@@ -3158,6 +3158,26 @@ pub async fn create_with_progress(
     .record(__merge_pre_t.elapsed().as_secs_f64());
     let rejected_slashes = merge_pre_info.rejected_slashes.clone();
 
+    // Targets were picked from the floor's bonds, before the merge; an
+    // offender the pre-state already shows unbonded was slashed by a parent.
+    let slashing_deploys = {
+        let pre_state_bonds = runtime_manager.compute_bonds(&merge_pre_info.state).await?;
+        let mut still_bonded = Vec::with_capacity(slashing_deploys.len());
+        for slash_deploy in slashing_deploys {
+            let offender = casper_snapshot
+                .dag
+                .lookup_unsafe(&slash_deploy.invalid_block_hash)?
+                .sender;
+            if pre_state_bonds
+                .iter()
+                .any(|bond| bond.validator == offender && bond.stake > 0)
+            {
+                still_bonded.push(slash_deploy);
+            }
+        }
+        still_bonded
+    };
+
     // NEVER EXECUTE A DEPLOY WHOSE EFFECT IS ALREADY IN THE PRE-STATE.
     //
     // Selection ran BEFORE the parents were merged, so it cannot know what

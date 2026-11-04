@@ -48,7 +48,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
+    ApprovedBlock, BlockMessage, Bond, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -1679,11 +1679,13 @@ impl Validate {
         }
     }
 
-    /// If block contains an invalid justification block B and the creator of B is still bonded,
-    /// return a RejectableBlock. Otherwise, return an IncludeableBlock.
+    /// If block contains an invalid justification block B and the creator of B is still bonded
+    /// in the block's post-state, return a RejectableBlock. Otherwise, return an IncludeableBlock.
+    /// A slash the block or a parent carries leaves the creator unbonded there.
     pub fn neglected_invalid_block(
         block: &BlockMessage,
         s: &mut CasperSnapshot,
+        post_state_bonds: &[Bond],
     ) -> ValidBlockProcessing {
         let epoch_length = s.on_chain_state.shard_conf.epoch_length;
         let current_epoch =
@@ -1697,6 +1699,10 @@ impl Validate {
             };
         let bonds = proto_util::bonds(block);
         let bonds_by_validator: HashMap<&Validator, i64> = bonds
+            .iter()
+            .map(|bond| (&bond.validator, bond.stake))
+            .collect();
+        let post_state_stake: HashMap<&Validator, i64> = post_state_bonds
             .iter()
             .map(|bond| (&bond.validator, bond.stake))
             .collect();
@@ -1767,9 +1773,9 @@ impl Validate {
                 continue;
             }
 
-            let bond = bonds_by_validator
+            let bond = post_state_stake
                 .get(&metadata.sender)
-                .or_else(|| bonds_by_validator.get(&justification.validator))
+                .or_else(|| post_state_stake.get(&justification.validator))
                 .copied()
                 .unwrap_or(0);
             let slash_required = match received_slash_deploy_authorized(
@@ -2060,7 +2066,34 @@ mod merge_recovery_validation_tests {
         let block = candidate(4334, proposer, offender, invalid, Vec::new());
 
         assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Validate::neglected_invalid_block(&block, &mut snapshot, &block.body.state.bonds),
+            Either::Right(ValidBlock::Valid)
+        ));
+    }
+
+    #[test]
+    fn an_offender_already_slashed_in_the_post_state_is_owed_nothing() {
+        let mut snapshot =
+            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
+        snapshot.on_chain_state.shard_conf.epoch_length = 10;
+        let offender = validator(7);
+        let proposer = validator(8);
+        let invalid = hash(68);
+        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 94, true);
+        let block = candidate(95, proposer.clone(), offender.clone(), invalid, Vec::new());
+        let post_state_bonds = vec![
+            Bond {
+                validator: offender,
+                stake: 0,
+            },
+            Bond {
+                validator: proposer,
+                stake: 1000,
+            },
+        ];
+
+        assert!(matches!(
+            Validate::neglected_invalid_block(&block, &mut snapshot, &post_state_bonds),
             Either::Right(ValidBlock::Valid)
         ));
     }
@@ -2085,7 +2118,7 @@ mod merge_recovery_validation_tests {
         );
 
         assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Validate::neglected_invalid_block(&block, &mut snapshot, &block.body.state.bonds),
             Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
         ));
 
@@ -2093,7 +2126,7 @@ mod merge_recovery_validation_tests {
             slash(invalid, proposer, 9),
         ]);
         assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot),
+            Validate::neglected_invalid_block(&block, &mut snapshot, &block.body.state.bonds),
             Either::Right(ValidBlock::Valid)
         ));
     }

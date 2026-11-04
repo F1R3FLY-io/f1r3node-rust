@@ -27,7 +27,7 @@
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -244,6 +244,23 @@ pub fn received_slash_deploy_authorized(
 
 fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, DomainError> {
     epoch_for_block_number(metadata.block_number, epoch_length)
+}
+
+/// The senders of the invalid blocks whose evidence epoch is the epoch of
+/// `block_number`: the offenders a block at that height may slash.
+pub fn offenders_with_evidence_in_epoch_of(
+    invalid_blocks: impl IntoIterator<Item = BlockMetadata>,
+    block_number: i64,
+    epoch_length: i32,
+) -> Result<HashSet<Validator>, DomainError> {
+    let epoch = epoch_for_block_number(block_number, epoch_length)?;
+    let mut offenders = HashSet::new();
+    for metadata in invalid_blocks {
+        if metadata.invalid && evidence_epoch(&metadata, epoch_length)? == epoch {
+            offenders.insert(metadata.sender);
+        }
+    }
+    Ok(offenders)
 }
 
 /// Proposer-side enumeration of slash candidates for the block being built.
