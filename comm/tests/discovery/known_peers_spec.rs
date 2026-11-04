@@ -99,7 +99,7 @@ fn missing_file_gives_no_peers_and_malformed_lines_are_skipped() {
     std::fs::write(&path, content).unwrap();
 
     let loaded = KnownPeers::load(path);
-    assert_eq!(loaded.peers(), [validator1.clone()]);
+    assert_eq!(loaded.peers(), std::slice::from_ref(&validator1));
     assert_eq!(loaded.peers()[0].endpoint, validator1.endpoint);
 }
 
