@@ -542,7 +542,7 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
         hex::encode(&alice.pk.bytes)
     );
     let (answer, _) = rm
-        .play_exploratory_deploy(bonded, &post, None)
+        .play_exploratory_deploy(bonded, &post, None, Vec::new())
         .await
         .unwrap();
     assert_eq!(RhoBoolean::unapply(&answer[0]), Some(true));

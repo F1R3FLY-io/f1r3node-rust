@@ -36,7 +36,7 @@ async fn a_v6_genesis_runs_pos_on_native_bonds_and_the_vault_facade() {
     let post = &block.body.state.post_state_hash;
 
     let (bonds, _) = rm
-        .play_exploratory_deploy(BONDS_QUERY.to_string(), post, None)
+        .play_exploratory_deploy(BONDS_QUERY.to_string(), post, None, Vec::new())
         .await
         .unwrap();
     assert_eq!(bonds.len(), 1, "PoS answers getBonds");
@@ -50,7 +50,7 @@ async fn a_v6_genesis_runs_pos_on_native_bonds_and_the_vault_facade() {
 
     let funded = &genesis.vaults[0];
     let query = VAULT_FACADE_QUERY.replace("__ADDRESS__", &funded.vault_address.to_base58());
-    let (answer, _) = rm.play_exploratory_deploy(query, post, None).await.unwrap();
+    let (answer, _) = rm.play_exploratory_deploy(query, post, None, Vec::new()).await.unwrap();
     let (ok, balance) =
         rholang::rust::interpreter::rho_type::RhoTuple2::unapply(&answer[0]).unwrap();
     assert_eq!(

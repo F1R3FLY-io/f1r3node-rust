@@ -138,7 +138,7 @@ async fn pos_bond(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> Opti
            }}"#,
         hex::encode(&pk.bytes)
     );
-    let (answer, _) = rm.play_exploratory_deploy(query, root, None).await.unwrap();
+    let (answer, _) = rm.play_exploratory_deploy(query, root, None, Vec::new()).await.unwrap();
     RhoNumber::unapply(&answer[0]).filter(|b| *b >= 0)
 }
 
@@ -553,7 +553,7 @@ async fn active(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> bool {
            }}"#,
         hex::encode(&pk.bytes)
     );
-    let (answer, _) = rm.play_exploratory_deploy(query, root, None).await.unwrap();
+    let (answer, _) = rm.play_exploratory_deploy(query, root, None, Vec::new()).await.unwrap();
     RhoBoolean::unapply(&answer[0]).unwrap()
 }
 

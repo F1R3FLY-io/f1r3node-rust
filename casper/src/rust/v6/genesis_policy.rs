@@ -19,7 +19,7 @@ pub async fn read_genesis_policy(
     state_hash: &StateHash,
 ) -> Result<Option<ShardResourcePolicy>, CasperError> {
     let (result, _cost) = runtime_manager
-        .play_exploratory_deploy(RESOURCE_POLICY_QUERY.to_string(), state_hash, None)
+        .play_exploratory_deploy(RESOURCE_POLICY_QUERY.to_string(), state_hash, None, Vec::new())
         .await?;
     match result.as_slice() {
         [] => Ok(None),

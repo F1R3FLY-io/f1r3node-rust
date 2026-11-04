@@ -24,6 +24,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     Bond, DeployData, Event, ProcessedDeploy, ProcessedSystemDeploy, SystemDeployData,
 };
+use models::rust::deploy_parameters::DeployParameter;
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
@@ -1142,6 +1143,7 @@ impl RuntimeOps {
         hash: &StateHash,
         deployer: Option<PublicKey>,
         phlo_limit: i64,
+        parameters: Vec<DeployParameter>,
     ) -> Result<(Vec<Par>, u64), CasperError> {
         let deploy_result = async {
             let data = DeployData {
@@ -1152,7 +1154,7 @@ impl RuntimeOps {
                 valid_after_block_number: 0,
                 shard_id: String::new(),
                 expiration_timestamp: None,
-                parameters: Vec::new(),
+                parameters,
                 cosignatures: Vec::new(),
                 required_cosigners: Vec::new(),
             };

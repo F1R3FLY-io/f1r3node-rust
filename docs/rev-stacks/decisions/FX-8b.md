@@ -156,3 +156,22 @@ v6 tests: 88 passed, 0 failed, 7 ignored. `rev_bond_spec`: 3 passed. The cross-h
 | `close_charge_spec`: keep `no_deployment_makes_the_close_fail` and lane C's substitution test | Take one side | The tests are independent | Yes |
 
 v6 tests: 104 passed, 0 failed, 10 ignored. `seal_wiring_spec`: 3 passed. `rev_bond_spec`: 9 passed.
+
+## Merge of `origin/dev` (Decision 95, 2026-11-04)
+
+`origin/dev` at 657156f98 merged into FX-8b after FX-15 and FX-15-close (f7af68ca8). `dev` moved 37 commits past the dry run's target (746a1c368). Issue #730 (trusted deploy-store reads) adds five conflicts that the dry run did not see. The dry run's sections 2.1, 2.2 and 3 apply as written.
+
+| Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|
+| Take `dev`'s deploy codec (signature checked at write, Blake2b fingerprint checked at read) and remove A4's verify-once cache, `from_stored_proto` and the `deploy-verified-encodings-cap` setting | Keep the cache beside the fingerprint | Both remove the per-read signature check. `dev`'s form needs no process-wide set and also covers restore and quarantine. Two mechanisms for one job is slop. | Yes |
+| Check named cosigners in the codec's `verify_signature`, which the write path and the restore path both call | Check them only in `from_proto` | `dev`'s read path no longer calls `from_proto`. Without this, a stored deploy that lacks a named cosigner is read back as valid. FX-3 refused it on read. A missing cosigner maps to `signature_verification_failed` at admission. | Yes |
+| `from_proto` = `from_proto_unverified`, then the signature check, then `with_complete_cosignatures` | `dev`'s `from_proto` without the cosigner check | Network input keeps FX-3's rule | Yes |
+| `PreparedDeploy` carries the signature, and every insert path clears the offer-rejection entry | Clear only in `add` and `add_if_absent` | `dev`'s admission inserts through `add_prepared_if_unchanged`. FX-8b's rejection log must clear there too. | Yes |
+| `reserve_deploy`: `dev`'s snapshot loop, with A3's pool cap checked under the rejected-buffer guard just before the insert. `Reservation::{Added, Refused, PoolFull}` keeps the `pool_full` lifecycle event. | `dev`'s `Option<DeployError>` and no cap | P0-00 A4 keeps the cap in the admission critical section. `dev`'s guard is that section. | Yes |
+| Seven dry-run calls plus two that FX-15-close added in `pos_bond_admin_spec.rs` pass `Vec::new()` as the fourth argument of `play_exploratory_deploy` | — | Dry run section 3 | Yes |
+| `web_api.rs` per section 2.2: `balance_query_term` validates the address, then returns `BALANCE_RHOLANG_TEMPLATE` with the `address` parameter (Legacy) or `native::balance_term` with no parameter (Native) | — | Ruled in the dry run | Yes |
+
+**Decision 88 labels:**
+
+- Known issue, not blocking: the Native balance path puts the validated address in source text (dry run section 2.2). The validation refuses every string that is not an address, and `balance_query_rejects_addresses_that_are_not_valid` proves it.
+- Known issue, not blocking: an operator config that still sets `deploy-verified-encodings-cap` is ignored, because the field is gone and the casper config does not deny unknown keys.

@@ -9,6 +9,9 @@ use std::collections::HashSet;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    DeployPreparationError, PreparedInsertResult,
+};
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
@@ -154,46 +157,69 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
     {
         return Ok(true);
     }
-    this.rejected_deploy_buffer
-        .lock()?
-        .contains_sig(deploy_id)
-        .map_err(Into::into)
+    let rejected_deploys = this.rejected_deploy_buffer.lock()?.clone();
+    rejected_deploys.contains_sig(deploy_id).map_err(Into::into)
 }
 
 enum Reservation {
     Added,
-    Duplicate,
+    Refused(DeployError),
     PoolFull(DeployError),
 }
 
 fn reserve_deploy<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
-    deploy: Signed<DeployData>,
+    deploy: &Signed<DeployData>,
 ) -> Result<Reservation, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    if this
-        .block_dag_storage
-        .deploy_canonical_appearance(&deploy_id)?
-        .is_some()
-    {
-        return Ok(Reservation::Duplicate);
-    }
-
-    let rejected_deploys = this.rejected_deploy_buffer.lock()?;
-    if rejected_deploys.contains_sig(&deploy_id)? {
-        return Ok(Reservation::Duplicate);
-    }
-    let cap = deploy_pool_cap(
-        this.casper_shard_conf.max_user_deploys_per_block,
-        this.casper_shard_conf.deploy_pool_blocks_of_backlog,
-    );
-    if let Some(error) = pool_admission(this.deploy_storage.pending_count()?, cap) {
-        return Ok(Reservation::PoolFull(error));
-    }
-    if this.deploy_storage.add_if_absent(deploy)? {
-        Ok(Reservation::Added)
-    } else {
-        Ok(Reservation::Duplicate)
+    let preparation = this.deploy_storage.prepare_checked(deploy);
+    loop {
+        let rejected_store = this.rejected_deploy_buffer.lock()?.clone();
+        if this
+            .block_dag_storage
+            .deploy_canonical_appearance(&deploy_id)?
+            .is_some()
+        {
+            return Ok(Reservation::Refused(DeployError::duplicate_deploy(deploy_id)));
+        }
+        let pool = this.deploy_storage.inspect_sig(&deploy_id)?;
+        let rejected = rejected_store.inspect_sig(&deploy_id)?;
+        if pool.is_present() || rejected.is_present() {
+            return Ok(Reservation::Refused(DeployError::duplicate_deploy(deploy_id)));
+        }
+        let prepared = match preparation {
+            Ok(ref prepared) => prepared,
+            Err(DeployPreparationError::InvalidSignature) => {
+                return Ok(Reservation::Refused(DeployError::signature_verification_failed()));
+            }
+            Err(DeployPreparationError::UnsupportedAlgorithm(algorithm)) => {
+                return Ok(Reservation::Refused(DeployError::unknown_signature_algorithm(
+                    algorithm,
+                )));
+            }
+            Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
+        };
+        let rejected_guard = this.rejected_deploy_buffer.lock()?;
+        if !rejected_guard.matches_snapshot(&rejected)? {
+            continue;
+        }
+        let cap = deploy_pool_cap(
+            this.casper_shard_conf.max_user_deploys_per_block,
+            this.casper_shard_conf.deploy_pool_blocks_of_backlog,
+        );
+        if let Some(error) = pool_admission(this.deploy_storage.pending_count()?, cap) {
+            return Ok(Reservation::PoolFull(error));
+        }
+        match this
+            .deploy_storage
+            .add_prepared_if_unchanged(prepared, &pool)?
+        {
+            PreparedInsertResult::Inserted => return Ok(Reservation::Added),
+            PreparedInsertResult::AlreadyPresent => {
+                return Ok(Reservation::Refused(DeployError::duplicate_deploy(deploy_id)));
+            }
+            PreparedInsertResult::Changed => continue,
+        }
     }
 }
 
@@ -260,11 +286,9 @@ pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
     deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
     let deploy_id = deploy.sig.to_vec();
-    match reserve_deploy(this, deploy.clone())? {
+    match reserve_deploy(this, &deploy)? {
         Reservation::Added => {}
-        Reservation::Duplicate => {
-            return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
-        }
+        Reservation::Refused(error) => return Ok(Either::Left(error)),
         Reservation::PoolFull(error) => {
             tracing::info!(
                 target: "f1r3fly.casper.deploy_lifecycle",

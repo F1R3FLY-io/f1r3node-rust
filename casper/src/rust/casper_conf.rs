@@ -204,12 +204,6 @@ pub struct CasperConf {
     )]
     pub proposal_pacing_floor_distance: i64,
 
-    #[serde(
-        rename = "deploy-verified-encodings-cap",
-        default = "default_deploy_verified_encodings_cap"
-    )]
-    pub deploy_verified_encodings_cap: usize,
-
     #[serde(rename = "rejection-search-cap-from-height", default)]
     pub rejection_search_cap_from_height: Option<i64>,
 
@@ -327,10 +321,6 @@ pub fn default_offer_rejection_reason_bytes() -> usize {
 
 pub fn default_rejection_search_group_branch_cap() -> usize {
     crate::rust::casper::REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT
-}
-
-pub fn default_deploy_verified_encodings_cap() -> usize {
-    block_storage::rust::deploy::key_value_deploy_storage::VERIFIED_ENCODINGS_CAP_DEFAULT
 }
 
 /// Round robin dispatcher configuration

@@ -72,6 +72,7 @@ async fn legacy_vault_balance(
             LEGACY_BALANCE_QUERY.replace("__ADDRESS__", address),
             state,
             None,
+            Vec::new(),
         )
         .await
         .expect("the legacy balance query runs");
@@ -101,6 +102,7 @@ async fn facade_balance(
             FACADE_BALANCE_QUERY.replace("__ADDRESS__", address),
             state,
             None,
+            Vec::new(),
         )
         .await
         .expect("the facade balance query runs");

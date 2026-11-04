@@ -254,7 +254,7 @@ impl DeployRuntime {
         let bytes = hex::decode(envelope.trim()).map_err(|e| format!("Bad envelope: {e}"))?;
         let proto =
             DeployDataProto::decode(bytes.as_slice()).map_err(|e| format!("Bad envelope: {e}"))?;
-        let stored = DeployData::from_stored_proto(proto)?;
+        let stored = DeployData::from_proto_unverified(proto)?;
         Signed::from_signed_data(stored.data, stored.pk, stored.sig, stored.sig_algorithm)?
             .ok_or_else(|| "Invalid signature".to_string())
     }
