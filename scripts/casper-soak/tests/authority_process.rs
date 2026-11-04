@@ -13,6 +13,7 @@ use casper_soak::{encoded, file_hash, record};
 use serde_json::{json, Value};
 
 fn config(root: &Path, executable: &Path) -> Value {
+    let executable = fs::canonicalize(executable).unwrap();
     let pinned = root.join("sleep");
     fs::copy(executable, &pinned).unwrap();
     json!({"path":pinned,"sha256":file_hash(&pinned).unwrap(),"arguments":["60"],"working_directory":root})
