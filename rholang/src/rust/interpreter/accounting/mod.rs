@@ -99,6 +99,24 @@ impl CostManager {
         Ok(())
     }
 
+    pub fn charge_reserving(&self, amount: Cost, reserve: i64) -> Result<(), InterpreterError> {
+        if let (Some(record), Some(meter)) = (rev_stack::seal::current(), rev_stack::seal::meter())
+        {
+            if amount.value > 0 && meter.gates(&record) {
+                return match meter.admit_charge(&record, amount.value.saturating_add(reserve)) {
+                    membrane::Admission::Refused => Err(InterpreterError::MembraneStopped),
+                    _ => {
+                        self.comms
+                            .on_work(Some(comm_ledger::Surface::of(&record)), amount.value);
+                        self.push_log(amount);
+                        Ok(())
+                    }
+                };
+            }
+        }
+        self.charge(amount)
+    }
+
     fn push_log(&self, amount: Cost) {
         if self.max_log_entries > 0 {
             let mut log = self.log.lock().unwrap();
