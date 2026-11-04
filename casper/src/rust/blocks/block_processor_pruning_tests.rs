@@ -402,6 +402,103 @@ async fn deferred_dependency_survives_recovery_cooldown() {
 }
 
 #[tokio::test]
+async fn deferred_requests_reserve_capacity_until_the_first_body_is_released() {
+    let fixture = Fixture::new().await;
+    fixture
+        .dependencies
+        .block_store
+        .set_pending_limits(PendingBlockLimits {
+            max_blocks: 1,
+            max_bytes: usize::MAX,
+            max_per_sender: 1,
+        });
+    let mut first = get_random_block_default();
+    first.block_hash = fixture.parent.clone();
+    fixture.dependencies.defer_pending(&first);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.parent)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let second_hash = BlockHash::from(vec![7; 32]);
+    fixture
+        .dependencies
+        .casper_buffer
+        .add_relation(
+            BlockHashSerde(second_hash.clone()),
+            BlockHashSerde(BlockHash::from(vec![8; 32])),
+        )
+        .unwrap();
+    let mut second = get_random_block_default();
+    second.block_hash = second_hash.clone();
+    second.sender = first.sender.clone();
+    fixture.dependencies.defer_pending(&second);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!fixture
+        .dependencies
+        .block_retriever
+        .was_requested_as_dependency(&second_hash)
+        .unwrap());
+
+    let mut external = get_random_block_default();
+    external.block_hash = BlockHash::from(vec![9; 32]);
+    external.sender = Bytes::from(vec![9; 65]);
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_store
+            .put_pending_as(&external, PendingClass::Solicited)
+            .unwrap()
+            .status,
+        PendingInsert::Accepted
+    );
+    let outcome = fixture
+        .dependencies
+        .block_store
+        .put_pending_as(&first, PendingClass::Solicited)
+        .unwrap();
+    assert_eq!(outcome.status, PendingInsert::Accepted);
+    assert_eq!(outcome.evicted, vec![external.block_hash.clone()]);
+    assert_eq!(fixture.dependencies.block_store.pending_blocks().len(), 1);
+    fixture
+        .dependencies
+        .casper_buffer
+        .remove(BlockHashSerde(first.block_hash.clone()))
+        .unwrap();
+    fixture
+        .dependencies
+        .block_retriever
+        .ack_in_casper(first.block_hash.clone())
+        .await
+        .unwrap();
+    assert!(fixture
+        .dependencies
+        .block_store
+        .pending_blocks()
+        .remove(&first.block_hash));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&second_hash)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn deferred_worker_releases_entries_lock_before_store_reads() {
     let mut fixture = Fixture::new().await;
     let mut parent = get_random_block_default();
