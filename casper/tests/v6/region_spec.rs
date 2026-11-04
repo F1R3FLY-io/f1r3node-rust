@@ -1411,3 +1411,64 @@ async fn work_under_an_underfunded_installer_stops_and_the_client_pays_nothing_f
         .await
         .is_err());
 }
+
+async fn funded_process(
+    rm: &RuntimeManager,
+    root: &StateHash,
+    term: &str,
+    amount: u64,
+) -> (WalletOwner, StateHash) {
+    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let process = process_owner(&Compiler::source_to_adt(term).unwrap());
+    let mut runtime = rm.spawn_runtime().await.unwrap();
+    runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(root))
+        .await
+        .unwrap();
+    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
+        .deposit(&process, amount)
+        .unwrap();
+    (process, runtime.create_checkpoint().await.root.to_bytes_prost())
+}
+
+#[tokio::test]
+#[ignore = "blocked: the meter admits each run against the whole wallet, so two runs can overdraw it together (FX-15-charging log)"]
+async fn two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full() {
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, genesis_root) = shard(&[(&bob, 100_000), (&carol, 100_000)]).await;
+    let service = r#"contract @"svc"(_) = {
+        new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(300) }
+    }"#;
+    let (process, pre) = funded_process(&rm, &genesis_root, service, 56_000).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 4);
+    let sealed = format!("{{% {service} %}}[# {{ {service} }}]");
+    let first = executor
+        .execute(&pre, vec![envelope(&sealed, 1, &alice, 1_000, 1)], block_data(&proposer))
+        .await
+        .expect("the service installs");
+    let root = first.settled_root.clone();
+    let left = read_wallet_balance(&rm, &root, &process).await.unwrap();
+    let room = left;
+    let calls = vec![
+        envelope(r#"@"svc"!(0)"#, 4, &bob, 1_000, 1),
+        envelope(r#"@"svc"!(0)"#, 5, &carol, 1_000, 1),
+    ];
+    let outcome = executor.execute(&root, calls, block_data(&proposer)).await;
+    let block = outcome.expect("two runs that each fit execute");
+    let charges: Vec<_> = block
+        .settlement
+        .surface_charges
+        .iter()
+        .filter(|sc| sc.purse == process)
+        .collect();
+    let drawn: u64 = charges.iter().map(|sc| sc.drawn).sum();
+    assert!(drawn <= room, "{drawn} > {room}");
+    assert!(
+        charges.iter().all(|sc| sc.drawn == sc.owed),
+        "no step under the membrane runs unpaid: {charges:?}"
+    );
+}
