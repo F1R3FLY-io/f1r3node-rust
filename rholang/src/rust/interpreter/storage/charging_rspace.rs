@@ -363,24 +363,45 @@ fn handle_result(
 
             // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
             // That persistent continuation is going to be charged for (without refund) once it has no matches in TS.
-            let refund_for_consume =
-                if !cont.persistent || consume_id_bytes == triggered_by_id_bytes {
-                    storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation)
+            let triggered_by_consume = consume_id_bytes == triggered_by_id_bytes;
+            if !cont.persistent || triggered_by_consume {
+                let refund =
+                    storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
+                let payer = if triggered_by_consume {
+                    seal::current()
                 } else {
-                    Cost::create(0, "refund_for_consume")
+                    seal::of_continuation(&cont.continuation).ok().flatten()
                 };
+                seal::within_now(payer, || {
+                    cost.charge(Cost::create(-refund.value, "consume storage refund"))
+                })?;
+            } else {
+                cost.charge(Cost::create(0, "consume storage refund"))?;
+            }
 
-            let refund_for_produces =
-                refund_for_removing_produces(data_list, &cont.channels, &triggered_by_id_bytes);
-
-            cost.charge(Cost::create(
-                -refund_for_consume.value,
-                "consume storage refund",
-            ))?;
-            cost.charge(Cost::create(
-                -refund_for_produces.value,
-                "produces storage refund",
-            ))?;
+            let mut refunded = false;
+            for (data, channel) in data_list.iter().zip(cont.channels.iter()) {
+                let triggered_by_datum = data.removed_datum.random_state == triggered_by_id_bytes;
+                if data.persistent && !triggered_by_datum {
+                    continue;
+                }
+                let refund = storage_cost_produce(channel, &data.removed_datum);
+                let payer = if triggered_by_datum {
+                    seal::current()
+                } else {
+                    data.removed_datum
+                        .seal
+                        .as_ref()
+                        .and_then(|p| seal::SealRecord::from_proto(p).ok())
+                };
+                seal::within_now(payer, || {
+                    cost.charge(Cost::create(-refund.value, "produces storage refund"))
+                })?;
+                refunded = true;
+            }
+            if !refunded {
+                cost.charge(Cost::create(0, "produces storage refund"))?;
+            }
 
             cost.record_comm();
 
@@ -420,32 +441,6 @@ fn draw_replayed_comm(
     );
     let follow = follow + comm_event_storage_cost(cont.channels.len() as i64).value;
     meter.draw_comm_in_replay(&records, seal::current().as_ref(), follow);
-}
-
-fn refund_for_removing_produces(
-    data_list: &[RSpaceResult<Par, ListParWithRandom>],
-    channels: &[Par],
-    triggered_id_bytes: &[u8],
-) -> Cost {
-    data_list
-        .iter()
-        .zip(channels.iter())
-        // A persistent produce is charged for upfront before reaching the TS, and needs to be refunded
-        // after each iteration it matches an existing consume. We treat it as 'removed' on each such iteration.
-        // It is going to be 'not removed' and charged for on the last iteration, where it doesn't match anything.
-        .filter(|(data, _)| {
-            !data.persistent || data.removed_datum.random_state == triggered_id_bytes
-        })
-        .map(|(data, channel)| storage_cost_produce(channel, &data.removed_datum))
-        .fold(
-            Cost::create(0, "refund_for_removing_produces init"),
-            |acc, cost| {
-                Cost::create(
-                    acc.value + cost.value,
-                    "refund_for_removing_produces operation",
-                )
-            },
-        )
 }
 
 enum Trigger {
