@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2359,6 +2359,99 @@ The gate status of revision 23 does not change.
 | F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the F39 end-to-end path, the Decision 108 griefing case, the two drop-rule observations | Known issue | Open |
 
 
+## Revision 26 (actions A-8 and A-9): the `dev` merge into FX-8b, and the withdrawer rewrite
+
+- **Commits audited:**
+  - `patch/FX-8b` merge `ac2d7dacd` (parents `f7af68ca8` and `dev` at `657156f98`) and the fix commit `7b60c3880`.
+  - `patch/FX-17-epoch` at `acf9fff28` (the withdrawer rewrite, Decision 107).
+  - `patch/FX-16` at `a35c37a16` (the re-measured bound).
+- **Reference:** design r21 (publications `81599ff`).
+- **Method:** a code reading of the resolved files and the PoSV6 diff. No tests were run.
+- **Not changed:** the Q-33 memo, FX-17 code, and lane B's `dea48f13d`. There is no ruling on `AlreadyIncluded`. Question 20 is answered in practice by lane B's rewrite (below).
+
+### The `dev` merge against the watch item
+
+| Check | Result |
+|---|---|
+| `runtime.rs` | **Holds.** The ledger reset before the system source and `charge_recorded_work` after it, before the checkpoint, are kept. |
+| `web_api.rs`, both wallet paths | **Holds.** `balance_query_term` checks the address with `VaultAddress::is_valid` first. The legacy path returns `BALANCE_RHOLANG_TEMPLATE` with the address bound as a deploy parameter. The native path returns `native::balance_term`, which checks the address again. `dev`'s tests `get_balance_template_binds_address_through_ast_not_source` and `get_registry_template_binds_uri_through_ast_not_source` are kept, with FX-8b's `balance_query_rejects_addresses_that_are_not_valid`. F44 stays a known issue, as lane A2 also labels it. |
+| `reduce.rs` (spot check) | **Holds.** `dev`'s join rule (a join with two channels that resolve to one name never matches) returns before the receive is stored, so nothing is charged or recorded for it. The record on a stored datum (`stored_seal`) is still written. `check_region_signature` keeps FX-4's check ahead of the origin check (F30). |
+| `space_matcher.rs` (spot check) | **Holds.** `admits_waiting` still runs for each waiting continuation. The `check_commit` veto still comes before the commit, and its rollback now uses `dev`'s `restore`, which undoes the matches newest first. That also makes the FX-15 veto restore a channel matched twice correctly. |
+| Issue #730 (trusted deploy-store reads) | **Holds for authority.** `dev` checks a deploy's signature at write and a fingerprint at read. Lane A2 adds the FX-3 check of the named cosigners to the codec's `verify_signature`, which both the write path and the restore path call. So a stored deploy that lacks a named cosigner is still refused, as FX-3 refused it on read. A4's verify-once cache is removed in favour of `dev`'s mechanism. |
+| A3's pool cap | **Holds.** It is checked inside `dev`'s admission guard, just before the insert. |
+
+**The play double count (`7b60c3880`):**
+- D8b's `on_comm_between` and the older `record_comm` both counted each COMM in play. `rholang/tests/comm_ledger_spec.rs` found it, and lane A2 removed `record_comm`.
+- Lane A2 states that production reads only the surfaces and the work, so no root and no charge changed. **Accepted.** The double count was in the COMM tally, not in the surface or work tallies that settlement reads.
+- Lane A2's label (known issue, now fixed) is accepted.
+
+**Full suites:** the FX-8b log says that the full suites found this fix. It gives no counts for the merged tree. **Condition:** post the counts for `7b60c3880`.
+
+Lane A2's known issue (an operator config that still sets `deploy-verified-encodings-cap` is ignored) is accepted. It has no authority effect.
+
+**The `dev` merge watch item is closed.**
+
+### The withdrawer rewrite (`acf9fff28`, Decision 107, flagged for review)
+
+**What changes:**
+- Withdrawers move with three native map operations.
+- A release schedule (`releases`: block number at which quarantine ends → the set of keys that end then) replaces the filter over every withdrawer.
+- Due releases are split in halves until each part has one entry. Each part calls `RevBondAdmin!("release", …)`, and a counter collects the failures.
+- No contract body that fires once for each withdrawer carries the PoS state. The release cap of revision 2 is removed.
+
+**Reading of the release path:**
+- Due entries are removed from `releases` (`rest.delete(end)`), and released keys are removed from `withdrawers` and `committedRewards` with one `diff` each.
+- A failed release stays in `withdrawers` and is put back in `releases` under the current block, so the next epoch close tries it again.
+- **No key is released twice. Holds.**
+
+**F51 — Medium, known issue: a key that bonds again while a withdrawal is in quarantine.**
+- **Code:** `bond` refuses a key only if it is in `allBonds`. A withdrawn key leaves `allBonds` when it moves to `withdrawers`, so it can bond again during its quarantine. If it then withdraws again:
+  - `movePendingWithdrawer` replaces its amount in `withdrawers` with the new bond (`++`).
+  - The key is in `releases` under both quarantine ends.
+- **Effect:**
+  - At the first end, the new amount is released before its own quarantine has passed.
+  - The first amount is never released.
+
+  Lane B notes the replacement and says the old contract did the same. The early release is new, because the old contract kept one end for each key in `withdrawers`.
+- **Reason for the label:** v6 runs no slashing today (`require_no_slashes`), and the effect is limited to the validator's own funds. So it is Medium, below the gate, and not a §6.3 item.
+- **Change of label:** before B6 enables slashing, it becomes an authority finding (a bond that leaves quarantine early escapes slashing). It must be settled then, together with the slashing epoch arithmetic.
+- **Proposed fix:** refuse `bond` for a key that is in `withdrawers`, or keep the quarantine end with the amount. Lane B.
+
+**Test coverage:** `an_epoch_close_releases_every_withdrawer_whose_quarantine_has_ended` covers the normal path. No test makes a release fail, because `RevBondAdmin` refuses a release only when the native bond is missing. That is a known issue: the retry path is covered by reading only.
+
+### F47 after the rewrite (`a35c37a16`)
+
+| Case | Close | Pre-charge |
+|---|---|---|
+| 100 bonds, 60 withdrawers, epoch 1 | 1,012,609 | 1,100,000 |
+| 100 bonds, 99 withdrawers, epoch 1 | **1,291,842** | 1,100,000 |
+| Bonds only, up to 200 | about half the pre-charge or less | — |
+
+- The release cost is now linear, at about 8,000 to 17,000 phlo for each withdrawer.
+- `an_epoch_with_many_withdrawers_stays_inside_its_pre_charge` (10, 30 and 60 withdrawers) is enabled and passes.
+- **One case is still over:** 99 of 100 validators withdrawing in one epoch. The test for it is ignored.
+
+**F47 is narrowed to this one case and stays blocking**, because work above the pre-charge runs unpaid. Lane B's options are:
+1. A per-bond rate of 13,000 (a margin of about 1.2 at 99 withdrawers).
+2. Keep 9,000 and bound the releases of one epoch close to 60 % of the bonds.
+
+That needs a ruling (question 21). Question 20 is overtaken by the rewrite.
+
+**Merge requirement:** `acf9fff28` and `a35c37a16` are not in FX-8b. They change the PoS term and the genesis root, so A-8 re-reads the FX-8b merge commit when they land.
+
+### Gate status on FX-8b at `7b60c3880`
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | Open until FX-17 lands |
+| D10 | **Blocking** | Not wired in production |
+| F47 (99 withdrawers) | **Blocking** | Question 21. The rewrite is not yet in FX-8b. |
+| Full-suite counts for `7b60c3880`, the F39 negative test, the active-set equivalence test | Merge conditions | Open |
+| The `dev` merge | — | Closed |
+| F51 (bond again during quarantine) | Known issue | New. Settle before B6 slashes. |
+| F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the F39 end-to-end path, the Decision 108 griefing case, the two drop-rule observations, the ignored `deploy-verified-encodings-cap`, the untested release-failure path | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -2381,4 +2474,5 @@ The gate status of revision 23 does not change.
 17. **F49:** answered on 2026-11-03 (Decision 103). The meter admits each step against what t drew in its own run. Parallel runs in one block can then each draw the same wallet up to its whole free balance, and settlement caps the total. Is the meter block-wide, is the wallet's balance split between runs, or does the settlement cap across runs stand?
 18. **F50:** answered on 2026-11-03 (Decision 104). Are storage bookkeeping charges under a gated record (restores of persistent items, post-COMM charges, the event charge of a stored datum) admitted with the step that caused them, or exempt from the gate?
 19. **F47 (measured):** answered on 2026-11-04 (Decision 107: the PoS close is made linear). The PoS close grows about quadratically in the bonds at an epoch boundary, and in the withdrawers that one epoch releases. Is the PoS close made linear (a native active-set pick, and withdrawer folds over the withdrawer maps only), is the number of releases in each close capped, or does the pre-charge gain a quadratic term?
-20. **F47 (withdrawers):** the PoS close still grows with the withdrawers of one epoch, and the pre-charge counts bonds only. Is the withdrawer loop rewritten now (a release schedule keyed by epoch, about 2.5 days), or do interim caps on moves and on the quarantine window apply, with withdrawers in quarantine counted as bonds for the pre-charge?
+20. **F47 (withdrawers):** overtaken on 2026-11-04 by lane B's withdrawer rewrite (`acf9fff28`). See question 21. the PoS close still grows with the withdrawers of one epoch, and the pre-charge counts bonds only. Is the withdrawer loop rewritten now (a release schedule keyed by epoch, about 2.5 days), or do interim caps on moves and on the quarantine window apply, with withdrawers in quarantine counted as bonds for the pre-charge?
+21. **F47 (99 withdrawers):** after the withdrawer rewrite, an epoch in which 99 of 100 validators withdraw costs 1,291,842 phlo against a pre-charge of 1,100,000. Is the per-bond rate raised to 13,000, or are the releases of one epoch close bounded to 60 % of the bonds?
