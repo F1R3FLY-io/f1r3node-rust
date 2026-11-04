@@ -3,7 +3,7 @@ use rholang::rust::interpreter::accounting::rev_stack::{RevAmount, WalletOwner};
 
 pub const CLOSE_BASE_PHLO: u64 = 200_000;
 
-pub const CLOSE_PHLO_PER_BOND: u64 = 9_000;
+pub const CLOSE_PHLO_PER_BOND: u64 = 13_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CloseCharge {

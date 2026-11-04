@@ -199,7 +199,6 @@ async fn an_epoch_with_many_withdrawers_stays_inside_its_pre_charge() {
 }
 
 #[tokio::test]
-#[ignore = "needs a ruling: 99 of 100 validators withdrawing in one epoch costs about 10,900 phlo per bond, above the ruled 9,000 (FX-16 log)"]
 async fn an_epoch_where_almost_every_validator_withdraws_stays_inside_its_pre_charge() {
     for (bonds, phlo) in withdrawers_close(100, 99).await {
         let bound = pre_charge_phlo(bonds, 0);
