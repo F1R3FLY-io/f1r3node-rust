@@ -541,3 +541,43 @@ async fn a_genesis_validator_takes_its_handle_at_its_own_seal() {
     got.sort_by_key(|(ok, _)| *ok);
     assert_eq!(got, vec![(true, Par::default()), (true, Par::default())]);
 }
+
+async fn active(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> bool {
+    let query = format!(
+        r#"new ret, rl(`rho:registry:lookup`), posCh, activeCh in {{
+             rl!(`rho:system:pos`, *posCh) |
+             for (@(_, PoS) <- posCh) {{
+               @PoS!("getActiveValidators", *activeCh) |
+               for (@active <- activeCh) {{ ret!(active.contains("{}".hexToBytes())) }}
+             }}
+           }}"#,
+        hex::encode(&pk.bytes)
+    );
+    let (answer, _) = rm.play_exploratory_deploy(query, root, None).await.unwrap();
+    RhoBoolean::unapply(&answer[0]).unwrap()
+}
+
+#[tokio::test]
+async fn an_epoch_starts_at_the_first_close_at_or_past_its_boundary() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis, _) = shard(&[&alice, &bob], 3, 10).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let bond = |stash: &str| bond_term(&[(1_000, 1_000, stash)]);
+
+    let first = run(&executor, &genesis, &block(1, vec![envelope(&bond("a"), 1, &alice)], &proposer)).await;
+    assert_eq!(pos_bond(&rm, &first, &alice.pk).await, Some(1_000));
+    assert!(!active(&rm, &first, &alice.pk).await, "block 1 is inside epoch 0");
+
+    let past_void = run(&executor, &first, &block(4, vec![], &proposer)).await;
+    assert!(
+        active(&rm, &past_void, &alice.pk).await,
+        "block 3 was void, so the close of block 4 starts epoch 1"
+    );
+
+    let same_epoch = run(&executor, &past_void, &block(5, vec![envelope(&bond("b"), 5, &bob)], &proposer)).await;
+    assert_eq!(pos_bond(&rm, &same_epoch, &bob.pk).await, Some(1_000));
+    assert!(!active(&rm, &same_epoch, &bob.pk).await, "epoch 1 starts only once");
+
+    let next = run(&executor, &same_epoch, &block(6, vec![], &proposer)).await;
+    assert!(active(&rm, &next, &bob.pk).await, "block 6 is the boundary of epoch 2");
+}

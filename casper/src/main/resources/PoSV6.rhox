@@ -12,9 +12,10 @@ new PoS,
 in {
   registryLookup!(`rho:lang:listOps`, *listOpsCh) |
   for (@(_, ListOps) <- listOpsCh) {
-    new initialActiveCh, stateCh, settlePendingBonds in {
+    new initialActiveCh, stateCh, lastEpochCh, settlePendingBonds in {
       pickActiveValidators!($$initialBonds$$.toList(), *initialActiveCh) |
       for (@initialActive <- initialActiveCh) {
+        lastEpochCh!(0) |
         stateCh!({
           "allBonds"          : $$initialBonds$$,
           "activeValidators"  : initialActive,
@@ -250,9 +251,11 @@ in {
                   for (_ <- settledCh) {
                   getBlockData!(*blockDataCh) |
                   for (@blockNumber, _, _ <- blockDataCh) {
-                    if (blockNumber % $$epochLength$$ != 0) {
+                  for (@lastEpoch <<- lastEpochCh) {
+                    if (blockNumber / $$epochLength$$ <= lastEpoch) {
                       ackCh!((true, Nil))
                     } else {
+                      for (_ <- lastEpochCh) { lastEpochCh!(blockNumber / $$epochLength$$) } |
                       new stateProcessCh, movePendingWithdrawer, movePendingCh,
                           removeQuarantinedWithdrawers, removeQuarantinedCh, newValidatorsCh
                       in {
@@ -320,6 +323,7 @@ in {
                         }
                       }
                     }
+                  }
                   }
                   }
                 }
