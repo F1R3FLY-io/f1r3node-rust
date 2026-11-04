@@ -9,7 +9,7 @@
  * async support while maintaining the same flexibility as the original Scala version.
  */
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,27 +19,32 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, KeyValueDagRepresentation,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use block_storage::rust::pending_blocks::{PendingClass, PendingInsert};
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
+use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::store::key_value_store::MissingBlockContext;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
+use tokio::task::JoinHandle;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
 use crate::rust::engine::block_retriever::{AdmitHashReason, BlockRetriever};
 use crate::rust::engine::multi_parent_casper::buffer_resolver::dependencies_are_ready;
+use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_PROCESSING_STORAGE_TIME_METRIC, BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC,
-    BLOCK_PROCESSOR_METRICS_SOURCE, BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC,
-    BLOCK_VALIDATION_SUCCESS_METRIC, BLOCK_VALIDATION_TIME_METRIC,
+    BLOCK_INTEGRITY_REJECTED_METRIC, BLOCK_PROCESSING_STORAGE_TIME_METRIC,
+    BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC, BLOCK_PROCESSOR_METRICS_SOURCE,
+    BLOCK_SIZE_METRIC, BLOCK_VALIDATION_FAILED_METRIC, BLOCK_VALIDATION_SUCCESS_METRIC,
+    BLOCK_VALIDATION_TIME_METRIC,
 };
 use crate::rust::util::proto_util;
 use crate::rust::validate::Validate;
@@ -141,6 +146,84 @@ pub enum SenderAuthorization {
     Authorized,
     Unauthorized,
     Unknown,
+}
+
+impl SenderAuthorization {
+    pub fn store_mode(self) -> Option<StoreMode> {
+        match self {
+            SenderAuthorization::Authorized => Some(StoreMode::Block),
+            SenderAuthorization::Unknown => Some(StoreMode::Pending),
+            SenderAuthorization::Unauthorized => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreMode {
+    Block,
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreVerdict {
+    Stored,
+    PendingRefused(PendingInsert),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrityFailure {
+    Malformed,
+    HashMismatch,
+}
+
+impl IntegrityFailure {
+    fn reason(self) -> &'static str {
+        match self {
+            IntegrityFailure::Malformed => "malformed",
+            IntegrityFailure::HashMismatch => "hash-mismatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedBlock(BlockMessage);
+
+impl CheckedBlock {
+    pub fn check(
+        block: BlockMessage,
+        source: &'static str,
+    ) -> Result<Self, (Box<BlockMessage>, IntegrityFailure)> {
+        let failure = if !(Validate::format_of_fields(&block) && Validate::block_signature(&block))
+        {
+            IntegrityFailure::Malformed
+        } else if matches!(Validate::block_hash(&block), Either::Left(_)) {
+            IntegrityFailure::HashMismatch
+        } else {
+            return Ok(Self(block));
+        };
+        metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => source, "reason" => failure.reason())
+            .increment(1);
+        Err((Box::new(block), failure))
+    }
+
+    pub fn block(&self) -> &BlockMessage { &self.0 }
+
+    pub fn into_block(self) -> BlockMessage { self.0 }
+}
+
+#[derive(Debug, Clone)]
+pub enum QueuedBlock {
+    Network(CheckedBlock),
+    Stored(BlockMessage),
+}
+
+impl QueuedBlock {
+    pub fn block(&self) -> &BlockMessage {
+        match self {
+            QueuedBlock::Network(checked) => checked.block(),
+            QueuedBlock::Stored(block) => block,
+        }
+    }
 }
 
 fn of_interest_verdict(
@@ -344,7 +427,7 @@ pub fn mark_in_flight(blocks: &Arc<InFlightBlocks>, hash: BlockHash) -> InFlight
 /// in-flight marker while the item exists.
 pub type BlockQueueItem = (
     Arc<dyn crate::rust::casper::MultiParentCasper + Send + Sync>,
-    BlockMessage,
+    QueuedBlock,
     InFlightBlockGuard,
 );
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
@@ -392,11 +475,13 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub fn check_if_of_interest(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
     ) -> Result<OfInterestVerdict, CasperError> {
+        let block = checked.block();
         // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed = casper.dag_contains(&block.block_hash)
-            || casper.buffer_waits_on_dependency(&block.block_hash);
+            || (casper.buffer_waits_on_dependency(&block.block_hash)
+                && self.dependencies.holds_body(&block.block_hash)?);
 
         let shard_of_interest = casper.get_approved_block().map(|approved_block| {
             approved_block
@@ -436,10 +521,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     /// stored or its dependencies are requested.
     pub fn check_sender_authorization(
         &self,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
     ) -> Result<SenderAuthorization, CasperError> {
+        let block = checked.block();
         let authorization = self.dependencies.sender_authorization(block)?;
         if authorization == SenderAuthorization::Unauthorized {
+            self.dependencies.discard_pending(block);
+            self.dependencies
+                .strike_block_source(&block.block_hash, Strike::UnauthorizedSender);
             tracing::warn!(
                 "Ignoring block {} because block creator {} has 0 weight in main parent.",
                 PrettyPrinter::build_string_bytes(&block.block_hash),
@@ -449,32 +538,57 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         Ok(authorization)
     }
 
-    /// check block format and store if check passed
-    pub async fn check_if_well_formed_and_store(
+    pub fn strike_block_source(&self, block: &BlockMessage, strike: Strike) {
+        self.dependencies
+            .strike_block_source(&block.block_hash, strike);
+    }
+
+    pub fn forget_block_source(&self, block: &BlockMessage) {
+        self.dependencies.forget_block_source(&block.block_hash);
+    }
+
+    pub async fn store(
         &self,
-        block: &BlockMessage,
-    ) -> Result<bool, CasperError> {
-        let valid_format = Validate::format_of_fields(block);
-        let valid_sig = Validate::block_signature(block);
-        let is_valid = valid_format && valid_sig;
+        checked: &CheckedBlock,
+        mode: StoreMode,
+    ) -> Result<StoreVerdict, CasperError> {
+        let block = checked.block();
+        let storage_start = Instant::now();
+        let verdict = match mode {
+            StoreMode::Block => {
+                self.dependencies.store_block(block).await?;
+                StoreVerdict::Stored
+            }
+            StoreMode::Pending => {
+                let held = self.dependencies.hold_pending(block).await?;
+                if held != PendingInsert::Accepted {
+                    tracing::warn!(
+                        "Dropping block {} from {}: pending area refused it ({:?}).",
+                        PrettyPrinter::build_string_bytes(&block.block_hash),
+                        PrettyPrinter::build_string_bytes(&block.sender),
+                        held
+                    );
+                }
+                if held == PendingInsert::Accepted {
+                    StoreVerdict::Stored
+                } else {
+                    StoreVerdict::PendingRefused(held)
+                }
+            }
+        };
+        metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
+            .record(storage_start.elapsed().as_secs_f64());
 
-        if is_valid {
-            // Time storage operation
-            let storage_start = Instant::now();
-            self.dependencies.store_block(block).await?;
-            metrics::histogram!(BLOCK_PROCESSING_STORAGE_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
-                .record(storage_start.elapsed().as_secs_f64());
-        }
-
-        Ok(is_valid)
+        Ok(verdict)
     }
 
     /// check if block has all dependencies available and can be validated
     pub async fn check_dependencies_with_effects(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
     ) -> Result<bool, CasperError> {
+        let block = checked.block();
         self.dependencies.prune_casper_buffer_if_needed()?;
         self.dependencies
             .sweep_expired_missing_dependency_quarantine()?;
@@ -515,6 +629,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 .clear_missing_dependency_attempts(&block.block_hash)?;
             // store pendant block in buffer, it will be removed once block is validated and added to DAG
             self.dependencies.commit_to_buffer(block, None).await?;
+            if !self.dependencies.holds_body(&block.block_hash)? {
+                let has_dependents = self.dependencies.has_buffered_dependents(&block.block_hash);
+                self.dependencies
+                    .release_evicted_pending(std::slice::from_ref(&block.block_hash))
+                    .await?;
+                if !has_dependents {
+                    self.dependencies.ack_processed(block).await?;
+                }
+                return Ok(false);
+            }
         } else {
             if self
                 .dependencies
@@ -550,6 +674,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                     .await?;
             }
             self.dependencies.ack_processed(block).await?;
+            if !self.dependencies.holds_body(&block.block_hash)? {
+                self.dependencies
+                    .release_evicted_pending(std::slice::from_ref(&block.block_hash))
+                    .await?;
+            }
         }
 
         Ok(is_ready)
@@ -559,11 +688,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn validate_with_effects(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
         // this option is required for tests, as sometimes block without parents available are added, so
         // CasperSnapshot cannot be constructed
         snapshot_opt: Option<CasperSnapshot>,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let block = checked.block();
         // Record block size
         let block_size = block.to_proto().encode_to_vec().len();
         metrics::histogram!(BLOCK_SIZE_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
@@ -633,6 +763,15 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         let status = guard_deferral(status, self.approved_block_number(casper.clone())?);
         metrics::histogram!(BLOCK_VALIDATION_TIME_METRIC, "source" => BLOCK_PROCESSOR_METRICS_SOURCE)
             .record(validation_start.elapsed().as_secs_f64());
+        match &status {
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender)) => self
+                .dependencies
+                .strike_block_source(&block.block_hash, Strike::InvalidSender),
+            Either::Right(_) | Either::Left(BlockError::Invalid(_)) => {
+                self.dependencies.forget_block_source(&block.block_hash)
+            }
+            Either::Left(_) => {}
+        }
 
         // Record validation outcome
         let _ = match &status {
@@ -749,9 +888,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
     ) -> Result<bool, CasperError> {
-        self.dependencies.try_admit_settled(casper, block).await
+        self.dependencies
+            .try_admit_settled(casper, checked.block())
+            .await
     }
 
     /// Remove block hash from CasperBuffer dependency graph.
@@ -766,8 +907,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     pub async fn dispose_not_of_interest(
         &self,
         verdict: OfInterestVerdict,
-        block: &BlockMessage,
+        checked: &CheckedBlock,
     ) -> Result<(), CasperError> {
+        let block = checked.block();
         if verdict.purges_buffer() {
             tracing::info!(
                 "Block {} is not of interest. Dropped.",
@@ -791,6 +933,23 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
             );
             self.ack_processed(block).await
         }
+    }
+
+    pub async fn release_refused_pending(
+        &self,
+        block: &BlockMessage,
+        refusal: PendingInsert,
+    ) -> Result<(), CasperError> {
+        self.dependencies
+            .release_refused_pending(block, refusal)
+            .await
+    }
+
+    pub async fn drop_refused(&self, block: &BlockMessage) -> Result<(), CasperError> {
+        if self.dependencies.discard_copy(block)? {
+            self.purge_from_buffer_and_ack(block).await?;
+        }
+        Ok(())
     }
 
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
@@ -859,6 +1018,32 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     /// announce holds one until its sends resolve, so slow peers cap the task
     /// count at the permit count instead of block-rate x send-timeout.
     announce_permits: Arc<tokio::sync::Semaphore>,
+    deferred_pending: Arc<DeferredPending>,
+}
+
+struct DeferredPending {
+    entries: Mutex<HashMap<BlockHash, (Bytes, usize)>>,
+    wake: Arc<Notify>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for DeferredPending {
+    fn drop(&mut self) {
+        if let Some(worker) = self
+            .worker
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            worker.abort();
+        }
+    }
+}
+
+fn has_buffered_dependents(casper_buffer: &CasperBufferKeyValueStorage, hash: &BlockHash) -> bool {
+    casper_buffer
+        .get_children(&BlockHashSerde(hash.clone()))
+        .is_some_and(|children| !children.is_empty())
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
@@ -889,6 +1074,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             settled_admissions: Arc::new(AtomicU64::new(0)),
             state_root_fetch_tx,
             announce_permits: Arc::new(tokio::sync::Semaphore::new(ANNOUNCE_MAX_IN_FLIGHT)),
+            deferred_pending: Arc::new(DeferredPending {
+                entries: Mutex::new(HashMap::new()),
+                wake: Arc::new(Notify::new()),
+                worker: Mutex::new(None),
+            }),
         }
     }
 
@@ -1052,6 +1242,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 })?;
         let (stale_pruned, overflow_pruned) = (stale_hashes.len(), overflow_hashes.len());
         for hash in stale_hashes.iter().chain(overflow_hashes.iter()) {
+            self.block_store.discard_pending(&hash.0);
             self.block_retriever
                 .forget_received_hash_tracking(&hash.0)?;
         }
@@ -1103,10 +1294,257 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         })
     }
 
+    pub fn discard_copy(&self, block: &BlockMessage) -> Result<bool, CasperError> {
+        Ok(self.block_store.discard_copy(block)?)
+    }
+
     /// Equivalent to Scala's: storeBlock = (b: BlockMessage) => BlockStore[F].put(b)
-    pub async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+    pub(crate) async fn store_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.block_store.put_block_message(block)?;
         Ok(())
+    }
+
+    pub(crate) async fn hold_pending(
+        &self,
+        block: &BlockMessage,
+    ) -> Result<PendingInsert, CasperError> {
+        let class = if self.was_requested_as_dependency(&block.block_hash)? {
+            PendingClass::Solicited
+        } else if self
+            .block_dag_storage
+            .get_representation()?
+            .latest_message_hash(&block.sender)
+            .is_some()
+        {
+            PendingClass::KnownSender
+        } else {
+            PendingClass::Unsolicited
+        };
+        let outcome = self.block_store.put_pending_as(block, class)?;
+        self.release_evicted_pending(&outcome.evicted).await?;
+        if matches!(
+            outcome.status,
+            PendingInsert::SenderLimitReached | PendingInsert::AreaFull
+        ) && self.has_buffered_dependents(&block.block_hash)
+        {
+            if let Some(descendant) = self.pending_descendant(block) {
+                let replacement =
+                    self.block_store
+                        .put_pending_replacing(block, &descendant.block_hash, class)?;
+                if replacement.evicted.contains(&descendant.block_hash) {
+                    self.defer_pending(&descendant);
+                }
+                let other_evictions: Vec<_> = replacement
+                    .evicted
+                    .into_iter()
+                    .filter(|hash| hash != &descendant.block_hash)
+                    .collect();
+                self.release_evicted_pending(&other_evictions).await?;
+                return Ok(replacement.status);
+            }
+        }
+        Ok(outcome.status)
+    }
+
+    fn pending_descendant(&self, block: &BlockMessage) -> Option<BlockMessage> {
+        let mut queue = VecDeque::from([block.block_hash.clone()]);
+        let mut seen = HashSet::new();
+        let mut candidate = None;
+        let pending = self.block_store.pending_blocks();
+        while let Some(parent) = queue.pop_front() {
+            for child in self
+                .casper_buffer
+                .get_children(&BlockHashSerde(parent))
+                .into_iter()
+                .flatten()
+            {
+                if !seen.insert(child.0.clone()) {
+                    continue;
+                }
+                if pending
+                    .sender_of(&child.0)
+                    .is_some_and(|sender| sender == block.sender)
+                {
+                    candidate = Some(child.0.clone());
+                }
+                queue.push_back(child.0);
+            }
+        }
+        candidate.and_then(|hash| pending.get(&hash))
+    }
+
+    pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {
+        for hash in evicted {
+            let has_dependents = self.has_buffered_dependents(hash);
+            if has_dependents {
+                self.block_retriever
+                    .recover_dependency(hash.clone())
+                    .await?;
+            } else {
+                self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
+            }
+            tracing::debug!(
+                "Pending block {} evicted; dependents waiting: {}.",
+                PrettyPrinter::build_string_bytes(hash),
+                has_dependents
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn release_refused_pending(
+        &self,
+        block: &BlockMessage,
+        refusal: PendingInsert,
+    ) -> Result<(), CasperError> {
+        if refusal != PendingInsert::TooLarge && self.has_buffered_dependents(&block.block_hash) {
+            self.defer_pending(block);
+        } else {
+            self.ack_processed(block).await?;
+        }
+        Ok(())
+    }
+
+    fn defer_pending(&self, block: &BlockMessage) {
+        let bytes = block.to_proto().encoded_len();
+        self.deferred_pending
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(block.block_hash.clone(), (block.sender.clone(), bytes));
+        self.start_deferred_pending_worker();
+        self.deferred_pending.wake.notify_one();
+    }
+
+    fn start_deferred_pending_worker(&self) {
+        let mut worker = self
+            .deferred_pending
+            .worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return;
+        }
+        let state = Arc::downgrade(&self.deferred_pending);
+        let block_store = self.block_store.clone();
+        let casper_buffer = self.casper_buffer.clone();
+        let block_retriever = self.block_retriever.clone();
+        let mut capacity_changes = block_store.pending_blocks().subscribe_capacity_changes();
+        let recovery_cooldown =
+            Duration::from_millis(BlockRetriever::<T>::DEPENDENCY_RECOVERY_COOLDOWN_MS);
+        *worker = Some(tokio::spawn(async move {
+            loop {
+                let Some(state) = state.upgrade() else { break };
+                let candidates: Vec<_> = state
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .map(|(hash, entry)| (hash.clone(), entry.clone()))
+                    .collect();
+                let pending = block_store.pending_blocks();
+                let mut budget = pending.recovery_budget();
+                let mut ready = Vec::new();
+                let mut discard = Vec::new();
+                for (hash, (sender, bytes)) in candidates {
+                    let hash_serde = BlockHashSerde(hash.clone());
+                    if !has_buffered_dependents(&casper_buffer, &hash)
+                        && !casper_buffer.contains(&hash_serde)
+                        && !casper_buffer.is_pendant(&hash_serde)
+                    {
+                        discard.push((hash, sender, bytes));
+                        continue;
+                    }
+                    match block_store.contains_key(&hash) {
+                        Ok(true) => {
+                            discard.push((hash, sender, bytes));
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(%err, "Could not inspect deferred pending block");
+                            continue;
+                        }
+                        Ok(false) => {}
+                    }
+                    if casper_buffer
+                            .get_parents(&hash_serde)
+                            .is_some_and(|parents| {
+                                parents.iter().any(|parent| {
+                                    match block_store.contains_key(&parent.0) {
+                                        Ok(present) => !present,
+                                        Err(err) => {
+                                            tracing::warn!(%err, "Could not inspect deferred pending parent");
+                                            true
+                                        }
+                                    }
+                                })
+                            })
+                        {
+                            continue;
+                        }
+                    if budget.reserve(&sender, bytes) {
+                        ready.push((hash, sender, bytes));
+                    }
+                }
+                {
+                    let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
+                    for (hash, sender, bytes) in discard {
+                        if entries.get(&hash) == Some(&(sender, bytes)) {
+                            entries.remove(&hash);
+                        }
+                    }
+                    ready.retain(|(hash, sender, bytes)| {
+                        if entries.get(hash) == Some(&(sender.clone(), *bytes)) {
+                            entries.remove(hash);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                }
+                let mut retry_deferred = false;
+                for (hash, sender, bytes) in ready {
+                    let requested = match block_retriever.try_recover_dependency(hash.clone()).await
+                    {
+                        Ok(requested) => requested,
+                        Err(err) => {
+                            tracing::warn!(%err, "Could not retry deferred pending dependency");
+                            false
+                        }
+                    };
+                    if !requested {
+                        state
+                            .entries
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .entry(hash)
+                            .or_insert((sender, bytes));
+                        retry_deferred = true;
+                    }
+                }
+                let wake = state.wake.clone();
+                drop(state);
+                tokio::select! {
+                    result = capacity_changes.changed() => {
+                        if result.is_err() { break; }
+                    }
+                    _ = wake.notified() => {}
+                    _ = tokio::time::sleep(recovery_cooldown), if retry_deferred => {}
+                }
+            }
+        }));
+    }
+
+    fn has_buffered_dependents(&self, hash: &BlockHash) -> bool {
+        has_buffered_dependents(&self.casper_buffer, hash)
+    }
+
+    pub fn holds_body(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+        Ok(self.block_store.contains_key(hash)?)
+    }
+
+    pub fn discard_pending(&self, block: &BlockMessage) -> bool {
+        self.block_store.discard_pending(&block.block_hash)
     }
 
     /// Equivalent to Scala's: getCasperStateSnapshot = (c: Casper[F]) => c.getSnapshot
@@ -1275,6 +1713,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     pub async fn remove_from_buffer(&self, block: &BlockMessage) -> Result<(), CasperError> {
         let block_hash_serde = BlockHashSerde(block.block_hash.clone());
         self.casper_buffer.remove(block_hash_serde)?;
+        self.block_store.discard_pending(&block.block_hash);
         self.clear_missing_dependency_attempts(&block.block_hash)?;
         self.clear_missing_dependency_quarantine(&block.block_hash)?;
 
@@ -1610,6 +2049,14 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         self.block_retriever.was_requested_as_dependency(hash)
     }
 
+    pub fn strike_block_source(&self, hash: &BlockHash, strike: Strike) {
+        self.block_retriever.strike_block_source(hash, strike);
+    }
+
+    pub fn forget_block_source(&self, hash: &BlockHash) {
+        self.block_retriever.forget_block_source(hash);
+    }
+
     /// Admit an arriving block as settled history if [`admit_as_settled`]'s
     /// conditions hold: inserted into the DAG hash-checked and unjudged, the
     /// same treatment LFS restore gave every block it downloaded. Returns
@@ -1619,7 +2066,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     /// Insertion cannot touch consensus state: `InsertMode::SettledHistory`
     /// leaves latest messages exactly as they were, and every verdict channel
     /// is untouched because the block never enters validation.
-    pub async fn try_admit_settled(
+    pub(crate) async fn try_admit_settled(
         &self,
         casper: Arc<dyn Casper + Send + Sync + 'static>,
         block: &BlockMessage,
@@ -1673,6 +2120,10 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             return Ok(false);
         };
 
+        if let Err(persist_err) = self.block_store.persist_block(block) {
+            self.settled_admissions.fetch_sub(1, Ordering::Relaxed);
+            return Err(persist_err.into());
+        }
         if let Err(insert_err) = self.block_dag_storage.insert(
             block,
             block_storage::rust::dag::block_dag_key_value_storage::InsertMode::SettledHistory,

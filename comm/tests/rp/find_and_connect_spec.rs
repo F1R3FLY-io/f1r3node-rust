@@ -374,6 +374,43 @@ mod eviction_tests {
     }
 
     #[tokio::test]
+    async fn a_bootstrap_that_refuses_our_network_or_chain_is_evicted_despite_the_pin() {
+        let bootstrap = peer("bootstrap");
+        let refusals = [
+            CommError::WrongNetwork("bootstrap".to_string(), "network mismatch".to_string()),
+            CommError::WrongChainId(
+                "bootstrap".to_string(),
+                "peer is on another chain".to_string(),
+            ),
+        ];
+
+        for refusal in refusals {
+            let discovery = MemoryDiscovery::new(vec![bootstrap.clone()]);
+            let connections = mk_connections(&[]);
+            let mut failures = ConnectFailureTracker::new(3).unwrap();
+
+            find_and_connect(
+                &connections,
+                &discovery,
+                |_| {
+                    let refusal = refusal.clone();
+                    async move { Err(refusal) }
+                },
+                Some(&bootstrap),
+                &mut failures,
+            )
+            .await
+            .unwrap();
+
+            assert!(
+                discovery.peers().unwrap().is_empty(),
+                "{refusal:?} kept the pinned bootstrap"
+            );
+            assert_eq!(*discovery.removed.lock().unwrap(), vec![bootstrap.clone()]);
+        }
+    }
+
+    #[tokio::test]
     async fn changed_address_starts_a_new_failure_streak() {
         let original = peer("candidate");
         let mut changed = original.clone();

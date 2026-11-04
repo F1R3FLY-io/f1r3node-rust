@@ -34,6 +34,10 @@ pub const BLOCK_RETRIEVER_REQUESTED_BLOCKS_SIZE_METRIC: &str =
 pub const BLOCK_RETRIEVER_WAITING_LIST_TOTAL_SIZE_METRIC: &str =
     "block.retriever.waiting-list.total.size";
 pub const BLOCK_RETRIEVER_PEERS_TOTAL_SIZE_METRIC: &str = "block.retriever.peers.total.size";
+pub const PEER_SCORING_STRIKES_METRIC: &str = "block.retriever.peer-scoring.strikes";
+pub const PEER_SCORING_IGNORED_PEERS_METRIC: &str = "block.retriever.peer-scoring.ignored-peers";
+pub const PEER_SCORING_DROPPED_MESSAGES_METRIC: &str =
+    "block.retriever.peer-scoring.dropped-messages";
 pub const ACTIVE_VALIDATORS_CACHE_SIZE_METRIC: &str = "active-validators-cache.size";
 pub const DEPLOYS_IN_SCOPE_SIZE_METRIC: &str = "deploys-in-scope.size";
 pub const DEPLOYS_IN_SCOPE_SIG_BYTES_ESTIMATE_METRIC: &str = "deploys-in-scope.sig-bytes-estimate";
@@ -83,6 +87,7 @@ pub const BLOCK_PROCESSING_VALIDATION_SETUP_TIME_METRIC: &str =
     "block.processing.stage.validation-setup.time";
 pub const BLOCK_VALIDATION_TIME_METRIC: &str = "block.validation.time";
 pub const BLOCK_PROCESSING_STORAGE_TIME_METRIC: &str = "block.processing.stage.storage.time";
+pub const BLOCK_INTEGRITY_REJECTED_METRIC: &str = "block.integrity.rejected";
 pub const BLOCK_PROCESSING_REPLAY_TIME_METRIC: &str = "block.processing.stage.replay.time";
 pub const BLOCK_PROCESSING_PARENTS_POST_STATE_TIME_METRIC: &str =
     "block.processing.stage.parents-post-state.time";

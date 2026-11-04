@@ -51,6 +51,7 @@ jobs:
           encoded_ref="$(jq -rn --arg ref "$TARGET_REF" '$ref|@uri')"
           target_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/$encoded_ref" --jq .sha)"
           [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          bash .github/scripts/require-repository-commit.sh "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$target_sha"
           source .github/oci-validation.env
           [[ "$SYSTEM_INTEGRATION_REF" =~ ^[0-9a-f]{40}$ ]] || exit 2
           {
