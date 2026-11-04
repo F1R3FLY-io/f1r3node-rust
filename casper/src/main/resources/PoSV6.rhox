@@ -21,6 +21,7 @@ in {
           "withdrawers"       : {},
           "committedRewards"  : {},
           "pendingWithdrawers": {},
+          "releases"          : {},
           "randomImages"      : {},
           "randomNumbers"     : {},
           "pendingBonds"      : {},
@@ -53,14 +54,7 @@ in {
                             r!((s, total))
                           }
                         } |
-                        match current.get("withdrawers").get(pk) {
-                          (withdrawing, _) => {
-                            @ListOps!("fold", pendings, (current, current.get("allBonds").getOrElse(pk, 0) + withdrawing), *admit, *admittedCh)
-                          }
-                          _ => {
-                            @ListOps!("fold", pendings, (current, current.get("allBonds").getOrElse(pk, 0)), *admit, *admittedCh)
-                          }
-                        } |
+                        @ListOps!("fold", pendings, (current, current.get("allBonds").getOrElse(pk, 0) + current.get("withdrawers").getOrElse(pk, 0)), *admit, *admittedCh) |
                         for (@(s, total) <- admittedCh) {
                           if (native > total) {
                             new releaseCh in {
@@ -175,12 +169,16 @@ in {
                     (false, message) => { resultCh!(state, (false, message)) }
                     (true, userPk) => {
                   if (state.get("allBonds").contains(userPk)) {
-                    resultCh!(
-                      state.set("pendingWithdrawers",
-                                state.get("pendingWithdrawers")
-                                     .set(userPk,
-                                       $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$))),
-                      (true, Nil))
+                    match $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$) {
+                      end => {
+                        resultCh!(
+                          state
+                            .set("pendingWithdrawers", state.get("pendingWithdrawers").set(userPk, end))
+                            .set("releases",
+                                 state.get("releases").set(end, state.get("releases").getOrElse(end, {}).set(userPk, true))),
+                          (true, Nil))
+                      }
+                    }
                   } else {
                     resultCh!(state, (false, "User is not bonded"))
                   }
@@ -272,51 +270,76 @@ in {
                           }
                         } |
                         contract movePendingWithdrawer(@state, returnCh) = {
-                          new movePending in {
-                            @ListOps!("fold", state.get("pendingWithdrawers").toList(), state, *movePending, *returnCh) |
-                            contract movePending(@(pk, quarantine), @updatedState, resultCh) = {
-                              resultCh!(updatedState
-                                        .set("withdrawers", updatedState.get("withdrawers").set(pk, (updatedState.get("allBonds").get(pk), quarantine)))
-                                        .set("allBonds", updatedState.get("allBonds").delete(pk))
-                                        .set("pendingWithdrawers", updatedState.get("pendingWithdrawers").delete(pk)))
-                            }
-                          }
+                          returnCh!(state
+                                    .set("withdrawers",
+                                         state.get("withdrawers") ++
+                                           state.get("allBonds").diff(state.get("allBonds").diff(state.get("pendingWithdrawers"))))
+                                    .set("allBonds", state.get("allBonds").diff(state.get("pendingWithdrawers")))
+                                    .set("pendingWithdrawers", {}))
                         } |
                         contract removeQuarantinedWithdrawers(@currentBlockNumber, @state, returnCh) = {
-                          new quarantinedCh, isQuarantineFinished, payWithdraw, payRet, computeRemove in {
-                            @ListOps!("filter", state.get("withdrawers").toList(), *isQuarantineFinished, *quarantinedCh) |
-                            for (@quarantined <- quarantinedCh) {
-                              @ListOps!("unorderedParMap", quarantined.take(2), *payWithdraw, *payRet) |
-                              contract payWithdraw(@(pk, (bonds, _)), resultCh) = {
-                                if (bonds <= 0) {
-                                  resultCh!((pk, true))
-                                } else {
-                                  new releaseCh in {
-                                    RevBondAdmin!("release", (pk, bonds), *releaseCh) |
-                                    for (@releaseResult <- releaseCh) {
-                                      match releaseResult {
-                                        (true, _) => { resultCh!((pk, true)) }
-                                        (_, _)    => { resultCh!((pk, false)) }
+                          new dueCh, collectDue in {
+                            @ListOps!("fold", state.get("releases").keys().toList(), ({}, state.get("releases")), *collectDue, *dueCh) |
+                            contract collectDue(@end, @(due, rest), resultCh) = {
+                              if (end <= currentBlockNumber) {
+                                resultCh!((due ++ rest.get(end), rest.delete(end)))
+                              } else {
+                                resultCh!((due, rest))
+                              }
+                            } |
+                            for (@(due, rest) <- dueCh) {
+                              if (due.size() == 0) {
+                                returnCh!(state.set("releases", rest))
+                              } else {
+                                new spawn, release, resultsCh, collect, failedCh, finish in {
+                                  spawn!(state.get("withdrawers").diff(state.get("withdrawers").diff(due)).toList()) |
+                                  contract spawn(@entries) = {
+                                    match entries.length() {
+                                      0 => { Nil }
+                                      1 => { release!(entries.nth(0)) }
+                                      n => { spawn!(entries.slice(0, n / 2)) | spawn!(entries.slice(n / 2, n)) }
+                                    }
+                                  } |
+                                  contract release(@(pk, bonds)) = {
+                                    if (bonds <= 0) {
+                                      resultsCh!((pk, true))
+                                    } else {
+                                      new releaseCh in {
+                                        RevBondAdmin!("release", (pk, bonds), *releaseCh) |
+                                        for (@releaseResult <- releaseCh) {
+                                          match releaseResult {
+                                            (true, _) => { resultsCh!((pk, true)) }
+                                            _         => { resultsCh!((pk, false)) }
+                                          }
+                                        }
                                       }
+                                    }
+                                  } |
+                                  collect!(state.get("withdrawers").diff(state.get("withdrawers").diff(due)).size(), {}) |
+                                  contract collect(@remaining, @failed) = {
+                                    if (remaining <= 0) {
+                                      failedCh!(failed)
+                                    } else {
+                                      for (@(pk, ok) <- resultsCh) {
+                                        if (ok) { collect!(remaining - 1, failed) }
+                                        else    { collect!(remaining - 1, failed.set(pk, true)) }
+                                      }
+                                    }
+                                  } |
+                                  for (@failed <- failedCh) {
+                                    match failed.size() {
+                                      0 => { finish!(rest) }
+                                      _ => { finish!(rest.set(currentBlockNumber, failed)) }
+                                    } |
+                                    for (@releases <- finish) {
+                                      returnCh!(state
+                                                .set("withdrawers", state.get("withdrawers").diff(due.diff(failed)))
+                                                .set("committedRewards", state.get("committedRewards").diff(due.diff(failed)))
+                                                .set("releases", releases))
                                     }
                                   }
                                 }
-                              } |
-                              for (@payResults <- payRet) {
-                                @ListOps!("fold", payResults, state, *computeRemove, *returnCh) |
-                                contract computeRemove(@(pk, success), @updatedState, resultCh) = {
-                                  if (success) {
-                                    resultCh!(updatedState
-                                              .set("committedRewards", updatedState.get("committedRewards").delete(pk))
-                                              .set("withdrawers", updatedState.get("withdrawers").delete(pk)))
-                                  } else {
-                                    resultCh!(updatedState)
-                                  }
-                                }
                               }
-                            } |
-                            contract isQuarantineFinished(@(_, (_, blockNumber)), resultCh) = {
-                              resultCh!(currentBlockNumber >= blockNumber)
                             }
                           }
                         }
