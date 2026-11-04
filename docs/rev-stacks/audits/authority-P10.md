@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2293,6 +2293,29 @@ This change also narrows **F38** (refund keying). A storage refund at a COMM now
 | `dev` merge into FX-8b | Watch item | Not merged. Lane A2's dry-run memo is on FX-8b. |
 | F40, F45, F46, F49, F50, F39, D8b, FX-15 merge requirement 4, the gated-close seal-records defect | — | Closed on FX-8b |
 | F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the F39 end-to-end path, the Decision 108 griefing case, the two drop-rule observations above | Known issue | Open |
+
+
+## Revision 24 (action A-9): FX-15 charging revision 2 (the F39 negative test)
+
+- **Commit audited:** `patch/FX-15-charging` at `dea48f13d` (lane B), with lane C's `e30313108` merged in at `42ecf44bc`.
+- **Reference:** design r21 (publications `81599ff`).
+- **Method:** reading only. No tests were run.
+- **Not changed:**
+  - The Q-33 memo.
+  - FX-8b (`efa511e93`), with no `dev` merge and no full-suite results.
+  - FX-15, FX-15-close, FX-16 and FX-17-epoch.
+
+  No FX-17 code has landed, and there is no ruling yet on `AlreadyIncluded` or question 20.
+
+**What the commit does:**
+- It removes the surface cap and enables the cross-run test. FX-8b already did the same in `5e92b0d6b`, so this adds nothing to the integration branch.
+- **It adds a negative test for F39's run-time path.** `region_spec::the_gate_refuses_a_seal_that_resolves_only_at_run_time` asserts that the gate refuses (`ForeignSignature`) the three term shapes that lane B tried.
+
+**Result:**
+- The test records what the gate does for three shapes. It does not show that the gate refuses every seal that resolves only at run time. So F39's end-to-end path and F33 stay **known issues** until lane A2 states that guarantee (revision 22).
+- **Merge requirement:** this commit is not in FX-8b. Bring the negative test into FX-8b with the F48 merge, so that the integration branch keeps the record of the gate's behavior.
+
+The gate status of revision 23 does not change.
 
 
 ## Open questions for review
