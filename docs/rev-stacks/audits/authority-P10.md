@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2316,6 +2316,47 @@ This change also narrows **F38** (refund keying). A storage refund at a COMM now
 - **Merge requirement:** this commit is not in FX-8b. Bring the negative test into FX-8b with the F48 merge, so that the integration branch keeps the record of the gate's behavior.
 
 The gate status of revision 23 does not change.
+
+
+## Revision 25 (action A-8): the FX-15-close merge into FX-8b
+
+- **Commit audited:** `patch/FX-8b` merge `f7af68ca8`, with parents `efa511e93` and `34e6c842d` (`patch/FX-15-close`). It brings in:
+  - `patch/FX-15` at `432dc390f` (a storage refund at a COMM goes to the payer of the stored item).
+  - FX-16 at `bee4c599f` (the bound test on the linear close).
+  - Lane B's epoch fix and Decision 107 (`efb0e3daf`, `dcb3ce695`).
+  - Lane C's close substitution test.
+- **Reference:** design r21 (publications `81599ff`).
+- **Method:** a reading of the merge and its log. No tests were run.
+- **Not changed:**
+  - The Q-33 memo.
+  - Lane B's `dea48f13d` (the F39 negative test, still not in FX-8b).
+  - FX-17 code.
+  - The `dev` merge.
+
+  There is no ruling yet on `AlreadyIncluded` or question 20.
+
+| Check | Result |
+|---|---|
+| The client's limit has no foreign-work budget | **Holds.** Lane A2 kept `CostManager::charge` as on `efa511e93`. The auto-merge had brought back `own_origin` and the `foreign` budget. On `f7af68ca8` the tree has no `FOREIGN_WORK_BUDGET`, `set_own_origin` or `own_origin` in `rholang/src` or `casper/src`. |
+| F48 in the close | **Closed on FX-8b.** `handle_result` credits each storage refund at a COMM to the payer of the stored item. Two tests come in with the merge: `seal_wiring_spec::a_storage_refund_at_a_comm_goes_to_the_payer_of_the_stored_item` and `close_charge_spec::substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_the_proposer`. `no_deployment_makes_the_close_fail` is kept beside them. |
+| Decision 107 and the epoch fix | **In FX-8b.** The test that the old and new active-set pick agree for a bond map larger than N (revision 23) is still not added. **Condition.** |
+| F47 for bonds | **Closed on FX-8b.** `the_close_stays_inside_its_pre_charge` runs. |
+| F47 for withdrawers | **Blocking.** `an_epoch_with_many_withdrawers_stays_inside_its_pre_charge` is ignored. It waits for question 20. |
+| Full suites | **Not posted.** The FX-8b log gives v6 only (104 passed, 0 failed, 10 ignored), plus `seal_wiring_spec` (3) and `rev_bond_spec` (9). |
+| The F39 negative test (`dea48f13d`) | **Not merged.** The merge requirement of revision 24 stands. |
+
+### Gate status on FX-8b at `f7af68ca8`
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | Open until FX-17 lands |
+| D10 | **Blocking** | Not wired in production. FX-17 builds the `CloseCharge` from consensus data. |
+| F47 (withdrawers) | **Blocking** | Question 20 |
+| Full suites | Merge condition | Not posted |
+| The active-set equivalence test, the F39 negative test | Merge conditions | Open |
+| `dev` merge | Watch item | Not merged |
+| F39, F40, F45, F46, F48, F49, F50, D8b, F47 for bonds | — | Closed on FX-8b |
+| F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the F39 end-to-end path, the Decision 108 griefing case, the two drop-rule observations | Known issue | Open |
 
 
 ## Open questions for review
