@@ -781,7 +781,7 @@ jobs:
   soak_harness_tests:
     name: Soak Harness Tests
     needs: build_base
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
