@@ -258,3 +258,33 @@ async fn genesis_charges_nobody() {
     assert_eq!(balance(&rm, &genesis, &alice.owner).await, FUNDS);
     assert_eq!(balance(&rm, &genesis, &bob.owner).await, FUNDS);
 }
+
+#[tokio::test]
+async fn substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_the_proposer() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis).await;
+    let wide =
+        r#"@"wide"!([h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h])"#;
+    let thin = r#"@"wide"!(Nil)"#;
+    let mut closes = Vec::new();
+    for continuation in [thin, wide] {
+        let term = bond_term(continuation);
+        let record = run_record(
+            &executor,
+            &genesis,
+            &block(1, vec![envelope(&term, 1, &alice)], &proposer),
+        )
+        .await;
+        closes.push(close(&rm, &genesis, &record, &proposer).await);
+    }
+    let installer = |c: &Close| c.compute - c.proposer;
+    assert!(
+        installer(&closes[1]) > installer(&closes[0]),
+        "the installer pays for the wider body"
+    );
+    assert_eq!(
+        closes[1].proposer, closes[0].proposer,
+        "the proposer's close charge does not change"
+    );
+}
