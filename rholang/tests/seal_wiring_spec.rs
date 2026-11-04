@@ -346,3 +346,44 @@ async fn code_with_no_record_draws_on_no_wallet_under_seal_records() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_storage_refund_at_a_comm_goes_to_the_payer_of_the_stored_item() {
+    use std::sync::{Arc, Mutex};
+    let firer: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
+    let bob = owner(&BOB).canonical_bytes();
+    for body in [
+        "Nil",
+        r#"@"y"!([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18])"#,
+    ] {
+        let (firer, bob) = (firer.clone(), bob.clone());
+        sealed(|runtime| async move {
+            run(
+                &runtime,
+                &ALICE,
+                &[],
+                1,
+                &format!(r#"for (_ <- @"x") {{ {body} }}"#),
+            )
+            .await;
+            runtime.cost.comm_ledger().take_work();
+            run(&runtime, &BOB, &[], 2, r#"@"x"!(0)"#).await;
+            let work: i64 = runtime
+                .cost
+                .comm_ledger()
+                .take_work()
+                .into_iter()
+                .filter(|(s, _)| s.as_ref().is_some_and(|s| s.owner == bob))
+                .map(|(_, w)| w as i64)
+                .sum();
+            firer.lock().unwrap().push(work);
+        })
+        .await;
+    }
+    let firer = firer.lock().unwrap().clone();
+    assert!(firer[0] > 0);
+    assert_eq!(
+        firer[0], firer[1],
+        "the firer's work does not depend on the stored body"
+    );
+}

@@ -171,7 +171,6 @@ async fn measure(validators: usize, epoch_length: i32, bonds: usize) -> u64 {
 }
 
 #[tokio::test]
-#[ignore = "fails until the PoS active-set pick is linear in the bonds: see the FX-16 log"]
 async fn the_close_stays_inside_its_pre_charge() {
     for (validators, epoch_length, bonds) in [
         (1, 1000, 0),
@@ -189,6 +188,17 @@ async fn the_close_stays_inside_its_pre_charge() {
     }
 }
 
+#[tokio::test]
+#[ignore = "blocked: moving and filtering withdrawers still carry the PoS state by value (D107 loop memo)"]
+async fn an_epoch_with_many_withdrawers_stays_inside_its_pre_charge() {
+    for withdrawers in [10, 30] {
+        for (bonds, phlo) in withdrawers_close(100, withdrawers).await {
+            let bound = pre_charge_phlo(bonds, 0);
+            assert!(phlo <= bound, "{withdrawers} withdrawers, {bonds} bonds: {phlo} > {bound}");
+        }
+    }
+}
+
 fn withdraw_term() -> String {
     r#"new rb(`rho:rev:bond`), d(`rho:system:deployerId`), rl(`rho:registry:lookup`), posCh, handleCh, out in {
          rb!("handle", *d, *handleCh) |
@@ -200,7 +210,7 @@ fn withdraw_term() -> String {
     .to_string()
 }
 
-async fn withdrawers_close(validators: usize, withdrawers: usize) -> u64 {
+async fn withdrawers_close(validators: usize, withdrawers: usize) -> [(u64, u64); 2] {
     let proposer = party();
     let keys: Vec<(PrivateKey, PublicKey)> = (0..validators).map(|_| Secp256k1.new_key_pair()).collect();
     let parties: Vec<Party> = keys
@@ -221,12 +231,18 @@ async fn withdrawers_close(validators: usize, withdrawers: usize) -> u64 {
         assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Completed);
         root = record.post_root().clone();
     }
-    let b = block(1000, vec![], &proposer);
-    let record = executor.execute(&root, &b).await.expect("the epoch close executes");
-    assert_eq!(&executor.replay(&record, &b).await.unwrap(), record.post_root());
-    let phlo = close_phlo(&rm, &root, &record, &proposer).await;
-    eprintln!("close phlo: validators {validators}, epoch boundary releasing {withdrawers} withdrawers: {phlo}");
-    phlo
+    let mut closes = [(0, 0); 2];
+    for (epoch, number) in [1000i64, 2000].into_iter().enumerate() {
+        let bonds = if epoch == 0 { validators } else { validators - withdrawers };
+        let b = block(number, vec![], &proposer);
+        let record = executor.execute(&root, &b).await.expect("the epoch close executes");
+        assert_eq!(&executor.replay(&record, &b).await.unwrap(), record.post_root());
+        let phlo = close_phlo(&rm, &root, &record, &proposer).await;
+        eprintln!("close phlo: validators {validators}, {withdrawers} withdrawers, epoch {} with {bonds} bonds: {phlo}", epoch + 1);
+        closes[epoch] = (bonds as u64, phlo);
+        root = record.post_root().clone();
+    }
+    closes
 }
 
 #[tokio::test]
@@ -241,7 +257,7 @@ async fn measure_the_close_per_bond() {
 #[tokio::test]
 #[ignore = "measures the close for the FX-16 pre-charge terms"]
 async fn measure_the_close_per_released_withdrawer() {
-    for withdrawers in [0, 10, 30] {
+    for withdrawers in [0, 10, 30, 60, 99] {
         withdrawers_close(100, withdrawers).await;
     }
 }

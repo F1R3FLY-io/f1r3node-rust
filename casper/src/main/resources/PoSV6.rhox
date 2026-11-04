@@ -3,7 +3,6 @@ new PoS,
     listOpsCh,
     pickActiveValidators,
     runMVar,
-    fst,
     rs(`rho:registry:insertSigned:secp256k1`),
     sysAuthTokenOps(`sys:authToken:ops`),
     RevBond(`rho:rev:bond`),
@@ -12,9 +11,10 @@ new PoS,
 in {
   registryLookup!(`rho:lang:listOps`, *listOpsCh) |
   for (@(_, ListOps) <- listOpsCh) {
-    new initialActiveCh, stateCh, settlePendingBonds in {
-      pickActiveValidators!($$initialBonds$$.toList(), *initialActiveCh) |
+    new initialActiveCh, stateCh, lastEpochCh, settlePendingBonds in {
+      pickActiveValidators!($$initialBonds$$, *initialActiveCh) |
       for (@initialActive <- initialActiveCh) {
+        lastEpochCh!(0) |
         stateCh!({
           "allBonds"          : $$initialBonds$$,
           "activeValidators"  : initialActive,
@@ -250,9 +250,11 @@ in {
                   for (_ <- settledCh) {
                   getBlockData!(*blockDataCh) |
                   for (@blockNumber, _, _ <- blockDataCh) {
-                    if (blockNumber % $$epochLength$$ != 0) {
+                  for (@lastEpoch <<- lastEpochCh) {
+                    if (blockNumber / $$epochLength$$ <= lastEpoch) {
                       ackCh!((true, Nil))
                     } else {
+                      for (_ <- lastEpochCh) { lastEpochCh!(blockNumber / $$epochLength$$) } |
                       new stateProcessCh, movePendingWithdrawer, movePendingCh,
                           removeQuarantinedWithdrawers, removeQuarantinedCh, newValidatorsCh
                       in {
@@ -262,7 +264,7 @@ in {
                           for (@moved <- movePendingCh) {
                             removeQuarantinedWithdrawers!(blockNumber, moved, *removeQuarantinedCh) |
                             for (@removed <- removeQuarantinedCh) {
-                              pickActiveValidators!(moved.get("allBonds").toList(), *newValidatorsCh) |
+                              pickActiveValidators!(moved.get("allBonds"), *newValidatorsCh) |
                               for (@newValidators <- newValidatorsCh) {
                                 stateUpdateCh!(removed.set("activeValidators", newValidators), (true, Nil))
                               }
@@ -284,7 +286,7 @@ in {
                           new quarantinedCh, isQuarantineFinished, payWithdraw, payRet, computeRemove in {
                             @ListOps!("filter", state.get("withdrawers").toList(), *isQuarantineFinished, *quarantinedCh) |
                             for (@quarantined <- quarantinedCh) {
-                              @ListOps!("unorderedParMap", quarantined, *payWithdraw, *payRet) |
+                              @ListOps!("unorderedParMap", quarantined.take(2), *payWithdraw, *payRet) |
                               contract payWithdraw(@(pk, (bonds, _)), resultCh) = {
                                 if (bonds <= 0) {
                                   resultCh!((pk, true))
@@ -320,6 +322,7 @@ in {
                         }
                       }
                     }
+                  }
                   }
                   }
                 }
@@ -393,21 +396,8 @@ in {
       }
     }
   } |
-  contract fst(@(first, _), resultCh) = {
-    resultCh!(first)
-  } |
   contract pickActiveValidators(@allBonds, returnCh) = {
-    new pksCh in {
-      registryLookup!(`rho:lang:listOps`, *pksCh) |
-      for (@(_, ListOps) <- pksCh) {
-        new mapped in {
-          @ListOps!("map", allBonds, *fst, *mapped) |
-          for (@pks <- mapped) {
-            returnCh!(pks.take($$numberOfActiveValidators$$).toSet())
-          }
-        }
-      }
-    }
+    returnCh!(allBonds.keys().toList().take($$numberOfActiveValidators$$).toSet())
   } |
   rs!(
     "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e524e6f237cde5f80dbb921cac12e6500791e9a9ed1254a745a816fe1f".hexToBytes(),

@@ -145,3 +145,14 @@ cc3168032 merged at 11c9cb42f. It carries FX-14's follow-ups (2bfaaf942: receipt
 v6 tests: 88 passed, 0 failed, 7 ignored. `rev_bond_spec`: 3 passed. The cross-host fixture still replays.
 
 **Decision 88 label, known issue:** `FOREIGN_WORK_BUDGET` bounds foreign work in a run with a fixed amount. Decision 86 bounds it by the membrane's wallet instead. FX-15 replaces the fixed amount.
+
+## FX-15-close and the refund-to-payer fix (2026-11-04)
+
+`patch/FX-15-close` at 34e6c842d merged. It carries `patch/FX-15` at 432dc390f (a storage refund at a COMM goes to the payer of the stored item), FX-16 at bee4c599f (the linear close, Decision 107), lane B's epoch fix efb0e3daf and D107, and lane C's test `close_charge_spec::substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_the_proposer`.
+
+| Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|
+| `CostManager::charge` stays as on efa511e93 (lane B's c345b400d): the meter decides gated charges first, and there is no foreign-work limit | Lane C's resolution, which the auto-merge brought back with `own_origin` and the `foreign` budget | Decisions 91 and 103: gated work is bounded by its wallet, and ungated work counts against the client's limit | Yes |
+| `close_charge_spec`: keep `no_deployment_makes_the_close_fail` and lane C's substitution test | Take one side | The tests are independent | Yes |
+
+v6 tests: 104 passed, 0 failed, 10 ignored. `seal_wiring_spec`: 3 passed. `rev_bond_spec`: 9 passed.
