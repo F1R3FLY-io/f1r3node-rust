@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2195,6 +2195,106 @@ Earlier sections keep their text. Where they say V1 to V4, read (a) to (d).
 Meredith rules on the repeat check moving to execution (`AlreadyIncluded`) after that revision.
 
 
+## Revision 23 (actions A-8 and A-9): Q-33 revision 3 (Q-34), the FX-15 integration into FX-8b, and Decision 107
+
+- **Documents and commits reviewed:**
+  - `docs/rev-stacks/memos/Q-33.md` on `patch/Q-32` at `191f74ccb` (lane A2, revision 3).
+  - `patch/FX-8b` merge `efa511e93`, with parents `4a74b0e34` and `02f70434e`. The FX-15-replay chain includes `b0fe54608` (lane C's `e30313108`), `cc4df0211` (lane B's `c345b400d`), `5e92b0d6b` (surface cap) and `02f70434e` (FX-16, Decision 108, the close).
+  - `patch/FX-17-epoch` at `dcb3ce695` (Decision 107) and `patch/FX-16` at `bee4c599f` (the re-measured bound).
+  - `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (F48 in the close).
+- **Reference:** design r21 (publications `81599ff`). r21 adds Decisions 107 and 108, the naming convention, and the open issue of Decision 108 to §6.3.
+- **Method:** reading only. No tests were run.
+
+### Q-34 against the review list ("Rulings of 2026-11-04")
+
+| Item | Result |
+|---|---|
+| 1. Identifiable | **Met.** A void B stays in the DAG and in every justification by its hash. "Void" is the outcome and reason in B's canonical record entry. Replay checks it in both directions, and P5 attests the post-root at B's position, which for a void B is the pre-root. |
+| 2. Reason (c) | **Met.** The deployment is discarded and is not returned to the pool. (c) is slashable, because the proposer could see the terms (Decision 101). |
+| 3. Reason (d) | **Met.** Replay accepts a record with reason (d) only after it runs the record's deployments and the close, and the close fails. The memo gives an argument and a test (`close_charge_spec::no_deployment_makes_the_close_fail`). It states that this does not prove (d) unreachable for every PoS state. So the drop rule applies: a deployment that has been through one void block for reason (d) is dropped. (d) is not slashable. |
+| 4. Counting | **Met.** A count of voids for each proposer, by reason, is derived from canonical records only, persisted with them, rebuilt on restart, and exposed as a metric and to B6. |
+| 5. Griefing | **Met.** The Decision 108 case is stated as an open issue: stored receives that the proposer installed and that others fire, and transfers that the proposer authorized earlier. r21 states the same issue. |
+| 6a. Reason (a) amount | **Met in the memo.** The hold is FX-16's `CloseCharge::pre_charge` (Decisions 102 and 106). The production wiring is an FX-17 condition (below). |
+| 6b. One deployment twice in one block | **Not addressed.** This stays an FX-17 condition from revision 20. |
+
+**The test found and fixed a High safety defect.** The close ran without seal records, so a continuation that the close fired ran with no record and was not gated. An endless loop then used memory until the process was killed. `SystemGate::apply` now turns seal records on for the gated close (FX-15-replay decision 18). **Closed.**
+
+**Two observations on the drop rules:**
+1. **Known issue.** A void for reason (d) drops every deployment of the block, including deployments that did not cause it. They are not charged, and their deployers can submit them again. (d) is not expected to occur, and dropping them has no authority effect.
+2. **Known issue.** "Dropped" and "discarded" act on each node's pool. A proposer that includes such a deployment again makes only its own block void again, and the blocks above it run normally. If the same rule is wanted across proposers, the gate can refuse a deployment that appears in an earlier canonical record that is void for reason (c) or (d), as it does for `AlreadyIncluded`. That belongs with Meredith's ruling on `AlreadyIncluded`.
+
+**Q-34 sign-off: given.** Meredith can rule on `AlreadyIncluded`. The FX-17 conditions of revision 20 stand: the within-block duplicate check and reason (a) from consensus data.
+
+### The FX-15 integration into FX-8b (`efa511e93`)
+
+| Merge requirement (revisions 19, 21, 22) | Result |
+|---|---|
+| One replay mechanism, the exact drawn amount | **Holds.** Lane C's meter and `BlockLedger` are taken whole (FX-15-replay decision 11). Replay refuses exactly the logged steps. Lane A2's reached-charge check is kept. |
+| Lane B's `settled_work` | **Replaced, and accepted.** FX-15-replay decision 12 drops D − R. Settlement requires replay to reach the recorded work of each stopped surface. Replay is now exact, and under Decision 104 the drawn amount includes reserved storage, so D − R is no longer the net work. F46 stays closed. |
+| `FOREIGN_WORK_BUDGET` removed | **Holds** (from `c345b400d`). |
+| The surface cap removed with the block ledger, and lane B's two-run test enabled | **Holds** (`5e92b0d6b`). `two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full` is not ignored. A draw above what remains is an error. |
+| The deploy-log refusal event | **Holds.** `replay_recorded` reads each run's refusals from its deploy log (`stops::refusals_of`), so `BlockExecutor` replay passes them. Merge requirement 4 is met. |
+| `CloseFunding` installed, the close cap removed in the same commit | **Holds** (`02f70434e`, decision 16). |
+| D8b: the close's COMM cells | **Holds** (decision 17). `handle_result` records the cells of each COMM, and the close charges the cells of a stored record to its installer, with its work. **D8b is closed** on the integration branch. |
+| Decision 108: acceptance checks removed | **Holds** (decision 15). `check_close_cover` and the `create_block` check are gone. |
+| F39 | **Holds** (from `c345b400d`). Closed on the integration branch. The end-to-end path stays a known issue. |
+| Full suites for the merge | **Not posted.** The FX-15-replay log gives v6 only (100 passed, 0 failed, 10 ignored). Lane A2 must post the full suites before the handoff. |
+
+**Status on FX-8b at `efa511e93`:**
+- F40, F45, F46, F49, F50, F39 and D8b are **closed** on the integration branch.
+- FX-15 merge requirement 4 is **closed.**
+
+**D10 is still open in production.** `BlockExecutor::with_close_charge` has no caller outside tests, so `close_precharge` is 0. Then the gate holds nothing, and the close is not charged. FX-17 must build the `CloseCharge` for each block from consensus data (the bonds at the attested root, the lag, and the shard floor) and pass it in play, validation and replay, together with void reason (a).
+
+### F48 in the close
+
+- Lane C found the cause. With the storage rule off, `handle_result` credited every storage refund of a COMM to the record that fired it. A continuation's consume refund grows with its body, so the close's PoS code received a refund for storage that the installer had paid.
+- `432dc390f` credits each refund to the payer of the stored item, as `left_in_space_match` already does.
+- Tests:
+  - `seal_wiring_spec::a_storage_refund_at_a_comm_goes_to_the_payer_of_the_stored_item`.
+  - `close_charge_spec::substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_the_proposer`, on `patch/FX-15-close`.
+
+**F48 is fixed on `patch/FX-15` and `patch/FX-15-close`.** It closes when they merge into FX-8b. `432dc390f` is not in FX-8b.
+
+This change also narrows **F38** (refund keying). A storage refund at a COMM now goes to the payer of the stored item in both paths. F38 stays a known issue for refunds outside a COMM.
+
+### Decision 107 (`dcb3ce695`, flagged for review)
+
+- **`pickActiveValidators`** is now `allBonds.keys().toList().take(N).toSet()`, in place of `ListOps.map` with `fst` over `allBonds.toList()`.
+  - Both forms take the first N keys in the map's sorted key order. So the active set does not change, provided `keys().toList()` and `toList()` order the keys alike.
+  - **Condition:** a test that asserts the same active set from the old and the new form, for a bond map larger than N. The existing tests check the set for small maps only.
+  - The genesis root changes, and the cross-host fixture is written again.
+- **An epoch close releases at most two withdrawers** (`quarantined.take(2)`). `an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_takes_the_rest` covers it.
+- **The loop inventory** (`docs/rev-stacks/memos/D107-loops.md`) is a reading of every genesis contract. It names the loops that carry state by value. Only PoSV6's loops run in the close. The others are paid by the deployer that calls them.
+
+### F47 after Decision 107 (`bee4c599f`)
+
+- **Bonds:** `close_bound_spec::the_close_stays_inside_its_pre_charge` is enabled and passes. Every measured close, with 1 to 200 bonds and epoch lengths 1 and 1,000, is under 200,000 + 9,000 × bonds, with a margin of about 2 at 100 bonds and above. **Closed for bonds.**
+- **Withdrawers: still blocking.** `movePendingWithdrawer` folds over every pending withdrawer and carries the whole PoS state. `removeQuarantinedWithdrawers` walks every withdrawer in quarantine. The pre-charge counts bonds, and withdrawers held back by the cap are no longer bonds. Lane B measures:
+  - Epoch 1 with 10 withdrawers: 1.71 million phlo against a pre-charge of 1.1 million.
+  - Epoch 2 with 99 held back and 1 bond left: 9.6 million against 209,000.
+
+  The work above the pre-charge runs unpaid, which is a §6.3 divergence. **This audit agrees with lane B's label (blocking).**
+- **Lane B's options:**
+  - The withdrawer rewrite (a release schedule keyed by epoch, with native map operations), about 2.5 days.
+  - Or interim caps on moves and on the quarantine window, with withdrawers in quarantine counted as bonds for the pre-charge.
+
+  The choice is Meredith's (question 20). `an_epoch_with_many_withdrawers_stays_inside_its_pre_charge` is the test, and it is ignored until one option lands.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | The design is signed off (Q-33 revisions 2 and 3). Open until FX-17 lands. |
+| D10 | **Blocking** | The mechanism is on FX-8b. It is not wired in production. FX-17 builds the `CloseCharge` from consensus data. |
+| F47 (withdrawers) | **Blocking** | Question 20 |
+| F48 | **Blocking until merged** | Fixed on `patch/FX-15` and `patch/FX-15-close` |
+| Full suites for the FX-15 merge | Merge condition | Not posted |
+| `dev` merge into FX-8b | Watch item | Not merged. Lane A2's dry-run memo is on FX-8b. |
+| F40, F45, F46, F49, F50, F39, D8b, FX-15 merge requirement 4, the gated-close seal-records defect | — | Closed on FX-8b |
+| F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the F39 end-to-end path, the Decision 108 griefing case, the two drop-rule observations above | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -2217,3 +2317,4 @@ Meredith rules on the repeat check moving to execution (`AlreadyIncluded`) after
 17. **F49:** answered on 2026-11-03 (Decision 103). The meter admits each step against what t drew in its own run. Parallel runs in one block can then each draw the same wallet up to its whole free balance, and settlement caps the total. Is the meter block-wide, is the wallet's balance split between runs, or does the settlement cap across runs stand?
 18. **F50:** answered on 2026-11-03 (Decision 104). Are storage bookkeeping charges under a gated record (restores of persistent items, post-COMM charges, the event charge of a stored datum) admitted with the step that caused them, or exempt from the gate?
 19. **F47 (measured):** answered on 2026-11-04 (Decision 107: the PoS close is made linear). The PoS close grows about quadratically in the bonds at an epoch boundary, and in the withdrawers that one epoch releases. Is the PoS close made linear (a native active-set pick, and withdrawer folds over the withdrawer maps only), is the number of releases in each close capped, or does the pre-charge gain a quadratic term?
+20. **F47 (withdrawers):** the PoS close still grows with the withdrawers of one epoch, and the pre-charge counts bonds only. Is the withdrawer loop rewritten now (a release schedule keyed by epoch, about 2.5 days), or do interim caps on moves and on the quarantine window apply, with withdrawers in quarantine counted as bonds for the pre-charge?
