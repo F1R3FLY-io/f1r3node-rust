@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2093,6 +2093,69 @@ The peek of the epoch counter adds about 4,300 to 4,700 phlo to a close at 100 b
 | FX-15 merge requirement 4 (deploy-log refusal event) | **Blocking** | Open |
 | D8b, F39 | **Blocking** | Open |
 | F38, F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void envelope, slashing epoch arithmetic, a shard floor of 0 | Known issue | Open |
+
+
+## Revision 22 (action A-9): FX-15 charging (F39), and the caps
+
+- **Commits audited:** `patch/FX-15-charging` at `c345b400d` (lane B). It is cut from lane C's `fc3a6ca72` and merges FX-8b `4a74b0e34` at `83a4dd428`.
+- **Not in this branch:**
+  - Lane C's `e30313108` (the block ledger and storage admission).
+  - Lane A2's `patch/FX-15-replay`.
+  - Lane B's `patch/FX-15-settle`.
+- **Reference:** design r20 (publications `23fb421`).
+- **Method:** reading only. No tests were run.
+- **Not changed:** the Q-33 memo (V4 is still open), FX-17 code, FX-16, FX-8b, and the `dev` merge.
+
+### The meter meets FX-8b (`83a4dd428`)
+
+**Holds** for revision 19's merge requirement 2. Lane C's `CostManager::charge` is kept:
+- A gated record is admitted against its wallet and does not count against the client's limit.
+- Every other charge counts against the client's limit.
+
+`FOREIGN_WORK_BUDGET`, `set_own_origin` and the own-origin fields are removed. The constant bound of F40 is gone on this branch. Ungated foreign work, which is work of an owner that the gate committed, now counts against the client's limit. The envelope pays it, so this is correct.
+
+### F39 (Decision 83)
+
+**Fixed in settlement.**
+- `own_payers` returns no payer for an own key whose owner the gate did not commit.
+- `charges` skips that key, so the key does not use the client's budget.
+- `surface_charges` draws the key from the owner's purse at its origin price, like any surface draw.
+- A key with no record still goes to the client (Decision 81).
+- This matches lane C's gate (`EnvelopeFunding::gates`), so admission and settlement now name the same wallet.
+- The unit test `settlement_spec::an_own_region_whose_owner_the_gate_did_not_commit_is_charged_to_that_owner` covers the rule.
+
+**End-to-end path: known issue.**
+- Lane B tried three term shapes for a seal that the gate cannot resolve and that resolves at run time to another wallet. The gate refused each one as `ForeignSignature`. So no run is known to reach the F39 path.
+- **Reason for the label:** the settlement rule is now correct for any key that reaches it, and no unpaid or misattributed charge is shown. This audit gives no term shape, because the audit works by reading.
+- **Request to lane A2:** state whether the gate refuses every seal that it cannot resolve to a committed owner. If it does, record that as the gate's guarantee with a negative test, and F33 closes with it. If it does not, the lane that owns the gate writes the end-to-end test.
+
+### Lane B's finding: two runs together overdraw a gated wallet
+
+This is F49. Lane C's `e30313108` (revision 21) fixes it with one `BlockLedger` for each block, which Decision 103 ruled. That commit is not in this branch. So lane B's evidence test (`two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full`, ignored) shows the state before the fix.
+
+**Merge requirement (added to revision 19's list):**
+- When FX-15-charging and `e30313108` meet, the block ledger admits the gross draws of all runs against one allowance. The net work that settlement charges is at most the gross draw, so it cannot pass the wallet's free balance.
+- Then remove the surface cap (`owed.min(free)` in `surface_charges`) and enable lane B's test. The test must pass with the cap removed.
+- If the test fails, settlement still falls short, and that is a blocking §6.3 divergence.
+
+### The close cap
+
+Lane B keeps the cap in `charge_recorded_work` until lane A2 installs `CloseFunding`. **Agreed** as a merge step. The cap must be removed in the commit that installs `CloseFunding`, together with the Decision 97 hold (revision 21, FX-16 condition 2). Until then it is part of D8b (blocking).
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | The design is signed off except for V4. Open until FX-17 lands. |
+| Q-33 V4 | **Blocking** for the void code | Open |
+| F40 | **Blocking until merged** | The constant bound is removed on `patch/FX-15-charging`. |
+| F45, F49, F50 | **Blocking until merged** | Fixed on `patch/FX-15` (`e30313108`). F49 needs the surface cap removed at the merge. |
+| F39 | **Blocking until merged** | Fixed in settlement on `patch/FX-15-charging`. The end-to-end path is a known issue. |
+| F48 | **Blocking** for the close | Open |
+| F47 | **Blocking** | Question 19 |
+| D10, D8b | **Blocking** | Open. Wiring, the hold and `CloseFunding` wait for FX-17 and the FX-8b integration. |
+| FX-15 merge requirement 4 (deploy-log refusal event) | **Blocking** | Open |
+| F38, F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void envelope, slashing epoch arithmetic, a shard floor of 0, the F39 end-to-end path | Known issue | Open |
 
 
 ## Open questions for review
