@@ -213,9 +213,9 @@ pub fn accept_metered(
             .find(|wallet| {
                 let limit = purses.free(wallet).unwrap_or(0);
                 let worked = drawn.get(&wallet.canonical_bytes()).copied().unwrap_or(0);
-                refusal.drawn <= limit && refusal.drawn <= worked
+                refusal.drawn <= limit && refusal.drawn == worked
             })
-            .ok_or_else(|| "a refusal's drawn amount is forged".to_string())?;
+            .ok_or_else(|| "a refusal's drawn amount is not the wallet's total".to_string())?;
         let limit = purses.free(&wallet).unwrap_or(0);
         let unpayable = limit - refusal.drawn < refusal.charge;
         let stop = stops

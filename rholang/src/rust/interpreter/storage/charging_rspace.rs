@@ -81,30 +81,41 @@ impl ChargingRSpace {
                 RSpaceError,
             > {
                 let consume_storage = storage_cost_consume(&channels, &patterns, &continuation);
-                self.cost.charge(consume_storage.clone())?;
+                let channels_count = channels.len() as i64;
+                let left = event_storage_cost(channels_count).value;
+                self.cost.charge_reserving(consume_storage.clone(), left)?;
+                let follow = left
+                    + if persist {
+                        consume_storage.value + left
+                    } else {
+                        0
+                    };
 
                 let id = consume_id_bytes(&continuation)?;
-                let channels_count = channels.len() as i64;
                 if self.cost.storage_left_in_space().is_some() {
-                    let consume_res = self
-                        .space
-                        .consume(channels, patterns, continuation, persist, peeks)
-                        .await?;
+                    let consume_res = membrane::following(
+                        follow,
+                        self.space
+                            .consume(channels, patterns, continuation, persist, peeks),
+                    )
+                    .await?;
                     match consume_res.as_ref() {
                         Some((cont, data_list)) => {
-                            left_in_space_match(cont, data_list, &Trigger::Consume, &self.cost)?
+                            left_in_space_match(cont, data_list, &Trigger::Consume, &self.cost, follow)?
                         }
                         None => match with_rule(&self.cost, |rule| rule.left_continuation(&id, seal::current())) {
-                            true => self.cost.charge(event_storage_cost(channels_count))?,
+                            true => membrane::settling(|| self.cost.charge(event_storage_cost(channels_count)))?,
                             false => refund(&self.cost, consume_storage.value, "consume storage refund")?,
                         },
                     }
                     return Ok(consume_res);
                 }
-                let consume_res = self
-                    .space
-                    .consume(channels, patterns, continuation, persist, peeks)
-                    .await?;
+                let consume_res = membrane::following(
+                    follow,
+                    self.space
+                        .consume(channels, patterns, continuation, persist, peeks),
+                )
+                .await?;
 
                 handle_result(
                     consume_res
@@ -116,6 +127,7 @@ impl ChargingRSpace {
                         channels_count,
                     },
                     self.cost.clone(),
+                    follow,
                 )?;
                 Ok(consume_res)
             }
@@ -133,20 +145,30 @@ impl ChargingRSpace {
                     let id = data.random_state.clone();
                     let restored = with_rule(&self.cost, |rule| rule.restores(&id));
                     let produce_storage = storage_cost_produce(&channel, &data);
+                    let left = event_storage_cost(1).value;
                     if !restored {
-                        self.cost.charge(produce_storage.clone())?;
+                        self.cost.charge_reserving(produce_storage.clone(), left)?;
                     }
+                    let follow = left
+                        + if persist {
+                            produce_storage.value + left
+                        } else {
+                            0
+                        };
                     with_rule(&self.cost, |rule| rule.announce_datum(&id, seal::current()));
-                    let produce_res = self.space.produce(channel, data, persist).await?;
+                    let produce_res =
+                        membrane::following(follow, self.space.produce(channel, data, persist))
+                            .await?;
                     match produce_res.as_ref() {
                         Some((cont, data_list, _)) => left_in_space_match(
                             cont,
                             data_list,
                             &Trigger::Produce { id: id.clone(), restored },
                             &self.cost,
+                            follow,
                         )?,
                         None if !restored => match with_rule(&self.cost, |rule| rule.left_datum(&id, seal::current())) {
-                            true => self.cost.charge(event_storage_cost(1))?,
+                            true => membrane::settling(|| self.cost.charge(event_storage_cost(1)))?,
                             false => refund(&self.cost, produce_storage.value, "produces storage refund")?,
                         },
                         None => {}
@@ -155,10 +177,19 @@ impl ChargingRSpace {
                     return Ok(produce_res);
                 }
 
-                self.cost.charge(storage_cost_produce(&channel, &data))?;
+                let produce_storage = storage_cost_produce(&channel, &data);
+                let left = event_storage_cost(1).value;
+                self.cost.charge_reserving(produce_storage.clone(), left)?;
+                let follow = left
+                    + if persist {
+                        produce_storage.value + left
+                    } else {
+                        0
+                    };
 
                 let id = data.random_state.clone();
-                let produce_res = self.space.produce(channel, data, persist).await?;
+                let produce_res =
+                    membrane::following(follow, self.space.produce(channel, data, persist)).await?;
                 handle_result(
                     produce_res
                         .as_ref()
@@ -169,6 +200,7 @@ impl ChargingRSpace {
                         channels_count: 1,
                     },
                     self.cost.clone(),
+                    follow,
                 )?;
                 Ok(produce_res)
             }
@@ -312,6 +344,7 @@ fn handle_result(
     )>,
     triggered_by: TriggeredBy,
     cost: _cost,
+    follow: i64,
 ) -> Result<(), InterpreterError> {
     let (triggered_by_id_bytes, triggered_by_channels_count, triggered_by_persistent) =
         match triggered_by {
@@ -325,20 +358,7 @@ fn handle_result(
 
     match result {
         Some((cont, data_list)) => membrane::settling(|| {
-            if let Some(meter) = seal::meter() {
-                let mut records: Vec<seal::SealRecord> = seal::of_continuation(&cont.continuation)
-                    .ok()
-                    .flatten()
-                    .into_iter()
-                    .collect();
-                records.extend(
-                    data_list
-                        .iter()
-                        .filter_map(|d| d.removed_datum.seal.as_ref())
-                        .filter_map(|p| seal::SealRecord::from_proto(p).ok()),
-                );
-                meter.draw_comm_in_replay(&records);
-            }
+            draw_replayed_comm(cont, data_list, follow);
             let consume_id_bytes = consume_id_bytes(&cont.continuation)?;
 
             // We refund for non-persistent continuations, and for the persistent continuation triggering the comm.
@@ -372,8 +392,34 @@ fn handle_result(
 
             cost.charge(comm_event_storage_cost(cont.channels.len() as i64))
         }),
-        None => cost.charge(event_storage_cost(triggered_by_channels_count)),
+        None => membrane::settling(|| cost.charge(event_storage_cost(triggered_by_channels_count))),
     }
+}
+
+fn draw_replayed_comm(
+    cont: &ContResult<Par, BindPattern, TaggedContinuation>,
+    data_list: &[RSpaceResult<Par, ListParWithRandom>],
+    follow: i64,
+) {
+    let Some(meter) = seal::meter() else {
+        return;
+    };
+    if !meter.is_replay() {
+        return;
+    }
+    let mut records: Vec<seal::SealRecord> = seal::of_continuation(&cont.continuation)
+        .ok()
+        .flatten()
+        .into_iter()
+        .collect();
+    records.extend(
+        data_list
+            .iter()
+            .filter_map(|d| d.removed_datum.seal.as_ref())
+            .filter_map(|p| seal::SealRecord::from_proto(p).ok()),
+    );
+    let follow = follow + comm_event_storage_cost(cont.channels.len() as i64).value;
+    meter.draw_comm_in_replay(&records, seal::current().as_ref(), follow);
 }
 
 fn refund_for_removing_produces(
@@ -429,7 +475,9 @@ fn left_in_space_match(
     data_list: &[RSpaceResult<Par, ListParWithRandom>],
     trigger: &Trigger,
     cost: &_cost,
+    follow: i64,
 ) -> Result<(), InterpreterError> {
+    draw_replayed_comm(cont, data_list, follow);
     let receive = seal::of_continuation(&cont.continuation).ok().flatten();
     let sends: Vec<Option<seal::SealRecord>> = data_list
         .iter()
@@ -450,9 +498,6 @@ fn left_in_space_match(
         })
         .collect();
     let surfaces = comm_cells(receive.as_ref(), sends.iter().map(Option::as_ref));
-    if let Some(meter) = seal::meter() {
-        meter.draw_comm_in_replay(&seal::records_of_comm(receive.as_ref(), &sends));
-    }
     let consume_storage = storage_cost_consume(&cont.channels, &cont.patterns, &cont.continuation);
     match trigger {
         Trigger::Consume => refund(cost, consume_storage.value, "consume storage refund")?,

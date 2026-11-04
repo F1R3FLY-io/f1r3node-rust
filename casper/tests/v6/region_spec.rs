@@ -1410,6 +1410,94 @@ async fn work_under_an_underfunded_installer_stops_and_the_client_pays_nothing_f
         )
         .await
         .is_err());
+
+    let replays = |logged: Vec<Vec<_>>| {
+        let (executor, root, held) = (&executor, &root, &held);
+        let proposer = &proposer;
+        async move {
+            executor
+                .replay_with_refusals(
+                    root,
+                    held.processed.clone(),
+                    &held.gate.entries,
+                    block_data(proposer),
+                    logged,
+                )
+                .await
+                .map(|again| again.settled_root == held.settled_root)
+                .unwrap_or(false)
+        }
+    };
+    let mut high = logged.clone();
+    high[0].iter_mut().for_each(|r| r.drawn += 1);
+    assert!(!replays(high).await, "a drawn amount set too high");
+
+    let tighter = executor
+        .execute(
+            &root,
+            vec![
+                call(),
+                envelope(&sealed, 3, &alice, (left - room / 2) as i64, 1),
+            ],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the tighter call executes");
+    let earlier: Vec<_> = tighter.metered.iter().map(|m| m.refusals.clone()).collect();
+    assert!(!earlier[0].is_empty());
+    assert!(earlier[0]
+        .iter()
+        .all(|r| !logged[0].iter().any(|l| l.step == r.step)));
+    assert!(
+        !replays(earlier).await,
+        "an admitted step changed to refused"
+    );
+}
+
+#[tokio::test]
+async fn substitution_into_a_fired_continuation_is_charged_to_its_installer() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let install = r#"
+        contract @"wide"(@x) = { @"sink"!([x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x]) } |
+        contract @"thin"(@x) = { Nil }
+    "#;
+    let first = executor
+        .execute(
+            &pre,
+            vec![envelope(install, 1, &alice, 5_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the services install");
+    assert!(!first.processed[0].is_failed);
+    let payload = format!("{:?}", vec![7u8; 40]).replace(' ', "");
+    let call = |name: &str| envelope(&format!(r#"@"{name}"!({payload})"#), 2, &bob, 50_000, 1);
+    let mut owners = Vec::new();
+    let mut clients = Vec::new();
+    for name in ["wide", "thin"] {
+        let played = executor
+            .execute(&first.settled_root, vec![call(name)], block_data(&proposer))
+            .await
+            .expect("the call executes");
+        assert!(!played.processed[0].is_failed);
+        let owner: u64 = played.work[0]
+            .iter()
+            .filter(|(s, _)| {
+                s.as_ref()
+                    .is_some_and(|s| s.owner == alice.owner.canonical_bytes())
+            })
+            .map(|(_, w)| *w)
+            .sum();
+        owners.push(owner);
+        clients.push(played.runs[0].compute_phlo);
+    }
+    assert!(owners[0] > owners[1], "{owners:?}");
+    assert_eq!(
+        clients[0], clients[1],
+        "the firer pays the same for either body"
+    );
 }
 
 async fn funded_process(
