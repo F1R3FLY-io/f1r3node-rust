@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -1829,6 +1829,108 @@ Lane B measures the close's PoS work. The worst case is about 4.87 million phlo,
 | F38 (refund keying), F43 (narrowed), F44, the `for` form under `# P`, storage growth under P11, client latency, the partial hold until the void path | Known issue | Open |
 
 
+## Revision 19 (action A-9): lane C's FX-15 meter
+
+- **Commit audited:** `patch/FX-15` at `fc3a6ca72` (lane C), cut from `patch/FX-8b` at `aea9b529d`.
+- **Not in this branch:**
+  - FX-12's own-origin commit `eab30238f` and the FX-14 follow-ups (which are in FX-8b at `4a74b0e34`).
+  - Lane A2's `patch/FX-15-replay`.
+  - Lane B's `patch/FX-15-settle`.
+- **Reference:** design r19 §6.3 (publications `8530da2`).
+- **Method:** a code reading of `accounting::membrane`, the executor and surface changes, and the FX-15 log. No tests were run.
+- **Not changed since revision 18:** the Q-33 memo, the FX-17 paper, FX-16, FX-8b (no `dev` merge), and F39, F47 and F48. The Q-33 sign-off is still open on Q2 to Q5.
+
+### The gate checks
+
+| Check | Result |
+|---|---|
+| Each step under t is admitted against the wallet at t, less the block's holds, less what t has drawn | **Holds within one run.** `MembraneMeter::admit` tests each positive charge under a gated record against each wallet of its purse. The limit is `BlockPurses::free` (the pre-state balance less the gate table) less the gross amount that the wallet drew in this run. The charge is the phlo times the record's origin price. A record is gated when its owner is not a payer that the gate committed for the envelope (Decision 93). Across runs, see F49. |
+| Work under t stops when the wallet cannot pay | **Holds.** A refusal stops the wallet in the same lock as the test. Every later step on that wallet is refused and logged with the same drawn amount. A refused step ends its branch with `MembraneStopped`, and the run does not fail. |
+| The client's own work does not stop because of another membrane | **Holds.** Gated work goes to the work tally and not to the client's phlo state. This branch does not have `FOREIGN_WORK_BUDGET` (FX-12 `eab30238f`), and the merge must not bring it back (merge requirement 2). With the gate, work under a gated record is bounded by its wallet. |
+| The cells of a COMM | **Holds.** `check_commit` admits the cells of all gated surfaces of a COMM together, after the spatial match. An unpayable COMM is vetoed, with a `Cell` refusal for each unpayable record. D79's `admits_waiting` filter now returns `true` by default (D79 decision 9 is superseded). |
+| The close's funding oracle (D8b) | **Not wired.** `CloseFunding` gates every record that the close fires, against the block's limit less what the envelope runs drew. Lane A2 must install it through the `SystemGate`. The close's COMM cells are still not charged in the state, because the storage rule is off in system deploys (FX-12 decision 8). **D8b stays open.** |
+| `check_unstopped` is on | **Holds.** `accept_metered` checks W ≤ A for each wallet that did not stop. |
+| Refusals are read from the trace | **Not yet.** `replay` passes no refusals until lane A2's deploy-log event lands (FX-15 decision 10). Only `replay_with_refusals`, which tests use, takes them. |
+
+### Trace-alteration tests
+
+`region_spec::work_under_an_underfunded_installer_stops_and_the_client_pays_nothing_for_it` plays a block in which a loop under an underfunded process wallet stops. Then it replays the block in three ways:
+
+| Alteration | Expected | Check |
+|---|---|---|
+| The honest refusals, replayed eight times | Same root, drawn amounts and settlement | Present |
+| No refusals (each refused step becomes admitted) | Rejected, or a different root | Present. This covers (c), an admitted step that was not payable. |
+| Drawn amount set to 0 on each refusal | Rejected | Present. This covers (b) in the "too low" direction. |
+| A drawn amount that is too high, inside A − c < D ≤ min(A, W) | Rejected | **Absent.** This is F45. `accept_metered` uses the same window as lane A2's `check_stop`. |
+| One admitted step changed into a refused step | Rejected | **Absent.** This is (a). |
+
+### F49 — blocking: two runs in one block can each draw a wallet up to its whole free balance
+
+- **Code:** the meter's limit is per run. It is `free(wallet)` less what that run drew. Envelope runs in one block run in parallel, and each has its own meter. Two runs that fire code under the same gated wallet can each be admitted up to the wallet's full free balance. Settlement then caps the draw (`surface_charges`, D76 decision 7), so the second run's admitted work is partly unpaid.
+- **Design:** r19 §6.3 admits each step against "what t has already drawn in the run". It also says that no step is executed unpaid. Across parallel runs the two clauses conflict.
+- **Reason for the label:** a step runs unpaid, which is a §6.3 divergence.
+- **Proposed resolution:** a ruling (question 17). The options are:
+  - One block-wide meter for each gated wallet, with the draws of all runs counted against one limit. Decision 89 replay handles the nondeterministic order.
+  - A split of each gated wallet's free balance between the runs before they start.
+  - A statement in the design that the settlement cap applies across runs, which makes this a known issue.
+
+### F50 — blocking: some charges under a gated record are taken without admission
+
+- **Code:**
+  - FX-15 decision 8: a charge in a restore scope draws nothing and is never refused. A restore scope covers a persistent datum or continuation that is stored again, or a peeked datum that is produced again. The same applies to the post-COMM charges in `handle_result`.
+  - Lane C's known issue 1: the `event_storage_cost` charge of a gated produce comes after the datum is stored. If it is refused, the datum stays and the charge is unpaid.
+- **Effect:** these charges go to the work tally, and settlement caps them. So they can run unpaid, and they do not count toward the wallet's drawn amount.
+- **Reason for the label:** r19 §6.3 admits "each charge of the cost schedule", and no step runs unpaid. Lane C's reason for decision 8 is real: a refused restore would delete a persistent contract. That makes it a design question, not a code defect.
+- **Proposed resolution:** a ruling (question 18). The options are:
+  - These charges are pre-admitted with the step that caused them (the COMM, or the store).
+  - The design exempts storage bookkeeping charges from the gate, which makes this a known issue.
+
+### Lane C's other known issues
+
+| Item | Label | Reason |
+|---|---|---|
+| For a compound owner, the stop is checked against the first component wallet that fits its drawn amount | Known issue | Play and replay use the same rule, so the outcome replays. It only changes which component stops first. |
+| A gated charge outside every step scope has a fixed identity | Known issue | No test reaches this path. If two such refusals occur, `accept_metered` refuses two refusals with one step. That gives a failed replay, not an unpaid step. |
+| The veto in `check_commit` costs one extra match attempt | Known issue | It affects cost to the validator only. |
+
+### Status of earlier items on this branch
+
+- **F39:** still **blocking.** Decision 93 gates an own-envelope record whose owner the gate did not commit, so admission draws on the owner's wallet. But `settle::own_payers` is unchanged. Settlement still charges such a key to the client. The fix must charge a gated own key to its owner, as a surface charge.
+- **F45:** still **blocking** (question 14).
+- **F48:** not addressed. The fired body's identity uses the COMM's merged state, but substitution still runs before the installer's membrane.
+- **FX-15 decision 11** cites Decision 96. Under Decision 97 the close's PoS code is pre-charged. The text must be updated at the merge.
+
+### Merge requirements for FX-15 into FX-8b
+
+1. **One replay mechanism.**
+   - Lane A2's `ReplayStops` (stop at the storage boundary, `stops::check`) and lane C's `MembraneMeter` replay (refuse exactly the logged steps, `accept_metered`) implement the same Decision 89 checks.
+   - The merge keeps one of them, and one refusal type (`stops::Refusal` or `membrane::Refusal`).
+   - It keeps lane A2's checks that replay reaches each refused step at its recorded cost.
+2. **The client's limit.** FX-12's `set_own_origin` and `FOREIGN_WORK_BUDGET` (`eab30238f`) conflict with lane C's gate in `accounting/mod.rs`. Keep lane C's rule (gated work never counts against the client's limit). Remove the constant bound, which F40 asks for. Keep the own-origin rule only for records that are not gated.
+3. **Settlement.** Lane B's `settled_work` (recorded work = D − R) applies to the stopped wallets of lane C's meter.
+4. **The deploy-log refusal event (lane A2) lands before or with the merge.** Without it, `BlockExecutor::replay` passes no refusals. Then every block in which play stopped a membrane fails replay on the other validators. That is a High safety finding (the chain halts), so it is **blocking** as a merge condition.
+5. **The close.** Install `CloseFunding` in the `SystemGate`. The close limit must also subtract the Decision 97 hold on the proposer's wallet (`7ac56f01a`) when a fired record draws on that wallet.
+6. **Tests at the merge:**
+   - The region_spec test above.
+   - Lane A2's storage-boundary test.
+   - Lane B's settlement tests.
+   - The two absent alterations: a too-high D, and an admitted step changed into a refused one.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | Open. The Q-33 sign-off waits for Q2 to Q5. |
+| F40 | **Blocking** | Implemented on `patch/FX-15`. It stays open until the merge into FX-8b meets requirements 1 to 4. |
+| F45 | **Blocking** | Open. Question 14. |
+| F49: per-run limits across parallel runs | **Blocking** | New. Question 17. |
+| F50: charges without admission | **Blocking** | New. Question 18. |
+| FX-15 merge requirement 4 (deploy-log refusal event) | **Blocking** | Open |
+| Trace-alteration tests (a) and the too-high D | **Blocking** | Open |
+| D8b, D10, F39, F47, F48 | **Blocking** | Open |
+| F38, F43, F44, the `for` form under `# P`, the three lane C known issues above, storage growth and client latency under P11, the partial hold | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1848,3 +1950,5 @@ Lane B measures the close's PoS work. The worst case is about 4.87 million phlo,
 14. **F45 and F46:** replay does not reproduce the running total of a stopped membrane exactly, because interleavings differ before the next IO step. Must replay compute the exact running total at each refusal, as r16 §6.3 says? Or does the design admit a bounded window for the drawn amount and for the recorded work, and if so, what bound?
 15. **Q-33, Q4:** may a block be voided without slashing its sender, when its invalidity depends on the pre-state at its linear position, which the proposer could not see? Or is `VoidBlock` slashed only for invalidity that the proposer could decide from its own justifications?
 16. **F47:** the close's work at an epoch boundary grows with the number of bonds. Is the bonded set capped, or does the close's pre-charge scale with the number of bonds?
+17. **F49:** the meter admits each step against what t drew in its own run. Parallel runs in one block can then each draw the same wallet up to its whole free balance, and settlement caps the total. Is the meter block-wide, is the wallet's balance split between runs, or does the settlement cap across runs stand?
+18. **F50:** are storage bookkeeping charges under a gated record (restores of persistent items, post-COMM charges, the event charge of a stored datum) admitted with the step that caused them, or exempt from the gate?
