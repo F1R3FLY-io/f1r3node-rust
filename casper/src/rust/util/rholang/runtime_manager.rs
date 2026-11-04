@@ -260,20 +260,10 @@ impl Default for ReplayLock {
     fn default() -> Self { Self::new() }
 }
 
-pub type StopChecker = Arc<
-    dyn Fn(
-            &[rholang::rust::interpreter::accounting::stops::Refusal],
-            &rholang::rust::interpreter::accounting::stops::ReplayStops,
-        ) -> Result<(), String>
-        + Send
-        + Sync,
->;
-
 #[derive(Clone, Default)]
 pub struct SystemGate {
-    pub funding: Option<Arc<dyn rholang::rust::interpreter::accounting::rev_stack::seal::Funding>>,
+    pub funding: Option<Arc<rholang::rust::interpreter::accounting::membrane::MembraneMeter>>,
     pub charge: Option<rholang::rust::interpreter::accounting::system_charge::SystemCharge>,
-    pub stops: Option<StopChecker>,
 }
 
 impl SystemGate {
@@ -1118,7 +1108,7 @@ impl RuntimeManager {
             seq_num as i64,
             replay_payload_hash,
         );
-        if let Some(ref cache) = self.replay_cache {
+        if let (Some(ref cache), None) = (&self.replay_cache, &gate) {
             if let Some(entry) = cache.get(&replay_cache_key) {
                 // A replay that returns Ok must leave the mergeable entry for its
                 // post-state persisted — `ensure_mergeable_entry` exists precisely
@@ -1146,7 +1136,7 @@ impl RuntimeManager {
                     let rspace_events: Vec<_> = entry
                         .event_log
                         .iter()
-                        .map(crate::rust::util::event_converter::to_rspace_event)
+                        .filter_map(crate::rust::util::event_converter::to_rspace_event)
                         .collect();
                     replay_runtime.rig(rspace_events).await?;
 
@@ -1169,22 +1159,9 @@ impl RuntimeManager {
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await?;
-        let refusals = crate::rust::v6::stops::system_refusals(&system_deploys);
-        let stopped = match &gate {
-            Some(gate) => {
-                gate.apply(&replay_runtime);
-                crate::rust::v6::stops::install_system(&system_deploys)
-            }
-            None => None,
-        };
-        if !refusals.is_empty() && gate.as_ref().and_then(|g| g.stops.as_ref()).is_none() {
-            return Err(CasperError::RuntimeError(
-                "a system deploy carries refusals, but its replay has no stop check".to_string(),
-            ));
+        if let Some(gate) = &gate {
+            gate.apply(&replay_runtime);
         }
-        replay_runtime
-            .cost
-            .set_replay_stops(stopped.as_ref().map(|(stops, _)| stops.clone()));
         let runtime_ops = RuntimeOps::new(replay_runtime);
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
@@ -1210,13 +1187,6 @@ impl RuntimeManager {
         // `block_hash` via `Validate::block_hash` which recomputes leaves
         // from the stored block body.
         let (state_hash, mergeable_chs, _block_hash_leaves) = replay_result?;
-        if let (Some((stops, refusals)), Some(check)) =
-            (&stopped, gate.as_ref().and_then(|g| g.stops.as_ref()))
-        {
-            check(refusals, stops).map_err(|e| {
-                CasperError::RuntimeError(format!("a membrane stop in a system deploy does not replay: {e}"))
-            })?;
-        }
 
         // Convert from final to diff values and persist mergeable (number) channels for post-state hash
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(start_hash);

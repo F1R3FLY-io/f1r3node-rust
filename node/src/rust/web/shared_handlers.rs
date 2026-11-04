@@ -406,6 +406,7 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
             "host_work_rejected",
             ie.to_string(),
         ),
+        MembraneStopped => (S::UNPROCESSABLE_ENTITY, "membrane_stopped", ie.to_string()),
         UserAbortError => (S::UNPROCESSABLE_ENTITY, "user_abort", ie.to_string()),
 
         ReduceError(_)

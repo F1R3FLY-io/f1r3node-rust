@@ -50,6 +50,7 @@ use super::accounting::costs::{
     receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
     var_eval_cost,
 };
+use super::accounting::membrane;
 use super::accounting::rev_stack::journal::{
     journal_open, journaled_transfers, record, JournalEntry,
 };
@@ -222,6 +223,53 @@ where
     })
 }
 
+fn gated_now() -> bool {
+    match (seal::meter(), seal::current()) {
+        (Some(meter), Some(record)) => meter.gates(&record),
+        _ => false,
+    }
+}
+
+fn evaluation_scope(
+    term: &GeneratedMessage,
+    rand: &Blake2b512Random,
+) -> Option<Arc<membrane::StepScope>> {
+    if !gated_now() {
+        return None;
+    }
+    let content = match term {
+        GeneratedMessage::Send(t) => t.encode_to_vec(),
+        GeneratedMessage::Receive(t) => t.encode_to_vec(),
+        GeneratedMessage::New(t) => t.encode_to_vec(),
+        GeneratedMessage::Match(t) => t.encode_to_vec(),
+        GeneratedMessage::Bundle(t) => t.encode_to_vec(),
+        GeneratedMessage::Expr(t) => t.encode_to_vec(),
+        GeneratedMessage::CostSignedTerm(t) => t.encode_to_vec(),
+        GeneratedMessage::If(t) => t.encode_to_vec(),
+    };
+    Some(membrane::StepScope::new(membrane::step_base(
+        membrane::StepSource::Evaluation,
+        &content,
+        &rand.to_bytes(),
+    )))
+}
+
+fn restore_scope<F: Future>(random_state: &[u8], future: F) -> impl Future<Output = F::Output> {
+    let scope = gated_now().then(|| {
+        membrane::StepScope::restoring(membrane::step_base(
+            membrane::StepSource::Restore,
+            &[],
+            random_state,
+        ))
+    });
+    async move {
+        match scope {
+            Some(scope) => membrane::stepping(scope, future).await,
+            None => future.await,
+        }
+    }
+}
+
 fn split_kind(
     signature: &CostSignature,
 ) -> Result<Option<(KindStack, Option<CostSignature>)>, InterpreterError> {
@@ -300,7 +348,7 @@ pub struct DebruijnInterpreter {
     pub genesis_phase: Arc<std::sync::atomic::AtomicBool>,
     pub deploy_data: Arc<RwLock<DeployData>>,
     pub seal_records: Arc<std::sync::atomic::AtomicBool>,
-    pub funding: Arc<std::sync::Mutex<Option<Arc<dyn seal::Funding>>>>,
+    pub funding: Arc<std::sync::Mutex<Option<Arc<seal::MembraneMeter>>>>,
 }
 
 type Application = Option<(
@@ -791,7 +839,9 @@ impl DebruijnInterpreter {
                     }
 
                     futures.push(Box::pin(
-                        async move { self_clone2.produce(chan, data, true).await },
+                        restore_scope(&data.random_state.clone(), async move {
+                            self_clone2.produce(chan, data, true).await
+                        }),
                     )
                         as Pin<
                             Box<
@@ -942,9 +992,10 @@ impl DebruijnInterpreter {
                         }));
                     }
 
-                    futures.push(Box::pin(async move {
+                    let restored = body.random_state.clone();
+                    futures.push(Box::pin(restore_scope(&restored, async move {
                         self_clone2.consume(binds, body, true, peek, guard).await
-                    })
+                    }))
                         as Pin<
                             Box<
                                 dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
@@ -1084,7 +1135,10 @@ impl DebruijnInterpreter {
             .filter(|(_, _, _, persist)| !persist)
             .map(|(chan, _, removed_data, _)| {
                 let self_clone = self.clone();
-                Box::pin(async move { self_clone.produce(chan, removed_data, false).await })
+                let restored = removed_data.random_state.clone();
+                Box::pin(restore_scope(&restored, async move {
+                    self_clone.produce(chan, removed_data, false).await
+                }))
                     as Pin<
                         Box<
                             dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
@@ -1177,6 +1231,10 @@ impl DebruijnInterpreter {
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
+        let errors: Vec<InterpreterError> = errors
+            .into_iter()
+            .filter(|e| !matches!(e, InterpreterError::MembraneStopped))
+            .collect();
         match errors.as_slice() {
             // No errors
             [] => Ok(DispatchType::Skip),
@@ -1214,6 +1272,20 @@ impl DebruijnInterpreter {
     }
 
     async fn generated_message_eval(
+        &self,
+        term: GeneratedMessage,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        match evaluation_scope(&term, &rand) {
+            Some(scope) => {
+                membrane::stepping(scope, self.generated_message_step(term, env, rand)).await
+            }
+            None => self.generated_message_step(term, env, rand).await,
+        }
+    }
+
+    async fn generated_message_step(
         &self,
         term: GeneratedMessage,
         env: &Env<Par>,

@@ -99,9 +99,10 @@ async fn play(
     assert!(!played.processed[0].is_failed, "{:?}", played.processed[0]);
     assert!(played.settlement.is_balanced());
     let again = executor
-        .replay(
+        .replay_recorded(
             pre,
             played.processed.clone(),
+            Some(played.work.clone()),
             &played.gate.entries,
             block_data(proposer),
         )

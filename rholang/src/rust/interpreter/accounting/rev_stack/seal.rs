@@ -27,38 +27,104 @@ pub struct SealRecord {
     pub origin: Origin,
 }
 
-pub trait Funding: Send + Sync {
-    fn funds(&self, record: &SealRecord) -> bool;
-}
+pub use crate::rust::interpreter::accounting::membrane::{Admission, Funding, MembraneMeter};
 
 tokio::task_local! {
     static SEAL: Option<SealRecord>;
-    static FUNDING: Option<Arc<dyn Funding>>;
+    static FUNDING: Option<Arc<MembraneMeter>>;
 }
 
-fn current_funding() -> Option<Arc<dyn Funding>> { FUNDING.try_with(Clone::clone).ok().flatten() }
+pub fn meter() -> Option<Arc<MembraneMeter>> { FUNDING.try_with(Clone::clone).ok().flatten() }
 
-pub fn funds(record: &SealRecord) -> bool {
-    current_funding().is_none_or(|funding| funding.funds(record))
+pub fn funds(record: &SealRecord, step: impl FnOnce() -> Vec<u8>) -> bool {
+    meter().is_none_or(|meter| meter.admit_cell(record, step) != Admission::Refused)
 }
 
 pub fn funds_continuation(continuation: &TaggedContinuation) -> bool {
     match of_continuation(continuation) {
-        Ok(Some(record)) => funds(&record),
+        Ok(Some(record)) => funds(&record, || cell_step(continuation)),
         Ok(None) => true,
         Err(_) => false,
     }
 }
 
+pub fn admits_comm(
+    continuation: &TaggedContinuation,
+    matched: &[models::rhoapi::ListParWithRandom],
+) -> bool {
+    let Some(meter) = meter() else {
+        return true;
+    };
+    let mut records = Vec::new();
+    match of_continuation(continuation) {
+        Ok(Some(record)) => records.push(record),
+        Ok(None) => {}
+        Err(_) => return false,
+    }
+    for datum in matched {
+        match datum.seal.as_ref().map(SealRecord::from_proto) {
+            Some(Ok(record)) => records.push(record),
+            Some(Err(_)) => return false,
+            None => {}
+        }
+    }
+    meter.admit_comm(&records, || comm_step(continuation, matched))
+}
+
+pub fn records_of_comm(
+    continuation: Option<&SealRecord>,
+    sends: &[Option<SealRecord>],
+) -> Vec<SealRecord> {
+    continuation
+        .into_iter()
+        .chain(sends.iter().flatten())
+        .cloned()
+        .collect()
+}
+
+fn comm_step(
+    continuation: &TaggedContinuation,
+    matched: &[models::rhoapi::ListParWithRandom],
+) -> Vec<u8> {
+    use crate::rust::interpreter::accounting::membrane::{step_base, StepSource};
+    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    let body = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body.random_state.clone(),
+        _ => Vec::new(),
+    };
+    let mut randoms = vec![Blake2b512Random::from_bytes(&body)];
+    randoms.extend(
+        matched
+            .iter()
+            .map(|d| Blake2b512Random::from_bytes(&d.random_state)),
+    );
+    step_base(
+        StepSource::Comm,
+        &[],
+        &Blake2b512Random::merge(randoms).to_bytes(),
+    )
+}
+
+fn cell_step(continuation: &TaggedContinuation) -> Vec<u8> {
+    use crate::rust::interpreter::accounting::membrane::{step_base, step_id, StepSource};
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    let random_state = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body.random_state.clone(),
+        _ => Vec::new(),
+    };
+    step_id(&step_base(StepSource::Comm, &[], &random_state), 0)
+}
+
 pub(crate) async fn funded_by<F: Future>(
-    funding: Option<Arc<dyn Funding>>,
+    meter: Option<Arc<MembraneMeter>>,
     future: F,
 ) -> F::Output {
-    FUNDING.scope(funding, future).await
+    FUNDING.scope(meter, future).await
 }
 
 pub(crate) fn keep_funding<F: Future>(future: F) -> impl Future<Output = F::Output> {
-    FUNDING.scope(current_funding(), future)
+    FUNDING.scope(meter(), future)
 }
 
 pub fn current() -> Option<SealRecord> { SEAL.try_with(Clone::clone).ok().flatten() }
@@ -282,30 +348,40 @@ mod tests {
     struct Only(u8);
 
     impl Funding for Only {
-        fn funds(&self, record: &SealRecord) -> bool {
-            record.owner == WalletOwner::Unforgeable(vec![self.0; 32])
+        fn gates(&self, _record: &SealRecord) -> bool { true }
+
+        fn limit(&self, wallet: &WalletOwner) -> u64 {
+            if *wallet == WalletOwner::Unforgeable(vec![self.0; 32]) {
+                1_000
+            } else {
+                0
+            }
         }
     }
+
+    fn only(n: u8) -> Option<Arc<MembraneMeter>> { Some(MembraneMeter::play(Arc::new(Only(n)))) }
 
     #[tokio::test]
     async fn funding_is_scoped_and_spawned_tasks_keep_it() {
         let poor = record(5, SealKind::Process);
         let rich = record(7, SealKind::Process);
-        assert!(funds(&poor));
-        let funding: Arc<dyn Funding> = Arc::new(Only(7));
-        let seen = funded_by(Some(funding), async {
-            let here = (funds(&poor), funds(&rich));
+        let step = || vec![1];
+        assert!(funds(&poor, step));
+        let seen = funded_by(only(7), async {
+            let here = (funds(&poor, step), funds(&rich, step));
             let p = poor.clone();
-            let inherited = tokio::spawn(inherit(async move { funds(&p) }))
+            let inherited = tokio::spawn(inherit(async move { funds(&p, || vec![2]) }))
                 .await
                 .unwrap();
             let p = poor.clone();
-            let kept = tokio::spawn(keep_funding(async move { funds(&p) }))
+            let kept = tokio::spawn(keep_funding(async move { funds(&p, || vec![3]) }))
                 .await
                 .unwrap();
             let p = poor.clone();
-            let bare = tokio::spawn(async move { funds(&p) }).await.unwrap();
-            let sealed = within(Some(rich.clone()), async { funds(&poor) }).await;
+            let bare = tokio::spawn(async move { funds(&p, || vec![4]) })
+                .await
+                .unwrap();
+            let sealed = within(Some(rich.clone()), async { funds(&poor, step) }).await;
             (here, inherited, kept, bare, sealed)
         })
         .await;
@@ -315,7 +391,7 @@ mod tests {
             ..TaggedContinuation::default()
         };
         assert!(funds_continuation(&stored));
-        let unfunded = funded_by(Some(Arc::new(Only(7)) as Arc<dyn Funding>), async {
+        let unfunded = funded_by(only(7), async {
             (
                 funds_continuation(&stored),
                 funds_continuation(&TaggedContinuation::default()),

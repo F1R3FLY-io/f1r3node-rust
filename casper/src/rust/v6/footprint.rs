@@ -110,7 +110,7 @@ pub fn footprint<E>(
             Event::Consume(c) => {
                 created_consumes.insert(&c.hash);
             }
-            Event::Comm(_) => {}
+            Event::Comm(_) | Event::Refusal(_) => {}
         }
     }
     let mut cells: BTreeMap<Bytes, u32> = BTreeMap::new();

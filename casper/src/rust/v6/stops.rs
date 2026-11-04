@@ -1,71 +1,89 @@
-use models::rust::casper::protocol::casper_message::{
-    Event as LogEvent, ProcessedDeploy, ProcessedSystemDeploy,
-};
-use rholang::rust::interpreter::accounting::stops::{check_stop, Refusal, ReplayStops, StopCheck};
-use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
-
 use std::collections::BTreeMap;
 
-use rholang::rust::interpreter::accounting::stops::Membrane;
+use models::rust::casper::protocol::casper_message::{
+    Event as LogEvent, ProcessedDeploy, ProcessedSystemDeploy, RefusalEvent,
+};
+use prost::bytes::Bytes;
+use rholang::rust::interpreter::accounting::comm_ledger::Surface;
+use rholang::rust::interpreter::accounting::membrane::{Refusal, RefusalKind};
 
-use super::surface::{BlockPurses, Surfaces};
-use crate::rust::util::event_converter::to_rspace_event;
+use super::surface::Surfaces;
 
-pub fn refusals_in(_events: &[LogEvent]) -> Vec<Refusal> { Vec::new() }
+pub type Membrane = Option<Surface>;
 
-pub fn refusals_of(processed: &ProcessedDeploy) -> Vec<Refusal> { refusals_in(&processed.deploy_log) }
+pub fn to_event(refusal: &Refusal) -> LogEvent {
+    LogEvent::Refusal(RefusalEvent {
+        owner: Bytes::copy_from_slice(&refusal.surface.owner),
+        envelope: Bytes::copy_from_slice(&refusal.surface.envelope),
+        phlo_price: refusal.surface.phlo_price,
+        step: Bytes::copy_from_slice(&refusal.step),
+        kind: refusal.kind.tag(),
+        drawn: refusal.drawn,
+        charge: refusal.charge,
+        surface_drawn: refusal.surface_drawn,
+    })
+}
 
-fn system_events(deploy: &ProcessedSystemDeploy) -> &[LogEvent] {
+pub fn refusals_in(events: &[LogEvent]) -> Result<Vec<Refusal>, String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            LogEvent::Refusal(r) => Some(r),
+            _ => None,
+        })
+        .map(|r| {
+            Ok(Refusal {
+                surface: Surface {
+                    owner: r.owner.to_vec(),
+                    envelope: r.envelope.to_vec(),
+                    phlo_price: r.phlo_price,
+                },
+                step: r.step.to_vec(),
+                kind: RefusalKind::from_tag(r.kind)
+                    .ok_or_else(|| format!("unknown refusal kind {}", r.kind))?,
+                drawn: r.drawn,
+                charge: r.charge,
+                surface_drawn: r.surface_drawn,
+            })
+        })
+        .collect()
+}
+
+pub fn refusals_of(processed: &ProcessedDeploy) -> Result<Vec<Refusal>, String> {
+    refusals_in(&processed.deploy_log)
+}
+
+pub fn system_events(deploy: &ProcessedSystemDeploy) -> &[LogEvent] {
     match deploy {
         ProcessedSystemDeploy::Succeeded { event_list, .. } => event_list,
         ProcessedSystemDeploy::Failed { event_list, .. } => event_list,
     }
 }
 
-pub fn system_refusals(deploys: &[ProcessedSystemDeploy]) -> Vec<Refusal> {
-    deploys.iter().flat_map(|d| refusals_in(system_events(d))).collect()
-}
-
-pub fn install_system(deploys: &[ProcessedSystemDeploy]) -> Option<(ReplayStops, Vec<Refusal>)> {
-    let refusals = system_refusals(deploys);
-    if refusals.is_empty() {
-        return None;
+pub fn system_refusals(deploys: &[ProcessedSystemDeploy]) -> Result<Vec<Refusal>, String> {
+    let mut all = Vec::new();
+    for deploy in deploys {
+        all.extend(refusals_in(system_events(deploy))?);
     }
-    let logged = deploys.iter().flat_map(|d| logged_io_in(system_events(d))).collect::<Vec<_>>();
-    Some((ReplayStops::new(&refusals, logged), refusals))
+    Ok(all)
 }
 
-pub fn logged_io(processed: &ProcessedDeploy) -> Vec<Vec<u8>> { logged_io_in(&processed.deploy_log) }
-
-pub fn logged_io_in(events: &[LogEvent]) -> Vec<Vec<u8>> {
-    let mut hashes = Vec::new();
-    for event in events.iter().map(to_rspace_event) {
-        match event {
-            Event::IoEvent(IOEvent::Produce(produce)) => hashes.push(produce.hash.bytes()),
-            Event::IoEvent(IOEvent::Consume(consume)) => hashes.push(consume.hash.bytes()),
-            Event::Comm(comm) => {
-                hashes.push(comm.consume.hash.bytes());
-                hashes.extend(comm.produces.iter().map(|produce| produce.hash.bytes()));
-            }
+pub fn with_refusals(deploy: ProcessedSystemDeploy, refusals: &[Refusal]) -> ProcessedSystemDeploy {
+    let events = refusals.iter().map(to_event);
+    match deploy {
+        ProcessedSystemDeploy::Succeeded { mut event_list, system_deploy } => {
+            event_list.extend(events);
+            ProcessedSystemDeploy::Succeeded { event_list, system_deploy }
+        }
+        ProcessedSystemDeploy::Failed { mut event_list, error_msg } => {
+            event_list.extend(events);
+            ProcessedSystemDeploy::Failed { event_list, error_msg }
         }
     }
-    hashes
-}
-
-pub fn install(processed: &ProcessedDeploy) -> Option<(ReplayStops, Vec<Refusal>)> {
-    let refusals = refusals_of(processed);
-    if refusals.is_empty() {
-        return None;
-    }
-    let stops = ReplayStops::new(&refusals, logged_io(processed));
-    Some((stops, refusals))
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StopFailure {
-    ClientMembrane,
-    NoPurse,
-    Check(StopCheck),
     NoRecordedWork,
     WorkNotSettled { recorded: u64, expected: u64 },
 }
@@ -82,10 +100,11 @@ pub fn settled_work(
     let recorded = recorded.ok_or(StopFailure::NoRecordedWork)?;
     let mut drawn: BTreeMap<Membrane, u64> = BTreeMap::new();
     for refusal in refusals {
+        let phlo = refusal.surface_drawn / refusal.surface.phlo_price.max(1);
         drawn
-            .entry(refusal.membrane.clone())
-            .and_modify(|d| *d = (*d).min(refusal.drawn))
-            .or_insert(refusal.drawn);
+            .entry(Some(refusal.surface.clone()))
+            .and_modify(|d| *d = (*d).min(phlo))
+            .or_insert(phlo);
     }
     let mut work: BTreeMap<Membrane, u64> = replayed
         .into_iter()
@@ -110,32 +129,10 @@ pub fn settled_work(
     Ok(work.into_iter().collect())
 }
 
-pub fn check(
-    refusals: &[Refusal],
-    stops: &ReplayStops,
-    purses: &BlockPurses,
-    own_envelope: &[u8],
-) -> Result<(), StopFailure> {
-    for refusal in refusals {
-        let surface = match &refusal.membrane {
-            Some(surface) if surface.envelope.as_slice() != own_envelope => surface,
-            _ => return Err(StopFailure::ClientMembrane),
-        };
-        let available = purses.available(surface).ok_or(StopFailure::NoPurse)?;
-        check_stop(
-            refusal,
-            available,
-            stops.gross(&refusal.membrane),
-            stops.found(&refusal.step),
-        )
-        .map_err(StopFailure::Check)?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use rholang::rust::interpreter::accounting::comm_ledger::Surface;
+    use rholang::rust::interpreter::accounting::membrane::RefusalKind;
 
     use super::*;
 
@@ -149,10 +146,16 @@ mod tests {
 
     fn refusal(owner: u8, drawn: u64) -> Refusal {
         Refusal {
-            membrane: membrane(owner),
-            step: vec![owner],
+            surface: Surface {
+                owner: vec![owner],
+                envelope: vec![9],
+                phlo_price: 1,
+            },
+            step: vec![owner, drawn as u8],
+            kind: RefusalKind::Charge,
             drawn,
-            cost: 10,
+            charge: 10,
+            surface_drawn: drawn,
         }
     }
 
@@ -239,5 +242,25 @@ mod tests {
             settled_work(&[refusal(1, 95)], Vec::new(), None, &no_refunds),
             Err(StopFailure::NoRecordedWork)
         );
+    }
+
+    #[test]
+    fn a_refusal_survives_the_deploy_log_encoding() {
+        let refusal = Refusal {
+            kind: RefusalKind::Cell,
+            ..refusal(3, 70)
+        };
+        let proto = to_event(&refusal).to_proto();
+        let back = LogEvent::from_proto(proto).unwrap();
+        assert_eq!(refusals_in(&[back]).unwrap(), vec![refusal]);
+    }
+
+    #[test]
+    fn an_unknown_refusal_kind_is_refused() {
+        let mut event = to_event(&refusal(3, 70));
+        if let LogEvent::Refusal(r) = &mut event {
+            r.kind = 9;
+        }
+        assert!(refusals_in(&[event]).is_err());
     }
 }

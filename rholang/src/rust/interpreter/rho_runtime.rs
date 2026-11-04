@@ -428,7 +428,7 @@ impl RhoRuntimeImpl {
 
     pub fn set_funding(
         &self,
-        funding: Option<Arc<dyn crate::rust::interpreter::accounting::rev_stack::seal::Funding>>,
+        funding: Option<Arc<crate::rust::interpreter::accounting::membrane::MembraneMeter>>,
     ) {
         if let Ok(mut slot) = self.reducer.funding.lock() {
             *slot = funding;

@@ -92,3 +92,29 @@ Decisions 86 and 89. Base: `patch/FX-8b` at 4a74b0e34. The play side (the meter 
 `rholang/tests/replay_stops_spec.rs` runs a real runtime:
 - Under a stopped membrane, a logged produce is stored. An unlogged produce and an unlogged consume are refused (2 refusals).
 - With no stopped membrane, everything is stored.
+
+## One replay mechanism: merge of lane B's settlement and lane C's meter (2026-11-03)
+
+Merged in this order: `patch/FX-15-settle` (dda77b2c5, lane B, F46), then `patch/FX-15` (fc3a6ca72, lane C). Checked against lane A1's revision 19 merge requirements.
+
+| # | Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|---|
+| 1 | Keep lane C's `MembraneMeter` replay and `accept_metered`. Remove lane A2's `ReplayStops`, its storage-boundary hook and its test. | Keep `ReplayStops` | Lane C's meter refuses exactly the logged steps, compute steps included. Play and replay then use one mechanism. | Yes |
+| 2 | The refusal is a fourth deploy-log event: `Event::Refusal`, proto `RefusalEventProto` (field 4 of `EventProto`). Play appends each run's refusals to its deploy log, and the close's refusals to the close's event list. `to_rspace_event` gives `None` for a refusal, so `rig`, the replay cache and the block index skip it. | A separate record field | The deploy log is already in the record entry and is replayed. | Yes |
+| 3 | `BlockExecutor::replay` reads the refusals from each recorded deploy log (`stops::refusals_of`). | — | Merge requirement 4. Without it, replay passes no refusals, and every stopped block fails replay. | No (consensus format) |
+| 4 | A refusal carries `surface_drawn`: the gross work charge under its surface at the stop. Lane B's F46 rule uses it in phlo (`surface_drawn / price`). The comm ledger counts gross refunds for each surface, and replay passes them to `settled_work`. | The wallet's drawn amount | A wallet's drawn amount mixes the surfaces of one owner, and it also counts cells. | Yes |
+| 5 | Replay records the charge of each reached logged step. `accept_metered` requires it to equal the logged charge (lane A2's check on the recorded cost). A `Cell` refusal is exempt from "reached". Replay does not match a vetoed COMM, so it cannot reach that step. | Require it for both kinds | See the known issue below. | Yes |
+| 6 | `accept_metered` requires D to equal the replayed drawn amount of the wallet, not only D ≤ W. | D ≤ W (lane C) | Replay admits exactly the steps that play admitted, so W = D for an honest trace. This rejects a D that is too high inside the window (F45). | Yes |
+| 7 | `FOREIGN_WORK_BUDGET` and the own-origin rule are removed. Gated work never counts against the client's limit (lane C). Ungated work always counts. | Keep the own-origin rule for ungated records | An ungated record's owner is a payer that the gate committed for the envelope. With the constant bound removed, ungated work of another origin would have no bound if it did not count. **For lane A1:** this departs from merge requirement 2's wording. | Yes |
+| 8 | The close's meter is lane C's `CloseFunding` through `SystemGate.funding`. Its purses are the block's pre-state purses with the gate table, which holds the Decision 97 pre-charge (merge requirement 5). Replay checks the close's refusals with `accept_metered` against the close limit. | — | D8b's funding oracle. | Yes |
+| 9 | A gated replay of a system deploy does not use the replay cache. | Store refusals in the cache | A cached replay does not run the meter, so the close's refusals would be unreached. | Yes |
+| 10 | `replay_with_refusals` replaces the refusal events in the deploy logs and takes the recorded work. | — | The test paths then use the same code as replay from a record. | Yes |
+
+**Tests added:**
+- `region_spec::work_under_an_underfunded_installer…`:
+  - replay from the deploy log;
+  - a D that is too high by 1 (rejected);
+  - an admitted step changed into a refused one, taken from a tighter play (rejected, or another root).
+- `v6::stops`: the encoding round trip, and an unknown kind is refused.
+
+**Decision 88 label, known issue:** a `Cell` refusal is not checked as reached (decision 5). A forged `Cell` refusal must still pass the drawn-amount and unpayability checks. It does not change replay, because play did not run the vetoed COMM.
