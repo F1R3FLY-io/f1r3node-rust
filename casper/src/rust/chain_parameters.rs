@@ -243,6 +243,18 @@ mod tests {
         assert_eq!(basis.minimum_quarantine(), None);
     }
 
+    /// Genesis and a node's read both check through here, so a chain can carry
+    /// no value a node refuses, and a node names the value it refuses.
+    #[test]
+    fn an_out_of_range_parameter_is_refused_by_name() {
+        let error = ChainParameters::checked(|name| match name {
+            "maxParentDepth" => Ok(0),
+            _ => Ok(1),
+        })
+        .expect_err("a zero parent depth has no parent-spread rule");
+        assert!(error.contains("maxParentDepth out of range"), "{error}");
+    }
+
     #[test]
     fn the_derived_values_are_proportional_to_their_basis() {
         let shipped = ChainParameters::shipped().window_basis();
