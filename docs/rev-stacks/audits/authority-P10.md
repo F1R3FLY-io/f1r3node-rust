@@ -2158,6 +2158,43 @@ Lane B keeps the cap in `charge_recorded_work` until lane A2 installs `CloseFund
 | F38, F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void envelope, slashing epoch arithmetic, a shard floor of 0, the F39 end-to-end path | Known issue | Open |
 
 
+## Rulings of 2026-11-04 (plan r8.23, design r21): Decisions 107 and 108, the naming convention, Q-34
+
+Design r21 is not yet in publications (the latest commit there is `23fb421`, r20). This section records the rulings as the plan states them. A-9 reads the r21 text when it is committed.
+
+**Naming convention, from this section on:**
+- V1 … Vn are validators.
+- u1 … um are deployers.
+- d1 … di are deployments.
+- B1 … Bj are blocks.
+- The void reasons are (a) to (d). They were V1 to V4 in Q-33 revision 2 and in revisions 20 and 21 of this audit:
+  - (a) The close is not covered.
+  - (b) Slash records before B6.
+  - (c) Terms that the gate cannot read.
+  - (d) The close fails.
+
+Earlier sections keep their text. Where they say V1 to V4, read (a) to (d).
+
+| Ruling | Effect on the audit |
+|---|---|
+| **Decision 107:** the PoS close is made linear. It is flagged for review. | **Answers question 19 (F47).** F47 stays **blocking** until the linear close lands and lane B's `the_close_stays_inside_its_pre_charge` is enabled and passes, with rows at an epoch boundary at the largest bonded set of the test genesis and with an epoch that releases many withdrawers. The change touches the PoS term and the genesis root, so A-8 reads it in full when it lands. |
+| **Decision 108:** the close's pre-charge is evaluated only at execution, on the block's true pre-state. There is no check at acceptance. An uncovered close makes the block void for reason (a). That other deployers can cause such voids is a recorded open issue. | **The D10 test plan changes.** Test 4 ("a block whose proposer cannot cover the pre-charge is refused at acceptance") is withdrawn. In its place: a block whose proposer cannot cover the pre-charge at its true pre-state is void for reason (a), and replay accepts the void record and rejects a normal one. The acceptance check (`check_close_cover`) and the matching check in `create_block` must be removed. The Decision 97 hold at the gate, before any envelope, must be restored, so that the block's own deployments cannot drain the proposer before the close (revision 21, FX-16 condition 2). The griefing case is a **known issue** by ruling. |
+
+**Q-34 (Meredith's void-attack questions) is added to lane A2's memo revision.** A-8 reviews the revision when it lands, and checks the following:
+1. **Identifiable.** A void block stays in the justification structure by its hash. "Void" is a property of the canonical record, checked in both directions in replay and attested.
+2. **Reason (c).** A deployment that causes reason (c) is discarded, not returned to the pool.
+3. **Reason (d).**
+   - Replay decides (d) only after it replays the record's deployments and close (revision 20).
+   - The memo proves, with a test, that no deployment can make the close fail. If it cannot prove this, a deployment that has been through one void block is dropped.
+4. **Counting.** A count of voids for each proposer is kept.
+5. **Griefing.** The Decision 108 case is stated as an open issue.
+6. **Earlier conditions still apply:**
+   - The amount for reason (a) by Decisions 102 and 106.
+   - The check against one deployment twice in one block.
+
+Meredith rules on the repeat check moving to execution (`AlreadyIncluded`) after that revision.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -2179,4 +2216,4 @@ Lane B keeps the cap in `charge_recorded_work` until lane A2 installs `CloseFund
 16. **F47:** answered on 2026-11-03 (Decision 102). The close's work at an epoch boundary grows with the number of bonds. Is the bonded set capped, or does the close's pre-charge scale with the number of bonds?
 17. **F49:** answered on 2026-11-03 (Decision 103). The meter admits each step against what t drew in its own run. Parallel runs in one block can then each draw the same wallet up to its whole free balance, and settlement caps the total. Is the meter block-wide, is the wallet's balance split between runs, or does the settlement cap across runs stand?
 18. **F50:** answered on 2026-11-03 (Decision 104). Are storage bookkeeping charges under a gated record (restores of persistent items, post-COMM charges, the event charge of a stored datum) admitted with the step that caused them, or exempt from the gate?
-19. **F47 (measured):** the PoS close grows about quadratically in the bonds at an epoch boundary, and in the withdrawers that one epoch releases. Is the PoS close made linear (a native active-set pick, and withdrawer folds over the withdrawer maps only), is the number of releases in each close capped, or does the pre-charge gain a quadratic term?
+19. **F47 (measured):** answered on 2026-11-04 (Decision 107: the PoS close is made linear). The PoS close grows about quadratically in the bonds at an epoch boundary, and in the withdrawers that one epoch releases. Is the PoS close made linear (a native active-set pick, and withdrawer folds over the withdrawer maps only), is the number of releases in each close capped, or does the pre-charge gain a quadratic term?
