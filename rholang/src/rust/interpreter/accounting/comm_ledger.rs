@@ -17,7 +17,6 @@ struct LedgerState {
     tally: CommTally,
     surfaces: BTreeMap<Option<Surface>, u64>,
     work: BTreeMap<Option<Surface>, i64>,
-    refunds: BTreeMap<Option<Surface>, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -83,15 +82,9 @@ impl CommLedger {
 
     pub fn on_work(&self, surface: Option<Surface>, phlo: i64) {
         let mut s = self.lock();
-        if phlo < 0 {
-            let r = s.refunds.entry(surface.clone()).or_insert(0);
-            *r = r.saturating_add(phlo.unsigned_abs());
-        }
         let w = s.work.entry(surface).or_insert(0);
         *w = w.saturating_add(phlo);
     }
-
-    pub fn take_refunds(&self) -> BTreeMap<Option<Surface>, u64> { std::mem::take(&mut self.lock().refunds) }
 
     pub fn take_work(&self) -> BTreeMap<Option<Surface>, u64> {
         std::mem::take(&mut self.lock().work)
@@ -116,7 +109,6 @@ impl CommLedger {
         s.tally = CommTally::default();
         s.surfaces.clear();
         s.work.clear();
-        s.refunds.clear();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, LedgerState> {

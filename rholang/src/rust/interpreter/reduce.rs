@@ -256,7 +256,7 @@ fn evaluation_scope(
 
 fn restore_scope<F: Future>(random_state: &[u8], future: F) -> impl Future<Output = F::Output> {
     let scope = gated_now().then(|| {
-        membrane::StepScope::restoring(membrane::step_base(
+        membrane::StepScope::prepaid(membrane::step_base(
             membrane::StepSource::Restore,
             &[],
             random_state,

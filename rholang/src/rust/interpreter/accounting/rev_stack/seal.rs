@@ -36,18 +36,6 @@ tokio::task_local! {
 
 pub fn meter() -> Option<Arc<MembraneMeter>> { FUNDING.try_with(Clone::clone).ok().flatten() }
 
-pub fn funds(record: &SealRecord, step: impl FnOnce() -> Vec<u8>) -> bool {
-    meter().is_none_or(|meter| meter.admit_cell(record, step) != Admission::Refused)
-}
-
-pub fn funds_continuation(continuation: &TaggedContinuation) -> bool {
-    match of_continuation(continuation) {
-        Ok(Some(record)) => funds(&record, || cell_step(continuation)),
-        Ok(None) => true,
-        Err(_) => false,
-    }
-}
-
 pub fn admits_comm(
     continuation: &TaggedContinuation,
     matched: &[models::rhoapi::ListParWithRandom],
@@ -68,18 +56,15 @@ pub fn admits_comm(
             None => {}
         }
     }
-    meter.admit_comm(&records, || comm_step(continuation, matched))
-}
-
-pub fn records_of_comm(
-    continuation: Option<&SealRecord>,
-    sends: &[Option<SealRecord>],
-) -> Vec<SealRecord> {
-    continuation
-        .into_iter()
-        .chain(sends.iter().flatten())
-        .cloned()
-        .collect()
+    let follow =
+        crate::rust::interpreter::accounting::membrane::follow_up()
+            + crate::rust::interpreter::accounting::costs::comm_event_storage_cost(
+                matched.len() as i64
+            )
+            .value;
+    meter.admit_comm(&records, current().as_ref(), follow, || {
+        comm_step(continuation, matched)
+    })
 }
 
 fn comm_step(
@@ -93,27 +78,17 @@ fn comm_step(
         Some(TaggedCont::ParBody(body)) => body.random_state.clone(),
         _ => Vec::new(),
     };
-    let mut randoms = vec![Blake2b512Random::from_bytes(&body)];
-    randoms.extend(
-        matched
-            .iter()
-            .map(|d| Blake2b512Random::from_bytes(&d.random_state)),
-    );
-    step_base(
-        StepSource::Comm,
-        &[],
-        &Blake2b512Random::merge(randoms).to_bytes(),
-    )
-}
-
-fn cell_step(continuation: &TaggedContinuation) -> Vec<u8> {
-    use crate::rust::interpreter::accounting::membrane::{step_base, step_id, StepSource};
-    use models::rhoapi::tagged_continuation::TaggedCont;
-    let random_state = match &continuation.tagged_cont {
-        Some(TaggedCont::ParBody(body)) => body.random_state.clone(),
-        _ => Vec::new(),
+    let randoms: Vec<Blake2b512Random> = std::iter::once(body.as_slice())
+        .chain(matched.iter().map(|d| d.random_state.as_slice()))
+        .filter(|state| !state.is_empty())
+        .map(Blake2b512Random::from_bytes)
+        .collect();
+    let merged = if randoms.is_empty() {
+        Vec::new()
+    } else {
+        Blake2b512Random::merge(randoms).to_bytes()
     };
-    step_id(&step_base(StepSource::Comm, &[], &random_state), 0)
+    step_base(StepSource::Comm, &[], &merged)
 }
 
 pub(crate) async fn funded_by<F: Future>(
@@ -359,46 +334,44 @@ mod tests {
         }
     }
 
-    fn only(n: u8) -> Option<Arc<MembraneMeter>> { Some(MembraneMeter::play(Arc::new(Only(n)))) }
+    fn only(n: u8) -> Option<Arc<MembraneMeter>> {
+        use crate::rust::interpreter::accounting::membrane::BlockLedger;
+        Some(MembraneMeter::play(Arc::new(Only(n)), BlockLedger::new()))
+    }
+
+    fn admits(continuation: &TaggedContinuation) -> bool { admits_comm(continuation, &[]) }
 
     #[tokio::test]
-    async fn funding_is_scoped_and_spawned_tasks_keep_it() {
-        let poor = record(5, SealKind::Process);
-        let rich = record(7, SealKind::Process);
-        let step = || vec![1];
-        assert!(funds(&poor, step));
-        let seen = funded_by(only(7), async {
-            let here = (funds(&poor, step), funds(&rich, step));
-            let p = poor.clone();
-            let inherited = tokio::spawn(inherit(async move { funds(&p, || vec![2]) }))
-                .await
-                .unwrap();
-            let p = poor.clone();
-            let kept = tokio::spawn(keep_funding(async move { funds(&p, || vec![3]) }))
-                .await
-                .unwrap();
-            let p = poor.clone();
-            let bare = tokio::spawn(async move { funds(&p, || vec![4]) })
-                .await
-                .unwrap();
-            let sealed = within(Some(rich.clone()), async { funds(&poor, step) }).await;
-            (here, inherited, kept, bare, sealed)
-        })
-        .await;
-        assert_eq!(seen, ((false, true), false, false, true, false));
-        let stored = TaggedContinuation {
-            seal: Some(poor.to_proto()),
+    async fn the_meter_is_scoped_and_spawned_tasks_keep_it() {
+        let stored = |r: &SealRecord| TaggedContinuation {
+            seal: Some(r.to_proto()),
             ..TaggedContinuation::default()
         };
-        assert!(funds_continuation(&stored));
-        let unfunded = funded_by(only(7), async {
+        let poor = stored(&record(5, SealKind::Process));
+        let rich = stored(&record(7, SealKind::Process));
+        assert!(admits(&poor));
+        let seen = funded_by(only(7), async {
+            let here = (admits(&poor), admits(&rich));
+            let p = poor.clone();
+            let inherited = tokio::spawn(inherit(async move { admits(&p) }))
+                .await
+                .unwrap();
+            let p = poor.clone();
+            let kept = tokio::spawn(keep_funding(async move { admits(&p) }))
+                .await
+                .unwrap();
+            let p = poor.clone();
+            let bare = tokio::spawn(async move { admits(&p) }).await.unwrap();
             (
-                funds_continuation(&stored),
-                funds_continuation(&TaggedContinuation::default()),
+                here,
+                inherited,
+                kept,
+                bare,
+                admits(&TaggedContinuation::default()),
             )
         })
         .await;
-        assert_eq!(unfunded, (false, true));
+        assert_eq!(seen, ((false, true), false, false, true, true));
     }
 
     #[tokio::test]

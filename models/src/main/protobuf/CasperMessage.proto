@@ -507,7 +507,6 @@ message RefusalEventProto {
   uint32 kind         = 5;
   uint64 drawn        = 6;
   uint64 charge       = 7;
-  uint64 surfaceDrawn = 8;
 }
 
 message ProduceEventProto {

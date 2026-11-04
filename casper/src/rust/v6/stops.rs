@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use models::rust::casper::protocol::casper_message::{
     Event as LogEvent, ProcessedDeploy, ProcessedSystemDeploy, RefusalEvent,
 };
@@ -20,7 +18,6 @@ pub fn to_event(refusal: &Refusal) -> LogEvent {
         kind: refusal.kind.tag(),
         drawn: refusal.drawn,
         charge: refusal.charge,
-        surface_drawn: refusal.surface_drawn,
     })
 }
 
@@ -43,7 +40,6 @@ pub fn refusals_in(events: &[LogEvent]) -> Result<Vec<Refusal>, String> {
                     .ok_or_else(|| format!("unknown refusal kind {}", r.kind))?,
                 drawn: r.drawn,
                 charge: r.charge,
-                surface_drawn: r.surface_drawn,
             })
         })
         .collect()
@@ -92,41 +88,26 @@ pub fn settled_work(
     refusals: &[Refusal],
     replayed: Surfaces,
     recorded: Option<&Surfaces>,
-    refunds: &dyn Fn(&Membrane) -> u64,
 ) -> Result<Surfaces, StopFailure> {
     if refusals.is_empty() {
         return Ok(replayed);
     }
     let recorded = recorded.ok_or(StopFailure::NoRecordedWork)?;
-    let mut drawn: BTreeMap<Membrane, u64> = BTreeMap::new();
-    for refusal in refusals {
-        let phlo = refusal.surface_drawn / refusal.surface.phlo_price.max(1);
-        drawn
-            .entry(Some(refusal.surface.clone()))
-            .and_modify(|d| *d = (*d).min(phlo))
-            .or_insert(phlo);
-    }
-    let mut work: BTreeMap<Membrane, u64> = replayed
-        .into_iter()
-        .filter(|(membrane, _)| !drawn.contains_key(membrane))
-        .collect();
-    for (membrane, drawn) in &drawn {
-        let net = recorded
-            .iter()
-            .find(|(m, _)| m == membrane)
-            .map_or(0, |(_, w)| *w);
-        let expected = drawn.saturating_sub(refunds(membrane));
+    let stopped: std::collections::BTreeSet<Membrane> =
+        refusals.iter().map(|r| Some(r.surface.clone())).collect();
+    let find = |work: &Surfaces, membrane: &Membrane| {
+        work.iter().find(|(m, _)| m == membrane).map_or(0, |(_, w)| *w)
+    };
+    for membrane in &stopped {
+        let (net, expected) = (find(recorded, membrane), find(&replayed, membrane));
         if net != expected {
             return Err(StopFailure::WorkNotSettled {
                 recorded: net,
                 expected,
             });
         }
-        if net > 0 {
-            work.insert(membrane.clone(), net);
-        }
     }
-    Ok(work.into_iter().collect())
+    Ok(replayed)
 }
 
 #[cfg(test)]
@@ -155,55 +136,30 @@ mod tests {
             kind: RefusalKind::Charge,
             drawn,
             charge: 10,
-            surface_drawn: drawn,
         }
     }
-
-    fn no_refunds(_: &Membrane) -> u64 { 0 }
 
     #[test]
     fn without_a_stop_the_replayed_work_stands() {
         let replayed = vec![(None, 30), (membrane(1), 40)];
-        assert_eq!(settled_work(&[], replayed.clone(), None, &no_refunds), Ok(replayed));
+        assert_eq!(settled_work(&[], replayed.clone(), None), Ok(replayed));
     }
 
     #[test]
-    fn a_stopped_membrane_settles_the_recorded_work() {
-        let replayed = vec![(None, 30), (membrane(1), 120), (membrane(2), 5)];
-        let recorded = vec![(None, 30), (membrane(1), 95), (membrane(2), 5)];
+    fn a_stopped_membrane_settles_when_replay_reaches_the_recorded_work() {
+        let replayed = vec![(None, 30), (membrane(1), 95)];
         assert_eq!(
-            settled_work(&[refusal(1, 95)], replayed, Some(&recorded), &no_refunds),
-            Ok(vec![(None, 30), (membrane(1), 95), (membrane(2), 5)])
+            settled_work(&[refusal(1, 95)], replayed.clone(), Some(&replayed)),
+            Ok(replayed)
         );
     }
 
     #[test]
-    fn the_recorded_work_is_the_drawn_amount_less_the_refunds() {
-        let recorded = vec![(membrane(1), 80)];
-        let refunds = |m: &Membrane| if *m == membrane(1) { 15 } else { 0 };
-        assert_eq!(
-            settled_work(&[refusal(1, 95)], vec![(membrane(1), 130)], Some(&recorded), &refunds),
-            Ok(vec![(membrane(1), 80)])
-        );
-    }
-
-    #[test]
-    fn recorded_work_below_the_drawn_amount_is_refused() {
-        let recorded = vec![(membrane(1), 60)];
-        assert_eq!(
-            settled_work(&[refusal(1, 95)], vec![(membrane(1), 95)], Some(&recorded), &no_refunds),
-            Err(StopFailure::WorkNotSettled {
-                recorded: 60,
-                expected: 95
-            })
-        );
-    }
-
-    #[test]
-    fn recorded_work_above_the_drawn_amount_is_refused() {
+    fn recorded_work_that_replay_does_not_reach_is_refused() {
+        let replayed = vec![(membrane(1), 95)];
         let recorded = vec![(membrane(1), 96)];
         assert_eq!(
-            settled_work(&[refusal(1, 95)], vec![(membrane(1), 96)], Some(&recorded), &no_refunds),
+            settled_work(&[refusal(1, 95)], replayed, Some(&recorded)),
             Err(StopFailure::WorkNotSettled {
                 recorded: 96,
                 expected: 95
@@ -212,34 +168,9 @@ mod tests {
     }
 
     #[test]
-    fn the_least_drawn_amount_of_a_membrane_is_used() {
-        let recorded = vec![(membrane(1), 85)];
-        assert_eq!(
-            settled_work(&[refusal(1, 95), refusal(1, 85)], Vec::new(), Some(&recorded), &no_refunds),
-            Ok(vec![(membrane(1), 85)])
-        );
-    }
-
-    #[test]
-    fn refunds_at_or_above_the_drawn_amount_settle_to_nothing() {
-        let refunds = |_: &Membrane| 120;
-        assert_eq!(
-            settled_work(&[refusal(1, 95)], vec![(membrane(1), 40)], Some(&Vec::new()), &refunds),
-            Ok(Vec::new())
-        );
-        assert_eq!(
-            settled_work(&[refusal(1, 95)], Vec::new(), Some(&vec![(membrane(1), 1)]), &refunds),
-            Err(StopFailure::WorkNotSettled {
-                recorded: 1,
-                expected: 0
-            })
-        );
-    }
-
-    #[test]
     fn a_stop_without_the_recorded_work_is_refused() {
         assert_eq!(
-            settled_work(&[refusal(1, 95)], Vec::new(), None, &no_refunds),
+            settled_work(&[refusal(1, 95)], Vec::new(), None),
             Err(StopFailure::NoRecordedWork)
         );
     }

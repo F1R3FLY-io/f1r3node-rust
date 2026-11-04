@@ -1676,7 +1676,6 @@ pub struct RefusalEvent {
     pub kind: u32,
     pub drawn: u64,
     pub charge: u64,
-    pub surface_drawn: u64,
 }
 
 impl RefusalEvent {
@@ -1689,7 +1688,6 @@ impl RefusalEvent {
             kind: self.kind,
             drawn: self.drawn,
             charge: self.charge,
-            surface_drawn: self.surface_drawn,
         }
     }
 
@@ -1702,7 +1700,6 @@ impl RefusalEvent {
             kind: proto.kind,
             drawn: proto.drawn,
             charge: proto.charge,
-            surface_drawn: proto.surface_drawn,
         }
     }
 }
