@@ -108,6 +108,8 @@ impl DetectorFixture {
             &self.block_store,
             &self.genesis,
             &self.dag_storage,
+            &block.body.state.bonds,
+            &self.validators.iter().cloned().collect(),
         )
         .await
         .expect("detector is total")

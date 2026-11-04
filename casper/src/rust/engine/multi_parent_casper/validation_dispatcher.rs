@@ -37,7 +37,9 @@ use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
-use crate::rust::slashing_authorization::checked_base_seq;
+use crate::rust::slashing_authorization::{
+    checked_base_seq, offenders_with_evidence_in_epoch_of, SlashAuthError,
+};
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
 use crate::rust::validate::Validate;
@@ -252,10 +254,21 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         (None, None)
     };
 
+    let post_state_bonds = this
+        .runtime_manager
+        .compute_bonds(&block.body.state.post_state_hash)
+        .await?;
+
     let (neglected_invalid_block_result, t4) = timed_step(
         "neglected-invalid-block",
         BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-        async { Ok(Validate::neglected_invalid_block(block, snapshot)) },
+        async {
+            Ok(Validate::neglected_invalid_block(
+                block,
+                snapshot,
+                &post_state_bonds,
+            ))
+        },
     )
     .await?;
     tracing::debug!(target: "f1r3fly.casper", "neglected-invalid-block-validated");
@@ -267,12 +280,20 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         "neglected-equivocation",
         BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
         async {
+            let slashable = offenders_with_evidence_in_epoch_of(
+                snapshot.dag.invalid_blocks(),
+                block.body.state.block_number,
+                snapshot.on_chain_state.chain.epoch_length,
+            )
+            .map_err(SlashAuthError::from)?;
             EquivocationDetector::check_neglected_equivocations_with_update(
                 block,
                 &snapshot.dag,
                 &this.block_store,
                 &this.approved_block,
                 &this.block_dag_storage,
+                &post_state_bonds,
+                &slashable,
             )
             .await
             .map_err(CasperError::from)
