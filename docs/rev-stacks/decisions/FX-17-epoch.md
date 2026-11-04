@@ -57,3 +57,41 @@ Each block replays to the same post-state root.
 - New test: `pos_bond_admin_spec::an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_takes_the_rest`. Three validators withdraw in one epoch. The close of block 10 releases two of them, and the close of block 20 releases the third.
 - The cross-host fixture is regenerated.
 - Verification (release): casper `v6::` 90 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
+
+## Revision 3: the withdrawer rewrite (Decision 107, for review)
+
+The release cap of revision 2 is removed. The withdrawer loops no longer carry the PoS state through a channel.
+
+### State
+
+- New key `releases`: a map from the block number at which quarantine ends to a map `{pk: true}` of the keys that end then.
+- `withdrawers` maps a key to its bond amount. It was `(bond, quarantine end)`. The quarantine end now lives in `releases`. `getWithdrawers` returns the new shape. No Rust code and no v6 test reads the old shape. Only the legacy `PoSTest.rho` uses the old PoS contract.
+
+### Changes
+
+| Part | Before | Now |
+|---|---|---|
+| `withdraw` | sets `pendingWithdrawers[pk] = end` | also adds `pk` to `releases[end]`. All withdrawals of one epoch share one `end`. |
+| `movePendingWithdrawer` | `ListOps.fold` over the pending withdrawers, carrying the state | three native map operations: `withdrawers ++ allBonds∩pending`, `allBonds.diff(pending)`, `pendingWithdrawers = {}` |
+| quarantine filter | `ListOps.filter` over all withdrawers | a fold over the keys of `releases` that carries two small maps. There is one key for each epoch with withdrawals still in quarantine. |
+| releases | `unorderedParMap` (capped at 2), then a fold over the results carrying the state | the due entries are split in halves with `slice` until each part has one entry. Each part calls `RevBondAdmin!("release", …)`. A counter loop collects the failures, and it carries only the failure map. |
+| state update | one `delete` per key inside the fold | one `diff` for `withdrawers` and one for `committedRewards` |
+| failed release | the key stayed in `withdrawers` and was tried again at each epoch | the key stays in `withdrawers` and is put back in `releases` under the current block, so the next epoch close tries it again |
+| `settleOne` | matched `(withdrawing, _)` | reads `withdrawers.getOrElse(pk, 0)` |
+
+No contract body that fires once for each withdrawer refers to the PoS state, so the state is not copied once for each withdrawer.
+
+### Edge case to review
+
+`movePendingWithdrawer` joins the new withdrawers to `withdrawers` with `++`. If a key is still in quarantine and withdraws again after a new bond, the right side (the new bond) replaces the old amount. That is the same as the old `set`. The old quarantined bond is not added to the new one in either version.
+
+### Tests
+
+- `pos_bond_admin_spec::an_epoch_close_releases_every_withdrawer_whose_quarantine_has_ended` replaces the cap test:
+  - Validators V1, V2 and V3 bond in B1 to B3 and withdraw in B4 to B6, with an epoch length of 10 and quarantine 0.
+  - B9 releases none.
+  - The close of B10 moves all three and releases all three. None of them is bonded after it.
+- The release, re-bond and pending-bond tests of revision 1 pass unchanged (14 PoS tests).
+- No test makes a release fail. `RevBondAdmin` release fails only when the native bond is missing, and no test can set that up from outside.
+- The cross-host fixture is regenerated.
+- Verification (release): casper `v6::` 90 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.

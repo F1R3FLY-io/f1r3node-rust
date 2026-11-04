@@ -583,7 +583,7 @@ async fn an_epoch_starts_at_the_first_close_at_or_past_its_boundary() {
 }
 
 #[tokio::test]
-async fn an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_takes_the_rest() {
+async fn an_epoch_close_releases_every_withdrawer_whose_quarantine_has_ended() {
     let (alice, bob, carol, proposer) = (party(), party(), party(), party());
     let (rm, genesis, _) = shard(&[&alice, &bob, &carol], 10, 0).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
@@ -605,10 +605,15 @@ async fn an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_take
     }
 
     assert_eq!(released(&rm, &root, &parties).await, 0);
-    let first_epoch = run(&executor, &root, &block(10, vec![], &proposer)).await;
-    assert_eq!(released(&rm, &first_epoch, &parties).await, 2, "one close releases at most two");
-    let second_epoch = run(&executor, &first_epoch, &block(20, vec![], &proposer)).await;
-    assert_eq!(released(&rm, &second_epoch, &parties).await, 3, "the next epoch releases the rest");
+    let inside = run(&executor, &root, &block(9, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &inside, &parties).await, 0, "no release inside the epoch");
+    let epoch = run(&executor, &inside, &block(10, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &epoch, &parties).await, 3, "the epoch close releases all three");
+    for who in parties {
+        assert_eq!(pos_bond(&rm, &epoch, &who.pk).await, None);
+    }
+    let after = run(&executor, &epoch, &block(20, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &after, &parties).await, 3);
 }
 
 async fn released(rm: &RuntimeManager, root: &StateHash, parties: &[&Party]) -> usize {
