@@ -138,3 +138,4 @@ impl CostManager {
         self.storage.lock().expect("storage rule lock")
     }
 }
+

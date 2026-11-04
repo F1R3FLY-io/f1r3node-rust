@@ -24,7 +24,7 @@ in {
           "randomImages"      : {},
           "randomNumbers"     : {},
           "pendingBonds"      : {},
-          "handles"           : {},
+          "spentReceipts"     : Set(),
         }) |
         contract settlePendingBonds(doneCh) = {
           new processCh in {
@@ -40,11 +40,13 @@ in {
                       new admittedCh, admit in {
                         contract admit(@(amount, handleCh), @(s, total), r) = {
                           if (total + amount <= native) {
-                            new handle in {
-                              @handleCh!((true, *handle)) |
-                              r!((s.set("allBonds", s.get("allBonds").set(pk, s.get("allBonds").getOrElse(pk, 0) + amount))
-                                   .set("handles", s.get("handles").set(*handle, pk)),
-                                  total + amount))
+                            new handleOfCh in {
+                              RevBondAdmin!("handleOf", pk, *handleOfCh) |
+                              for (@(_, handle) <- handleOfCh) {
+                                @handleCh!((true, handle)) |
+                                r!((s.set("allBonds", s.get("allBonds").set(pk, s.get("allBonds").getOrElse(pk, 0) + amount)),
+                                    total + amount))
+                              }
                             }
                           } else {
                             @handleCh!((false, "The native bond does not cover this bond")) |
@@ -132,7 +134,9 @@ in {
                   new processCh in {
                     runMVar!(*stateCh, *processCh, *returnCh) |
                     for (@state, resultCh <- processCh) {
-                      if (state.get("allBonds").contains(userPk)) {
+                      if (state.get("spentReceipts").contains(receipt)) {
+                        resultCh!(state, (false, "This bond receipt is already spent."))
+                      } else if (state.get("allBonds").contains(userPk)) {
                         resultCh!(state, (false, "Public key is already bonded."))
                       } else if (not (amount matches Int)) {
                         resultCh!(state, (false, "Bond amount must be an Int."))
@@ -145,7 +149,8 @@ in {
                       } else {
                         resultCh!(state.set("pendingBonds",
                                             state.get("pendingBonds").set(userPk,
-                                              state.get("pendingBonds").getOrElse(userPk, []) ++ [(amount, *handleCh)])),
+                                              state.get("pendingBonds").getOrElse(userPk, []) ++ [(amount, *handleCh)]))
+                                       .set("spentReceipts", state.get("spentReceipts").add(receipt)),
                                   (true, Nil))
                       }
                     }
@@ -163,9 +168,12 @@ in {
             getBlockData!(*blockDataCh) |
             for (@state, resultCh   <- processCh &
                  @blockNumber, _, _ <- blockDataCh) {
-              match state.get("handles").get(handle) {
-                Nil => { resultCh!(state, (false, "Unknown validator handle")) }
-                userPk => {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, userPk) => {
                   if (state.get("allBonds").contains(userPk)) {
                     resultCh!(
                       state.set("pendingWithdrawers",
@@ -175,6 +183,8 @@ in {
                       (true, Nil))
                   } else {
                     resultCh!(state, (false, "User is not bonded"))
+                  }
+                }
                   }
                 }
               }
@@ -323,13 +333,18 @@ in {
           new mvarCh in {
             runMVar!(*stateCh, *mvarCh, *ackCh) |
             for (@state, resultCh <- mvarCh) {
-              match state.get("handles").get(handle) {
-                Nil => { resultCh!(state, (false, "Unknown validator handle")) }
-                validator => {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, validator) => {
                   if (state.get("randomImages").contains(validator)) {
                     resultCh!(state, (false, "Image already committed"))
                   } else {
                     resultCh!(state.set("randomImages", state.get("randomImages").set(validator, hash)), true)
+                  }
+                }
                   }
                 }
               }
@@ -342,9 +357,12 @@ in {
             computeHash!(random, *hashCh) |
             for (@state, resultCh <- mvarCh &
                  @hash            <- hashCh) {
-              match state.get("handles").get(handle) {
-                Nil => { resultCh!(state, (false, "Unknown validator handle")) }
-                validator => {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, validator) => {
                   if (state.get("randomImages").contains(validator)) {
                     if (hash == state.get("randomImages").get(validator)) {
                       resultCh!(state.set("randomNumbers", state.get("randomNumbers").set(validator, random)), true)
@@ -353,6 +371,8 @@ in {
                     }
                   } else {
                     resultCh!(state, (false, "Previously committed random image not found"))
+                  }
+                }
                   }
                 }
               }
