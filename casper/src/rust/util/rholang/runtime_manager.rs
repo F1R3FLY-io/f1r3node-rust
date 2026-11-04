@@ -49,7 +49,7 @@ use crate::rust::metrics_constants::{
     RUNTIME_SPAWN_REPLAY_TIME_METRIC, RUNTIME_SPAWN_TIME_METRIC,
 };
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
-use crate::rust::rholang::runtime::RuntimeOps;
+use crate::rust::rholang::runtime::{ConsensusParameters, RuntimeOps};
 use crate::rust::util::bounded_cache::BoundedCache;
 use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
@@ -1155,14 +1155,13 @@ impl RuntimeManager {
             .await
     }
 
-    /// On-chain consensus parameters `(max-parent-depth, deploy-lifespan,
-    /// min-phlo-price)` at `start_hash`, or `None` when the chain's genesis
-    /// predates them. Read once at casper construction (`hash_set_casper`) —
-    /// not cached here.
+    /// On-chain consensus parameters at `start_hash`, or `None` when the
+    /// chain's genesis predates them. Read once at casper construction
+    /// (`hash_set_casper`) — not cached here.
     pub async fn get_consensus_parameters(
         &self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, i64)>, CasperError> {
+    ) -> Result<Option<ConsensusParameters>, CasperError> {
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
         runtime_ops.get_consensus_parameters(start_hash).await

@@ -1067,17 +1067,20 @@ impl DeployService for DeployGrpcServiceV1Impl {
         };
 
         let is_ready = self.is_ready.load(Ordering::Relaxed);
-        let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
-            lfb_number / self.epoch_length as i64
+
+        // Advertise the values admission and validity actually enforce — the
+        // chain-adopted ones; local conf only until casper is up.
+        let (min_phlo_price, epoch_length) = match self.engine_cell.get().await.with_casper() {
+            Some(casper) => (
+                casper.casper_shard_conf().min_phlo_price,
+                casper.casper_shard_conf().epoch_length,
+            ),
+            None => (self.min_phlo_price, self.epoch_length),
+        };
+        let current_epoch = if epoch_length > 0 && lfb_number >= 0 {
+            lfb_number / epoch_length as i64
         } else {
             0
-        };
-
-        // Advertise the floor admission and validity actually enforce — the
-        // chain-adopted value; local conf only until casper is up.
-        let min_phlo_price = match self.engine_cell.get().await.with_casper() {
-            Some(casper) => casper.casper_shard_conf().min_phlo_price,
-            None => self.min_phlo_price,
         };
 
         let status = Status {
@@ -1100,7 +1103,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
-            epoch_length: self.epoch_length,
+            epoch_length,
         };
 
         Ok(tonic::Response::new(StatusResponse {

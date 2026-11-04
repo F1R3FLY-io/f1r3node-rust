@@ -1185,6 +1185,12 @@ impl TestNode {
             floor_seed: None,
             sigs: vec![],
         };
+        let epoch_length = runtime_manager
+            .get_consensus_parameters(&genesis.body.state.post_state_hash)
+            .await
+            .expect("consensus parameters read from the test genesis")
+            .expect("test genesis exposes getConsensusParameters")
+            .epoch_length;
         let shard_conf = CasperShardConf {
             fault_tolerance_threshold: 0.1,
             fault_tolerance_threshold_ppm: 100_000,
@@ -1205,7 +1211,7 @@ impl TestNode {
             casper_version: 1,
             bond_minimum: 0,
             bond_maximum: i64::MAX,
-            epoch_length: 10000,
+            epoch_length,
             quarantine_length: 20000,
             min_phlo_price: 1,
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss

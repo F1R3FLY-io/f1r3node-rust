@@ -3873,11 +3873,12 @@ async fn consensus_parameters_round_trip_through_genesis() {
         mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
     };
 
-    // Values the test-genesis defaults (15, 50, 0) can never produce by accident.
+    // Values the test-genesis defaults (15, 50, 0, 1000) can never produce by accident.
     let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(4));
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
     parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.epoch_length = 9;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -3900,7 +3901,12 @@ async fn consensus_parameters_round_trip_through_genesis() {
 
     assert_eq!(
         read,
-        Some((21, 70, 3)),
+        Some(casper::rust::rholang::runtime::ConsensusParameters {
+            max_parent_depth: 21,
+            deploy_lifespan: 70,
+            min_phlo_price: 3,
+            epoch_length: 9,
+        }),
         "genesis must bake the consensus parameters into the PoS contract and \
          expose them via getConsensusParameters"
     );
@@ -3975,6 +3981,7 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
     parameters.2.proof_of_stake.max_parent_depth = 21;
     parameters.2.proof_of_stake.deploy_lifespan = 70;
     parameters.2.proof_of_stake.min_phlo_price = 3;
+    parameters.2.proof_of_stake.epoch_length = 9;
 
     let genesis_context = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -4013,11 +4020,12 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         rp_conf,
     );
 
-    // Local conf diverges from the chain on all three values.
+    // Local conf diverges from the chain on every value.
     let mut local_conf = CasperShardConf::new();
     local_conf.max_parent_depth = 15;
     local_conf.deploy_lifespan = 50;
     local_conf.min_phlo_price = 1;
+    local_conf.epoch_length = 10000;
 
     let casper = hash_set_casper(
         block_retriever,
@@ -4042,9 +4050,10 @@ async fn consensus_parameters_are_adopted_from_chain_over_local_config() {
         (
             adopted.max_parent_depth,
             adopted.deploy_lifespan,
-            adopted.min_phlo_price
+            adopted.min_phlo_price,
+            adopted.epoch_length
         ),
-        (21, 70, 3),
+        (21, 70, 3, 9),
         "the on-chain consensus parameters must be adopted over local configuration"
     );
 }

@@ -316,7 +316,7 @@ in {
               // and runs them regardless of local configuration. Immutable
               // until an on-chain parameter-upgrade mechanism exists.
               contract PoS(@"getConsensusParameters", returnCh) = {
-                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$))
+                returnCh!(($$maxParentDepth$$, $$deployLifespan$$, $$minPhloPrice$$, $$epochLength$$))
               } |
               contract PoS(@"posVaultTransfer", @targetAddress, @amount, @deployerID, @transferRet) = {
                 // human transfer would just use this method
