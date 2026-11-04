@@ -59,3 +59,14 @@ Lane C's `region_spec::work_under_an_underfunded_installer_stops_and_the_client_
 - casper `genesis::`: 118 passed. casper `util::`: 134 passed. casper lib: 852 passed.
 - rholang: 2,457 passed, 70 ignored. node lib: 427 passed.
 - `cargo fmt --check`: not verified.
+
+## Revision 2: Decision 103, the surface cap removed, and the F39 negative test
+
+Lane C's e30313108 (Decisions 103 and 104) is merged in. It keeps one ledger per block: one gross drawn amount and one stop for each wallet, shared by all runs of the block, in play and replay. The overdraw finding of revision 1 is answered by Decision 103. Decision 48's rule is not adopted.
+
+- **The surface cap is removed.** `surface_charges` draws the full amount owed. It fails only when a draw exceeds what the wallet can pay. Under one ledger per block, the net draws of a block are at most the gross drawn amount, which the meter keeps within the wallet's free balance. So an honest block never reaches that failure.
+- `region_spec::two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full` is enabled and passes. The second run stops on the shared ledger, and every surface draw is paid in full.
+- **The close cap stays.** `CloseFunding` is still not installed in the close (lane A2), so a stored continuation fired in the close is not gated yet.
+- **F39, the run-time path:** `region_spec::the_gate_refuses_a_seal_that_resolves_only_at_run_time` asserts that the gate refuses (`ForeignSignature`) the three term shapes that revision 1 tried. If lane A2 confirms that the gate refuses every seal that resolves only at run time, this test closes F39's remaining path and F33. Until then it records what the gate does for these shapes.
+- F48 (lane C): substitution into a fired body is charged to its installer.
+- Verification (release): casper `v6::` 93 passed, 0 failed, 7 ignored. `genesis::` 118 passed. `util::` 134 passed. casper lib 852 passed. rholang 2,458 passed. node lib 427 passed. `cargo fmt --check` not verified.
