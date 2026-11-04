@@ -41,7 +41,7 @@ Each block replays to the same post-state root.
 ## Effects on other parts
 
 - **Slashing:** `slashing_authorization` derives the epoch of a block by arithmetic (`block_number / epoch_length`). After a void boundary, PoS can still be in the earlier epoch while that arithmetic gives the later one. A v6 block runs no slashing today, so nothing reads the difference yet. **Known issue, not blocking:** it must be settled before v6 enables slashing.
-- **The close bound (FX-16):** a close inside an epoch now reads one more datum. The re-measured close is in the FX-16 log.
+- **The close bound (FX-16):** a close now reads one more datum. Re-measured with 100 bonds: inside an epoch 182,040 to 186,339 phlo (+4,299), at a boundary 4,400,917 to 4,405,649 (+4,732). The full sweep is in the FX-16 log, revision 2.
 
 ## Verification
 
