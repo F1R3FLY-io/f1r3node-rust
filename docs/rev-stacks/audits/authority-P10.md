@@ -1931,6 +1931,23 @@ Lane B measures the close's PoS work. The worst case is about 4.87 million phlo,
 | F38, F43, F44, the `for` form under `# P`, the three lane C known issues above, storage growth and client latency under P11, the partial hold | Known issue | Open |
 
 
+## Rulings of 2026-11-03 (evening): design r20, Decisions 101 to 106, and question 14
+
+From this point on, A-9 reads against design r20 (publications `23fb421`). r20 changes §6.3 only by the items below.
+
+| Ruling | Answers | Effect on the audit |
+|---|---|---|
+| **Decision 101:** a void caused by state that the proposer could not see is recorded but not slashed. Only invalidity visible from the proposer's own justifications is slashable. | Question 15, Q-33 item Q4 | **Q4 is resolved by ruling.** The revised Q-33 memo must apply it to `Offence::VoidBlock`. An uncovered close at the true pre-state is recorded and not slashed. |
+| **Decision 102:** the close's pre-charge is a base plus a rate per bond. The bonds are those at the attested root, plus one for each block of execution lag, because at most one bond merges per block. | Question 16, F47 | **F47 stays blocking until FX-16 implements it.** Check: the rate per bond covers the measured cost of one more bond at an epoch boundary. Lane B's `the_close_stays_inside_its_bound` must include rows at an epoch boundary with the largest bonded set that the test genesis allows. It must fail if a close passes the scaled bound. |
+| **Decision 103:** one meter per wallet per block, shared by the block's parallel runs. Which run reaches a wallet's stop may differ between executions, and the trace records it. | Question 17, F49 | **F49 stays blocking until the meter is block-wide.** Check: lane C's per-run `MembraneMeter` limit becomes one allowance per wallet for the block. `accept_metered`'s W ≤ A check and the stop checks read the block-wide totals, not one run's totals. |
+| **Decision 104:** a step is admitted together with the storage that it will cause. If the wallet cannot cover both, the step itself is refused. | Question 18, F50 | **F50 stays blocking until implemented.** Check: restore scopes, post-COMM charges and the event charge of a stored datum are admitted with their causing step, and no charge under a gated record runs without admission. |
+| **Question 14:** the drawn amount must be exact, as r14 says. Lane C adds the two trace-alteration tests. | F45 | **F45 stays blocking until replay computes the exact running total.** Check: replay compares the recorded D with its own running total for the wallet at the refusal point, across the runs of the block (Decision 103). The two tests: a too-high D is rejected, and an admitted step changed into a refused one is rejected. |
+| **Decision 105:** the close starts an epoch at the first block at or past the boundary that runs a close, by an epoch counter in the PoS state. | Condition 3 of the Q-33 review | **Answered for epochs.** FX-17 still needs a test: a void block at an epoch boundary, and the next block that runs a close starts the epoch. |
+| **Decision 106:** the close is priced at the shard's price floor. | The price source for the pre-charge (FX-16, `7ac56f01a`) | **Answered.** Check at FX-16: the pre-charge and the close charge use the price floor from the on-chain shard configuration, in play, validation and replay. |
+
+Questions 14 to 18 are answered. Lane A2 revises the Q-33 memo for Q2, Q3 and Q5, with the three answers of revision 18 included. A-8 reviews it when it lands.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -1947,8 +1964,8 @@ Lane B measures the close's PoS work. The worst case is about 4.87 million phlo,
 12. **F39 and F33:** answered on 2026-11-03 (Decision 83: the wallet at the seal pays). Is an own key whose owner the gate did not commit charged to the client, refused at the gate, or added to the settlement check?
 13. **D8b:** answered on 2026-11-03 (Decision 94: the close is charged, its undecorated code to the proposer and stored continuations to their installers). Is the close-block system deploy exempt from the one-cell charge of r12 §6.3, or must a COMM that the close fires pay its cells?
 
-14. **F45 and F46:** replay does not reproduce the running total of a stopped membrane exactly, because interleavings differ before the next IO step. Must replay compute the exact running total at each refusal, as r16 §6.3 says? Or does the design admit a bounded window for the drawn amount and for the recorded work, and if so, what bound?
-15. **Q-33, Q4:** may a block be voided without slashing its sender, when its invalidity depends on the pre-state at its linear position, which the proposer could not see? Or is `VoidBlock` slashed only for invalidity that the proposer could decide from its own justifications?
-16. **F47:** the close's work at an epoch boundary grows with the number of bonds. Is the bonded set capped, or does the close's pre-charge scale with the number of bonds?
-17. **F49:** the meter admits each step against what t drew in its own run. Parallel runs in one block can then each draw the same wallet up to its whole free balance, and settlement caps the total. Is the meter block-wide, is the wallet's balance split between runs, or does the settlement cap across runs stand?
-18. **F50:** are storage bookkeeping charges under a gated record (restores of persistent items, post-COMM charges, the event charge of a stored datum) admitted with the step that caused them, or exempt from the gate?
+14. **F45 and F46:** answered on 2026-11-03 (the drawn amount must be exact, as r14 says). replay does not reproduce the running total of a stopped membrane exactly, because interleavings differ before the next IO step. Must replay compute the exact running total at each refusal, as r16 §6.3 says? Or does the design admit a bounded window for the drawn amount and for the recorded work, and if so, what bound?
+15. **Q-33, Q4:** answered on 2026-11-03 (Decision 101). may a block be voided without slashing its sender, when its invalidity depends on the pre-state at its linear position, which the proposer could not see? Or is `VoidBlock` slashed only for invalidity that the proposer could decide from its own justifications?
+16. **F47:** answered on 2026-11-03 (Decision 102). the close's work at an epoch boundary grows with the number of bonds. Is the bonded set capped, or does the close's pre-charge scale with the number of bonds?
+17. **F49:** answered on 2026-11-03 (Decision 103). the meter admits each step against what t drew in its own run. Parallel runs in one block can then each draw the same wallet up to its whole free balance, and settlement caps the total. Is the meter block-wide, is the wallet's balance split between runs, or does the settlement cap across runs stand?
+18. **F50:** answered on 2026-11-03 (Decision 104). are storage bookkeeping charges under a gated record (restores of persistent items, post-COMM charges, the event charge of a stored datum) admitted with the step that caused them, or exempt from the gate?
