@@ -150,6 +150,8 @@ fn envelope_run(processed: &ProcessedDeploy) -> EnvelopeRun {
     }
 }
 
+const FOREIGN_WORK_BUDGET: i64 = super::resource_policy::DEFAULT_DEMAND_CAP;
+
 pub struct EnvelopeExecutor {
     runtime_manager: Arc<RuntimeManager>,
     workers: usize,
@@ -227,6 +229,7 @@ impl Runs {
     }
 
     fn give_back(&self, replay: bool, pooled: Pooled) {
+        pooled.runtime.cost.set_own_origin(None, 0);
         let mut pool = if replay { self.replay_pool.lock() } else { self.play_pool.lock() };
         if pool.len() < self.workers {
             pool.push(pooled);
@@ -251,6 +254,7 @@ impl Runs {
         ops.runtime.set_funding(Some(meter.clone()));
         ops.runtime.cost.charge_storage_left_in_space();
         ops.runtime.cost.comm_ledger().reset();
+        ops.runtime.cost.set_own_origin(Some(envelope.sig.to_vec()), FOREIGN_WORK_BUDGET);
         let cells = runtime_cells(&ops.runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -303,6 +307,7 @@ impl Runs {
         runtime.set_funding(Some(meter.clone()));
         runtime.cost.charge_storage_left_in_space();
         runtime.cost.comm_ledger().reset();
+        runtime.cost.set_own_origin(Some(recorded.deploy.sig.to_vec()), FOREIGN_WORK_BUDGET);
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -756,6 +761,7 @@ pub struct BlockExecutor {
     runtime_manager: Arc<RuntimeManager>,
     slashes: Arc<dyn SlashSource>,
     conservation: Option<Arc<Conservation>>,
+    close_charge: Option<super::close_charge::CloseCharge>,
 }
 
 impl BlockExecutor {
@@ -765,6 +771,7 @@ impl BlockExecutor {
             runtime_manager,
             slashes: Arc::new(NoSlashing),
             conservation: None,
+            close_charge: None,
         }
     }
 
@@ -787,12 +794,13 @@ impl BlockExecutor {
         let started = std::time::Instant::now();
         let (post_root, _, system_deploys) = self
             .runtime_manager
-            .compute_state(
+            .compute_state_closing(
                 &executed.settled_root,
                 vec![],
                 vec![close_block(block)],
                 block_data(block),
                 None,
+                self.close_charge,
             )
             .await?;
         let close_block_time = started.elapsed();
@@ -818,6 +826,11 @@ impl BlockExecutor {
             record: started.elapsed(),
         };
         Ok((record, timings))
+    }
+
+    pub fn with_close_charge(mut self, close: super::close_charge::CloseCharge) -> Self {
+        self.close_charge = Some(close);
+        self
     }
 
     pub fn with_conservation(mut self, conservation: Arc<Conservation>) -> Self {
@@ -983,13 +996,14 @@ impl ExecutionBackend for BlockExecutor {
         }
         let post_root = self
             .runtime_manager
-            .replay_compute_state(
+            .replay_compute_state_closing(
                 &replayed.settled_root,
                 vec![],
                 record.system_deploys().to_vec(),
                 &block_data(block),
                 None,
                 false,
+                self.close_charge,
             )
             .await?;
         if post_root != *record.post_root() {

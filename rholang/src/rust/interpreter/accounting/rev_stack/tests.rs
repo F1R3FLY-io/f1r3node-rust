@@ -398,6 +398,10 @@ fn term_builders_accept_only_valid_addresses_and_amounts() {
     assert!(bond.contains("@PoS!(\"bond\", receipt, 1000, *deployId, *deployId)"));
     assert!(crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(&bond).is_ok());
     assert!(super::native::bond_term(0).is_err());
+    let withdraw = super::native::withdraw_term();
+    assert!(withdraw.contains("rb!(\"handle\", *deployerId, *handleCh)"));
+    assert!(withdraw.contains("@PoS!(\"withdraw\", handle, *deployId)"));
+    assert!(crate::rust::interpreter::compiler::compiler::Compiler::source_to_adt(&withdraw).is_ok());
 }
 
 #[test]

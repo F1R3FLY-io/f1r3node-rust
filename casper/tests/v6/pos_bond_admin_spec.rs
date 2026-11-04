@@ -83,7 +83,7 @@ fn envelope(term: &str, ts: i64, who: &Party) -> ProcessedDeploy {
         construct_deploy::source_deploy(
             term.to_string(),
             ts,
-            Some(50_000),
+            Some(200_000),
             Some(1),
             Some(who.sk.clone()),
             None,
@@ -168,13 +168,16 @@ async fn close_charge(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord
     after - before - record.settlement().unwrap().compute_credit
 }
 
-fn bond_term(native: u64, bonds: &[(u64, &str)]) -> String {
+fn bond_term(bonds: &[(u64, u64, &str)]) -> String {
     let registrations = bonds
         .iter()
-        .map(|(amount, stash)| {
+        .map(|(native, amount, stash)| {
             format!(
-                r#"new registered, handleCh in {{
-                     @PoS!("bond", receipt, {amount}, *registered, *handleCh) |
+                r#"new bonded, registered, handleCh in {{
+                     rb!("bond", (*deployerId, {native}), *bonded) |
+                     for (@(true, receipt) <- bonded) {{
+                       @PoS!("bond", receipt, {amount}, *registered, *handleCh)
+                     }} |
                      for (@r <- registered) {{ @"registered-{stash}"!(r) }} |
                      for (@h <- handleCh) {{ @"{stash}"!(h) }}
                    }}"#
@@ -183,21 +186,19 @@ fn bond_term(native: u64, bonds: &[(u64, &str)]) -> String {
         .collect::<Vec<_>>()
         .join(" | ");
     format!(
-        r#"new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), rl(`rho:registry:lookup`), posCh, bonded in {{
+        r#"new rb(`rho:rev:bond`), deployerId(`rho:system:deployerId`), rl(`rho:registry:lookup`), posCh in {{
              @"published-id"!(*deployerId) |
-             rb!("bond", (*deployerId, {native}), *bonded) |
-             for (@(true, receipt) <- bonded) {{
-               rl!(`rho:system:pos`, *posCh) |
-               for (@(_, PoS) <- posCh) {{ {registrations} }}
-             }}
+             rl!(`rho:system:pos`, *posCh) |
+             for (@(_, PoS) <- posCh) {{ {registrations} }}
            }}"#
     )
 }
 
-fn with_handle(stash: &str, call: &str, answer: &str) -> String {
+fn with_handle(call: &str, answer: &str) -> String {
     format!(
-        r#"new rl(`rho:registry:lookup`), posCh, out in {{
-             for (@(true, handle) <<- @"{stash}") {{
+        r#"new rb(`rho:rev:bond`), d(`rho:system:deployerId`), rl(`rho:registry:lookup`), posCh, handleCh, out in {{
+             rb!("handle", *d, *handleCh) |
+             for (@(true, handle) <- handleCh) {{
                rl!(`rho:system:pos`, *posCh) |
                for (@(_, PoS) <- posCh) {{ {call} | for (@r <- out) {{ @"{answer}"!(r) }} }}
              }}
@@ -235,13 +236,13 @@ async fn a_withdrawn_bond_is_released_to_its_validator_after_quarantine() {
     let (rm, genesis, _) = shard(&[&alice], 1, 1).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
 
-    let bond = bond_term(1_000, &[(1_000, "alice-handle")]);
+    let bond = bond_term(&[(1_000, 1_000, "alice-handle")]);
     let bonded = run(&executor, &genesis, &block(1, vec![envelope(&bond, 1, &alice)], &proposer)).await;
     assert!(admitted(&rm, &bonded, "alice-handle").await);
     assert_eq!(read_bond_balance(&rm, &bonded, &alice.pk.bytes).await.unwrap(), 1_000);
     assert_eq!(pos_bond(&rm, &bonded, &alice.pk).await, Some(1_000));
 
-    let withdraw = with_handle("alice-handle", r#"@PoS!("withdraw", handle, *out)"#, "answer");
+    let withdraw = with_handle(r#"@PoS!("withdraw", handle, *out)"#, "answer");
     let withdrawn = run(&executor, &bonded, &block(2, vec![envelope(&withdraw, 2, &alice)], &proposer)).await;
     assert_eq!(answers(&rm, &withdrawn, "answer").await, vec![(true, Par::default())]);
     assert_eq!(pos_bond(&rm, &withdrawn, &alice.pk).await, None);
@@ -265,7 +266,7 @@ async fn two_pos_bonds_on_one_native_bond_admit_the_first_and_release_the_rest()
     let (rm, genesis, _) = shard(&[&alice], 1, 1).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
 
-    let bond = bond_term(1_500, &[(1_000, "first"), (1_000, "second")]);
+    let bond = bond_term(&[(1_000, 1_000, "first"), (500, 1_000, "second")]);
     let record = run_record(&executor, &genesis, &block(1, vec![envelope(&bond, 1, &alice)], &proposer)).await;
     let post = record.post_root().clone();
     let charge = record.settlement().unwrap().debited();
@@ -287,9 +288,9 @@ async fn a_pending_bond_backed_only_by_a_withdrawn_bond_is_dropped() {
     let (rm, genesis, _) = shard(&[&alice], 1, 10).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
 
-    let bond = bond_term(1_000, &[(1_000, "alice-handle")]);
+    let bond = bond_term(&[(1_000, 1_000, "alice-handle")]);
     let bonded = run(&executor, &genesis, &block(1, vec![envelope(&bond, 1, &alice)], &proposer)).await;
-    let withdraw = with_handle("alice-handle", r#"@PoS!("withdraw", handle, *out)"#, "answer");
+    let withdraw = with_handle(r#"@PoS!("withdraw", handle, *out)"#, "answer");
     let withdrawn = run(&executor, &bonded, &block(2, vec![envelope(&withdraw, 2, &alice)], &proposer)).await;
     assert_eq!(pos_bond(&rm, &withdrawn, &alice.pk).await, None);
 
@@ -321,11 +322,11 @@ async fn a_published_deployer_id_does_not_act_for_its_validator() {
     let (rm, genesis, _) = shard(&[&alice, &mallory], 1, 10).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
 
-    let bond = bond_term(1_000, &[(1_000, "alice-handle")]);
+    let bond = bond_term(&[(1_000, 1_000, "alice-handle")]);
     let bonded = run(&executor, &genesis, &block(1, vec![envelope(&bond, 1, &alice)], &proposer)).await;
     assert!(admitted(&rm, &bonded, "alice-handle").await);
 
-    let impersonate = r#"new rl(`rho:registry:lookup`), keccak(`rho:crypto:keccak256Hash`), posCh, imageCh, out in {
+    let impersonate = r#"new rl(`rho:registry:lookup`), rb(`rho:rev:bond`), keccak(`rho:crypto:keccak256Hash`), posCh, imageCh, out in {
         for (@aliceId <<- @"published-id") {
           rl!(`rho:system:pos`, *posCh) |
           keccak!("secret".toByteArray(), *imageCh) |
@@ -333,6 +334,7 @@ async fn a_published_deployer_id_does_not_act_for_its_validator() {
             @PoS!("withdraw", aliceId, *out) |
             @PoS!("commitRandomImage", aliceId, image, *out) |
             @PoS!("revealRandom", aliceId, "secret".toByteArray(), *out) |
+            rb!("handle", aliceId, *out) |
             new taken in {
               @PoS!("bond", aliceId, 1000, *out, *taken) |
               for (@h <- taken) { @"mallory-handle"!(h) }
@@ -343,7 +345,7 @@ async fn a_published_deployer_id_does_not_act_for_its_validator() {
       }"#;
     let refused = run(&executor, &bonded, &block(2, vec![envelope(impersonate, 2, &mallory)], &proposer)).await;
     let refusals = answers(&rm, &refused, "answer").await;
-    assert_eq!(refusals.len(), 4);
+    assert_eq!(refusals.len(), 5);
     let mut messages: Vec<_> = refusals
         .iter()
         .map(|(ok, message)| {
@@ -359,13 +361,13 @@ async fn a_published_deployer_id_does_not_act_for_its_validator() {
             "Unknown validator handle".to_string(),
             "Unknown validator handle".to_string(),
             "expected a bond receipt from rho:rev:bond".to_string(),
+            "the validator must hold the enclosing seal".to_string(),
         ]
     );
     assert!(data(&rm, &refused, "mallory-handle").await.is_empty(), "no handle for a published id");
     assert_eq!(pos_bond(&rm, &refused, &alice.pk).await, Some(1_000));
 
     let own = with_handle(
-        "alice-handle",
         r#"new keccak(`rho:crypto:keccak256Hash`), imageCh, committed in {
              keccak!("secret".toByteArray(), *imageCh) |
              for (@image <- imageCh) {
@@ -432,7 +434,7 @@ async fn a_continuation_fired_inside_the_close_is_paid_by_its_installer() {
     let (rm, genesis, _) = shard(&[&alice], 1, 10).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
     let heavy = "new y in { y!(1) | for (_ <- y) { new z in { z!(2) | for (_ <- z) { Nil } } } }";
-    let light = bond_term(1_000, &[(1_000, "light")]);
+    let light = bond_term(&[(1_000, 1_000, "light")]);
     let loaded = light.replace(
         r#"for (@h <- handleCh) { @"light"!(h) }"#,
         &format!(r#"for (@h <- handleCh) {{ @"light"!(h) | {heavy} }}"#),
@@ -452,4 +454,169 @@ async fn a_continuation_fired_inside_the_close_is_paid_by_its_installer() {
     let before = read_wallet_balance(&rm, &genesis, &compute).await.unwrap();
     let after = read_wallet_balance(&rm, &post, &compute).await.unwrap();
     assert_eq!(after - before, settlement.compute_credit + in_close);
+}
+
+#[tokio::test]
+async fn a_bond_receipt_is_spent_by_its_first_registration() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis, _) = shard(&[&alice], 1, 10).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let twice = r#"new rb(`rho:rev:bond`), d(`rho:system:deployerId`), rl(`rho:registry:lookup`),
+            posCh, bonded, first, second, h1, h2 in {
+          rb!("bond", (*d, 1000), *bonded) |
+          for (@(true, receipt) <- bonded) {
+            rl!(`rho:system:pos`, *posCh) |
+            for (@(_, PoS) <- posCh) {
+              @PoS!("bond", receipt, 500, *first, *h1) |
+              for (@r <- first) {
+                @"first"!(r) |
+                @PoS!("bond", receipt, 500, *second, *h2) |
+                for (@r2 <- second) { @"second"!(r2) }
+              }
+            }
+          } |
+          for (@h <- h1) { @"h1"!(h) } |
+          for (@h <- h2) { @"h2"!(h) }
+        }"#;
+    let post = run(&executor, &genesis, &block(1, vec![envelope(twice, 1, &alice)], &proposer)).await;
+    let reply = |channel: &'static str| {
+        let (rm, post) = (rm.clone(), post.clone());
+        async move {
+            let d = data(&rm, &post, channel).await;
+            assert_eq!(d.len(), 1, "{channel}");
+            let (ok, why) = RhoTuple2::unapply(&d[0]).unwrap();
+            (RhoBoolean::unapply(&ok).unwrap(), RhoString::unapply(&why))
+        }
+    };
+    assert_eq!(reply("first").await, (true, None));
+    assert_eq!(
+        reply("second").await,
+        (false, Some("This bond receipt is already spent.".to_string()))
+    );
+    assert!(admitted(&rm, &post, "h1").await);
+    assert!(data(&rm, &post, "h2").await.is_empty());
+    assert_eq!(pos_bond(&rm, &post, &alice.pk).await, Some(500));
+}
+
+#[tokio::test]
+async fn a_genesis_validator_takes_its_handle_at_its_own_seal() {
+    let proposer = party();
+    let rm = mk_runtime_manager("v6-bond-admin", Some(Genesis::default_mergeable_tags_arc())).await;
+    let (validator_keys, _, mut genesis) =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, Some(1));
+    genesis.version = PROTOCOL_V6;
+    let (sk, pk) = validator_keys[0].clone();
+    let validator = Party {
+        owner: WalletOwner::from_public_key(&pk).unwrap(),
+        sk,
+        pk,
+    };
+    genesis.vaults = vec![Vault {
+        vault_address: VaultAddress::from_public_key(&validator.pk).unwrap(),
+        initial_balance: 1_000_000,
+    }];
+    let block0 = Genesis::create_genesis_block_with_policy(
+        &rm,
+        &genesis,
+        Some(&ShardResourcePolicy::default()),
+    )
+    .await
+    .unwrap();
+    let rm = Arc::new(rm);
+    let pre = block0.body.state.post_state_hash.clone();
+    assert!(pos_bond(&rm, &pre, &validator.pk).await.is_some());
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let own = with_handle(
+        r#"new keccak(`rho:crypto:keccak256Hash`), imageCh, committed in {
+             keccak!("secret".toByteArray(), *imageCh) |
+             for (@image <- imageCh) {
+               @PoS!("commitRandomImage", handle, image, *committed) |
+               for (@c <- committed) { @PoS!("revealRandom", handle, "secret".toByteArray(), *out) | @"genesis-answer"!(c) }
+             }
+           }"#,
+        "genesis-answer",
+    );
+    let post = run(&executor, &pre, &block(1, vec![envelope(&own, 1, &validator)], &proposer)).await;
+    let mut got = answers(&rm, &post, "genesis-answer").await;
+    got.sort_by_key(|(ok, _)| *ok);
+    assert_eq!(got, vec![(true, Par::default()), (true, Par::default())]);
+}
+
+async fn active(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> bool {
+    let query = format!(
+        r#"new ret, rl(`rho:registry:lookup`), posCh, activeCh in {{
+             rl!(`rho:system:pos`, *posCh) |
+             for (@(_, PoS) <- posCh) {{
+               @PoS!("getActiveValidators", *activeCh) |
+               for (@active <- activeCh) {{ ret!(active.contains("{}".hexToBytes())) }}
+             }}
+           }}"#,
+        hex::encode(&pk.bytes)
+    );
+    let (answer, _) = rm.play_exploratory_deploy(query, root, None).await.unwrap();
+    RhoBoolean::unapply(&answer[0]).unwrap()
+}
+
+#[tokio::test]
+async fn an_epoch_starts_at_the_first_close_at_or_past_its_boundary() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis, _) = shard(&[&alice, &bob], 3, 10).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let bond = |stash: &str| bond_term(&[(1_000, 1_000, stash)]);
+
+    let first = run(&executor, &genesis, &block(1, vec![envelope(&bond("a"), 1, &alice)], &proposer)).await;
+    assert_eq!(pos_bond(&rm, &first, &alice.pk).await, Some(1_000));
+    assert!(!active(&rm, &first, &alice.pk).await, "block 1 is inside epoch 0");
+
+    let past_void = run(&executor, &first, &block(4, vec![], &proposer)).await;
+    assert!(
+        active(&rm, &past_void, &alice.pk).await,
+        "block 3 was void, so the close of block 4 starts epoch 1"
+    );
+
+    let same_epoch = run(&executor, &past_void, &block(5, vec![envelope(&bond("b"), 5, &bob)], &proposer)).await;
+    assert_eq!(pos_bond(&rm, &same_epoch, &bob.pk).await, Some(1_000));
+    assert!(!active(&rm, &same_epoch, &bob.pk).await, "epoch 1 starts only once");
+
+    let next = run(&executor, &same_epoch, &block(6, vec![], &proposer)).await;
+    assert!(active(&rm, &next, &bob.pk).await, "block 6 is the boundary of epoch 2");
+}
+
+#[tokio::test]
+async fn an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_takes_the_rest() {
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, genesis, _) = shard(&[&alice, &bob, &carol], 10, 0).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let parties = [&alice, &bob, &carol];
+
+    let mut root = genesis.clone();
+    for (i, who) in parties.iter().enumerate() {
+        let n = i as i64 + 1;
+        let bond = bond_term(&[(1_000, 1_000, "handle")]);
+        root = run(&executor, &root, &block(n, vec![envelope(&bond, n, who)], &proposer)).await;
+        assert_eq!(pos_bond(&rm, &root, &who.pk).await, Some(1_000));
+    }
+    let withdraw = with_handle(r#"@PoS!("withdraw", handle, *out)"#, "answer");
+    for (i, who) in parties.iter().enumerate() {
+        let n = i as i64 + 4;
+        root = run(&executor, &root, &block(n, vec![envelope(&withdraw, n, who)], &proposer)).await;
+        let said = answers(&rm, &root, "answer").await;
+        assert!(said.iter().all(|(ok, _)| *ok), "{said:?}");
+    }
+
+    assert_eq!(released(&rm, &root, &parties).await, 0);
+    let first_epoch = run(&executor, &root, &block(10, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &first_epoch, &parties).await, 2, "one close releases at most two");
+    let second_epoch = run(&executor, &first_epoch, &block(20, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &second_epoch, &parties).await, 3, "the next epoch releases the rest");
+}
+
+async fn released(rm: &RuntimeManager, root: &StateHash, parties: &[&Party]) -> usize {
+    let mut count = 0;
+    for who in parties {
+        if read_bond_balance(rm, root, &who.pk.bytes).await.unwrap() == 0 {
+            count += 1;
+        }
+    }
+    count
 }

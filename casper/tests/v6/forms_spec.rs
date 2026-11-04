@@ -265,3 +265,33 @@ async fn separately_named_regions_pay_only_their_own_work() {
     assert_eq!(charge(&played, &alice).unwrap().comm_phlo, 1);
     assert_eq!(charge(&played, &carol).unwrap().comm_phlo, 2);
 }
+
+#[tokio::test]
+async fn work_that_stored_code_pays_for_does_not_count_against_the_clients_limit() {
+    let (bob, alice, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[&bob, &alice]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let heavy = (0..40).fold("Nil".to_string(), |inner, _| {
+        format!("new y in {{ y!(1) | for (_ <- y) {{ {inner} }} }}")
+    });
+    let stored = format!(r#"for (_ <- @"x") {{ {heavy} }}"#);
+    let mut install = envelope(&stored, 1, &bob, 1);
+    install.data.phlo_limit = 100_000;
+    let install = Signed::create(install.data, Box::new(Secp256k1), bob.sk.clone()).unwrap();
+    let installed = play(&executor, &pre, install, &proposer).await;
+
+    let limit = 1_000;
+    let mut fire = envelope(r#"@"x"!(1)"#, 2, &alice, 1).data;
+    fire.phlo_limit = limit;
+    let fire = Signed::create(fire, Box::new(Secp256k1), alice.sk.clone()).unwrap();
+    let fired = play(&executor, &installed.settled_root, fire, &proposer).await;
+    let installer = surface(&fired, &bob).expect("the installer pays the continuation");
+    assert!(
+        installer.compute > limit as u64,
+        "the continuation's work ({}) is more than the client's limit",
+        installer.compute
+    );
+    let client = charge(&fired, &alice).expect("the client pays its own part");
+    assert!(client.comm_phlo + client.compute_phlo <= limit as u64);
+    assert!(fired.runs[0].compute_phlo <= limit as u64, "the run's meter counts the client's own work only");
+}

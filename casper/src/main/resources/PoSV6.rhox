@@ -3,7 +3,6 @@ new PoS,
     listOpsCh,
     pickActiveValidators,
     runMVar,
-    fst,
     rs(`rho:registry:insertSigned:secp256k1`),
     sysAuthTokenOps(`sys:authToken:ops`),
     RevBond(`rho:rev:bond`),
@@ -12,9 +11,10 @@ new PoS,
 in {
   registryLookup!(`rho:lang:listOps`, *listOpsCh) |
   for (@(_, ListOps) <- listOpsCh) {
-    new initialActiveCh, stateCh, settlePendingBonds in {
-      pickActiveValidators!($$initialBonds$$.toList(), *initialActiveCh) |
+    new initialActiveCh, stateCh, lastEpochCh, settlePendingBonds in {
+      pickActiveValidators!($$initialBonds$$, *initialActiveCh) |
       for (@initialActive <- initialActiveCh) {
+        lastEpochCh!(0) |
         stateCh!({
           "allBonds"          : $$initialBonds$$,
           "activeValidators"  : initialActive,
@@ -24,7 +24,7 @@ in {
           "randomImages"      : {},
           "randomNumbers"     : {},
           "pendingBonds"      : {},
-          "handles"           : {},
+          "spentReceipts"     : Set(),
         }) |
         contract settlePendingBonds(doneCh) = {
           new processCh in {
@@ -40,11 +40,13 @@ in {
                       new admittedCh, admit in {
                         contract admit(@(amount, handleCh), @(s, total), r) = {
                           if (total + amount <= native) {
-                            new handle in {
-                              @handleCh!((true, *handle)) |
-                              r!((s.set("allBonds", s.get("allBonds").set(pk, s.get("allBonds").getOrElse(pk, 0) + amount))
-                                   .set("handles", s.get("handles").set(*handle, pk)),
-                                  total + amount))
+                            new handleOfCh in {
+                              RevBondAdmin!("handleOf", pk, *handleOfCh) |
+                              for (@(_, handle) <- handleOfCh) {
+                                @handleCh!((true, handle)) |
+                                r!((s.set("allBonds", s.get("allBonds").set(pk, s.get("allBonds").getOrElse(pk, 0) + amount)),
+                                    total + amount))
+                              }
                             }
                           } else {
                             @handleCh!((false, "The native bond does not cover this bond")) |
@@ -132,7 +134,9 @@ in {
                   new processCh in {
                     runMVar!(*stateCh, *processCh, *returnCh) |
                     for (@state, resultCh <- processCh) {
-                      if (state.get("allBonds").contains(userPk)) {
+                      if (state.get("spentReceipts").contains(receipt)) {
+                        resultCh!(state, (false, "This bond receipt is already spent."))
+                      } else if (state.get("allBonds").contains(userPk)) {
                         resultCh!(state, (false, "Public key is already bonded."))
                       } else if (not (amount matches Int)) {
                         resultCh!(state, (false, "Bond amount must be an Int."))
@@ -145,7 +149,8 @@ in {
                       } else {
                         resultCh!(state.set("pendingBonds",
                                             state.get("pendingBonds").set(userPk,
-                                              state.get("pendingBonds").getOrElse(userPk, []) ++ [(amount, *handleCh)])),
+                                              state.get("pendingBonds").getOrElse(userPk, []) ++ [(amount, *handleCh)]))
+                                       .set("spentReceipts", state.get("spentReceipts").add(receipt)),
                                   (true, Nil))
                       }
                     }
@@ -163,9 +168,12 @@ in {
             getBlockData!(*blockDataCh) |
             for (@state, resultCh   <- processCh &
                  @blockNumber, _, _ <- blockDataCh) {
-              match state.get("handles").get(handle) {
-                Nil => { resultCh!(state, (false, "Unknown validator handle")) }
-                userPk => {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, userPk) => {
                   if (state.get("allBonds").contains(userPk)) {
                     resultCh!(
                       state.set("pendingWithdrawers",
@@ -175,6 +183,8 @@ in {
                       (true, Nil))
                   } else {
                     resultCh!(state, (false, "User is not bonded"))
+                  }
+                }
                   }
                 }
               }
@@ -240,9 +250,11 @@ in {
                   for (_ <- settledCh) {
                   getBlockData!(*blockDataCh) |
                   for (@blockNumber, _, _ <- blockDataCh) {
-                    if (blockNumber % $$epochLength$$ != 0) {
+                  for (@lastEpoch <<- lastEpochCh) {
+                    if (blockNumber / $$epochLength$$ <= lastEpoch) {
                       ackCh!((true, Nil))
                     } else {
+                      for (_ <- lastEpochCh) { lastEpochCh!(blockNumber / $$epochLength$$) } |
                       new stateProcessCh, movePendingWithdrawer, movePendingCh,
                           removeQuarantinedWithdrawers, removeQuarantinedCh, newValidatorsCh
                       in {
@@ -252,7 +264,7 @@ in {
                           for (@moved <- movePendingCh) {
                             removeQuarantinedWithdrawers!(blockNumber, moved, *removeQuarantinedCh) |
                             for (@removed <- removeQuarantinedCh) {
-                              pickActiveValidators!(moved.get("allBonds").toList(), *newValidatorsCh) |
+                              pickActiveValidators!(moved.get("allBonds"), *newValidatorsCh) |
                               for (@newValidators <- newValidatorsCh) {
                                 stateUpdateCh!(removed.set("activeValidators", newValidators), (true, Nil))
                               }
@@ -274,7 +286,7 @@ in {
                           new quarantinedCh, isQuarantineFinished, payWithdraw, payRet, computeRemove in {
                             @ListOps!("filter", state.get("withdrawers").toList(), *isQuarantineFinished, *quarantinedCh) |
                             for (@quarantined <- quarantinedCh) {
-                              @ListOps!("unorderedParMap", quarantined, *payWithdraw, *payRet) |
+                              @ListOps!("unorderedParMap", quarantined.take(2), *payWithdraw, *payRet) |
                               contract payWithdraw(@(pk, (bonds, _)), resultCh) = {
                                 if (bonds <= 0) {
                                   resultCh!((pk, true))
@@ -312,6 +324,7 @@ in {
                     }
                   }
                   }
+                  }
                 }
               } else {
                 ackCh!((false, "Invalid system auth token"))
@@ -323,13 +336,18 @@ in {
           new mvarCh in {
             runMVar!(*stateCh, *mvarCh, *ackCh) |
             for (@state, resultCh <- mvarCh) {
-              match state.get("handles").get(handle) {
-                Nil => { resultCh!(state, (false, "Unknown validator handle")) }
-                validator => {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, validator) => {
                   if (state.get("randomImages").contains(validator)) {
                     resultCh!(state, (false, "Image already committed"))
                   } else {
                     resultCh!(state.set("randomImages", state.get("randomImages").set(validator, hash)), true)
+                  }
+                }
                   }
                 }
               }
@@ -342,9 +360,12 @@ in {
             computeHash!(random, *hashCh) |
             for (@state, resultCh <- mvarCh &
                  @hash            <- hashCh) {
-              match state.get("handles").get(handle) {
-                Nil => { resultCh!(state, (false, "Unknown validator handle")) }
-                validator => {
+              new keyCh in {
+                RevBondAdmin!("handleKey", handle, *keyCh) |
+                for (@key <- keyCh) {
+                  match key {
+                    (false, message) => { resultCh!(state, (false, message)) }
+                    (true, validator) => {
                   if (state.get("randomImages").contains(validator)) {
                     if (hash == state.get("randomImages").get(validator)) {
                       resultCh!(state.set("randomNumbers", state.get("randomNumbers").set(validator, random)), true)
@@ -353,6 +374,8 @@ in {
                     }
                   } else {
                     resultCh!(state, (false, "Previously committed random image not found"))
+                  }
+                }
                   }
                 }
               }
@@ -373,21 +396,8 @@ in {
       }
     }
   } |
-  contract fst(@(first, _), resultCh) = {
-    resultCh!(first)
-  } |
   contract pickActiveValidators(@allBonds, returnCh) = {
-    new pksCh in {
-      registryLookup!(`rho:lang:listOps`, *pksCh) |
-      for (@(_, ListOps) <- pksCh) {
-        new mapped in {
-          @ListOps!("map", allBonds, *fst, *mapped) |
-          for (@pks <- mapped) {
-            returnCh!(pks.take($$numberOfActiveValidators$$).toSet())
-          }
-        }
-      }
-    }
+    returnCh!(allBonds.keys().toList().take($$numberOfActiveValidators$$).toSet())
   } |
   rs!(
     "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e524e6f237cde5f80dbb921cac12e6500791e9a9ed1254a745a816fe1f".hexToBytes(),

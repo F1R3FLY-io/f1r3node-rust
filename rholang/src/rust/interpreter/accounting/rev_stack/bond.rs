@@ -83,6 +83,24 @@ pub fn receipt_key(receipt: &Par) -> Result<Vec<u8>, String> {
     Ok(rest[..rest.len() - 32].to_vec())
 }
 
+const HANDLE_DOMAIN: &[u8] = b"f1r3fly/rev-stack/validator-handle/v1";
+
+pub fn validator_handle(validator_pk: &[u8]) -> Par {
+    let mut id = HANDLE_DOMAIN.to_vec();
+    id.extend_from_slice(validator_pk);
+    RhoName::create_par(GPrivate { id })
+}
+
+pub fn handle_key(handle: &Par) -> Result<Vec<u8>, String> {
+    let refused = || "Unknown validator handle".to_string();
+    let id = RhoName::unapply(handle).ok_or_else(refused)?.id;
+    let pk = id.strip_prefix(HANDLE_DOMAIN).ok_or_else(refused)?;
+    if pk.is_empty() {
+        return Err(refused());
+    }
+    Ok(pk.to_vec())
+}
+
 pub fn handle(
     store: Option<RhoHotStore>,
     command: &str,
@@ -126,6 +144,17 @@ pub fn handle(
                 .map(|_| bond_receipt(&pk, random_state))
                 .map_err(funds_error)
         }),
+        "handle" => {
+            let pk = RhoDeployerId::unapply(arg)
+                .ok_or_else(|| "expected the validator's deployer id".to_string());
+            pk.and_then(|pk| {
+                let validator = WalletOwner::from_deployer_id(&pk).map_err(|e| e.to_string())?;
+                if !admissible(&validator, authority) {
+                    return Err("the validator must hold the enclosing seal".to_string());
+                }
+                Ok(validator_handle(&pk))
+            })
+        }
         "balance" => bytes(arg).and_then(|pk| {
             bond_balance(cells()?, &pk)
                 .map(|b| RhoNumber::create_par(b as i64))
@@ -183,6 +212,8 @@ pub fn admin_handle(store: Option<RhoHotStore>, command: &str, arg: &Par) -> Opt
                 .map_err(funds_error)
         }),
         "receipt" => receipt_key(arg).map(|pk| RhoByteArray::create_par(pk)),
+        "handleKey" => handle_key(arg).map(|pk| RhoByteArray::create_par(pk)),
+        "handleOf" => bytes(arg).map(|pk| validator_handle(&pk)),
         "slash" => bytes(arg).and_then(|pk| {
             slash(cells()?, &pk)
                 .map(|held| RhoNumber::create_par(held as i64))

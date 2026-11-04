@@ -467,6 +467,7 @@ impl RuntimeManager {
         usr_processed: &[ProcessedDeploy],
         sys_processed: &[ProcessedSystemDeploy],
         is_genesis: bool,
+        close: Option<&crate::rust::v6::close_charge::CloseCharge>,
     ) -> Vec<u8> {
         #[inline]
         fn push_len_prefixed(bytes: &mut Vec<u8>, data: &[u8]) {
@@ -476,6 +477,13 @@ impl RuntimeManager {
 
         // Fingerprint replay-relevant payload so cache keys stay safe under adversarial input.
         let mut bytes = Vec::new();
+        match close {
+            Some(close) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&close.fingerprint());
+            }
+            None => bytes.push(0),
+        }
         bytes.extend_from_slice(&(usr_processed.len() as u64).to_le_bytes());
         for pd in usr_processed {
             push_len_prefixed(&mut bytes, &pd.deploy.sig);
@@ -784,9 +792,23 @@ impl RuntimeManager {
         block_data: BlockData,
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
     ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
+        self.compute_state_closing(start_hash, terms, system_deploys, block_data, invalid_blocks, None)
+            .await
+    }
+
+    pub async fn compute_state_closing(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<Signed<DeployData>>,
+        system_deploys: Vec<super::system_deploy_enum::SystemDeployEnum>,
+        block_data: BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        close: Option<crate::rust::v6::close_charge::CloseCharge>,
+    ) -> Result<(StateHash, Vec<ProcessedDeploy>, Vec<ProcessedSystemDeploy>), CasperError> {
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let runtime = self.spawn_runtime().await?;
         let mut runtime_ops = RuntimeOps::new(runtime);
+        runtime_ops.close_charge = close;
 
         // Block data used for mergeable key
         let sender = block_data.sender.clone();
@@ -834,7 +856,7 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
             let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
+                Self::replay_payload_hash(&usr_processed, &sys_processed, false, close.as_ref());
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
                 let key = ReplayCacheKey::new(
@@ -945,7 +967,7 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
             let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
+                Self::replay_payload_hash(&usr_processed, &sys_processed, false, None);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
                 let key = ReplayCacheKey::new(
@@ -1046,9 +1068,23 @@ impl RuntimeManager {
         invalid_blocks: Option<HashMap<BlockHash, Validator>>,
         is_genesis: bool, // FIXME have a better way of knowing this. Pass the replayDeploy function maybe? - OLD
     ) -> Result<StateHash, CasperError> {
+        self.replay_compute_state_closing(start_hash, terms, system_deploys, block_data, invalid_blocks, is_genesis, None)
+            .await
+    }
+
+    pub async fn replay_compute_state_closing(
+        &self,
+        start_hash: &StateHash,
+        terms: Vec<ProcessedDeploy>,
+        system_deploys: Vec<ProcessedSystemDeploy>,
+        block_data: &BlockData,
+        invalid_blocks: Option<HashMap<BlockHash, Validator>>,
+        is_genesis: bool,
+        close: Option<crate::rust::v6::close_charge::CloseCharge>,
+    ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
-        let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
+        let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis, close.as_ref());
 
         // Step 1: Check replay cache (deterministic replay delta)
         let replay_cache_key = ReplayCacheKey::new(
@@ -1108,7 +1144,8 @@ impl RuntimeManager {
             .map_err(|error| CasperError::Other(format!("Replay semaphore closed: {}", error)))?;
         let invalid_blocks = invalid_blocks.unwrap_or_default();
         let replay_runtime = self.spawn_replay_runtime().await?;
-        let runtime_ops = RuntimeOps::new(replay_runtime);
+        let mut runtime_ops = RuntimeOps::new(replay_runtime);
+        runtime_ops.close_charge = close;
         let mut replay_runtime_ops = ReplayRuntimeOps::new(runtime_ops);
 
         let execute_start = std::time::Instant::now();
