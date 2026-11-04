@@ -16,6 +16,7 @@ pub struct Refusal {
 #[derive(Default)]
 struct Observed {
     gross: BTreeMap<Membrane, u64>,
+    refunds: BTreeMap<Membrane, u64>,
     found: BTreeMap<Vec<u8>, u64>,
     refused: u64,
 }
@@ -47,12 +48,20 @@ impl ReplayStops {
     pub fn is_stopped(&self, membrane: &Membrane) -> bool { self.stopped.contains(membrane) }
 
     pub fn on_charge(&self, membrane: &Membrane, amount: i64) {
-        if amount <= 0 || !self.is_stopped(membrane) {
+        if amount == 0 || !self.is_stopped(membrane) {
             return;
         }
         let mut observed = self.lock();
-        let gross = observed.gross.entry(membrane.clone()).or_insert(0);
-        *gross = gross.saturating_add(amount as u64);
+        let tally = if amount > 0 {
+            observed.gross.entry(membrane.clone()).or_insert(0)
+        } else {
+            observed.refunds.entry(membrane.clone()).or_insert(0)
+        };
+        *tally = tally.saturating_add(amount.unsigned_abs());
+    }
+
+    pub fn refunds(&self, membrane: &Membrane) -> u64 {
+        self.lock().refunds.get(membrane).copied().unwrap_or(0)
     }
 
     pub fn io(&self, membrane: &Membrane, step: &[u8], cost: i64) -> StopOutcome {
@@ -227,5 +236,17 @@ mod tests {
         stops.on_charge(&membrane(2), 50);
         assert_eq!(stops.gross(&membrane(1)), 65);
         assert_eq!(stops.gross(&membrane(2)), 0);
+    }
+
+    #[test]
+    fn refunds_under_a_stopped_membrane_are_counted_apart_from_gross_work() {
+        let stops = ReplayStops::new(&[refusal(95, 10)], Vec::<Vec<u8>>::new());
+        stops.on_charge(&membrane(1), 40);
+        stops.on_charge(&membrane(1), -15);
+        stops.on_charge(&membrane(1), -5);
+        stops.on_charge(&membrane(2), -50);
+        assert_eq!(stops.gross(&membrane(1)), 40);
+        assert_eq!(stops.refunds(&membrane(1)), 20);
+        assert_eq!(stops.refunds(&membrane(2)), 0);
     }
 }
