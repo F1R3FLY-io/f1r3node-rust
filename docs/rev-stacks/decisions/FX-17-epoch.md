@@ -49,3 +49,11 @@ Each block replays to the same post-state root.
 - casper `genesis::` (release): 118 passed, 0 failed.
 - casper lib (release): 851 passed, 0 failed, 1 ignored.
 - `cargo fmt --check`: not verified.
+
+## Revision 2: Decision 107, a linear PoS close (flagged for review)
+
+- `pickActiveValidators` is one expression: `allBonds.keys().toList().take(numberOfActiveValidators).toSet()`. Its callers pass the `allBonds` map instead of a list. The unused `fst` helper is removed. The order is the same: the map's keys in their sorted order.
+- An epoch close releases at most 2 quarantined withdrawers (`quarantined.take(2)` before `unorderedParMap`). The others stay in `withdrawers` and are released at the next epoch close. The cap is temporary. `docs/rev-stacks/memos/D107-loops.md` gives the loops that still pass state by value and estimates the proper rewrite.
+- New test: `pos_bond_admin_spec::an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_takes_the_rest`. Three validators withdraw in one epoch. The close of block 10 releases two of them, and the close of block 20 releases the third.
+- The cross-host fixture is regenerated.
+- Verification (release): casper `v6::` 90 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.

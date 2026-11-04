@@ -581,3 +581,42 @@ async fn an_epoch_starts_at_the_first_close_at_or_past_its_boundary() {
     let next = run(&executor, &same_epoch, &block(6, vec![], &proposer)).await;
     assert!(active(&rm, &next, &bob.pk).await, "block 6 is the boundary of epoch 2");
 }
+
+#[tokio::test]
+async fn an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_takes_the_rest() {
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, genesis, _) = shard(&[&alice, &bob, &carol], 10, 0).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let parties = [&alice, &bob, &carol];
+
+    let mut root = genesis.clone();
+    for (i, who) in parties.iter().enumerate() {
+        let n = i as i64 + 1;
+        let bond = bond_term(&[(1_000, 1_000, "handle")]);
+        root = run(&executor, &root, &block(n, vec![envelope(&bond, n, who)], &proposer)).await;
+        assert_eq!(pos_bond(&rm, &root, &who.pk).await, Some(1_000));
+    }
+    let withdraw = with_handle(r#"@PoS!("withdraw", handle, *out)"#, "answer");
+    for (i, who) in parties.iter().enumerate() {
+        let n = i as i64 + 4;
+        root = run(&executor, &root, &block(n, vec![envelope(&withdraw, n, who)], &proposer)).await;
+        let said = answers(&rm, &root, "answer").await;
+        assert!(said.iter().all(|(ok, _)| *ok), "{said:?}");
+    }
+
+    assert_eq!(released(&rm, &root, &parties).await, 0);
+    let first_epoch = run(&executor, &root, &block(10, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &first_epoch, &parties).await, 2, "one close releases at most two");
+    let second_epoch = run(&executor, &first_epoch, &block(20, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &second_epoch, &parties).await, 3, "the next epoch releases the rest");
+}
+
+async fn released(rm: &RuntimeManager, root: &StateHash, parties: &[&Party]) -> usize {
+    let mut count = 0;
+    for who in parties {
+        if read_bond_balance(rm, root, &who.pk.bytes).await.unwrap() == 0 {
+            count += 1;
+        }
+    }
+    count
+}
