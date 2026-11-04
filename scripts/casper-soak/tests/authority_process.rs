@@ -12,7 +12,9 @@ use casper_soak::{encoded, file_hash, record};
 use serde_json::{json, Value};
 
 fn config(root: &std::path::Path) -> Value {
-    json!({"path":"/usr/bin/sleep","sha256":file_hash(std::path::Path::new("/usr/bin/sleep")).unwrap(),"arguments":["60"],"working_directory":root})
+    let executable = root.join("sleep");
+    fs::copy("/usr/bin/sleep", &executable).unwrap();
+    json!({"path":executable,"sha256":file_hash(&executable).unwrap(),"arguments":["60"],"working_directory":root})
 }
 
 fn request(child: Value, action: &str) -> Value {
