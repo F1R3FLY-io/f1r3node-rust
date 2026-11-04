@@ -346,6 +346,10 @@ fn handle_result(
     cost: _cost,
     follow: i64,
 ) -> Result<(), InterpreterError> {
+    let trigger_produce = match &triggered_by {
+        TriggeredBy::Produce { id, .. } => Some(id.clone()),
+        TriggeredBy::Consume { .. } => None,
+    };
     let (triggered_by_id_bytes, triggered_by_channels_count, triggered_by_persistent) =
         match triggered_by {
             TriggeredBy::Consume {
@@ -356,6 +360,24 @@ fn handle_result(
             TriggeredBy::Produce { id, persistent, .. } => (id, 1, persistent),
         };
 
+    if let Some((cont, data_list)) = result {
+        let receive = seal::of_continuation(&cont.continuation).ok().flatten();
+        let sends: Vec<Option<seal::SealRecord>> = data_list
+            .iter()
+            .map(|data| {
+                if trigger_produce.as_ref() == Some(&data.removed_datum.random_state) {
+                    seal::current()
+                } else {
+                    data.removed_datum
+                        .seal
+                        .as_ref()
+                        .and_then(|p| seal::SealRecord::from_proto(p).ok())
+                }
+            })
+            .collect();
+        cost.comm_ledger()
+            .on_comm_between(comm_cells(receive.as_ref(), sends.iter().map(Option::as_ref)));
+    }
     match result {
         Some((cont, data_list)) => membrane::settling(|| {
             draw_replayed_comm(cont, data_list, follow);

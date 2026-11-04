@@ -129,18 +129,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
 
     if let Some(engine) = this.v6.as_ref() {
         match engine.check_block(block, &snapshot.dag) {
-            Ok((body, _records)) => {
-                if let Err(reason) = engine.check_close_cover(block, &body).await {
-                    tracing::warn!(
-                        target: "f1r3fly.v6",
-                        block = %PrettyPrinter::build_string_bytes(&block.block_hash),
-                        %reason,
-                        "v6 close pre-charge not covered"
-                    );
-                    return Ok(Either::Left(BlockError::Invalid(InvalidBlock::InvalidFormat)));
-                }
-                engine.observe_block(block, &body)
-            }
+            Ok((body, _records)) => engine.observe_block(block, &body),
             Err(reason) => {
                 tracing::warn!(
                     target: "f1r3fly.v6",

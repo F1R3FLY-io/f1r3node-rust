@@ -11,9 +11,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, F1r3flyState, Header, ProcessedDeploy,
 };
-use crypto::rust::public_key::PublicKey;
 use prost::bytes::Bytes;
-use rholang::rust::interpreter::accounting::rev_stack::WalletOwner;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use super::backend::ExecutionBackend;
@@ -123,8 +121,7 @@ impl V6Engine<BlockRecord> {
         )?;
         let backend = Arc::new(
             BlockExecutor::new(runtime_manager.clone(), workers)
-                .with_conservation(conservation.clone())
-                .with_close_precharge(policy.close_precharge),
+                .with_conservation(conservation.clone()),
         );
         let parts = V6Parts {
             backend,
@@ -325,34 +322,6 @@ impl<R: ExecutionRecord> V6Engine<R> {
         dag: &KeyValueDagRepresentation,
     ) -> Result<(V6Body, Vec<R>), String> {
         check_structure::<R>(block, &self.limits, &|hash| dag.block_number(hash))
-    }
-
-    pub async fn check_close_cover(&self, block: &BlockMessage, body: &V6Body) -> Result<(), String> {
-        let attestation = body
-            .attestation
-            .as_ref()
-            .ok_or_else(|| "a v6 block must carry an attestation".to_string())?;
-        self.proposer_covers_close(&block.sender, &attestation.root).await
-    }
-
-    async fn proposer_covers_close(&self, sender: &Bytes, root: &StateHash) -> Result<(), String> {
-        let precharge = self.limits.close_precharge;
-        if precharge == 0 {
-            return Ok(());
-        }
-        let proposer = WalletOwner::from_public_key(&PublicKey::from_bytes(sender))
-            .map_err(|e| format!("the block sender has no wallet: {e}"))?;
-        let balance = self
-            .inclusion
-            .balance(root, &proposer)
-            .await
-            .map_err(|e| e.to_string())?;
-        if balance < precharge {
-            return Err(format!(
-                "the proposer holds {balance} at the attested root and the close pre-charge is {precharge}"
-            ));
-        }
-        Ok(())
     }
 
     pub fn observe_block(&self, block: &BlockMessage, body: &V6Body) {
@@ -566,10 +535,6 @@ impl<R: ExecutionRecord> V6Engine<R> {
             })
             .collect();
         let records = pack_records(records, &self.limits);
-        if let Err(reason) = self.proposer_covers_close(&self_key, &attestation.root).await {
-            tracing::warn!(target: "f1r3fly.v6", %reason, "the proposer cannot cover the close pre-charge; no block is proposed");
-            return Ok(BlockCreatorResult::NoNewDeploys);
-        }
 
         let envelopes: Vec<ProcessedDeploy> = if self.admits_envelopes(snapshot, &attestation) {
             let pool = self.deploy_storage.read_all()?;

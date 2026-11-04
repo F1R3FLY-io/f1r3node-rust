@@ -118,3 +118,20 @@ Merged in this order: `patch/FX-15-settle` (dda77b2c5, lane B, F46), then `patch
 - `v6::stops`: the encoding round trip, and an unknown kind is refused.
 
 **Decision 88 label, known issue:** a `Cell` refusal is not checked as reached (decision 5). A forged `Cell` refusal must still pass the drawn-amount and unpayability checks. It does not change replay, because play did not run the vetoed COMM.
+
+## Lane C's block ledger, F39, FX-16 and the caps (2026-11-04, plan r8.23)
+
+Merged in this order: e30313108 (lane C, Decisions 103 and 104), c345b400d (lane B, F39), a51dd79fc (lane B, FX-16).
+
+| # | Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|---|
+| 11 | Take lane C's meter whole, and keep only the reached charge. | Merge hunk by hunk | Lane C restructured the meter around one ledger per block. | Yes |
+| 12 | `settled_work` requires replay to reach the recorded work of each stopped surface. The `surface_drawn` field and the refund tally are removed. | Lane B's D − R | Replay is now exact: it refuses exactly the logged steps. Under Decision 104 the drawn amount D includes reserved storage, so D − R is not the net work. **For lane A1:** this replaces merge requirement 3's D − R. | Yes |
+| 13 | The surface cap (`owed.min(free)`) is removed. A draw above what remains of the wallet is an error. Lane B's two-run test is enabled and passes. | Keep the cap | Revision 22: the block ledger bounds the gross draws of all runs. | Yes |
+| 14 | `SystemGate` carries FX-16's `CloseCharge`. `BlockExecutor::with_close_charge` also sets the gate hold to `pre_charge` (Decision 108). The policy field `close-precharge` is removed, and policy encoding 2 stays. | Keep the policy field | One pre-charge, FX-16's, which FX-17 derives from consensus data. | Yes |
+| 15 | Decision 108: `check_close_cover` and the check in `create_block` are removed. | — | Decision 108. | No (ruling) |
+| 16 | The close cap in `charge_recorded_work` is removed in this commit, which installs the close meter. | — | Revision 22. | Yes |
+| 17 | D8b: `handle_result` records the cells of each COMM (the storage rule is off in system deploys). The close charges the cells of a stored record to its installer, with its work. | — | D8b. | Yes |
+| 18 | `SystemGate::apply` turns seal records on for the gated close. | — | Without them, a continuation that the close fired ran with no record and was not gated. The test `no_deployment_makes_the_close_fail` found this: an endless loop used memory until the process was killed. | Yes |
+
+v6: 100 passed, 0 failed, 10 ignored.

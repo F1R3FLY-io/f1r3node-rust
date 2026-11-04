@@ -14,7 +14,6 @@ pub struct Limits {
     pub max_record_bytes: usize,
     pub ordered_only: bool,
     pub min_phlo_price: i64,
-    pub close_precharge: u64,
 }
 
 impl Default for Limits {

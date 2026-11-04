@@ -1406,7 +1406,12 @@ async fn the_close_pre_charge_is_held_before_any_envelope_and_replay_holds_it_to
         extra_bytes: Bytes::new(),
     };
     let open = BlockExecutor::new(rm.clone(), 2);
-    let held = BlockExecutor::new(rm.clone(), 2).with_close_precharge(2_500);
+    let held = BlockExecutor::new(rm.clone(), 2).with_close_charge(
+        casper::rust::v6::close_charge::CloseCharge {
+            price: 0,
+            pre_charge: 2_500,
+        },
+    );
     let free = open.execute(&pre, &block).await.expect("the block executes");
     assert_eq!(free.gate()[0].verdict, Verdict::Admitted);
     let record = held.execute(&pre, &block).await.expect("the block executes");

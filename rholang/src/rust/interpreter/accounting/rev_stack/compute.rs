@@ -56,7 +56,7 @@ pub fn charge_recorded_work(
             .checked_mul(surface.phlo_price)
             .ok_or(RevStackError::InvalidAmount(RevAmount::MAX))?;
         for payer in super::seal::purse_of(&owner) {
-            let drawn = owed.min(stacks.balance(&payer)?);
+            let drawn = owed;
             if drawn == 0 {
                 continue;
             }

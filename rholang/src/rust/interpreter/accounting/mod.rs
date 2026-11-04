@@ -14,7 +14,6 @@ pub mod membrane;
 pub mod noop;
 pub mod rev_stack;
 pub mod storage_rule;
-pub mod system_charge;
 
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/accounting/package.scala
 #[allow(non_camel_case_types)]
@@ -27,7 +26,6 @@ pub struct CostManager {
     max_log_entries: usize,
     comms: comm_ledger::CommLedger,
     storage: Arc<Mutex<Option<storage_rule::LeftInSpace>>>,
-    system_charge: Arc<Mutex<Option<system_charge::SystemCharge>>>,
 }
 
 impl CostManager {
@@ -49,7 +47,6 @@ impl CostManager {
             max_log_entries,
             comms: comm_ledger::CommLedger::default(),
             storage: Arc::new(Mutex::new(None)),
-            system_charge: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -147,14 +144,6 @@ impl CostManager {
     pub fn record_comm(&self) { self.comms.on_comm(); }
 
     pub fn comm_ledger(&self) -> &comm_ledger::CommLedger { &self.comms }
-
-    pub fn set_system_charge(&self, charge: Option<system_charge::SystemCharge>) {
-        *self.system_charge.lock().unwrap_or_else(|p| p.into_inner()) = charge;
-    }
-
-    pub fn system_charge(&self) -> Option<system_charge::SystemCharge> {
-        self.system_charge.lock().unwrap_or_else(|p| p.into_inner()).clone()
-    }
 
     pub fn charge_storage_left_in_space(&self) {
         *self.storage.lock().expect("storage rule lock") =

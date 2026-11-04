@@ -49,7 +49,6 @@ use crate::rust::errors::CasperError;
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::runtime_manager::{RuntimeManager, SystemGate};
-use rholang::rust::interpreter::accounting::system_charge::SystemCharge;
 
 #[derive(Clone, Debug)]
 pub struct ExecutedBlock {
@@ -831,6 +830,7 @@ pub struct BlockExecutor {
     runtime_manager: Arc<RuntimeManager>,
     slashes: Arc<dyn SlashSource>,
     conservation: Option<Arc<Conservation>>,
+    close_charge: Option<super::close_charge::CloseCharge>,
 }
 
 impl BlockExecutor {
@@ -838,12 +838,8 @@ impl BlockExecutor {
         &self,
         pre_root: &StateHash,
         executed: &ExecutedBlock,
-        block: &BlockMessage,
         logged: Option<&[Refusal]>,
     ) -> Result<(SystemGate, Arc<MembraneMeter>, Arc<dyn Funding>), CasperError> {
-        let payer = WalletOwner::from_public_key(&block_data(block).sender)
-            .map_err(|e| invalid(format!("the block sender has no wallet: {e}")))?;
-        let hold = executed.gate.close_hold.as_ref().map_or(0, |h| h.amount);
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), executed.gate.table.clone()));
         let funding = CloseFunding::new(purses, executed.metered.iter().map(|m| &m.drawn));
@@ -853,14 +849,9 @@ impl BlockExecutor {
         };
         let gate = SystemGate {
             funding: Some(meter.clone()),
-            charge: Some(SystemCharge::new(payer, hold)),
+            close: self.close_charge,
         };
         Ok((gate, meter, funding))
-    }
-
-    pub fn with_close_precharge(mut self, precharge: RevAmount) -> Self {
-        self.envelopes = self.envelopes.with_close_precharge(precharge);
-        self
     }
 
     pub fn new(runtime_manager: Arc<RuntimeManager>, workers: usize) -> Self {
@@ -869,6 +860,7 @@ impl BlockExecutor {
             runtime_manager,
             slashes: Arc::new(NoSlashing),
             conservation: None,
+            close_charge: None,
         }
     }
 
@@ -889,7 +881,7 @@ impl BlockExecutor {
             .execute(pre_root, envelopes, block_data(block))
             .await?;
         let started = std::time::Instant::now();
-        let (gate, close_meter, _) = self.close_gate(pre_root, &executed, block, None).await?;
+        let (gate, close_meter, _) = self.close_gate(pre_root, &executed, None).await?;
         let (post_root, _, system_deploys) = self
             .runtime_manager
             .compute_state_gated(
@@ -929,6 +921,12 @@ impl BlockExecutor {
             record: started.elapsed(),
         };
         Ok((record, timings))
+    }
+
+    pub fn with_close_charge(mut self, close: super::close_charge::CloseCharge) -> Self {
+        self.envelopes = self.envelopes.with_close_precharge(close.pre_charge);
+        self.close_charge = Some(close);
+        self
     }
 
     pub fn with_conservation(mut self, conservation: Arc<Conservation>) -> Self {
@@ -1096,7 +1094,7 @@ impl ExecutionBackend for BlockExecutor {
         let close_logged = super::stops::system_refusals(record.system_deploys())
             .map_err(|e| mismatch(&format!("a close refusal does not decode: {e}")))?;
         let (gate, close_meter, close_funding) = self
-            .close_gate(record.pre_root(), &replayed, block, Some(&close_logged))
+            .close_gate(record.pre_root(), &replayed, Some(&close_logged))
             .await?;
         let post_root = self
             .runtime_manager

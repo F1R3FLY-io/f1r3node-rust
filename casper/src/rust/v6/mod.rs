@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod block_record;
 pub mod body;
+pub mod close_charge;
 pub mod conservation;
 pub mod core;
 pub mod engine;
