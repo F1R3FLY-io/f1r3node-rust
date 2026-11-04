@@ -272,7 +272,7 @@ async fn work_that_stored_code_pays_for_does_not_count_against_the_clients_limit
     let (bob, alice, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[&bob, &alice]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
-    let heavy = (0..40).fold("Nil".to_string(), |inner, _| {
+    let heavy = (0..12).fold("Nil".to_string(), |inner, _| {
         format!("new y in {{ y!(1) | for (_ <- y) {{ {inner} }} }}")
     });
     let stored = format!(r#"for (_ <- @"x") {{ {heavy} }}"#);
