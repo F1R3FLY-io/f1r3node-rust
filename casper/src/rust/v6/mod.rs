@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod block_record;
 pub mod body;
+pub mod close_charge;
 pub mod conservation;
 pub mod core;
 pub mod engine;
@@ -24,6 +25,7 @@ pub mod resource_policy;
 pub mod run;
 pub mod settle;
 pub mod slash;
+pub mod stops;
 pub mod store;
 pub mod surface;
 pub mod validators;

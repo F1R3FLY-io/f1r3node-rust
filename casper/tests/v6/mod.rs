@@ -13,3 +13,5 @@ pub mod forms_spec;
 pub mod offer_screen_spec;
 pub mod conservation_spec;
 pub mod exit_spec;
+pub mod close_charge_spec;
+pub mod close_bound_spec;

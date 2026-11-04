@@ -131,11 +131,14 @@ pub fn charges(
         let mut budget = entry.delta;
         let mut owed: BTreeMap<Vec<u8>, (WalletOwner, u64, u64)> = BTreeMap::new();
         for (key, (cells, compute)) in own_meter(surfaces, work, &entry.envelope_sig) {
+            let Some(own) = own_payers(&key, input, &payers) else {
+                continue;
+            };
             let cells = cells.min(budget);
             budget -= cells;
             let compute = compute.min(budget);
             budget -= compute;
-            for payer in own_payers(&key, input, &payers) {
+            for payer in own {
                 let o = owed
                     .entry(payer.canonical_bytes())
                     .or_insert((payer, 0, 0));
@@ -224,22 +227,26 @@ fn client(input: &GateInput, payers: &[WalletOwner]) -> Vec<WalletOwner> {
     }
 }
 
-fn own_payers(key: &Option<Surface>, input: &GateInput, payers: &[WalletOwner]) -> Vec<WalletOwner> {
+fn own_payers(key: &Option<Surface>, input: &GateInput, payers: &[WalletOwner]) -> Option<Vec<WalletOwner>> {
     let Some(owner) = key
         .as_ref()
         .and_then(|s| WalletOwner::from_canonical_bytes(&s.owner))
     else {
-        return client(input, payers);
+        return Some(client(input, payers));
     };
     if payers.contains(&owner) {
-        return vec![owner];
+        return Some(vec![owner]);
     }
     match owner {
         WalletOwner::Compound(components) if components.iter().all(|c| payers.contains(c)) => {
-            components
+            Some(components)
         }
-        _ => client(input, payers),
+        _ => None,
     }
+}
+
+pub fn gated_own(key: &Option<Surface>, input: &GateInput) -> bool {
+    own_payers(key, input, &input.paying_wallets()).is_none()
 }
 
 pub fn apply(
@@ -342,7 +349,7 @@ pub async fn settle_block(
         CasperError::RuntimeError("the runtime's space has no native REV layer".into())
     })?;
     let cells: Arc<dyn CellStore> = Arc::new(HotStoreCells(store));
-    settlement.surface_charges = surface_charges(&RevStacks::new(cells.clone()), entries, surfaces, work, &settlement)?;
+    settlement.surface_charges = surface_charges(&RevStacks::new(cells.clone()), inputs, entries, surfaces, work, &settlement)?;
     for sc in &settlement.surface_charges {
         let wallet = wallet_channel_id(&sc.purse);
         if sc.drawn > 0 {
@@ -406,6 +413,7 @@ pub async fn settle_block(
 
 fn surface_charges(
     stacks: &RevStacks,
+    inputs: &[GateInput],
     entries: &[GateEntry],
     surfaces: &[Surfaces],
     work: &[Surfaces],
@@ -419,12 +427,12 @@ fn surface_charges(
         }
     }
     let mut out = Vec::new();
-    for ((entry, tally), done) in entries.iter().zip(surfaces).zip(work) {
+    for (((input, entry), tally), done) in inputs.iter().zip(entries).zip(surfaces).zip(work) {
         if !entry.admitted() {
             continue;
         }
         let envelope = entry.envelope_sig.as_ref();
-        for (key, (cells, compute)) in meter(tally, done, |k| !is_own(k, envelope)) {
+        for (key, (cells, compute)) in meter(tally, done, |k| !is_own(k, envelope) || gated_own(k, input)) {
             let Some(surface) = key else { continue };
             let surface = &surface;
             let phlo = cells.checked_add(compute).ok_or_else(overflow)?;
@@ -436,7 +444,12 @@ fn surface_charges(
                     .balance(&purse)
                     .map_err(|e| CasperError::RuntimeError(format!("settlement: {e}")))?;
                 let used = planned.entry(wallet).or_insert(0);
-                let drawn = owed.min(held.saturating_sub(*used));
+                if owed > held.saturating_sub(*used) {
+                    return Err(CasperError::RuntimeError(
+                        "settlement: a surface draw exceeds what the block ledger admitted".into(),
+                    ));
+                }
+                let drawn = owed;
                 *used = used.checked_add(drawn).ok_or_else(overflow)?;
                 out.push(SurfaceCharge {
                     envelope_sig: entry.envelope_sig.clone(),

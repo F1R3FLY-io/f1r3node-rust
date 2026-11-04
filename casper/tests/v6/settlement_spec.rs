@@ -394,3 +394,48 @@ fn client_work(
         })
         .collect()
 }
+
+#[tokio::test]
+async fn an_own_region_whose_owner_the_gate_did_not_commit_is_charged_to_that_owner() {
+    use rholang::rust::interpreter::accounting::comm_ledger::Surface;
+
+    let (alice, carol, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&carol, 1_000)]).await;
+    let inputs = vec![input(&alice, 1, 1_000, 3)];
+    let reader = StoreReader::at(&rm, &pre).await.unwrap();
+    let gate = gate_block(&reader, &PhloLimitDemand, &inputs).unwrap();
+    assert_eq!(gate.admitted(), vec![true]);
+    let region = Some(Surface {
+        owner: carol.owner.canonical_bytes(),
+        envelope: gate.entries[0].envelope_sig.to_vec(),
+        phlo_price: 3,
+    });
+    let surfaces = vec![vec![(None, 2), (region.clone(), 4)]];
+    let work = vec![vec![(region, 10)]];
+    let (settlement, settled) = settle_block(
+        &rm,
+        &pre,
+        &inputs,
+        &gate.entries,
+        &[run(6)],
+        &surfaces,
+        &work,
+        &[Vec::new()],
+        &[true],
+        &proposer.owner,
+        Boxcar::unbounded(),
+    )
+    .await
+    .unwrap();
+    let client: Vec<_> = settlement.charges.iter().map(|c| (c.comm_phlo, c.compute_phlo)).collect();
+    assert_eq!(client, vec![(2, 0)], "the client pays only for its own unsealed cells");
+    let region_charge = settlement
+        .surface_charges
+        .iter()
+        .find(|sc| sc.purse == carol.owner)
+        .expect("the region's owner pays");
+    assert_eq!((region_charge.cells, region_charge.compute), (4, 10));
+    assert_eq!(region_charge.drawn, 14 * 3);
+    assert_eq!(balance(&rm, &settled, &carol).await, 1_000 - 42);
+    assert_eq!(balance(&rm, &settled, &alice).await, 100_000 - 6);
+}

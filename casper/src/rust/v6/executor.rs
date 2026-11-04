@@ -17,9 +17,9 @@ use rholang::rust::interpreter::accounting::rev_stack::region::named_owners;
 use rholang::rust::interpreter::accounting::rev_stack::reserve::{
     clear_reservation, set_reservation, Reservation,
 };
-use rholang::rust::interpreter::accounting::rev_stack::seal::Funding;
+use rholang::rust::interpreter::accounting::membrane::{BlockLedger, Funding, MembraneMeter, Metered, Refusal};
 use rholang::rust::interpreter::accounting::rev_stack::{
-    wallet_channel_id, wallet_channel_id_of, HotStoreCells, WalletOwner,
+    wallet_channel_id, wallet_channel_id_of, HotStoreCells, RevAmount, WalletOwner,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -36,7 +36,7 @@ use super::body::StateHash;
 use super::conservation::Conservation;
 use super::footprint::{footprint, Footprint};
 use super::gate::{
-    check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
+    check_recorded_with_close, gate_block_with_close, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
     PhloLimitDemand, StoreReader,
 };
 use super::merge::{merge_runs, RunEffect};
@@ -44,11 +44,11 @@ use super::record::ExecutionRecord;
 use super::run::EnvelopeRun;
 use super::settle::{self, Boxcar, Settlement};
 use super::slash::{require_no_slashes, NoSlashing, SlashSource};
-use super::surface::{own_cells, BlockPurses, EnvelopeFunding, Surfaces};
+use super::surface::{accept_metered, own_cells, BlockPurses, CloseFunding, EnvelopeFunding, Surfaces};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::RuntimeOps;
-use crate::rust::util::rholang::runtime_manager::RuntimeManager;
+use crate::rust::util::rholang::runtime_manager::{RuntimeManager, SystemGate};
 
 #[derive(Clone, Debug)]
 pub struct ExecutedBlock {
@@ -59,11 +59,29 @@ pub struct ExecutedBlock {
     pub footprints: Vec<Footprint>,
     pub surfaces: Vec<Surfaces>,
     pub work: Vec<Surfaces>,
+    pub metered: Vec<RunMeter>,
     pub overdrawn: Vec<bool>,
     pub gate: GateOutcome,
     pub settlement: Settlement,
     pub settled_root: StateHash,
     pub timings: PhaseTimings,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunMeter {
+    pub refusals: Vec<Refusal>,
+    pub drawn: std::collections::BTreeMap<Vec<u8>, u64>,
+    pub reached: std::collections::BTreeMap<Vec<u8>, u64>,
+}
+
+impl From<Metered> for RunMeter {
+    fn from(m: Metered) -> Self {
+        RunMeter {
+            refusals: m.refusals,
+            drawn: m.drawn,
+            reached: m.reached,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,12 +114,14 @@ struct MergedBlock {
     footprints: Vec<Footprint>,
     surfaces: Vec<Surfaces>,
     work: Vec<Surfaces>,
+    metered: Vec<RunMeter>,
 }
 
 struct EnvelopeEffect {
     run: EnvelopeRun,
     surfaces: Surfaces,
     work: Surfaces,
+    metered: RunMeter,
     processed: ProcessedDeploy,
     number_channels: NumberChannelsEndVal,
     changes: Vec<HotStoreAction<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
@@ -130,13 +150,13 @@ fn envelope_run(processed: &ProcessedDeploy) -> EnvelopeRun {
     }
 }
 
-const FOREIGN_WORK_BUDGET: i64 = super::resource_policy::DEFAULT_DEMAND_CAP;
 
 pub struct EnvelopeExecutor {
     runtime_manager: Arc<RuntimeManager>,
     workers: usize,
     boxcar: Boxcar,
     runs: Arc<Runs>,
+    close_precharge: RevAmount,
 }
 
 struct Runs {
@@ -164,12 +184,27 @@ impl EnvelopeExecutor {
             runtime_manager,
             workers,
             boxcar: Boxcar::unbounded(),
+            close_precharge: 0,
         }
     }
 
     pub fn with_boxcar(mut self, boxcar: Boxcar) -> Self {
         self.boxcar = boxcar;
         self
+    }
+
+    pub fn with_close_precharge(mut self, precharge: RevAmount) -> Self {
+        self.close_precharge = precharge;
+        self
+    }
+
+    fn close_hold(&self, block_data: &BlockData) -> Result<Option<(WalletOwner, RevAmount)>, CasperError> {
+        if self.close_precharge == 0 {
+            return Ok(None);
+        }
+        let proposer = WalletOwner::from_public_key(&block_data.sender)
+            .map_err(|e| invalid(format!("the block sender has no wallet: {e}")))?;
+        Ok(Some((proposer, self.close_precharge)))
     }
 }
 
@@ -209,7 +244,6 @@ impl Runs {
     }
 
     fn give_back(&self, replay: bool, pooled: Pooled) {
-        pooled.runtime.cost.set_own_origin(None, 0);
         let mut pool = if replay { self.replay_pool.lock() } else { self.play_pool.lock() };
         if pool.len() < self.workers {
             pool.push(pooled);
@@ -222,7 +256,7 @@ impl Runs {
         envelope: Signed<DeployData>,
         block_data: BlockData,
         reservations: Vec<(WalletOwner, Reservation)>,
-        funding: Arc<dyn Funding>,
+        meter: Arc<MembraneMeter>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let started = std::time::Instant::now();
         let spawned = started.elapsed();
@@ -231,15 +265,14 @@ impl Runs {
         ops.runtime.set_block_data(block_data).await;
         ops.runtime.set_invalid_blocks(HashMap::new()).await;
         ops.runtime.set_seal_records(true);
-        ops.runtime.set_funding(Some(funding));
+        ops.runtime.set_funding(Some(meter.clone()));
         ops.runtime.cost.charge_storage_left_in_space();
         ops.runtime.cost.comm_ledger().reset();
-        ops.runtime.cost.set_own_origin(Some(envelope.sig.to_vec()), FOREIGN_WORK_BUDGET);
         let cells = runtime_cells(&ops.runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         let setup = started.elapsed();
-        let (processed, number_channels) = ops.process_deploy_with_mergeable_data(envelope).await?;
+        let (mut processed, number_channels) = ops.process_deploy_with_mergeable_data(envelope).await?;
         let evaluated = started.elapsed();
         let overdrawn = journal_overdrawn(Arc::new(runtime_cells(&ops.runtime)?))
             .map_err(|e| invalid(format!("journal: {e}")))?;
@@ -251,10 +284,15 @@ impl Runs {
         let checkpointed = started.elapsed();
         ops.runtime.set_funding(None);
         self.give_back(false, Pooled { runtime: ops.runtime, base });
+        let metered = meter.take();
+        processed
+            .deploy_log
+            .extend(metered.refusals.iter().map(super::stops::to_event));
         Ok(EnvelopeEffect {
             run: envelope_run(&processed),
             surfaces,
             work,
+            metered: metered.into(),
             processed,
             number_channels,
             changes,
@@ -275,7 +313,9 @@ impl Runs {
         recorded: ProcessedDeploy,
         block_data: BlockData,
         reservations: Vec<(WalletOwner, Reservation)>,
-        funding: Arc<dyn Funding>,
+        meter: Arc<MembraneMeter>,
+        logged: Vec<Refusal>,
+        recorded_work: Option<Surfaces>,
     ) -> Result<EnvelopeEffect, CasperError> {
         let Pooled { runtime, base } = self.runtime_at(true, pre_root).await?;
         let mut replay = ReplayRuntimeOps::new_from_runtime(runtime);
@@ -283,10 +323,9 @@ impl Runs {
         runtime.set_block_data(block_data).await;
         runtime.set_invalid_blocks(HashMap::new()).await;
         runtime.set_seal_records(true);
-        runtime.set_funding(Some(funding));
+        runtime.set_funding(Some(meter.clone()));
         runtime.cost.charge_storage_left_in_space();
         runtime.cost.comm_ledger().reset();
-        runtime.cost.set_own_origin(Some(recorded.deploy.sig.to_vec()), FOREIGN_WORK_BUDGET);
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -304,6 +343,8 @@ impl Runs {
             .into_iter()
             .collect();
         let work: Surfaces = replay.runtime_ops.runtime.cost.comm_ledger().take_work().into_iter().collect();
+        let work = super::stops::settled_work(&logged, work, recorded_work.as_ref())
+        .map_err(|e| invalid(format!("a stopped membrane does not settle: {e:?}")))?;
         let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
         replay.runtime_ops.runtime.set_funding(None);
         self.give_back(true, Pooled { runtime: replay.runtime_ops.runtime, base });
@@ -311,6 +352,7 @@ impl Runs {
             run: envelope_run(&recorded),
             surfaces,
             work,
+            metered: meter.take().into(),
             processed: recorded,
             number_channels,
             changes,
@@ -330,6 +372,7 @@ impl EnvelopeExecutor {
             number_channels: NumberChannelsEndVal::default(),
             surfaces: Vec::new(),
             work: Vec::new(),
+            metered: RunMeter::default(),
             changes: Vec::new(),
             journal: Vec::new(),
             timing: Default::default(),
@@ -424,9 +467,11 @@ impl EnvelopeExecutor {
         let mut overdrawn = Vec::with_capacity(effects.len());
         let mut surfaces = Vec::with_capacity(effects.len());
         let mut work = Vec::with_capacity(effects.len());
+        let mut metered = Vec::with_capacity(effects.len());
         for effect in effects {
             surfaces.push(effect.surfaces);
             work.push(effect.work);
+            metered.push(effect.metered);
             runs.push(effect.run);
             processed.push(effect.processed);
             journals.push(effect.journal);
@@ -436,6 +481,7 @@ impl EnvelopeExecutor {
             mid_root: merged.mid_root,
             surfaces,
             work,
+            metered,
             runs,
             processed,
             kept,
@@ -501,6 +547,7 @@ impl EnvelopeExecutor {
             footprints,
             surfaces,
             work,
+            metered,
             overdrawn,
         } = self.merge(pre_root, effects, &admitted)?;
         timings.merge = started.elapsed();
@@ -519,6 +566,7 @@ impl EnvelopeExecutor {
             footprints,
             surfaces,
             work,
+            metered,
             overdrawn,
             gate,
             settlement,
@@ -537,8 +585,15 @@ impl EnvelopeExecutor {
         let mut inputs = gate_inputs(envelopes.iter())?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let gate = gate_block(&reader, &PhloLimitDemand, &inputs)?;
+        let close = self.close_hold(&block_data)?;
+        let gate = gate_block_with_close(
+            &reader,
+            &PhloLimitDemand,
+            &inputs,
+            close.as_ref().map(|(owner, amount)| (owner, *amount)),
+        )?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), gate.table.clone()));
+        let ledger = BlockLedger::new();
         let gate_time = started.elapsed();
         let effects: Vec<EnvelopeEffect> = stream::iter(envelopes.into_iter().enumerate())
             .map(|(i, envelope)| {
@@ -547,14 +602,15 @@ impl EnvelopeExecutor {
                 let block_data = block_data.clone();
                 let admitted = gate.entries[i].admitted();
                 let held = reservations(gate, &inputs[i], i);
-                let funding = EnvelopeFunding::new(purses.clone(), &gate.entries[i].envelope_sig);
+                let funding = EnvelopeFunding::new(purses.clone(), inputs[i].paying_wallets());
+                let meter = MembraneMeter::play(funding, ledger.clone());
                 let runs = Arc::clone(&self.runs);
                 let pre_root = pre_root.clone();
                 async move {
                     if !admitted {
                         return Ok(Self::refused(envelope));
                     }
-                    tokio::spawn(async move { runs.run(&pre_root, envelope, block_data, held, funding).await })
+                    tokio::spawn(async move { runs.run(&pre_root, envelope, block_data, held, meter).await })
                         .await
                         .map_err(|e| invalid(format!("an envelope run stopped: {e}")))?
                 }
@@ -578,20 +634,74 @@ impl EnvelopeExecutor {
         recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
+        self.replay_recorded(pre_root, recorded, None, recorded_gate, block_data)
+            .await
+    }
+
+    pub async fn replay_with_refusals(
+        &self,
+        pre_root: &StateHash,
+        recorded: Vec<ProcessedDeploy>,
+        recorded_gate: &[GateEntry],
+        block_data: BlockData,
+        logged: Vec<Vec<Refusal>>,
+        recorded_work: Option<Vec<Surfaces>>,
+    ) -> Result<ExecutedBlock, CasperError> {
+        let recorded = recorded
+            .into_iter()
+            .zip(logged)
+            .map(|(mut processed, logged)| {
+                processed
+                    .deploy_log
+                    .retain(|event| !matches!(event, models::rust::casper::protocol::casper_message::Event::Refusal(_)));
+                processed
+                    .deploy_log
+                    .extend(logged.iter().map(super::stops::to_event));
+                processed
+            })
+            .collect();
+        self.replay_recorded(pre_root, recorded, recorded_work, recorded_gate, block_data)
+            .await
+    }
+
+    pub async fn replay_recorded(
+        &self,
+        pre_root: &StateHash,
+        recorded: Vec<ProcessedDeploy>,
+        recorded_work: Option<Vec<Surfaces>>,
+        recorded_gate: &[GateEntry],
+        block_data: BlockData,
+    ) -> Result<ExecutedBlock, CasperError> {
         let mut inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let gate = check_recorded(&reader, &PhloLimitDemand, &inputs, recorded_gate)
+        let close = self.close_hold(&block_data)?;
+        let gate = check_recorded_with_close(
+            &reader,
+            &PhloLimitDemand,
+            &inputs,
+            recorded_gate,
+            close.as_ref().map(|(owner, amount)| (owner, *amount)),
+        )
             .map_err(|e| invalid(format!("the recorded gate does not replay: {e}")))?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), gate.table.clone()));
-        let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().enumerate())
-            .map(|(i, processed)| {
+        let logged = recorded
+            .iter()
+            .map(super::stops::refusals_of)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| invalid(format!("a refusal event does not decode: {e}")))?;
+        let ledger = BlockLedger::new();
+        let logged_runs = logged.clone();
+        let effects: Vec<EnvelopeEffect> = stream::iter(recorded.into_iter().zip(logged).enumerate())
+            .map(|(i, (processed, logged))| {
                 let gate = &gate;
                 let inputs = &inputs;
                 let block_data = block_data.clone();
                 let admitted = gate.entries[i].admitted();
                 let held = reservations(gate, &inputs[i], i);
-                let funding = EnvelopeFunding::new(purses.clone(), &gate.entries[i].envelope_sig);
+                let funding = EnvelopeFunding::new(purses.clone(), inputs[i].paying_wallets());
+                let work = recorded_work.as_ref().and_then(|w| w.get(i).cloned());
+                let meter = MembraneMeter::replay(funding, ledger.clone(), &logged);
                 let runs = Arc::clone(&self.runs);
                 let pre_root = pre_root.clone();
                 async move {
@@ -599,7 +709,7 @@ impl EnvelopeExecutor {
                         return Ok(Self::refused(processed.deploy));
                     }
                     tokio::spawn(async move {
-                        runs.replay_one(&pre_root, processed, block_data, held, funding)
+                        runs.replay_one(&pre_root, processed, block_data, held, meter, logged, work)
                             .await
                     })
                     .await
@@ -609,6 +719,18 @@ impl EnvelopeExecutor {
             .buffered(self.workers)
             .try_collect()
             .await?;
+        let logged_all: Vec<Refusal> = logged_runs.into_iter().flatten().collect();
+        let reached = effects
+            .iter()
+            .flat_map(|e| e.metered.reached.iter().map(|(k, v)| (k.clone(), *v)))
+            .collect();
+        accept_metered(
+            &|wallet| purses.free(wallet).unwrap_or(0),
+            &logged_all,
+            &ledger.drawn(),
+            &reached,
+        )
+        .map_err(|e| invalid(format!("the membrane stops do not replay: {e}")))?;
         self.finish(pre_root, inputs, gate, effects, &block_data, PhaseTimings::default())
             .await
     }
@@ -708,15 +830,37 @@ pub struct BlockExecutor {
     runtime_manager: Arc<RuntimeManager>,
     slashes: Arc<dyn SlashSource>,
     conservation: Option<Arc<Conservation>>,
+    close_charge: Option<super::close_charge::CloseCharge>,
 }
 
 impl BlockExecutor {
+    async fn close_gate(
+        &self,
+        pre_root: &StateHash,
+        executed: &ExecutedBlock,
+        logged: Option<&[Refusal]>,
+    ) -> Result<(SystemGate, Arc<MembraneMeter>, Arc<dyn Funding>), CasperError> {
+        let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        let purses = Arc::new(BlockPurses::new(Box::new(reader), executed.gate.table.clone()));
+        let funding = CloseFunding::new(purses, executed.metered.iter().map(|m| &m.drawn));
+        let meter = match logged {
+            Some(logged) => MembraneMeter::replay(funding.clone(), BlockLedger::new(), logged),
+            None => MembraneMeter::play(funding.clone(), BlockLedger::new()),
+        };
+        let gate = SystemGate {
+            funding: Some(meter.clone()),
+            close: self.close_charge,
+        };
+        Ok((gate, meter, funding))
+    }
+
     pub fn new(runtime_manager: Arc<RuntimeManager>, workers: usize) -> Self {
         BlockExecutor {
             envelopes: EnvelopeExecutor::new(Arc::clone(&runtime_manager), workers),
             runtime_manager,
             slashes: Arc::new(NoSlashing),
             conservation: None,
+            close_charge: None,
         }
     }
 
@@ -737,16 +881,23 @@ impl BlockExecutor {
             .execute(pre_root, envelopes, block_data(block))
             .await?;
         let started = std::time::Instant::now();
+        let (gate, close_meter, _) = self.close_gate(pre_root, &executed, None).await?;
         let (post_root, _, system_deploys) = self
             .runtime_manager
-            .compute_state(
+            .compute_state_gated(
                 &executed.settled_root,
                 vec![],
                 vec![close_block(block)],
                 block_data(block),
                 None,
+                Some(gate),
             )
             .await?;
+        let close_refusals = close_meter.take().refusals;
+        let system_deploys: Vec<_> = system_deploys
+            .into_iter()
+            .map(|deploy| super::stops::with_refusals(deploy, &close_refusals))
+            .collect();
         let close_block_time = started.elapsed();
         let started = std::time::Instant::now();
         self.audit(block, &executed.settlement, &post_root).await;
@@ -770,6 +921,12 @@ impl BlockExecutor {
             record: started.elapsed(),
         };
         Ok((record, timings))
+    }
+
+    pub fn with_close_charge(mut self, close: super::close_charge::CloseCharge) -> Self {
+        self.envelopes = self.envelopes.with_close_precharge(close.pre_charge);
+        self.close_charge = Some(close);
+        self
     }
 
     pub fn with_conservation(mut self, conservation: Arc<Conservation>) -> Self {
@@ -917,9 +1074,10 @@ impl ExecutionBackend for BlockExecutor {
             .collect::<Result<Vec<_>, _>>()?;
         let replayed = self
             .envelopes
-            .replay(
+            .replay_recorded(
                 record.pre_root(),
                 processed,
+                Some(recorded.iter().map(|entry| entry.work.clone()).collect()),
                 record.gate(),
                 block_data(block),
             )
@@ -933,20 +1091,34 @@ impl ExecutionBackend for BlockExecutor {
         if record.settlement() != Some(&replayed.settlement) {
             return Err(mismatch("the settled charges"));
         }
+        let close_logged = super::stops::system_refusals(record.system_deploys())
+            .map_err(|e| mismatch(&format!("a close refusal does not decode: {e}")))?;
+        let (gate, close_meter, close_funding) = self
+            .close_gate(record.pre_root(), &replayed, Some(&close_logged))
+            .await?;
         let post_root = self
             .runtime_manager
-            .replay_compute_state(
+            .replay_compute_state_gated(
                 &replayed.settled_root,
                 vec![],
                 record.system_deploys().to_vec(),
                 &block_data(block),
                 None,
                 false,
+                Some(gate),
             )
             .await?;
         if post_root != *record.post_root() {
             return Err(mismatch("post-state root"));
         }
+        let closed = close_meter.take();
+        accept_metered(
+            &|wallet| close_funding.limit(wallet),
+            &close_logged,
+            &closed.drawn,
+            &closed.reached,
+        )
+        .map_err(|e| mismatch(&format!("the close's membrane stops: {e}")))?;
         self.audit(block, &replayed.settlement, &post_root).await;
         Ok(post_root)
     }

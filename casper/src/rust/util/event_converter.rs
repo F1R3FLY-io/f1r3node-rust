@@ -66,8 +66,8 @@ pub fn to_casper_event(event: RspaceEvent) -> Event {
     }
 }
 
-pub fn to_rspace_event(event: &Event) -> RspaceEvent {
-    match event {
+pub fn to_rspace_event(event: &Event) -> Option<RspaceEvent> {
+    Some(match event {
         Event::Produce(produce_event) => RspaceEvent::IoEvent(IOEvent::Produce(Produce {
             channel_hash: Blake2b256Hash::from_bytes_prost(&produce_event.channels_hash),
             hash: Blake2b256Hash::from_bytes_prost(&produce_event.hash),
@@ -142,5 +142,6 @@ pub fn to_rspace_event(event: &Event) -> RspaceEvent {
                 times_repeated,
             })
         }
-    }
+        Event::Refusal(_) => return None,
+    })
 }

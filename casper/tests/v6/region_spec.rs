@@ -863,7 +863,7 @@ async fn data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_p
     assert_eq!(
         sender.compute_phlo,
         second.runs[0].compute_phlo,
-        "the sender's limit counts only its own work, and the owner's work is charged apart"
+        "the client's run counts only the client's own work (Decision 86)"
     );
     let again = executor
         .replay(
@@ -1280,9 +1280,10 @@ async fn an_unfunded_stored_receive_is_not_a_match_candidate_in_play_or_replay()
 
     for played in [&funded, &held] {
         let again = executor
-            .replay(
+            .replay_recorded(
                 &root,
                 played.processed.clone(),
+                Some(played.work.clone()),
                 &played.gate.entries,
                 block_data(&proposer),
             )
@@ -1299,4 +1300,281 @@ async fn an_unfunded_stored_receive_is_not_a_match_candidate_in_play_or_replay()
         .replay(&root, stale, &held.gate.entries, block_data(&proposer))
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn work_under_an_underfunded_installer_stops_and_the_client_pays_nothing_for_it() {
+    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis_root) = shard(&[(&bob, 100_000)]).await;
+    let service = r#"contract @"svc"(_) = {
+        new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(300) }
+    }"#;
+    let process = process_owner(&Compiler::source_to_adt(service).unwrap());
+    let mut runtime = rm.spawn_runtime().await.unwrap();
+    runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(&genesis_root))
+        .await
+        .unwrap();
+    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
+        .deposit(&process, 200_000)
+        .unwrap();
+    let pre = runtime.create_checkpoint().await.root.to_bytes_prost();
+    let executor = EnvelopeExecutor::new(rm.clone(), 4);
+    let sealed = format!("{{% {service} %}}[# {{ {service} }}]");
+    let first = executor
+        .execute(
+            &pre,
+            vec![envelope(&sealed, 1, &alice, 1_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the service installs");
+    assert_eq!(
+        first.gate.admitted(),
+        vec![true],
+        "{:?}",
+        first.gate.entries[0].verdict
+    );
+    let root = first.settled_root.clone();
+    let left = read_wallet_balance(&rm, &root, &process).await.unwrap();
+    let call = || envelope(r#"@"svc"!(0)"#, 2, &bob, 1_000, 1);
+
+    let funded = executor
+        .execute(&root, vec![call()], block_data(&proposer))
+        .await
+        .expect("the funded call executes");
+    assert!(
+        !funded.processed[0].is_failed,
+        "{:?} {:?} {:?}",
+        funded.processed[0].cost, funded.metered[0], funded.work[0]
+    );
+    assert!(funded.metered[0].refusals.is_empty());
+    let full = funded.metered[0].drawn[&process.canonical_bytes()];
+    assert!(full > 600, "{full}");
+
+    let room = 200;
+    let holding = envelope(&sealed, 3, &alice, (left - room) as i64, 1);
+    let held = executor
+        .execute(&root, vec![call(), holding], block_data(&proposer))
+        .await
+        .expect("the held call executes");
+    assert_eq!(held.gate.admitted(), vec![true, true]);
+    assert!(!held.processed[0].is_failed);
+    let meter = &held.metered[0];
+    assert!(!meter.refusals.is_empty());
+    let drawn = meter.drawn[&process.canonical_bytes()];
+    assert!(drawn <= room, "{drawn}");
+    assert!(meter.refusals.iter().all(|r| r.drawn == drawn));
+    assert!(meter.refusals.iter().any(|r| drawn + r.charge > room));
+    assert_eq!(paid(&held, &bob), paid(&funded, &bob));
+
+    let logged: Vec<_> = held.metered.iter().map(|m| m.refusals.clone()).collect();
+    for _ in 0..8 {
+        let again = executor
+            .replay_with_refusals(
+                &root,
+                held.processed.clone(),
+                &held.gate.entries,
+                block_data(&proposer),
+                logged.clone(),
+                Some(held.work.clone()),
+            )
+            .await
+            .expect("the stopped call replays");
+        assert_eq!(again.settled_root, held.settled_root);
+        assert_eq!(again.metered[0].drawn, meter.drawn);
+        assert_eq!(again.settlement, held.settlement);
+    }
+
+    let unlogged = executor
+        .replay_with_refusals(
+            &root,
+            held.processed.clone(),
+            &held.gate.entries,
+            block_data(&proposer),
+            vec![Vec::new(); held.processed.len()],
+            Some(held.work.clone()),
+        )
+        .await;
+    assert!(unlogged.map_or(true, |r| r.settled_root != held.settled_root));
+    let from_log = executor
+        .replay_recorded(
+            &root,
+            held.processed.clone(),
+            Some(held.work.clone()),
+            &held.gate.entries,
+            block_data(&proposer),
+        )
+        .await
+        .expect("the refusals in the deploy log replay");
+    assert_eq!(from_log.settled_root, held.settled_root);
+    assert_eq!(from_log.settlement, held.settlement);
+
+    let mut early = logged.clone();
+    early[0].iter_mut().for_each(|r| r.drawn = 0);
+    assert!(executor
+        .replay_with_refusals(
+            &root,
+            held.processed.clone(),
+            &held.gate.entries,
+            block_data(&proposer),
+            early,
+            Some(held.work.clone())
+        )
+        .await
+        .is_err());
+
+    let replays = |logged: Vec<Vec<_>>| {
+        let (executor, root, held) = (&executor, &root, &held);
+        let proposer = &proposer;
+        async move {
+            executor
+                .replay_with_refusals(
+                    root,
+                    held.processed.clone(),
+                    &held.gate.entries,
+                    block_data(proposer),
+                    logged,
+                    Some(held.work.clone()),
+                )
+                .await
+                .map(|again| again.settled_root == held.settled_root)
+                .unwrap_or(false)
+        }
+    };
+    let mut high = logged.clone();
+    high[0].iter_mut().for_each(|r| r.drawn += 1);
+    assert!(!replays(high).await, "a drawn amount set too high");
+
+    let tighter = executor
+        .execute(
+            &root,
+            vec![
+                call(),
+                envelope(&sealed, 3, &alice, (left - room / 2) as i64, 1),
+            ],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the tighter call executes");
+    let earlier: Vec<_> = tighter.metered.iter().map(|m| m.refusals.clone()).collect();
+    assert!(!earlier[0].is_empty());
+    assert!(earlier[0]
+        .iter()
+        .all(|r| !logged[0].iter().any(|l| l.step == r.step)));
+    assert!(
+        !replays(earlier).await,
+        "an admitted step changed to refused"
+    );
+}
+
+#[tokio::test]
+async fn substitution_into_a_fired_continuation_is_charged_to_its_installer() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let install = r#"
+        contract @"wide"(@x) = { @"sink"!([x, x, x, x, x, x, x, x, x, x, x, x, x, x, x, x]) } |
+        contract @"thin"(@x) = { Nil }
+    "#;
+    let first = executor
+        .execute(
+            &pre,
+            vec![envelope(install, 1, &alice, 5_000, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the services install");
+    assert!(!first.processed[0].is_failed);
+    let payload = format!("{:?}", vec![7u8; 40]).replace(' ', "");
+    let call = |name: &str| envelope(&format!(r#"@"{name}"!({payload})"#), 2, &bob, 50_000, 1);
+    let mut owners = Vec::new();
+    let mut clients = Vec::new();
+    for name in ["wide", "thin"] {
+        let played = executor
+            .execute(&first.settled_root, vec![call(name)], block_data(&proposer))
+            .await
+            .expect("the call executes");
+        assert!(!played.processed[0].is_failed);
+        let owner: u64 = played.work[0]
+            .iter()
+            .filter(|(s, _)| {
+                s.as_ref()
+                    .is_some_and(|s| s.owner == alice.owner.canonical_bytes())
+            })
+            .map(|(_, w)| *w)
+            .sum();
+        owners.push(owner);
+        clients.push(played.runs[0].compute_phlo);
+    }
+    assert!(owners[0] > owners[1], "{owners:?}");
+    assert_eq!(
+        clients[0], clients[1],
+        "the firer pays the same for either body"
+    );
+}
+
+async fn funded_process(
+    rm: &RuntimeManager,
+    root: &StateHash,
+    term: &str,
+    amount: u64,
+) -> (WalletOwner, StateHash) {
+    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let process = process_owner(&Compiler::source_to_adt(term).unwrap());
+    let mut runtime = rm.spawn_runtime().await.unwrap();
+    runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(root))
+        .await
+        .unwrap();
+    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
+        .deposit(&process, amount)
+        .unwrap();
+    (process, runtime.create_checkpoint().await.root.to_bytes_prost())
+}
+
+#[tokio::test]
+async fn two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full() {
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, genesis_root) = shard(&[(&bob, 100_000), (&carol, 100_000)]).await;
+    let service = r#"contract @"svc"(_) = {
+        new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(300) }
+    }"#;
+    let (process, pre) = funded_process(&rm, &genesis_root, service, 56_000).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 4);
+    let sealed = format!("{{% {service} %}}[# {{ {service} }}]");
+    let first = executor
+        .execute(&pre, vec![envelope(&sealed, 1, &alice, 1_000, 1)], block_data(&proposer))
+        .await
+        .expect("the service installs");
+    let root = first.settled_root.clone();
+    let left = read_wallet_balance(&rm, &root, &process).await.unwrap();
+    let room = left;
+    let calls = vec![
+        envelope(r#"@"svc"!(0)"#, 4, &bob, 1_000, 1),
+        envelope(r#"@"svc"!(0)"#, 5, &carol, 1_000, 1),
+    ];
+    let outcome = executor.execute(&root, calls, block_data(&proposer)).await;
+    let block = outcome.expect("two runs that each fit execute");
+    let charges: Vec<_> = block
+        .settlement
+        .surface_charges
+        .iter()
+        .filter(|sc| sc.purse == process)
+        .collect();
+    let drawn: u64 = charges.iter().map(|sc| sc.drawn).sum();
+    assert!(drawn <= room, "{drawn} > {room}");
+    assert!(
+        charges.iter().all(|sc| sc.drawn == sc.owed),
+        "no step under the membrane runs unpaid: {charges:?}"
+    );
 }

@@ -1360,3 +1360,65 @@ async fn a_process_with_new_hashes_the_same_in_every_deploy_and_is_funded_across
         second.settled_root
     );
 }
+
+#[tokio::test]
+async fn the_close_pre_charge_is_held_before_any_envelope_and_replay_holds_it_too() {
+    use casper::rust::v6::backend::ExecutionBackend;
+    use casper::rust::v6::executor::BlockExecutor;
+    use casper::rust::v6::gate::Verdict;
+    use casper::rust::v6::record::ExecutionRecord;
+    use models::rust::casper::protocol::casper_message::{
+        BlockMessage, Body, F1r3flyState, Header, ProcessedDeploy,
+    };
+    use prost::bytes::Bytes;
+
+    let proposer = party();
+    let (rm, pre) = shard(&[(&proposer, 3_000)]).await;
+    let block = BlockMessage {
+        block_hash: Bytes::from_static(b"v6-close-precharge"),
+        header: Header {
+            parents_hash_list: vec![],
+            timestamp: 1,
+            version: 1,
+            extra_bytes: Bytes::new(),
+        },
+        body: Body {
+            state: F1r3flyState {
+                pre_state_hash: Bytes::new(),
+                post_state_hash: Bytes::new(),
+                bonds: vec![],
+                block_number: 1,
+            },
+            deploys: vec![ProcessedDeploy::empty(envelope(ONE_COMM, 1, &proposer, 1_000, 1))],
+            rejected_deploys: vec![],
+            system_deploys: vec![],
+            extra_bytes: Bytes::new(),
+            applied_from_scope: vec![],
+            merge_base: Bytes::new(),
+            v6: None,
+        },
+        justifications: vec![],
+        sender: proposer.pk.bytes.clone(),
+        seq_num: 1,
+        sig: Bytes::new(),
+        sig_algorithm: String::new(),
+        shard_id: "root".to_string(),
+        extra_bytes: Bytes::new(),
+    };
+    let open = BlockExecutor::new(rm.clone(), 2);
+    let held = BlockExecutor::new(rm.clone(), 2).with_close_charge(
+        casper::rust::v6::close_charge::CloseCharge {
+            price: 0,
+            pre_charge: 2_500,
+        },
+    );
+    let free = open.execute(&pre, &block).await.expect("the block executes");
+    assert_eq!(free.gate()[0].verdict, Verdict::Admitted);
+    let record = held.execute(&pre, &block).await.expect("the block executes");
+    assert!(matches!(record.gate()[0].verdict, Verdict::Refused(_)));
+    assert_eq!(
+        &held.replay(&record, &block).await.expect("the held block replays"),
+        record.post_root()
+    );
+    assert!(open.replay(&record, &block).await.is_err());
+}

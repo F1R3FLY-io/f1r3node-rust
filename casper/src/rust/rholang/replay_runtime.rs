@@ -738,7 +738,7 @@ impl ReplayRuntimeOps {
                 processed_deploy
                     .deploy_log
                     .iter()
-                    .map(event_converter::to_rspace_event)
+                    .filter_map(event_converter::to_rspace_event)
                     .collect(),
             )
             .await?;
@@ -762,7 +762,7 @@ impl ReplayRuntimeOps {
             .rig(
                 event_list
                     .iter()
-                    .map(|event: &Event| event_converter::to_rspace_event(event))
+                    .filter_map(|event: &Event| event_converter::to_rspace_event(event))
                     .collect(),
             )
             .await?)
