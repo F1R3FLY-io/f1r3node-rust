@@ -1543,7 +1543,6 @@ async fn funded_process(
 }
 
 #[tokio::test]
-#[ignore = "blocked: the meter admits each run against the whole wallet, so two runs can overdraw it together (FX-15-charging log)"]
 async fn two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full() {
     let (alice, bob, carol, proposer) = (party(), party(), party(), party());
     let (rm, genesis_root) = shard(&[(&bob, 100_000), (&carol, 100_000)]).await;

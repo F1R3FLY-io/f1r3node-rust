@@ -444,7 +444,12 @@ fn surface_charges(
                     .balance(&purse)
                     .map_err(|e| CasperError::RuntimeError(format!("settlement: {e}")))?;
                 let used = planned.entry(wallet).or_insert(0);
-                let drawn = owed.min(held.saturating_sub(*used));
+                if owed > held.saturating_sub(*used) {
+                    return Err(CasperError::RuntimeError(
+                        "settlement: a surface draw exceeds what the block ledger admitted".into(),
+                    ));
+                }
+                let drawn = owed;
                 *used = used.checked_add(drawn).ok_or_else(overflow)?;
                 out.push(SurfaceCharge {
                     envelope_sig: entry.envelope_sig.clone(),
