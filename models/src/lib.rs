@@ -469,6 +469,9 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => a == b,
             (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => a == b,
             (ExprInstance::GFloat32(a), ExprInstance::GFloat32(b)) => a == b,
+            (ExprInstance::ELambdaBody(a), ExprInstance::ELambdaBody(b)) => a == b,
+            (ExprInstance::EAppBody(a), ExprInstance::EAppBody(b)) => a == b,
+            (ExprInstance::EPiBody(a), ExprInstance::EPiBody(b)) => a == b,
             _ => false,
         }
     }
@@ -519,6 +522,9 @@ impl Hash for expr::ExprInstance {
             ExprInstance::GUint16(a) => a.hash(state),
             ExprInstance::GUint8(a) => a.hash(state),
             ExprInstance::GFloat32(a) => a.hash(state),
+            ExprInstance::ELambdaBody(a) => a.hash(state),
+            ExprInstance::EAppBody(a) => a.hash(state),
+            ExprInstance::EPiBody(a) => a.hash(state),
         }
     }
 }
@@ -643,6 +649,56 @@ impl Hash for EZipper {
         self.pathmap.hash(state);
         self.current_path.hash(state);
         self.is_write_zipper.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for ELambda {
+    fn eq(&self, other: &Self) -> bool {
+        self.bind_count == other.bind_count
+            && self.body == other.body
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for ELambda {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bind_count.hash(state);
+        self.body.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for EApp {
+    fn eq(&self, other: &Self) -> bool {
+        self.fun == other.fun
+            && self.args == other.args
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for EApp {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.fun.hash(state);
+        self.args.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
+impl PartialEq for EPi {
+    fn eq(&self, other: &Self) -> bool {
+        self.bind_count == other.bind_count
+            && self.param_types == other.param_types
+            && self.codomain == other.codomain
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for EPi {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bind_count.hash(state);
+        self.param_types.hash(state);
+        self.codomain.hash(state);
         self.connective_used.hash(state);
     }
 }
@@ -909,6 +965,7 @@ impl PartialEq for ConnectiveInstance {
             (ConnectiveInstance::ConnString(a), ConnectiveInstance::ConnString(b)) => a == b,
             (ConnectiveInstance::ConnUri(a), ConnectiveInstance::ConnUri(b)) => a == b,
             (ConnectiveInstance::ConnByteArray(a), ConnectiveInstance::ConnByteArray(b)) => a == b,
+            (ConnectiveInstance::ConnType(a), ConnectiveInstance::ConnType(b)) => a == b,
             _ => false,
         }
     }
@@ -926,6 +983,7 @@ impl Hash for ConnectiveInstance {
             ConnectiveInstance::ConnString(a) => a.hash(state),
             ConnectiveInstance::ConnUri(a) => a.hash(state),
             ConnectiveInstance::ConnByteArray(a) => a.hash(state),
+            ConnectiveInstance::ConnType(a) => a.hash(state),
         }
     }
 }

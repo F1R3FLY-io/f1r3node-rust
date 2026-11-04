@@ -575,6 +575,51 @@ impl PrettyPrinter {
                         }
                     }
                 }
+                ExprInstance::ELambdaBody(lambda) => {
+                    let params = (0..lambda.bind_count)
+                        .map(|i| format!("_{}", i))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let body = self.build_string_from_message(
+                        lambda
+                            .body
+                            .as_ref()
+                            .expect("ELambda body field was None, should be Some"),
+                    );
+                    Ok(format!("(({}) => {})", params, wrap_with_braces(body)))
+                }
+                ExprInstance::EAppBody(app) => {
+                    let fun = self.build_string_from_message(
+                        app.fun
+                            .as_ref()
+                            .expect("EApp fun field was None, should be Some"),
+                    );
+                    let args = app
+                        .args
+                        .iter()
+                        .map(|a| self.build_string_from_message(a))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Ok(format!("{}({})", fun, args))
+                }
+                ExprInstance::EPiBody(pi) => {
+                    let codomain = self.build_string_from_message(
+                        pi.codomain
+                            .as_ref()
+                            .expect("EPi codomain field was None, should be Some"),
+                    );
+                    // Non-dependent sugar: 1-param Pi with codomain never
+                    // referencing the binder. Phase 2a stores both forms
+                    // identically, so render always with explicit params.
+                    let params = pi
+                        .param_types
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| format!("_{}: {}", i, self.build_string_from_message(p)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Ok(format!("(({}) -> {})", params, wrap_with_braces(codomain)))
+                }
             },
             // TODO: Figure out if we can prevent prost from generating - OLD
             None => Ok(String::from("Nil")),
@@ -898,6 +943,7 @@ impl PrettyPrinter {
                     ConnectiveInstance::ConnString(_) => Ok(String::from("String")),
                     ConnectiveInstance::ConnUri(_) => Ok(String::from("Uri")),
                     ConnectiveInstance::ConnByteArray(_) => Ok(String::from("ByteArray")),
+                    ConnectiveInstance::ConnType(_) => Ok(String::from("Type")),
                 },
                 None => Ok(String::new()),
             }

@@ -276,6 +276,21 @@ message Expr {
     uint32 g_uint32 = 41;          // Unsigned 32-bit integer (u32 suffix)
     uint32 g_uint16 = 42;          // Unsigned 16-bit integer (u16 suffix), always <= u16::MAX
     uint32 g_uint8 = 43;           // Unsigned 8-bit integer (u8 suffix), always <= u8::MAX
+
+    // Calculus of Constructions (Phase 1a): lambda abstraction and application.
+    // Terms-as-processes; types will reuse these variants plus EPi in a later
+    // phase. Binders are DeBruijn levels, same convention as `New`/`Receive`:
+    // a lambda introduces `bindCount` levels that the body references via
+    // `Var::bound_var`.
+    ELambda e_lambda_body = 44;
+    EApp e_app_body = 45;
+
+    // Calculus of Constructions (Phase 2a): dependent function type `(x: A)
+    // -> B`. `A -> B` surface syntax is sugar for `(_: A) -> B` where the
+    // binder is unused in `B`. Types-as-processes; a Pi value reduces to
+    // itself under β-WHNF (same as ELambda). Typechecker arrives in a later
+    // phase; for now Pi flows through the pipeline as an opaque value.
+    EPi e_pi_body = 46;
   }
 }
 
@@ -372,6 +387,44 @@ message EMethod {
 message KeyValuePair {
   Par key = 1 [(scalapb.field).no_box = true];
   Par value = 2 [(scalapb.field).no_box = true];
+}
+
+// Lambda abstraction. `bindCount` DeBruijn levels are bound in `body`.
+// Non-dependent (no per-binder type annotation yet); Phase 2 adds annotations
+// via a parallel ELambdaTyped or by widening this message.
+message ELambda {
+  sint32 bindCount = 1;
+  Par body = 2 [(scalapb.field).no_box = true];
+  bytes locallyFree = 3
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 4;
+}
+
+// Function application. `args.len()` must equal `fun`'s ELambda bindCount at
+// reduction time; otherwise InterpreterError. Reduction is β-WHNF.
+message EApp {
+  Par fun = 1 [(scalapb.field).no_box = true];
+  repeated Par args = 2;
+  bytes locallyFree = 3
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 4;
+}
+
+// Dependent function type. `bindCount` DeBruijn levels are bound in
+// `codomain`, each with the corresponding entry in `paramTypes`.
+// `paramTypes.len() == bindCount`. Non-dependent sugar `A -> B` is stored
+// as `Pi { bindCount: 1, paramTypes: [A], codomain: B }` with the binder
+// unused in `B`.
+message EPi {
+  sint32 bindCount = 1;
+  repeated Par paramTypes = 2;
+  Par codomain = 3 [(scalapb.field).no_box = true];
+  bytes locallyFree = 4
+      [(scalapb.field).type =
+           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  bool connective_used = 5;
 }
 
 // A variable used as a var should be bound in a process context, not a name
@@ -493,6 +546,11 @@ message Connective {
     bool conn_string = 7;
     bool conn_uri = 8;
     bool conn_byte_array = 9;
+    // CoC Phase 2c: the universe. `Type` is a process (a value) and
+    // also a pattern that matches any well-typed type-level process.
+    // Pattern-matching semantics arrive with the typechecker (Phase 2d
+    // onward); for now `Type` flows through as an opaque value.
+    bool conn_type = 10;
   }
 }
 

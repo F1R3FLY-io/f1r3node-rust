@@ -1,22 +1,23 @@
 pub use models::rhoapi::connective::ConnectiveInstance::{
-    ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnUri,
-    VarRefBody,
+    ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnType,
+    ConnUri, VarRefBody,
 };
 pub use models::rhoapi::expr::ExprInstance::{
-    EAndBody, EDivBody, EEqBody, EGtBody, EGteBody, EListBody, ELtBody, ELteBody, EMapBody,
-    EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody, EMultBody, ENegBody,
-    ENeqBody, ENotBody, EOrBody, EPathmapBody, EPercentPercentBody, EPlusBody, EPlusPlusBody,
-    ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool, GByteArray, GDouble,
-    GFixedPoint, GFloat32, GInt, GInt32, GString, GUint16, GUint32, GUint64, GUint8, GUri,
+    EAndBody, EAppBody, EDivBody, EEqBody, EGtBody, EGteBody, ELambdaBody, EListBody, ELtBody,
+    ELteBody, EMapBody, EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody,
+    EMultBody, ENegBody, ENeqBody, ENotBody, EOrBody, EPathmapBody, EPercentPercentBody, EPiBody,
+    EPlusBody, EPlusPlusBody, ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool,
+    GByteArray, GDouble, GFixedPoint, GFloat32, GInt, GInt32, GString, GUint16, GUint32, GUint64,
+    GUint8, GUri,
 };
 pub use models::rhoapi::g_unforgeable::UnfInstance::{GDeployerIdBody, GPrivateBody};
 pub use models::rhoapi::var::VarInstance::{BoundVar, FreeVar, Wildcard};
 pub use models::rhoapi::var::{VarInstance, WildcardMsg};
 pub use models::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
-    EMap, EMatches, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, Expr, GBigRational, GPrivate,
-    GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, Receive,
+    BindPattern, Bundle, Connective, ConnectiveBody, EAnd, EApp, EDiv, EEq, EGt, EGte, ELambda,
+    EList, ELt, ELte, EMap, EMatches, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
+    EPathMap, EPercentPercent, EPi, EPlus, EPlusPlus, ESet, ETuple, EVar, Expr, GBigRational,
+    GPrivate, GUnforgeable, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, Receive,
     ReceiveBind, Send, TaggedContinuation, Var, VarRef,
 };
 

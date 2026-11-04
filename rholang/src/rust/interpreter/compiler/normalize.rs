@@ -419,6 +419,26 @@ pub fn normalize_ann_proc<'ast>(
             normalize_p_var_ref(*kind, var, input, proc.span)
         }
 
+        // CoC Phase 1b: lambda abstraction and application. Types as processes
+        // (dependent-type binders / Pi) land in Phase 2.
+        Proc::Lambda { params, body } => {
+            use crate::rust::interpreter::compiler::normalizer::processes::p_lambda_normalizer::normalize_p_lambda;
+            normalize_p_lambda(params, body, input, _env, parser)
+        }
+
+        Proc::App { fun, args } => {
+            use crate::rust::interpreter::compiler::normalizer::processes::p_app_normalizer::normalize_p_app;
+            normalize_p_app(fun, args, input, _env, parser)
+        }
+
+        // CoC Phase 2a: Pi type — a type-level process. Params carry
+        // type annotations; codomain is normalized under the extended
+        // scope. No typechecking yet.
+        Proc::Pi { params, codomain } => {
+            use crate::rust::interpreter::compiler::normalizer::processes::p_pi_normalizer::normalize_p_pi;
+            normalize_p_pi(params, codomain, input, _env, parser)
+        }
+
         // Select - handle select expressions (choice constructs)
         Proc::Select { branches: _ } => {
             // TODO: Implement select normalizer when needed

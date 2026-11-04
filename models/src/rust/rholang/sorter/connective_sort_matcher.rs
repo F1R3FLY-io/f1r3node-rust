@@ -158,6 +158,22 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                 ]),
             },
 
+            Some(ConnectiveInstance::ConnType(b)) => ScoredTerm {
+                term: Connective {
+                    connective_instance: Some(ConnectiveInstance::ConnType(b.clone())),
+                },
+                score: Tree::<ScoreAtom>::create_node_from_i64s(vec![
+                    Score::CONNECTIVE_TYPE as i64,
+                    {
+                        if *b {
+                            1
+                        } else {
+                            0
+                        }
+                    },
+                ]),
+            },
+
             None => ScoredTerm {
                 term: Connective::default(),
                 score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),

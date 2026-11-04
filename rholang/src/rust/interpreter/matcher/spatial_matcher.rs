@@ -154,6 +154,28 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            // CoC Phase 2c: `Type` matches any type-level value. Phase
+            // 2d (typechecker) will refine this to "target typechecks to
+            // Type". For now, match the universe constant, Pi types, and
+            // base-type tokens as the inhabitants.
+            Some(ConnType(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(EPiBody(_)),
+                }) => Some(()),
+                _ => match target.connectives.first() {
+                    Some(c) => match &c.connective_instance {
+                        Some(ConnBool(_))
+                        | Some(ConnInt(_))
+                        | Some(ConnString(_))
+                        | Some(ConnUri(_))
+                        | Some(ConnByteArray(_))
+                        | Some(ConnType(_)) => Some(()),
+                        _ => None,
+                    },
+                    None => None,
+                },
+            },
+
             None => None,
         }
     }

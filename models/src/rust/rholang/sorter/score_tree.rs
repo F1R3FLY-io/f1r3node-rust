@@ -248,6 +248,9 @@ impl Score {
     pub const EPLUSPLUS: i32 = 120;
     pub const EMINUSMINUS: i32 = 121;
     pub const EMOD: i32 = 122;
+    pub const ELAMBDA: i32 = 123;
+    pub const EAPP: i32 = 124;
+    pub const EPI: i32 = 125;
 
     // Other
     pub const QUOTE: i32 = 203;
@@ -272,6 +275,7 @@ impl Score {
     pub const CONNECTIVE_STRING: i32 = 406;
     pub const CONNECTIVE_URI: i32 = 407;
     pub const CONNECTIVE_BYTEARRAY: i32 = 408;
+    pub const CONNECTIVE_TYPE: i32 = 409;
 
     pub const PAR: i32 = 999;
 }
