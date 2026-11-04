@@ -1,0 +1,15 @@
+{
+  "schema": "cbc-acceptance/v2",
+  "artifact": "formal/tlaplus/soak_cleanup/clean.cfg",
+  "source_sha256": "8e691e15db5e5240418fe2ec605e9dca77c5c3c4ce7f49097d7497a532b86059",
+  "claim": {
+    "path": "docs/claims/soak-segment-cleanup.md",
+    "sha256": "ee3b85468c121cb316388c95e58da557cf9eadd535d35a62273e27eba0ccc2ba"
+  },
+  "claim_id": "CLAIM-SOAK-CLEANUP-001",
+  "claim_set_sha256": "1cacbaa7eacf52eb3887420dd9f64348d2f1c28a3f37e217fa11c6cc5c263147",
+  "evidence_sha256": "242c2681d18ad416fae22ffcc2d36e7b5fb0a7a1cadc3bbde78f222823329b26",
+  "accepted_by": "",
+  "approved_at": "",
+  "approval_ref": ""
+}
