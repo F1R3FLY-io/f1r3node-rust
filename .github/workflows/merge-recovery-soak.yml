@@ -350,13 +350,7 @@ env:
   #   Clears three startup warnings on every shard. Verified: descends from
   #   2d3a8d4; test_concurrent_bridge_locks passes locally with none of the
   #   warnings on any node.
-  # 2026-11-05: e1e00ee -> 61ae9d1 (system-integration main, PR #167).
-  #   Recognizes floor-cache request failures and response timeouts as retry
-  #   evidence. Retains recovery, target-block, and state-hash assertions.
-  #   Also updates cAdvisor and runtime mounts, and retains monitoring logs.
-  #   Verified ancestry from e1e00ee and reviewed the complete dependency diff.
-  #   The reviewed PR head passed all nine Smoke Test jobs.
-  SYSTEM_INTEGRATION_REF: 61ae9d14c4b8b8881fc0a82a2b6eac3fcbe5a797
+  SYSTEM_INTEGRATION_REF: e1e00ee503ea3071c03abb84245cc0d48e441e82
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
