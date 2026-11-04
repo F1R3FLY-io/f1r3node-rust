@@ -2412,6 +2412,8 @@ mod tests {
         assert_eq!(receipt["commPhlo"], 2);
         assert_eq!(receipt["computePhlo"], 40);
         assert_eq!(receipt["eventCount"], 5);
+    }
+
     fn param_env(name: &str, value: RholangValue) -> HashMap<String, Par> {
         let mut env = HashMap::new();
         env.insert(format!("rho:deploy:param:{}", name), value.to_par());
@@ -2499,6 +2501,8 @@ mod tests {
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
                 parameters: Vec::new(),
+                cosignatures: Vec::new(),
+                required_cosigners: Vec::new(),
             },
             Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
             crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),

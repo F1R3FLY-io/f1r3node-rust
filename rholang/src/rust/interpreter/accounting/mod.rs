@@ -141,8 +141,6 @@ impl CostManager {
 
     pub fn clear_log(&self) { self.log.lock().unwrap().clear(); }
 
-    pub fn record_comm(&self) { self.comms.on_comm(); }
-
     pub fn comm_ledger(&self) -> &comm_ledger::CommLedger { &self.comms }
 
     pub fn charge_storage_left_in_space(&self) {

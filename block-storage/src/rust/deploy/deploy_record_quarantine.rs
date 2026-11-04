@@ -428,6 +428,7 @@ mod tests {
             expiration_timestamp: None,
             parameters: Vec::new(),
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         })
     }
 
@@ -442,6 +443,7 @@ mod tests {
             expiration_timestamp: Some(1000),
             parameters: Vec::new(),
             cosignatures: Vec::new(),
+            required_cosigners: Vec::new(),
         })
     }
 

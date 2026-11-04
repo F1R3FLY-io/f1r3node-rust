@@ -425,8 +425,6 @@ fn handle_result(
                 cost.charge(Cost::create(0, "produces storage refund"))?;
             }
 
-            cost.record_comm();
-
             let last_iteration = !triggered_by_persistent;
 
             if last_iteration {

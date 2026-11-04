@@ -175,3 +175,14 @@ v6 tests: 104 passed, 0 failed, 10 ignored. `seal_wiring_spec`: 3 passed. `rev_b
 
 - Known issue, not blocking: the Native balance path puts the validated address in source text (dry run section 2.2). The validation refuses every string that is not an address, and `balance_query_rejects_addresses_that_are_not_valid` proves it.
 - Known issue, not blocking: an operator config that still sets `deploy-verified-encodings-cap` is ignored, because the field is gone and the casper config does not deny unknown keys.
+
+### Fixes found by the full suites on the merged tree
+
+| Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|
+| Remove `cost.record_comm()` from `handle_result` and remove `CostManager::record_comm` | Add a surfaces-only ledger call for D8b | D8b's `on_comm_between` (02f70434e) already counts the COMM, so play counted each COMM twice. `rholang/tests/comm_ledger_spec.rs` found it. Production reads only the surfaces and the work, so no root or charge changes. | Yes |
+| Add `cosignatures` and `required_cosigners` to `dev`'s new `DeployData` fixtures in `block-storage` and `web_api.rs` tests, and close the `web_api.rs` test function that the conflict split | — | Compile fixes | Yes |
+
+**Decision 88 label, known issue:** the double count was on FX-8b since efa511e93. It is fixed here. `rholang --test` targets were not in the suites that ran on FX-15-replay, which is why it was not seen there.
+
+`cargo fmt --check` did not run faithfully: the pinned nightly cannot be downloaded in this environment, and stable rustfmt ignores the repository's unstable options, so it reports diffs across untouched files. The lines added in this merge are under 100 columns.
