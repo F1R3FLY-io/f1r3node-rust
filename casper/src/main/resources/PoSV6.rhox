@@ -270,12 +270,26 @@ in {
                           }
                         } |
                         contract movePendingWithdrawer(@state, returnCh) = {
-                          returnCh!(state
-                                    .set("withdrawers",
-                                         state.get("withdrawers") ++
-                                           state.get("allBonds").diff(state.get("allBonds").diff(state.get("pendingWithdrawers"))))
-                                    .set("allBonds", state.get("allBonds").diff(state.get("pendingWithdrawers")))
-                                    .set("pendingWithdrawers", {}))
+                          match (state.get("pendingWithdrawers"), state.get("pendingWithdrawers").toList()) {
+                            (_, []) => { returnCh!(state) }
+                            (pending, [(_, end) ..._]) => {
+                              new prunedCh, prune in {
+                                @ListOps!("fold", state.get("releases").keys().toList(), state.get("releases"), *prune, *prunedCh) |
+                                contract prune(@key, @schedule, resultCh) = {
+                                  if (key == end) { resultCh!(schedule) }
+                                  else { resultCh!(schedule.set(key, schedule.get(key).diff(pending))) }
+                                } |
+                                for (@releases <- prunedCh) {
+                                  returnCh!(state
+                                            .set("withdrawers",
+                                                 state.get("withdrawers") ++ state.get("allBonds").diff(state.get("allBonds").diff(pending)))
+                                            .set("allBonds", state.get("allBonds").diff(pending))
+                                            .set("pendingWithdrawers", {})
+                                            .set("releases", releases))
+                                }
+                              }
+                            }
+                          }
                         } |
                         contract removeQuarantinedWithdrawers(@currentBlockNumber, @state, returnCh) = {
                           new dueCh, collectDue in {
