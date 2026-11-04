@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2495,6 +2495,87 @@ No blocking item is added or closed by this revision. The gate status of revisio
 - The `AlreadyPresent` rejection entry and the endlessly retried failed release are added as known issues.
 
 
+## Revision 28 (actions A-8 and A-9): the FX-8b merge conditions, D10 in production, and the re-bond fix
+
+- **Commits audited:**
+  - `patch/FX-8b` at `6c43a2c8f` (lane A2): the last merge conditions.
+  - `patch/FX-17` at `b7c9a1de8` (lane A2): D10, with `04f16121b` merging FX-17-epoch at `acf9fff28`. It contains FX-8b `6c43a2c8f`.
+  - `patch/FX-17-epoch` at `86bb14a74` (lane B): `a0d65de80` and `86bb14a74`.
+- **Reference:** design r21 (publications `81599ff`), Decisions 107 to 111.
+- **Method:** reading only. No tests were run.
+- **Not changed:** the Q-33 memo, and the FX-17 code for the order floor, P5, the gates, void and Decision 109. The full-suite counts for FX-8b are still not posted.
+
+### FX-8b merge conditions (`6c43a2c8f`)
+
+| Condition | Result |
+|---|---|
+| The F39 negative test | **Met.** `region_spec::the_gate_refuses_a_seal_that_resolves_only_at_run_time` is taken from `dea48f13d`. |
+| The active-set equivalence test (Decision 107) | **Met twice.** `pos_v6_spec::the_one_expression_active_set_pick_agrees_with_the_list_ops_pick` (lane A2, 35 cases, up to 30 bonds) is on FX-8b. Lane B's `the_active_set_expression_picks_what_the_old_loop_picked` (bond maps of 12, 101 and 150 keys) is on FX-17-epoch. Both find the same set in every case. |
+| Full-suite counts | **Open.** |
+
+**Lane A2's answer on F39 and F33: known issue, not blocking. Agreed.**
+- The gate does not refuse every seal that resolves only at run time. A pure stack body under a seal bound at run time passes the gate, which reads it as a token kind and names no wallet.
+- At run time, `check_region_signature` refuses the seal unless its owner signed the deployment or is held. So no wallet outside the deployment's signers is reached, and authority holds.
+- What is lost is the gate's commitment for that signer's wallet. Two things still hold:
+  - The per-block ledger keeps each draw within the wallet's free balance.
+  - Since `c345b400d`, settlement charges such a region to its owner.
+
+Lane A2 asks for a ruling: refuse an unresolved bound seal on a stack body at the gate, which also refuses a token kind passed in at run time, or keep the run-time check as the only guard. That is question 22. F39's end-to-end path and F33 stay known issues until it is ruled.
+
+### D10 in production (`b7c9a1de8`)
+
+**What changes:**
+- `EnvelopeExecutor` no longer holds a fixed pre-charge.
+- `BlockExecutor` has a `CloseChargeSource`: off, fixed (tests), or consensus. The engine builds its executor with `with_consensus_close_charge()`.
+- For each block, `CloseCharge::at(pre_root)` reads two values at the block's true pre-state:
+  - The number of bonds with stake above 0 (`compute_bonds`).
+  - The shard floor (`shard_floor`).
+- Both execute and replay pass the pre-charge to the gate hold (`execute_held`, `replay_held`) and to the close gate.
+- `CLOSE_PHLO_PER_BOND` is 13,000 (Decision 111).
+
+| Check | Result |
+|---|---|
+| The charge is built from consensus data | **Holds.** The bonds and the floor are read at the pre-root, and play and replay both start from it. So every validator computes the same pre-charge. |
+| Wired into production execute and replay | **Holds.** The engine's executor uses the consensus source, and `replay_recorded` reads the pre-charge at `record.pre_root()`. |
+| The Decision 97 hold at the gate | **Holds.** `close_hold` holds the pre-charge on the proposer's wallet before any deployment, in play and in replay. |
+| Decision 111 | **Holds** in code. |
+| The test | `the_consensus_close_charge_reads_the_bonds_and_the_floor_at_the_pre_state`. |
+
+**The lag term is dropped.**
+- r21 §6.3 (Decision 102) applies the per-bond rate to "the bonds at the attested root plus one for each block of execution lag".
+- The code applies it to the bonds at the block's true pre-state, with no lag term. Lane A2's reason: Decision 108 evaluates the pre-charge at execution on the true pre-state, so the exact bond count is known there and no lag estimate is needed. This is the stronger form, because it uses the actual count, where the formula estimated an upper bound.
+- **It is still a difference from the §6.3 text, so this audit labels it blocking until a ruling or a design revision accepts it (question 23).** The recommendation is to update the text.
+
+**Still open for D10:**
+- Void reason (a) when the free balance is less than the pre-charge. The void code is not yet on FX-17, so the gate still holds what is free.
+- F47 at 99 withdrawers: `an_epoch_where_almost_every_validator_withdraws_stays_inside_its_pre_charge` must be enabled and pass with the rate of 13,000.
+
+### The re-bond during quarantine (F51)
+
+- **The early release is fixed** (`a0d65de80`, then `86bb14a74`). When a key that is still in quarantine withdraws again, `withdraw` removes it from every release entry before it adds the key under its new end.
+  - The withdrawing deployer pays for that fold. The close does not run it, so the close bound does not change.
+  - `a_bond_made_during_quarantine_replaces_the_quarantined_amount_and_keeps_the_later_end` shows that the second amount is released at the later end only.
+- **The stranded first amount stays.** Lane B's memo (`D107-rebond-in-quarantine.md`) shows that the first amount is no longer tracked by PoS, so no close releases it. This was also true before Decision 107. Lane B recommends adding the amounts (option 1). The choice is Meredith's (question 24).
+- **F51 is narrowed** to the stranded amount. It is Medium and a known issue, because only the validator's own funds are affected, and they are locked, not moved. The condition before B6 is no longer needed, because the early release, which was the slashing concern, is fixed.
+- **The failed-release path now has a test.** `a_failed_release_keeps_the_withdrawer_and_the_next_epoch_tries_again` empties the native bond, sees the release fail and the key stay, restores the bond, and sees the next epoch close release it. Revision 27's untested-path known issue is closed.
+
+**Merge requirement:** `patch/FX-17` merged FX-17-epoch at `acf9fff28`, which has the early release. It must take `86bb14a74` before FX-17 merges into FX-8b. The cross-host fixture must then be written again.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | Open until the FX-17 order floor, P5 and void code land |
+| D10 | **Blocking** | Mechanism and production wiring on `patch/FX-17`. Waits for void (a), the 99-withdrawer test, and question 23. |
+| F47 (99 withdrawers) | **Blocking** | The rate of 13,000 is in code. The test must be enabled. |
+| Question 23 (the lag term dropped) | **Blocking** until ruled | New |
+| Full-suite counts for FX-8b | Merge condition | Open |
+| FX-17 takes `86bb14a74` | Merge condition | New |
+| F51 (stranded first amount) | Known issue | Narrowed. Question 24. |
+| F39 end-to-end path and F33 | Known issue | Question 22 |
+| F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the Decision 108 griefing case, the (d) drop of uninvolved deployments, the ignored `deploy-verified-encodings-cap`, the `AlreadyPresent` rejection entry, the endlessly retried failed release | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -2519,3 +2600,6 @@ No blocking item is added or closed by this revision. The gate status of revisio
 19. **F47 (measured):** answered on 2026-11-04 (Decision 107: the PoS close is made linear). The PoS close grows about quadratically in the bonds at an epoch boundary, and in the withdrawers that one epoch releases. Is the PoS close made linear (a native active-set pick, and withdrawer folds over the withdrawer maps only), is the number of releases in each close capped, or does the pre-charge gain a quadratic term?
 20. **F47 (withdrawers):** answered on 2026-11-04 (Decision 110: the withdrawer rewrite goes ahead now). The PoS close still grows with the withdrawers of one epoch, and the pre-charge counts bonds only. Is the withdrawer loop rewritten now (a release schedule keyed by epoch, about 2.5 days), or do interim caps on moves and on the quarantine window apply, with withdrawers in quarantine counted as bonds for the pre-charge?
 21. **F47 (99 withdrawers):** answered on 2026-11-04 (Decision 111: the per-bond rate is 13,000). After the withdrawer rewrite, an epoch in which 99 of 100 validators withdraw costs 1,291,842 phlo against a pre-charge of 1,100,000. Is the per-bond rate raised to 13,000, or are the releases of one epoch close bounded to 60 % of the bonds?
+22. **F39 and F33:** a pure stack body under a seal bound at run time passes the gate as a token kind, and only the run-time check refuses a wallet outside the deployment's signers. Does the gate refuse an unresolved bound seal on a stack body (which also refuses a token kind passed in at run time), or does the run-time check stay the only guard?
+23. **D10:** the code applies the per-bond rate to the bonds at the block's true pre-state, with no lag term, because Decision 108 evaluates the pre-charge at execution. Is the §6.3 text of Decision 102 updated to this form?
+24. **F51:** a validator that bonds again in quarantine and withdraws again loses track of its first amount, which stays locked in the native bond. Are the amounts added (lane B's recommendation), kept as two entries, or is the re-bond refused?
