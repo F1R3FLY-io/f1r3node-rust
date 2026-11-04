@@ -1578,3 +1578,32 @@ async fn two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full() {
         "no step under the membrane runs unpaid: {charges:?}"
     );
 }
+
+#[tokio::test]
+async fn the_gate_refuses_a_seal_that_resolves_only_at_run_time() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let shapes = [
+        r#"new c(`rho:system:cosignerId:0`), ch in {
+             ch!(*c) | for (s <- ch) { {% new x in { x!(1) } %}[s] }
+           }"#,
+        r#"new c(`rho:system:cosignerId:0`), ch, slot in {
+             ch!(*c) | for (s <- ch) { {% new x in { x!(1) } | slot :: () %}[s] }
+           }"#,
+        r#"new c(`rho:system:cosignerId:0`), ch, slot in {
+             ch!(*c) | for (s <- ch) { {% @"x"!(1) | slot :: slot :: () %}[s] } | @"slot"!(*slot)
+           }"#,
+    ];
+    for (i, term) in shapes.iter().enumerate() {
+        let played = executor
+            .execute(&pre, vec![cosigned(term, i as i64 + 1, &alice, &bob, 1)], block_data(&proposer))
+            .await
+            .expect("the block executes");
+        assert_eq!(
+            played.gate.entries[0].verdict,
+            Verdict::Refused(Refusal::ForeignSignature),
+            "shape {i}"
+        );
+    }
+}

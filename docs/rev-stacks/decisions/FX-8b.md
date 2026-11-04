@@ -186,3 +186,18 @@ v6 tests: 104 passed, 0 failed, 10 ignored. `seal_wiring_spec`: 3 passed. `rev_b
 **Decision 88 label, known issue:** the double count was on FX-8b since efa511e93. It is fixed here. `rholang --test` targets were not in the suites that ran on FX-15-replay, which is why it was not seen there.
 
 `cargo fmt --check` did not run faithfully: the pinned nightly cannot be downloaded in this environment, and stable rustfmt ignores the repository's unstable options, so it reports diffs across untouched files. The lines added in this merge are under 100 columns.
+
+## Last merge conditions (2026-11-04)
+
+| Decision | Alternatives | Reason | Reversible |
+|---|---|---|---|
+| Take `region_spec::the_gate_refuses_a_seal_that_resolves_only_at_run_time` from dea48f13d. Its settle change is already on FX-8b. | Merge the whole commit | Only the test is missing | Yes |
+| Write `pos_v6_spec::the_one_expression_active_set_pick_agrees_with_the_list_ops_pick` here. It runs the old pick (`toList`, `ListOps` `map` with `fst`, `take`, `toSet`) and the new one (`keys().toList().take().toSet()`) on 35 cases: 0 to 30 bonds with random 65-byte keys, and 1 to 100 active validators. Both give the same set in every case. | Wait for lane B | No branch on `origin` has lane B's test. Lane B can replace this one. | Yes |
+
+Both tests pass.
+
+**Finding for F39 (lane A2's confirmation that lane B asked for). Known issue, not blocking:**
+- The gate does **not** refuse every seal that resolves only at run time. A pure stack body under a seal bound at run time is admitted: `for (s <- ch) { {% slot :: () %}[s] }`. `region::stack_payer` reads an unresolved bound seal on a stack body as a token kind, so it names no wallet.
+- At run time, `split_kind` finds no kind, and `check_region_signature` refuses the seal unless its owner is a signer of the deployment or is held (`held_or_signed`). So no wallet outside the deployment's signers is reached, and authority holds.
+- What is lost: the gate makes no commitment for that signer's wallet. Work under the stack is still bounded by the meter's per-block ledger, which keeps each draw within the wallet's free balance.
+- Fix options, for a ruling: (1) the gate names an unresolved bound seal on a stack body as an unresolved owner, which refuses it. This also refuses a token kind passed in at run time. (2) Keep the run-time check as the only guard and record it under F39. F39 and F33 stay open until this is ruled.
