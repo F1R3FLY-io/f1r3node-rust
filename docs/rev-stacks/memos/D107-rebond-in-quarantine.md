@@ -20,7 +20,7 @@ Lane B, 2026-11-04. Plan r8.23. For Meredith's review. Branch `patch/FX-17-epoch
 | Close at E2 | releases b2 to V1 | releases b2 to V1 |
 | b1 | stays in V1's native bond. PoS no longer tracks it. | the same |
 
-The rewrite keeps the old behaviour. One difference had to be fixed on the way: without the pruning step, the stale entry for E1 would have released b2 at E1, before its own quarantine ended. `movePendingWithdrawer` now removes each moved key from every other release entry. That is a fold over the keys of `releases`, one per epoch with withdrawals still in quarantine, and it carries only the release map.
+The rewrite keeps the old behaviour. One difference had to be fixed on the way: without the pruning step, the stale entry for E1 would have released b2 at E1, before its own quarantine ended. `withdraw` now removes the key from every release entry before adding it under its new end, when the key is still in quarantine. That is a fold over the keys of `releases`, one per epoch with withdrawals still in quarantine, and it carries only the release map. The withdrawing deployer pays for it, and the close does not.
 
 **Test:** `pos_bond_admin_spec::a_bond_made_during_quarantine_replaces_the_quarantined_amount_and_keeps_the_later_end`, with epoch length 10 and quarantine 15:
 - b1 = 1,000, moved at B10, E1 = 25.
