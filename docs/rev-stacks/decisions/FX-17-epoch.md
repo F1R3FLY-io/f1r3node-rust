@@ -83,7 +83,7 @@ No contract body that fires once for each withdrawer refers to the PoS state, so
 
 ### Edge case to review
 
-`movePendingWithdrawer` joins the new withdrawers to `withdrawers` with `++`. If a key is still in quarantine and withdraws again after a new bond, the right side (the new bond) replaces the old amount. That is the same as the old `set`. The old quarantined bond is not added to the new one in either version.
+See `docs/rev-stacks/memos/D107-rebond-in-quarantine.md` (revision 4 below).
 
 ### Tests
 
@@ -95,3 +95,16 @@ No contract body that fires once for each withdrawer refers to the PoS state, so
 - No test makes a release fail. `RevBondAdmin` release fails only when the native bond is missing, and no test can set that up from outside.
 - The cross-host fixture is regenerated.
 - Verification (release): casper `v6::` 90 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
+
+## Revision 4: the follow-ups to the accepted rewrite
+
+- **A re-bond during quarantine.**
+  - Without a fix, the rewrite would have released the new bond at the old quarantine end. The key stayed in the old release entry.
+  - `movePendingWithdrawer` now removes each moved key from every other release entry. It folds over the keys of `releases` and carries only that map.
+  - The behaviour now matches the code before Decision 107. The case and the b1 lock are written up in `docs/rev-stacks/memos/D107-rebond-in-quarantine.md`.
+- **New tests in `pos_bond_admin_spec`:**
+  - `a_failed_release_keeps_the_withdrawer_and_the_next_epoch_tries_again`: the test empties V1's native bond between the withdrawal and the epoch close, so `RevBondAdmin` release fails. V1 stays in `withdrawers` with 1,000 and its wallet does not change. After the native bond is restored, the next epoch close releases it.
+  - `a_bond_made_during_quarantine_replaces_the_quarantined_amount_and_keeps_the_later_end`
+  - `the_active_set_expression_picks_what_the_old_loop_picked`: lane A1's equivalence test. The old `ListOps.map` pick and the new expression choose the same set for bond maps of 12, 101 and 150 random keys, with 5, 100 and 100 active. The old loop runs with a phlo limit of 10⁹, because at 150 bonds it passes the exploratory limit.
+- The cross-host fixture is regenerated.
+- Verification (revision 4, release): casper `v6::` 93 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
