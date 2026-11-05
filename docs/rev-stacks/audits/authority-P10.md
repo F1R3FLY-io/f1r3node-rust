@@ -3153,6 +3153,56 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | The proof-order liveness issue, P12-4, P12-6, P12-7, P12-8, the status pruning, and the earlier known issues | Known issue | Open |
 
 
+## Revision 37 (actions A-8, A-9 and A-10): design r26 and the scope freeze
+
+- **Commits read:**
+  - `patch/FX-17` at `0b01b1663` (lane A2): the merge of `c8c15ffe7` (`c1e70e73e`) and the liveness floor of 25 (`0b01b1663`).
+  - `patch/FX-18` at `915e1c418` (lane A2) and `patch/FX-18-handoff` at `dacacc41a` (lane B), both parked.
+- **Reference:** design r26 (publications `671a704`), Decisions 118 to 123.
+- **Method:** a reading of the diffs and of the design text. No tests were run.
+
+### Decision 118 replaces the reading of revision 36
+
+- Revision 36 kept P12-1, P12-2, P12-3 and P12-5 blocking under Decision 116. **Decision 118 freezes the scope of the handoff at revision 24, and moves joining under P12 and Decision 117 to a later track.**
+- **New labels:** P12-1, P12-2, P12-3, P12-5, F53, lane C's canonical-record finding, items 9 and 10, and the known issues P12-4, P12-6, P12-7 and P12-8 all move to the **P12 track**. None of them blocks the handoff.
+- **FX-18 is parked.** About 3 of its 9.5 days are done. Lane A2 records the remaining work, F53 and items 9 and 10 in the parked plan on `patch/FX-17`. **This agrees with revisions 33 to 36.**
+- **Lane B's handoff record (`dacacc41a`), for the P12 track only:**
+  - The record chains each committee to the previous one by hash, and the outgoing committee certifies the next one through a one-epoch lookahead.
+  - A chain by hash has no gap and no repeat, whatever the epoch index. This meets the gap check of item 9. The slashing part of item 9 stays a known issue until B6.
+  - **Condition:** the lookahead moves the start of service of a new bond by one epoch. That is a consensus change to PoS. It must not reach the shipped branch while FX-18 is parked.
+
+### FX-17 at `0b01b1663`
+
+- **`c8c15ffe7` is merged.** The gate-claim condition is closed on the integration path.
+- **The liveness floor is 25** in `a_long_run_keeps_executor_memory_flat_and_old_receipts_available`, and the memory checks are unchanged. This agrees with the decision of revision 35.
+- **Still open:** the full suites on the tip, the merge into FX-8b, the `dev` 8e6517d63 merge, and the SIGSEGV run.
+
+### What Decisions 119 to 123 change in this audit
+
+| Decision | Effect on open items | New audit work when the code lands |
+|---|---|---|
+| **119:** the close is recorded (κ), not charged, until B6. The pre-charge, its hold and void reason (a) leave the shipped branch. Reasons (b), (c) and (d) and Decisions 101 and 109 stand. | **D10 and F47 leave the handoff gate.** Their subject, the charge for the close, is not on the shipped branch. Both become known issues for B6. The (d) item stays closed. | Check that κ is in the record and that replay reproduces it. Check that void reason (a) and the hold are removed from play, replay and the void handling, with no reason code left that a record can carry. Check that reasons (b), (c) and (d) and the repeat rule are unchanged. |
+| **120:** stored code is bounded by a per-firing limit in its seal. A stored receive is a candidate only if the installer's wallet covers the bound. The bound is charged when the continuation fires, and the unused part is refunded. Exhaustion fails the run. The refusal events leave the record. | This replaces Decisions 86 and 89 for the shipped branch. The checks that rest on the trace of refusals change: the three FX-15 trace checks of revision 15 and the per-step gate. The deterministic storage reservation (Decision 104) must be read again against the new rule. | Check that the candidate test, the charge and the refund are the same in play and replay without a trace. Check the matcher's choice when several stored receives are candidates and some are not covered. Check that a failed firing keeps the bound and leaves no partial effect. Check who may declare the limit (P10: the installer, from the verified seal). |
+| **121:** an elaboration pass in the normalizer. The reducer reads seals from the term. | P10 becomes an invariant of the elaborated term. The audit items about the reducer's own seal record (F5, F6, F13, F16 wiring, F22, F24) are read again against the pass. | Check that every path into the reducer passes through the pass, including system deploys and stored code. Check that the reducer does not accept a term that was not elaborated. Check that the seal that the reducer reads is the one that the deployment signed. |
+| **122:** the gate commits the smaller of the declared limit and the sum of the schedule's maxima over the term, with P3-01 for COMMs. | Answers question 24 for the handoff. | Check that the estimate is an upper bound for every term shape, and the same on every node. Check that a term whose estimate cannot be computed is refused, not admitted at 0. |
+| **123:** tag the handoff candidate and fast-forward `feature/rev-stacks-ote`. | — | Check that the tagged commit contains every merge that the gate lists, and that the plan's branch record matches the repository. |
+
+**Two questions for the record (no ruling needed now):**
+1. Decision 119 removes void reason (a). The void-reason code stays in the record format for (b), (c) and (d). Is reason (a) refused on read, so that no record can carry it?
+2. Decision 120 removes the refusal events from the record. Records written before the change still carry them. Is a record with refusal events refused, or read and ignored? This matters only if a store from before the change must be read.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| D11 and the deterministic storage reservation | **Blocking until FX-17 merges into FX-8b** | Unchanged. The reservation is read again under Decision 120. |
+| Decisions 119 to 122 | **To be audited when the code lands** | No code yet |
+| D10, F47 | Known issue for B6 | Out of the handoff gate under Decision 119 |
+| P12-1, P12-2, P12-3, P12-5, F53, lane C's finding, items 9 and 10, P12-4, P12-6, P12-7, P12-8 | P12 track | Not blocking the handoff (Decision 118) |
+| The suites on the FX-17 tip, the `dev` 8e6517d63 merge, the SIGSEGV run, Decision 123 | Conditions | Open |
+| The earlier known issues | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
