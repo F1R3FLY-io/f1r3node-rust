@@ -114,7 +114,7 @@ pub fn total_unresolved_rerequest_span_ms() -> u64 {
         .sum()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     requested_blocks: RequestedBlocks,
     dependency_recovery_last_request: Arc<Mutex<HashMap<BlockHash, u64>>>,
@@ -130,13 +130,32 @@ pub struct BlockRetriever<T: TransportLayer + Send + Sync> {
     conf: RPConf,
 }
 
+impl<T: TransportLayer + Send + Sync> Clone for BlockRetriever<T> {
+    fn clone(&self) -> Self {
+        Self {
+            requested_blocks: self.requested_blocks.clone(),
+            dependency_recovery_last_request: self.dependency_recovery_last_request.clone(),
+            broadcast_retry_last_request: self.broadcast_retry_last_request.clone(),
+            peer_requery_last_request: self.peer_requery_last_request.clone(),
+            peer_requery_attempts_by_hash: self.peer_requery_attempts_by_hash.clone(),
+            retry_attempts_by_hash: self.retry_attempts_by_hash.clone(),
+            local_backpressure_credits: self.local_backpressure_credits.clone(),
+            retry_budget_quarantine_until: self.retry_budget_quarantine_until.clone(),
+            peer_scores: self.peer_scores.clone(),
+            transport: self.transport.clone(),
+            connections_cell: self.connections_cell.clone(),
+            conf: self.conf.clone(),
+        }
+    }
+}
+
 impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     const MAX_REQUESTED_BLOCKS_ENTRIES: usize = 2048;
     const MAX_WAITING_LIST_PER_HASH: usize = 64;
     const PEER_REQUERY_COOLDOWN_MS: u64 = 500;
     const BROADCAST_ONLY_COOLDOWN_MS: u64 = 500;
     const MIN_REREQUEST_INTERVAL_MS: u64 = UNRESOLVED_REREQUEST_ANCHOR_MS;
-    const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
+    pub(crate) const DEPENDENCY_RECOVERY_COOLDOWN_MS: u64 = 500;
     const STALE_REQUEST_LIFETIME_MULTIPLIER: u64 = 6;
     const KNOWN_PEER_REQUERY_SOFT_LIMIT: u32 = 8;
     const RETRY_BUDGET_QUARANTINE_MS: u64 = 10_000;
@@ -1219,6 +1238,13 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     /// Force dependency recovery by reopening request state and rebroadcasting HasBlockRequest.
     /// This is used when the processor detects buffered dependency deadlocks.
     pub async fn recover_dependency(&self, hash: BlockHash) -> Result<(), CasperError> {
+        self.try_recover_dependency(hash).await.map(|_| ())
+    }
+
+    pub(crate) async fn try_recover_dependency(
+        &self,
+        hash: BlockHash,
+    ) -> Result<bool, CasperError> {
         let now = Self::current_millis();
 
         if self.is_retry_budget_quarantined(&hash, now)? {
@@ -1227,7 +1253,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                 PrettyPrinter::build_string_bytes(&hash),
                 Self::RETRY_BUDGET_QUARANTINE_MS
             );
-            return Ok(());
+            return Ok(false);
         }
 
         if self.has_exceeded_retry_budget(&hash)? {
@@ -1250,7 +1276,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                     Self::RETRY_BUDGET_QUARANTINE_MS
                 );
             }
-            return Ok(());
+            return Ok(false);
         }
 
         let dependency_recovery_rerequest_cooldown_ms = Self::DEPENDENCY_RECOVERY_COOLDOWN_MS;
@@ -1269,7 +1295,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
                         PrettyPrinter::build_string_bytes(&hash),
                         dependency_recovery_rerequest_cooldown_ms
                     );
-                    return Ok(());
+                    return Ok(false);
                 }
             }
 
@@ -1321,7 +1347,7 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         );
         self.update_aux_tracking_metrics()?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// Helper method to try re-requesting a block from the next peer in waiting list
