@@ -657,7 +657,27 @@ impl Validate {
 
         // Calculate max block number and earliest acceptable block number
         let max_block_number = proto_util::max_block_number_metadata(&init_parents);
-        let earliest_block_number = max_block_number + 1 - expiration_threshold as i64;
+        let tip_scan_start = max_block_number + 1 - expiration_threshold as i64;
+        let oldest_valid_after = block
+            .body
+            .deploys
+            .iter()
+            .map(|pd| pd.deploy.data.valid_after_block_number)
+            .min();
+        let earliest_block_number = match (floor_ctx, oldest_valid_after) {
+            (Some(ctx), Some(oldest_valid_after)) => {
+                match crate::rust::util::deploy_window::repeat_scan_start(
+                    tip_scan_start,
+                    ctx.floor.block_number,
+                    expiration_threshold as i64,
+                    oldest_valid_after,
+                ) {
+                    Ok(start) => start,
+                    Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+                }
+            }
+            _ => tip_scan_start,
+        };
 
         // Latest canonical dispositions within the block's parent scope,
         // over the same expiration window the ancestor scan uses, from the
@@ -733,7 +753,9 @@ impl Validate {
         // which is the window and parent-scope verification (a fork-only
         // carrier must not poison this block). Any read failure keeps the
         // sig in the scan: unreadable index state is no information, never
-        // an absence proof.
+        // an absence proof. A scan that starts below the tip window also
+        // stays exact: pruning follows the node's own LFB, so the index
+        // proves nothing at heights a late block's floor can still reach.
         let index_read_failures = metrics::counter!(
             REPEAT_DEPLOY_CARRIER_INDEX_READ_FAILURE_METRIC,
             "source" => CASPER_METRICS_SOURCE
@@ -743,7 +765,9 @@ impl Validate {
         metrics::histogram!(REPEAT_DEPLOY_CARRIER_WATERMARK_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(watermark_start.elapsed().as_secs_f64());
         let deploy_key_set: HashSet<Vec<u8>> = match watermark_result {
-            Ok(Some(w)) if w <= earliest_block_number.max(0) => {
+            Ok(Some(w))
+                if earliest_block_number == tip_scan_start && w <= earliest_block_number.max(0) =>
+            {
                 metrics::counter!(REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC, "source" => CASPER_METRICS_SOURCE)
                     .increment(1);
                 let row_reads = metrics::counter!(

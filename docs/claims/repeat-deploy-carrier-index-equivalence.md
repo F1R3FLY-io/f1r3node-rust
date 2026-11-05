@@ -52,7 +52,9 @@ Redelivery must not create a second entry for the same signature and block hash.
 
 ### C2 — Sound absence proof
 
-The fast path can use index absence only when `W <= max(start, 0)`.
+The fast path can use index absence only when `W <= max(start, 0)` and `start` is the tip window start `max_parent_height + 1 - expiration_threshold`.
+
+A block that carries a deploy older than the tip window has a lower `start` (issue #944). That block uses the reference scan, because pruning follows the node LFB and a late block floor can trail it.
 
 Under that gate, an absent index row proves that the reference predicate is false for that signature.
 
