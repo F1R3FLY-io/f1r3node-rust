@@ -36,7 +36,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
@@ -59,6 +59,7 @@ use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
+use tokio::sync::mpsc;
 
 use super::block_metadata_store::BlockMetadataStore;
 use super::carrier_index::CarrierIndex;
@@ -906,9 +907,67 @@ pub struct BlockDagKeyValueStorage {
     /// LEARN it — hash only, never the block — during restore. Consumers
     /// that need a network-uniform genesis sentinel read this register.
     pub(crate) genesis_hash_index: KeyValueTypedStoreImpl<String, BlockHashSerde>,
+    /// Receives the hash of every block this storage inserts, in every mode,
+    /// once the block is visible in the DAG.
+    insert_observer: Arc<OnceLock<mpsc::UnboundedSender<BlockHash>>>,
 }
 
 impl BlockDagKeyValueStorage {
+    /// Report every block inserted from now on to `observer`. A storage has
+    /// one observer for its lifetime.
+    pub fn set_insert_observer(
+        &self,
+        observer: mpsc::UnboundedSender<BlockHash>,
+    ) -> Result<(), KvStoreError> {
+        self.insert_observer.set(observer).map_err(|_| {
+            KvStoreError::InvalidArgument(
+                "the DAG storage already has an insert observer".to_string(),
+            )
+        })
+    }
+
+    pub fn contains(&self, hash: &BlockHash) -> bool {
+        self.block_metadata_index.read().contains(hash)
+    }
+
+    /// A block that depends on `hash` need not wait for it: the block is in
+    /// the DAG, or it was detected as an equivocation.
+    pub fn is_dependency_satisfied(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
+        if self.contains(hash) {
+            return Ok(true);
+        }
+        self.access_equivocations_tracker(|tracker| {
+            Ok(tracker
+                .data()?
+                .iter()
+                .any(|record| record.equivocation_detected_block_hashes.contains(hash)))
+        })
+    }
+
+    pub fn lookup(&self, hash: &BlockHash) -> Result<Option<BlockMetadata>, KvStoreError> {
+        self.block_metadata_index.read().get(hash)
+    }
+
+    pub fn latest_message_hash(
+        &self,
+        validator: &Validator,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        Ok(self
+            .latest_messages_index
+            .get_one(&ValidatorSerde(validator.clone()))?
+            .map(BlockHash::from))
+    }
+
+    /// `None` until the approved block is inserted.
+    pub fn last_finalized_block(&self) -> Option<BlockHash> {
+        let guard = self.block_metadata_index.read();
+        let dag_state = guard.dag_state().read();
+        dag_state
+            .last_finalized_block
+            .as_ref()
+            .map(|(hash, _)| hash.clone())
+    }
+
     /// Storage-level twin of `KeyValueDagRepresentation::deploy_canonical_appearance`
     /// (same shared lifecycle tables), for callers holding the storage rather
     /// than a representation. Lock order: `block_metadata_index` before
@@ -1034,6 +1093,7 @@ impl BlockDagKeyValueStorage {
             dag_generation: Arc::new(AtomicU64::new(0)),
             ft_lower_bound: Arc::new(AtomicU32::new(0.0f32.to_bits())),
             genesis_hash_index: genesis_hash_db,
+            insert_observer: Arc::new(OnceLock::new()),
         })
     }
 
@@ -1134,6 +1194,7 @@ impl BlockDagKeyValueStorage {
             genesis_hash_index: KeyValueTypedStoreImpl::new(Arc::new(
                 rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore::new(),
             )),
+            insert_observer: Arc::new(OnceLock::new()),
         }
     }
 
@@ -1496,6 +1557,10 @@ impl BlockDagKeyValueStorage {
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
             self.dag_generation.fetch_add(1, Ordering::Relaxed);
+            if let Some(observer) = self.insert_observer.get() {
+                // A closed receiver means the observer has stopped; inserts go on.
+                let _ = observer.send(block_hash.clone());
+            }
 
             if invalid {
                 self.invalid_blocks_index

@@ -446,10 +446,9 @@ case InvalidBlock.AdmissibleEquivocation =>
   
   // 3. Mark block as invalid in DAG
   BlockDagStorage.insert(block, invalid = true)
-  
-  // 4. Remove from buffer
-  CasperBufferStorage.remove(block.blockHash)
 ```
+
+The DAG insert releases the blocks that block ingest holds waiting on this block.
 
 **Code Location:** `casper/src/rust/engine/multi_parent_casper/mod.rs`
 

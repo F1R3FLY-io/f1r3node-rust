@@ -155,8 +155,6 @@ impl NoOpsCasperEffect {
 
 #[async_trait]
 impl MultiParentCasper for NoOpsCasperEffect {
-    async fn fetch_dependencies(&self) -> Result<(), CasperError> { Ok(()) }
-
     fn normalized_initial_fault(
         &self,
         _weights: HashMap<Validator, u64>,
@@ -199,17 +197,7 @@ impl Casper for NoOpsCasperEffect {
         ))
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool {
-        // Use actual KeyValueBlockStore instead of HashMap (preserving Scala test logic)
-        match self.block_store.get(hash) {
-            Ok(maybe_block) => maybe_block.is_some(),
-            Err(_) => false,
-        }
-    }
-
     fn dag_contains(&self, _hash: &BlockHash) -> bool { false }
-
-    fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
 
     fn deploy(
         &self,
@@ -226,8 +214,6 @@ impl Casper for NoOpsCasperEffect {
     }
 
     fn get_version(&self) -> i64 { 1 }
-
-    fn get_all_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> { Ok(Vec::new()) }
 
     async fn validate(
         &self,
@@ -267,10 +253,6 @@ impl Casper for NoOpsCasperEffect {
         _dag: &KeyValueDagRepresentation,
     ) -> Result<KeyValueDagRepresentation, CasperError> {
         Ok(self.block_dag_storage.clone())
-    }
-
-    fn get_dependency_free_from_buffer(&self) -> Result<Vec<BlockMessage>, CasperError> {
-        Ok(Vec::new())
     }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {

@@ -23,8 +23,6 @@ pub struct CasperConf {
 
     #[serde(rename = "casper-loop-interval", deserialize_with = "de_duration")]
     pub casper_loop_interval: Duration,
-    #[serde(rename = "requested-blocks-timeout", deserialize_with = "de_duration")]
-    pub requested_blocks_timeout: Duration,
     #[serde(rename = "finalization-rate")]
     pub finalization_rate: i32,
     #[serde(rename = "max-number-of-parents")]
