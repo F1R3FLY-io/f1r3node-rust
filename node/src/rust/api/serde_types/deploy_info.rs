@@ -64,7 +64,8 @@ pub struct DeployInfoSerde {
     pub sig: String,
     #[serde(rename = "sigAlgorithm")]
     pub sig_algorithm: String,
-    #[serde(rename = "phloPrice")]
+    #[serde(rename = "phloPrice", with = "int_string")]
+    #[schema(value_type = String)]
     pub phlo_price: i64,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
@@ -415,6 +416,27 @@ mod tests {
         let json = serde_json::to_vec(&deploy).unwrap();
         let restored: DeployInfoSerde = serde_json::from_slice(&json).unwrap();
         assert_eq!(restored.parameters, parameters);
+    }
+
+    #[test]
+    fn deploy_info_phlo_price_is_a_decimal_string_and_reads_legacy_numbers() {
+        for price in [0, 1, (1 << 53) + 1, i64::MAX] {
+            let mut info = deploy_info(Vec::new());
+            info.phlo_price = price;
+            let deploy = DeployInfoSerde::try_from(info).unwrap();
+            let mut json = serde_json::to_value(&deploy).unwrap();
+            assert_eq!(json["phloPrice"], price.to_string());
+            let restored: DeployInfoSerde = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(restored.phlo_price, price);
+            json["phloPrice"] = json!(price);
+            let legacy: DeployInfoSerde = serde_json::from_value(json).unwrap();
+            assert_eq!(legacy.phlo_price, price);
+        }
+        let mut json =
+            serde_json::to_value(DeployInfoSerde::try_from(deploy_info(Vec::new())).unwrap())
+                .unwrap();
+        json["phloPrice"] = json!("01");
+        assert!(serde_json::from_value::<DeployInfoSerde>(json).is_err());
     }
 
     #[test]

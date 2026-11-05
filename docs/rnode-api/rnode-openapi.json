@@ -369,7 +369,7 @@
                     "timestamp": 1600735421769,
                     "sig": "304402202258eac6522a475d582d19387673322829d7b18c50efe828579dd682b6ff4bad0220195a6bc59eca8898d8ff105fa8963d5df4b238288820f8674e0fefaba9d932a5",
                     "sigAlgorithm": "secp256k1",
-                    "phloPrice": 1,
+                    "phloPrice": "1",
                     "phloLimit": 100000,
                     "validAfterBlockNumber": 420136,
                     "cost": 23,
@@ -1281,9 +1281,8 @@
           "format": "int64"
         },
         "phloPrice": {
-          "type": "integer",
-          "description": "in units of 10^-8 REV",
-          "format": "int64"
+          "type": "string",
+          "description": "in units of 10^-8 REV, as a canonical decimal string"
         },
         "validAfterBlockNumber": {
           "type": "integer",

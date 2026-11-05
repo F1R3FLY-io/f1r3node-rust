@@ -74,12 +74,14 @@ The JSON API therefore gives these values as decimal strings:
 | Vault balance | `balance` in `GET /api/balance/{address}` |
 | Validator stake | `stake` and `totalStake` in `GET /api/validators`, `stake` in `GET /api/validator/{pubkey}`, `bonds[].stake` in block info |
 | Transfer amount | `transfers[].amount` in block and deploy responses, `amount` in the `transfers-available` WebSocket event |
+| Phlo price | `phloPrice` in block, deploy, and `GET /api/pending-deploys` responses, `minPhloPrice` in `GET /api/status` |
 
 - Integer strings use base 10, without an exponent, a decimal point, or leading zeros. A negative value starts with `-`.
 - Monetary values use base units (dust). Other Rholang integers retain their original meaning.
 - The type is always a string. The type does not change with the size of the value.
-- Phlo quantities (`cost`, `phloLimit`) and the phlo price (`phloPrice`, `minPhloPrice`) stay JSON numbers.
-- Phlo price string serialization remains pending under [issue 808](https://github.com/F1R3FLY-io/f1r3node-rust/issues/808).
+- Phlo quantities (`cost`, `phloLimit`) stay JSON numbers.
+- The `POST /api/deploy` request keeps `phloPrice` as a JSON number. Convert a `minPhloPrice` string to an integer before you sign a deploy.
+- gRPC responses keep the phlo price fields as `int64`.
 - Deploy `parameters` keep the JSON format of the deploy request. An `int` value there stays a JSON number.
 - The trace report (`GET /reporting/trace`) gives raw Rholang terms in protobuf JSON form. Integers in these terms stay JSON numbers.
 - The Rust HTTP response types in the `node` crate also read the earlier JSON number form.
@@ -153,7 +155,7 @@ curl http://localhost:40403/api/status
   "shardId": "root",
   "peers": 4,
   "nodes": 4,
-  "minPhloPrice": 1,
+  "minPhloPrice": "1",
   "peerList": [
     {"address": "rnode://...", "nodeId": "a5aec03d...", "host": "rnode.validator3", "protocolPort": 40400, "discoveryPort": 40404, "isConnected": true}
   ],
@@ -177,7 +179,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
+| `minPhloPrice` | string | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |
@@ -453,7 +455,7 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `deployer` | string | Deployer public key (full only) |
 | `term` | string | Rholang source (full only) |
 | `systemDeployError` | string | System deploy error message (full only) |
-| `phloPrice` | int | Phlo price (full only) |
+| `phloPrice` | string | Phlo price as a decimal string (full only) |
 | `phloLimit` | int | Phlo limit (full only) |
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
@@ -529,7 +531,7 @@ curl http://localhost:40403/api/pending-deploys?deployer=04abc...
     {
       "term": "@1!(1)",
       "timestamp": 1700000000000,
-      "phloPrice": 1,
+      "phloPrice": "1",
       "phloLimit": 90000,
       "validAfterBlockNumber": 0,
       "shardId": "",

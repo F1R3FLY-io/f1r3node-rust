@@ -202,7 +202,8 @@ pub struct DeployFinalizationStatusJson {
 pub struct PendingDeployJson {
     pub term: String,
     pub timestamp: i64,
-    #[serde(rename = "phloPrice")]
+    #[serde(rename = "phloPrice", with = "int_string")]
+    #[schema(value_type = String)]
     pub phlo_price: i64,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
@@ -1466,7 +1467,8 @@ pub struct ApiStatus {
     pub shard_id: String,
     pub peers: i32,
     pub nodes: i32,
-    #[serde(rename = "minPhloPrice")]
+    #[serde(rename = "minPhloPrice", with = "int_string")]
+    #[schema(value_type = String)]
     pub min_phlo_price: i64,
     #[serde(rename = "peerList")]
     pub peer_list: Vec<PeerInfoData>,
@@ -1534,7 +1536,13 @@ pub struct DeployResponse {
     pub term: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "systemDeployError")]
     pub system_deploy_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "phloPrice")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "phloPrice",
+        with = "int_string::option"
+    )]
+    #[schema(value_type = Option<String>)]
     pub phlo_price: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "phloLimit")]
     pub phlo_limit: Option<i64>,
@@ -2377,6 +2385,9 @@ mod tests {
                 ("BondInfoJson", "stake"),
                 ("TransferInfoSerde", "amount"),
                 ("BalanceResponse", "balance"),
+                ("ApiStatus", "minPhloPrice"),
+                ("DeployInfoSerde", "phloPrice"),
+                ("PendingDeployJson", "phloPrice"),
             ] {
                 assert_eq!(
                     schemas[name]["properties"][field]["type"], "string",
@@ -2393,7 +2404,33 @@ mod tests {
                     .unwrap()
                     .contains(&serde_json::json!("string"))
             );
+            assert!(schemas["DeployResponse"]["properties"]["phloPrice"]["type"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("string")));
         }
+    }
+
+    #[test]
+    fn pending_deploy_phlo_price_stays_exact_in_json() {
+        let pending = PendingDeployJson {
+            term: "Nil".to_string(),
+            timestamp: 1,
+            phlo_price: i64::MAX,
+            phlo_limit: 1,
+            valid_after_block_number: 0,
+            shard_id: "root".to_string(),
+            deployer: "04aa".to_string(),
+            sig: "aa".to_string(),
+            sig_algorithm: "secp256k1".to_string(),
+            expiration_timestamp: None,
+            is_rejected: false,
+        };
+        let mut json = serde_json::to_value(pending).unwrap();
+        assert_eq!(json["phloPrice"], i64::MAX.to_string());
+        json["phloPrice"] = serde_json::json!(i64::MAX);
+        let legacy: PendingDeployJson = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.phlo_price, i64::MAX);
     }
 
     #[test]
@@ -2430,7 +2467,7 @@ mod tests {
         assert_eq!(json["rejectionCount"], 0);
         assert!(json.get("deployer").is_some());
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
+        assert_eq!(json["phloPrice"], "10");
         assert!(json.get("phloLimit").is_some());
         assert!(json.get("transfers").is_some());
         assert!(json.get("parameters").is_none());
@@ -2477,6 +2514,12 @@ mod tests {
         assert!(json.get("deployer").is_none());
         assert!(json.get("term").is_none());
         assert!(json.get("phloPrice").is_none());
+        let restored: DeployResponse = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(restored.phlo_price, None);
+        let mut legacy = json.clone();
+        legacy["phloPrice"] = serde_json::json!(i64::MAX);
+        let restored: DeployResponse = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.phlo_price, Some(i64::MAX));
         assert!(json.get("phloLimit").is_none());
         assert!(json.get("sigAlgorithm").is_none());
         assert!(json.get("validAfterBlockNumber").is_none());

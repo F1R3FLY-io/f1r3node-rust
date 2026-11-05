@@ -912,7 +912,7 @@ mod tests {
             ])
         );
         assert!(json.get("term").is_some());
-        assert!(json.get("phloPrice").is_some());
+        assert_eq!(json["phloPrice"], "10");
         assert!(json.get("phloLimit").is_some());
         assert!(json.get("sigAlgorithm").is_some());
         assert!(json.get("transfers").is_some());
@@ -992,6 +992,7 @@ mod tests {
         assert_eq!(json["deploys"][0]["deployer"], "0487def456");
         assert_eq!(json["deploys"][1]["deployer"], "0499abc789");
         assert_eq!(json["deploys"][0]["sigAlgorithm"], "secp256k1");
+        assert_eq!(json["deploys"][0]["phloPrice"], "1");
         for deploy in json["deploys"].as_array().unwrap() {
             assert!(deploy.get("parameters").is_none());
         }
@@ -1114,7 +1115,7 @@ mod router_tests {
                 shard_id: "root".to_string(),
                 peers: 1,
                 nodes: 2,
-                min_phlo_price: 1,
+                min_phlo_price: i64::MAX,
                 peer_list: vec![],
                 native_token_name: "F1R3".to_string(),
                 native_token_symbol: "F1R3".to_string(),
@@ -1397,6 +1398,7 @@ mod router_tests {
         let (status, json) = get_response("/status").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json["networkId"], "testnet");
+        assert_eq!(json["minPhloPrice"], i64::MAX.to_string());
         assert_eq!(json["shardId"], "root");
         assert_eq!(json["isReady"], true);
         assert_eq!(json["lastFinalizedBlockNumber"], 5);
