@@ -2576,6 +2576,31 @@ Lane A2 asks for a ruling: refuse an unresolved bound seal on a stack body at th
 | F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the Decision 108 griefing case, the (d) drop of uninvolved deployments, the ignored `deploy-verified-encodings-cap`, the `AlreadyPresent` rejection entry, the endlessly retried failed release | Known issue | Open |
 
 
+## Rulings of 2026-11-04 (afternoon): design r23, Decisions 112 to 114
+
+From this point on, A-9 reads against design r23 (publications `c032466`). r22 records Decisions 109 and 110: re-inclusion, the network-wide refusal, and the withdrawer rewrite. r23 records Decisions 111 to 114 in §6.3: the per-bond rate, the pre-state bond count, run-time seals, and two entries on re-bond.
+
+| Ruling | Effect on the audit |
+|---|---|
+| **Decision 112:** a seal bound only at run time is guarded by the run-time check, not refused at the gate. | Answers question 22. **F39 and F33 are closed.** The F39 end-to-end path leaves the known-issue list. r23 §6.3 states the guard: the run-time check refuses any owner that is neither a signer of the deployment nor held, and the draws are charged to that wallet and bounded by the block's ledger. |
+| **Decision 113:** the pre-charge counts the bonds at the block's true pre-state, and the lag term of Decision 102 is dropped. | Answers question 23. **FX-17's D10 conforms**, and the blocking item of revision 28 is removed. |
+| **Decision 114:** a validator that bonds again in quarantine keeps each withdrawn amount as its own entry, released at its own quarantine end. | Answers question 24. Lane B builds it on `patch/FX-17-epoch`. **F51 stays a known issue until it lands.** A-8 then checks four things: each entry is released at its own end, no amount is stranded, the native bond is fully released, and the close stays linear. |
+
+**FX-8b merge conditions:** closed at `6c43a2c8f`, except for the full-suite counts.
+
+### Gate status after these rulings
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | Open until the FX-17 order floor, P5 and void code land |
+| D10 | **Blocking** | Mechanism and production wiring on `patch/FX-17` conform (Decision 113). Waits for void (a) and the F47 test. |
+| F47 (99 withdrawers) | **Blocking** | The rate of 13,000 is in code. `an_epoch_where_almost_every_validator_withdraws_stays_inside_its_pre_charge` must be enabled and pass. |
+| Full-suite counts for FX-8b | Merge condition | Open |
+| FX-17 takes `86bb14a74`, and then Decision 114 | Merge condition | Open |
+| F39, F33, question 23 | — | Closed by ruling |
+| F51 (until Decision 114 lands), F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the Decision 108 griefing case, the (d) drop of uninvolved deployments, the ignored `deploy-verified-encodings-cap`, the `AlreadyPresent` rejection entry, the endlessly retried failed release | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -2600,6 +2625,6 @@ Lane A2 asks for a ruling: refuse an unresolved bound seal on a stack body at th
 19. **F47 (measured):** answered on 2026-11-04 (Decision 107: the PoS close is made linear). The PoS close grows about quadratically in the bonds at an epoch boundary, and in the withdrawers that one epoch releases. Is the PoS close made linear (a native active-set pick, and withdrawer folds over the withdrawer maps only), is the number of releases in each close capped, or does the pre-charge gain a quadratic term?
 20. **F47 (withdrawers):** answered on 2026-11-04 (Decision 110: the withdrawer rewrite goes ahead now). The PoS close still grows with the withdrawers of one epoch, and the pre-charge counts bonds only. Is the withdrawer loop rewritten now (a release schedule keyed by epoch, about 2.5 days), or do interim caps on moves and on the quarantine window apply, with withdrawers in quarantine counted as bonds for the pre-charge?
 21. **F47 (99 withdrawers):** answered on 2026-11-04 (Decision 111: the per-bond rate is 13,000). After the withdrawer rewrite, an epoch in which 99 of 100 validators withdraw costs 1,291,842 phlo against a pre-charge of 1,100,000. Is the per-bond rate raised to 13,000, or are the releases of one epoch close bounded to 60 % of the bonds?
-22. **F39 and F33:** a pure stack body under a seal bound at run time passes the gate as a token kind, and only the run-time check refuses a wallet outside the deployment's signers. Does the gate refuse an unresolved bound seal on a stack body (which also refuses a token kind passed in at run time), or does the run-time check stay the only guard?
-23. **D10:** the code applies the per-bond rate to the bonds at the block's true pre-state, with no lag term, because Decision 108 evaluates the pre-charge at execution. Is the §6.3 text of Decision 102 updated to this form?
-24. **F51:** a validator that bonds again in quarantine and withdraws again loses track of its first amount, which stays locked in the native bond. Are the amounts added (lane B's recommendation), kept as two entries, or is the re-bond refused?
+22. **F39 and F33:** answered on 2026-11-04 (Decision 112: the run-time check is the guard). A pure stack body under a seal bound at run time passes the gate as a token kind, and only the run-time check refuses a wallet outside the deployment's signers. Does the gate refuse an unresolved bound seal on a stack body (which also refuses a token kind passed in at run time), or does the run-time check stay the only guard?
+23. **D10:** answered on 2026-11-04 (Decision 113: the pre-state form, with no lag term). The code applies the per-bond rate to the bonds at the block's true pre-state, with no lag term, because Decision 108 evaluates the pre-charge at execution. Is the §6.3 text of Decision 102 updated to this form?
+24. **F51:** answered on 2026-11-04 (Decision 114: two entries, each released at its own quarantine end). A validator that bonds again in quarantine and withdraws again loses track of its first amount, which stays locked in the native bond. Are the amounts added (lane B's recommendation), kept as two entries, or is the re-bond refused?
