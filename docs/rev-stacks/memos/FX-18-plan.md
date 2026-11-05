@@ -48,3 +48,32 @@ Lane A2, 2026-11-05. Design r25, Decisions 115 to 117. Lane A1's A-10 audit (rev
 | **Total** | **9.5** | |
 
 **Risks:** the harness is new, and LFS has no multi-node test today. If lane B's handoff record is not fixed by day 2, the quorum work slips by the same amount. Lane A1's P12-8 (the conservation audit needs every wallet) stays a known issue. A joiner disables the audit or reads its index from the anchor state.
+
+## Shared interface (for lanes B and C, before code)
+
+The proof travels with the trimmed approved block, beside `floorSeed`, outside the signed candidate:
+
+```proto
+message ApprovedBlockProto {
+  ApprovedBlockCandidateProto candidate = 1;
+  repeated Signature sigs               = 2;
+  FinalizedFloorSeedProto floorSeed     = 3;
+  V6JoinProofProto v6Join               = 4;   // new, v6 only
+}
+
+message V6JoinProofProto {
+  bytes anchorRoot                         = 1; // R(L), the canonical root at the LFB's position
+  repeated BlockMessageProto citers        = 2; // blocks above L whose records chain from R(L) to the attested roots
+  repeated BlockMessageProto attesters     = 3; // signed blocks whose attestations make the quorum
+  repeated ValidatorSetHandoffProto handoffs = 4; // lane B: checkpoint to L, in order
+}
+```
+
+- **Joiner check, in order:** (1) the handoff chain from the configured checkpoint, each certified by more than 2/3 of the previous set's stake; (2) every citer and attester signature; (3) the records in `citers` chain from R(L) (a record with target L and post-root R(L)) up to each attested root; (4) the attesters whose attested root lies on that chain hold more than 2/3 of the bond set in force at L. Only then does the joiner request the tuple space at R(L).
+- **Lane B:** `ValidatorSetHandoffProto` (the new set, the epoch, and the signatures of the previous set). The joiner needs its fields and its signed payload.
+- **Lane C:** the statuses for the lifespan window are derived from the records reachable from `citers` and from the blocks LFS downloads.
+- `required_sigs` stays 0 for the candidate. The quorum lives in `v6Join`, so the genesis ceremony's signed payload does not change.
+
+## Finding while merging: a timing test after Decision 114
+
+`multi_node::v6_engine_state::a_long_run_keeps_executor_memory_flat_and_old_receipts_available` needs 30 fixed positions in a fixed time. Measured alone: 31 at 488122957, 31 at eae1a57c7 (F52), 29 at 36168ae0a (after lane B's `30258ed83`, Decision 114). The heavier epoch close in D114 slows execution enough to miss the bound. The memory-flatness checks pass. Lane B to decide: speed up the close, or lane A1 to accept a lower liveness bound in this test.
