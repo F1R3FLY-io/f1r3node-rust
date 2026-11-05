@@ -3134,8 +3134,8 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 - **F53:** the label changes from blocking to **P12 track**. The finding and its conditions in revision 35 stay as written.
 - **Item 10 (the void hook, revision 34):** lane C's finding is the general form of this item. A joiner that takes its statuses from the records must first know which record is canonical. Item 10 therefore moves to the P12 track together with lane C's finding. Its checks stay as written, and the digest chain must meet them.
 - **The reading that I apply (reversible):** P12-1, P12-2, P12-3 and P12-5 stay blocking for the handoff under Decision 116, as gaps that make a node depend on genesis. Two things go to the P12 track:
-  - the binding of the anchor root to the attested quorum (F53);
-  - the choice of the canonical record without execution (lane C's finding).
+  - The binding of the anchor root to the attested quorum (F53).
+  - The choice of the canonical record without execution (lane C's finding).
 
   So P12-2 is closed for the handoff when the checkpoint, the handoff chain and the quorum check land with their tests. F53 follows on the P12 track. A ruling that differs from this reading changes only these labels.
 - **New commits for the next check:** `patch/FX-18` at `915e1c418` (P12-1: the join proof on the approved block, the state download at the anchor root, and a stored anchor) and `patch/FX-18-handoff` at `dacacc41a` (lane B's handoff record, item 9).
