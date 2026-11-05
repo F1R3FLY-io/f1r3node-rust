@@ -35,6 +35,7 @@ async fn rho_deploy_data_system_channel_should_return_timestamp_deployer_id_and_
         deploy_id: sig.clone(),
         cosigners: Vec::new(),
         phlo_price: 0,
+        phlo_limit: 0,
     };
 
     let expected = vec![

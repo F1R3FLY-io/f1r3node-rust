@@ -483,7 +483,7 @@ async fn a_user_transfer_and_bond_survive_play_and_replay() {
                 block_number: 1,
             },
             deploys: vec![ProcessedDeploy::empty(envelope(
-                &term, 1, &alice, 50_000, 1,
+                &term, 1, &alice, 45_000, 1,
             ))],
             rejected_deploys: vec![],
             system_deploys: vec![],

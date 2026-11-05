@@ -53,6 +53,7 @@ async fn sign_as(runtime: &RhoRuntimeImpl, signer: &Key) {
             deploy_id: vec![1],
             cosigners: Vec::new(),
             phlo_price: 0,
+            phlo_limit: 0,
         })
         .await;
 }

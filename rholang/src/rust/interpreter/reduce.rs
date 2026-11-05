@@ -72,6 +72,7 @@ use super::metrics_constants::{
 };
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
+use super::storage::charging_rspace::{consume_issue, produce_issue};
 use super::substitute::{Substitute, SubstituteTrait};
 use super::system_processes::DeployData;
 use super::util::GeneratedMessage;
@@ -223,51 +224,8 @@ where
     })
 }
 
-fn gated_now() -> bool {
-    match (seal::meter(), seal::current()) {
-        (Some(meter), Some(record)) => meter.gates(&record),
-        _ => false,
-    }
-}
-
-fn evaluation_scope(
-    term: &GeneratedMessage,
-    rand: &Blake2b512Random,
-) -> Option<Arc<membrane::StepScope>> {
-    if !gated_now() {
-        return None;
-    }
-    let content = match term {
-        GeneratedMessage::Send(t) => t.encode_to_vec(),
-        GeneratedMessage::Receive(t) => t.encode_to_vec(),
-        GeneratedMessage::New(t) => t.encode_to_vec(),
-        GeneratedMessage::Match(t) => t.encode_to_vec(),
-        GeneratedMessage::Bundle(t) => t.encode_to_vec(),
-        GeneratedMessage::Expr(t) => t.encode_to_vec(),
-        GeneratedMessage::CostSignedTerm(t) => t.encode_to_vec(),
-        GeneratedMessage::If(t) => t.encode_to_vec(),
-    };
-    Some(membrane::StepScope::new(membrane::step_base(
-        membrane::StepSource::Evaluation,
-        &content,
-        &rand.to_bytes(),
-    )))
-}
-
-fn restore_scope<F: Future>(random_state: &[u8], future: F) -> impl Future<Output = F::Output> {
-    let scope = gated_now().then(|| {
-        membrane::StepScope::prepaid(membrane::step_base(
-            membrane::StepSource::Restore,
-            &[],
-            random_state,
-        ))
-    });
-    async move {
-        match scope {
-            Some(scope) => membrane::stepping(scope, future).await,
-            None => future.await,
-        }
-    }
+fn restore_scope<F: Future>(_random_state: &[u8], future: F) -> impl Future<Output = F::Output> {
+    membrane::settled(future)
 }
 
 fn split_kind(
@@ -663,6 +621,30 @@ impl DebruijnInterpreter {
         data: ListParWithRandom,
         persistent: bool,
     ) -> Result<DispatchType, InterpreterError> {
+        if let Some(firing) = membrane::firing() {
+            let (storage, reserve) = produce_issue(&chan, &data, persistent);
+            self.cost.charge_reserving(storage, reserve)?;
+            let reducer = self.clone();
+            firing.defer(Box::pin(seal::within(
+                seal::current(),
+                membrane::precharged(async move {
+                    reducer
+                        .produce_now(chan, data, persistent)
+                        .await
+                        .map(|_| ())
+                }),
+            )));
+            return Ok(DispatchType::Skip);
+        }
+        self.produce_now(chan, data, persistent).await
+    }
+
+    async fn produce_now(
+        &self,
+        chan: Par,
+        data: ListParWithRandom,
+        persistent: bool,
+    ) -> Result<DispatchType, InterpreterError> {
         self.update_mergeable_channels(&chan).await;
         let retry = persistent.then(|| (chan.clone(), data.clone()));
         let produce_result = self.space.produce(chan, data, persistent).await?;
@@ -730,6 +712,38 @@ impl DebruijnInterpreter {
     }
 
     async fn consume_inner(
+        &self,
+        binds: Vec<(BindPattern, Par)>,
+        body: ParWithRandom,
+        persistent: bool,
+        peek: bool,
+        guard: Option<Par>,
+    ) -> Result<DispatchType, InterpreterError> {
+        if let Some(firing) = membrane::firing() {
+            let continuation = TaggedContinuation {
+                tagged_cont: Some(TaggedCont::ParBody(body.clone())),
+                guard: guard.clone(),
+                seal: self.stored_seal(),
+            };
+            let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.iter().cloned().unzip();
+            let (storage, reserve) = consume_issue(&sources, &patterns, &continuation, persistent);
+            self.cost.charge_reserving(storage, reserve)?;
+            let reducer = self.clone();
+            firing.defer(Box::pin(seal::within(
+                seal::current(),
+                membrane::precharged(async move {
+                    reducer
+                        .consume_now(binds, body, persistent, peek, guard)
+                        .await
+                        .map(|_| ())
+                }),
+            )));
+            return Ok(DispatchType::Skip);
+        }
+        self.consume_now(binds, body, persistent, peek, guard).await
+    }
+
+    async fn consume_now(
         &self,
         binds: Vec<(BindPattern, Par)>,
         body: ParWithRandom,
@@ -1233,7 +1247,7 @@ impl DebruijnInterpreter {
     ) -> Result<DispatchType, InterpreterError> {
         let errors: Vec<InterpreterError> = errors
             .into_iter()
-            .filter(|e| !matches!(e, InterpreterError::MembraneStopped))
+            .filter(|e| !matches!(e, InterpreterError::FiringExhausted))
             .collect();
         match errors.as_slice() {
             // No errors
@@ -1277,12 +1291,7 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
-        match evaluation_scope(&term, &rand) {
-            Some(scope) => {
-                membrane::stepping(scope, self.generated_message_step(term, env, rand)).await
-            }
-            None => self.generated_message_step(term, env, rand).await,
-        }
+        self.generated_message_step(term, env, rand).await
     }
 
     async fn generated_message_step(
@@ -1805,6 +1814,7 @@ impl DebruijnInterpreter {
                 envelope: data.deploy_id.clone(),
                 signers,
                 phlo_price: data.phlo_price,
+                phlo_limit: data.phlo_limit,
             },
         ))
     }

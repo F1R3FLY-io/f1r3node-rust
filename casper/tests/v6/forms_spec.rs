@@ -102,7 +102,6 @@ async fn play(
         .replay_recorded(
             pre,
             played.processed.clone(),
-            Some(played.work.clone()),
             &played.gate.entries,
             block_data(proposer),
         )
@@ -277,7 +276,7 @@ async fn work_that_stored_code_pays_for_does_not_count_against_the_clients_limit
     });
     let stored = format!(r#"for (_ <- @"x") {{ {heavy} }}"#);
     let mut install = envelope(&stored, 1, &bob, 1);
-    install.data.phlo_limit = 100_000;
+    install.data.phlo_limit = 5_000;
     let install = Signed::create(install.data, Box::new(Secp256k1), bob.sk.clone()).unwrap();
     let installed = play(&executor, &pre, install, &proposer).await;
 

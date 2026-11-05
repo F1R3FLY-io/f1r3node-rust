@@ -68,6 +68,7 @@ async fn run(
             deploy_id: vec![envelope; 4],
             cosigners: cosigners.iter().map(|c| PublicKey::from_bytes(c)).collect(),
             phlo_price: 5,
+            phlo_limit: 0,
         })
         .await;
     let mut env = deployer_env(key);
@@ -494,6 +495,7 @@ async fn a_legacy_runtime_keeps_the_golden_root() {
                     deploy_id: vec![1],
                     cosigners: Vec::new(),
                     phlo_price: 0,
+                    phlo_limit: 0,
                 })
                 .await;
             let result = runtime
@@ -525,6 +527,7 @@ async fn a_v6_runtime_records_seals_and_changes_the_root() {
                 deploy_id: vec![1],
                 cosigners: Vec::new(),
                 phlo_price: 0,
+                phlo_limit: 0,
             })
             .await;
         let result = runtime

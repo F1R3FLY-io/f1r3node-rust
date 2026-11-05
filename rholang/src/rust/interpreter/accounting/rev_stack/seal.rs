@@ -11,6 +11,7 @@ pub struct Origin {
     pub envelope: Vec<u8>,
     pub signers: Vec<WalletOwner>,
     pub phlo_price: u64,
+    pub phlo_limit: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,7 +28,7 @@ pub struct SealRecord {
     pub origin: Origin,
 }
 
-pub use crate::rust::interpreter::accounting::membrane::{Admission, Funding, MembraneMeter};
+pub use crate::rust::interpreter::accounting::membrane::{Funding, MembraneMeter};
 
 tokio::task_local! {
     static SEAL: Option<SealRecord>;
@@ -36,13 +37,47 @@ tokio::task_local! {
 
 pub fn meter() -> Option<Arc<MembraneMeter>> { FUNDING.try_with(Clone::clone).ok().flatten() }
 
-pub fn admits_waiting(continuation: &TaggedContinuation) -> bool {
-    let Some(meter) = meter() else {
-        return true;
-    };
-    match of_continuation(continuation) {
-        Ok(Some(record)) => !meter.stopped(&record),
-        _ => true,
+fn comm_records(
+    continuation: &TaggedContinuation,
+    data: impl IntoIterator<Item = Option<SealRecordProto>>,
+) -> Option<(Option<SealRecord>, Vec<SealRecord>)> {
+    let receive = of_continuation(continuation).ok()?;
+    let sends = data
+        .into_iter()
+        .flatten()
+        .map(|proto| SealRecord::from_proto(&proto).ok())
+        .collect::<Option<Vec<_>>>()?;
+    Some((receive, sends))
+}
+
+pub fn holds_comm(
+    meter: &MembraneMeter,
+    continuation: &TaggedContinuation,
+    data: impl IntoIterator<Item = Option<SealRecordProto>>,
+    channels: usize,
+) -> bool {
+    match comm_records(continuation, data) {
+        Some((receive, sends)) => {
+            let named = body_owners(continuation);
+            meter.hold(&meter.comm_needs(
+                receive.as_ref().map(|r| (r, named.as_slice())),
+                &sends,
+                channels,
+            ))
+        }
+        None => false,
+    }
+}
+
+pub fn body_owners(continuation: &TaggedContinuation) -> Vec<WalletOwner> {
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => body
+            .body
+            .as_ref()
+            .map(super::region::resolved_owners)
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -53,47 +88,15 @@ pub fn admits_comm(
     let Some(meter) = meter() else {
         return true;
     };
-    let mut records = Vec::new();
-    match of_continuation(continuation) {
-        Ok(Some(record)) => records.push(record),
-        Ok(None) => {}
-        Err(_) => return false,
+    if meter.is_replay() {
+        return true;
     }
-    for datum in matched {
-        match datum.seal.as_ref().map(SealRecord::from_proto) {
-            Some(Ok(record)) => records.push(record),
-            Some(Err(_)) => return false,
-            None => {}
-        }
-    }
-    let follow = crate::rust::interpreter::accounting::membrane::follow_up();
-    meter.admit_comm(&records, current().as_ref(), follow, || {
-        comm_step(continuation, matched)
-    })
-}
-
-fn comm_step(
-    continuation: &TaggedContinuation,
-    matched: &[models::rhoapi::ListParWithRandom],
-) -> Vec<u8> {
-    use crate::rust::interpreter::accounting::membrane::{step_base, StepSource};
-    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-    use models::rhoapi::tagged_continuation::TaggedCont;
-    let body = match &continuation.tagged_cont {
-        Some(TaggedCont::ParBody(body)) => body.random_state.clone(),
-        _ => Vec::new(),
-    };
-    let randoms: Vec<Blake2b512Random> = std::iter::once(body.as_slice())
-        .chain(matched.iter().map(|d| d.random_state.as_slice()))
-        .filter(|state| !state.is_empty())
-        .map(Blake2b512Random::from_bytes)
-        .collect();
-    let merged = if randoms.is_empty() {
-        Vec::new()
-    } else {
-        Blake2b512Random::merge(randoms).to_bytes()
-    };
-    step_base(StepSource::Comm, &[], &merged)
+    holds_comm(
+        &meter,
+        continuation,
+        matched.iter().map(|datum| datum.seal.clone()),
+        matched.len(),
+    )
 }
 
 pub(crate) async fn funded_by<F: Future>(
@@ -137,7 +140,10 @@ pub(crate) fn within_now<R>(record: Option<SealRecord>, f: impl FnOnce() -> R) -
 }
 
 pub(crate) fn inherit<F: Future>(future: F) -> impl Future<Output = F::Output> {
-    SEAL.scope(current(), keep_funding(future))
+    SEAL.scope(
+        current(),
+        keep_funding(crate::rust::interpreter::accounting::membrane::inherit_firing(future)),
+    )
 }
 
 const KIND_DEPLOYMENT: i32 = 1;
@@ -201,6 +207,7 @@ impl SealRecord {
                     .map(WalletOwner::canonical_bytes)
                     .collect(),
                 phlo_price: self.origin.phlo_price,
+                phlo_limit: self.origin.phlo_limit,
             }),
         }
     }
@@ -227,6 +234,7 @@ impl SealRecord {
                 envelope: origin.envelope.clone(),
                 signers,
                 phlo_price: origin.phlo_price,
+                phlo_limit: origin.phlo_limit,
             },
         })
     }
@@ -247,6 +255,7 @@ mod tests {
                     WalletOwner::Unforgeable(vec![2; 32]),
                 ],
                 phlo_price: 3,
+                phlo_limit: 11,
             },
         }
     }
@@ -339,10 +348,7 @@ mod tests {
         }
     }
 
-    fn only(n: u8) -> Option<Arc<MembraneMeter>> {
-        use crate::rust::interpreter::accounting::membrane::BlockLedger;
-        Some(MembraneMeter::play(Arc::new(Only(n)), BlockLedger::new()))
-    }
+    fn only(n: u8) -> Option<Arc<MembraneMeter>> { Some(MembraneMeter::play(Arc::new(Only(n)))) }
 
     fn admits(continuation: &TaggedContinuation) -> bool { admits_comm(continuation, &[]) }
 
