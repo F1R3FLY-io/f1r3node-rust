@@ -227,6 +227,7 @@ const INDEX: u8 = b'i';
 
 fn encode_prior(entry: &PriorEntry) -> Vec<u8> {
     let mut bytes = entry.block_number.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&entry.position.to_be_bytes());
     bytes.push(match entry.status {
         PriorStatus::Included => 1,
         PriorStatus::Discarded => 2,
@@ -235,7 +236,8 @@ fn encode_prior(entry: &PriorEntry) -> Vec<u8> {
 }
 
 fn decode_prior(bytes: &[u8]) -> Option<PriorEntry> {
-    let (number, status) = bytes.split_at_checked(8)?;
+    let (number, rest) = bytes.split_at_checked(8)?;
+    let (position, status) = rest.split_at_checked(8)?;
     let status = match status {
         [1] => PriorStatus::Included,
         [2] => PriorStatus::Discarded,
@@ -243,6 +245,7 @@ fn decode_prior(bytes: &[u8]) -> Option<PriorEntry> {
     };
     Some(PriorEntry {
         block_number: i64::from_be_bytes(number.try_into().ok()?),
+        position: u64::from_be_bytes(position.try_into().ok()?),
         status,
     })
 }
@@ -702,6 +705,7 @@ mod tests {
                 void: Some((h("V1"), VoidReason::CloseUncovered)),
                 statuses: vec![(h(&format!("d-{target}")), PriorEntry {
                     block_number: 7,
+                    position: 1,
                     status: PriorStatus::Discarded,
                 })],
             };
@@ -717,6 +721,7 @@ mod tests {
             RecordStore::<BlockRecord>::prior(&reopened, b"d-b2"),
             Some(PriorEntry {
                 block_number: 7,
+                position: 1,
                 status: PriorStatus::Discarded
             })
         );

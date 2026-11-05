@@ -289,3 +289,73 @@ async fn every_validator_audits_conservation_on_its_schedule() {
         .wallets(&TokenKind::rev())
         .any(|w| *w == bob_wallet));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restart_after_an_order_commit_keeps_both_floors_and_the_same_state_floor() {
+    let genesis = crate::helper::v6_network::v6_genesis_with(Some(3)).await;
+    let mut nodes = TestNode::create_v6_network(genesis, 3).await.unwrap();
+    let mut blocks = Vec::new();
+    for round in 0..24 {
+        let block = propose_and_broadcast(&mut nodes, round % 3, &[]).await;
+        blocks.push(block.block_hash.clone());
+        settle(&nodes, Duration::from_millis(300)).await;
+    }
+    settle(&nodes, Duration::from_millis(1500)).await;
+    let node = &nodes[0];
+    let order = node.block_dag_storage.order_floor().unwrap();
+    assert_ne!(order, node.genesis.block_hash, "the order floor moved");
+    let lfb = node.block_dag_storage.get_representation().unwrap().last_finalized_block();
+    let live = engine(node);
+    let canonical = live.canonical_len();
+    let state_floor = live.state_floor().await.unwrap();
+
+    let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(node.block_store.clone());
+    let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
+        node.block_dag_storage.v6_executor_state(),
+        source,
+        node.genesis.block_hash.clone(),
+        node.genesis.body.state.post_state_hash.clone(),
+    )
+    .unwrap();
+    assert_eq!(opened, Opened::Resumed);
+    let runtime_manager = Arc::new(node.runtime_manager.clone());
+    let backend = Arc::new(CountingBackend {
+        inner: BlockExecutor::new(runtime_manager.clone(), 2),
+        targets: parking_lot::Mutex::new(Vec::new()),
+    });
+    let restarted = V6Engine::with_parts(
+        &node.genesis,
+        V6Parts {
+            backend: backend.clone(),
+            validators: Arc::new(AttestedRootValidators::new(runtime_manager.clone())),
+            evidence: Arc::new(MemoryEvidenceSink::new()),
+            inclusion: Arc::new(GateScreen::new(runtime_manager)),
+            store: Some(Box::new(store)),
+            limits: Limits::default(),
+            params: Default::default(),
+            lag_threshold: casper::rust::v6::lag::DEFAULT_LAG_THRESHOLD,
+            conservation: None,
+        },
+        node.block_store.clone(),
+        node.block_dag_storage.clone(),
+        node.deploy_storage.clone(),
+    );
+    node.block_dag_storage.check_floor_order().unwrap();
+    assert_eq!(node.block_dag_storage.order_floor().unwrap(), order);
+    assert_eq!(
+        node.block_dag_storage.get_representation().unwrap().last_finalized_block(),
+        lfb
+    );
+    assert!(restarted.canonical_len() >= canonical);
+    assert!(restarted.rebuild_tally().unwrap() > 0, "the tally is rebuilt from the blocks above the LFB");
+    assert_eq!(restarted.state_floor().await.unwrap(), state_floor);
+    for _ in 0..400 {
+        if !restarted.tick().await.unwrap() {
+            break;
+        }
+    }
+    let touched = backend.targets.lock().clone();
+    for hash in blocks.iter().filter(|hash| live.executed(hash).is_some()).take(canonical.saturating_sub(1)) {
+        assert!(!touched.contains(hash), "a resumed block was run again");
+    }
+}

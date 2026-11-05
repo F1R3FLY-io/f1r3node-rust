@@ -233,8 +233,13 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         let Some(&block_number) = self.numbers.get(record.target()) else {
             return Vec::new();
         };
+        let position = self
+            .index
+            .get(record.target())
+            .map_or(u64::MAX, |index| *index as u64);
         let entry = |status| PriorEntry {
             block_number,
+            position,
             status,
         };
         match record.void_reason() {
@@ -259,6 +264,14 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
                 .map(|(id, _)| (id.clone(), entry(PriorStatus::Included)))
                 .collect(),
         }
+    }
+
+    pub fn prior_at(&self, envelope: &[u8], attested: &BlockHash) -> Option<PriorStatus> {
+        let attested = self.store.position_of(attested)? as u64;
+        self.store
+            .prior(envelope)
+            .filter(|entry| entry.position <= attested)
+            .map(|entry| entry.status)
     }
 
     pub fn prior(&self, target: &BlockHash) -> Prior {
@@ -1420,5 +1433,21 @@ mod tests {
         }
         assert_eq!(first.attested_position(&bonds), Some(2));
         assert_eq!(rebuilt.attested_position(&bonds), first.attested_position(&bonds));
+    }
+
+    #[test]
+    fn an_inclusion_counts_only_records_at_or_below_the_attested_position() {
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(carrying("b2", 11, &["d2"], vec![ran("b1", "r0", "r1", &["d1"])]));
+        c.emit(carrying("b3", 12, &[], vec![ran("b2", "r1", "r2", &["d2"])]));
+        for (target, citer, pre, post, ids) in [("b1", "b2", "r0", "r1", ["d1"]), ("b2", "b3", "r1", "r2", ["d2"])] {
+            assert!(matches!(c.next_action(), Action::Replay { .. }));
+            c.apply_replay(&h(target), &h(citer), &ran(target, pre, post, &ids), Ok(h(post)));
+        }
+        assert_eq!(c.prior_at(b"d1", &h("b1")), Some(PriorStatus::Included));
+        assert_eq!(c.prior_at(b"d2", &h("b1")), None, "b2 is above the attested position");
+        assert_eq!(c.prior_at(b"d2", &h("b2")), Some(PriorStatus::Included));
+        assert_eq!(c.prior_at(b"d1", &h("nowhere")), None);
     }
 }

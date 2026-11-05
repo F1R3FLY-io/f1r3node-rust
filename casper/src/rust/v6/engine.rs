@@ -28,7 +28,7 @@ use super::linearizer::{Advance, Linearizer};
 use super::price::{effective_price, FixedPriceHook, NodePriceConf, PriceHook};
 use super::propose::{pack_records, select_envelopes, SelectionContext};
 use super::gate::GateInput;
-use super::record::{ExecutionRecord, VoidReason};
+use super::record::{ExecutionRecord, PriorStatus, VoidReason};
 use super::resource_policy::ShardResourcePolicy;
 use super::store::{
     LmdbRecordStore, MemoryRecordStore, Opened, RecordSource, RecordStore, Retention,
@@ -391,7 +391,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             .inclusion
             .refused(&check.root, block.header.timestamp, &block.body.deploys)
             .await;
-        let refused = match screened {
+        let mut refused = match screened {
             Ok(refused) => refused,
             Err(error) => {
                 tracing::warn!(
@@ -403,6 +403,23 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 return Ok(());
             }
         };
+        {
+            let core = self.core.lock();
+            for processed in &block.body.deploys {
+                let sig = &processed.deploy.sig;
+                if refused.iter().any(|(id, _)| id == sig) {
+                    continue;
+                }
+                let cause = match core.prior_at(sig, &check.attested) {
+                    Some(PriorStatus::Included) => {
+                        "a canonical record at or below the attested position ran the deployment"
+                    }
+                    Some(PriorStatus::Discarded) => "a void block discarded the deployment",
+                    None => continue,
+                };
+                refused.push((sig.clone(), cause.to_string()));
+            }
+        }
         tracing::debug!(
             target: "f1r3fly.v6",
             block = %hex::encode(&check.block),

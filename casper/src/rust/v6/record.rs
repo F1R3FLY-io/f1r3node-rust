@@ -74,6 +74,7 @@ pub enum PriorStatus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PriorEntry {
     pub block_number: i64,
+    pub position: u64,
     pub status: PriorStatus,
 }
 
