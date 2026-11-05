@@ -239,7 +239,8 @@ pub struct Finalizer {
     in_cycle: Arc<AtomicBool>,
     /// The `requested` value each completed cycle read when it started.
     completed: tokio::sync::watch::Receiver<u64>,
-    _stop: tokio::sync::oneshot::Sender<()>,
+    stop: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Finalizer {
@@ -252,7 +253,7 @@ impl Finalizer {
         let in_cycle = Arc::new(AtomicBool::new(false));
         let (completed_tx, completed) = tokio::sync::watch::channel(0);
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        tokio::spawn(finalizer_loop(
+        let task = tokio::spawn(finalizer_loop(
             cycle,
             wake.clone(),
             requested.clone(),
@@ -265,8 +266,22 @@ impl Finalizer {
             requested,
             in_cycle,
             completed,
-            _stop: stop,
+            stop: std::sync::Mutex::new(Some(stop)),
+            task: tokio::sync::Mutex::new(Some(task)),
         }
+    }
+
+    pub async fn shutdown(&self) -> Result<(), CasperError> {
+        self.stop.lock().unwrap().take();
+        let mut task = self.task.lock().await;
+        if let Some(handle) = task.as_mut() {
+            let result = handle.await;
+            task.take();
+            result.map_err(|error| {
+                CasperError::RuntimeError(format!("finalizer shutdown failed: {error}"))
+            })?;
+        }
+        Ok(())
     }
 
     /// Asks for a cycle and returns at once.
@@ -309,8 +324,9 @@ async fn finalizer_loop(
     use crate::rust::metrics_constants::{CASPER_METRICS_SOURCE, FINALIZER_RUN_RERUNS_METRIC};
     loop {
         tokio::select! {
-            _ = wake.notified() => {}
+            biased;
             _ = &mut stopped => return,
+            _ = wake.notified() => {}
         }
         let started_with = requested.load(Ordering::SeqCst);
         in_cycle.store(true, Ordering::SeqCst);
@@ -964,6 +980,30 @@ mod finalizer_run_metric_tests {
         }
 
         fn runs(&self) -> u32 { self.runs.load(Ordering::SeqCst) }
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_active_cycle_after_cancelled_wait() {
+        let probe = Probe::new(&[]);
+        let finalizer = Finalizer::spawn(probe.cycle());
+        finalizer.trigger();
+        probe.started.notified().await;
+        finalizer.trigger();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), finalizer.shutdown())
+                .await
+                .is_err()
+        );
+        probe.gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(5), finalizer.shutdown())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(probe.runs(), 1);
+        assert_eq!(Arc::strong_count(&probe.gate), 1);
+        finalizer.shutdown().await.unwrap();
     }
 
     async fn settle_task() {

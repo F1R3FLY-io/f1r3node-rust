@@ -1,5 +1,5 @@
 // Pins the report-shape invariant that
-// `node/src/rust/web/block_info_enricher.rs::extract_transfers_from_report`
+// `node/src/rust/consensus/casper/web/block_info_enricher.rs::extract_transfers_from_report`
 // relies on. The batch order (precharge -> user -> refund) is a contract of
 // `casper/src/rust/rholang/replay_runtime.rs::process_deploy_with_cost_accounting`,
 // not a coincidence, so it is asserted here in the crate that produces it
@@ -25,7 +25,7 @@ use crate::util::genesis_builder::GenesisBuilder;
 use crate::util::rholang::resources::mk_test_rnode_store_manager_shared;
 
 /// Reconstruct the transfer unforgeable channel exactly as
-/// `node/src/rust/web/transaction::transfer_unforgeable` does, so this test
+/// `node/src/rust/consensus/casper/web/transaction::transfer_unforgeable` does, so this test
 /// does not depend on the `node` crate.
 fn transfer_unforgeable_channel() -> models::rhoapi::Par {
     let system_vault_pub_key = to_public(SYSTEM_VAULT_PK);

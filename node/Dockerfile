@@ -57,6 +57,7 @@ COPY graphz/ ./graphz/
 COPY block-storage/ ./block-storage/
 COPY rspace++/ ./rspace++/
 COPY casper/ ./casper/
+COPY consensus/ ./consensus/
 COPY comm/ ./comm/
 COPY rho-pure-eval/ ./rho-pure-eval/
 COPY rholang/ ./rholang/

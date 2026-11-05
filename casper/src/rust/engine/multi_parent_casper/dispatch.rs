@@ -216,6 +216,10 @@ impl<T: TransportLayer + Send + Sync> MultiParentCasper for MultiParentCasperImp
         ))
     }
 
+    async fn shutdown_background_tasks(&self) -> Result<(), CasperError> {
+        self.finalizer.shutdown().await
+    }
+
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
         super::finalization_runner::read_last_finalized_block(
             &self.block_dag_storage,

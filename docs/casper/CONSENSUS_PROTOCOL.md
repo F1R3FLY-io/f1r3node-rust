@@ -417,7 +417,7 @@ Block API → is_finalized?
 
 ## 8. Liveness (Heartbeat Proposer)
 
-The heartbeat proposer (`node/src/rust/instances/heartbeat_proposer.rs`) ensures the chain makes progress even without user deploys.
+The heartbeat proposer (`node/src/rust/consensus/casper/instances/heartbeat_proposer.rs`) ensures the chain makes progress even without user deploys.
 
 ### Trigger Logic
 
@@ -582,7 +582,7 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 ### Liveness
 | File | Role |
 |------|------|
-| `node/src/rust/instances/heartbeat_proposer.rs` | Heartbeat-driven proposals, stale recovery |
+| `node/src/rust/consensus/casper/instances/heartbeat_proposer.rs` | Heartbeat-driven proposals, stale recovery |
 
 ### Storage (consensus-agnostic)
 | File | Role |

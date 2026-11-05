@@ -177,6 +177,8 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     /// The persisted LFB. Reading it never advances finality.
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError>;
 
+    async fn shutdown_background_tasks(&self) -> Result<(), CasperError> { Ok(()) }
+
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
 
