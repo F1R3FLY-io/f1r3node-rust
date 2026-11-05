@@ -7,14 +7,21 @@ new PoS,
     sysAuthTokenOps(`sys:authToken:ops`),
     RevBond(`rho:rev:bond`),
     RevBondAdmin(`rho:rev:bondAdmin`),
+    blake2b256(`rho:crypto:blake2b256Hash`),
     uriOut
 in {
   registryLookup!(`rho:lang:listOps`, *listOpsCh) |
   for (@(_, ListOps) <- listOpsCh) {
-    new initialActiveCh, stateCh, lastEpochCh, settlePendingBonds in {
+    new initialActiveCh, stateCh, lastEpochCh, handoffCh, firstHashCh, settlePendingBonds in {
       pickActiveValidators!($$initialBonds$$, *initialActiveCh) |
       for (@initialActive <- initialActiveCh) {
         lastEpochCh!(0) |
+        blake2b256!(("".hexToBytes(), initialActive, $$initialBonds$$).toByteArray(), *firstHashCh) |
+        for (@firstHash <- firstHashCh) {
+          handoffCh!((("".hexToBytes(), initialActive, $$initialBonds$$).toByteArray(),
+                      (firstHash, initialActive, $$initialBonds$$).toByteArray(),
+                      initialActive))
+        } |
         stateCh!({
           "allBonds"          : $$initialBonds$$,
           "activeValidators"  : initialActive,
@@ -100,6 +107,11 @@ in {
         contract PoS(@"getActiveValidators", returnCh) = {
           for (@state <<- stateCh) {
             returnCh!(state.get("activeValidators"))
+          }
+        } |
+        contract PoS(@"getHandoff", returnCh) = {
+          for (@(current, next, _) <<- handoffCh) {
+            returnCh!((current, next))
           }
         } |
         contract PoS(@"getWithdrawers", returnCh) = {
@@ -259,7 +271,7 @@ in {
                     } else {
                       for (_ <- lastEpochCh) { lastEpochCh!(blockNumber / $$epochLength$$) } |
                       new stateProcessCh, movePendingWithdrawer, movePendingCh,
-                          removeQuarantinedWithdrawers, removeQuarantinedCh, newValidatorsCh
+                          removeQuarantinedWithdrawers, removeQuarantinedCh, newValidatorsCh, nextHashCh
                       in {
                         runMVar!(*stateCh, *stateProcessCh, *ackCh) |
                         for (@state, stateUpdateCh <- stateProcessCh) {
@@ -268,8 +280,12 @@ in {
                             removeQuarantinedWithdrawers!(blockNumber, moved, *removeQuarantinedCh) |
                             for (@removed <- removeQuarantinedCh) {
                               pickActiveValidators!(moved.get("allBonds"), *newValidatorsCh) |
-                              for (@newValidators <- newValidatorsCh) {
-                                stateUpdateCh!(removed.set("activeValidators", newValidators), (true, Nil))
+                              for (@newValidators <- newValidatorsCh & @(_, next, nextActive) <- handoffCh) {
+                                blake2b256!(next, *nextHashCh) |
+                                for (@nextHash <- nextHashCh) {
+                                  handoffCh!((next, (nextHash, newValidators, moved.get("allBonds")).toByteArray(), newValidators)) |
+                                  stateUpdateCh!(removed.set("activeValidators", nextActive), (true, Nil))
+                                }
                               }
                             }
                           }

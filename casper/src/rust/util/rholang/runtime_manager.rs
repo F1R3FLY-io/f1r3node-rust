@@ -1209,6 +1209,14 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    pub async fn get_handoff(
+        &self,
+        start_hash: &StateHash,
+    ) -> Result<(Vec<u8>, Vec<u8>), CasperError> {
+        let runtime = self.spawn_runtime().await?;
+        RuntimeOps::new(runtime).get_handoff(start_hash).await
+    }
+
     pub async fn get_active_validators(
         &self,
         start_hash: &StateHash,

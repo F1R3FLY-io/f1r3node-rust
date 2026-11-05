@@ -9,6 +9,7 @@ pub mod evidence;
 pub mod executor;
 pub mod footprint;
 pub mod gate;
+pub mod handoff;
 pub mod genesis_policy;
 pub mod genesis_wallets;
 pub mod history;

@@ -55,6 +55,23 @@ pub async fn shard_floor(
     })
 }
 
+pub async fn charged_bonds(
+    runtime_manager: &crate::rust::util::rholang::runtime_manager::RuntimeManager,
+    root: &models::rust::block::state_hash::StateHash,
+) -> Result<u64, crate::rust::errors::CasperError> {
+    let bonded = runtime_manager.compute_bonds(root).await?.len();
+    let (current, next) = runtime_manager.get_handoff(root).await?;
+    let carried = [current, next]
+        .iter()
+        .map(|record| {
+            super::handoff::HandoffRecord::decode(record)
+                .map(|r| r.bonds.len())
+                .map_err(|e| crate::rust::errors::CasperError::RuntimeError(e.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(carried.into_iter().fold(bonded, usize::max) as u64)
+}
+
 pub fn proposer(sender: &[u8]) -> Option<WalletOwner> {
     if sender.is_empty() {
         return None;

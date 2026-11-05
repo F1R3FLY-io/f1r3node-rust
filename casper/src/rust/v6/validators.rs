@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use models::rust::casper::protocol::casper_message::Bond;
 
 use super::body::Attestation;
+use super::handoff::HandoffRecord;
 use crate::rust::errors::CasperError;
-use crate::rust::finality::floor::floor_committee;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 #[async_trait]
@@ -27,6 +27,16 @@ impl AttestedRootValidators {
     }
 }
 
+pub async fn committee_at(
+    runtime_manager: &RuntimeManager,
+    root: &models::rust::block::state_hash::StateHash,
+) -> Result<Vec<Bond>, CasperError> {
+    let (current, _) = runtime_manager.get_handoff(root).await?;
+    HandoffRecord::decode(&current)
+        .map(|record| record.committee())
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
+}
+
 #[async_trait]
 impl ValidatorSetSource for AttestedRootValidators {
     async fn bonds(
@@ -34,6 +44,6 @@ impl ValidatorSetSource for AttestedRootValidators {
         attestation: &Attestation,
         _block_number: i64,
     ) -> Result<Vec<Bond>, CasperError> {
-        floor_committee(&self.runtime_manager, &attestation.root).await
+        committee_at(&self.runtime_manager, &attestation.root).await
     }
 }

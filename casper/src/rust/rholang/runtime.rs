@@ -1748,6 +1748,54 @@ impl RuntimeOps {
         })
     }
 
+    fn handoff_query_par() -> &'static Par {
+        static QUERY: OnceLock<Par> = OnceLock::new();
+        QUERY.get_or_init(|| {
+            Compiler::source_to_adt(
+                r#"
+          new return, rl(`rho:registry:lookup`), poSCh in {
+          rl!(`rho:system:pos`, *poSCh) |
+          for(@(_, PoS) <- poSCh) {
+            @PoS!("getHandoff", *return)
+          }
+        }
+      "#,
+            )
+            .expect("Failed to compile handoff query source")
+        })
+    }
+
+    pub async fn get_handoff(
+        &mut self,
+        start_hash: &StateHash,
+    ) -> Result<(Vec<u8>, Vec<u8>), CasperError> {
+        let pars = self
+            .play_exploratory_par_strict(Self::handoff_query_par().clone(), start_hash)
+            .await?;
+        let malformed = || {
+            CasperError::RuntimeError(format!(
+                "getHandoff gave no (current, next) pair in state {}",
+                PrettyPrinter::build_string_bytes(start_hash)
+            ))
+        };
+        let [par] = pars.as_slice() else {
+            return Err(malformed());
+        };
+        let Some(ExprInstance::ETupleBody(tuple)) =
+            par.exprs.first().and_then(|e| e.expr_instance.clone())
+        else {
+            return Err(malformed());
+        };
+        let bytes = |p: &Par| match p.exprs.first().and_then(|e| e.expr_instance.clone()) {
+            Some(ExprInstance::GByteArray(b)) => Ok(b),
+            _ => Err(malformed()),
+        };
+        match tuple.ps.as_slice() {
+            [current, next] => Ok((bytes(current)?, bytes(next)?)),
+            _ => Err(malformed()),
+        }
+    }
+
     fn activate_validator_query_par() -> &'static Par {
         static QUERY: OnceLock<Par> = OnceLock::new();
         QUERY.get_or_init(|| {

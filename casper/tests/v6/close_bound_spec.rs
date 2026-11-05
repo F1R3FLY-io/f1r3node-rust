@@ -7,7 +7,7 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::backend::ExecutionBackend;
 use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
-use casper::rust::v6::close_charge::{pre_charge_phlo, CloseCharge};
+use casper::rust::v6::close_charge::{charged_bonds, pre_charge_phlo, CloseCharge};
 use casper::rust::v6::executor::BlockExecutor;
 use casper::rust::v6::genesis_wallets::read_wallet_balance;
 use casper::rust::v6::record::ExecutionRecord;
@@ -240,7 +240,8 @@ async fn withdrawers_close(validators: usize, withdrawers: usize) -> [(u64, u64)
     }
     let mut closes = [(0, 0); 2];
     for (epoch, number) in [1000i64, 2000].into_iter().enumerate() {
-        let bonds = if epoch == 0 { validators } else { validators - withdrawers };
+        let bonds = charged_bonds(&rm, &root).await.unwrap() as usize;
+        assert!(bonds >= if epoch == 0 { validators } else { validators - withdrawers });
         let b = block(number, vec![], &proposer);
         let record = executor.execute(&root, &b).await.expect("the epoch close executes");
         assert_eq!(&executor.replay(&record, &b).await.unwrap(), record.post_root());

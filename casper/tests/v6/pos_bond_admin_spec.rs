@@ -11,7 +11,10 @@ use casper::rust::util::rholang::system_deploy_util::generate_slash_deploy_rando
 use casper::rust::v6::backend::ExecutionBackend;
 use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
 use casper::rust::v6::executor::BlockExecutor;
+use casper::rust::safety::clique_oracle::FtThreshold;
 use casper::rust::v6::genesis_wallets::{read_bond_balance, read_wallet_balance};
+use casper::rust::v6::handoff::{handoff_hash, verify_handoff, Certification, HandoffRecord};
+use casper::rust::v6::validators::committee_at;
 use casper::rust::v6::record::ExecutionRecord;
 use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 use crypto::rust::private_key::PrivateKey;
@@ -566,20 +569,26 @@ async fn an_epoch_starts_at_the_first_close_at_or_past_its_boundary() {
 
     let first = run(&executor, &genesis, &block(1, vec![envelope(&bond("a"), 1, &alice)], &proposer)).await;
     assert_eq!(pos_bond(&rm, &first, &alice.pk).await, Some(1_000));
-    assert!(!active(&rm, &first, &alice.pk).await, "block 1 is inside epoch 0");
+    assert!(!in_next(&rm, &first, &alice.pk).await, "block 1 is inside epoch 0");
 
     let past_void = run(&executor, &first, &block(4, vec![], &proposer)).await;
     assert!(
-        active(&rm, &past_void, &alice.pk).await,
-        "block 3 was void, so the close of block 4 starts epoch 1"
+        in_next(&rm, &past_void, &alice.pk).await,
+        "block 3 was void, so the close of block 4 starts epoch 1 and picks the next set"
     );
+    assert!(!active(&rm, &past_void, &alice.pk).await, "the set picked at epoch 1 serves in epoch 2");
 
     let same_epoch = run(&executor, &past_void, &block(5, vec![envelope(&bond("b"), 5, &bob)], &proposer)).await;
     assert_eq!(pos_bond(&rm, &same_epoch, &bob.pk).await, Some(1_000));
-    assert!(!active(&rm, &same_epoch, &bob.pk).await, "epoch 1 starts only once");
+    assert!(!in_next(&rm, &same_epoch, &bob.pk).await, "epoch 1 starts only once");
 
     let next = run(&executor, &same_epoch, &block(6, vec![], &proposer)).await;
-    assert!(active(&rm, &next, &bob.pk).await, "block 6 is the boundary of epoch 2");
+    assert!(active(&rm, &next, &alice.pk).await, "block 6 is the boundary of epoch 2");
+    assert!(in_next(&rm, &next, &bob.pk).await);
+    assert!(!active(&rm, &next, &bob.pk).await);
+
+    let after = run(&executor, &next, &block(9, vec![], &proposer)).await;
+    assert!(active(&rm, &after, &bob.pk).await, "block 9 is the boundary of epoch 3");
 }
 
 #[tokio::test]
@@ -754,4 +763,95 @@ async fn the_active_set_expression_picks_what_the_old_loop_picked() {
         let (old, new) = RhoTuple2::unapply(&answer[0]).expect("a pair of sets");
         assert_eq!(old, new, "{size} bonds, {active} active");
     }
+}
+
+async fn in_next(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> bool {
+    let (_, next) = rm.get_handoff(root).await.unwrap();
+    HandoffRecord::decode(&next).unwrap().active.contains(&pk.bytes)
+}
+
+fn certified_by(committee: &[models::rust::casper::protocol::casper_message::Bond], next: &[u8]) -> Vec<Certification> {
+    committee
+        .iter()
+        .map(|bond| Certification {
+            validator: bond.validator.clone(),
+            handoff: handoff_hash(next),
+        })
+        .collect()
+}
+
+const TWO_THIRDS: FtThreshold = FtThreshold { num: 2, den: 3 };
+
+#[tokio::test]
+async fn a_joiner_follows_the_handoffs_from_genesis_with_only_the_previous_set() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis, validators) = shard(&[&alice, &bob], 3, 10).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let bond = |stash: &str| bond_term(&[(1_000, 1_000, stash)]);
+
+    let (r0, r1) = rm.get_handoff(&genesis).await.unwrap();
+    let genesis_record = HandoffRecord::decode(&r0).unwrap();
+    assert!(genesis_record.previous.is_empty());
+    assert_eq!(
+        genesis_record.committee().iter().map(|b| b.validator.clone()).collect::<Vec<_>>(),
+        validators.iter().map(|pk| pk.bytes.clone()).collect::<Vec<_>>()
+    );
+    assert_eq!(HandoffRecord::decode(&r1).unwrap().previous, handoff_hash(&r0));
+
+    let mut roots = vec![];
+    let mut root = genesis.clone();
+    for (n, deploys) in [
+        (1, vec![envelope(&bond("a"), 1, &alice)]),
+        (3, vec![]),
+        (4, vec![envelope(&bond("b"), 4, &bob)]),
+        (6, vec![]),
+        (9, vec![]),
+    ] {
+        root = run(&executor, &root, &block(n, deploys, &proposer)).await;
+        roots.push(root.clone());
+    }
+
+    let mut held = r0;
+    let mut steps = 0;
+    for root in std::iter::once(&genesis).chain(roots.iter()) {
+        let (current, next) = rm.get_handoff(root).await.unwrap();
+        if current != held {
+            continue;
+        }
+        let committee = HandoffRecord::decode(&held).unwrap().committee();
+        assert_eq!(committee_at(&rm, root).await.unwrap(), committee, "consensus reads the held record");
+        let accepted = verify_handoff(&held, &next, &certified_by(&committee, &next), TWO_THIRDS).unwrap();
+        assert_eq!(accepted, HandoffRecord::decode(&next).unwrap());
+        held = next;
+        steps += 1;
+    }
+    let (last, _) = rm.get_handoff(&root).await.unwrap();
+    assert_eq!(steps, 4, "genesis and the closes at blocks 3, 6 and 9 each hand off once");
+    let (_, final_next) = rm.get_handoff(&root).await.unwrap();
+    assert_eq!(held, final_next);
+    assert_eq!(handoff_hash(&last), HandoffRecord::decode(&final_next).unwrap().previous);
+    let serving = HandoffRecord::decode(&last).unwrap();
+    assert!(serving.active.contains(&alice.pk.bytes) && serving.active.contains(&bob.pk.bytes));
+}
+
+#[tokio::test]
+async fn a_withdrawer_serves_out_the_epoch_its_record_names_and_leaves_the_next() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis, _) = shard(&[&alice], 3, 10).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let withdraw = with_handle(r#"@PoS!("withdraw", handle, *out)"#, "answer");
+
+    let b1 = run(&executor, &genesis, &block(1, vec![envelope(&bond_term(&[(1_000, 1_000, "handle")]), 1, &alice)], &proposer)).await;
+    let b3 = run(&executor, &b1, &block(3, vec![], &proposer)).await;
+    let b4 = run(&executor, &b3, &block(4, vec![envelope(&withdraw, 4, &alice)], &proposer)).await;
+    let b6 = run(&executor, &b4, &block(6, vec![], &proposer)).await;
+    assert_eq!(pos_bond(&rm, &b6, &alice.pk).await, None, "the close moved the withdrawer out of the bonds");
+    let serving = committee_at(&rm, &b6).await.unwrap();
+    assert!(
+        serving.iter().any(|b| b.validator == alice.pk.bytes && b.stake == 1_000),
+        "the record picked at block 3 still names her stake for epoch 2"
+    );
+    assert!(!in_next(&rm, &b6, &alice.pk).await);
+    let b9 = run(&executor, &b6, &block(9, vec![], &proposer)).await;
+    assert!(committee_at(&rm, &b9).await.unwrap().iter().all(|b| b.validator != alice.pk.bytes));
 }
