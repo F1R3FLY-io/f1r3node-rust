@@ -653,7 +653,7 @@ async fn withdrawing(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> O
            }}"#,
         hex::encode(&pk.bytes)
     );
-    let (answer, _) = rm.play_exploratory_deploy(query, root, None).await.unwrap();
+    let (answer, _) = rm.play_exploratory_deploy(query, root, None, Vec::new()).await.unwrap();
     RhoNumber::unapply(&answer[0]).filter(|b| *b >= 0)
 }
 
