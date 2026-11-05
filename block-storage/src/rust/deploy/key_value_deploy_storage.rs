@@ -1062,7 +1062,8 @@ mod tests {
             assert_eq!(decodes.get(), 2);
             assert_ne!(changed.generation, initial.generation);
             assert!(!changed.entries.contains_key(&first.sig.to_vec()));
-            assert!(changed.entries.contains_key(&second.sig.to_vec()));
+            assert!(!changed.entries.contains_key(&second.sig.to_vec()));
+            assert!(changed.entries.is_empty());
 
             let temporary = deploy(3);
             independent.add(vec![temporary.clone()]).unwrap();
@@ -1091,12 +1092,13 @@ mod tests {
             assert_eq!(pool.metadata_snapshot().unwrap().entries.len(), 1);
             let mut tampered = first.clone();
             tampered.data.time_stamp += 1;
+            let key = pool.store.encode_key(&first.sig.to_vec()).unwrap();
+            let bytes = crate::rust::deploy::deploy_codec::encode_v1_unchecked(&tampered);
             persistent
                 .store
-                .put_one(first.sig.to_vec(), tampered.clone())
+                .raw_store()
+                .put(vec![(key.clone(), bytes.clone())])
                 .unwrap();
-            let key = pool.store.encode_key(&first.sig.to_vec()).unwrap();
-            let bytes = pool.store.encode_value(&tampered).unwrap();
 
             assert!(pool.metadata_snapshot().unwrap().entries.is_empty());
             assert!(!pool.contains_sig(&first.sig).unwrap());
@@ -1220,6 +1222,39 @@ mod tests {
                 );
                 drop(hook);
             }
+        }
+
+        #[tokio::test]
+        async fn checked_conditional_insert_updates_warm_metadata() {
+            use crate::rust::deploy::key_value_deploy_storage::{
+                DeployMetadata, PreparedInsertResult,
+            };
+
+            let dir = tempfile::tempdir().unwrap();
+            let pool = storage(dir.path()).await;
+            let initial = pool.metadata_snapshot().unwrap();
+            let candidate = deploy(1);
+            let prepared = pool.prepare_checked(&candidate).unwrap();
+            let absent = pool.inspect_sig(&candidate.sig).unwrap();
+            assert_eq!(
+                pool.add_prepared_if_unchanged(&prepared, &absent).unwrap(),
+                PreparedInsertResult::Inserted
+            );
+            let added = pool.metadata_snapshot().unwrap();
+            assert_eq!(added.parent_generation, Some(initial.generation));
+            assert_eq!(
+                added.entries.get(&candidate.sig.to_vec()),
+                Some(&DeployMetadata::from(&candidate))
+            );
+            let present = pool.inspect_sig(&candidate.sig).unwrap();
+            assert_eq!(
+                pool.add_prepared_if_unchanged(&prepared, &present).unwrap(),
+                PreparedInsertResult::AlreadyPresent
+            );
+            assert_eq!(
+                pool.metadata_snapshot().unwrap().generation,
+                added.generation
+            );
         }
 
         #[tokio::test]

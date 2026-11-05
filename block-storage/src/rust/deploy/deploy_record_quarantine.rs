@@ -217,31 +217,51 @@ impl DeployRecordQuarantine {
         let mut next = HashMap::with_capacity(raw.len());
         let mut entries = imbl::HashMap::new();
         let mut damaged = Vec::new();
+        let mut upgrades = Vec::new();
         let mut decoded = 0;
         for (key, value) in raw {
-            let record = store.decode_key(&key).and_then(|signature| {
-                let fingerprint = record_fingerprint(&key, &value);
-                let record = match verified.get(&signature) {
-                    Some(record) if record.fingerprint == fingerprint => record.clone(),
-                    _ => {
-                        let deploy = store.decode_value(&value)?;
-                        decoded += 1;
-                        VerifiedMetadata {
-                            fingerprint,
-                            metadata: DeployMetadata::from(&deploy),
+            let record = store
+                .decode_key(&key)
+                .map_err(|error| RecordError {
+                    reason: "decode",
+                    error,
+                })
+                .and_then(|signature| {
+                    let fingerprint = record_fingerprint(&key, &value);
+                    let record = match verified.get(&signature) {
+                        Some(record) if record.fingerprint == fingerprint => record.clone(),
+                        _ => {
+                            let (deploy, upgraded) = self.decode_verified(store, &key, &value)?;
+                            decoded += 1;
+                            let fingerprint = if let Some(upgraded) = upgraded {
+                                let fingerprint = record_fingerprint(&key, &upgraded);
+                                upgrades.push((key.clone(), value.clone(), upgraded));
+                                fingerprint
+                            } else {
+                                fingerprint
+                            };
+                            VerifiedMetadata {
+                                fingerprint,
+                                metadata: DeployMetadata::from(&deploy),
+                            }
                         }
-                    }
-                };
-                Ok((signature, record))
-            });
+                    };
+                    Ok((signature, record))
+                });
             match record {
                 Ok((signature, record)) => {
                     entries.insert(record.metadata.signature.clone(), record.metadata.clone());
                     next.insert(signature, record);
                 }
-                Err(error) => damaged.push(DamagedRecord { key, value, error }),
+                Err(RecordError { error, reason }) => damaged.push(DamagedRecord {
+                    key,
+                    value,
+                    error,
+                    reason,
+                }),
             }
         }
+        self.upgrade_records(store, upgrades);
         self.isolate(store, damaged)?;
         *verified = next;
         Ok((entries, decoded))
@@ -525,6 +545,55 @@ mod tests {
         ))
         .encode_key(&sig.to_vec())
         .unwrap()
+    }
+
+    #[test]
+    fn metadata_upgrades_legacy_records_and_reuses_verified_metadata() {
+        let live = in_memory();
+        let quarantine = in_memory();
+        let store = DeployTypedStore::with_value_codec(
+            live.clone(),
+            super::super::deploy_codec::encode,
+            super::super::deploy_codec::decode,
+        );
+        let handler = DeployRecordQuarantine::new(DEPLOY_STORAGE_DB, quarantine);
+        let mut verified = HashMap::new();
+        let deploy = legacy_deploy();
+        let key = key_for(&deploy.sig);
+        live.put(vec![(key.clone(), legacy_bytes())]).unwrap();
+        let (first, decoded) = handler.read_metadata(&store, &mut verified).unwrap();
+        assert_eq!(decoded, 1);
+        assert!(first.contains_key(&deploy.sig.to_vec()));
+        assert!(super::super::deploy_codec::is_current(
+            &live.get_one(&key).unwrap().unwrap()
+        ));
+        assert_eq!(handler.signature_checks.load(Ordering::Relaxed), 1);
+        let (second, decoded) = handler.read_metadata(&store, &mut verified).unwrap();
+        assert_eq!(second, first);
+        assert_eq!(decoded, 0);
+        assert_eq!(handler.signature_checks.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn metadata_quarantines_invalid_legacy_signatures_and_mismatched_keys() {
+        for wrong_key in [false, true] {
+            let live = in_memory();
+            let quarantine = in_memory();
+            let storage =
+                KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+            let valid = legacy_deploy();
+            let mut value = legacy_bytes();
+            let key = if wrong_key {
+                key_for(&deploy(2).sig)
+            } else {
+                value[8] = b'X';
+                key_for(&valid.sig)
+            };
+            live.put(vec![(key.clone(), value)]).unwrap();
+            assert!(storage.metadata_snapshot().unwrap().entries.is_empty());
+            assert!(live.get_one(&key).unwrap().is_none());
+            assert!(quarantine.get_one(&key).unwrap().is_some());
+        }
     }
 
     enum Pool {
