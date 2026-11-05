@@ -1,8 +1,9 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-ii (skeleton): synthesis (`synth`) for ground literals and
-//! `SimpleType` connectives. Subsequent phases add Pi formation, lambda
-//! checking, application checking, and definitional equality.
+//! Phase 2c-iii (Pi formation): synthesis (`synth`) for ground literals,
+//! `SimpleType` connectives, Pi well-formedness, and non-dependent
+//! application. Remaining phases add dependent-codomain substitution,
+//! definitional equality, and process-level typing.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -136,10 +137,36 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
         ExprInstance::GUri(_) => Ok(type_par(ConnectiveInstance::ConnUri(true))),
         ExprInstance::GByteArray(_) => Ok(type_par(ConnectiveInstance::ConnByteArray(true))),
 
-        // Pi types are inhabitants of Type. Phase 2c-iii will check
-        // that the param types and codomain are themselves types; for
-        // now accept any EPi.
-        ExprInstance::EPiBody(_) => Ok(type_par(ConnectiveInstance::ConnType(true))),
+        // Pi formation. A Pi `(x_0: A_0, …, x_{n-1}: A_{n-1}) -> B` has
+        // type `Type` iff every `A_i` has type `Type` in `_ctx` (the
+        // outer scope — the normalizer does not thread earlier binders
+        // into later param types) and `B` has type `Type` in the ctx
+        // extended with all `A_i`. We extend in reverse so that
+        // `BoundVar(i)` in `B` resolves to `A_i` (same convention as the
+        // lambda-check branch).
+        ExprInstance::EPiBody(pi) => {
+            if pi.bind_count as usize != pi.param_types.len() {
+                return Err(TypeError::NotWellFormed(format!(
+                    "EPi bind_count {} does not match param_types len {}",
+                    pi.bind_count,
+                    pi.param_types.len()
+                )));
+            }
+            let type_univ = type_par(ConnectiveInstance::ConnType(true));
+            for pt in pi.param_types.iter() {
+                check(_ctx, pt, &type_univ)?;
+            }
+            let mut inner = _ctx.clone();
+            for pt in pi.param_types.iter().rev() {
+                inner = inner.extend(pt.clone());
+            }
+            let codomain = pi
+                .codomain
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EPi with no codomain".to_string()))?;
+            check(&inner, codomain, &type_univ)?;
+            Ok(type_univ)
+        }
 
         // Bare lambda has no inherent type without an expected Pi — use
         // `check` with an annotation instead.
@@ -659,5 +686,86 @@ mod tests {
         let ctx = Context::new();
         let err = synth(&ctx, &bvar_par(0)).unwrap_err();
         assert!(matches!(err, TypeError::UnboundVar(0)));
+    }
+
+    #[test]
+    fn synth_pi_int_to_int_is_type() {
+        // `(x: Int) -> Int` is well-formed and has type Type.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let pi = pi_par(int_ty.clone(), int_ty);
+        let ty = synth(&ctx, &pi).unwrap();
+        assert!(matches!(
+            connective_of(&ty),
+            Some(ConnectiveInstance::ConnType(_))
+        ));
+    }
+
+    #[test]
+    fn synth_pi_rejects_non_type_param() {
+        // `(x: 42) -> Int` is ill-formed — 42 is a value, not a type.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let bad_pi = pi_par(gint_par(42), int_ty);
+        let err = synth(&ctx, &bad_pi).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_pi_rejects_non_type_codomain() {
+        // `(x: Int) -> 42` is ill-formed — 42 is a value, not a type.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let bad_pi = pi_par(int_ty, gint_par(42));
+        let err = synth(&ctx, &bad_pi).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_pi_dependent_codomain() {
+        // `(A: Type) -> A` is well-formed: in the extended ctx,
+        // BoundVar(0) = A has type Type, so the codomain synths to Type.
+        let ctx = Context::new();
+        let type_univ = type_par(ConnectiveInstance::ConnType(true));
+        let pi = pi_par(type_univ, bvar_par(0));
+        let ty = synth(&ctx, &pi).unwrap();
+        assert!(matches!(
+            connective_of(&ty),
+            Some(ConnectiveInstance::ConnType(_))
+        ));
+    }
+
+    #[test]
+    fn synth_pi_bind_count_mismatch_is_malformed() {
+        use models::rhoapi::{EPi, Expr};
+        // bind_count claims 2 but only one param_type — malformed proto.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let malformed = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPiBody(EPi {
+                bind_count: 2,
+                param_types: vec![int_ty.clone()],
+                codomain: Some(int_ty),
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+        let err = synth(&ctx, &malformed).unwrap_err();
+        assert!(matches!(err, TypeError::NotWellFormed(_)));
+    }
+
+    #[test]
+    fn synth_pi_nested_pi_param_type_is_type() {
+        // `(f: Int -> Int) -> Int` is well-formed: the param_type is
+        // itself a Pi, which must synth to Type.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let int_to_int = pi_par(int_ty.clone(), int_ty.clone());
+        let higher_order = pi_par(int_to_int, int_ty);
+        let ty = synth(&ctx, &higher_order).unwrap();
+        assert!(matches!(
+            connective_of(&ty),
+            Some(ConnectiveInstance::ConnType(_))
+        ));
     }
 }
