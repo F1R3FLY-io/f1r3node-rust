@@ -1471,6 +1471,22 @@ async fn work_under_an_underfunded_installer_stops_and_the_client_pays_nothing_f
         !replays(earlier).await,
         "an admitted step changed to refused"
     );
+
+    let after = executor
+        .execute(&root, vec![call()], block_data(&proposer))
+        .await
+        .expect("a later block executes");
+    assert!(
+        after.metered[0].refusals.is_empty(),
+        "no stop carries into a later block"
+    );
+    assert_eq!(after.metered[0].drawn[&process.canonical_bytes()], full);
+    assert_eq!(after.settled_root, funded.settled_root);
+    assert_eq!(
+        rholang::rust::interpreter::accounting::membrane::unscoped_charges(),
+        0,
+        "every gated charge has a step identity"
+    );
 }
 
 #[tokio::test]
@@ -1577,4 +1593,148 @@ async fn two_runs_that_each_fit_a_gated_wallet_but_not_together_pay_in_full() {
         charges.iter().all(|sc| sc.drawn == sc.owed),
         "no step under the membrane runs unpaid: {charges:?}"
     );
+}
+
+#[tokio::test]
+async fn the_gate_refuses_every_seal_whose_owner_resolves_only_at_run_time() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 1_000_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let d = "d(`rho:system:deployerId`)";
+    let p = r#"@"x"!(1)"#;
+    let shapes: Vec<(String, bool)> = vec![
+        (format!("new {d} in {{ {{% {p} %}}[d] }}"), true),
+        (format!("new x, {d} in {{ {{% {p} %}}[x] }}"), false),
+        (format!("new x, {d} in {{ {{% {p} %}}[d] }}"), true),
+        (format!("new {d}, x in {{ {{% {p} %}}[x] }}"), false),
+        (format!("new {d}, x in {{ {{% {p} %}}[d] }}"), true),
+        (
+            format!("new a(`rho:registry:lookup`), {d}, b in {{ {{% {p} %}}[a] }}"),
+            false,
+        ),
+        (
+            format!("new a(`rho:registry:lookup`), {d}, b in {{ {{% {p} %}}[b] }}"),
+            false,
+        ),
+        (
+            format!("new a(`rho:registry:lookup`), {d}, b in {{ {{% {p} %}}[d] }}"),
+            true,
+        ),
+        (
+            format!("new {d} in {{ new d in {{ {{% {p} %}}[d] }} }}"),
+            false,
+        ),
+        (
+            format!("new {d} in {{ new e in {{ {{% {p} %}}[d] }} }}"),
+            true,
+        ),
+        (
+            format!(r#"new {d} in {{ for (y <- @"c") {{ {{% {p} %}}[y] }} }}"#),
+            false,
+        ),
+        (
+            format!(r#"new {d} in {{ for (y <- @"c") {{ {{% {p} %}}[d] }} | @"c"!(0) }}"#),
+            true,
+        ),
+        (
+            format!(r#"new {d} in {{ for (@a, y <- @"c"; z <- @"e") {{ {{% {p} %}}[z] }} }}"#),
+            false,
+        ),
+        (
+            format!(r#"new {d} in {{ for (@a, y <- @"c"; z <- @"e") {{ {{% {p} %}}[y] }} }}"#),
+            false,
+        ),
+        (
+            format!(r#"new {d} in {{ for (@a, y <- @"c"; z <- @"e") {{ {{% {p} %}}[d] }} }}"#),
+            true,
+        ),
+        (
+            format!("new {d} in {{ match 1 {{ z => {{% {p} %}}[d] }} }}"),
+            true,
+        ),
+        (
+            format!("new {d} in {{ match [1, 2] {{ [a, b] => {{% {p} %}}[d] }} }}"),
+            true,
+        ),
+        (
+            format!("new {d} in {{ for (y <= @\"c\") {{ {{% {p} %}}[y] }} }}"),
+            false,
+        ),
+        (
+            format!("new {d} in {{ for (y <<- @\"c\") {{ {{% {p} %}}[y] }} }}"),
+            false,
+        ),
+        (
+            format!(r#"new {d} in {{ contract @"k"(y, z) = {{ {{% {p} %}}[d] }} }}"#),
+            true,
+        ),
+        (
+            format!(r#"new {d} in {{ contract @"k"(y, z) = {{ {{% {p} %}}[y] }} }}"#),
+            false,
+        ),
+        (
+            format!(r#"new {d} in {{ @"q"!({{ {{% {p} %}}[d] }}) }}"#),
+            true,
+        ),
+        (
+            format!(r#"new x in {{ @"q"!({{ {{% {p} %}}[x] }}) }}"#),
+            false,
+        ),
+        (
+            format!(r#"for (y <- @"c") {{ @"q"!([{{ {{% {p} %}}[y] }}]) }}"#),
+            false,
+        ),
+        (
+            format!(r#"new x in {{ @"q"!([{{ {{% {p} %}}[x] }}].nth(0)) }}"#),
+            false,
+        ),
+        (
+            format!(r#"new x in {{ @"q"!({{"k": {{ {{% {p} %}}[x] }}}}) }}"#),
+            false,
+        ),
+        (
+            format!(r#"new x in {{ @"q"!(({{ {{% {p} %}}[x] }}, 1)) }}"#),
+            false,
+        ),
+        (
+            format!("new x in {{ if (true) {{ {{% {p} %}}[x] }} else {{ Nil }} }}"),
+            false,
+        ),
+        (format!("new {d}, x in {{ {{% {p} %}}[d (*) x] }}"), false),
+        (
+            format!("new {d}, x in {{ {{% {{% {p} %}}[x] %}}[d] }}"),
+            false,
+        ),
+        (
+            format!("new {d}, x in {{ {{% {{% {p} %}}[d] %}}[d] }}"),
+            true,
+        ),
+        (format!("new {d} in {{ @{{ {{% {p} %}}[d] }}!(1) }}"), true),
+        (format!("new x in {{ @{{ {{% {p} %}}[x] }}!(1) }}"), false),
+        (
+            format!(r#"new x in {{ for (@y <- @"c") {{ y }} | @"c"!({{ {{% {p} %}}[x] }}) }}"#),
+            false,
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (i, (term, admitted)) in shapes.iter().enumerate() {
+        let played = executor
+            .execute(
+                &pre,
+                vec![envelope(term, i as i64 + 1, &alice, 10_000, 1)],
+                block_data(&proposer),
+            )
+            .await
+            .expect("the block executes");
+        let verdict = played.gate.entries[0].verdict.clone();
+        let ok = if *admitted {
+            verdict == Verdict::Admitted && !played.processed[0].is_failed
+        } else {
+            verdict == Verdict::Refused(Refusal::ForeignSignature)
+        };
+        if !ok {
+            wrong.push((term.clone(), verdict, played.processed[0].is_failed));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }

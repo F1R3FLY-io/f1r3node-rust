@@ -74,6 +74,10 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for Matcher {
     /// evaluated via rho-pure-eval. Returns true iff it reduces to
     /// `GBool(true)`. Anything else (false, non-bool, error) means
     /// guard-fail and the consume stays uncommitted. See plan §7.12.
+    fn admits_waiting(&self, k: &TaggedContinuation) -> bool {
+        crate::rust::interpreter::accounting::rev_stack::seal::admits_waiting(k)
+    }
+
     fn check_commit(&self, k: &TaggedContinuation, matched: &[ListParWithRandom]) -> bool {
         guard_holds(k, matched)
             && crate::rust::interpreter::accounting::rev_stack::seal::admits_comm(k, matched)

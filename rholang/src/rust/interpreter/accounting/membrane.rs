@@ -112,8 +112,13 @@ pub async fn stepping<F: Future>(scope: Arc<StepScope>, future: F) -> F::Output 
     STEP.scope(scope, future).await
 }
 
+static UNSCOPED: AtomicU64 = AtomicU64::new(0);
+
+pub fn unscoped_charges() -> u64 { UNSCOPED.load(Ordering::Relaxed) }
+
 fn next_position(record: &SealRecord) -> (Vec<u8>, u64) {
     STEP.try_with(|scope| scope.take()).unwrap_or_else(|_| {
+        UNSCOPED.fetch_add(1, Ordering::Relaxed);
         (
             step_base(
                 StepSource::Evaluation,
@@ -343,6 +348,18 @@ impl MembraneMeter {
         }
         needs.sort_by_key(|(r, _)| Surface::of(r));
         needs
+    }
+
+    pub fn stopped(&self, record: &SealRecord) -> bool {
+        if self.replay.is_some() || !self.funding.gates(record) {
+            return false;
+        }
+        self.ledger.state.lock().is_ok_and(|ledger| {
+            record
+                .purse()
+                .iter()
+                .any(|wallet| ledger.stopped.contains(&wallet.canonical_bytes()))
+        })
     }
 
     pub fn admit_comm(
@@ -656,6 +673,20 @@ mod tests {
         assert_eq!(settled, Admission::Admitted);
         let metered = meter.take();
         assert!(metered.drawn.is_empty() && metered.refusals.is_empty());
+    }
+
+    #[test]
+    fn a_stopped_wallet_is_seen_in_play_and_never_in_replay() {
+        let ledger = BlockLedger::new();
+        let play = MembraneMeter::play(funding(), ledger.clone());
+        let alice = record(1, 1);
+        assert!(!play.stopped(&alice));
+        assert!(!play.admit_comm(&[alice.clone()], Some(&alice), 20, || vec![1]));
+        assert!(play.stopped(&alice));
+        assert!(!play.stopped(&record(2, 1)));
+        assert!(!play.stopped(&record(9, 1)));
+        let replay = MembraneMeter::replay(funding(), ledger, &[]);
+        assert!(!replay.stopped(&alice));
     }
 
     #[tokio::test]
