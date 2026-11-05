@@ -171,12 +171,24 @@ in {
                   if (state.get("allBonds").contains(userPk)) {
                     match $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$) {
                       end => {
-                        resultCh!(
-                          state
-                            .set("pendingWithdrawers", state.get("pendingWithdrawers").set(userPk, end))
-                            .set("releases",
-                                 state.get("releases").set(end, state.get("releases").getOrElse(end, {}).set(userPk, true))),
-                          (true, Nil))
+                        new prunedCh, prune in {
+                          match (state.get("releases"), state.get("withdrawers").contains(userPk)) {
+                            (releases, false) => { prunedCh!(releases) }
+                            (releases, true) => {
+                              @ListOps!("fold", releases.keys().toList(), releases, *prune, *prunedCh) |
+                              contract prune(@key, @schedule, pruneCh) = {
+                                pruneCh!(schedule.set(key, schedule.get(key).delete(userPk)))
+                              }
+                            }
+                          } |
+                          for (@releases <- prunedCh) {
+                            resultCh!(
+                              state
+                                .set("pendingWithdrawers", state.get("pendingWithdrawers").set(userPk, end))
+                                .set("releases", releases.set(end, releases.getOrElse(end, {}).set(userPk, true))),
+                              (true, Nil))
+                          }
+                        }
                       }
                     }
                   } else {
