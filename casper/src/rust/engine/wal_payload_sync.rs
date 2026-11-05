@@ -1161,6 +1161,7 @@ mod tests {
         RPConf::new(
             mk_peer("local"),
             "test-network".to_string(),
+            comm::rust::rp::chain_id::ChainIdCell::unknown(),
             None,
             Duration::from_secs(5),
             10,

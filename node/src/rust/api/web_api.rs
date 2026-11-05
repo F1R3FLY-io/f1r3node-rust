@@ -14,16 +14,13 @@ use casper::rust::ProposeFunction;
 use comm::rust::discovery::node_discovery::NodeDiscovery;
 use comm::rust::rp::connect::ConnectionsCell;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use crypto::rust::signatures::signatures_alg::SignaturesAlgFactory;
 use crypto::rust::signatures::signed::Signed;
-#[cfg(feature = "schnorr_secp256k1_experimental")]
-use crypto::rust::signatures::{
-    frost_secp256k1::FrostSecp256k1, schnorr_secp256k1::SchnorrSecp256k1,
-};
 use eyre::{eyre, Result};
 use hex;
 use models::casper::LightBlockInfo;
 use models::rust::casper::protocol::casper_message::DeployData;
+use models::rust::deploy_parameters::{DeployParameter, RholangValue};
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 use tracing::warn;
@@ -41,6 +38,43 @@ const FIND_DEPLOY_MAX_ATTEMPTS: u16 = 1;
 fn find_deploy_retry_interval_ms() -> u64 { FIND_DEPLOY_RETRY_INTERVAL_MS }
 
 fn find_deploy_max_attempts() -> u16 { FIND_DEPLOY_MAX_ATTEMPTS }
+
+// Balance- and registry-lookup Rholang templates. The user-supplied address
+// and URI are bound through deploy parameters (`rho:deploy:param:*`) and land
+// in the AST as leaf GString / GUri Pars at normalization time. The parser
+// never sees the user's bytes, so no closing quote or backtick in the input
+// can escape into Rholang code.
+pub(crate) const BALANCE_RHOLANG_TEMPLATE: &str = r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh,
+    addressParam(`rho:deploy:param:address`) in {
+  rl!(`rho:vault:system`, *systemVaultCh) |
+  for (@(_, SystemVault) <- systemVaultCh) {
+    @SystemVault!("findOrCreate", *addressParam, *vaultCh) |
+    for (@either <- vaultCh) {
+      match either {
+        (true, vault) => {
+          @vault!("balance", *balanceCh) |
+          for (@balance <- balanceCh) {
+            return!(balance)
+          }
+        }
+        (false, errorMsg) => {
+          return!(errorMsg)
+        }
+      }
+    }
+  }
+}"#;
+
+pub(crate) const REGISTRY_RHOLANG_TEMPLATE: &str = r#"new return, rl(`rho:registry:lookup`), ch,
+    uriParam(`rho:deploy:param:uri`) in {
+  rl!(*uriParam, *ch) |
+  for (@val <- ch) {
+    match val {
+      (true, data) => { return!(data) }
+      (false, _)   => { return!("not found") }
+    }
+  }
+}"#;
 
 /// Web API trait defining the interface for HTTP endpoints
 #[async_trait::async_trait]
@@ -702,6 +736,7 @@ impl WebApi for WebApiImpl {
             use_pre_state_hash,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 
@@ -813,27 +848,12 @@ impl WebApi for WebApiImpl {
         address: String,
         block_hash: Option<String>,
     ) -> Result<BalanceResponse> {
-        let term = format!(
-            r#"new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh, balanceCh in {{
-  rl!(`rho:vault:system`, *systemVaultCh) |
-  for (@(_, SystemVault) <- systemVaultCh) {{
-    @SystemVault!("findOrCreate", "{address}", *vaultCh) |
-    for (@either <- vaultCh) {{
-      match either {{
-        (true, vault) => {{
-          @vault!("balance", *balanceCh) |
-          for (@balance <- balanceCh) {{
-            return!(balance)
-          }}
-        }}
-        (false, errorMsg) => {{
-          return!(errorMsg)
-        }}
-      }}
-    }}
-  }}
-}}"#
-        );
+        let term = BALANCE_RHOLANG_TEMPLATE.to_string();
+
+        let parameters = vec![DeployParameter {
+            name: "address".to_string(),
+            value: RholangValue::String(address.clone()),
+        }];
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -844,6 +864,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            parameters,
         )
         .await?;
 
@@ -867,17 +888,12 @@ impl WebApi for WebApiImpl {
         uri: String,
         block_hash: Option<String>,
     ) -> Result<RegistryResponse> {
-        let term = format!(
-            r#"new return, rl(`rho:registry:lookup`), ch in {{
-  rl!(`{uri}`, *ch) |
-  for (@val <- ch) {{
-    match val {{
-      (true, data) => {{ return!(data) }}
-      (false, _)   => {{ return!("not found") }}
-    }}
-  }}
-}}"#
-        );
+        let term = REGISTRY_RHOLANG_TEMPLATE.to_string();
+
+        let parameters = vec![DeployParameter {
+            name: "uri".to_string(),
+            value: RholangValue::Uri(uri.clone()),
+        }];
 
         let (resolved_hash, block_number) = self.resolve_block(block_hash).await?;
 
@@ -888,6 +904,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            parameters,
         )
         .await?;
 
@@ -919,6 +936,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 
@@ -1011,6 +1029,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             deployer_pk,
+            Vec::new(),
         )
         .await?;
 
@@ -1040,6 +1059,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 
@@ -1078,6 +1098,7 @@ impl WebApi for WebApiImpl {
             false,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 
@@ -1707,21 +1728,12 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
     let pk = PublicKey::from_bytes(&pk_bytes);
 
     // Look up signature algorithm by name
-    let sig_alg: Box<dyn SignaturesAlg> = match request.sig_algorithm.as_str() {
-        "secp256k1" => Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
-        "secp256k1-eth" => Box::new(crypto::rust::signatures::secp256k1_eth::Secp256k1Eth),
-        "ed25519" => Box::new(crypto::rust::signatures::ed25519::Ed25519),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "schnorr-secp256k1" => Box::new(SchnorrSecp256k1),
-        #[cfg(feature = "schnorr_secp256k1_experimental")]
-        "frost-secp256k1" => Box::new(FrostSecp256k1),
-        _ => {
-            return Err(eyre!(
-                "Signature algorithm not supported: {}",
-                request.sig_algorithm
-            ))
-        }
-    };
+    let sig_alg = SignaturesAlgFactory::apply(&request.sig_algorithm).ok_or_else(|| {
+        eyre!(
+            "Signature algorithm not supported: {}",
+            request.sig_algorithm
+        )
+    })?;
 
     // Create DeployData (use the data from request)
     let deploy_data = request.data.clone();
@@ -2114,13 +2126,122 @@ fn to_rho_data_response(
 
 #[cfg(test)]
 mod tests {
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::g_unforgeable::UnfInstance;
     use models::rhoapi::{
         Bundle, EList, EMap, ESet, ETuple, GDeployId, GDeployerId, GPrivate, KeyValuePair,
     };
+    use models::rust::deploy_parameters::RholangValue;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
 
     use super::*;
+
+    fn param_env(name: &str, value: RholangValue) -> HashMap<String, Par> {
+        let mut env = HashMap::new();
+        env.insert(format!("rho:deploy:param:{}", name), value.to_par());
+        env
+    }
+
+    fn compile_with(template: &str, env: HashMap<String, Par>) -> Par {
+        Compiler::source_to_adt_with_normalizer_env(template, env)
+            .expect("template must parse with the deploy-parameter env")
+    }
+
+    // The user-supplied address never passes through the Rholang parser —
+    // whatever bytes it carries end up only inside a GString leaf of the
+    // deploy-parameter Par. Compiling the balance template with a benign
+    // address and with an injection payload must produce the same process
+    // structure (same send/receive/new/match counts).
+    #[test]
+    fn get_balance_template_binds_address_through_ast_not_source() {
+        let benign = "1111111111111111111111111111111111111111111111111111";
+        let injection = r#"X", *vaultCh) | @"pwned"!("hello") | @Nil!("Y"#;
+
+        let par_benign = compile_with(
+            BALANCE_RHOLANG_TEMPLATE,
+            param_env("address", RholangValue::String(benign.to_string())),
+        );
+        let par_injection = compile_with(
+            BALANCE_RHOLANG_TEMPLATE,
+            param_env("address", RholangValue::String(injection.to_string())),
+        );
+
+        assert_eq!(
+            par_benign.sends.len(),
+            par_injection.sends.len(),
+            "injection payload must not add any sends to the compiled Par"
+        );
+        assert_eq!(
+            par_benign.receives.len(),
+            par_injection.receives.len(),
+            "injection payload must not add any receives to the compiled Par"
+        );
+        assert_eq!(
+            par_benign.news.len(),
+            par_injection.news.len(),
+            "injection payload must not add any new names to the compiled Par"
+        );
+        assert_eq!(
+            par_benign.matches.len(),
+            par_injection.matches.len(),
+            "injection payload must not add any match constructs"
+        );
+    }
+
+    // Same guarantee for the registry endpoint: a backtick inside the URI
+    // never terminates a URI literal because the user input is bound through
+    // a GUri Par in the normalizer env, not spliced into the source.
+    #[test]
+    fn get_registry_template_binds_uri_through_ast_not_source() {
+        let benign = "rho:registry:0abcdef";
+        let injection = "`, *x) | @\"pwned\"!(1) | @Nil!(`anything";
+
+        let par_benign = compile_with(
+            REGISTRY_RHOLANG_TEMPLATE,
+            param_env("uri", RholangValue::Uri(benign.to_string())),
+        );
+        let par_injection = compile_with(
+            REGISTRY_RHOLANG_TEMPLATE,
+            param_env("uri", RholangValue::Uri(injection.to_string())),
+        );
+
+        assert_eq!(par_benign.sends.len(), par_injection.sends.len());
+        assert_eq!(par_benign.receives.len(), par_injection.receives.len());
+        assert_eq!(par_benign.news.len(), par_injection.news.len());
+        assert_eq!(par_benign.matches.len(), par_injection.matches.len());
+    }
+
+    #[test]
+    fn deploy_request_uses_the_protobuf_algorithm_contract() {
+        let deploy = Signed::create(
+            DeployData {
+                term: "Nil".to_string(),
+                time_stamp: 0,
+                phlo_price: 1,
+                phlo_limit: 100_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+                parameters: Vec::new(),
+            },
+            Box::new(crypto::rust::signatures::secp256k1::Secp256k1),
+            crypto::rust::private_key::PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap();
+        let mut request = DeployRequest {
+            data: deploy.data.clone(),
+            deployer: hex::encode(&deploy.pk.bytes),
+            signature: hex::encode(&deploy.sig),
+            sig_algorithm: deploy.sig_algorithm.name(),
+        };
+        assert_eq!(to_signed_deploy(&request).unwrap(), deploy);
+        request.sig_algorithm = "ed25519".to_string();
+        assert_eq!(
+            to_signed_deploy(&request).unwrap_err().to_string(),
+            "Signature algorithm not supported: ed25519"
+        );
+    }
 
     #[test]
     fn test_deploy_response_full_view_includes_all_fields() {
