@@ -521,3 +521,75 @@ async fn a_failed_close_is_part_of_the_trace_and_replay_checks_it() {
     });
     assert!(executor.replay(&other_failure, &b).await.is_err());
 }
+
+#[tokio::test]
+async fn a_deployment_twice_in_one_block_runs_only_its_first_copy() {
+    use casper::rust::v6::gate::{Refusal, Verdict};
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let once = envelope("Nil", 1, &alice);
+    let b = block(1, vec![once.clone(), envelope("Nil", 2, &alice), once], &proposer);
+    let record = executor.execute(&genesis, &b).await.unwrap();
+    assert!(record.gate()[0].admitted());
+    assert!(record.gate()[1].admitted());
+    assert_eq!(record.gate()[2].verdict, Verdict::Refused(Refusal::AlreadyIncluded));
+    assert_eq!(record.executed()[2].outcome, EnvelopeOutcome::NotRun);
+    assert_eq!(executor.replay(&record, &b).await.unwrap(), *record.post_root());
+}
+
+#[tokio::test]
+async fn a_d_record_whose_traced_close_succeeds_is_rejected() {
+    use models::rust::casper::protocol::casper_message::ProcessedSystemDeploy;
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let b = block(1, vec![envelope("Nil", 1, &alice)], &proposer);
+    let normal = run_record(&executor, &genesis, &b).await;
+    let [ProcessedSystemDeploy::Succeeded { event_list, .. }] = normal.system_deploys() else {
+        panic!("a normal record carries its close");
+    };
+    let forged = BlockRecord::new(
+        normal.target().clone(),
+        normal.pre_root().clone(),
+        normal.mid_root().clone(),
+        normal.pre_root().clone(),
+        normal.entries().to_vec(),
+        vec![ProcessedSystemDeploy::Failed {
+            event_list: event_list.clone(),
+            error_msg: "close failed: Unable to consume results of system deploy".to_string(),
+        }],
+    )
+    .unwrap()
+    .with_gate(normal.gate().to_vec())
+    .unwrap()
+    .with_settlement(normal.settlement().cloned().unwrap())
+    .with_failed_close();
+    assert!(BlockRecord::decode(&forged.encode()).is_ok());
+    assert!(executor.replay(&forged, &b).await.is_err());
+}
+
+#[tokio::test]
+async fn an_honest_d_record_replays_under_one_two_and_four_workers() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, _) = shard(&[&alice, &bob, &proposer]).await;
+    let empty = RuntimeManager::empty_state_hash_fixed();
+    let b = block(
+        1,
+        vec![envelope("Nil", 1, &alice), envelope("Nil", 2, &bob), envelope("Nil", 3, &alice)],
+        &proposer,
+    );
+    let mut records = Vec::new();
+    for workers in [1, 2, 4] {
+        let record = BlockExecutor::new(rm.clone(), workers).execute(&empty, &b).await.unwrap();
+        assert_eq!(record.void_reason(), Some(VoidReason::CloseFailed), "{workers} workers");
+        records.push(record);
+    }
+    for record in &records {
+        assert_eq!(record, &records[0], "the record does not depend on the workers");
+        for workers in [1, 2, 4] {
+            let replayed = BlockExecutor::new(rm.clone(), workers).replay(record, &b).await;
+            assert_eq!(replayed.unwrap(), empty, "{workers} workers");
+        }
+    }
+}

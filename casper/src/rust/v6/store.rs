@@ -172,7 +172,7 @@ impl<R: ExecutionRecord> RecordStore<R> for MemoryRecordStore<R> {
             *self.voids.entry((proposer.clone(), *reason)).or_insert(0) += 1;
         }
         for (envelope, entry) in &marks.statuses {
-            self.priors.insert(envelope.clone(), *entry);
+            self.priors.entry(envelope.clone()).or_insert(*entry);
         }
         Ok(())
     }
@@ -421,7 +421,11 @@ impl<R: ExecutionRecord> RecordStore<R> for LmdbRecordStore<R> {
             rows.push((void_key(proposer, *reason), count.to_be_bytes().to_vec()));
         }
         for (envelope, entry) in &marks.statuses {
-            rows.push((keyed(PRIOR, envelope), encode_prior(entry)));
+            if RecordStore::<R>::prior(self, envelope).is_none()
+                && !rows.iter().any(|(key, _)| *key == keyed(PRIOR, envelope))
+            {
+                rows.push((keyed(PRIOR, envelope), encode_prior(entry)));
+            }
         }
         self.fix_rows(target, citer, record, rows)
     }

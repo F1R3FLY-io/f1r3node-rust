@@ -758,11 +758,16 @@ impl EnvelopeExecutor {
 }
 
 fn with_prior(inputs: Vec<GateInput>, prior: &Prior) -> Vec<GateInput> {
+    let mut seen = std::collections::HashSet::new();
     inputs
         .into_iter()
         .map(|input| {
-            let status = prior.get(&input.envelope_sig);
-            input.with_prior(status)
+            let status = if seen.insert(input.envelope_sig.clone()) {
+                prior.get(&input.envelope_sig).copied()
+            } else {
+                Some(super::record::PriorStatus::Included)
+            };
+            input.with_prior(status.as_ref())
         })
         .collect()
 }

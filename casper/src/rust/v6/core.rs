@@ -280,7 +280,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         };
         let ids = self.envelopes.get(target).cloned().unwrap_or_default();
         let in_window = |entry: &PriorEntry| {
-            entry.block_number < number
+            entry.position < index as u64
                 && entry.block_number.saturating_add(self.params.deploy_lifespan) > number
         };
         let mut prior = Prior::new();
@@ -295,7 +295,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             }
             for (id, entry) in self.statuses(record) {
                 if ids.contains(&id) && in_window(&entry) {
-                    prior.insert(id, entry.status);
+                    prior.entry(id).or_insert(entry.status);
                 }
             }
         }
@@ -1449,5 +1449,44 @@ mod tests {
         assert_eq!(c.prior_at(b"d2", &h("b1")), None, "b2 is above the attested position");
         assert_eq!(c.prior_at(b"d2", &h("b2")), Some(PriorStatus::Included));
         assert_eq!(c.prior_at(b"d1", &h("nowhere")), None);
+    }
+
+    #[test]
+    fn a_carrier_earlier_in_the_order_is_prior_whatever_its_block_number() {
+        for later_number in [10, 9] {
+            let mut c = core();
+            c.emit(carrying("b1", 10, &["d1"], vec![]));
+            c.emit(carrying("b2", later_number, &["d1"], vec![ran("b1", "r0", "r1", &["d1"])]));
+            assert!(matches!(c.next_action(), Action::Replay { .. }));
+            c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1"]), Ok(h("r1")));
+            assert_eq!(
+                c.prior(&h("b2")).get(&h("d1")),
+                Some(&PriorStatus::Included),
+                "block number {later_number}"
+            );
+        }
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(carrying("b2", 10, &["d1"], vec![]));
+        assert!(matches!(c.next_action(), Action::Execute { .. }));
+        c.apply_execute(ran("b1", "r0", "r1", &["d1"]));
+        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included), "speculative path");
+    }
+
+    #[test]
+    fn the_first_status_of_an_envelope_is_kept() {
+        let mut c = core();
+        let mut b2 = carrying("b2", 11, &["d1"], vec![ran("b1", "r0", "r1", &["d1"])]);
+        b2.unreadable = vec![];
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(b2);
+        let void = BlockRecord::voided(h("b2"), h("r1"), &[h("d1")], VoidReason::CloseUncovered)
+            .with_failed_close();
+        c.emit(carrying("b3", 12, &["d1"], vec![void.clone()]));
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1"]), Ok(h("r1")));
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b2"), &h("b3"), &void, Ok(h("r1")));
+        assert_eq!(c.prior_at(b"d1", &h("b2")), Some(PriorStatus::Included));
     }
 }
