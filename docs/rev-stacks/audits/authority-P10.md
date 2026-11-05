@@ -3369,6 +3369,63 @@ A test covers a firing whose body fails with a seal refusal (Decision 112).
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 40 (actions A-8 and A-9): FX-8b takes FX-20 and FX-19, and the FX-19 condition tests
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b (`914f2c47b`), FX-19, FX-20, FX-21, FX-22 or any tag.
+- **Commits read:**
+  - `patch/FX-8b` at `914f2c47b` (lane A2): the merges of FX-20 (`275eccde7`) and FX-19 `10e218add` (`914f2c47b`).
+  - `patch/FX-19` at `6735761a8` (lane C): tests for the conditions of revision 38, and additions to the log.
+- **Method:** a reading of the merge resolution in `executor.rs`, the new tests and the logs. No tests were run.
+
+### The FX-19 merge into FX-8b (`914f2c47b`)
+
+`executor.rs` had six conflicts. Each resolution keeps the rule of both sides:
+- `close_gate` takes FX-19's replay flag and FX-20's κ cell. `CloseFunding` stays for the stored code that the close fires, and it now uses the runs' holds.
+- `replay_after` keeps FX-20's κ check and drops `accept_metered` and the close's refusal log, as FX-19 does.
+- The play and replay paths take FX-19's signatures, without the pre-charge argument and without the logged refusals.
+
+No `CloseCharge`, pre-charge or refusal log remains on the merged paths. The cross-host fixture is written again on the merged tree, for the same reason as FX-20 D4. **The resolution is correct.**
+
+**Conditions:**
+- **The suites on the merged tip.** Lane A2 posts only the v6 subsets (casper lib `v6::` 126, `--test mod v6::` 123, `multi_node::v6` 11). The full suites are needed.
+- **`6735761a8` is not in FX-8b.** The merge took FX-19 at `10e218add`. FX-8b must take `6735761a8`, so that the condition tests below are on the handoff branch.
+
+### FX-19 tests for the conditions of revision 38 (`6735761a8`)
+
+| Condition | Test | Result |
+|---|---|---|
+| The bound comes only from the installer's seal, and a received term cannot change it | `region_spec::the_bound_comes_only_from_the_installers_seal_and_no_received_term_changes_it` | **Met.** With a light term and a heavy term, and client limits of 10,000 and 900,000, the hold is the installer's bound and nothing else. A received seal under the client's own key holds nothing, and the run-time check refuses it. |
+| A firing over its bound costs W exactly b and leaves no storage | `region_spec::a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_no_storage` | **Met.** At price 2, the installer pays exactly (1,500 + 1 cell) × 2. The body's send, receive and contract install leave nothing, and the block replays. |
+| Replay recomputes each firing's cost | `close_charge_spec::replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one` | **Met.** A record whose firing cost differs by 1 phlo either way is rejected, for a firing within its bound and for one over it. |
+
+**The body-error check of revision 39 is answered by lane C's known issue 8.**
+- An error inside stored code, for example the run-time refusal of Decision 112, fails the client's whole run, as before FX-19. Exhaustion ends only the firing.
+- A failed run leaves no effects, so a firing is still kept or discarded whole. **The condition is closed.**
+- **Question for a ruling (lane C's, and mine):** should every error inside a firing end only that firing?
+  - The argument for: an installer's code can then not fail a client's run, because exhaustion and errors would have one outcome.
+  - The argument against: today's error rule is the rule that dev and every client already follow.
+  - It changes no authority result in either form. **Known issue until ruled.**
+
+**Lane C's known issue 7** (the hold includes the COMM event storage, which is not charged, so a run holds 128 phlo more than it pays for each firing) is on the safe side. **Accepted.**
+
+### FX-22: one condition closed
+
+`ScheduleBound` is used only through `ScheduleBound::default()` in `DeltaEstimate::of_source`. So it is a code constant, the same on every node. **The condition of revision 39 is closed.** FX-22 is not yet merged into FX-8b.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decisions 119 and 120 | — | **On FX-8b** at `914f2c47b`. Conditions: the full suites, and FX-8b takes `6735761a8`. |
+| Decision 122 (FX-22) | — | Conforms. Merge into FX-8b pending, with suites. |
+| Decision 121 (FX-21) and Decision 127 (lane B's firing-limit syntax) | **To be audited when the code lands** | No code yet |
+| Lane A2's format patch after FX-19 | Condition | Open |
+| The SIGSEGV run, the `dev` merge, Decision 123 | Conditions | Open |
+| Errors inside a firing (lane C's known issue 8) | Known issue | For a ruling |
+| The earlier known issues, D10 and F47 for B6 | Known issue | Unchanged |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
