@@ -1842,7 +1842,6 @@ mod admission_regressions {
     async fn failed_persistence_releases_the_reserved_last_slot() {
         use casper::rust::engine::engine::noop;
         use shared::rust::store::key_value_store::KvStoreError;
-        use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(None)
@@ -1858,16 +1857,18 @@ mod admission_regressions {
         }
         node.engine_cell.set(Arc::new(noop())).await;
         let original = node.deploy_storage.clone();
-        let mut instrumented = original.as_ref().clone();
-        instrumented.store = KeyValueTypedStoreImpl::with_value_codec(
-            original.store.raw_store().clone(),
-            |_| {
+        let wrapped: Arc<dyn KeyValueStore> = Arc::new(StoreWithScanHook {
+            inner: original.store.raw_store().clone(),
+            after_scan: Arc::new(|| Ok(())),
+            before_insert: Some(Arc::new(|| {
                 Err(KvStoreError::IoError(
                     "Injected deploy persistence failure".into(),
                 ))
-            },
-            |_| panic!("Warm admission must not decode the pool"),
-        );
+            })),
+        });
+        let instrumented =
+            KeyValueDeployStorage::from_stores(wrapped, Arc::new(InMemoryKeyValueStore::new()))
+                .unwrap();
         node.deploy_storage = Arc::new(instrumented);
         Arc::get_mut(&mut node.casper)
             .expect("Admission fixture must own its Casper instance")
