@@ -555,7 +555,10 @@ pub(crate) async fn derive_last_finalized_block(
 
     let started = std::time::Instant::now();
     let mut slot = cursor.lock().await;
-    let fresh = ctx.block_dag_storage.get_representation()?;
+    let mut fresh = ctx.block_dag_storage.get_representation()?;
+    if ctx.v6.is_some() {
+        fresh.last_finalized_block_hash = ctx.block_dag_storage.order_floor()?;
+    }
     let lfb_hash = fresh.last_finalized_block();
     let lfb_height = fresh.lookup_unsafe(&lfb_hash)?.block_number;
     let current = Floor {
@@ -624,8 +627,12 @@ pub(crate) async fn adopt_derived(
     derived: Option<DerivedLfb>,
 ) -> Result<bool, CasperError> {
     publish_pending_finalizations(ctx)?;
+    let state_moved = match &ctx.v6 {
+        Some(engine) => commit_state_floor(ctx, engine).await?,
+        None => false,
+    };
     let Some(derived) = derived else {
-        return Ok(false);
+        return Ok(state_moved);
     };
     let observer = ctx.observer.get().cloned();
     let operation = observer.as_ref().and_then(|observer| observer.operation());
@@ -644,7 +651,7 @@ pub(crate) async fn adopt_derived(
         }
         None => false,
     };
-    if adopted {
+    if adopted || state_moved {
         if let Some(engine) = &ctx.v6 {
             engine.wake();
         }
@@ -655,7 +662,57 @@ pub(crate) async fn adopt_derived(
         derived.started.elapsed().as_millis(),
         adopted
     );
-    Ok(adopted)
+    Ok(adopted || state_moved)
+}
+
+async fn commit_state_floor(
+    ctx: &FinalizationContext,
+    engine: &crate::rust::v6::V6Engine,
+) -> Result<bool, CasperError> {
+    use block_storage::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal};
+    if ctx.ftt().num <= 0 {
+        return Ok(false);
+    }
+    let Some(state) = engine.state_floor().await? else {
+        return Ok(false);
+    };
+    let dag = ctx.block_dag_storage.get_representation()?;
+    let ft_value = crate::rust::safety::clique_oracle::CliqueOracle::normalized_fault_tolerance(&state, &dag)
+        .await
+        .map_err(CasperError::from)?;
+    let order = ctx.block_dag_storage.order_floor()?;
+    let outcome = ctx
+        .block_dag_storage
+        .commit_lfb(state.clone(), ft_value, |dag_now| {
+            let lfb = dag_now.last_finalized_block();
+            let on_chain = |lower: &BlockHash, upper: &BlockHash| {
+                dag_now.is_in_main_chain(lower, upper).unwrap_or(false)
+            };
+            if !on_chain(&state, &order) || !on_chain(&lfb, &state) {
+                return Err(CommitRefusal::StateChanged(
+                    "the state floor is not on the main chain between the LFB and the order floor"
+                        .to_string(),
+                ));
+            }
+            Ok(())
+        })
+        .map_err(CasperError::KvStoreError)?;
+    match outcome {
+        CommitOutcome::Committed(marker) => {
+            publish_finalization(ctx, &marker).map_err(CasperError::KvStoreError)?;
+            ctx.divergence_monitor.on_advance();
+            Ok(true)
+        }
+        CommitOutcome::Refused(refusal) => {
+            metrics::counter!(
+                crate::rust::metrics_constants::COMMIT_LFB_REFUSALS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE,
+                "kind" => refusal.kind()
+            )
+            .increment(1);
+            Ok(false)
+        }
+    }
 }
 
 fn emit_derivation(
@@ -775,22 +832,47 @@ async fn adopt(
     let effect_started = std::time::Instant::now();
     let ftt = ctx.ftt();
     let alin = ctx.alin();
-    let outcome = ctx
-        .block_dag_storage
-        .commit_lfb(new_lfb.hash.clone(), ft_value, |dag_now| {
-            validate_commit(
-                dag_now,
-                &ctx.block_store,
-                current,
-                sigma,
-                new_lfb,
-                ftt,
-                alin,
-            )
-        });
+    let outcome = if ctx.v6.is_some() {
+        use block_storage::rust::dag::finalization_commit::OrderOutcome;
+        ctx.block_dag_storage
+            .commit_order(new_lfb.hash.clone(), |dag_now, order_now| {
+                let mut ordered = dag_now.clone();
+                ordered.last_finalized_block_hash = order_now.clone();
+                validate_commit(
+                    &ordered,
+                    &ctx.block_store,
+                    current,
+                    sigma,
+                    new_lfb,
+                    ftt,
+                    alin,
+                )
+            })
+            .map(|outcome| match outcome {
+                OrderOutcome::Committed(_) => None,
+                OrderOutcome::Refused(refusal) => Some(CommitOutcome::Refused(refusal)),
+            })
+    } else {
+        ctx.block_dag_storage
+            .commit_lfb(new_lfb.hash.clone(), ft_value, |dag_now| {
+                validate_commit(
+                    dag_now,
+                    &ctx.block_store,
+                    current,
+                    sigma,
+                    new_lfb,
+                    ftt,
+                    alin,
+                )
+            })
+            .map(Some)
+    };
     let persisted: Result<bool, KvStoreError> = match outcome {
-        Ok(CommitOutcome::Committed(marker)) => publish_finalization(ctx, &marker).map(|()| true),
-        Ok(CommitOutcome::Refused(refusal)) => {
+        Ok(None) => Ok(true),
+        Ok(Some(CommitOutcome::Committed(marker))) => {
+            publish_finalization(ctx, &marker).map(|()| true)
+        }
+        Ok(Some(CommitOutcome::Refused(refusal))) => {
             metrics::counter!(
                 crate::rust::metrics_constants::COMMIT_LFB_REFUSALS_METRIC,
                 "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE,

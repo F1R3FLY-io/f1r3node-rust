@@ -8,7 +8,7 @@ use prost::Message;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
 use super::body::{StateHash, V6Records};
-use super::record::ExecutionRecord;
+use super::record::{ExecutionRecord, FixMarks, PriorEntry, PriorStatus, VoidReason};
 
 pub const DEFAULT_RETAINED_RECORDS: usize = crate::rust::casper::V6_RETAINED_RECORDS_DEFAULT;
 
@@ -33,6 +33,22 @@ pub trait RecordStore<R: ExecutionRecord>: Send {
     fn record(&self, block: &BlockHash) -> Option<R>;
 
     fn fix(&mut self, target: BlockHash, citer: BlockHash, record: R) -> Result<(), KvStoreError>;
+
+    fn fix_marked(
+        &mut self,
+        target: BlockHash,
+        citer: BlockHash,
+        record: R,
+        _marks: &FixMarks,
+    ) -> Result<(), KvStoreError> {
+        self.fix(target, citer, record)
+    }
+
+    fn void_count(&self, _proposer: &Bytes, _reason: VoidReason) -> u64 { 0 }
+
+    fn prior(&self, _envelope: &[u8]) -> Option<PriorEntry> { None }
+
+    fn position_of(&self, block: &BlockHash) -> Option<usize>;
 
     fn reset(&mut self) -> Result<(), KvStoreError>;
 
@@ -62,6 +78,7 @@ struct Prefix {
     anchor_root: StateHash,
     positions: Vec<BlockHash>,
     roots: HashMap<BlockHash, StateHash>,
+    index: HashMap<BlockHash, usize>,
     canonical_root: StateHash,
 }
 
@@ -70,6 +87,7 @@ impl Prefix {
         Prefix {
             positions: vec![anchor.clone()],
             roots: HashMap::from([(anchor.clone(), anchor_root.clone())]),
+            index: HashMap::from([(anchor.clone(), 0)]),
             canonical_root: anchor_root.clone(),
             anchor,
             anchor_root,
@@ -77,6 +95,7 @@ impl Prefix {
     }
 
     fn push(&mut self, target: BlockHash, root: StateHash) {
+        self.index.insert(target.clone(), self.positions.len());
         self.positions.push(target.clone());
         self.roots.insert(target, root.clone());
         self.canonical_root = root;
@@ -88,6 +107,8 @@ pub struct MemoryRecordStore<R: ExecutionRecord> {
     prefix: Prefix,
     retained: HashMap<BlockHash, R>,
     retained_order: VecDeque<BlockHash>,
+    voids: HashMap<(Bytes, VoidReason), u64>,
+    priors: HashMap<Bytes, PriorEntry>,
 }
 
 impl<R: ExecutionRecord> MemoryRecordStore<R> {
@@ -97,6 +118,8 @@ impl<R: ExecutionRecord> MemoryRecordStore<R> {
             prefix: Prefix::new(genesis, genesis_root),
             retained: HashMap::new(),
             retained_order: VecDeque::new(),
+            voids: HashMap::new(),
+            priors: HashMap::new(),
         }
     }
 
@@ -137,10 +160,37 @@ impl<R: ExecutionRecord> RecordStore<R> for MemoryRecordStore<R> {
         Ok(())
     }
 
+    fn fix_marked(
+        &mut self,
+        target: BlockHash,
+        citer: BlockHash,
+        record: R,
+        marks: &FixMarks,
+    ) -> Result<(), KvStoreError> {
+        self.fix(target, citer, record)?;
+        if let Some((proposer, reason)) = &marks.void {
+            *self.voids.entry((proposer.clone(), *reason)).or_insert(0) += 1;
+        }
+        for (envelope, entry) in &marks.statuses {
+            self.priors.entry(envelope.clone()).or_insert(*entry);
+        }
+        Ok(())
+    }
+
+    fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
+        self.voids.get(&(proposer.clone(), reason)).copied().unwrap_or(0)
+    }
+
+    fn prior(&self, envelope: &[u8]) -> Option<PriorEntry> { self.priors.get(envelope).copied() }
+
+    fn position_of(&self, block: &BlockHash) -> Option<usize> { self.prefix.index.get(block).copied() }
+
     fn reset(&mut self) -> Result<(), KvStoreError> {
         self.prefix = Prefix::new(self.prefix.anchor.clone(), self.prefix.anchor_root.clone());
         self.retained.clear();
         self.retained_order.clear();
+        self.voids.clear();
+        self.priors.clear();
         Ok(())
     }
 
@@ -171,6 +221,41 @@ const META_KEY: &[u8] = b"meta";
 const POSITION: u8 = b'p';
 const ROOT: u8 = b'r';
 const CITER: u8 = b'k';
+const VOIDS: u8 = b'v';
+const PRIOR: u8 = b'e';
+const INDEX: u8 = b'i';
+
+fn encode_prior(entry: &PriorEntry) -> Vec<u8> {
+    let mut bytes = entry.block_number.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&entry.position.to_be_bytes());
+    bytes.push(match entry.status {
+        PriorStatus::Included => 1,
+        PriorStatus::Discarded => 2,
+    });
+    bytes
+}
+
+fn decode_prior(bytes: &[u8]) -> Option<PriorEntry> {
+    let (number, rest) = bytes.split_at_checked(8)?;
+    let (position, status) = rest.split_at_checked(8)?;
+    let status = match status {
+        [1] => PriorStatus::Included,
+        [2] => PriorStatus::Discarded,
+        _ => return None,
+    };
+    Some(PriorEntry {
+        block_number: i64::from_be_bytes(number.try_into().ok()?),
+        position: u64::from_be_bytes(position.try_into().ok()?),
+        status,
+    })
+}
+
+fn void_key(proposer: &[u8], reason: VoidReason) -> Vec<u8> {
+    let mut body = Vec::with_capacity(1 + proposer.len());
+    body.push(reason.tag() as u8);
+    body.extend_from_slice(proposer);
+    keyed(VOIDS, &body)
+}
 
 fn keyed(kind: u8, body: &[u8]) -> Vec<u8> {
     let mut key = Vec::with_capacity(1 + body.len());
@@ -320,22 +405,61 @@ impl<R: ExecutionRecord> RecordStore<R> for LmdbRecordStore<R> {
     }
 
     fn fix(&mut self, target: BlockHash, citer: BlockHash, record: R) -> Result<(), KvStoreError> {
-        let root = record.post_root().clone();
-        let next = Head {
-            anchor: self.head.anchor.clone(),
-            anchor_root: self.head.anchor_root.clone(),
-            len: self.head.len + 1,
-            last: target.clone(),
-            canonical_root: root.clone(),
-        };
-        self.db.put(vec![
-            (position_key(self.head.len), target.to_vec()),
-            (keyed(ROOT, &target), root.to_vec()),
-            (keyed(CITER, &target), citer.to_vec()),
-            (META_KEY.to_vec(), next.meta()),
-        ])?;
-        self.head = next;
-        Ok(())
+        self.fix_rows(target, citer, record, Vec::new())
+    }
+
+    fn fix_marked(
+        &mut self,
+        target: BlockHash,
+        citer: BlockHash,
+        record: R,
+        marks: &FixMarks,
+    ) -> Result<(), KvStoreError> {
+        let mut rows = Vec::new();
+        if let Some((proposer, reason)) = &marks.void {
+            let count = RecordStore::<R>::void_count(self, proposer, *reason) + 1;
+            rows.push((void_key(proposer, *reason), count.to_be_bytes().to_vec()));
+        }
+        for (envelope, entry) in &marks.statuses {
+            if RecordStore::<R>::prior(self, envelope).is_none()
+                && !rows.iter().any(|(key, _)| *key == keyed(PRIOR, envelope))
+            {
+                rows.push((keyed(PRIOR, envelope), encode_prior(entry)));
+            }
+        }
+        self.fix_rows(target, citer, record, rows)
+    }
+
+    fn position_of(&self, block: &BlockHash) -> Option<usize> {
+        if *block == self.head.anchor {
+            return Some(0);
+        }
+        if *block == self.head.last {
+            return Some(self.head.len - 1);
+        }
+        self.db
+            .get_one(&keyed(INDEX, block))
+            .ok()
+            .flatten()
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+            .map(|bytes| u64::from_be_bytes(bytes) as usize)
+    }
+
+    fn prior(&self, envelope: &[u8]) -> Option<PriorEntry> {
+        self.db
+            .get_one(&keyed(PRIOR, envelope))
+            .ok()
+            .flatten()
+            .and_then(|bytes| decode_prior(&bytes))
+    }
+
+    fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
+        self.db
+            .get_one(&void_key(proposer, reason))
+            .ok()
+            .flatten()
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+            .map_or(0, u64::from_be_bytes)
     }
 
     fn reset(&mut self) -> Result<(), KvStoreError> {
@@ -348,6 +472,36 @@ impl<R: ExecutionRecord> RecordStore<R> for LmdbRecordStore<R> {
     }
 
     fn resident(&self) -> usize { 1 }
+}
+
+impl<R: ExecutionRecord> LmdbRecordStore<R> {
+    fn fix_rows(
+        &mut self,
+        target: BlockHash,
+        citer: BlockHash,
+        record: R,
+        extra: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> Result<(), KvStoreError> {
+        let root = record.post_root().clone();
+        let next = Head {
+            anchor: self.head.anchor.clone(),
+            anchor_root: self.head.anchor_root.clone(),
+            len: self.head.len + 1,
+            last: target.clone(),
+            canonical_root: root.clone(),
+        };
+        let mut rows = vec![
+            (position_key(self.head.len), target.to_vec()),
+            (keyed(ROOT, &target), root.to_vec()),
+            (keyed(CITER, &target), citer.to_vec()),
+            (keyed(INDEX, &target), (self.head.len as u64).to_be_bytes().to_vec()),
+            (META_KEY.to_vec(), next.meta()),
+        ];
+        rows.extend(extra);
+        self.db.put(rows)?;
+        self.head = next;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -541,5 +695,40 @@ mod tests {
         let (store, opened) = open(&db, &citers, "anchor", "ra");
         assert_eq!(opened, Opened::ReplacedOlderFormat);
         assert_eq!(store.canonical_len(), 1);
+    }
+
+    #[test]
+    fn void_counts_are_written_with_the_record_and_survive_a_restart() {
+        let db: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let citers = Arc::new(Citers::default());
+        let (mut store, _) = open(&db, &citers, "g", "r0");
+        let void = |target: &str| BlockRecord::voided(h(target), h("r0"), &[], VoidReason::CloseUncovered);
+        for target in ["b1", "b2"] {
+            citers.cite("c", void(target));
+            let marks = FixMarks {
+                void: Some((h("V1"), VoidReason::CloseUncovered)),
+                statuses: vec![(h(&format!("d-{target}")), PriorEntry {
+                    block_number: 7,
+                    position: 1,
+                    status: PriorStatus::Discarded,
+                })],
+            };
+            store.fix_marked(h(target), h("c"), void(target), &marks).unwrap();
+        }
+        let (reopened, opened) = open(&db, &citers, "g", "r0");
+        assert_eq!(opened, Opened::Resumed);
+        assert_eq!(RecordStore::<BlockRecord>::canonical_len(&reopened), 3);
+        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::CloseUncovered), 2);
+        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::CloseFailed), 0);
+        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V2"), VoidReason::CloseUncovered), 0);
+        assert_eq!(
+            RecordStore::<BlockRecord>::prior(&reopened, b"d-b2"),
+            Some(PriorEntry {
+                block_number: 7,
+                position: 1,
+                status: PriorStatus::Discarded
+            })
+        );
+        assert_eq!(RecordStore::<BlockRecord>::prior(&reopened, b"d-b3"), None);
     }
 }

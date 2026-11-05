@@ -66,7 +66,11 @@ Decision 107 caps the releases of one close at 2 (`quarantined.take(2)`). The ca
 
 **Risk:** medium. The change touches bond custody (`RevBondAdmin` release), so it needs lane A1's authority audit. One point needs checking: whether every native operation it uses (`union` and `diff` on sets and maps) exists in the Rust interpreter with the expected cost.
 
-## Open
+## Status (revision 2)
+
+The rewrite is done: `patch/FX-17-epoch`, revision 3 of the FX-17 epoch log. The release cap is removed. `settlePendingBonds` (line 34) still folds over the pending bonds with the state. At most one bond registration merges per block, so this loop is short.
+
+## Open (revision 1)
 
 - **Lines 276 and 287 stay unbounded under the cap.** A shard where many validators withdraw in one epoch can still make one epoch close exceed the pre-charge. The bound test in FX-16 measures this case.
 - The pre-charge counts the bonds at the attested root. A withdrawer in quarantine has left `allBonds`, so it is not counted, although lines 276 and 287 still walk it. Two remedies: the rewrite above, or counting withdrawers in quarantine as bonds for the pre-charge.

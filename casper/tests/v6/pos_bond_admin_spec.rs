@@ -583,7 +583,7 @@ async fn an_epoch_starts_at_the_first_close_at_or_past_its_boundary() {
 }
 
 #[tokio::test]
-async fn an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_takes_the_rest() {
+async fn an_epoch_close_releases_every_withdrawer_whose_quarantine_has_ended() {
     let (alice, bob, carol, proposer) = (party(), party(), party(), party());
     let (rm, genesis, _) = shard(&[&alice, &bob, &carol], 10, 0).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
@@ -605,10 +605,15 @@ async fn an_epoch_close_releases_at_most_two_withdrawers_and_the_next_epoch_take
     }
 
     assert_eq!(released(&rm, &root, &parties).await, 0);
-    let first_epoch = run(&executor, &root, &block(10, vec![], &proposer)).await;
-    assert_eq!(released(&rm, &first_epoch, &parties).await, 2, "one close releases at most two");
-    let second_epoch = run(&executor, &first_epoch, &block(20, vec![], &proposer)).await;
-    assert_eq!(released(&rm, &second_epoch, &parties).await, 3, "the next epoch releases the rest");
+    let inside = run(&executor, &root, &block(9, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &inside, &parties).await, 0, "no release inside the epoch");
+    let epoch = run(&executor, &inside, &block(10, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &epoch, &parties).await, 3, "the epoch close releases all three");
+    for who in parties {
+        assert_eq!(pos_bond(&rm, &epoch, &who.pk).await, None);
+    }
+    let after = run(&executor, &epoch, &block(20, vec![], &proposer)).await;
+    assert_eq!(released(&rm, &after, &parties).await, 3);
 }
 
 async fn released(rm: &RuntimeManager, root: &StateHash, parties: &[&Party]) -> usize {
@@ -619,4 +624,134 @@ async fn released(rm: &RuntimeManager, root: &StateHash, parties: &[&Party]) -> 
         }
     }
     count
+}
+
+async fn move_native(rm: &RuntimeManager, root: &StateHash, from: &WalletOwner, to: &WalletOwner, amount: u64) -> StateHash {
+    use rholang::rust::interpreter::accounting::rev_stack::RevStacks;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let mut runtime = rm.spawn_runtime().await.unwrap();
+    runtime
+        .reset(&Blake2b256Hash::from_bytes_prost(root))
+        .await
+        .unwrap();
+    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
+        .transfer(from, to, amount)
+        .unwrap();
+    runtime.create_checkpoint().await.root.to_bytes_prost()
+}
+
+async fn withdrawing(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> Option<i64> {
+    let query = format!(
+        r#"new ret, rl(`rho:registry:lookup`), posCh, wCh, lo, sum in {{
+             rl!(`rho:system:pos`, *posCh) |
+             rl!(`rho:lang:listOps`, *lo) |
+             contract sum(@(_, entry), @acc, r) = {{ r!(acc + entry.getOrElse("{pk}".hexToBytes(), 0)) }} |
+             for (@(_, PoS) <- posCh; @(_, ListOps) <- lo) {{
+               @PoS!("getWithdrawers", *wCh) |
+               for (@w <- wCh) {{ @ListOps!("fold", w.toList(), 0, *sum, *ret) }}
+             }}
+           }}"#,
+        pk = hex::encode(&pk.bytes)
+    );
+    let (answer, _) = rm.play_exploratory_deploy(query, root, None, Vec::new()).await.unwrap();
+    RhoNumber::unapply(&answer[0]).filter(|b| *b > 0)
+}
+
+#[tokio::test]
+async fn a_failed_release_keeps_the_withdrawer_and_the_next_epoch_tries_again() {
+    use rholang::rust::interpreter::accounting::rev_stack::bond::bond_owner;
+
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis, _) = shard(&[&alice], 10, 0).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let bond = bond_term(&[(1_000, 1_000, "handle")]);
+    let bonded = run(&executor, &genesis, &block(1, vec![envelope(&bond, 1, &alice)], &proposer)).await;
+    let withdraw = with_handle(r#"@PoS!("withdraw", handle, *out)"#, "answer");
+    let withdrawn = run(&executor, &bonded, &block(2, vec![envelope(&withdraw, 2, &alice)], &proposer)).await;
+
+    let native = bond_owner(&alice.pk.bytes);
+    let elsewhere = WalletOwner::Unforgeable(vec![7; 32]);
+    let drained = move_native(&rm, &withdrawn, &native, &elsewhere, 1_000).await;
+    let before = read_wallet_balance(&rm, &drained, &alice.owner).await.unwrap();
+
+    let failed = run(&executor, &drained, &block(10, vec![], &proposer)).await;
+    assert_eq!(pos_bond(&rm, &failed, &alice.pk).await, None, "the epoch moved the withdrawer");
+    assert_eq!(withdrawing(&rm, &failed, &alice.pk).await, Some(1_000), "the failed release keeps the withdrawer");
+    assert_eq!(read_wallet_balance(&rm, &failed, &alice.owner).await.unwrap(), before);
+
+    let restored = move_native(&rm, &failed, &elsewhere, &native, 1_000).await;
+    let retried = run(&executor, &restored, &block(20, vec![], &proposer)).await;
+    assert_eq!(withdrawing(&rm, &retried, &alice.pk).await, None, "the next epoch releases it");
+    assert_eq!(read_bond_balance(&rm, &retried, &alice.pk.bytes).await.unwrap(), 0);
+    assert_eq!(read_wallet_balance(&rm, &retried, &alice.owner).await.unwrap(), before + 1_000);
+}
+
+#[tokio::test]
+async fn a_bond_made_during_quarantine_is_released_at_its_own_end_and_the_first_at_its_own() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis, _) = shard(&[&alice], 10, 15).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let withdraw = with_handle(r#"@PoS!("withdraw", handle, *out)"#, "answer");
+
+    let b1 = run(&executor, &genesis, &block(1, vec![envelope(&bond_term(&[(1_000, 1_000, "first")]), 1, &alice)], &proposer)).await;
+    let b2 = run(&executor, &b1, &block(2, vec![envelope(&withdraw, 2, &alice)], &proposer)).await;
+    let moved = run(&executor, &b2, &block(10, vec![], &proposer)).await;
+    assert_eq!(withdrawing(&rm, &moved, &alice.pk).await, Some(1_000), "quarantine ends at block 25");
+
+    let b11 = run(&executor, &moved, &block(11, vec![envelope(&bond_term(&[(500, 500, "again")]), 11, &alice)], &proposer)).await;
+    assert_eq!(pos_bond(&rm, &b11, &alice.pk).await, Some(500));
+    let b12 = run(&executor, &b11, &block(12, vec![envelope(&withdraw, 12, &alice)], &proposer)).await;
+    let moved_again = run(&executor, &b12, &block(20, vec![], &proposer)).await;
+    assert_eq!(
+        withdrawing(&rm, &moved_again, &alice.pk).await,
+        Some(1_500),
+        "each amount has its own entry: 1,000 ending at block 25, 500 ending at block 35"
+    );
+
+    let before = read_wallet_balance(&rm, &moved_again, &alice.owner).await.unwrap();
+    let first_end = run(&executor, &moved_again, &block(30, vec![], &proposer)).await;
+    assert_eq!(withdrawing(&rm, &first_end, &alice.pk).await, Some(500), "the 1,000 is released at its own end");
+    assert_eq!(read_wallet_balance(&rm, &first_end, &alice.owner).await.unwrap(), before + 1_000);
+    assert_eq!(read_bond_balance(&rm, &first_end, &alice.pk.bytes).await.unwrap(), 500);
+
+    let second_end = run(&executor, &first_end, &block(40, vec![], &proposer)).await;
+    assert_eq!(withdrawing(&rm, &second_end, &alice.pk).await, None);
+    assert_eq!(read_wallet_balance(&rm, &second_end, &alice.owner).await.unwrap(), before + 1_500);
+    assert_eq!(read_bond_balance(&rm, &second_end, &alice.pk.bytes).await.unwrap(), 0, "nothing stays locked");
+}
+
+#[tokio::test]
+async fn the_active_set_expression_picks_what_the_old_loop_picked() {
+    let (alice, _) = (party(), party());
+    let (rm, genesis, _) = shard(&[&alice], 10, 10).await;
+    for (size, active) in [(12usize, 5usize), (101, 100), (150, 100)] {
+        let bonds = (0..size)
+            .map(|i| {
+                let pk = Secp256k1.new_key_pair().1;
+                format!(r#""{}".hexToBytes(): {}"#, hex::encode(&pk.bytes), 10 + i)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let query = format!(
+            r#"new ret, rl(`rho:registry:lookup`), lo, mapped, fst in {{
+                 contract fst(@(first, _), r) = {{ r!(first) }} |
+                 rl!(`rho:lang:listOps`, *lo) |
+                 for (@(_, ListOps) <- lo) {{
+                   @ListOps!("map", {{{bonds}}}.toList(), *fst, *mapped) |
+                   for (@pks <- mapped) {{
+                     ret!((pks.take({active}).toSet(), {{{bonds}}}.keys().toList().take({active}).toSet()))
+                   }}
+                 }}
+               }}"#
+        );
+        let mut ops = casper::rust::rholang::runtime::RuntimeOps::new(rm.spawn_runtime().await.unwrap());
+        let (answer, _) = ops
+            .play_exploratory_deploy_with_phlo_limit(query, &genesis, None, 1_000_000_000, Vec::new())
+            .await
+            .unwrap();
+        let (old, new) = RhoTuple2::unapply(&answer[0]).expect("a pair of sets");
+        assert_eq!(old, new, "{size} bonds, {active} active");
+    }
 }

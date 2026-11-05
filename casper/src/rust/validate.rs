@@ -639,7 +639,7 @@ impl Validate {
         expiration_threshold: i32,
         floor_ctx: Option<&crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
-        if block.body.deploys.is_empty() {
+        if block.body.deploys.is_empty() || block.body.v6.is_some() {
             return Either::Right(ValidBlock::Valid);
         }
 

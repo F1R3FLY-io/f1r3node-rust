@@ -37,13 +37,13 @@ use super::conservation::Conservation;
 use super::footprint::{footprint, Footprint};
 use super::gate::{
     check_recorded_with_close, gate_block_with_close, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
-    PhloLimitDemand, StoreReader,
+    PhloLimitDemand, StoreReader, WalletReader,
 };
 use super::merge::{merge_runs, RunEffect};
-use super::record::ExecutionRecord;
+use super::record::{ExecutionRecord, Prior, VoidReason};
 use super::run::EnvelopeRun;
 use super::settle::{self, Boxcar, Settlement};
-use super::slash::{require_no_slashes, NoSlashing, SlashSource};
+use super::slash::{NoSlashing, SlashSource};
 use super::surface::{accept_metered, own_cells, BlockPurses, CloseFunding, EnvelopeFunding, Surfaces};
 use crate::rust::errors::CasperError;
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
@@ -156,7 +156,6 @@ pub struct EnvelopeExecutor {
     workers: usize,
     boxcar: Boxcar,
     runs: Arc<Runs>,
-    close_precharge: RevAmount,
 }
 
 struct Runs {
@@ -184,7 +183,6 @@ impl EnvelopeExecutor {
             runtime_manager,
             workers,
             boxcar: Boxcar::unbounded(),
-            close_precharge: 0,
         }
     }
 
@@ -193,18 +191,16 @@ impl EnvelopeExecutor {
         self
     }
 
-    pub fn with_close_precharge(mut self, precharge: RevAmount) -> Self {
-        self.close_precharge = precharge;
-        self
-    }
-
-    fn close_hold(&self, block_data: &BlockData) -> Result<Option<(WalletOwner, RevAmount)>, CasperError> {
-        if self.close_precharge == 0 {
+    fn close_hold(
+        block_data: &BlockData,
+        precharge: RevAmount,
+    ) -> Result<Option<(WalletOwner, RevAmount)>, CasperError> {
+        if precharge == 0 {
             return Ok(None);
         }
         let proposer = WalletOwner::from_public_key(&block_data.sender)
             .map_err(|e| invalid(format!("the block sender has no wallet: {e}")))?;
-        Ok(Some((proposer, self.close_precharge)))
+        Ok(Some((proposer, precharge)))
     }
 }
 
@@ -581,11 +577,22 @@ impl EnvelopeExecutor {
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
+        self.execute_held(pre_root, envelopes, block_data, 0, &Prior::new()).await
+    }
+
+    pub async fn execute_held(
+        &self,
+        pre_root: &StateHash,
+        envelopes: Vec<Signed<DeployData>>,
+        block_data: BlockData,
+        close_precharge: RevAmount,
+        prior: &Prior,
+    ) -> Result<ExecutedBlock, CasperError> {
         let started = std::time::Instant::now();
-        let mut inputs = gate_inputs(envelopes.iter())?;
+        let mut inputs = with_prior(gate_inputs(envelopes.iter())?, prior);
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let close = self.close_hold(&block_data)?;
+        let close = Self::close_hold(&block_data, close_precharge)?;
         let gate = gate_block_with_close(
             &reader,
             &PhloLimitDemand,
@@ -672,10 +679,24 @@ impl EnvelopeExecutor {
         recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        let mut inputs = gate_inputs(recorded.iter().map(|p| &p.deploy))?;
+        self.replay_held(pre_root, recorded, recorded_work, recorded_gate, block_data, 0, &Prior::new())
+            .await
+    }
+
+    pub async fn replay_held(
+        &self,
+        pre_root: &StateHash,
+        recorded: Vec<ProcessedDeploy>,
+        recorded_work: Option<Vec<Surfaces>>,
+        recorded_gate: &[GateEntry],
+        block_data: BlockData,
+        close_precharge: RevAmount,
+        prior: &Prior,
+    ) -> Result<ExecutedBlock, CasperError> {
+        let mut inputs = with_prior(gate_inputs(recorded.iter().map(|p| &p.deploy))?, prior);
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let close = self.close_hold(&block_data)?;
+        let close = Self::close_hold(&block_data, close_precharge)?;
         let gate = check_recorded_with_close(
             &reader,
             &PhloLimitDemand,
@@ -734,6 +755,21 @@ impl EnvelopeExecutor {
         self.finish(pre_root, inputs, gate, effects, &block_data, PhaseTimings::default())
             .await
     }
+}
+
+fn with_prior(inputs: Vec<GateInput>, prior: &Prior) -> Vec<GateInput> {
+    let mut seen = std::collections::HashSet::new();
+    inputs
+        .into_iter()
+        .map(|input| {
+            let status = if seen.insert(input.envelope_sig.clone()) {
+                prior.get(&input.envelope_sig).copied()
+            } else {
+                Some(super::record::PriorStatus::Included)
+            };
+            input.with_prior(status.as_ref())
+        })
+        .collect()
 }
 
 pub(crate) fn gate_inputs<'a>(
@@ -830,7 +866,17 @@ pub struct BlockExecutor {
     runtime_manager: Arc<RuntimeManager>,
     slashes: Arc<dyn SlashSource>,
     conservation: Option<Arc<Conservation>>,
-    close_charge: Option<super::close_charge::CloseCharge>,
+    close_charge: CloseChargeSource,
+    close_charges: parking_lot::Mutex<std::collections::VecDeque<(StateHash, super::close_charge::CloseCharge)>>,
+}
+
+const CLOSE_CHARGES_KEPT: usize = 64;
+
+#[derive(Clone, Copy)]
+enum CloseChargeSource {
+    Off,
+    Fixed(super::close_charge::CloseCharge),
+    Consensus,
 }
 
 impl BlockExecutor {
@@ -839,6 +885,7 @@ impl BlockExecutor {
         pre_root: &StateHash,
         executed: &ExecutedBlock,
         logged: Option<&[Refusal]>,
+        close: Option<super::close_charge::CloseCharge>,
     ) -> Result<(SystemGate, Arc<MembraneMeter>, Arc<dyn Funding>), CasperError> {
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), executed.gate.table.clone()));
@@ -849,7 +896,7 @@ impl BlockExecutor {
         };
         let gate = SystemGate {
             funding: Some(meter.clone()),
-            close: self.close_charge,
+            close,
         };
         Ok((gate, meter, funding))
     }
@@ -860,8 +907,62 @@ impl BlockExecutor {
             runtime_manager,
             slashes: Arc::new(NoSlashing),
             conservation: None,
-            close_charge: None,
+            close_charge: CloseChargeSource::Off,
+            close_charges: parking_lot::Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    async fn close_charge_at(
+        &self,
+        pre_root: &StateHash,
+    ) -> Result<Option<super::close_charge::CloseCharge>, CasperError> {
+        match self.close_charge {
+            CloseChargeSource::Off => Ok(None),
+            CloseChargeSource::Fixed(close) => Ok(Some(close)),
+            CloseChargeSource::Consensus => {
+                let kept = self
+                    .close_charges
+                    .lock()
+                    .iter()
+                    .find(|(root, _)| root == pre_root)
+                    .map(|(_, close)| *close);
+                if let Some(close) = kept {
+                    return Ok(Some(close));
+                }
+                let close = super::close_charge::CloseCharge::at(&self.runtime_manager, pre_root).await?;
+                let mut kept = self.close_charges.lock();
+                kept.push_back((pre_root.clone(), close));
+                if kept.len() > CLOSE_CHARGES_KEPT {
+                    kept.pop_front();
+                }
+                Ok(Some(close))
+            }
+        }
+    }
+
+    pub async fn void_before_runs(
+        &self,
+        pre_root: &StateHash,
+        block: &BlockMessage,
+        close: Option<super::close_charge::CloseCharge>,
+    ) -> Result<Option<VoidReason>, CasperError> {
+        if !self.slashes.slashes(block)?.is_empty() {
+            return Ok(Some(VoidReason::SlashRecords));
+        }
+        if gate_inputs(block.body.deploys.iter().map(|p| &p.deploy)).is_err() {
+            return Ok(Some(VoidReason::UnreadableTerms));
+        }
+        let Some(close) = close.filter(|close| close.pre_charge > 0) else {
+            return Ok(None);
+        };
+        let Some(proposer) = super::close_charge::proposer(&block.sender) else {
+            return Ok(Some(VoidReason::CloseUncovered));
+        };
+        let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
+        if reader.balance(&proposer)? < close.pre_charge {
+            return Ok(Some(VoidReason::CloseUncovered));
+        }
+        Ok(None)
     }
 
     pub async fn execute_timed(
@@ -869,7 +970,27 @@ impl BlockExecutor {
         pre_root: &StateHash,
         block: &BlockMessage,
     ) -> Result<(BlockRecord, BlockTimings), CasperError> {
-        require_no_slashes(&self.slashes.slashes(block)?)?;
+        self.execute_prior(pre_root, block, &Prior::new()).await
+    }
+
+    pub async fn execute_prior(
+        &self,
+        pre_root: &StateHash,
+        block: &BlockMessage,
+        prior: &Prior,
+    ) -> Result<(BlockRecord, BlockTimings), CasperError> {
+        let close = self.close_charge_at(pre_root).await?;
+        if let Some(reason) = self.void_before_runs(pre_root, block, close).await? {
+            return Ok((
+                BlockRecord::voided(
+                    block.block_hash.clone(),
+                    pre_root.clone(),
+                    &envelope_ids(block),
+                    reason,
+                ),
+                BlockTimings::default(),
+            ));
+        }
         let envelopes = block
             .body
             .deploys
@@ -878,11 +999,17 @@ impl BlockExecutor {
             .collect();
         let executed = self
             .envelopes
-            .execute(pre_root, envelopes, block_data(block))
+            .execute_held(
+                pre_root,
+                envelopes,
+                block_data(block),
+                close.map_or(0, |close| close.pre_charge),
+                prior,
+            )
             .await?;
         let started = std::time::Instant::now();
-        let (gate, close_meter, _) = self.close_gate(pre_root, &executed, None).await?;
-        let (post_root, _, system_deploys) = self
+        let (gate, close_meter, _) = self.close_gate(pre_root, &executed, None, close).await?;
+        let closed = self
             .runtime_manager
             .compute_state_gated(
                 &executed.settled_root,
@@ -892,12 +1019,33 @@ impl BlockExecutor {
                 None,
                 Some(gate),
             )
-            .await?;
+            .await;
+        let (post_root, _, system_deploys) = closed?;
         let close_refusals = close_meter.take().refusals;
         let system_deploys: Vec<_> = system_deploys
             .into_iter()
             .map(|deploy| super::stops::with_refusals(deploy, &close_refusals))
             .collect();
+        if let Some(failed) = system_deploys.iter().find(|deploy| traced_close_failure(deploy)) {
+            tracing::warn!(
+                target: "f1r3fly.v6",
+                block = %hex::encode(&block.block_hash),
+                failure = ?failed,
+                "the close failed; the block is void for reason (d)"
+            );
+            let record = BlockRecord::new(
+                block.block_hash.clone(),
+                pre_root.clone(),
+                executed.mid_root.clone(),
+                pre_root.clone(),
+                entries(&executed),
+                vec![failed.clone()],
+            )
+            .and_then(|record| record.with_gate(executed.gate.entries.clone()))
+            .map(|record| record.with_settlement(executed.settlement.clone()).with_failed_close())
+            .map_err(CasperError::RuntimeError)?;
+            return Ok((record, BlockTimings::default()));
+        }
         let close_block_time = started.elapsed();
         let started = std::time::Instant::now();
         self.audit(block, &executed.settlement, &post_root).await;
@@ -924,8 +1072,12 @@ impl BlockExecutor {
     }
 
     pub fn with_close_charge(mut self, close: super::close_charge::CloseCharge) -> Self {
-        self.envelopes = self.envelopes.with_close_precharge(close.pre_charge);
-        self.close_charge = Some(close);
+        self.close_charge = CloseChargeSource::Fixed(close);
+        self
+    }
+
+    pub fn with_consensus_close_charge(mut self) -> Self {
+        self.close_charge = CloseChargeSource::Consensus;
         self
     }
 
@@ -1018,6 +1170,29 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
         .collect()
 }
 
+fn envelope_ids(block: &BlockMessage) -> Vec<prost::bytes::Bytes> {
+    block.body.deploys.iter().map(|d| d.deploy.sig.clone()).collect()
+}
+
+fn traced_close_failure(deploy: &models::rust::casper::protocol::casper_message::ProcessedSystemDeploy) -> bool {
+    matches!(
+        deploy,
+        models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Failed { error_msg, .. }
+            if error_msg.starts_with(crate::rust::rholang::runtime::CLOSE_FAILED_PREFIX)
+    )
+}
+
+fn close_failed(error: &CasperError) -> bool {
+    use crate::rust::util::rholang::system_deploy_user_error::SystemDeployPlatformFailure;
+    matches!(
+        error,
+        CasperError::SystemRuntimeError(
+            SystemDeployPlatformFailure::UnexpectedSystemErrors(_)
+                | SystemDeployPlatformFailure::ConsumeFailed
+        )
+    )
+}
+
 fn mismatch(what: &str) -> CasperError {
     CasperError::RuntimeError(format!("v6 record replay mismatch: {what}"))
 }
@@ -1031,9 +1206,7 @@ impl ExecutionBackend for BlockExecutor {
         pre_root: &StateHash,
         block: &BlockMessage,
     ) -> Result<BlockRecord, CasperError> {
-        self.execute_timed(pre_root, block)
-            .await
-            .map(|(record, _)| record)
+        self.execute_after(pre_root, block, &Prior::new()).await
     }
 
     async fn replay(
@@ -1041,10 +1214,58 @@ impl ExecutionBackend for BlockExecutor {
         record: &BlockRecord,
         block: &BlockMessage,
     ) -> Result<StateHash, CasperError> {
+        self.replay_after(record, block, &Prior::new()).await
+    }
+
+    async fn execute_after(
+        &self,
+        pre_root: &StateHash,
+        block: &BlockMessage,
+        prior: &Prior,
+    ) -> Result<BlockRecord, CasperError> {
+        self.execute_prior(pre_root, block, prior)
+            .await
+            .map(|(record, _)| record)
+    }
+
+    async fn replay_after(
+        &self,
+        record: &BlockRecord,
+        block: &BlockMessage,
+        prior: &Prior,
+    ) -> Result<StateHash, CasperError> {
         if record.target() != &block.block_hash {
             return Err(mismatch("the record executes another block"));
         }
-        require_no_slashes(&self.slashes.slashes(block)?)?;
+        let close = self.close_charge_at(record.pre_root()).await?;
+        let predicted = self.void_before_runs(record.pre_root(), block, close).await?;
+        match (record.void_reason(), predicted) {
+            (Some(recorded), Some(predicted)) if recorded == predicted => {
+                let expected = BlockRecord::voided(
+                    block.block_hash.clone(),
+                    record.pre_root().clone(),
+                    &envelope_ids(block),
+                    predicted,
+                );
+                if *record != expected {
+                    return Err(mismatch("the void record"));
+                }
+                return Ok(record.pre_root().clone());
+            }
+            (None, None) | (Some(VoidReason::CloseFailed), None) => {}
+            (Some(recorded), _) => {
+                return Err(mismatch(&format!(
+                    "the record is void for reason ({}), and the block is not",
+                    recorded.label()
+                )))
+            }
+            (None, Some(predicted)) => {
+                return Err(mismatch(&format!(
+                    "the block is void for reason ({}), and the record is not",
+                    predicted.label()
+                )))
+            }
+        }
         let recorded = record.executed();
         if recorded.len() != block.body.deploys.len() {
             return Err(mismatch("the record does not cover the block's envelopes"));
@@ -1074,12 +1295,14 @@ impl ExecutionBackend for BlockExecutor {
             .collect::<Result<Vec<_>, _>>()?;
         let replayed = self
             .envelopes
-            .replay_recorded(
+            .replay_held(
                 record.pre_root(),
                 processed,
                 Some(recorded.iter().map(|entry| entry.work.clone()).collect()),
                 record.gate(),
                 block_data(block),
+                close.map_or(0, |close| close.pre_charge),
+                prior,
             )
             .await?;
         if entries(&replayed) != record.entries() {
@@ -1094,9 +1317,9 @@ impl ExecutionBackend for BlockExecutor {
         let close_logged = super::stops::system_refusals(record.system_deploys())
             .map_err(|e| mismatch(&format!("a close refusal does not decode: {e}")))?;
         let (gate, close_meter, close_funding) = self
-            .close_gate(record.pre_root(), &replayed, Some(&close_logged))
+            .close_gate(record.pre_root(), &replayed, Some(&close_logged), close)
             .await?;
-        let post_root = self
+        let replayed_close = self
             .runtime_manager
             .replay_compute_state_gated(
                 &replayed.settled_root,
@@ -1107,7 +1330,17 @@ impl ExecutionBackend for BlockExecutor {
                 false,
                 Some(gate),
             )
-            .await?;
+            .await;
+        let post_root = match (record.void_reason(), replayed_close) {
+            (Some(VoidReason::CloseFailed), Err(error)) if close_failed(&error) => {
+                record.pre_root().clone()
+            }
+            (Some(VoidReason::CloseFailed), Err(error)) => return Err(error),
+            (Some(VoidReason::CloseFailed), Ok(_)) => {
+                return Err(mismatch("the record is void for reason (d), and the close runs"))
+            }
+            (_, replayed_close) => replayed_close?,
+        };
         if post_root != *record.post_root() {
             return Err(mismatch("post-state root"));
         }

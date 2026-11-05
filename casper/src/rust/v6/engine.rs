@@ -7,9 +7,10 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::offer_rejection::OfferRejection;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, F1r3flyState, Header, ProcessedDeploy,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -26,7 +27,8 @@ use super::lag::{Lag, LagGate, Transition};
 use super::linearizer::{Advance, Linearizer};
 use super::price::{effective_price, FixedPriceHook, NodePriceConf, PriceHook};
 use super::propose::{pack_records, select_envelopes, SelectionContext};
-use super::record::ExecutionRecord;
+use super::gate::GateInput;
+use super::record::{ExecutionRecord, PriorStatus, VoidReason};
 use super::resource_policy::ShardResourcePolicy;
 use super::store::{
     LmdbRecordStore, MemoryRecordStore, Opened, RecordSource, RecordStore, Retention,
@@ -84,6 +86,7 @@ impl V6Engine<BlockRecord> {
         policy: ShardResourcePolicy,
         retained_records: usize,
         conservation_audit_interval: u64,
+        deploy_lifespan: i64,
     ) -> Result<Arc<Self>, CasperError> {
         let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(block_store.clone());
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
@@ -121,7 +124,8 @@ impl V6Engine<BlockRecord> {
         )?;
         let backend = Arc::new(
             BlockExecutor::new(runtime_manager.clone(), workers)
-                .with_conservation(conservation.clone()),
+                .with_conservation(conservation.clone())
+                .with_consensus_close_charge(),
         );
         let parts = V6Parts {
             backend,
@@ -133,6 +137,7 @@ impl V6Engine<BlockRecord> {
             params: CoreParams {
                 fallback_distance,
                 retained_records,
+                deploy_lifespan,
                 ..CoreParams::default()
             },
             lag_threshold,
@@ -203,6 +208,27 @@ impl<R: ExecutionRecord> V6Engine<R> {
         if self.started.swap(true, Ordering::SeqCst) {
             return;
         }
+        if let Err(error) = self.dag_storage.check_floor_order() {
+            panic!("v6 floors: {error}");
+        }
+        if let Ok(dag) = self.dag_storage.get_representation() {
+            let core = self.core.lock();
+            if let Some(position) = core.position_of(&dag.last_finalized_block()) {
+                core.register_unrun_after(position);
+            }
+        }
+        match self.rebuild_tally() {
+            Ok(counted) => tracing::info!(
+                target: "f1r3fly.v6",
+                counted,
+                "v6 attestation tally rebuilt from the blocks above the LFB"
+            ),
+            Err(error) => tracing::warn!(
+                target: "f1r3fly.v6",
+                %error,
+                "the v6 attestation tally could not be rebuilt; it fills from new blocks"
+            ),
+        }
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
@@ -265,12 +291,31 @@ impl<R: ExecutionRecord> V6Engine<R> {
     pub fn lag_gate_engaged(&self) -> bool { self.lag_gate.engaged() }
 
     fn admits_envelopes(&self, snapshot: &CasperSnapshot, attestation: &Attestation) -> bool {
-        let lfb = snapshot.dag.last_finalized_block();
+        let lfb = self
+            .dag_storage
+            .order_floor()
+            .unwrap_or_else(|_| snapshot.dag.last_finalized_block());
         let lag = Lag::measure(
             snapshot.dag.block_number(&lfb),
             snapshot.dag.block_number(&attestation.block_hash),
         );
         let lfb_number = snapshot.dag.block_number(&lfb);
+        let state_number = snapshot
+            .dag
+            .block_number(&snapshot.dag.last_finalized_block());
+        if let (Some(order), Some(state)) = (lfb_number, state_number) {
+            let unattested = order - state;
+            let max_unattested = self.core.lock().params().max_unattested;
+            if unattested > max_unattested {
+                tracing::info!(
+                    target: "f1r3fly.v6",
+                    unattested,
+                    max_unattested,
+                    "the LFB lags the order floor past max_unattested; proposing without envelopes"
+                );
+                return false;
+            }
+        }
         if let Some(lfb_number) = lfb_number {
             let floor_distance = snapshot.max_block_num - lfb_number;
             if crate::rust::util::rholang::interpreter_util::floor_pacing_engaged(
@@ -326,6 +371,9 @@ impl<R: ExecutionRecord> V6Engine<R> {
 
     pub fn observe_block(&self, block: &BlockMessage, body: &V6Body) {
         if let Some(attestation) = &body.attestation {
+            self.core
+                .lock()
+                .count(&block.sender, block.seq_num, attestation);
             self.core.lock().observe_attestation(
                 &block.block_hash,
                 &block.sender,
@@ -343,7 +391,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
             .inclusion
             .refused(&check.root, block.header.timestamp, &block.body.deploys)
             .await;
-        let refused = match screened {
+        let mut refused = match screened {
             Ok(refused) => refused,
             Err(error) => {
                 tracing::warn!(
@@ -355,6 +403,23 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 return Ok(());
             }
         };
+        {
+            let core = self.core.lock();
+            for processed in &block.body.deploys {
+                let sig = &processed.deploy.sig;
+                if refused.iter().any(|(id, _)| id == sig) {
+                    continue;
+                }
+                let cause = match core.prior_at(sig, &check.attested) {
+                    Some(PriorStatus::Included) => {
+                        "a canonical record at or below the attested position ran the deployment"
+                    }
+                    Some(PriorStatus::Discarded) => "a void block discarded the deployment",
+                    None => continue,
+                };
+                refused.push((sig.clone(), cause.to_string()));
+            }
+        }
         tracing::debug!(
             target: "f1r3fly.v6",
             block = %hex::encode(&check.block),
@@ -377,15 +442,110 @@ impl<R: ExecutionRecord> V6Engine<R> {
         Ok(())
     }
 
+    pub fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
+        self.core.lock().void_count(proposer, reason)
+    }
+
+    fn release_voided(&self, target: &BlockHash, reason: VoidReason) -> Result<(), CasperError> {
+        let block = self.load(target)?;
+        let dropped = |deploy: &Signed<DeployData>| match reason {
+            VoidReason::CloseFailed => true,
+            VoidReason::UnreadableTerms => GateInput::from_deploy(deploy, Vec::new()).is_err(),
+            VoidReason::CloseUncovered | VoidReason::SlashRecords => false,
+        };
+        let (dropped, kept): (Vec<_>, Vec<_>) = block
+            .body
+            .deploys
+            .iter()
+            .map(|processed| processed.deploy.clone())
+            .partition(|deploy| dropped(deploy));
+        for deploy in &dropped {
+            self.deploy_storage.record_rejection(OfferRejection {
+                deploy_id: deploy.sig.to_vec(),
+                pre_state_root: None,
+                block_number: block.body.state.block_number,
+                reason: format!("void block, reason ({})", reason.label()),
+            })?;
+        }
+        if !kept.is_empty() {
+            self.deploy_storage.add(kept)?;
+        }
+        tracing::info!(
+            target: "f1r3fly.v6",
+            block = %hex::encode(target),
+            reason = reason.label(),
+            dropped = dropped.len(),
+            "a canonical record voids the block"
+        );
+        Ok(())
+    }
+
     fn load(&self, hash: &BlockHash) -> Result<BlockMessage, CasperError> {
         self.block_store
             .get(hash)?
             .ok_or_else(|| CasperError::KvStoreError(KvStoreError::KeyNotFound(hex::encode(hash))))
     }
 
-    pub async fn tick(&self) -> Result<bool, CasperError> {
+    pub fn rebuild_tally(&self) -> Result<usize, CasperError> {
+        let dag = self.dag_storage.get_representation()?;
+        let lfb_height = dag.block_number(&dag.last_finalized_block()).unwrap_or(0);
+        let mut counted = 0;
+        for (_, blocks) in dag.height_map.range((lfb_height + 1)..) {
+            for hash in blocks.iter() {
+                let Some(block) = self.block_store.get(hash)? else {
+                    continue;
+                };
+                let Some(attestation) = block.body.v6.as_ref().and_then(|v6| v6.attestation.clone()) else {
+                    continue;
+                };
+                self.core
+                    .lock()
+                    .count(&block.sender, block.seq_num, &attestation);
+                counted += 1;
+            }
+        }
+        Ok(counted)
+    }
+
+    pub async fn state_floor(&self) -> Result<Option<BlockHash>, CasperError> {
         let dag = self.dag_storage.get_representation()?;
         let lfb = dag.last_finalized_block();
+        let order = self.dag_storage.order_floor()?;
+        let Some(lfb_root) = self.core.lock().executed(&lfb) else {
+            return Ok(None);
+        };
+        let lfb_height = dag.block_number(&lfb).unwrap_or(0);
+        let attestation = Attestation {
+            block_hash: lfb.clone(),
+            root: lfb_root,
+        };
+        let bonds: Vec<(Bytes, i64)> = self
+            .validators
+            .bonds(&attestation, lfb_height)
+            .await?
+            .into_iter()
+            .map(|bond| (bond.validator, bond.stake))
+            .collect();
+        let core = self.core.lock();
+        let Some(attested) = core.attested_position(&bonds) else {
+            return Ok(None);
+        };
+        let mut cursor = Some(order);
+        while let Some(block) = cursor {
+            if block == lfb || dag.block_number(&block).is_none_or(|n| n <= lfb_height) {
+                return Ok(None);
+            }
+            if core.position_of(&block).is_some_and(|position| position <= attested) {
+                return Ok(Some(block));
+            }
+            cursor = dag.main_parent(&block);
+        }
+        Ok(None)
+    }
+
+    pub async fn tick(&self) -> Result<bool, CasperError> {
+        let dag = self.dag_storage.get_representation()?;
+        let lfb = self.dag_storage.order_floor()?;
         let advance = {
             let core = self.core.lock();
             let emitted = |block: &BlockHash| core.is_emitted(block);
@@ -406,6 +566,14 @@ impl<R: ExecutionRecord> V6Engine<R> {
                     self.core.lock().emit(EmittedBlock {
                         hash,
                         sender: block.sender.clone(),
+                        block_number: block.body.state.block_number,
+                        unreadable: block
+                            .body
+                            .deploys
+                            .iter()
+                            .filter(|d| GateInput::from_deploy(&d.deploy, Vec::new()).is_err())
+                            .map(|d| d.deploy.sig.clone())
+                            .collect(),
                         envelope_ids: block
                             .body
                             .deploys
@@ -455,9 +623,10 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 record,
             } => {
                 let block = self.load(&target)?;
+                let prior = self.core.lock().prior(&target);
                 let result = self
                     .backend
-                    .replay(&record, &block)
+                    .replay_after(&record, &block, &prior)
                     .await
                     .map_err(|e| e.to_string());
                 if let Err(error) = &result {
@@ -476,10 +645,15 @@ impl<R: ExecutionRecord> V6Engine<R> {
             }
             Action::Execute { target, pre_root } => {
                 let block = self.load(&target)?;
-                let record = self.backend.execute(&pre_root, &block).await?;
+                let prior = self.core.lock().prior(&target);
+                let record = self.backend.execute_after(&pre_root, &block, &prior).await?;
                 self.core.lock().apply_execute(record);
                 progressed = true;
             }
+        }
+        let voided = self.core.lock().take_voided();
+        for (target, reason) in voided {
+            self.release_voided(&target, reason)?;
         }
         let check = self.core.lock().next_inclusion_check();
         if let Some(check) = check {
@@ -623,6 +797,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
         );
         let block = validator.sign_block(&unsigned);
         self.core.lock().mark_cited(&records);
+        self.core.lock().count(&self_key, seq_num, &attestation);
         Ok(BlockCreatorResult::Created(
             block,
             attestation.root.clone(),

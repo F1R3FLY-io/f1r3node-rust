@@ -83,13 +83,16 @@ impl ChargingRSpace {
                 let consume_storage = storage_cost_consume(&channels, &patterns, &continuation);
                 let channels_count = channels.len() as i64;
                 let left = event_storage_cost(channels_count).value;
-                self.cost.charge_reserving(consume_storage.clone(), left)?;
-                let follow = left
+                let reserve = left
+                    + comm_event_storage_cost(channels_count).value
                     + if persist {
                         consume_storage.value + left
                     } else {
                         0
                     };
+                self.cost
+                    .charge_reserving(consume_storage.clone(), reserve)?;
+                let follow = 0;
 
                 let id = consume_id_bytes(&continuation)?;
                 if self.cost.storage_left_in_space().is_some() {
@@ -146,15 +149,17 @@ impl ChargingRSpace {
                     let restored = with_rule(&self.cost, |rule| rule.restores(&id));
                     let produce_storage = storage_cost_produce(&channel, &data);
                     let left = event_storage_cost(1).value;
-                    if !restored {
-                        self.cost.charge_reserving(produce_storage.clone(), left)?;
-                    }
-                    let follow = left
+                    let reserve = left
                         + if persist {
                             produce_storage.value + left
                         } else {
                             0
                         };
+                    if !restored {
+                        self.cost
+                            .charge_reserving(produce_storage.clone(), reserve)?;
+                    }
+                    let follow = 0;
                     with_rule(&self.cost, |rule| rule.announce_datum(&id, seal::current()));
                     let produce_res =
                         membrane::following(follow, self.space.produce(channel, data, persist))
@@ -179,13 +184,15 @@ impl ChargingRSpace {
 
                 let produce_storage = storage_cost_produce(&channel, &data);
                 let left = event_storage_cost(1).value;
-                self.cost.charge_reserving(produce_storage.clone(), left)?;
-                let follow = left
+                let reserve = left
                     + if persist {
                         produce_storage.value + left
                     } else {
                         0
                     };
+                self.cost
+                    .charge_reserving(produce_storage.clone(), reserve)?;
+                let follow = 0;
 
                 let id = data.random_state.clone();
                 let produce_res =
@@ -431,7 +438,10 @@ fn handle_result(
                 cost.charge(event_storage_cost(triggered_by_channels_count))?;
             }
 
-            cost.charge(comm_event_storage_cost(cont.channels.len() as i64))
+            seal::within_now(
+                seal::of_continuation(&cont.continuation).ok().flatten(),
+                || cost.charge(comm_event_storage_cost(cont.channels.len() as i64)),
+            )
         }),
         None => membrane::settling(|| cost.charge(event_storage_cost(triggered_by_channels_count))),
     }
@@ -459,7 +469,6 @@ fn draw_replayed_comm(
             .filter_map(|d| d.removed_datum.seal.as_ref())
             .filter_map(|p| seal::SealRecord::from_proto(p).ok()),
     );
-    let follow = follow + comm_event_storage_cost(cont.channels.len() as i64).value;
     meter.draw_comm_in_replay(&records, seal::current().as_ref(), follow);
 }
 

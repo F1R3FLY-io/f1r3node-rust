@@ -392,6 +392,7 @@ mod tests {
 
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use metrics_util::debugging::{DebugValue, DebuggingRecorder, Snapshotter};
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -804,6 +805,42 @@ mod tests {
                 "{name}"
             );
             assert_eq!(pool.read_all().unwrap(), expected, "{name}");
+        }
+    }
+
+    fn naming_an_absent_cosigner(time_stamp: i64) -> Signed<DeployData> {
+        let (_, cosigner) = Secp256k1.new_key_pair();
+        let mut data = deploy(time_stamp).data;
+        data.required_cosigners = vec![cosigner.bytes.to_vec()];
+        signed(data)
+    }
+
+    #[test]
+    fn a_deploy_that_lacks_a_named_cosigner_is_not_written_and_not_read_back() {
+        for name in POOLS {
+            let (live, quarantine) = (in_memory(), in_memory());
+            let mut pool = Pool::open(name, &live, &quarantine);
+            let valid = deploy(1);
+            pool.add(vec![valid.clone()]);
+            let lacking = naming_an_absent_cosigner(2);
+            assert!(lacking.verify(), "the deployer's own signature is valid");
+            assert!(
+                super::super::deploy_codec::encode(&lacking).is_err(),
+                "{name}"
+            );
+            let key = key_for(&lacking.sig);
+            let bytes = versioned_bytes_unchecked(&lacking);
+            live.put_one(key.clone(), bytes.clone()).unwrap();
+
+            drop(pool);
+            let reopened = Pool::open(name, &live, &quarantine);
+            assert_eq!(
+                reopened.read_all().unwrap(),
+                HashSet::from([valid]),
+                "{name}"
+            );
+            assert!(!reopened.contains_sig(&lacking.sig).unwrap(), "{name}");
+            assert_eq!(quarantine.get_one(&key).unwrap(), Some(bytes), "{name}");
         }
     }
 

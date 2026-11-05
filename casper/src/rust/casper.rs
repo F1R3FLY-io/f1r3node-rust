@@ -58,6 +58,8 @@ pub const REJECTION_SEARCH_GROUP_BRANCH_CAP_DEFAULT: usize = 16;
 
 pub const V6_RETAINED_RECORDS_DEFAULT: usize = 1024;
 
+pub const DEPLOY_LIFESPAN_DEFAULT: i64 = 50;
+
 pub const FINALIZER_CURSOR_MAX_INVALIDATIONS_DEFAULT: u32 =
     crate::rust::finality::floor_runner::MAX_CONSECUTIVE_INVALIDATIONS;
 
@@ -449,6 +451,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             policy,
             casper_shard_conf.v6_retained_records,
             casper_shard_conf.v6_conservation_audit_interval,
+            casper_shard_conf.deploy_lifespan,
         )?;
         engine.start();
         Some(engine)

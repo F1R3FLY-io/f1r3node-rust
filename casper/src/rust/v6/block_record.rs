@@ -6,7 +6,7 @@ use prost::Message;
 
 use super::body::StateHash;
 use super::gate::{GateEntry, GateEntryProto};
-use super::record::ExecutionRecord;
+use super::record::{ExecutionRecord, VoidReason};
 use super::settle::{Settlement, SettlementProto};
 use super::footprint::{Footprint, FootprintCellProto};
 use super::surface::{self, SurfaceCellsProto, Surfaces};
@@ -49,6 +49,8 @@ pub struct BlockRecordProto {
     pub gate: Vec<GateEntryProto>,
     #[prost(message, optional, tag = "12")]
     pub settlement: Option<SettlementProto>,
+    #[prost(uint32, tag = "13")]
+    pub void_reason: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +61,7 @@ pub enum EnvelopeOutcome {
     Exhausted,
     Conflicted,
     Overdrawn,
+    Voided,
 }
 
 impl EnvelopeOutcome {
@@ -70,6 +73,7 @@ impl EnvelopeOutcome {
             EnvelopeOutcome::Exhausted => 3,
             EnvelopeOutcome::Conflicted => 5,
             EnvelopeOutcome::Overdrawn => 6,
+            EnvelopeOutcome::Voided => 7,
         }
     }
 
@@ -81,6 +85,7 @@ impl EnvelopeOutcome {
             3 => Ok(EnvelopeOutcome::Exhausted),
             5 => Ok(EnvelopeOutcome::Conflicted),
             6 => Ok(EnvelopeOutcome::Overdrawn),
+            7 => Ok(EnvelopeOutcome::Voided),
             other => Err(format!("unknown envelope outcome {other}")),
         }
     }
@@ -123,9 +128,50 @@ pub struct BlockRecord {
     envelope_ids: Vec<Bytes>,
     gate: Vec<GateEntry>,
     settlement: Option<Settlement>,
+    void_reason: Option<VoidReason>,
 }
 
 impl BlockRecord {
+    pub fn voided(
+        target: BlockHash,
+        pre_root: StateHash,
+        envelope_ids: &[Bytes],
+        reason: VoidReason,
+    ) -> Self {
+        let entries = envelope_ids
+            .iter()
+            .map(|id| RecordEntry {
+                executed: ExecutedEnvelope {
+                    envelope_id: id.clone(),
+                    outcome: EnvelopeOutcome::Voided,
+                    comm_phlo: 0,
+                    compute_phlo: 0,
+                    user_log: Vec::new(),
+                    footprint: Footprint::default(),
+                    surfaces: Vec::new(),
+                    work: Vec::new(),
+                },
+            })
+            .collect();
+        let mut record = BlockRecord::new(
+            target,
+            pre_root.clone(),
+            pre_root.clone(),
+            pre_root,
+            entries,
+            Vec::new(),
+        )
+        .expect("void entries name their envelopes");
+        record.void_reason = Some(reason);
+        record
+    }
+
+    pub fn with_failed_close(mut self) -> Self {
+        self.post_root = self.pre_root.clone();
+        self.void_reason = Some(VoidReason::CloseFailed);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn empty(target: BlockHash, pre_root: StateHash, post_root: StateHash) -> Self {
         Self::with_mid(target, pre_root.clone(), pre_root, post_root)
@@ -172,6 +218,7 @@ impl BlockRecord {
             envelope_ids,
             gate: Vec::new(),
             settlement: None,
+            void_reason: None,
         })
     }
 
@@ -225,6 +272,7 @@ impl BlockRecord {
                 .collect(),
             gate: self.gate.iter().map(GateEntry::to_proto).collect(),
             settlement: self.settlement.as_ref().map(Settlement::to_proto),
+            void_reason: self.void_reason.map_or(0, VoidReason::tag),
         }
     }
 
@@ -244,7 +292,8 @@ impl BlockRecord {
             .into_iter()
             .map(GateEntry::from_proto)
             .collect::<Result<Vec<_>, _>>()?;
-        BlockRecord::new(
+        let void_reason = VoidReason::from_tag(proto.void_reason)?;
+        let mut record = BlockRecord::new(
             proto.target,
             proto.pre_root,
             proto.mid_root,
@@ -256,7 +305,33 @@ impl BlockRecord {
         .and_then(|record| match proto.settlement {
             Some(s) => Settlement::from_proto(s).map(|s| record.with_settlement(s)),
             None => Ok(record),
-        })
+        })?;
+        if let Some(reason) = void_reason {
+            let failed_close = matches!(
+                record.system_deploys.as_slice(),
+                [ProcessedSystemDeploy::Failed { .. }]
+            );
+            let traced = if reason == VoidReason::CloseFailed {
+                failed_close
+            } else {
+                record.system_deploys.is_empty()
+            };
+            if record.post_root != record.pre_root || !traced {
+                return Err(
+                    "a void record leaves the state unchanged, and only a (d) record carries its failed close"
+                        .into(),
+                );
+            }
+            let voided = record
+                .entries
+                .iter()
+                .all(|e| e.executed.outcome == EnvelopeOutcome::Voided);
+            if (reason == VoidReason::CloseFailed) == voided && !record.entries.is_empty() {
+                return Err("only a record voided before its runs marks its envelopes void".into());
+            }
+        }
+        record.void_reason = void_reason;
+        Ok(record)
     }
 }
 
@@ -305,6 +380,15 @@ impl ExecutionRecord for BlockRecord {
     fn post_root(&self) -> &StateHash { &self.post_root }
 
     fn envelope_ids(&self) -> &[Bytes] { &self.envelope_ids }
+
+    fn void_reason(&self) -> Option<VoidReason> { self.void_reason }
+
+    fn ran(&self) -> Vec<bool> {
+        self.entries
+            .iter()
+            .map(|entry| !matches!(entry.executed.outcome, EnvelopeOutcome::NotRun | EnvelopeOutcome::Voided))
+            .collect()
+    }
 
     fn encode(&self) -> Bytes { Bytes::from(self.to_proto().encode_to_vec()) }
 

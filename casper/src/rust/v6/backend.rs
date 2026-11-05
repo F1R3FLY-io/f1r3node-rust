@@ -4,7 +4,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use rholang::rust::interpreter::system_processes::BlockData;
 
 use super::body::StateHash;
-use super::record::ExecutionRecord;
+use super::record::{ExecutionRecord, Prior};
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::costacc::close_block_deploy::CloseBlockDeploy;
 use crate::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
@@ -24,6 +24,24 @@ pub trait ExecutionBackend: Send + Sync {
         record: &Self::Record,
         block: &BlockMessage,
     ) -> Result<StateHash, CasperError>;
+
+    async fn execute_after(
+        &self,
+        pre_root: &StateHash,
+        block: &BlockMessage,
+        _prior: &Prior,
+    ) -> Result<Self::Record, CasperError> {
+        self.execute(pre_root, block).await
+    }
+
+    async fn replay_after(
+        &self,
+        record: &Self::Record,
+        block: &BlockMessage,
+        _prior: &Prior,
+    ) -> Result<StateHash, CasperError> {
+        self.replay(record, block).await
+    }
 }
 
 pub(super) fn block_data(block: &BlockMessage) -> BlockData {

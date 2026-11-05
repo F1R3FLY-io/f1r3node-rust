@@ -3,7 +3,7 @@ use rholang::rust::interpreter::accounting::rev_stack::{RevAmount, WalletOwner};
 
 pub const CLOSE_BASE_PHLO: u64 = 200_000;
 
-pub const CLOSE_PHLO_PER_BOND: u64 = 9_000;
+pub const CLOSE_PHLO_PER_BOND: u64 = 13_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CloseCharge {
@@ -12,11 +12,24 @@ pub struct CloseCharge {
 }
 
 impl CloseCharge {
-    pub fn new(bonds: u64, lag: u64, floor: u64) -> Self {
+    pub fn new(bonds: u64, floor: u64) -> Self {
         CloseCharge {
             price: floor,
-            pre_charge: pre_charge(bonds, lag, floor),
+            pre_charge: pre_charge(bonds, floor),
         }
+    }
+
+    pub async fn at(
+        runtime_manager: &crate::rust::util::rholang::runtime_manager::RuntimeManager,
+        root: &models::rust::block::state_hash::StateHash,
+    ) -> Result<Self, crate::rust::errors::CasperError> {
+        let bonds = runtime_manager
+            .compute_bonds(root)
+            .await?
+            .iter()
+            .filter(|bond| bond.stake > 0)
+            .count() as u64;
+        Ok(CloseCharge::new(bonds, shard_floor(runtime_manager, root).await?))
     }
 
     pub fn charge(&self, close_phlo: u64, balance: RevAmount) -> RevAmount {
@@ -34,14 +47,14 @@ impl CloseCharge {
     }
 }
 
-pub fn pre_charge_phlo(bonds: u64, lag: u64) -> u64 {
+pub fn pre_charge_phlo(bonds: u64) -> u64 {
     CLOSE_PHLO_PER_BOND
-        .saturating_mul(bonds.saturating_add(lag))
+        .saturating_mul(bonds)
         .saturating_add(CLOSE_BASE_PHLO)
 }
 
-pub fn pre_charge(bonds: u64, lag: u64, floor: u64) -> RevAmount {
-    pre_charge_phlo(bonds, lag).saturating_mul(floor)
+pub fn pre_charge(bonds: u64, floor: u64) -> RevAmount {
+    pre_charge_phlo(bonds).saturating_mul(floor)
 }
 
 pub async fn shard_floor(
@@ -67,28 +80,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_pre_charge_is_a_base_plus_a_rate_for_each_bond_and_each_block_of_lag() {
-        assert_eq!(pre_charge_phlo(0, 0), CLOSE_BASE_PHLO);
-        assert_eq!(pre_charge_phlo(100, 2), CLOSE_BASE_PHLO + 102 * CLOSE_PHLO_PER_BOND);
-        assert_eq!(pre_charge(100, 2, 3), 3 * pre_charge_phlo(100, 2));
+    fn the_pre_charge_is_a_base_plus_a_rate_for_each_bond() {
+        assert_eq!(pre_charge_phlo(0), 200_000);
+        assert_eq!(pre_charge_phlo(100), 200_000 + 100 * 13_000);
+        assert_eq!(pre_charge(100, 3), 3 * pre_charge_phlo(100));
     }
 
     #[test]
     fn the_charge_is_the_actual_close_work_at_the_floor_price() {
-        let close = CloseCharge::new(10, 0, 2);
+        let close = CloseCharge::new(10, 2);
         assert_eq!(close.charge(60_000, RevAmount::MAX), 120_000);
     }
 
     #[test]
     fn the_charge_never_passes_the_pre_charge_or_the_balance() {
-        let close = CloseCharge::new(0, 0, 1);
+        let close = CloseCharge::new(0, 1);
         assert_eq!(close.charge(CLOSE_BASE_PHLO + 1, RevAmount::MAX), close.pre_charge);
         assert_eq!(close.charge(60_000, 10), 10);
     }
 
     #[test]
     fn a_zero_floor_charges_nothing() {
-        assert_eq!(CloseCharge::new(100, 0, 0).charge(60_000, RevAmount::MAX), 0);
+        assert_eq!(CloseCharge::new(100, 0).charge(60_000, RevAmount::MAX), 0);
     }
 
     #[test]

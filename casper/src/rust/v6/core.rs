@@ -5,7 +5,7 @@ use prost::bytes::Bytes;
 
 use super::body::{Attestation, StateHash};
 use super::evidence::{Evidence, InvalidRecordReason, Offence};
-use super::record::ExecutionRecord;
+use super::record::{ExecutionRecord, FixMarks, Prior, PriorEntry, PriorStatus, VoidReason};
 use super::store::{MemoryRecordStore, RecordStore, Retention};
 
 #[derive(Clone, Debug)]
@@ -13,7 +13,11 @@ pub struct CoreParams {
     pub max_speculation: usize,
     pub fallback_distance: usize,
     pub retained_records: usize,
+    pub deploy_lifespan: i64,
+    pub max_unattested: i64,
 }
+
+pub const DEFAULT_MAX_UNATTESTED: i64 = 128;
 
 pub const DEFAULT_FALLBACK_DISTANCE: usize = 8;
 
@@ -23,6 +27,8 @@ impl Default for CoreParams {
             max_speculation: 32,
             fallback_distance: DEFAULT_FALLBACK_DISTANCE,
             retained_records: super::store::DEFAULT_RETAINED_RECORDS,
+            deploy_lifespan: crate::rust::casper::DEPLOY_LIFESPAN_DEFAULT,
+            max_unattested: DEFAULT_MAX_UNATTESTED,
         }
     }
 }
@@ -67,7 +73,9 @@ struct PendingAttestation {
 pub struct EmittedBlock<R> {
     pub hash: BlockHash,
     pub sender: Bytes,
+    pub block_number: i64,
     pub envelope_ids: Vec<Bytes>,
+    pub unreadable: Vec<Bytes>,
     pub records: Vec<R>,
 }
 
@@ -77,6 +85,8 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     window: VecDeque<BlockHash>,
     index: HashMap<BlockHash, usize>,
     senders: HashMap<BlockHash, Bytes>,
+    numbers: HashMap<BlockHash, i64>,
+    unreadable: HashMap<BlockHash, Vec<Bytes>>,
     envelopes: HashMap<BlockHash, Vec<Bytes>>,
     store: Box<dyn RecordStore<R>>,
     spec: VecDeque<R>,
@@ -89,6 +99,8 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     inclusion_seen: HashSet<BlockHash>,
     evidence: Vec<Evidence>,
     store_error: Option<String>,
+    voided: VecDeque<(BlockHash, VoidReason)>,
+    tally: HashMap<Bytes, (i32, Attestation)>,
 }
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
@@ -108,6 +120,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             window: VecDeque::new(),
             index: HashMap::new(),
             senders: HashMap::new(),
+            numbers: HashMap::new(),
+            unreadable: HashMap::new(),
             envelopes: HashMap::new(),
             store,
             spec: VecDeque::new(),
@@ -120,6 +134,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             inclusion_seen: HashSet::new(),
             evidence: Vec::new(),
             store_error: None,
+            voided: VecDeque::new(),
+            tally: HashMap::new(),
         }
     }
 
@@ -129,6 +145,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.window.clear();
         self.index.clear();
         self.senders.clear();
+        self.numbers.clear();
+        self.unreadable.clear();
         self.envelopes.clear();
         self.spec.clear();
         self.citations.clear();
@@ -139,6 +157,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.inclusion_due.clear();
         self.inclusion_seen.clear();
         self.store_error = None;
+        self.voided.clear();
+        self.tally.clear();
         Ok(())
     }
 
@@ -158,6 +178,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.window.len()
             + self.index.len()
             + self.senders.len()
+            + self.numbers.len()
+            + self.unreadable.len()
             + self.envelopes.len()
             + self.spec.len()
             + self.citations.len()
@@ -179,6 +201,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             self.base += 1;
             self.index.remove(&block);
             self.senders.remove(&block);
+            self.numbers.remove(&block);
+            self.unreadable.remove(&block);
             self.envelopes.remove(&block);
             self.citations.remove(&block);
             self.dismissed.remove(&block);
@@ -205,6 +229,141 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn take_store_error(&mut self) -> Option<String> { self.store_error.take() }
 
+    fn statuses(&self, record: &R) -> Vec<(Bytes, PriorEntry)> {
+        let Some(&block_number) = self.numbers.get(record.target()) else {
+            return Vec::new();
+        };
+        let position = self
+            .index
+            .get(record.target())
+            .map_or(u64::MAX, |index| *index as u64);
+        let entry = |status| PriorEntry {
+            block_number,
+            position,
+            status,
+        };
+        match record.void_reason() {
+            Some(VoidReason::CloseFailed) => record
+                .envelope_ids()
+                .iter()
+                .map(|id| (id.clone(), entry(PriorStatus::Discarded)))
+                .collect(),
+            Some(VoidReason::UnreadableTerms) => self
+                .unreadable
+                .get(record.target())
+                .into_iter()
+                .flatten()
+                .map(|id| (id.clone(), entry(PriorStatus::Discarded)))
+                .collect(),
+            Some(_) => Vec::new(),
+            None => record
+                .envelope_ids()
+                .iter()
+                .zip(record.ran())
+                .filter(|(_, ran)| *ran)
+                .map(|(id, _)| (id.clone(), entry(PriorStatus::Included)))
+                .collect(),
+        }
+    }
+
+    pub fn prior_at(&self, envelope: &[u8], attested: &BlockHash) -> Option<PriorStatus> {
+        let attested = self.store.position_of(attested)? as u64;
+        self.store
+            .prior(envelope)
+            .filter(|entry| entry.position <= attested)
+            .map(|entry| entry.status)
+    }
+
+    pub fn prior(&self, target: &BlockHash) -> Prior {
+        let (Some(&index), Some(&number)) = (self.index.get(target), self.numbers.get(target)) else {
+            return Prior::new();
+        };
+        let ids = self.envelopes.get(target).cloned().unwrap_or_default();
+        let in_window = |entry: &PriorEntry| {
+            entry.position < index as u64
+                && entry.block_number.saturating_add(self.params.deploy_lifespan) > number
+        };
+        let mut prior = Prior::new();
+        for id in &ids {
+            if let Some(entry) = self.store.prior(id).filter(in_window) {
+                prior.insert(id.clone(), entry.status);
+            }
+        }
+        for record in &self.spec {
+            if self.index.get(record.target()).is_none_or(|i| *i >= index) {
+                break;
+            }
+            for (id, entry) in self.statuses(record) {
+                if ids.contains(&id) && in_window(&entry) {
+                    prior.entry(id).or_insert(entry.status);
+                }
+            }
+        }
+        prior
+    }
+
+    pub fn params(&self) -> &CoreParams { &self.params }
+
+    pub fn position_of(&self, block: &BlockHash) -> Option<usize> { self.store.position_of(block) }
+
+    pub fn count(&mut self, sender: &Bytes, seq_num: i32, attestation: &Attestation) {
+        match self.tally.get(sender) {
+            Some((seen, _)) if *seen >= seq_num => {}
+            _ => {
+                self.tally
+                    .insert(sender.clone(), (seq_num, attestation.clone()));
+            }
+        }
+    }
+
+    pub fn attested_position(&self, bonds: &[(Bytes, i64)]) -> Option<usize> {
+        let total: i128 = bonds.iter().map(|(_, stake)| (*stake).max(0) as i128).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut support: Vec<(usize, i128)> = bonds
+            .iter()
+            .filter(|(_, stake)| *stake > 0)
+            .filter_map(|(validator, stake)| {
+                let (_, attestation) = self.tally.get(validator)?;
+                let position = self.store.position_of(&attestation.block_hash)?;
+                (self.store.executed(&attestation.block_hash).as_ref() == Some(&attestation.root))
+                    .then_some((position, *stake as i128))
+            })
+            .collect();
+        support.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut behind = 0i128;
+        for (position, stake) in support {
+            behind += stake;
+            if 3 * behind > 2 * total {
+                return Some(position);
+            }
+        }
+        None
+    }
+
+    pub fn register_unrun_after(&self, position: usize) -> usize {
+        let mut registered = 0;
+        for index in (position + 1)..self.store.canonical_len() {
+            let Some(record) = self
+                .store
+                .canonical_at(index)
+                .and_then(|block| self.store.record(&block))
+            else {
+                continue;
+            };
+            register_unrun(&record);
+            registered += 1;
+        }
+        registered
+    }
+
+    pub fn take_voided(&mut self) -> Vec<(BlockHash, VoidReason)> { self.voided.drain(..).collect() }
+
+    pub fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
+        self.store.void_count(proposer, reason)
+    }
+
     fn sender_of(&self, block: &BlockHash) -> Bytes {
         self.senders.get(block).cloned().unwrap_or_default()
     }
@@ -221,6 +380,10 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.index.insert(block.hash.clone(), citer_index);
         self.window.push_back(block.hash.clone());
         self.senders.insert(block.hash.clone(), block.sender);
+        self.numbers.insert(block.hash.clone(), block.block_number);
+        if !block.unreadable.is_empty() {
+            self.unreadable.insert(block.hash.clone(), block.unreadable);
+        }
         self.envelopes
             .insert(block.hash.clone(), block.envelope_ids);
         for record in block.records {
@@ -485,9 +648,36 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             .get(&target)
             .is_some_and(|pending| pending.iter().any(|p| p.root != root));
         let encoded = misattested.then(|| record.encode());
-        if let Err(error) = self.store.fix(target.clone(), citer, record) {
+        let void = record.void_reason();
+        let proposer = self.sender_of(&target);
+        let marks = FixMarks {
+            void: void.map(|reason| (proposer.clone(), reason)),
+            statuses: self.statuses(&record),
+        };
+        let fixed = self
+            .store
+            .fix_marked(target.clone(), citer.clone(), record, &marks);
+        if let Err(error) = fixed {
             self.store_error = Some(error.to_string());
             return;
+        }
+        if let Some(record) = self.store.record(&target) {
+            register_unrun(&record);
+        }
+        if let Some(reason) = void {
+            metrics::counter!(
+                crate::rust::metrics_constants::V6_VOID_BLOCKS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE,
+                "reason" => reason.label()
+            )
+            .increment(1);
+            self.evidence.push(Evidence {
+                offender: proposer,
+                citer,
+                target: target.clone(),
+                offence: Offence::VoidBlock { reason },
+            });
+            self.voided.push_back((target.clone(), reason));
         }
         match self.spec.front() {
             Some(own)
@@ -531,6 +721,17 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     }
 }
 
+fn register_unrun<R: ExecutionRecord>(record: &R) {
+    let unrun: HashSet<Bytes> = record
+        .envelope_ids()
+        .iter()
+        .zip(record.ran())
+        .filter(|(_, ran)| !ran || record.void_reason().is_some())
+        .map(|(id, _)| id.clone())
+        .collect();
+    crate::rust::finality::block_facts::set_unrun(record.target(), unrun);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,7 +747,9 @@ mod tests {
         EmittedBlock {
             hash: h(name),
             sender: h(sender),
+            block_number: 1,
             envelope_ids: vec![],
+            unreadable: vec![],
             records,
         }
     }
@@ -557,6 +760,8 @@ mod tests {
                 max_speculation: 4,
                 fallback_distance: 2,
                 retained_records: 2,
+                deploy_lifespan: 50,
+                max_unattested: DEFAULT_MAX_UNATTESTED,
             },
             Box::new(MemoryRecordStore::new(
                 h("g"),
@@ -625,6 +830,8 @@ mod tests {
         }
 
         fn resident(&self) -> usize { self.0.resident() }
+
+        fn position_of(&self, block: &BlockHash) -> Option<usize> { self.0.position_of(block) }
     }
 
     #[test]
@@ -889,7 +1096,9 @@ mod tests {
         c.emit(EmittedBlock {
             hash: h("b1"),
             sender: h("v1"),
+            block_number: 1,
             envelope_ids: vec![h("sig")],
+            unreadable: vec![],
             records: vec![],
         });
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
@@ -1080,5 +1289,204 @@ mod tests {
         assert_eq!(c.executed(&h("b1")), Some(h("r1")));
         assert_eq!(c.speculation_len(), 0);
         assert!(c.records_to_cite(&h("v1"), 10).is_empty());
+    }
+
+    #[test]
+    fn a_fixed_void_record_is_evidence_and_counts_against_its_proposer() {
+        let mut core = core();
+        core.emit(block("b1", "V1", vec![]));
+        let void = BlockRecord::voided(h("b1"), h("r0"), &[], VoidReason::UnreadableTerms);
+        core.emit(block("b2", "V2", vec![void.clone()]));
+        assert!(matches!(core.next_action(), Action::Replay { .. }));
+        core.apply_replay(&h("b1"), &h("b2"), &void, Ok(h("r0")));
+        assert_eq!(core.canonical_len(), 2);
+        assert_eq!(core.void_count(&h("V1"), VoidReason::UnreadableTerms), 1);
+        assert_eq!(core.take_voided(), vec![(h("b1"), VoidReason::UnreadableTerms)]);
+        let evidence = core.take_evidence();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].offender, h("V1"));
+        assert_eq!(evidence[0].offence, Offence::VoidBlock { reason: VoidReason::UnreadableTerms });
+        assert!(evidence[0].offence.slashable());
+    }
+
+    fn carrying(name: &str, number: i64, ids: &[&str], records: Vec<BlockRecord>) -> EmittedBlock<BlockRecord> {
+        EmittedBlock {
+            hash: h(name),
+            sender: h("v1"),
+            block_number: number,
+            envelope_ids: ids.iter().map(|id| h(id)).collect(),
+            unreadable: vec![],
+            records,
+        }
+    }
+
+    fn ran(target: &str, pre: &str, post: &str, ids: &[&str]) -> BlockRecord {
+        use crate::rust::v6::block_record::{EnvelopeOutcome, ExecutedEnvelope, RecordEntry};
+        let entries = ids
+            .iter()
+            .map(|id| RecordEntry {
+                executed: ExecutedEnvelope {
+                    envelope_id: h(id),
+                    outcome: EnvelopeOutcome::Completed,
+                    comm_phlo: 0,
+                    compute_phlo: 0,
+                    user_log: vec![],
+                    footprint: Default::default(),
+                    surfaces: vec![],
+                    work: vec![],
+                },
+            })
+            .collect();
+        BlockRecord::new(h(target), h(pre), h(pre), h(post), entries, vec![]).unwrap()
+    }
+
+    #[test]
+    fn an_envelope_run_in_an_earlier_record_is_prior_inside_the_lifespan_only() {
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1", "d2"], vec![]));
+        c.emit(carrying("b2", 20, &["d1"], vec![ran("b1", "r0", "r1", &["d1", "d2"])]));
+        c.emit(carrying("b3", 70, &["d2"], vec![]));
+        assert!(c.prior(&h("b2")).is_empty(), "b1 is not canonical or speculative yet");
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1", "d2"]), Ok(h("r1")));
+        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included));
+        assert!(c.prior(&h("b3")).is_empty(), "b1 is outside b3's lifespan");
+    }
+
+    #[test]
+    fn a_speculative_record_ahead_of_the_target_counts_as_prior() {
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(carrying("b2", 11, &["d1"], vec![]));
+        assert!(matches!(c.next_action(), Action::Execute { .. }));
+        c.apply_execute(ran("b1", "r0", "r1", &["d1"]));
+        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included));
+        assert!(c.prior(&h("b1")).is_empty());
+    }
+
+    #[test]
+    fn a_failed_close_discards_every_envelope_and_unreadable_terms_only_their_own() {
+        let mut c = core();
+        let mut b1 = carrying("b1", 10, &["d1", "d2"], vec![]);
+        b1.unreadable = vec![h("d2")];
+        c.emit(b1);
+        let void = BlockRecord::voided(h("b1"), h("r0"), &[h("d1"), h("d2")], VoidReason::UnreadableTerms);
+        c.emit(carrying("b2", 11, &["d1", "d2"], vec![void.clone()]));
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b1"), &h("b2"), &void, Ok(h("r0")));
+        let prior = c.prior(&h("b2"));
+        assert_eq!(prior.get(&h("d1")), None);
+        assert_eq!(prior.get(&h("d2")), Some(&PriorStatus::Discarded));
+    }
+
+    fn attests(target: &str, root: &str) -> Attestation {
+        Attestation {
+            block_hash: h(target),
+            root: h(root),
+        }
+    }
+
+    fn fixed_three() -> ExecutorCore<BlockRecord> {
+        let mut c = core();
+        c.emit(block("b1", "v1", vec![]));
+        c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
+        c.emit(block("b3", "v3", vec![rec("b2", "r1", "r2")]));
+        c.emit(block("b4", "v1", vec![rec("b3", "r2", "r3")]));
+        for (target, citer, pre, post) in [("b1", "b2", "r0", "r1"), ("b2", "b3", "r1", "r2"), ("b3", "b4", "r2", "r3")] {
+            assert!(matches!(c.next_action(), Action::Replay { .. }));
+            c.apply_replay(&h(target), &h(citer), &rec(target, pre, post), Ok(h(post)));
+        }
+        assert_eq!(c.canonical_len(), 4);
+        c
+    }
+
+    #[test]
+    fn p_star_is_the_highest_position_more_than_two_thirds_of_the_stake_attests() {
+        let bonds = vec![(h("v1"), 10), (h("v2"), 10), (h("v3"), 10)];
+        let mut c = fixed_three();
+        assert_eq!(c.attested_position(&bonds), None);
+        c.count(&h("v1"), 5, &attests("b3", "r3"));
+        c.count(&h("v2"), 5, &attests("b2", "r2"));
+        assert_eq!(c.attested_position(&bonds), None, "20 of 30 is not more than two thirds");
+        c.count(&h("v3"), 5, &attests("b1", "r1"));
+        assert_eq!(c.attested_position(&bonds), Some(1));
+        c.count(&h("v3"), 7, &attests("b3", "r3"));
+        assert_eq!(c.attested_position(&bonds), Some(2));
+        c.count(&h("v3"), 6, &attests("b1", "r1"));
+        assert_eq!(c.attested_position(&bonds), Some(2), "an older block of v3 does not replace its newer attestation");
+        c.count(&h("v2"), 8, &attests("b3", "wrong"));
+        assert_eq!(c.attested_position(&bonds), None, "a misattesting validator supports nothing");
+        assert_eq!(c.attested_position(&[(h("v1"), 10), (h("v3"), 10)]), Some(3));
+    }
+
+    #[test]
+    fn a_rebuilt_tally_gives_the_same_p_star() {
+        let bonds = vec![(h("v1"), 10), (h("v2"), 10), (h("v3"), 10)];
+        let blocks = [("v1", 5, "b3", "r3"), ("v2", 5, "b3", "r3"), ("v3", 4, "b2", "r2"), ("v3", 3, "b1", "r1")];
+        let mut first = fixed_three();
+        for (sender, seq, target, root) in blocks {
+            first.count(&h(sender), seq, &attests(target, root));
+        }
+        let mut rebuilt = fixed_three();
+        for (sender, seq, target, root) in blocks.iter().rev() {
+            rebuilt.count(&h(sender), *seq, &attests(target, root));
+        }
+        assert_eq!(first.attested_position(&bonds), Some(2));
+        assert_eq!(rebuilt.attested_position(&bonds), first.attested_position(&bonds));
+    }
+
+    #[test]
+    fn an_inclusion_counts_only_records_at_or_below_the_attested_position() {
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(carrying("b2", 11, &["d2"], vec![ran("b1", "r0", "r1", &["d1"])]));
+        c.emit(carrying("b3", 12, &[], vec![ran("b2", "r1", "r2", &["d2"])]));
+        for (target, citer, pre, post, ids) in [("b1", "b2", "r0", "r1", ["d1"]), ("b2", "b3", "r1", "r2", ["d2"])] {
+            assert!(matches!(c.next_action(), Action::Replay { .. }));
+            c.apply_replay(&h(target), &h(citer), &ran(target, pre, post, &ids), Ok(h(post)));
+        }
+        assert_eq!(c.prior_at(b"d1", &h("b1")), Some(PriorStatus::Included));
+        assert_eq!(c.prior_at(b"d2", &h("b1")), None, "b2 is above the attested position");
+        assert_eq!(c.prior_at(b"d2", &h("b2")), Some(PriorStatus::Included));
+        assert_eq!(c.prior_at(b"d1", &h("nowhere")), None);
+    }
+
+    #[test]
+    fn a_carrier_earlier_in_the_order_is_prior_whatever_its_block_number() {
+        for later_number in [10, 9] {
+            let mut c = core();
+            c.emit(carrying("b1", 10, &["d1"], vec![]));
+            c.emit(carrying("b2", later_number, &["d1"], vec![ran("b1", "r0", "r1", &["d1"])]));
+            assert!(matches!(c.next_action(), Action::Replay { .. }));
+            c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1"]), Ok(h("r1")));
+            assert_eq!(
+                c.prior(&h("b2")).get(&h("d1")),
+                Some(&PriorStatus::Included),
+                "block number {later_number}"
+            );
+        }
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(carrying("b2", 10, &["d1"], vec![]));
+        assert!(matches!(c.next_action(), Action::Execute { .. }));
+        c.apply_execute(ran("b1", "r0", "r1", &["d1"]));
+        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included), "speculative path");
+    }
+
+    #[test]
+    fn the_first_status_of_an_envelope_is_kept() {
+        let mut c = core();
+        let mut b2 = carrying("b2", 11, &["d1"], vec![ran("b1", "r0", "r1", &["d1"])]);
+        b2.unreadable = vec![];
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(b2);
+        let void = BlockRecord::voided(h("b2"), h("r1"), &[h("d1")], VoidReason::CloseUncovered)
+            .with_failed_close();
+        c.emit(carrying("b3", 12, &["d1"], vec![void.clone()]));
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1"]), Ok(h("r1")));
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b2"), &h("b3"), &void, Ok(h("r1")));
+        assert_eq!(c.prior_at(b"d1", &h("b2")), Some(PriorStatus::Included));
     }
 }

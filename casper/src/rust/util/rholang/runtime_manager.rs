@@ -272,6 +272,7 @@ impl SystemGate {
         runtime_ops.runtime.set_seal_records(true);
         runtime_ops.runtime.set_funding(self.funding.clone());
         runtime_ops.close_charge = self.close;
+        runtime_ops.trace_close_failure = true;
     }
 }
 

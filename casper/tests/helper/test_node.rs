@@ -122,6 +122,7 @@ fn v6_engine_for_test(
         config
             .audit_interval
             .unwrap_or(casper::rust::v6::conservation::CONSERVATION_AUDIT_INTERVAL_DEFAULT),
+        casper::rust::casper::DEPLOY_LIFESPAN_DEFAULT,
     )
     .expect("the v6 engine opens its executor state");
     if config.start_engine {

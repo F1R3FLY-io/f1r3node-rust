@@ -18,9 +18,10 @@ in {
         stateCh!({
           "allBonds"          : $$initialBonds$$,
           "activeValidators"  : initialActive,
-          "withdrawers"       : {},
           "committedRewards"  : {},
           "pendingWithdrawers": {},
+          "releases"          : {},
+          "pendingEnd"        : 0,
           "randomImages"      : {},
           "randomNumbers"     : {},
           "pendingBonds"      : {},
@@ -53,12 +54,11 @@ in {
                             r!((s, total))
                           }
                         } |
-                        match current.get("withdrawers").get(pk) {
-                          (withdrawing, _) => {
+                        new withdrawingCh, sumOne in {
+                          @ListOps!("fold", current.get("releases").toList(), 0, *sumOne, *withdrawingCh) |
+                          contract sumOne(@(_, entry), @sum, sumCh) = { sumCh!(sum + entry.getOrElse(pk, 0)) } |
+                          for (@withdrawing <- withdrawingCh) {
                             @ListOps!("fold", pendings, (current, current.get("allBonds").getOrElse(pk, 0) + withdrawing), *admit, *admittedCh)
-                          }
-                          _ => {
-                            @ListOps!("fold", pendings, (current, current.get("allBonds").getOrElse(pk, 0)), *admit, *admittedCh)
                           }
                         } |
                         for (@(s, total) <- admittedCh) {
@@ -104,7 +104,7 @@ in {
         } |
         contract PoS(@"getWithdrawers", returnCh) = {
           for (@state <<- stateCh) {
-            returnCh!(state.get("withdrawers"))
+            returnCh!(state.get("releases"))
           }
         } |
         contract PoS(@"getPendingWithdrawer", returnCh) = {
@@ -175,12 +175,15 @@ in {
                     (false, message) => { resultCh!(state, (false, message)) }
                     (true, userPk) => {
                   if (state.get("allBonds").contains(userPk)) {
-                    resultCh!(
-                      state.set("pendingWithdrawers",
-                                state.get("pendingWithdrawers")
-                                     .set(userPk,
-                                       $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$))),
-                      (true, Nil))
+                    match $$quarantineLength$$ + $$epochLength$$ * (1 + blockNumber / $$epochLength$$) {
+                      end => {
+                        resultCh!(
+                          state
+                            .set("pendingWithdrawers", state.get("pendingWithdrawers").set(userPk, end))
+                            .set("pendingEnd", end),
+                          (true, Nil))
+                      }
+                    }
                   } else {
                     resultCh!(state, (false, "User is not bonded"))
                   }
@@ -272,51 +275,79 @@ in {
                           }
                         } |
                         contract movePendingWithdrawer(@state, returnCh) = {
-                          new movePending in {
-                            @ListOps!("fold", state.get("pendingWithdrawers").toList(), state, *movePending, *returnCh) |
-                            contract movePending(@(pk, quarantine), @updatedState, resultCh) = {
-                              resultCh!(updatedState
-                                        .set("withdrawers", updatedState.get("withdrawers").set(pk, (updatedState.get("allBonds").get(pk), quarantine)))
-                                        .set("allBonds", updatedState.get("allBonds").delete(pk))
-                                        .set("pendingWithdrawers", updatedState.get("pendingWithdrawers").delete(pk)))
+                          match state.get("pendingWithdrawers").size() {
+                            0 => { returnCh!(state) }
+                            _ => {
+                              returnCh!(state
+                                        .set("releases",
+                                             state.get("releases").set(state.get("pendingEnd"),
+                                               state.get("releases").getOrElse(state.get("pendingEnd"), {}) ++
+                                                 state.get("allBonds").diff(state.get("allBonds").diff(state.get("pendingWithdrawers")))))
+                                        .set("allBonds", state.get("allBonds").diff(state.get("pendingWithdrawers")))
+                                        .set("pendingWithdrawers", {}))
                             }
                           }
                         } |
                         contract removeQuarantinedWithdrawers(@currentBlockNumber, @state, returnCh) = {
-                          new quarantinedCh, isQuarantineFinished, payWithdraw, payRet, computeRemove in {
-                            @ListOps!("filter", state.get("withdrawers").toList(), *isQuarantineFinished, *quarantinedCh) |
-                            for (@quarantined <- quarantinedCh) {
-                              @ListOps!("unorderedParMap", quarantined.take(2), *payWithdraw, *payRet) |
-                              contract payWithdraw(@(pk, (bonds, _)), resultCh) = {
-                                if (bonds <= 0) {
-                                  resultCh!((pk, true))
-                                } else {
-                                  new releaseCh in {
-                                    RevBondAdmin!("release", (pk, bonds), *releaseCh) |
-                                    for (@releaseResult <- releaseCh) {
-                                      match releaseResult {
-                                        (true, _) => { resultCh!((pk, true)) }
-                                        (_, _)    => { resultCh!((pk, false)) }
+                          new dueCh, collectDue in {
+                            @ListOps!("fold", state.get("releases").keys().toList(), ([], state.get("releases")), *collectDue, *dueCh) |
+                            contract collectDue(@end, @(due, rest), resultCh) = {
+                              if (end <= currentBlockNumber) {
+                                resultCh!((due ++ rest.get(end).toList(), rest.delete(end)))
+                              } else {
+                                resultCh!((due, rest))
+                              }
+                            } |
+                            for (@(due, rest) <- dueCh) {
+                              if (due.length() == 0) {
+                                returnCh!(state.set("releases", rest))
+                              } else {
+                                new spawn, release, resultsCh, collect, failedCh, finish in {
+                                  spawn!(due) |
+                                  contract spawn(@entries) = {
+                                    match entries.length() {
+                                      0 => { Nil }
+                                      1 => { release!(entries.nth(0)) }
+                                      n => { spawn!(entries.slice(0, n / 2)) | spawn!(entries.slice(n / 2, n)) }
+                                    }
+                                  } |
+                                  contract release(@(pk, bonds)) = {
+                                    if (bonds <= 0) {
+                                      resultsCh!((pk, true, bonds))
+                                    } else {
+                                      new releaseCh in {
+                                        RevBondAdmin!("release", (pk, bonds), *releaseCh) |
+                                        for (@releaseResult <- releaseCh) {
+                                          match releaseResult {
+                                            (true, _) => { resultsCh!((pk, true, bonds)) }
+                                            _         => { resultsCh!((pk, false, bonds)) }
+                                          }
+                                        }
                                       }
+                                    }
+                                  } |
+                                  collect!(due.length(), {}) |
+                                  contract collect(@remaining, @failed) = {
+                                    if (remaining <= 0) {
+                                      failedCh!(failed)
+                                    } else {
+                                      for (@(pk, ok, bonds) <- resultsCh) {
+                                        if (ok) { collect!(remaining - 1, failed) }
+                                        else    { collect!(remaining - 1, failed.set(pk, failed.getOrElse(pk, 0) + bonds)) }
+                                      }
+                                    }
+                                  } |
+                                  for (@failed <- failedCh) {
+                                    match failed.size() {
+                                      0 => { finish!(rest) }
+                                      _ => { finish!(rest.set(currentBlockNumber, rest.getOrElse(currentBlockNumber, {}) ++ failed)) }
+                                    } |
+                                    for (@releases <- finish) {
+                                      returnCh!(state.set("releases", releases))
                                     }
                                   }
                                 }
-                              } |
-                              for (@payResults <- payRet) {
-                                @ListOps!("fold", payResults, state, *computeRemove, *returnCh) |
-                                contract computeRemove(@(pk, success), @updatedState, resultCh) = {
-                                  if (success) {
-                                    resultCh!(updatedState
-                                              .set("committedRewards", updatedState.get("committedRewards").delete(pk))
-                                              .set("withdrawers", updatedState.get("withdrawers").delete(pk)))
-                                  } else {
-                                    resultCh!(updatedState)
-                                  }
-                                }
                               }
-                            } |
-                            contract isQuarantineFinished(@(_, (_, blockNumber)), resultCh) = {
-                              resultCh!(currentBlockNumber >= blockNumber)
                             }
                           }
                         }

@@ -1692,6 +1692,17 @@ impl BlockDagKeyValueStorage {
                 return Ok(CommitOutcome::Refused(CommitRefusal::NotInDag));
             }
             let directly_number = dag.block_number_unsafe(&directly)?;
+            if let Some(order) = self
+                .lfb_pointer_index
+                .get_one(&crate::rust::dag::finalization_commit::ORDER_POINTER_KEY.to_string())?
+            {
+                if directly_number > order.height {
+                    return Ok(CommitOutcome::Refused(CommitRefusal::StateChanged(format!(
+                        "the candidate at {directly_number} is above the order floor at {}",
+                        order.height
+                    ))));
+                }
+            }
             if let Err(refusal) = validate(&dag) {
                 return Ok(CommitOutcome::Refused(refusal));
             }
@@ -1789,6 +1800,78 @@ impl BlockDagKeyValueStorage {
     ) -> Result<Option<crate::rust::dag::finalization_commit::LfbPointer>, KvStoreError> {
         self.lfb_pointer_index
             .get_one(&crate::rust::dag::finalization_commit::LFB_POINTER_KEY.to_string())
+    }
+
+    pub fn order_pointer(
+        &self,
+    ) -> Result<Option<crate::rust::dag::finalization_commit::LfbPointer>, KvStoreError> {
+        self.lfb_pointer_index
+            .get_one(&crate::rust::dag::finalization_commit::ORDER_POINTER_KEY.to_string())
+    }
+
+    pub fn order_floor(&self) -> Result<BlockHash, KvStoreError> {
+        match self.order_pointer()? {
+            Some(pointer) => Ok(pointer.hash.0),
+            None => Ok(self.get_representation()?.last_finalized_block()),
+        }
+    }
+
+    pub fn commit_order<V>(
+        &self,
+        candidate: BlockHash,
+        validate: V,
+    ) -> Result<crate::rust::dag::finalization_commit::OrderOutcome, KvStoreError>
+    where
+        V: FnOnce(
+            &KeyValueDagRepresentation,
+            &BlockHash,
+        ) -> Result<(), crate::rust::dag::finalization_commit::CommitRefusal>,
+    {
+        use crate::rust::dag::finalization_commit::{
+            CommitRefusal, LfbPointer, OrderOutcome, ORDER_POINTER_KEY,
+        };
+        let _lock_guard = self.global_lock.write();
+        let dag = self.get_representation_internal()?;
+        if !dag.contains(&candidate) {
+            return Ok(OrderOutcome::Refused(CommitRefusal::NotInDag));
+        }
+        let height = dag.block_number_unsafe(&candidate)?;
+        let previous = self
+            .lfb_pointer_index
+            .get_one(&ORDER_POINTER_KEY.to_string())?;
+        let order_now = previous
+            .as_ref()
+            .map_or_else(|| dag.last_finalized_block(), |pointer| pointer.hash.0.clone());
+        let order_height = dag.block_number_unsafe(&order_now)?;
+        if order_now == candidate || order_height >= height {
+            return Ok(OrderOutcome::Refused(CommitRefusal::NotHigher {
+                lfb_height: order_height,
+            }));
+        }
+        if let Err(refusal) = validate(&dag, &order_now) {
+            return Ok(OrderOutcome::Refused(refusal));
+        }
+        let pointer = LfbPointer {
+            hash: BlockHashSerde(candidate),
+            height,
+            commit_epoch: previous.map_or(1, |pointer| pointer.commit_epoch + 1),
+        };
+        self.lfb_pointer_index
+            .put_one(ORDER_POINTER_KEY.to_string(), pointer.clone())?;
+        Ok(OrderOutcome::Committed(pointer))
+    }
+
+    pub fn check_floor_order(&self) -> Result<(), KvStoreError> {
+        let (Some(order), Some(lfb)) = (self.order_pointer()?, self.lfb_pointer()?) else {
+            return Ok(());
+        };
+        if order.height < lfb.height {
+            return Err(KvStoreError::InvalidArgument(format!(
+                "the order floor at {} is below the LFB at {}",
+                order.height, lfb.height
+            )));
+        }
+        Ok(())
     }
 
     pub fn commit_lfb_is_transactional(&self) -> bool {

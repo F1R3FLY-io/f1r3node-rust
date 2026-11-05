@@ -205,3 +205,14 @@ Both tests pass.
 **Ruling (Decision 112, 2026-11-04):** option 2. The run-time check (`check_region_signature`, `held_or_signed`) is the guard. The gate does not refuse a seal whose owner is bound only at run time. F39 and F33 are closed. `region_spec::the_gate_refuses_a_seal_that_resolves_only_at_run_time` records the shapes that the gate does refuse. The pure stack body above is admitted by design.
 
 Lane B's own equivalence test with random keys is kept beside `pos_v6_spec::the_one_expression_active_set_pick_agrees_with_the_list_ops_pick`.
+
+## FX-17 merged (2026-11-05)
+
+`patch/FX-17` at 0b01b1663 is merged: D10 and D11 (P11, the order floor and P5), the void records and Decision 109, F52, the traced (d) close, lane B's withdrawer rewrite and Decision 114, and lane C's FX-15 follow-ups (the deterministic storage reservation).
+
+Full suites at 0b01b1663 (release, `/tmp` cleared before each crate): rholang 2,463 passed, 69 ignored; rspace++ 423, 7 ignored; block-storage 320; models 338; shared 130 and 1 failed; crypto 118; comm 437 (rerun; see below); graphz 48; casper lib 900, 1 ignored; casper `--test mod` 1,314 passed, 1 failed, 21 ignored; node 469, 1 ignored.
+
+**Labels (Decision 88):**
+- Known issue, environmental: `shared::bounded_file::a_failed_rotation_keeps_the_active_file_writable`, as at 6c43a2c8f (root).
+- Known issue, timing: `comm::f1r3fly_server::resource_tests::dropping_incoming_releases_listener_and_stalled_handshakes` failed once in the full run. It passes 3 of 3 alone, and comm is unchanged since 6c43a2c8f. The full comm rerun gives 437 passed.
+- Known issue, timing under load: `multi_node::v6_engine_state::a_long_run_keeps_executor_memory_flat_and_old_receipts_available` fell below its floor of 25 in the full parallel run. Alone it fixes 34 and passes. Its count depends on machine load, not on the code.

@@ -128,8 +128,26 @@ pub async fn wait_for_finality(nodes: &[TestNode], rounds: usize) -> bool {
     false
 }
 
-pub async fn v6_genesis() -> GenesisContext {
-    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+pub async fn wait_for_order(nodes: &[TestNode], rounds: usize) -> bool {
+    for _ in 0..rounds {
+        let ordered = nodes.iter().all(|node| {
+            node.block_dag_storage
+                .order_floor()
+                .map(|order| order != node.genesis.block_hash)
+                .unwrap_or(false)
+        });
+        if ordered {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
+pub async fn v6_genesis() -> GenesisContext { v6_genesis_with(None).await }
+
+pub async fn v6_genesis_with(validators: Option<usize>) -> GenesisContext {
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, validators);
     parameters.2.version = PROTOCOL_V6;
     GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))

@@ -29,9 +29,18 @@ pub struct GateInput {
     pub bare_stack: bool,
     pub phlo_limit: i64,
     pub phlo_price: i64,
+    pub prior: Option<Refusal>,
 }
 
 impl GateInput {
+    pub fn with_prior(mut self, prior: Option<&super::record::PriorStatus>) -> Self {
+        self.prior = prior.map(|status| match status {
+            super::record::PriorStatus::Included => Refusal::AlreadyIncluded,
+            super::record::PriorStatus::Discarded => Refusal::Discarded,
+        });
+        self
+    }
+
     pub fn from_deploy(
         deploy: &Signed<DeployData>,
         named: Vec<WalletOwner>,
@@ -58,6 +67,7 @@ impl GateInput {
             bare_stack: false,
             phlo_limit: deploy.data.phlo_limit,
             phlo_price: deploy.data.phlo_price,
+            prior: None,
         })
     }
 
@@ -126,6 +136,8 @@ pub enum Refusal {
         need: RevAmount,
         have: RevAmount,
     },
+    AlreadyIncluded,
+    Discarded,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +171,10 @@ impl GateEntry {
             }
             Verdict::Refused(Refusal::InvalidTerms) => (VERDICT_INVALID_TERMS, Bytes::new(), 0, 0),
             Verdict::Refused(Refusal::Overflow) => (VERDICT_OVERFLOW, Bytes::new(), 0, 0),
+            Verdict::Refused(Refusal::AlreadyIncluded) => {
+                (VERDICT_ALREADY_INCLUDED, Bytes::new(), 0, 0)
+            }
+            Verdict::Refused(Refusal::Discarded) => (VERDICT_DISCARDED, Bytes::new(), 0, 0),
             Verdict::Refused(Refusal::InsufficientFunds { wallet, need, have }) => (
                 VERDICT_INSUFFICIENT_FUNDS,
                 Bytes::copy_from_slice(wallet),
@@ -190,6 +206,8 @@ impl GateEntry {
             VERDICT_FOREIGN_SIGNATURE => Verdict::Refused(Refusal::ForeignSignature),
             VERDICT_INVALID_TERMS => Verdict::Refused(Refusal::InvalidTerms),
             VERDICT_OVERFLOW => Verdict::Refused(Refusal::Overflow),
+            VERDICT_ALREADY_INCLUDED => Verdict::Refused(Refusal::AlreadyIncluded),
+            VERDICT_DISCARDED => Verdict::Refused(Refusal::Discarded),
             VERDICT_INSUFFICIENT_FUNDS => Verdict::Refused(Refusal::InsufficientFunds {
                 wallet: proto.wallet.to_vec(),
                 need: proto.need,
@@ -221,6 +239,8 @@ const VERDICT_FOREIGN_SIGNATURE: u32 = 1;
 const VERDICT_INVALID_TERMS: u32 = 2;
 const VERDICT_OVERFLOW: u32 = 3;
 const VERDICT_INSUFFICIENT_FUNDS: u32 = 4;
+const VERDICT_ALREADY_INCLUDED: u32 = 5;
+const VERDICT_DISCARDED: u32 = 6;
 
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CommitmentProto {
@@ -376,6 +396,9 @@ impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
             verdict: Verdict::Refused(refusal),
             commitments: Vec::new(),
         };
+        if let Some(prior) = &input.prior {
+            return Ok(refuse(0, prior.clone()));
+        }
         if !input.cosignatures_valid {
             return Ok(refuse(0, Refusal::InvalidTerms));
         }
@@ -556,6 +579,7 @@ mod tests {
             joint: Vec::new(),
             sealed: Vec::new(),
             bare_stack: false,
+            prior: None,
         }
     }
 

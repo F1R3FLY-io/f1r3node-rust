@@ -91,6 +91,13 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
     pub close_charge: Option<crate::rust::v6::close_charge::CloseCharge>,
+    pub trace_close_failure: bool,
+}
+
+pub const CLOSE_FAILED_PREFIX: &str = "close failed: ";
+
+pub fn close_failure_message(failure: &SystemDeployPlatformFailure) -> String {
+    format!("{CLOSE_FAILED_PREFIX}{failure}")
 }
 
 impl RuntimeOps {
@@ -98,6 +105,7 @@ impl RuntimeOps {
         Self {
             runtime,
             close_charge: None,
+            trace_close_failure: false,
         }
     }
 }
@@ -280,6 +288,15 @@ impl RuntimeOps {
                 } => {
                     processed_system_deploys.push((processed_system_deploy, mergeable_channels));
                     current_hash = state_hash;
+                }
+                SystemDeployResult::PlayFailed {
+                    processed_system_deploy:
+                        failed @ ProcessedSystemDeploy::Failed { .. },
+                } if self.trace_close_failure
+                    && matches!(&failed, ProcessedSystemDeploy::Failed { error_msg, .. } if error_msg.starts_with(CLOSE_FAILED_PREFIX)) =>
+                {
+                    processed_system_deploys.push((failed, NumberChannelsEndVal::default()));
+                    break;
                 }
                 SystemDeployResult::PlayFailed {
                     processed_system_deploy: ProcessedSystemDeploy::Failed { error_msg, .. },
@@ -883,8 +900,28 @@ impl RuntimeOps {
                 self.runtime.fs_handles.clone(),
             );
 
-        let (event_log, result, mergeable_channels) =
-            self.play_system_deploy_internal(system_deploy).await?;
+        let played = self.play_system_deploy_internal(system_deploy).await;
+        let traced = self.trace_close_failure
+            && system_deploy
+                .as_any()
+                .downcast_ref::<CloseBlockDeploy>()
+                .is_some();
+        let (event_log, result, mergeable_channels) = match played {
+            Err(CasperError::SystemRuntimeError(failure)) if traced => {
+                let event_log = self
+                    .runtime
+                    .take_event_log()
+                    .await
+                    .into_iter()
+                    .map(event_converter::to_casper_event)
+                    .collect();
+                return Ok(SystemDeployResult::play_failed(
+                    event_log,
+                    SystemDeployUserError::new(close_failure_message(&failure)),
+                ));
+            }
+            played => played?,
+        };
 
         let final_state_hash = {
             let checkpoint = self.runtime.create_checkpoint().await;
@@ -1035,8 +1072,10 @@ impl RuntimeOps {
             None => {
                 // INSTRUMENT (temporary): dump the leftover replay COMMs — names
                 // the consume the closeBlock stalled on at replay.
-                if let Err(e) = self.runtime.check_replay_data().await {
-                    tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                if self.runtime.is_replay().await {
+                    if let Err(e) = self.runtime.check_replay_data().await {
+                        tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                    }
                 }
                 Err(CasperError::SystemRuntimeError(
                     SystemDeployPlatformFailure::ConsumeFailed,

@@ -36,6 +36,16 @@ tokio::task_local! {
 
 pub fn meter() -> Option<Arc<MembraneMeter>> { FUNDING.try_with(Clone::clone).ok().flatten() }
 
+pub fn admits_waiting(continuation: &TaggedContinuation) -> bool {
+    let Some(meter) = meter() else {
+        return true;
+    };
+    match of_continuation(continuation) {
+        Ok(Some(record)) => !meter.stopped(&record),
+        _ => true,
+    }
+}
+
 pub fn admits_comm(
     continuation: &TaggedContinuation,
     matched: &[models::rhoapi::ListParWithRandom],
@@ -56,12 +66,7 @@ pub fn admits_comm(
             None => {}
         }
     }
-    let follow =
-        crate::rust::interpreter::accounting::membrane::follow_up()
-            + crate::rust::interpreter::accounting::costs::comm_event_storage_cost(
-                matched.len() as i64
-            )
-            .value;
+    let follow = crate::rust::interpreter::accounting::membrane::follow_up();
     meter.admit_comm(&records, current().as_ref(), follow, || {
         comm_step(continuation, matched)
     })
