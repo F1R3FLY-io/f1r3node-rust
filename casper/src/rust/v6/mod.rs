@@ -14,6 +14,7 @@ pub mod genesis_wallets;
 pub mod history;
 pub mod hooks;
 pub mod inclusion;
+pub mod join;
 pub mod lag;
 pub mod linearizer;
 pub mod merge;
