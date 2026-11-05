@@ -372,6 +372,13 @@ impl ExecutionRecord for BlockRecord {
 
     fn void_reason(&self) -> Option<VoidReason> { self.void_reason }
 
+    fn ran(&self) -> Vec<bool> {
+        self.entries
+            .iter()
+            .map(|entry| !matches!(entry.executed.outcome, EnvelopeOutcome::NotRun | EnvelopeOutcome::Voided))
+            .collect()
+    }
+
     fn encode(&self) -> Bytes { Bytes::from(self.to_proto().encode_to_vec()) }
 
     fn decode(bytes: &[u8]) -> Result<Self, String> {

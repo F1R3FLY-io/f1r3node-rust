@@ -65,6 +65,26 @@ impl VoidReason {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PriorStatus {
+    Included,
+    Discarded,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PriorEntry {
+    pub block_number: i64,
+    pub status: PriorStatus,
+}
+
+pub type Prior = std::collections::HashMap<Bytes, PriorStatus>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FixMarks {
+    pub void: Option<(Bytes, VoidReason)>,
+    pub statuses: Vec<(Bytes, PriorEntry)>,
+}
+
 pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static {
     fn target(&self) -> &BlockHash;
 
@@ -83,6 +103,8 @@ pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + '
     fn footprint(&self) -> Option<Footprint> { None }
 
     fn void_reason(&self) -> Option<VoidReason> { None }
+
+    fn ran(&self) -> Vec<bool> { vec![true; self.envelope_ids().len()] }
 
     fn digest(&self) -> RecordDigest {
         domain_digest(RECORD_DIGEST_DOMAIN, &self.encode())

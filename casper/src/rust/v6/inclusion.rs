@@ -54,6 +54,8 @@ pub fn refusal_reason(refusal: &Refusal) -> String {
         }
         Refusal::InvalidTerms => "the deployment's terms are invalid".to_string(),
         Refusal::Overflow => "the deployment's demand overflows".to_string(),
+        Refusal::AlreadyIncluded => "an earlier canonical record ran the deployment".to_string(),
+        Refusal::Discarded => "a void block discarded the deployment".to_string(),
         Refusal::InsufficientFunds { wallet, need, have } => format!(
             "wallet {} has {have} uncommitted, the deployment needs {need}",
             hex::encode(wallet)

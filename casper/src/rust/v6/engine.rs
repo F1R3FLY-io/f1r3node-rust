@@ -86,6 +86,7 @@ impl V6Engine<BlockRecord> {
         policy: ShardResourcePolicy,
         retained_records: usize,
         conservation_audit_interval: u64,
+        deploy_lifespan: i64,
     ) -> Result<Arc<Self>, CasperError> {
         let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(block_store.clone());
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
@@ -136,6 +137,7 @@ impl V6Engine<BlockRecord> {
             params: CoreParams {
                 fallback_distance,
                 retained_records,
+                deploy_lifespan,
                 ..CoreParams::default()
             },
             lag_threshold,
@@ -447,6 +449,14 @@ impl<R: ExecutionRecord> V6Engine<R> {
                     self.core.lock().emit(EmittedBlock {
                         hash,
                         sender: block.sender.clone(),
+                        block_number: block.body.state.block_number,
+                        unreadable: block
+                            .body
+                            .deploys
+                            .iter()
+                            .filter(|d| GateInput::from_deploy(&d.deploy, Vec::new()).is_err())
+                            .map(|d| d.deploy.sig.clone())
+                            .collect(),
                         envelope_ids: block
                             .body
                             .deploys
@@ -496,9 +506,10 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 record,
             } => {
                 let block = self.load(&target)?;
+                let prior = self.core.lock().prior(&target);
                 let result = self
                     .backend
-                    .replay(&record, &block)
+                    .replay_after(&record, &block, &prior)
                     .await
                     .map_err(|e| e.to_string());
                 if let Err(error) = &result {
@@ -517,7 +528,8 @@ impl<R: ExecutionRecord> V6Engine<R> {
             }
             Action::Execute { target, pre_root } => {
                 let block = self.load(&target)?;
-                let record = self.backend.execute(&pre_root, &block).await?;
+                let prior = self.core.lock().prior(&target);
+                let record = self.backend.execute_after(&pre_root, &block, &prior).await?;
                 self.core.lock().apply_execute(record);
                 progressed = true;
             }

@@ -240,7 +240,7 @@ pub struct CasperConf {
 
 fn default_deploy_play_budget() -> Duration { Duration::ZERO }
 
-fn default_deploy_lifespan() -> i64 { 50 }
+fn default_deploy_lifespan() -> i64 { crate::rust::casper::DEPLOY_LIFESPAN_DEFAULT }
 
 fn default_synchrony_recovery_stall_window() -> Duration { Duration::from_secs(60) }
 

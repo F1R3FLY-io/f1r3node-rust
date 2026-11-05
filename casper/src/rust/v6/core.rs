@@ -5,7 +5,7 @@ use prost::bytes::Bytes;
 
 use super::body::{Attestation, StateHash};
 use super::evidence::{Evidence, InvalidRecordReason, Offence};
-use super::record::{ExecutionRecord, VoidReason};
+use super::record::{ExecutionRecord, FixMarks, Prior, PriorEntry, PriorStatus, VoidReason};
 use super::store::{MemoryRecordStore, RecordStore, Retention};
 
 #[derive(Clone, Debug)]
@@ -13,6 +13,7 @@ pub struct CoreParams {
     pub max_speculation: usize,
     pub fallback_distance: usize,
     pub retained_records: usize,
+    pub deploy_lifespan: i64,
 }
 
 pub const DEFAULT_FALLBACK_DISTANCE: usize = 8;
@@ -23,6 +24,7 @@ impl Default for CoreParams {
             max_speculation: 32,
             fallback_distance: DEFAULT_FALLBACK_DISTANCE,
             retained_records: super::store::DEFAULT_RETAINED_RECORDS,
+            deploy_lifespan: crate::rust::casper::DEPLOY_LIFESPAN_DEFAULT,
         }
     }
 }
@@ -67,7 +69,9 @@ struct PendingAttestation {
 pub struct EmittedBlock<R> {
     pub hash: BlockHash,
     pub sender: Bytes,
+    pub block_number: i64,
     pub envelope_ids: Vec<Bytes>,
+    pub unreadable: Vec<Bytes>,
     pub records: Vec<R>,
 }
 
@@ -77,6 +81,8 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     window: VecDeque<BlockHash>,
     index: HashMap<BlockHash, usize>,
     senders: HashMap<BlockHash, Bytes>,
+    numbers: HashMap<BlockHash, i64>,
+    unreadable: HashMap<BlockHash, Vec<Bytes>>,
     envelopes: HashMap<BlockHash, Vec<Bytes>>,
     store: Box<dyn RecordStore<R>>,
     spec: VecDeque<R>,
@@ -109,6 +115,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             window: VecDeque::new(),
             index: HashMap::new(),
             senders: HashMap::new(),
+            numbers: HashMap::new(),
+            unreadable: HashMap::new(),
             envelopes: HashMap::new(),
             store,
             spec: VecDeque::new(),
@@ -131,6 +139,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.window.clear();
         self.index.clear();
         self.senders.clear();
+        self.numbers.clear();
+        self.unreadable.clear();
         self.envelopes.clear();
         self.spec.clear();
         self.citations.clear();
@@ -161,6 +171,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.window.len()
             + self.index.len()
             + self.senders.len()
+            + self.numbers.len()
+            + self.unreadable.len()
             + self.envelopes.len()
             + self.spec.len()
             + self.citations.len()
@@ -182,6 +194,8 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             self.base += 1;
             self.index.remove(&block);
             self.senders.remove(&block);
+            self.numbers.remove(&block);
+            self.unreadable.remove(&block);
             self.envelopes.remove(&block);
             self.citations.remove(&block);
             self.dismissed.remove(&block);
@@ -208,6 +222,66 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
 
     pub fn take_store_error(&mut self) -> Option<String> { self.store_error.take() }
 
+    fn statuses(&self, record: &R) -> Vec<(Bytes, PriorEntry)> {
+        let Some(&block_number) = self.numbers.get(record.target()) else {
+            return Vec::new();
+        };
+        let entry = |status| PriorEntry {
+            block_number,
+            status,
+        };
+        match record.void_reason() {
+            Some(VoidReason::CloseFailed) => record
+                .envelope_ids()
+                .iter()
+                .map(|id| (id.clone(), entry(PriorStatus::Discarded)))
+                .collect(),
+            Some(VoidReason::UnreadableTerms) => self
+                .unreadable
+                .get(record.target())
+                .into_iter()
+                .flatten()
+                .map(|id| (id.clone(), entry(PriorStatus::Discarded)))
+                .collect(),
+            Some(_) => Vec::new(),
+            None => record
+                .envelope_ids()
+                .iter()
+                .zip(record.ran())
+                .filter(|(_, ran)| *ran)
+                .map(|(id, _)| (id.clone(), entry(PriorStatus::Included)))
+                .collect(),
+        }
+    }
+
+    pub fn prior(&self, target: &BlockHash) -> Prior {
+        let (Some(&index), Some(&number)) = (self.index.get(target), self.numbers.get(target)) else {
+            return Prior::new();
+        };
+        let ids = self.envelopes.get(target).cloned().unwrap_or_default();
+        let in_window = |entry: &PriorEntry| {
+            entry.block_number < number
+                && entry.block_number.saturating_add(self.params.deploy_lifespan) > number
+        };
+        let mut prior = Prior::new();
+        for id in &ids {
+            if let Some(entry) = self.store.prior(id).filter(in_window) {
+                prior.insert(id.clone(), entry.status);
+            }
+        }
+        for record in &self.spec {
+            if self.index.get(record.target()).is_none_or(|i| *i >= index) {
+                break;
+            }
+            for (id, entry) in self.statuses(record) {
+                if ids.contains(&id) && in_window(&entry) {
+                    prior.insert(id, entry.status);
+                }
+            }
+        }
+        prior
+    }
+
     pub fn take_voided(&mut self) -> Vec<(BlockHash, VoidReason)> { self.voided.drain(..).collect() }
 
     pub fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
@@ -230,6 +304,10 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.index.insert(block.hash.clone(), citer_index);
         self.window.push_back(block.hash.clone());
         self.senders.insert(block.hash.clone(), block.sender);
+        self.numbers.insert(block.hash.clone(), block.block_number);
+        if !block.unreadable.is_empty() {
+            self.unreadable.insert(block.hash.clone(), block.unreadable);
+        }
         self.envelopes
             .insert(block.hash.clone(), block.envelope_ids);
         for record in block.records {
@@ -496,12 +574,13 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         let encoded = misattested.then(|| record.encode());
         let void = record.void_reason();
         let proposer = self.sender_of(&target);
-        let fixed = match void {
-            Some(reason) => self
-                .store
-                .fix_void(target.clone(), citer.clone(), record, &proposer, reason),
-            None => self.store.fix(target.clone(), citer.clone(), record),
+        let marks = FixMarks {
+            void: void.map(|reason| (proposer.clone(), reason)),
+            statuses: self.statuses(&record),
         };
+        let fixed = self
+            .store
+            .fix_marked(target.clone(), citer.clone(), record, &marks);
         if let Err(error) = fixed {
             self.store_error = Some(error.to_string());
             return;
@@ -578,7 +657,9 @@ mod tests {
         EmittedBlock {
             hash: h(name),
             sender: h(sender),
+            block_number: 1,
             envelope_ids: vec![],
+            unreadable: vec![],
             records,
         }
     }
@@ -589,6 +670,7 @@ mod tests {
                 max_speculation: 4,
                 fallback_distance: 2,
                 retained_records: 2,
+                deploy_lifespan: 50,
             },
             Box::new(MemoryRecordStore::new(
                 h("g"),
@@ -921,7 +1003,9 @@ mod tests {
         c.emit(EmittedBlock {
             hash: h("b1"),
             sender: h("v1"),
+            block_number: 1,
             envelope_ids: vec![h("sig")],
+            unreadable: vec![],
             records: vec![],
         });
         c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
@@ -1130,5 +1214,75 @@ mod tests {
         assert_eq!(evidence[0].offender, h("V1"));
         assert_eq!(evidence[0].offence, Offence::VoidBlock { reason: VoidReason::UnreadableTerms });
         assert!(evidence[0].offence.slashable());
+    }
+
+    fn carrying(name: &str, number: i64, ids: &[&str], records: Vec<BlockRecord>) -> EmittedBlock<BlockRecord> {
+        EmittedBlock {
+            hash: h(name),
+            sender: h("v1"),
+            block_number: number,
+            envelope_ids: ids.iter().map(|id| h(id)).collect(),
+            unreadable: vec![],
+            records,
+        }
+    }
+
+    fn ran(target: &str, pre: &str, post: &str, ids: &[&str]) -> BlockRecord {
+        use crate::rust::v6::block_record::{EnvelopeOutcome, ExecutedEnvelope, RecordEntry};
+        let entries = ids
+            .iter()
+            .map(|id| RecordEntry {
+                executed: ExecutedEnvelope {
+                    envelope_id: h(id),
+                    outcome: EnvelopeOutcome::Completed,
+                    comm_phlo: 0,
+                    compute_phlo: 0,
+                    user_log: vec![],
+                    footprint: Default::default(),
+                    surfaces: vec![],
+                    work: vec![],
+                },
+            })
+            .collect();
+        BlockRecord::new(h(target), h(pre), h(pre), h(post), entries, vec![]).unwrap()
+    }
+
+    #[test]
+    fn an_envelope_run_in_an_earlier_record_is_prior_inside_the_lifespan_only() {
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1", "d2"], vec![]));
+        c.emit(carrying("b2", 20, &["d1"], vec![ran("b1", "r0", "r1", &["d1", "d2"])]));
+        c.emit(carrying("b3", 70, &["d2"], vec![]));
+        assert!(c.prior(&h("b2")).is_empty(), "b1 is not canonical or speculative yet");
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b1"), &h("b2"), &ran("b1", "r0", "r1", &["d1", "d2"]), Ok(h("r1")));
+        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included));
+        assert!(c.prior(&h("b3")).is_empty(), "b1 is outside b3's lifespan");
+    }
+
+    #[test]
+    fn a_speculative_record_ahead_of_the_target_counts_as_prior() {
+        let mut c = core();
+        c.emit(carrying("b1", 10, &["d1"], vec![]));
+        c.emit(carrying("b2", 11, &["d1"], vec![]));
+        assert!(matches!(c.next_action(), Action::Execute { .. }));
+        c.apply_execute(ran("b1", "r0", "r1", &["d1"]));
+        assert_eq!(c.prior(&h("b2")).get(&h("d1")), Some(&PriorStatus::Included));
+        assert!(c.prior(&h("b1")).is_empty());
+    }
+
+    #[test]
+    fn a_failed_close_discards_every_envelope_and_unreadable_terms_only_their_own() {
+        let mut c = core();
+        let mut b1 = carrying("b1", 10, &["d1", "d2"], vec![]);
+        b1.unreadable = vec![h("d2")];
+        c.emit(b1);
+        let void = BlockRecord::voided(h("b1"), h("r0"), &[h("d1"), h("d2")], VoidReason::UnreadableTerms);
+        c.emit(carrying("b2", 11, &["d1", "d2"], vec![void.clone()]));
+        assert!(matches!(c.next_action(), Action::Replay { .. }));
+        c.apply_replay(&h("b1"), &h("b2"), &void, Ok(h("r0")));
+        let prior = c.prior(&h("b2"));
+        assert_eq!(prior.get(&h("d1")), None);
+        assert_eq!(prior.get(&h("d2")), Some(&PriorStatus::Discarded));
     }
 }

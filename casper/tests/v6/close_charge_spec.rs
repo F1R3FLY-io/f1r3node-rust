@@ -452,3 +452,28 @@ async fn a_valid_block_with_a_void_record_is_rejected() {
     let refused = executor.replay(&forged, &b).await.unwrap_err().to_string();
     assert!(refused.contains("the close runs"), "{refused}");
 }
+
+#[tokio::test]
+async fn an_envelope_with_a_prior_status_is_refused_at_no_charge_and_replay_needs_the_same_prior() {
+    use casper::rust::v6::gate::{Refusal, Verdict};
+    use casper::rust::v6::record::{Prior, PriorStatus};
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let first = envelope(&bond_term("Nil"), 1, &alice);
+    let second = envelope("Nil", 2, &alice);
+    for (status, refusal) in [
+        (PriorStatus::Included, Refusal::AlreadyIncluded),
+        (PriorStatus::Discarded, Refusal::Discarded),
+    ] {
+        let b = block(2, vec![first.clone(), second.clone()], &proposer);
+        let prior = Prior::from([(first.deploy.sig.clone(), status)]);
+        let record = executor.execute_after(&genesis, &b, &prior).await.unwrap();
+        assert_eq!(record.gate()[0].verdict, Verdict::Refused(refusal));
+        assert_eq!(record.gate()[0].delta, 0);
+        assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::NotRun);
+        assert!(record.gate()[1].admitted());
+        assert_eq!(executor.replay_after(&record, &b, &prior).await.unwrap(), *record.post_root());
+        assert!(executor.replay_after(&record, &b, &Prior::new()).await.is_err());
+    }
+}
