@@ -5,6 +5,7 @@ use heed::types::SerdeBincode;
 use heed::{Database, Env, Error as HeedError, MdbError, PutFlags};
 
 use super::key_value_store::{KeyValueStore, KvStoreError};
+use crate::rust::blocking::in_blocking;
 use crate::rust::ByteBuffer;
 
 // `heed::Database` is a `Copy` handle (a `u32` dbi) and is `Send + Sync`; it
@@ -21,21 +22,11 @@ pub struct LmdbKeyValueStore {
     pub db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>>,
 }
 
-fn in_blocking<T>(f: impl FnOnce() -> T) -> T {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(f)
-        }
-        _ => f(),
-    }
-}
-
 impl KeyValueStore for LmdbKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
-    // Unlike the other operations, point reads run on the calling worker: they
-    // are served from mapped pages in microseconds, and handing the worker off
-    // for each one serialized concurrent readers on the blocking pool.
+    // Point reads run on the calling worker. A caller that loops over many of
+    // them hands the worker off around the whole loop with `in_blocking`.
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
         let reader = self.env.read_txn()?;
         keys.iter()
