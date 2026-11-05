@@ -1037,7 +1037,7 @@ impl DebruijnInterpreter {
 
     /* Collect mergeable channels */
 
-    async fn update_mergeable_channels(&self, chan: &Par) -> () {
+    pub(crate) async fn update_mergeable_channels(&self, chan: &Par) {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);

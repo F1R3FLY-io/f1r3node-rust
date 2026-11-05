@@ -17,11 +17,10 @@
 #   3. Rust  (fail-soft) — the modality companions: rspace_plus_plus merger tests
 #      (GAP-1 combine commutativity + the Finding-A non-associativity pin +
 #      the sum-union order-independence; GAP-3 removed-predicate subsumption +
-#      the §3c produce-only over-fill ESCAPE of the retained detector;
+#      produce-only writes are not conflicts;
 #      P2 split-hides-no-conflict), the casper merging P3 proptest
 #      (cmp is a strict total order whose Equal-class is the injective key), and
-#      the rholang merging::rholang_merging_logic §3c guard tests
-#      (produce-only over-fill rejected IFF the cell would hold > 1 value).
+#      the rholang merging::rholang_merging_logic number-channel fold tests.
 #      SKIPPED if cargo is absent.
 #   4. Diagrams (fail-soft) — renders the dossier's PlantUML set and asserts a
 #      populated SVG (closing </svg>) with no stderr. SKIPPED if plantuml is
@@ -129,13 +128,10 @@ if command -v cargo >/dev/null 2>&1; then
   else
     fail "Rust casper merging:: tests failed (see /tmp/ma_rust_casper.log)"; tail -20 /tmp/ma_rust_casper.log | sed 's/^/      /'
   fi
-  # §3c single-value-cell guard (RCA-asi-devnet-finality-halt): the Rocq
-  # ConflictSoundness.v Section Overfill companion —
-  # check_single_value_cell_not_overfilled rejects a merge IFF the post-merge
-  # single-value NUMBER cell would hold > 1 value (produce-only over-fill), plus
-  # Kevin's §3c unit witnesses (produce-only reject / RMW allow / registry exempt).
+  # Tagged number cells (S7): the number-channel fold that keeps a tagged cell
+  # at one datum.
   if cargo test -p rholang --lib merging::rholang_merging_logic >/tmp/ma_rust_rholang.log 2>&1; then
-    pass "Rust rholang merging::rholang_merging_logic (§3c guard: produce-only over-fill rejected IFF result_len>1)"
+    pass "Rust rholang merging::rholang_merging_logic (number-channel fold)"
   else
     fail "Rust rholang merging::rholang_merging_logic tests failed (see /tmp/ma_rust_rholang.log)"; tail -20 /tmp/ma_rust_rholang.log | sed 's/^/      /'
   fi
