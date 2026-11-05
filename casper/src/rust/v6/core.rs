@@ -14,7 +14,10 @@ pub struct CoreParams {
     pub fallback_distance: usize,
     pub retained_records: usize,
     pub deploy_lifespan: i64,
+    pub max_unattested: i64,
 }
+
+pub const DEFAULT_MAX_UNATTESTED: i64 = 128;
 
 pub const DEFAULT_FALLBACK_DISTANCE: usize = 8;
 
@@ -25,6 +28,7 @@ impl Default for CoreParams {
             fallback_distance: DEFAULT_FALLBACK_DISTANCE,
             retained_records: super::store::DEFAULT_RETAINED_RECORDS,
             deploy_lifespan: crate::rust::casper::DEPLOY_LIFESPAN_DEFAULT,
+            max_unattested: DEFAULT_MAX_UNATTESTED,
         }
     }
 }
@@ -96,6 +100,7 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     evidence: Vec<Evidence>,
     store_error: Option<String>,
     voided: VecDeque<(BlockHash, VoidReason)>,
+    tally: HashMap<Bytes, (i32, Attestation)>,
 }
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
@@ -130,6 +135,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             evidence: Vec::new(),
             store_error: None,
             voided: VecDeque::new(),
+            tally: HashMap::new(),
         }
     }
 
@@ -152,6 +158,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.inclusion_seen.clear();
         self.store_error = None;
         self.voided.clear();
+        self.tally.clear();
         Ok(())
     }
 
@@ -280,6 +287,62 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             }
         }
         prior
+    }
+
+    pub fn params(&self) -> &CoreParams { &self.params }
+
+    pub fn position_of(&self, block: &BlockHash) -> Option<usize> { self.store.position_of(block) }
+
+    pub fn count(&mut self, sender: &Bytes, seq_num: i32, attestation: &Attestation) {
+        match self.tally.get(sender) {
+            Some((seen, _)) if *seen >= seq_num => {}
+            _ => {
+                self.tally
+                    .insert(sender.clone(), (seq_num, attestation.clone()));
+            }
+        }
+    }
+
+    pub fn attested_position(&self, bonds: &[(Bytes, i64)]) -> Option<usize> {
+        let total: i128 = bonds.iter().map(|(_, stake)| (*stake).max(0) as i128).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut support: Vec<(usize, i128)> = bonds
+            .iter()
+            .filter(|(_, stake)| *stake > 0)
+            .filter_map(|(validator, stake)| {
+                let (_, attestation) = self.tally.get(validator)?;
+                let position = self.store.position_of(&attestation.block_hash)?;
+                (self.store.executed(&attestation.block_hash).as_ref() == Some(&attestation.root))
+                    .then_some((position, *stake as i128))
+            })
+            .collect();
+        support.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut behind = 0i128;
+        for (position, stake) in support {
+            behind += stake;
+            if 3 * behind > 2 * total {
+                return Some(position);
+            }
+        }
+        None
+    }
+
+    pub fn register_unrun_after(&self, position: usize) -> usize {
+        let mut registered = 0;
+        for index in (position + 1)..self.store.canonical_len() {
+            let Some(record) = self
+                .store
+                .canonical_at(index)
+                .and_then(|block| self.store.record(&block))
+            else {
+                continue;
+            };
+            register_unrun(&record);
+            registered += 1;
+        }
+        registered
     }
 
     pub fn take_voided(&mut self) -> Vec<(BlockHash, VoidReason)> { self.voided.drain(..).collect() }
@@ -585,6 +648,9 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             self.store_error = Some(error.to_string());
             return;
         }
+        if let Some(record) = self.store.record(&target) {
+            register_unrun(&record);
+        }
         if let Some(reason) = void {
             metrics::counter!(
                 crate::rust::metrics_constants::V6_VOID_BLOCKS_METRIC,
@@ -642,6 +708,17 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     }
 }
 
+fn register_unrun<R: ExecutionRecord>(record: &R) {
+    let unrun: HashSet<Bytes> = record
+        .envelope_ids()
+        .iter()
+        .zip(record.ran())
+        .filter(|(_, ran)| !ran || record.void_reason().is_some())
+        .map(|(id, _)| id.clone())
+        .collect();
+    crate::rust::finality::block_facts::set_unrun(record.target(), unrun);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,6 +748,7 @@ mod tests {
                 fallback_distance: 2,
                 retained_records: 2,
                 deploy_lifespan: 50,
+                max_unattested: DEFAULT_MAX_UNATTESTED,
             },
             Box::new(MemoryRecordStore::new(
                 h("g"),
@@ -739,6 +817,8 @@ mod tests {
         }
 
         fn resident(&self) -> usize { self.0.resident() }
+
+        fn position_of(&self, block: &BlockHash) -> Option<usize> { self.0.position_of(block) }
     }
 
     #[test]
@@ -1284,5 +1364,61 @@ mod tests {
         let prior = c.prior(&h("b2"));
         assert_eq!(prior.get(&h("d1")), None);
         assert_eq!(prior.get(&h("d2")), Some(&PriorStatus::Discarded));
+    }
+
+    fn attests(target: &str, root: &str) -> Attestation {
+        Attestation {
+            block_hash: h(target),
+            root: h(root),
+        }
+    }
+
+    fn fixed_three() -> ExecutorCore<BlockRecord> {
+        let mut c = core();
+        c.emit(block("b1", "v1", vec![]));
+        c.emit(block("b2", "v2", vec![rec("b1", "r0", "r1")]));
+        c.emit(block("b3", "v3", vec![rec("b2", "r1", "r2")]));
+        c.emit(block("b4", "v1", vec![rec("b3", "r2", "r3")]));
+        for (target, citer, pre, post) in [("b1", "b2", "r0", "r1"), ("b2", "b3", "r1", "r2"), ("b3", "b4", "r2", "r3")] {
+            assert!(matches!(c.next_action(), Action::Replay { .. }));
+            c.apply_replay(&h(target), &h(citer), &rec(target, pre, post), Ok(h(post)));
+        }
+        assert_eq!(c.canonical_len(), 4);
+        c
+    }
+
+    #[test]
+    fn p_star_is_the_highest_position_more_than_two_thirds_of_the_stake_attests() {
+        let bonds = vec![(h("v1"), 10), (h("v2"), 10), (h("v3"), 10)];
+        let mut c = fixed_three();
+        assert_eq!(c.attested_position(&bonds), None);
+        c.count(&h("v1"), 5, &attests("b3", "r3"));
+        c.count(&h("v2"), 5, &attests("b2", "r2"));
+        assert_eq!(c.attested_position(&bonds), None, "20 of 30 is not more than two thirds");
+        c.count(&h("v3"), 5, &attests("b1", "r1"));
+        assert_eq!(c.attested_position(&bonds), Some(1));
+        c.count(&h("v3"), 7, &attests("b3", "r3"));
+        assert_eq!(c.attested_position(&bonds), Some(2));
+        c.count(&h("v3"), 6, &attests("b1", "r1"));
+        assert_eq!(c.attested_position(&bonds), Some(2), "an older block of v3 does not replace its newer attestation");
+        c.count(&h("v2"), 8, &attests("b3", "wrong"));
+        assert_eq!(c.attested_position(&bonds), None, "a misattesting validator supports nothing");
+        assert_eq!(c.attested_position(&[(h("v1"), 10), (h("v3"), 10)]), Some(3));
+    }
+
+    #[test]
+    fn a_rebuilt_tally_gives_the_same_p_star() {
+        let bonds = vec![(h("v1"), 10), (h("v2"), 10), (h("v3"), 10)];
+        let blocks = [("v1", 5, "b3", "r3"), ("v2", 5, "b3", "r3"), ("v3", 4, "b2", "r2"), ("v3", 3, "b1", "r1")];
+        let mut first = fixed_three();
+        for (sender, seq, target, root) in blocks {
+            first.count(&h(sender), seq, &attests(target, root));
+        }
+        let mut rebuilt = fixed_three();
+        for (sender, seq, target, root) in blocks.iter().rev() {
+            rebuilt.count(&h(sender), *seq, &attests(target, root));
+        }
+        assert_eq!(first.attested_position(&bonds), Some(2));
+        assert_eq!(rebuilt.attested_position(&bonds), first.attested_position(&bonds));
     }
 }

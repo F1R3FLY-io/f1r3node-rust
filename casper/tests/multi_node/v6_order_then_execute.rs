@@ -11,7 +11,7 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use crate::helper::test_node::TestNode;
 use crate::helper::v6_network::{
     broadcast, cited_records, engine, propose, propose_and_broadcast, tick_until_idle,
-    wait_for_finality, wake_until,
+    wait_for_finality, wait_for_order, wake_until,
 };
 use crate::util::genesis_builder::GenesisContext;
 
@@ -160,10 +160,18 @@ async fn driven_engines_advance_only_when_the_test_ticks_them() {
         blocks.push(block.block_hash.clone());
     }
     assert!(
-        wait_for_finality(&nodes, 600).await,
-        "the shard did not finalize a block"
+        wait_for_order(&nodes, 600).await,
+        "the shard did not order a block"
     );
     for node in &nodes {
+        assert_eq!(
+            node.block_dag_storage
+                .get_representation()
+                .unwrap()
+                .last_finalized_block(),
+            node.genesis.block_hash,
+            "no block is state-final before it is executed and attested"
+        );
         assert_eq!(
             engine(node).canonical_len(),
             1,
@@ -275,5 +283,34 @@ async fn offers_are_refused_once_the_pool_is_full() {
             assert_eq!(pending, cap);
         }
         other => panic!("expected the pool to be full, got {:?}", other),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lfb_follows_the_attested_canonical_roots_below_the_order_floor() {
+    let genesis = crate::helper::v6_network::v6_genesis_with(Some(3)).await;
+    let mut deploys = Deploys::new(&genesis);
+    let mut nodes = TestNode::create_v6_network(genesis, 3).await.unwrap();
+    let mut finalized = false;
+    for round in 0..60 {
+        let extra = vec![deploys.deploy(&format!(r#"@"p5"!({})"#, round), round % 2)];
+        propose_and_broadcast(&mut nodes, round % 3, &extra).await;
+        if wait_for_finality(&nodes, 20).await {
+            finalized = true;
+            break;
+        }
+    }
+    assert!(finalized, "no block became state-final");
+    for node in &nodes {
+        let dag = node.block_dag_storage.get_representation().unwrap();
+        let lfb = dag.last_finalized_block();
+        let order = node.block_dag_storage.order_floor().unwrap();
+        assert!(dag.block_number(&lfb) <= dag.block_number(&order));
+        assert!(dag.is_in_main_chain(&lfb, &order).unwrap());
+        assert!(
+            engine(node).executed(&lfb).is_some(),
+            "the LFB has a canonical root"
+        );
+        node.block_dag_storage.check_floor_order().unwrap();
     }
 }

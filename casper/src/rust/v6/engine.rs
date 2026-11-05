@@ -208,6 +208,27 @@ impl<R: ExecutionRecord> V6Engine<R> {
         if self.started.swap(true, Ordering::SeqCst) {
             return;
         }
+        if let Err(error) = self.dag_storage.check_floor_order() {
+            panic!("v6 floors: {error}");
+        }
+        if let Ok(dag) = self.dag_storage.get_representation() {
+            let core = self.core.lock();
+            if let Some(position) = core.position_of(&dag.last_finalized_block()) {
+                core.register_unrun_after(position);
+            }
+        }
+        match self.rebuild_tally() {
+            Ok(counted) => tracing::info!(
+                target: "f1r3fly.v6",
+                counted,
+                "v6 attestation tally rebuilt from the blocks above the LFB"
+            ),
+            Err(error) => tracing::warn!(
+                target: "f1r3fly.v6",
+                %error,
+                "the v6 attestation tally could not be rebuilt; it fills from new blocks"
+            ),
+        }
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
@@ -270,12 +291,31 @@ impl<R: ExecutionRecord> V6Engine<R> {
     pub fn lag_gate_engaged(&self) -> bool { self.lag_gate.engaged() }
 
     fn admits_envelopes(&self, snapshot: &CasperSnapshot, attestation: &Attestation) -> bool {
-        let lfb = snapshot.dag.last_finalized_block();
+        let lfb = self
+            .dag_storage
+            .order_floor()
+            .unwrap_or_else(|_| snapshot.dag.last_finalized_block());
         let lag = Lag::measure(
             snapshot.dag.block_number(&lfb),
             snapshot.dag.block_number(&attestation.block_hash),
         );
         let lfb_number = snapshot.dag.block_number(&lfb);
+        let state_number = snapshot
+            .dag
+            .block_number(&snapshot.dag.last_finalized_block());
+        if let (Some(order), Some(state)) = (lfb_number, state_number) {
+            let unattested = order - state;
+            let max_unattested = self.core.lock().params().max_unattested;
+            if unattested > max_unattested {
+                tracing::info!(
+                    target: "f1r3fly.v6",
+                    unattested,
+                    max_unattested,
+                    "the LFB lags the order floor past max_unattested; proposing without envelopes"
+                );
+                return false;
+            }
+        }
         if let Some(lfb_number) = lfb_number {
             let floor_distance = snapshot.max_block_num - lfb_number;
             if crate::rust::util::rholang::interpreter_util::floor_pacing_engaged(
@@ -331,6 +371,9 @@ impl<R: ExecutionRecord> V6Engine<R> {
 
     pub fn observe_block(&self, block: &BlockMessage, body: &V6Body) {
         if let Some(attestation) = &body.attestation {
+            self.core
+                .lock()
+                .count(&block.sender, block.seq_num, attestation);
             self.core.lock().observe_attestation(
                 &block.block_hash,
                 &block.sender,
@@ -426,9 +469,66 @@ impl<R: ExecutionRecord> V6Engine<R> {
             .ok_or_else(|| CasperError::KvStoreError(KvStoreError::KeyNotFound(hex::encode(hash))))
     }
 
-    pub async fn tick(&self) -> Result<bool, CasperError> {
+    pub fn rebuild_tally(&self) -> Result<usize, CasperError> {
+        let dag = self.dag_storage.get_representation()?;
+        let lfb_height = dag.block_number(&dag.last_finalized_block()).unwrap_or(0);
+        let mut counted = 0;
+        for (_, blocks) in dag.height_map.range((lfb_height + 1)..) {
+            for hash in blocks.iter() {
+                let Some(block) = self.block_store.get(hash)? else {
+                    continue;
+                };
+                let Some(attestation) = block.body.v6.as_ref().and_then(|v6| v6.attestation.clone()) else {
+                    continue;
+                };
+                self.core
+                    .lock()
+                    .count(&block.sender, block.seq_num, &attestation);
+                counted += 1;
+            }
+        }
+        Ok(counted)
+    }
+
+    pub async fn state_floor(&self) -> Result<Option<BlockHash>, CasperError> {
         let dag = self.dag_storage.get_representation()?;
         let lfb = dag.last_finalized_block();
+        let order = self.dag_storage.order_floor()?;
+        let Some(lfb_root) = self.core.lock().executed(&lfb) else {
+            return Ok(None);
+        };
+        let lfb_height = dag.block_number(&lfb).unwrap_or(0);
+        let attestation = Attestation {
+            block_hash: lfb.clone(),
+            root: lfb_root,
+        };
+        let bonds: Vec<(Bytes, i64)> = self
+            .validators
+            .bonds(&attestation, lfb_height)
+            .await?
+            .into_iter()
+            .map(|bond| (bond.validator, bond.stake))
+            .collect();
+        let core = self.core.lock();
+        let Some(attested) = core.attested_position(&bonds) else {
+            return Ok(None);
+        };
+        let mut cursor = Some(order);
+        while let Some(block) = cursor {
+            if block == lfb || dag.block_number(&block).is_none_or(|n| n <= lfb_height) {
+                return Ok(None);
+            }
+            if core.position_of(&block).is_some_and(|position| position <= attested) {
+                return Ok(Some(block));
+            }
+            cursor = dag.main_parent(&block);
+        }
+        Ok(None)
+    }
+
+    pub async fn tick(&self) -> Result<bool, CasperError> {
+        let dag = self.dag_storage.get_representation()?;
+        let lfb = self.dag_storage.order_floor()?;
         let advance = {
             let core = self.core.lock();
             let emitted = |block: &BlockHash| core.is_emitted(block);
@@ -680,6 +780,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
         );
         let block = validator.sign_block(&unsigned);
         self.core.lock().mark_cited(&records);
+        self.core.lock().count(&self_key, seq_num, &attestation);
         Ok(BlockCreatorResult::Created(
             block,
             attestation.root.clone(),

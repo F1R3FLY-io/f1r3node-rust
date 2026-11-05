@@ -430,7 +430,7 @@ async fn a_block_whose_close_fails_is_void_for_reason_d_and_replay_runs_the_clos
     let executor = BlockExecutor::new(rm.clone(), 2);
     let b = block(1, vec![], &proposer);
     let record = void_replays(&executor, &empty, &b, VoidReason::CloseFailed).await;
-    assert!(record.system_deploys().is_empty());
+    assert_eq!(record.system_deploys().len(), 1);
 }
 
 #[tokio::test]
@@ -476,4 +476,48 @@ async fn an_envelope_with_a_prior_status_is_refused_at_no_charge_and_replay_need
         assert_eq!(executor.replay_after(&record, &b, &prior).await.unwrap(), *record.post_root());
         assert!(executor.replay_after(&record, &b, &Prior::new()).await.is_err());
     }
+}
+
+#[tokio::test]
+async fn a_failed_close_is_part_of_the_trace_and_replay_checks_it() {
+    use models::rust::casper::protocol::casper_message::ProcessedSystemDeploy;
+    let proposer = party();
+    let (rm, _) = shard(&[&proposer]).await;
+    let empty = RuntimeManager::empty_state_hash_fixed();
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let b = block(1, vec![], &proposer);
+    let record = executor.execute(&empty, &b).await.unwrap();
+    assert_eq!(record.void_reason(), Some(VoidReason::CloseFailed));
+    let [ProcessedSystemDeploy::Failed { event_list, error_msg }] = record.system_deploys() else {
+        panic!("a (d) record carries its failed close");
+    };
+    assert!(error_msg.starts_with("close failed: "), "{error_msg}");
+    assert!(BlockRecord::decode(&record.encode()).is_ok());
+    let forged = |failed: ProcessedSystemDeploy| {
+        let mut proto = record.clone();
+        proto = BlockRecord::new(
+            proto.target().clone(),
+            proto.pre_root().clone(),
+            proto.mid_root().clone(),
+            proto.pre_root().clone(),
+            proto.entries().to_vec(),
+            vec![failed],
+        )
+        .unwrap()
+        .with_gate(proto.gate().to_vec())
+        .unwrap()
+        .with_settlement(record.settlement().cloned().unwrap())
+        .with_failed_close();
+        proto
+    };
+    assert_eq!(
+        executor.replay(&forged(record.system_deploys()[0].clone()), &b).await.unwrap(),
+        empty,
+        "the unaltered trace replays"
+    );
+    let other_failure = forged(ProcessedSystemDeploy::Failed {
+        event_list: event_list.clone(),
+        error_msg: "close failed: something else".to_string(),
+    });
+    assert!(executor.replay(&other_failure, &b).await.is_err());
 }

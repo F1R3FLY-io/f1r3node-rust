@@ -84,6 +84,23 @@ impl FactsCache {
     }
 }
 
+fn unrun() -> &'static parking_lot::Mutex<HashMap<BlockHash, HashSet<Bytes>>> {
+    static UNRUN: OnceLock<parking_lot::Mutex<HashMap<BlockHash, HashSet<Bytes>>>> =
+        OnceLock::new();
+    UNRUN.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
+pub fn set_unrun(block: &BlockHash, sigs: HashSet<Bytes>) {
+    if sigs.is_empty() {
+        return;
+    }
+    unrun().lock().insert(block.clone(), sigs);
+    let mut cache = cache().lock();
+    if let Some(facts) = cache.map.remove(block) {
+        cache.approx_bytes = cache.approx_bytes.saturating_sub(facts.approx_bytes());
+    }
+}
+
 fn cache() -> &'static parking_lot::Mutex<FactsCache> {
     static CACHE: OnceLock<parking_lot::Mutex<FactsCache>> = OnceLock::new();
     CACHE.get_or_init(|| parking_lot::Mutex::new(FactsCache::default()))
@@ -132,6 +149,9 @@ fn lookup(block_store: &KeyValueBlockStore, block_hash: &BlockHash) -> Result<Lo
         .map(|pd| pd.deploy.sig.clone())
         .collect();
     applied_sigs.extend(block.body.applied_from_scope.iter().cloned());
+    if let Some(unrun) = unrun().lock().get(block_hash) {
+        applied_sigs.retain(|sig| !unrun.contains(sig));
+    }
     let facts = Arc::new(BlockFacts {
         block_number: block.body.state.block_number,
         timestamp: block.header.timestamp,

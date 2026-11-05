@@ -48,6 +48,8 @@ pub trait RecordStore<R: ExecutionRecord>: Send {
 
     fn prior(&self, _envelope: &[u8]) -> Option<PriorEntry> { None }
 
+    fn position_of(&self, block: &BlockHash) -> Option<usize>;
+
     fn reset(&mut self) -> Result<(), KvStoreError>;
 
     fn resident(&self) -> usize;
@@ -76,6 +78,7 @@ struct Prefix {
     anchor_root: StateHash,
     positions: Vec<BlockHash>,
     roots: HashMap<BlockHash, StateHash>,
+    index: HashMap<BlockHash, usize>,
     canonical_root: StateHash,
 }
 
@@ -84,6 +87,7 @@ impl Prefix {
         Prefix {
             positions: vec![anchor.clone()],
             roots: HashMap::from([(anchor.clone(), anchor_root.clone())]),
+            index: HashMap::from([(anchor.clone(), 0)]),
             canonical_root: anchor_root.clone(),
             anchor,
             anchor_root,
@@ -91,6 +95,7 @@ impl Prefix {
     }
 
     fn push(&mut self, target: BlockHash, root: StateHash) {
+        self.index.insert(target.clone(), self.positions.len());
         self.positions.push(target.clone());
         self.roots.insert(target, root.clone());
         self.canonical_root = root;
@@ -178,6 +183,8 @@ impl<R: ExecutionRecord> RecordStore<R> for MemoryRecordStore<R> {
 
     fn prior(&self, envelope: &[u8]) -> Option<PriorEntry> { self.priors.get(envelope).copied() }
 
+    fn position_of(&self, block: &BlockHash) -> Option<usize> { self.prefix.index.get(block).copied() }
+
     fn reset(&mut self) -> Result<(), KvStoreError> {
         self.prefix = Prefix::new(self.prefix.anchor.clone(), self.prefix.anchor_root.clone());
         self.retained.clear();
@@ -216,6 +223,7 @@ const ROOT: u8 = b'r';
 const CITER: u8 = b'k';
 const VOIDS: u8 = b'v';
 const PRIOR: u8 = b'e';
+const INDEX: u8 = b'i';
 
 fn encode_prior(entry: &PriorEntry) -> Vec<u8> {
     let mut bytes = entry.block_number.to_be_bytes().to_vec();
@@ -415,6 +423,21 @@ impl<R: ExecutionRecord> RecordStore<R> for LmdbRecordStore<R> {
         self.fix_rows(target, citer, record, rows)
     }
 
+    fn position_of(&self, block: &BlockHash) -> Option<usize> {
+        if *block == self.head.anchor {
+            return Some(0);
+        }
+        if *block == self.head.last {
+            return Some(self.head.len - 1);
+        }
+        self.db
+            .get_one(&keyed(INDEX, block))
+            .ok()
+            .flatten()
+            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+            .map(|bytes| u64::from_be_bytes(bytes) as usize)
+    }
+
     fn prior(&self, envelope: &[u8]) -> Option<PriorEntry> {
         self.db
             .get_one(&keyed(PRIOR, envelope))
@@ -464,6 +487,7 @@ impl<R: ExecutionRecord> LmdbRecordStore<R> {
             (position_key(self.head.len), target.to_vec()),
             (keyed(ROOT, &target), root.to_vec()),
             (keyed(CITER, &target), citer.to_vec()),
+            (keyed(INDEX, &target), (self.head.len as u64).to_be_bytes().to_vec()),
             (META_KEY.to_vec(), next.meta()),
         ];
         rows.extend(extra);

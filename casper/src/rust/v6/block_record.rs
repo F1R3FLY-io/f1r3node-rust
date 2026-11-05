@@ -168,7 +168,6 @@ impl BlockRecord {
 
     pub fn with_failed_close(mut self) -> Self {
         self.post_root = self.pre_root.clone();
-        self.system_deploys = Vec::new();
         self.void_reason = Some(VoidReason::CloseFailed);
         self
     }
@@ -308,8 +307,20 @@ impl BlockRecord {
             None => Ok(record),
         })?;
         if let Some(reason) = void_reason {
-            if record.post_root != record.pre_root || !record.system_deploys.is_empty() {
-                return Err("a void record leaves the state unchanged and runs no close".into());
+            let failed_close = matches!(
+                record.system_deploys.as_slice(),
+                [ProcessedSystemDeploy::Failed { .. }]
+            );
+            let traced = if reason == VoidReason::CloseFailed {
+                failed_close
+            } else {
+                record.system_deploys.is_empty()
+            };
+            if record.post_root != record.pre_root || !traced {
+                return Err(
+                    "a void record leaves the state unchanged, and only a (d) record carries its failed close"
+                        .into(),
+                );
             }
             let voided = record
                 .entries

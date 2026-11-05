@@ -749,7 +749,7 @@ async fn the_active_set_expression_picks_what_the_old_loop_picked() {
         );
         let mut ops = casper::rust::rholang::runtime::RuntimeOps::new(rm.spawn_runtime().await.unwrap());
         let (answer, _) = ops
-            .play_exploratory_deploy_with_phlo_limit(query, &genesis, None, 1_000_000_000)
+            .play_exploratory_deploy_with_phlo_limit(query, &genesis, None, 1_000_000_000, Vec::new())
             .await
             .unwrap();
         let (old, new) = RhoTuple2::unapply(&answer[0]).expect("a pair of sets");

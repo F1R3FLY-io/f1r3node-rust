@@ -1015,34 +1015,32 @@ impl BlockExecutor {
                 Some(gate),
             )
             .await;
-        let (post_root, _, system_deploys) = match closed {
-            Err(error) if close_failed(&error) => {
-                tracing::warn!(
-                    target: "f1r3fly.v6",
-                    block = %hex::encode(&block.block_hash),
-                    %error,
-                    "the close failed; the block is void for reason (d)"
-                );
-                let record = BlockRecord::new(
-                    block.block_hash.clone(),
-                    pre_root.clone(),
-                    executed.mid_root.clone(),
-                    pre_root.clone(),
-                    entries(&executed),
-                    Vec::new(),
-                )
-                .and_then(|record| record.with_gate(executed.gate.entries.clone()))
-                .map(|record| record.with_settlement(executed.settlement.clone()).with_failed_close())
-                .map_err(CasperError::RuntimeError)?;
-                return Ok((record, BlockTimings::default()));
-            }
-            closed => closed?,
-        };
+        let (post_root, _, system_deploys) = closed?;
         let close_refusals = close_meter.take().refusals;
         let system_deploys: Vec<_> = system_deploys
             .into_iter()
             .map(|deploy| super::stops::with_refusals(deploy, &close_refusals))
             .collect();
+        if let Some(failed) = system_deploys.iter().find(|deploy| traced_close_failure(deploy)) {
+            tracing::warn!(
+                target: "f1r3fly.v6",
+                block = %hex::encode(&block.block_hash),
+                failure = ?failed,
+                "the close failed; the block is void for reason (d)"
+            );
+            let record = BlockRecord::new(
+                block.block_hash.clone(),
+                pre_root.clone(),
+                executed.mid_root.clone(),
+                pre_root.clone(),
+                entries(&executed),
+                vec![failed.clone()],
+            )
+            .and_then(|record| record.with_gate(executed.gate.entries.clone()))
+            .map(|record| record.with_settlement(executed.settlement.clone()).with_failed_close())
+            .map_err(CasperError::RuntimeError)?;
+            return Ok((record, BlockTimings::default()));
+        }
         let close_block_time = started.elapsed();
         let started = std::time::Instant::now();
         self.audit(block, &executed.settlement, &post_root).await;
@@ -1169,6 +1167,14 @@ fn entries(executed: &ExecutedBlock) -> Vec<RecordEntry> {
 
 fn envelope_ids(block: &BlockMessage) -> Vec<prost::bytes::Bytes> {
     block.body.deploys.iter().map(|d| d.deploy.sig.clone()).collect()
+}
+
+fn traced_close_failure(deploy: &models::rust::casper::protocol::casper_message::ProcessedSystemDeploy) -> bool {
+    matches!(
+        deploy,
+        models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Failed { error_msg, .. }
+            if error_msg.starts_with(crate::rust::rholang::runtime::CLOSE_FAILED_PREFIX)
+    )
 }
 
 fn close_failed(error: &CasperError) -> bool {
@@ -1303,31 +1309,12 @@ impl ExecutionBackend for BlockExecutor {
         if record.settlement() != Some(&replayed.settlement) {
             return Err(mismatch("the settled charges"));
         }
-        if record.void_reason() == Some(VoidReason::CloseFailed) {
-            let (gate, _, _) = self.close_gate(record.pre_root(), &replayed, None, close).await?;
-            let closed = self
-                .runtime_manager
-                .compute_state_gated(
-                    &replayed.settled_root,
-                    vec![],
-                    vec![close_block(block)],
-                    block_data(block),
-                    None,
-                    Some(gate),
-                )
-                .await;
-            return match closed {
-                Err(error) if close_failed(&error) => Ok(record.pre_root().clone()),
-                Err(error) => Err(error),
-                Ok(_) => Err(mismatch("the record is void for reason (d), and the close runs")),
-            };
-        }
         let close_logged = super::stops::system_refusals(record.system_deploys())
             .map_err(|e| mismatch(&format!("a close refusal does not decode: {e}")))?;
         let (gate, close_meter, close_funding) = self
             .close_gate(record.pre_root(), &replayed, Some(&close_logged), close)
             .await?;
-        let post_root = self
+        let replayed_close = self
             .runtime_manager
             .replay_compute_state_gated(
                 &replayed.settled_root,
@@ -1338,7 +1325,17 @@ impl ExecutionBackend for BlockExecutor {
                 false,
                 Some(gate),
             )
-            .await?;
+            .await;
+        let post_root = match (record.void_reason(), replayed_close) {
+            (Some(VoidReason::CloseFailed), Err(error)) if close_failed(&error) => {
+                record.pre_root().clone()
+            }
+            (Some(VoidReason::CloseFailed), Err(error)) => return Err(error),
+            (Some(VoidReason::CloseFailed), Ok(_)) => {
+                return Err(mismatch("the record is void for reason (d), and the close runs"))
+            }
+            (_, replayed_close) => replayed_close?,
+        };
         if post_root != *record.post_root() {
             return Err(mismatch("post-state root"));
         }

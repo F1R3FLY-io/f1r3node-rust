@@ -10,7 +10,8 @@ const THRESHOLD: u64 = 6;
 
 fn lfb_number(node: &TestNode) -> i64 {
     let dag = node.block_dag_storage.get_representation().unwrap();
-    dag.block_number(&dag.last_finalized_block()).unwrap()
+    dag.block_number(&node.block_dag_storage.order_floor().unwrap())
+        .unwrap()
 }
 
 fn lag(node: &TestNode) -> i64 {
@@ -18,7 +19,8 @@ fn lag(node: &TestNode) -> i64 {
     let executed = dag
         .block_number(&engine(node).attestation().block_hash)
         .unwrap();
-    dag.block_number(&dag.last_finalized_block()).unwrap() - executed
+    let order = node.block_dag_storage.order_floor().unwrap();
+    dag.block_number(&order).unwrap() - executed
 }
 
 async fn round(nodes: &mut [TestNode], proposer: usize, executing: &[usize]) -> BlockMessage {
@@ -78,7 +80,7 @@ async fn a_lagging_validator_proposes_without_envelopes_until_it_catches_up() {
     }
     assert!(
         lfb_number(&nodes[0]) > finalized_before,
-        "finality stalled while the gate was engaged"
+        "ordering stalled while the gate was engaged"
     );
 
     let mut carried = None;
