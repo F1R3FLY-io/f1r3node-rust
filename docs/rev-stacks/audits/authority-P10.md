@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2599,6 +2599,80 @@ From this point on, A-9 reads against design r23 (publications `c032466`). r22 r
 | FX-17 takes `86bb14a74`, and then Decision 114 | Merge condition | Open |
 | F39, F33, question 23 | — | Closed by ruling |
 | F51 (until Decision 114 lands), F38 (refunds outside a COMM), F43, F44, the `for` form under `# P`, lane C's remaining known issues, storage growth and client latency under P11, the deploy-lifespan expiry of a void deployment, slashing epoch arithmetic, a shard floor of 0, the Decision 108 griefing case, the (d) drop of uninvolved deployments, the ignored `deploy-verified-encodings-cap`, the `AlreadyPresent` rejection entry, the endlessly retried failed release | Known issue | Open |
+
+
+## Revision 29 (action A-8): FX-17, first half
+
+- **Commits audited:** `patch/FX-17` at `994f70ae0` (lane A2):
+  - `85ea0a9b6`: void records.
+  - `b4ab97899`: Decision 109.
+  - `994f70ae0`: the order-floor register.
+- **Reference:** design r23 (publications `c032466`), and the Q-33 revision 2 and 3 sign-offs.
+- **Method:** a reading of the FX-17 log and of `block_dag_key_value_storage.rs` and `finalization_commit.rs`. No tests were run. The rest of the void, gate and core code is read only as far as the log describes it. A-8 reads it in full when FX-17 is complete.
+
+### Label 1: reason (d) is replayed by running the close in play mode
+
+**What the code does:** a (d) record keeps the runs' entries, the gate and the settlement, sets post = pre, and carries no close log. Replay runs the deployments from their logs, then runs the close **in play mode**. It accepts the record only if that close fails with `UnexpectedSystemErrors` or `ConsumeFailed`. Lane A2 labels this a known issue, because the test reaches (d) only with an empty pre-state.
+
+**Judgment: as it stands, nodes can disagree on a void. Blocking.**
+- Under Decision 89, play is not deterministic. The close's own PoS code is not gated. But the stored continuations that it fires are gated by `CloseFunding`, and their stop points can differ from one execution to the next. The close also runs parallel branches whose order is not fixed. A close run in play mode follows no trace, so two replayers of the same (d) record can reach different outcomes: one sees the close fail, and another sees it succeed.
+- The node that sees it fail fixes the (d) record as canonical. The node that sees it succeed rejects the record as a citer fault, and later fixes another record for that position. The two nodes then hold different canonical records, so they attest different roots. Each also reports the other's attestation as a misattestation.
+- P5 counts an attestation only when it matches the local canonical root. So at most one of the two roots can pass 2/3. The nodes on the other side can never move their LFB past that position, because their own canonical root will never match. That is a stall for those nodes, and false misattestation evidence against honest validators.
+- **Reason for the label:** this is a safety finding of High severity. Nodes disagree on a canonical record, and that breaks the agreement that P11 depends on. The probability is low, because (d) is not expected to occur. But (d) is exactly the case of a PoS defect, and a defect can be reached on purpose. The impact when it occurs is severe.
+- **Required fix:** the fix that you asked lane A2 for. The (d) record carries the close's trace and outcome, and replay follows that trace like any other system deploy. The two-way check then applies at the end of the traced close. Replay rejects a (d) record whose traced close succeeds, and a normal record whose traced close fails.
+- **Pinning test:** alter an honest (d) record so that its close log is one that succeeds, and expect replay to reject it. Also replay the honest (d) record under 1, 2 and 4 workers, and expect the same outcome each time.
+
+### Label 2: the order commit is a separate transaction, written before the LFB
+
+**What the code does:**
+- `commit_order` takes the global write lock, refuses a candidate that is not higher than the current order pointer, runs the `validate` closure against the order pointer, and writes key `"order"` with one `put_one`.
+- `commit_lfb` refuses a candidate whose height is above the order pointer.
+- `order_floor()` reads the pointer from the store each time. There is no in-memory copy.
+- `check_floor_order()` returns an error when height(order) < height(LFB).
+
+**Crash points:**
+
+| Crash point | State after restart | Safe? |
+|---|---|---|
+| Before `commit_order` writes | Old order, old LFB | **Yes.** The next cycle derives again. |
+| During `commit_order`'s write | LMDB commits the single put or does not | **Yes.** No torn pointer. |
+| After `commit_order`, before `commit_lfb` | New order, old LFB | **Yes.** This is a valid state: the LFB may lag the order floor. The linearizer reads the order pointer from the store. |
+| During `commit_lfb` | LMDB commits the LFB transaction (pointer, marker, metadata) or does not | **Yes.** This is the existing transaction, and the existing marker reconciliation applies. |
+| After `commit_lfb`, before events | The marker is present | **Yes.** The existing re-emission path applies. |
+| A store from before FX-17 (no `"order"` key) | `order_floor()` falls back to the LFB, and the first `commit_order` starts from it | **Yes.** |
+
+The invariant height(LFB) ≤ height(order) cannot break by a crash. The order is written first, and `commit_lfb` refuses a candidate above it, under the same global lock. **Confirmed: every crash point is safe.** This matches revision 18's Q1 answer: the order floor commits on its own and is never blocked by P5.
+
+**Three conditions for the second half:**
+1. **The LFB must be a main-chain prefix of the order floor, not only at or below its height.** `commit_lfb` compares heights only. A candidate at a lower height on another branch would pass that check. The state part must require the candidate to be on the order floor's main chain, as Q-33's terms define the LFB. The P5 clamp ("the highest main-chain block at or below the order floor") will do this, but `commit_lfb` should also check it, as a guard.
+2. **Call `check_floor_order()` at startup** and stop the engine on an error. Today only the tests call it.
+3. **Wire `commit_order` into the finalizer**, with P1 to P4, containment and A-LIN against the order pointer. Today only the tests call it, so production has no order key and behaves as before.
+
+### Other items in the first half, at log level
+
+- **Void (a), (b) and (c)** are decided from the block and the pre-state, in the order (b), (c), (a). The record has post = mid = pre, and the reason is in field 13. Replay checks both directions. `VoidBlock { reason }` is slashable only for (b) and (c). The counts for each proposer are written in the same put as the record. **Matches the sign-off**, subject to the full reading.
+- **Decision 109:**
+  - `AlreadyIncluded` and `Discarded` are gate refusals, checked before any other rule, from statuses that are persisted with each canonical record and windowed by the deploy lifespan. They do not depend on what a node has pruned.
+  - `repeat_deploy` accepts every v6 block.
+  - **Condition:** r23 says that acceptance still refuses one deployment twice in one block. The log does not say where that check now sits. FX-17 must show it, because `repeat_deploy` no longer runs for v6 blocks.
+- **Lane A2's two known issues for the order-floor commit are conditions, not known issues.** Both affect Decision 109's guarantee that a void block's deployments run once:
+  1. The deploy lifecycle must skip void records. Otherwise it releases the envelopes that the engine put back.
+  2. The inclusion screen must use the canonical statuses.
+- **The defect found and fixed:** a close whose result never arrived panicked in play, because a `dev` diagnostic ran on a play runtime. It is closed.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | First half on `patch/FX-17`. Open until the second half lands. |
+| (d) replayed in play mode | **Blocking** | New. Fix: the close's trace and outcome go in the (d) record. |
+| D10 | **Blocking** | On `patch/FX-17`. Void (a) is there. FX-17 must merge into FX-8b. |
+| F47 (99 withdrawers) | **Blocking until merged** | Enabled and passing on `patch/FX-17`: 1,292,624 phlo against 1,500,000. |
+| The LFB as a main-chain prefix of the order floor, `check_floor_order` at startup, `commit_order` in the finalizer, the within-block duplicate check, the lifecycle skipping void records, the inclusion screen on statuses | FX-17 conditions | Open |
+| Full-suite counts for FX-8b | Merge condition | Open |
+| FX-17 takes FX-17-epoch with the early-release fix and Decision 114 | Merge condition | Open |
+| The unpruned deployment statuses (lane A2) | Known issue | New. Accepted: the window makes pruning safe. |
+| F51 (until Decision 114 lands) and the known issues of revision 28 except F39 and F33 | Known issue | Open |
 
 
 ## Open questions for review
