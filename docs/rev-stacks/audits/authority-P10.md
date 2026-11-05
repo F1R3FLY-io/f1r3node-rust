@@ -3171,6 +3171,8 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
   - A chain by hash has no gap and no repeat, whatever the epoch index. This meets the gap check of item 9. The slashing part of item 9 stays a known issue until B6.
   - **Condition:** the lookahead moves the start of service of a new bond by one epoch. That is a consensus change to PoS. It must not reach the shipped branch while FX-18 is parked.
 
+**Ruling of 2026-11-05 (09:31 PST):** `patch/FX-18-handoff` (lane B) is P12-track work. It changes how the validator set is chosen, so it is not merged into FX-17 or FX-8b. The condition above becomes a ruling. At `0b01b1663` and `b7e4d5329`, neither branch contains `dacacc41a`. Each later check confirms that `dacacc41a` is not an ancestor of FX-17, FX-8b or the tagged handoff candidate (Decision 123).
+
 ### FX-17 at `0b01b1663`
 
 - **`c8c15ffe7` is merged.** The gate-claim condition is closed on the integration path.
