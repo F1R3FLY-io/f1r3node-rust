@@ -1199,27 +1199,29 @@ impl ProcessedDeploy {
     }
 }
 
+/// Two blocks one sender signed at one sequence number: proof of an
+/// equivocation that needs nothing else to check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EquivocationEvidence {
+    pub first: BlockCommitment,
+    pub second: BlockCommitment,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SystemDeployData {
     Slash {
-        invalid_block_hash: ByteString,
+        evidence: Box<EquivocationEvidence>,
         issuer_public_key: PublicKey,
-        target_activation_epoch: i64,
     },
     CloseBlockSystemDeployData,
     Empty,
 }
 
 impl SystemDeployData {
-    pub fn create_slash(
-        invalid_block_hash: ByteString,
-        issuer_public_key: PublicKey,
-        target_activation_epoch: i64,
-    ) -> Self {
+    pub fn create_slash(evidence: EquivocationEvidence, issuer_public_key: PublicKey) -> Self {
         Self::Slash {
-            invalid_block_hash,
+            evidence: Box::new(evidence),
             issuer_public_key,
-            target_activation_epoch,
         }
     }
 
@@ -1230,15 +1232,20 @@ impl SystemDeployData {
             .system_deploy
             .ok_or_else(|| "Missing system deploy field".to_string())?
         {
-            system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(
-                slash_system_deploy_data_proto,
-            ) => Ok(Self::Slash {
-                invalid_block_hash: slash_system_deploy_data_proto.invalid_block_hash,
-                issuer_public_key: PublicKey::from_bytes(
-                    &slash_system_deploy_data_proto.issuer_public_key,
-                ),
-                target_activation_epoch: slash_system_deploy_data_proto.target_activation_epoch,
-            }),
+            system_deploy_data_proto::SystemDeploy::SlashSystemDeploy(slash) => {
+                let commitment = |proto: Option<BlockCommitmentProto>| {
+                    BlockCommitment::from_proto(
+                        proto.ok_or_else(|| "Missing slash evidence commitment".to_string())?,
+                    )
+                };
+                Ok(Self::Slash {
+                    evidence: Box::new(EquivocationEvidence {
+                        first: commitment(slash.first)?,
+                        second: commitment(slash.second)?,
+                    }),
+                    issuer_public_key: PublicKey::from_bytes(&slash.issuer_public_key),
+                })
+            }
             system_deploy_data_proto::SystemDeploy::CloseBlockSystemDeploy(_) => {
                 Ok(Self::CloseBlockSystemDeployData)
             }
@@ -1248,15 +1255,14 @@ impl SystemDeployData {
     pub fn to_proto(sdd: SystemDeployData) -> SystemDeployDataProto {
         match sdd {
             Self::Slash {
-                invalid_block_hash,
+                evidence,
                 issuer_public_key,
-                target_activation_epoch,
             } => SystemDeployDataProto {
                 system_deploy: Some(SystemDeploy::SlashSystemDeploy(
                     SlashSystemDeployDataProto {
-                        invalid_block_hash,
                         issuer_public_key: issuer_public_key.bytes.into(),
-                        target_activation_epoch,
+                        first: Some(evidence.first.to_proto()),
+                        second: Some(evidence.second.to_proto()),
                     },
                 )),
             },
@@ -2279,12 +2285,40 @@ mod tests {
         assert_eq!(info.sig, hex::encode(&deploy.sig));
     }
 
+    fn commitment(seed: u8) -> BlockCommitment {
+        BlockCommitment {
+            header: Header {
+                parents_hash_list: vec![Bytes::from(vec![seed; 32])],
+                timestamp: i64::from(seed),
+                version: 1,
+                extra_bytes: Bytes::new(),
+            },
+            pre_state_hash: Bytes::from(vec![seed; 32]),
+            post_state_hash: Bytes::from(vec![seed + 1; 32]),
+            bonds_root: Bytes::from(vec![seed + 2; 32]),
+            block_number: i64::from(seed),
+            rejected_root: Bytes::from(vec![seed + 3; 32]),
+            applied_from_scope_root: Bytes::from(vec![seed + 4; 32]),
+            merge_base: Bytes::new(),
+            body_extra_bytes: Bytes::new(),
+            sender: Bytes::from(vec![0x04; 65]),
+            sig_algorithm: "secp256k1".to_string(),
+            seq_num: 3,
+            shard_id: "root".to_string(),
+            extra_bytes: Bytes::new(),
+            deploys_root: Bytes::from(vec![seed + 5; 32]),
+            sig: Bytes::from(vec![seed + 6; 70]),
+        }
+    }
+
     #[test]
     fn system_deploy_data_round_trips_all_variants() {
         let slash = SystemDeployData::create_slash(
-            Bytes::from_static(b"invalid-block"),
+            EquivocationEvidence {
+                first: commitment(1),
+                second: commitment(9),
+            },
             PublicKey::from_bytes(b"issuer"),
-            5,
         );
         assert_eq!(
             SystemDeployData::from_proto(SystemDeployData::to_proto(slash.clone())).unwrap(),

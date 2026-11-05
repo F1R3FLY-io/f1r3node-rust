@@ -95,7 +95,6 @@ pub enum InvalidBlock {
     InvalidSequenceNumber,
     InvalidShardId,
     JustificationRegression,
-    NeglectedInvalidBlock,
     NeglectedEquivocation,
     InvalidTransaction,
     InvalidBondsCache,
@@ -169,10 +168,6 @@ impl BlockStatus {
 
     pub fn justification_regression() -> BlockError {
         BlockError::Invalid(InvalidBlock::JustificationRegression)
-    }
-
-    pub fn neglected_invalid_block() -> BlockError {
-        BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
     }
 
     pub fn neglected_equivocation() -> BlockError {
@@ -265,10 +260,8 @@ impl InvalidBlock {
             //     wire data; the sender is not identifiable (Signature) or
             //     the sender's identity can't be verified (Sender).
             //   • JustificationRegression / UnauthorizedSlashDeploy /
-            //     NeglectedInvalidBlock / NeglectedEquivocation: judged
-            //     against the receiver's own records or tracker — the
-            //     view-relative family observed diverging across honest
-            //     nodes in the run above.
+            //     NeglectedEquivocation: judged against the receiver's own
+            //     view of other blocks, not the signed block alone.
             //   • InvalidTransaction / InvalidBondsCache / InvalidParents /
             //     InvalidFollows / InvalidRepeatDeploy / InvalidBlockNumber /
             //     InvalidSequenceNumber / InvalidShardId / InvalidBlockHash /
@@ -303,7 +296,6 @@ impl InvalidBlock {
             | InvalidBlock::InvalidSequenceNumber
             | InvalidBlock::InvalidShardId
             | InvalidBlock::JustificationRegression
-            | InvalidBlock::NeglectedInvalidBlock
             | InvalidBlock::NeglectedEquivocation
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache

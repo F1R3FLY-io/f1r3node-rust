@@ -22,13 +22,11 @@ use super::tools::Tools;
 // closeBlock fires exactly once per block, so PREFIX ++ PublicKey ++ seqNum
 // is collision-free for it.
 //
-// Slashing can fire multiple times per block (one per equivocator detected
-// in the proposer's invalid_latest_messages, plus any merge-rejected slash
-// re-issued via the recovery path). The slash seed therefore takes the
-// equivocator's invalid_block_hash as well so each slash in the same block
-// gets a distinct rng — the slash contract allocates `new rl, poSCh, ...`
-// from this rng, and shared seeds would alias those unforgeable channel
-// names across slashes in the same block.
+// Slashing can fire multiple times per block (one per offender). The slash
+// seed therefore takes the block the slash cites as well so each slash in the
+// same block gets a distinct rng — the slash contract allocates
+// `new rl, poSCh, ...` from this rng, and shared seeds would alias those
+// unforgeable channel names across slashes in the same block.
 
 const SYSTEM_DEPLOY_PREFIX: i32 = 1;
 

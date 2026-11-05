@@ -19,10 +19,10 @@
 //!    `post_state_hash`.
 //! 4. `bonds_cache` — verify the block's bonds map matches the bonds
 //!    computed from the parent post-state hash.
-//! 5. `neglected_invalid_block` — reject the block if it has invalid
-//!    justifications whose bonded sender is *still* bonded (T-9.7).
-//! 6. `check_neglected_equivocations_with_update` — see Bug #2 / T-9.2.
-//! 7. `phlo_price` — minimum phlo-price check.
+//! 5. `check_neglected_equivocations` — reject the block if both blocks of
+//!    an equivocation are in its justifications and it leaves the
+//!    equivocator bonded.
+//! 6. `phlo_price` — minimum phlo-price check.
 //!
 //! ## Slashing-protocol position
 //!
@@ -30,7 +30,7 @@
 //! dispatcher (`dispatch_handle_invalid_block`) records the block invalid
 //! together with its sibling.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -46,7 +46,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, Bond, ProcessedSystemDeploy, SystemDeployData,
+    ApprovedBlock, BlockCommitment, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
@@ -69,10 +69,7 @@ use crate::rust::metrics_constants::{
     REPEAT_DEPLOY_PARENTS_TIME_METRIC, REPEAT_DEPLOY_REJECTED_SIGS_TIME_METRIC,
     REPEAT_DEPLOY_RETRY_GATE_TIME_METRIC,
 };
-use crate::rust::slashing_authorization::{
-    epoch_for_block_number, received_slash_deploy_authorized, slash_target_key,
-    validate_received_slash_deploys, SlashAuthError,
-};
+use crate::rust::slashing_authorization::validate_received_slash_deploys;
 use crate::rust::system_deploy::is_system_deploy_id;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -230,6 +227,17 @@ impl Validate {
             tracing::warn!("{}", Self::ignore(b, "signature is invalid."));
         }
         verified
+    }
+
+    /// Whether `commitment`'s sender signed `hash`, the hash it commits to.
+    pub fn commitment_signature(commitment: &BlockCommitment, hash: &BlockHash) -> bool {
+        Self::signature_algorithm_supported(&commitment.sig_algorithm)
+            && Self::verify_signature(
+                &commitment.sig_algorithm,
+                &hash.to_vec(),
+                &commitment.sig.to_vec(),
+                &commitment.sender.to_vec(),
+            )
     }
 
     pub fn block_sender_has_weight(
@@ -1660,130 +1668,6 @@ impl Validate {
         }
     }
 
-    /// If block contains an invalid justification block B and the creator of B is still bonded
-    /// in the block's post-state, return a RejectableBlock. Otherwise, return an IncludeableBlock.
-    /// A slash the block or a parent carries leaves the creator unbonded there.
-    pub fn neglected_invalid_block(
-        block: &BlockMessage,
-        s: &mut CasperSnapshot,
-        post_state_bonds: &[Bond],
-    ) -> ValidBlockProcessing {
-        let epoch_length = s.on_chain_state.shard_conf.epoch_length;
-        let current_epoch =
-            match epoch_for_block_number(block.body.state.block_number, epoch_length) {
-                Ok(epoch) => epoch,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-        let bonds = proto_util::bonds(block);
-        let bonds_by_validator: HashMap<&Validator, i64> = bonds
-            .iter()
-            .map(|bond| (&bond.validator, bond.stake))
-            .collect();
-        let post_state_stake: HashMap<&Validator, i64> = post_state_bonds
-            .iter()
-            .map(|bond| (&bond.validator, bond.stake))
-            .collect();
-        let mut slash_targets = HashSet::new();
-
-        for system_deploy in &block.body.system_deploys {
-            let ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash,
-                        issuer_public_key,
-                        target_activation_epoch,
-                    },
-                ..
-            } = system_deploy
-            else {
-                continue;
-            };
-            if issuer_public_key.bytes != block.sender {
-                continue;
-            }
-
-            let metadata = match s.dag.lookup(invalid_block_hash) {
-                Ok(Some(metadata)) => metadata,
-                Ok(None) => continue,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        error,
-                    )))
-                }
-            };
-            let target_activation_epoch = (*target_activation_epoch).into();
-            let bond = bonds_by_validator
-                .get(&metadata.sender)
-                .copied()
-                .unwrap_or(0);
-            let authorized = match received_slash_deploy_authorized(
-                block.body.state.block_number,
-                metadata.block_number,
-                target_activation_epoch,
-                epoch_length,
-                bond,
-                metadata.is_invalid(),
-            ) {
-                Ok(authorized) => authorized,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-            if authorized {
-                slash_targets.insert(slash_target_key(&metadata.sender, target_activation_epoch));
-            }
-        }
-
-        for justification in &block.justifications {
-            let metadata = match s.dag.lookup(&justification.latest_block_hash) {
-                Ok(Some(metadata)) => metadata,
-                Ok(None) => continue,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        error,
-                    )))
-                }
-            };
-            if !metadata.is_invalid() {
-                continue;
-            }
-
-            let bond = post_state_stake
-                .get(&metadata.sender)
-                .or_else(|| post_state_stake.get(&justification.validator))
-                .copied()
-                .unwrap_or(0);
-            let slash_required = match received_slash_deploy_authorized(
-                block.body.state.block_number,
-                metadata.block_number,
-                current_epoch,
-                epoch_length,
-                bond,
-                metadata.is_invalid(),
-            ) {
-                Ok(required) => required,
-                Err(error) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(
-                        SlashAuthError::from(error),
-                    )))
-                }
-            };
-            if slash_required
-                && !slash_targets.contains(&slash_target_key(&metadata.sender, current_epoch))
-            {
-                return Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock));
-            }
-        }
-
-        Either::Right(ValidBlock::Valid)
-    }
-
     pub async fn bonds_cache_from_floor(
         b: &BlockMessage,
         block_store: &KeyValueBlockStore,
@@ -1921,194 +1805,5 @@ impl Validate {
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
         }
-    }
-}
-
-#[cfg(test)]
-mod merge_recovery_validation_tests {
-    use std::collections::BTreeMap;
-
-    use crypto::rust::public_key::PublicKey;
-    use models::rust::block_metadata::BlockMetadata;
-    use models::rust::casper::protocol::casper_message::{
-        Body, Bond, F1r3flyState, Header, Justification,
-    };
-
-    use super::*;
-
-    fn validator(byte: u8) -> Validator { Bytes::from(vec![byte; models::rust::validator::LENGTH]) }
-
-    fn hash(byte: u8) -> BlockHash { Bytes::from(vec![byte; 32]) }
-
-    fn add_metadata(
-        snapshot: &mut CasperSnapshot,
-        block_hash: BlockHash,
-        sender: Validator,
-        block_number: i64,
-        invalid: bool,
-    ) {
-        snapshot.dag.dag_set.insert(block_hash.clone());
-        snapshot
-            .dag
-            .block_metadata_index
-            .write()
-            .add(BlockMetadata {
-                block_hash,
-                parents: Vec::new(),
-                sender,
-                justifications: Vec::new(),
-                weight_map: BTreeMap::new(),
-                block_number,
-                sequence_number: block_number as i32,
-                equivocates: invalid.then(|| hash(0xEE)),
-                directly_finalized: false,
-                finalized: false,
-                fault_tolerance_value: 0.0,
-                merge_base: Bytes::new(),
-            })
-            .expect("metadata inserted");
-    }
-
-    fn candidate(
-        block_number: i64,
-        sender: Validator,
-        offender: Validator,
-        invalid_hash: BlockHash,
-        system_deploys: Vec<ProcessedSystemDeploy>,
-    ) -> BlockMessage {
-        BlockMessage {
-            block_hash: hash(0xf0),
-            header: Header {
-                parents_hash_list: Vec::new(),
-                timestamp: block_number,
-                version: 1,
-                extra_bytes: Bytes::new(),
-            },
-            body: Body {
-                state: F1r3flyState {
-                    pre_state_hash: Bytes::new(),
-                    post_state_hash: Bytes::new(),
-                    bonds: vec![
-                        Bond {
-                            validator: offender.clone(),
-                            stake: 1000,
-                        },
-                        Bond {
-                            validator: sender.clone(),
-                            stake: 1000,
-                        },
-                    ],
-                    block_number,
-                },
-                deploys: Vec::new(),
-                rejected_deploys: Vec::new(),
-                system_deploys,
-                extra_bytes: Bytes::new(),
-                applied_from_scope: Vec::new(),
-                merge_base: Bytes::new(),
-            },
-            justifications: vec![Justification {
-                validator: offender,
-                latest_block_hash: invalid_hash,
-            }],
-            sender,
-            seq_num: block_number as i32,
-            sig: Bytes::new(),
-            sig_algorithm: "test".to_string(),
-            shard_id: "test".to_string(),
-            extra_bytes: Bytes::new(),
-        }
-    }
-
-    fn slash(
-        invalid_hash: BlockHash,
-        issuer: Validator,
-        target_activation_epoch: i64,
-    ) -> ProcessedSystemDeploy {
-        ProcessedSystemDeploy::Succeeded {
-            event_list: Vec::new(),
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: invalid_hash,
-                issuer_public_key: PublicKey::new(issuer),
-                target_activation_epoch,
-            },
-        }
-    }
-
-    #[test]
-    fn stale_invalid_justification_is_not_slash_obligating() {
-        let mut snapshot =
-            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.shard_conf.epoch_length = 10;
-        let offender = validator(2);
-        let proposer = validator(3);
-        let invalid = hash(17);
-        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 391, true);
-        let block = candidate(4334, proposer, offender, invalid, Vec::new());
-
-        assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot, &block.body.state.bonds),
-            Either::Right(ValidBlock::Valid)
-        ));
-    }
-
-    #[test]
-    fn an_offender_already_slashed_in_the_post_state_is_owed_nothing() {
-        let mut snapshot =
-            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.shard_conf.epoch_length = 10;
-        let offender = validator(7);
-        let proposer = validator(8);
-        let invalid = hash(68);
-        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 94, true);
-        let block = candidate(95, proposer.clone(), offender.clone(), invalid, Vec::new());
-        let post_state_bonds = vec![
-            Bond {
-                validator: offender,
-                stake: 0,
-            },
-            Bond {
-                validator: proposer,
-                stake: 1000,
-            },
-        ];
-
-        assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot, &post_state_bonds),
-            Either::Right(ValidBlock::Valid)
-        ));
-    }
-
-    #[test]
-    fn current_invalid_justification_requires_matching_slash() {
-        let mut snapshot =
-            crate::rust::casper::test_helpers::TestCasperWithSnapshot::create_empty_snapshot();
-        snapshot.on_chain_state.shard_conf.epoch_length = 10;
-        let offender = validator(4);
-        let proposer = validator(5);
-        let invalid = hash(34);
-        add_metadata(&mut snapshot, invalid.clone(), offender.clone(), 94, true);
-        let unrelated = hash(51);
-        add_metadata(&mut snapshot, unrelated.clone(), validator(6), 94, true);
-        let block = candidate(
-            95,
-            proposer.clone(),
-            offender.clone(),
-            invalid.clone(),
-            vec![slash(unrelated, proposer.clone(), 9)],
-        );
-
-        assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot, &block.body.state.bonds),
-            Either::Left(BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock))
-        ));
-
-        let block = candidate(95, proposer.clone(), offender, invalid.clone(), vec![
-            slash(invalid, proposer, 9),
-        ]);
-        assert!(matches!(
-            Validate::neglected_invalid_block(&block, &mut snapshot, &block.body.state.bonds),
-            Either::Right(ValidBlock::Valid)
-        ));
     }
 }

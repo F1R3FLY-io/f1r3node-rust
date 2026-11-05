@@ -33,13 +33,10 @@ use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
     BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
-use crate::rust::slashing_authorization::{
-    checked_base_seq, offenders_with_evidence_in_epoch_of, SlashAuthError,
-};
+use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
 use crate::rust::validate::Validate;
@@ -232,43 +229,17 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         .compute_bonds(&block.body.state.post_state_hash)
         .await?;
 
-    let (neglected_invalid_block_result, t4) = timed_step(
-        "neglected-invalid-block",
-        BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-        async {
-            Ok(Validate::neglected_invalid_block(
-                block,
-                snapshot,
-                &post_state_bonds,
-            ))
-        },
-    )
-    .await?;
-    tracing::debug!(target: "f1r3fly.casper", "neglected-invalid-block-validated");
-    if let Either::Left(block_error) = neglected_invalid_block_result {
-        return Ok(Either::Left(block_error));
-    }
-
     let (equivocation_detector_result, t5) = timed_step(
         "neglected-equivocation",
         BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
         async {
-            let slashable = offenders_with_evidence_in_epoch_of(
-                snapshot.dag.invalid_blocks(),
-                block.body.state.block_number,
-                snapshot.on_chain_state.shard_conf.epoch_length,
-            )
-            .map_err(SlashAuthError::from)?;
-            EquivocationDetector::check_neglected_equivocations_with_update(
+            EquivocationDetector::check_neglected_equivocations(
                 block,
                 &snapshot.dag,
                 &this.block_store,
                 &this.approved_block,
-                &this.block_dag_storage,
                 &post_state_bonds,
-                &slashable,
             )
-            .await
             .map_err(CasperError::from)
         },
     )
@@ -303,14 +274,13 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
 
     let timing_breakdown = match (t2_opt, t3_opt) {
         (Some(t2), Some(t3)) => format!(
-            "equiv={}, summary={}, checkpoint={}, bonds={}, neglected-invalid={}, \
-             neglected-equiv={}, phlo={}",
-            t0, t1, t2, t3, t4, t5, t6
+            "equiv={}, summary={}, checkpoint={}, bonds={}, neglected-equiv={}, phlo={}",
+            t0, t1, t2, t3, t5, t6
         ),
         _ => format!(
-            "equiv={}, summary={}, neglected-invalid={}, neglected-equiv={}, phlo={} \
+            "equiv={}, summary={}, neglected-equiv={}, phlo={} \
              (checkpoint and bonds-cache skipped — self-created)",
-            t0, t1, t4, t5, t6
+            t0, t1, t5, t6
         ),
     };
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);
@@ -503,8 +473,8 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
     // post-state of its own block. This dispatch is reached only from the
     // local proposer, never from the receiving path, so skipping
     // checkpoint+bonds here closes no security hole. Remaining validators
-    // (sender weight, equivocation, block_summary, neglected-invalid,
-    // neglected-equivocation, phlo-price) all run.
+    // (sender weight, equivocation, block_summary, neglected-equivocation,
+    // phlo-price) all run.
     let start = std::time::Instant::now();
     let val_result = run_validation_steps(
         this, block, snapshot, /* skip_checkpoint_and_bonds */ true,

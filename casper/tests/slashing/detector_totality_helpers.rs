@@ -13,8 +13,8 @@
 //
 // `DetectorFixture` wires an in-memory block store + DAG against the
 // production `EquivocationDetector` so each test can build small
-// synthetic DAGs and assert the detector's classification (Valid,
-// AdmissibleEquivocation, IgnorableEquivocation, NeglectedEquivocation).
+// synthetic DAGs, hold equivocations, and assert the neglect verdict
+// (Valid or NeglectedEquivocation).
 // `assert_valid` / `assert_neglected` keep the asserts terse so each UC
 // test stays under ~30 lines.
 //
@@ -26,8 +26,6 @@
 //   3. Missing-pointer tolerance: a justification whose hash is not in the
 //      store is treated as obliviousness, not as a store inconsistency.
 
-use std::collections::BTreeSet;
-
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
@@ -35,7 +33,6 @@ use casper::rust::equivocation_detector::EquivocationDetector;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, F1r3flyState, Header, Justification,
 };
-use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -87,19 +84,28 @@ impl DetectorFixture {
             .expect("insert block");
     }
 
-    pub fn add_record(&self, offender_index: usize, base_seq: i32, detected_hashes: &[Bytes]) {
-        let record = EquivocationRecord::new(
+    /// Holds an equivocation of `validators[offender_index]` above `base_seq`:
+    /// a block at `base_seq + 1` stored with its sibling.
+    pub fn add_equivocation(&self, offender_index: usize, base_seq: i32) {
+        let equivocation = block(
+            240 + offender_index as u8,
             self.validators[offender_index].clone(),
-            base_seq,
-            detected_hashes.iter().cloned().collect::<BTreeSet<_>>(),
+            base_seq + 1,
+            vec![],
+            self.validators.clone(),
         );
         self.dag_storage
-            .insert_equivocation_record(record)
-            .expect("insert record");
+            .insert(
+                &equivocation,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Equivocation {
+                    sibling: hash(239 - offender_index as u8),
+                },
+            )
+            .expect("insert equivocation");
     }
 
     pub async fn check(&self, block: &BlockMessage) -> Either<BlockError, ValidBlock> {
-        EquivocationDetector::check_neglected_equivocations_with_update(
+        EquivocationDetector::check_neglected_equivocations(
             block,
             &self
                 .dag_storage
@@ -107,11 +113,8 @@ impl DetectorFixture {
                 .expect("dag representation"),
             &self.block_store,
             &self.genesis,
-            &self.dag_storage,
             &block.body.state.bonds,
-            &self.validators.iter().cloned().collect(),
         )
-        .await
         .expect("detector is total")
     }
 }

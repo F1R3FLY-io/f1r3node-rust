@@ -33,7 +33,6 @@ const DEMOTED_VARIANTS: &[InvalidBlock] = &[
     InvalidBlock::InvalidSequenceNumber,
     InvalidBlock::InvalidShardId,
     InvalidBlock::JustificationRegression,
-    InvalidBlock::NeglectedInvalidBlock,
     InvalidBlock::NeglectedEquivocation,
     InvalidBlock::InvalidTransaction,
     InvalidBlock::InvalidBondsCache,

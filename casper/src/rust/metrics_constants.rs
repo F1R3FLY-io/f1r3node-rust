@@ -226,8 +226,6 @@ pub const BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC: &str =
     "block.validation.step.checkpoint.time";
 pub const BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC: &str =
     "block.validation.step.bonds-cache.time";
-pub const BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC: &str =
-    "block.validation.step.neglected-invalid-block.time";
 pub const BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC: &str =
     "block.validation.step.neglected-equivocation.time";
 pub const BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC: &str =

@@ -419,10 +419,12 @@ message BlockCommitmentProto {
   bytes sig                  = 16;
 }
 
+// Two blocks one sender signed at one sequence number, ordered by block hash.
 message SlashSystemDeployDataProto {
-  bytes invalidBlockHash = 1;
-  bytes issuerPublicKey = 2;
-  int64 targetActivationEpoch = 3;
+  reserved 1, 3;
+  bytes issuerPublicKey       = 2;
+  BlockCommitmentProto first  = 4 [(scalapb.field).no_box = true];
+  BlockCommitmentProto second = 5 [(scalapb.field).no_box = true];
 }
 
 message CloseBlockSystemDeployDataProto{

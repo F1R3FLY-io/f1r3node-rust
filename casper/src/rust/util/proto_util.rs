@@ -13,8 +13,8 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockCommitment, BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    BlockCommitment, BlockMessage, Body, Bond, DeployData, EquivocationEvidence, Header,
+    Justification, ProcessedDeploy, ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -938,26 +938,37 @@ pub fn unseen_block_hashes(
     Ok(all_unseen_blocks)
 }
 
-/// Deterministic invalid-blocks map (block_hash -> sender) for the PoS slash
-/// system deploys in a block: exactly the blocks this block slashes, each keyed
-/// to its immutable sender. Derived from the block's own recorded slash targets
-/// (NOT the node's DAG invalid-set view, which is node-view-dependent and so
-/// differs between the proposer and a validator), so block creation and replay
-/// produce a byte-identical map. That makes the slash deploy's
-/// `rho:casper:invalidBlocks` produce reproduce at replay (no slash
-/// ConsumeFailed). The slash contract only looks up its own target via
-/// `invalidBlocks.getOrElse(blockHash, ..)`, so this is exactly what it needs —
-/// and it makes the slash hit the block's true sender instead of falling back.
-pub fn slashed_block_senders(
-    dag: &KeyValueDagRepresentation,
-    slashed_hashes: &[BlockHash],
-) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
-    let mut map = std::collections::HashMap::with_capacity(slashed_hashes.len());
-    for h in slashed_hashes {
-        let meta = dag.lookup_unsafe(h)?;
-        map.insert(h.clone(), meta.sender.clone());
-    }
-    Ok(map)
+/// The invalid-blocks map (cited block hash -> offender) the PoS slash deploys
+/// of a set of slashes read through `rho:casper:invalidBlocks`. Taken from the
+/// slashes' own evidence, so creation and replay on any node produce the same
+/// map without consulting a DAG.
+pub fn slash_evidence_senders<'a>(
+    evidence: impl IntoIterator<Item = &'a EquivocationEvidence>,
+) -> std::collections::HashMap<BlockHash, Validator> {
+    evidence
+        .into_iter()
+        .map(|evidence| {
+            (
+                commitment_hash(&evidence.first),
+                evidence.first.sender.clone(),
+            )
+        })
+        .collect()
+}
+
+/// The evidence of every slash `block` carries.
+pub fn slash_evidence(block: &BlockMessage) -> impl Iterator<Item = &EquivocationEvidence> {
+    block
+        .body
+        .system_deploys
+        .iter()
+        .filter_map(|deploy| match deploy {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { evidence, .. },
+                ..
+            } => Some(evidence.as_ref()),
+            _ => None,
+        })
 }
 
 fn get_creator_blocks_between(
@@ -1046,7 +1057,6 @@ mod fork_choice_b1_repro_tests {
 
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
     use parking_lot::RwLock as PlRwLock;
-    use proptest::prelude::*;
     use prost::bytes::Bytes;
     use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -1251,123 +1261,6 @@ mod fork_choice_b1_repro_tests {
             "unheld traversed block must be MissingBlock naming it, got {result:?}"
         );
     }
-
-    // G1 (CRITICAL) — slash-replay determinism. `slashed_block_senders` builds the slash
-    // system-deploy's invalid_blocks map from the block's OWN recorded slash targets and
-    // each target's IMMUTABLE sender — NOT the node's `dag.invalid_blocks` view (which
-    // diverges proposer-vs-validator and previously caused a `ConsumeFailed` at replay →
-    // block rejection + finalization stall). This test pins that VIEW-INDEPENDENCE: two
-    // DAGs with identical block metadata but DIFFERENT invalid-block sets produce a
-    // byte-identical map, so the PLAY map (block creation) ≡ the REPLAY map (validation).
-    fn dag_with_invalid(
-        blocks: Vec<BlockMetadata>,
-        invalid: Vec<BlockMetadata>,
-    ) -> KeyValueDagRepresentation {
-        let mut dag = dag_with(blocks);
-        let mut inv = imbl::HashSet::new();
-        for b in invalid {
-            inv.insert(b);
-        }
-        dag.invalid_blocks_set = inv;
-        dag
-    }
-
-    #[test]
-    fn slashed_block_senders_is_view_independent_g1() {
-        let (va, vb, vc) = (h(50), h(51), h(52));
-        let (b1, b2, b3) = (h(1), h(2), h(3));
-        let blocks = vec![
-            md(b1.clone(), vec![], 1, &va),
-            md(b2.clone(), vec![b1.clone()], 2, &vb),
-            md(b3.clone(), vec![b2.clone()], 3, &vc),
-        ];
-        // The block slashes b1 and b3 (its own recorded targets).
-        let slashed = vec![b1.clone(), b3.clone()];
-        // Two nodes with DIVERGENT invalid-block views over identical block metadata
-        // (the proposer sees none invalid; the validator's view flags b2 and b3).
-        let dag_proposer = dag_with_invalid(blocks.clone(), vec![]);
-        let dag_validator = dag_with_invalid(blocks.clone(), vec![
-            md(b2.clone(), vec![b1.clone()], 2, &vb),
-            md(b3.clone(), vec![b2.clone()], 3, &vc),
-        ]);
-
-        let map_play = slashed_block_senders(&dag_proposer, &slashed).expect("play map");
-        let map_replay = slashed_block_senders(&dag_validator, &slashed).expect("replay map");
-
-        // Byte-identical map regardless of the invalid-block view (PLAY ≡ REPLAY) ...
-        assert_eq!(
-            map_play, map_replay,
-            "slash map must be node-view-independent (PLAY ≡ REPLAY)"
-        );
-        // ... and it keys each slashed block to its immutable sender.
-        let mut expected = std::collections::HashMap::new();
-        expected.insert(b1.clone(), va.clone());
-        expected.insert(b3.clone(), vc.clone());
-        assert_eq!(
-            map_play, expected,
-            "slash map must key each slashed block to its sender"
-        );
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(200))]
-        // G1 (∀-views property) — the standalone view-independence "lemma" for
-        // `slashed_block_senders`, mechanized as the modality that can actually catch
-        // the regression (a Rocq abstraction of the function would model it as
-        // content-only BY CONSTRUCTION and could never witness the defect). Over
-        // arbitrary block sets, arbitrary on-chain slash records, and TWO independently
-        // random — hence divergent — `invalid_blocks_set` node views, the map is
-        // (a) identical across the two views (PLAY ≡ REPLAY) and (b) equal to the
-        // content-derived ground truth (each slashed hash ↦ its immutable sender). Were
-        // the function to read `dag.invalid_blocks_set`, (a) would fail on the first
-        // view pair that disagrees on a slashed block.
-        #[test]
-        fn slashed_block_senders_is_view_independent_prop_g1(
-            senders in prop::collection::vec(0u8..5, 1..10),
-            slashed_flags in prop::collection::vec(any::<bool>(), 1..10),
-            view_a in prop::collection::vec(any::<bool>(), 1..10),
-            view_b in prop::collection::vec(any::<bool>(), 1..10),
-        ) {
-            let n = senders.len();
-            // n distinct blocks h(1..=n) in a chain; block i's immutable sender = h(100+vid).
-            let blocks: Vec<BlockMetadata> = (0..n)
-                .map(|i| {
-                    let hash = h((i + 1) as u8);
-                    let parents = if i == 0 { vec![] } else { vec![h(i as u8)] };
-                    let sender = h(100 + senders[i]);
-                    md(hash, parents, (i + 1) as i64, &sender)
-                })
-                .collect();
-            // On-chain slash record = the flagged subset (by index, within range).
-            let slashed: Vec<Bytes> = (0..n)
-                .filter(|&i| *slashed_flags.get(i).unwrap_or(&false))
-                .map(|i| h((i + 1) as u8))
-                .collect();
-            // Two nodes: identical block metadata, INDEPENDENTLY random invalid-block sets.
-            let inv_a: Vec<BlockMetadata> = (0..n)
-                .filter(|&i| *view_a.get(i).unwrap_or(&false))
-                .map(|i| blocks[i].clone())
-                .collect();
-            let inv_b: Vec<BlockMetadata> = (0..n)
-                .filter(|&i| *view_b.get(i).unwrap_or(&false))
-                .map(|i| blocks[i].clone())
-                .collect();
-            let dag_a = dag_with_invalid(blocks.clone(), inv_a);
-            let dag_b = dag_with_invalid(blocks.clone(), inv_b);
-
-            let map_a = slashed_block_senders(&dag_a, &slashed).expect("map a");
-            let map_b = slashed_block_senders(&dag_b, &slashed).expect("map b");
-            prop_assert_eq!(&map_a, &map_b);
-
-            let mut expected = std::collections::HashMap::new();
-            for i in 0..n {
-                if *slashed_flags.get(i).unwrap_or(&false) {
-                    expected.insert(h((i + 1) as u8), h(100 + senders[i]));
-                }
-            }
-            prop_assert_eq!(&map_a, &expected);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1421,14 +1314,26 @@ mod merkle_block_hash_tests {
         }
     }
 
+    fn slash_evidence_pair(seed: u8) -> EquivocationEvidence {
+        let commitment = |nonce: u8| {
+            let mut b = empty_block();
+            b.seq_num = i32::from(seed);
+            b.extra_bytes = Bytes::from(vec![nonce]);
+            block_commitment(&b)
+        };
+        EquivocationEvidence {
+            first: commitment(0),
+            second: commitment(1),
+        }
+    }
+
     fn processed_system_deploy_slash(seed: u8) -> ProcessedSystemDeploy {
         ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: Bytes::from(vec![seed; 32]),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[seed; 33]),
-                target_activation_epoch: seed as i64 + 100,
-            },
+            system_deploy: SystemDeployData::create_slash(
+                slash_evidence_pair(seed),
+                crypto::rust::public_key::PublicKey::from_bytes(&[seed; 33]),
+            ),
         }
     }
 
@@ -1528,6 +1433,26 @@ mod merkle_block_hash_tests {
         assert_eq!(
             (decoded.sender, decoded.seq_num, decoded.sig),
             (b.sender, 7, b.sig)
+        );
+    }
+
+    #[test]
+    fn a_slash_cites_its_first_commitment_and_its_sender() {
+        let mut a = empty_block();
+        a.sender = Bytes::from(vec![0x04; 65]);
+        a.seq_num = 3;
+        let mut b = a.clone();
+        b.body.deploys = vec![processed_deploy(1)];
+        let evidence = models::rust::casper::protocol::casper_message::EquivocationEvidence {
+            first: block_commitment(&a),
+            second: block_commitment(&b),
+        };
+
+        let senders = slash_evidence_senders([&evidence]);
+
+        assert_eq!(
+            senders,
+            std::collections::HashMap::from([(hash_block(&a), a.sender.clone())])
         );
     }
 
@@ -1987,21 +1912,17 @@ mod merkle_block_hash_tests {
             "Slash with different seed must produce different hash"
         );
 
-        // Build a Slash with modified target_activation_epoch only.
+        let mut evidence = slash_evidence_pair(0x01);
+        evidence.second.sig = Bytes::from(vec![0x55; 70]);
         let mut b3 = empty_block();
         b3.body.system_deploys = vec![ProcessedSystemDeploy::Succeeded {
             event_list: vec![],
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: Bytes::from(vec![0x01; 32]),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(&[0x01; 33]),
-                target_activation_epoch: 999, // vs. seed=0x01 → 0x01+100 = 101
-            },
+            system_deploy: SystemDeployData::create_slash(
+                evidence,
+                crypto::rust::public_key::PublicKey::from_bytes(&[0x01; 33]),
+            ),
         }];
-        assert_ne!(
-            hash_block(&b3),
-            h0,
-            "Slash.target_activation_epoch must affect hash",
-        );
+        assert_ne!(hash_block(&b3), h0, "the slash's evidence must affect hash",);
     }
 
     /// Test 4 — strong determinism guard: no `map<_,_>` field exists
@@ -2039,6 +1960,8 @@ mod merkle_block_hash_tests {
             "RholangNil",
             "SystemDeployDataProto",
             "SlashSystemDeployDataProto",
+            "BlockCommitmentProto",
+            "HeaderProto",
             "CloseBlockSystemDeployDataProto",
             "EventProto",
             "ProduceEventProto",

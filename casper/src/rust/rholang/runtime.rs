@@ -885,20 +885,15 @@ impl RuntimeOps {
             Either::Right(system_deploy_result) => {
                 let mcl = self.get_number_channels_data(&mergeable_channels).await?;
                 if let Some(SlashDeploy {
-                    invalid_block_hash,
+                    evidence,
                     pk,
-                    target_activation_epoch,
                     initial_rand: _,
                 }) = system_deploy.as_any().downcast_ref::<SlashDeploy>()
                 {
                     Ok(SystemDeployResult::play_succeeded(
                         final_state_hash,
                         event_log,
-                        SystemDeployData::create_slash(
-                            invalid_block_hash.clone(),
-                            pk.clone(),
-                            *target_activation_epoch,
-                        ),
+                        SystemDeployData::create_slash(evidence.clone(), pk.clone()),
                         mcl,
                         system_deploy_result,
                     ))
