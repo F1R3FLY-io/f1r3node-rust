@@ -201,3 +201,7 @@ Both tests pass.
 - At run time, `split_kind` finds no kind, and `check_region_signature` refuses the seal unless its owner is a signer of the deployment or is held (`held_or_signed`). So no wallet outside the deployment's signers is reached, and authority holds.
 - What is lost: the gate makes no commitment for that signer's wallet. Work under the stack is still bounded by the meter's per-block ledger, which keeps each draw within the wallet's free balance.
 - Fix options, for a ruling: (1) the gate names an unresolved bound seal on a stack body as an unresolved owner, which refuses it. This also refuses a token kind passed in at run time. (2) Keep the run-time check as the only guard and record it under F39. F39 and F33 stay open until this is ruled.
+
+**Ruling (Decision 112, 2026-11-04):** option 2. The run-time check (`check_region_signature`, `held_or_signed`) is the guard. The gate does not refuse a seal whose owner is bound only at run time. F39 and F33 are closed. `region_spec::the_gate_refuses_a_seal_that_resolves_only_at_run_time` records the shapes that the gate does refuse. The pure stack body above is admitted by design.
+
+Lane B's own equivalence test with random keys is kept beside `pos_v6_spec::the_one_expression_active_set_pick_agrees_with_the_list_ops_pick`.
