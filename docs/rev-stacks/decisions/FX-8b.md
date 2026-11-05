@@ -216,3 +216,13 @@ Full suites at 0b01b1663 (release, `/tmp` cleared before each crate): rholang 2,
 - Known issue, environmental: `shared::bounded_file::a_failed_rotation_keeps_the_active_file_writable`, as at 6c43a2c8f (root).
 - Known issue, timing: `comm::f1r3fly_server::resource_tests::dropping_incoming_releases_listener_and_stalled_handshakes` failed once in the full run. It passes 3 of 3 alone, and comm is unchanged since 6c43a2c8f. The full comm rerun gives 437 passed.
 - Known issue, timing under load: `multi_node::v6_engine_state::a_long_run_keeps_executor_memory_flat_and_old_receipts_available` fell below its floor of 25 in the full parallel run. Alone it fixes 34 and passes. Its count depends on machine load, not on the code.
+
+## FX-20 and FX-19 merged (2026-11-05, Decisions 119, 120, 124 to 126)
+
+- `patch/FX-20` at 91e3a02b7 is merged (275eccde7): κ in record field 20, no close charge, tag 1 reserved.
+- Lane C's `patch/FX-19` at 10e218add is merged: the declared per-firing bound, and the refusal machinery removed from the membrane. FX-19 was cut from FX-17, so `executor.rs` had six conflicts. The resolution:
+  - `close_gate` takes FX-19's `replay` flag and returns only the `SystemGate`. `CloseFunding` stays for stored code that the close fires. The gate carries FX-20's κ cell, and not FX-17's `CloseCharge`.
+  - `replay_after` keeps FX-20's κ check and drops `accept_metered` on the close, as FX-19 does.
+  - `replay_recorded` takes FX-19's signature without the pre-charge argument.
+- **Cross-host fixture.** FX-19's regenerated fixture has no κ, so its replay fails with "the close's cost". The fixture is written again on the merged tree. This is the same cause as FX-20 D4.
+- Results on the merged tree: casper lib `v6::` 126 passed; `--test mod v6::` 123 passed, 9 ignored; `multi_node::v6` 11 passed.

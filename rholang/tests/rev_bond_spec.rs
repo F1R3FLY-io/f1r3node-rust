@@ -51,6 +51,7 @@ async fn eval_as(runtime: &RhoRuntimeImpl, signer: &Key, term: &str) -> Vec<Stri
             deploy_id: vec![1],
             cosigners: Vec::new(),
             phlo_price: 1,
+            phlo_limit: 0,
         })
         .await;
     let result = runtime

@@ -177,6 +177,7 @@ mod surface_tests {
                 envelope: vec![envelope; 64],
                 signers: vec![WalletOwner::Unforgeable(vec![envelope; 32])],
                 phlo_price: price,
+                phlo_limit: 0,
             },
         }
     }

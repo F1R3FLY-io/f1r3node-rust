@@ -28,6 +28,12 @@ pub struct CostManager {
     storage: Arc<Mutex<Option<storage_rule::LeftInSpace>>>,
 }
 
+fn gated_record() -> Option<rev_stack::seal::SealRecord> {
+    let record = rev_stack::seal::current()?;
+    let meter = rev_stack::seal::meter()?;
+    meter.gates(&record).then_some(record)
+}
+
 impl CostManager {
     fn resolve_max_log_entries() -> usize { 1024 }
 
@@ -60,27 +66,9 @@ impl CostManager {
             return Err(InterpreterError::OutOfPhlogistonsError);
         }
 
-        if let Some(record) = rev_stack::seal::current() {
-            if let Some(meter) = rev_stack::seal::meter() {
-                if amount.value <= 0 && meter.gates(&record) {
-                    drop(current_cost);
-                    self.comms
-                        .on_work(Some(comm_ledger::Surface::of(&record)), amount.value);
-                    self.push_log(amount);
-                    return Ok(());
-                }
-                match meter.admit_charge(&record, amount.value) {
-                    membrane::Admission::Refused => return Err(InterpreterError::MembraneStopped),
-                    membrane::Admission::Admitted => {
-                        drop(current_cost);
-                        self.comms
-                            .on_work(Some(comm_ledger::Surface::of(&record)), amount.value);
-                        self.push_log(amount);
-                        return Ok(());
-                    }
-                    membrane::Admission::Ungated => {}
-                }
-            }
+        if let Some(record) = gated_record() {
+            drop(current_cost);
+            return self.charge_gated(&record, amount, 0);
         }
 
         // Use saturating arithmetic to prevent overflow when credits (negative
@@ -100,21 +88,30 @@ impl CostManager {
     }
 
     pub fn charge_reserving(&self, amount: Cost, reserve: i64) -> Result<(), InterpreterError> {
-        if let (Some(record), Some(meter)) = (rev_stack::seal::current(), rev_stack::seal::meter())
-        {
-            if amount.value > 0 && meter.gates(&record) {
-                return match meter.admit_charge(&record, amount.value.saturating_add(reserve)) {
-                    membrane::Admission::Refused => Err(InterpreterError::MembraneStopped),
-                    _ => {
-                        self.comms
-                            .on_work(Some(comm_ledger::Surface::of(&record)), amount.value);
-                        self.push_log(amount);
-                        Ok(())
-                    }
-                };
+        match gated_record() {
+            Some(record) => self.charge_gated(&record, amount, reserve),
+            None => self.charge(amount),
+        }
+    }
+
+    fn charge_gated(
+        &self,
+        record: &rev_stack::seal::SealRecord,
+        amount: Cost,
+        reserve: i64,
+    ) -> Result<(), InterpreterError> {
+        match membrane::firing() {
+            Some(firing) => firing.charge(record, amount.value, reserve)?,
+            None => {
+                if amount.value > 0 && !membrane::is_settling() {
+                    membrane::count_unbounded();
+                }
+                self.comms
+                    .on_work(Some(comm_ledger::Surface::of(record)), amount.value);
             }
         }
-        self.charge(amount)
+        self.push_log(amount);
+        Ok(())
     }
 
     fn push_log(&self, amount: Cost) {
@@ -170,6 +167,7 @@ mod own_limit_tests {
                 envelope: vec![envelope],
                 signers: Vec::new(),
                 phlo_price: 1,
+                phlo_limit: 0,
             },
         )
     }

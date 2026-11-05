@@ -843,6 +843,7 @@ pub struct DeployData {
     pub deploy_id: Vec<u8>,
     pub cosigners: Vec<PublicKey>,
     pub phlo_price: u64,
+    pub phlo_limit: u64,
 }
 
 impl DeployData {
@@ -853,6 +854,7 @@ impl DeployData {
             deploy_id: vec![0],
             cosigners: Vec::new(),
             phlo_price: 0,
+            phlo_limit: 0,
         }
     }
 
@@ -864,6 +866,7 @@ impl DeployData {
             cosigners: casper_message::Cosignature::verified_cosigners(template)
                 .unwrap_or_default(),
             phlo_price: u64::try_from(template.data.phlo_price).unwrap_or(0),
+            phlo_limit: u64::try_from(template.data.phlo_limit).unwrap_or(0),
         }
     }
 }

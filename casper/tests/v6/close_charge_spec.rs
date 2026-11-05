@@ -269,8 +269,6 @@ async fn no_deployment_makes_the_close_fail() {
     let replayed = executor.replay(&record, &b).await.expect("the block replays");
     assert_eq!(&replayed, record.post_root());
     let left = balance(&rm, record.post_root(), &alice.owner).await;
-    let refusals = casper::rust::v6::stops::system_refusals(record.system_deploys()).unwrap();
-    assert!(!refusals.is_empty(), "the installer's wallet stops the work that the close fired");
     assert!(left < FUNDS, "the installer pays for the work that the close fired");
 }
 

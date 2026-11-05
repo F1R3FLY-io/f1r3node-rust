@@ -52,6 +52,7 @@ async fn eval_signed(runtime: &RhoRuntimeImpl, signer: &Key, term: &str, seed: u
             deploy_id: seed.to_be_bytes().to_vec(),
             cosigners: Vec::new(),
             phlo_price: 0,
+            phlo_limit: 0,
         })
         .await;
     eval(runtime, signer, term, seed).await;
@@ -79,6 +80,7 @@ async fn runtime_with_facade() -> RhoRuntimeImpl {
             deploy_id: vec![2],
             cosigners: Vec::new(),
             phlo_price: 0,
+            phlo_limit: 0,
         })
         .await;
     eval(&runtime, &vault, SYSTEM_VAULT_V6, 2).await;

@@ -91,11 +91,36 @@ fn unresolved_owner(signature: &CostSignature) -> WalletOwner {
     WalletOwner::Unforgeable(signature.encode_to_vec())
 }
 
-pub fn named_owners(term: &Par) -> Vec<WalletOwner> {
+enum Named {
+    Resolved(WalletOwner),
+    Quoted(WalletOwner, WalletOwner),
+    Unresolved(WalletOwner),
+}
+
+fn collect(term: &Par) -> Vec<Named> {
     let mut named = Vec::new();
     let mut scope = Vec::new();
     visit_par(term, &mut scope, &mut named);
     named
+}
+
+pub fn named_owners(term: &Par) -> Vec<WalletOwner> {
+    collect(term)
+        .into_iter()
+        .map(|named| match named {
+            Named::Resolved(owner) | Named::Quoted(_, owner) | Named::Unresolved(owner) => owner,
+        })
+        .collect()
+}
+
+pub fn resolved_owners(term: &Par) -> Vec<WalletOwner> {
+    collect(term)
+        .into_iter()
+        .filter_map(|named| match named {
+            Named::Resolved(owner) | Named::Quoted(owner, _) => Some(owner),
+            Named::Unresolved(_) => None,
+        })
+        .collect()
 }
 
 type Scope = Vec<Option<WalletOwner>>;
@@ -156,15 +181,22 @@ fn stack_payer(signature: &CostSignature, scope: &Scope) -> StackSeal {
     }
 }
 
-fn name_signature(signature: &CostSignature, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
-    named.push(static_owner(signature, scope).unwrap_or_else(|| unresolved_owner(signature)));
+fn name_signature(signature: &CostSignature, scope: &mut Scope, named: &mut Vec<Named>) {
+    named.push(match (static_owner(signature, scope), &signature.value) {
+        (Some(owner), _) => Named::Resolved(owner),
+        (None, Some(Value::Quote(process))) => Named::Quoted(
+            super::process::process_owner(process),
+            unresolved_owner(signature),
+        ),
+        (None, _) => Named::Unresolved(unresolved_owner(signature)),
+    });
     visit_signature_pars(signature, scope, named);
 }
 
 fn visit_signature_pars(
     signature: &CostSignature,
     scope: &mut Scope,
-    named: &mut Vec<WalletOwner>,
+    named: &mut Vec<Named>,
 ) {
     match &signature.value {
         Some(Value::Quote(par)) | Some(Value::Name(par)) => visit_par(par, scope, named),
@@ -180,7 +212,7 @@ fn with_binders(
     scope: &mut Scope,
     binders: Vec<Option<WalletOwner>>,
     body: Option<&Par>,
-    named: &mut Vec<WalletOwner>,
+    named: &mut Vec<Named>,
 ) {
     let depth = scope.len();
     scope.extend(binders);
@@ -202,7 +234,7 @@ fn new_binders(new: &New) -> Vec<Option<WalletOwner>> {
         .collect()
 }
 
-fn visit_par(par: &Par, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
+fn visit_par(par: &Par, scope: &mut Scope, named: &mut Vec<Named>) {
     for term in &par.cost_signed_terms {
         let stack_body = term.body.as_ref().is_some_and(is_stack_body);
         match &term.signature {
@@ -276,7 +308,7 @@ fn visit_par(par: &Par, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
     }
 }
 
-fn visit_connective(connective: &Connective, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
+fn visit_connective(connective: &Connective, scope: &mut Scope, named: &mut Vec<Named>) {
     match &connective.connective_instance {
         Some(ConnectiveInstance::ConnAndBody(body))
         | Some(ConnectiveInstance::ConnOrBody(body)) => {
@@ -287,7 +319,7 @@ fn visit_connective(connective: &Connective, scope: &mut Scope, named: &mut Vec<
     }
 }
 
-fn visit_expr(expr: &Expr, scope: &mut Scope, named: &mut Vec<WalletOwner>) {
+fn visit_expr(expr: &Expr, scope: &mut Scope, named: &mut Vec<Named>) {
     let mut pars: Vec<&Par> = Vec::new();
     match &expr.expr_instance {
         Some(ExprInstance::ENotBody(e)) => pars.extend(&e.p),

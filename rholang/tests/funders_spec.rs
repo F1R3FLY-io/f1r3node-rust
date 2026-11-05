@@ -59,6 +59,7 @@ async fn reply(
             deploy_id: vec![1],
             cosigners: cosigners.iter().map(|c| c.pk.clone()).collect(),
             phlo_price: 0,
+            phlo_limit: 0,
         })
         .await;
     let result = runtime

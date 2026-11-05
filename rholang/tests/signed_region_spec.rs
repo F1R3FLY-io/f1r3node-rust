@@ -52,6 +52,7 @@ async fn run_with(
             deploy_id: vec![1],
             cosigners: cosigners.iter().map(|c| PublicKey::from_bytes(c)).collect(),
             phlo_price: 0,
+            phlo_limit: 0,
         })
         .await;
     let mut env = deployer_env(key);

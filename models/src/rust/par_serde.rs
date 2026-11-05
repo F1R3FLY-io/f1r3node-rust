@@ -522,6 +522,7 @@ mod tests {
                 envelope: vec![9; 64],
                 signers: vec![vec![1; 33], vec![2; 33]],
                 phlo_price: 7,
+                phlo_limit: 0,
             }),
         };
         for guard in [None, Some(small(2))] {
@@ -562,6 +563,7 @@ mod tests {
                 envelope: vec![9; 64],
                 signers: vec![vec![1; 33]],
                 phlo_price: 7,
+                phlo_limit: 0,
             }),
         }
     }
