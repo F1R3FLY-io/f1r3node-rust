@@ -1,6 +1,8 @@
 // See comm/src/main/scala/coop/rchain/comm/transport/StreamObservable.scala
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use chrono::{NaiveDateTime, Utc};
 
@@ -33,6 +35,7 @@ pub struct StreamObservable {
     peer: PeerNode,
     cache: StreamCache,
     subject: FlumeLimitedBuffer<Stream>,
+    pending: Mutex<HashSet<String>>,
 }
 
 impl StreamObservable {
@@ -129,11 +132,15 @@ impl StreamObservable {
             peer,
             cache,
             subject,
+            pending: Mutex::new(HashSet::new()),
         }
     }
 
     /// Enqueue a blob for streaming
     pub async fn enque(&self, blob: &Blob) -> Result<(), CommError> {
+        if self.subject.is_complete() {
+            return Err(CommError::PeerUnavailable(self.peer.to_address()));
+        }
         // Log stream information
         tracing::debug!(
             "Pushing message to {} stream message queue.",
@@ -157,7 +164,16 @@ impl StreamObservable {
                 };
 
                 // Try to push to buffer
+                let mut pending = self.pending.lock().unwrap();
+                if self.subject.is_complete() {
+                    self.cache.remove(&key);
+                    return Err(CommError::PeerUnavailable(self.peer.to_address()));
+                }
                 let push_succeed = self.subject.push_next(stream_msg);
+                if push_succeed {
+                    pending.insert(key.clone());
+                }
+                drop(pending);
 
                 if !push_succeed {
                     // Buffer is full
@@ -187,8 +203,26 @@ impl StreamObservable {
 
     /// Complete the stream
     pub fn complete(&self) {
+        let _pending = self.pending.lock().unwrap();
         self.subject.complete();
         tracing::debug!("Stream for {} marked as complete", self.peer.endpoint.host);
+    }
+
+    pub fn finish(&self, key: &str) {
+        self.pending.lock().unwrap().remove(key);
+        self.cache.remove(key);
+    }
+
+    pub fn stop_and_discard(&self) -> usize {
+        let mut pending = self.pending.lock().unwrap();
+        self.subject.complete();
+        let keys: Vec<String> = pending.drain().collect();
+        drop(pending);
+        for key in &keys {
+            self.cache.remove(key.as_str());
+        }
+        self.update_stream_cache_metrics();
+        keys.len()
     }
 
     /// Check if the stream is complete
@@ -297,11 +331,10 @@ mod tests {
         observable.complete();
         assert!(observable.is_complete());
 
-        // Try to enqueue after completion - should still succeed but be dropped
         let sender = create_test_peer();
         let blob = create_test_blob(sender, vec![1, 2, 3]);
         let result = observable.enque(&blob).await;
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(CommError::PeerUnavailable(_))));
     }
 
     #[tokio::test]
