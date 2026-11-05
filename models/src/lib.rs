@@ -909,6 +909,19 @@ impl PartialEq for ConnectiveInstance {
             (ConnectiveInstance::ConnString(a), ConnectiveInstance::ConnString(b)) => a == b,
             (ConnectiveInstance::ConnUri(a), ConnectiveInstance::ConnUri(b)) => a == b,
             (ConnectiveInstance::ConnByteArray(a), ConnectiveInstance::ConnByteArray(b)) => a == b,
+            (ConnectiveInstance::ConnInt32(a), ConnectiveInstance::ConnInt32(b)) => a == b,
+            (ConnectiveInstance::ConnUint64(a), ConnectiveInstance::ConnUint64(b)) => a == b,
+            (ConnectiveInstance::ConnUint32(a), ConnectiveInstance::ConnUint32(b)) => a == b,
+            (ConnectiveInstance::ConnUint16(a), ConnectiveInstance::ConnUint16(b)) => a == b,
+            (ConnectiveInstance::ConnUint8(a), ConnectiveInstance::ConnUint8(b)) => a == b,
+            (ConnectiveInstance::ConnFloat64(a), ConnectiveInstance::ConnFloat64(b)) => a == b,
+            (ConnectiveInstance::ConnFloat32(a), ConnectiveInstance::ConnFloat32(b)) => a == b,
+            (ConnectiveInstance::ConnBigInt(a), ConnectiveInstance::ConnBigInt(b)) => a == b,
+            (ConnectiveInstance::ConnBigRat(a), ConnectiveInstance::ConnBigRat(b)) => a == b,
+            (
+                ConnectiveInstance::ConnFixedPointBody(a),
+                ConnectiveInstance::ConnFixedPointBody(b),
+            ) => a == b,
             _ => false,
         }
     }
@@ -926,8 +939,26 @@ impl Hash for ConnectiveInstance {
             ConnectiveInstance::ConnString(a) => a.hash(state),
             ConnectiveInstance::ConnUri(a) => a.hash(state),
             ConnectiveInstance::ConnByteArray(a) => a.hash(state),
+            ConnectiveInstance::ConnInt32(a) => a.hash(state),
+            ConnectiveInstance::ConnUint64(a) => a.hash(state),
+            ConnectiveInstance::ConnUint32(a) => a.hash(state),
+            ConnectiveInstance::ConnUint16(a) => a.hash(state),
+            ConnectiveInstance::ConnUint8(a) => a.hash(state),
+            ConnectiveInstance::ConnFloat64(a) => a.hash(state),
+            ConnectiveInstance::ConnFloat32(a) => a.hash(state),
+            ConnectiveInstance::ConnBigInt(a) => a.hash(state),
+            ConnectiveInstance::ConnBigRat(a) => a.hash(state),
+            ConnectiveInstance::ConnFixedPointBody(a) => a.hash(state),
         }
     }
+}
+
+impl PartialEq for ConnFixedPointBody {
+    fn eq(&self, other: &Self) -> bool { self.scale == other.scale }
+}
+
+impl Hash for ConnFixedPointBody {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.scale.hash(state); }
 }
 
 impl PartialEq for VarRef {
