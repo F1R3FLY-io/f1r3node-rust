@@ -325,7 +325,14 @@ impl Runs {
             .take_surfaces()
             .into_iter()
             .collect();
-        let work: Surfaces = replay.runtime_ops.runtime.cost.comm_ledger().take_work().into_iter().collect();
+        let work: Surfaces = replay
+            .runtime_ops
+            .runtime
+            .cost
+            .comm_ledger()
+            .take_work()
+            .into_iter()
+            .collect();
         let changes = runtime_cells(&replay.runtime_ops.runtime)?.0.changes();
         replay.runtime_ops.runtime.set_funding(None);
         self.give_back(true, Pooled { runtime: replay.runtime_ops.runtime, base });
@@ -682,7 +689,8 @@ impl EnvelopeExecutor {
                         return Ok(Self::refused(processed.deploy));
                     }
                     tokio::spawn(async move {
-                        runs.replay_one(&pre_root, processed, block_data, held, meter).await
+                        runs.replay_one(&pre_root, processed, block_data, held, meter)
+                            .await
                     })
                     .await
                     .map_err(|e| invalid(format!("an envelope replay stopped: {e}")))?
@@ -697,7 +705,11 @@ impl EnvelopeExecutor {
 }
 
 fn admitted_runs(gate: &GateOutcome) -> u64 {
-    gate.entries.iter().filter(|entry| entry.admitted()).count().max(1) as u64
+    gate.entries
+        .iter()
+        .filter(|entry| entry.admitted())
+        .count()
+        .max(1) as u64
 }
 
 fn with_prior(inputs: Vec<GateInput>, prior: &Prior) -> Vec<GateInput> {

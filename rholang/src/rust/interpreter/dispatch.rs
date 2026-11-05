@@ -82,7 +82,8 @@ impl RholangAndScalaDispatcher {
                     let evaluation = seal::within(record, reducer.eval(body, &env, merged_rand));
                     match firing {
                         Some(firing) => {
-                            let evaluated = membrane::firing_scope(firing.clone(), evaluation).await;
+                            let evaluated =
+                                membrane::firing_scope(firing.clone(), evaluation).await;
                             match firing.finish(reducer.cost.comm_ledger()) {
                                 membrane::Finished::Exhausted => {}
                                 membrane::Finished::Within(ops) => {

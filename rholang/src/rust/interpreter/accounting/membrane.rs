@@ -77,7 +77,11 @@ impl MembraneMeter {
             }
             let follow = 1 + comm_event_storage_cost(channels as i64).value;
             for wallet in record.purse() {
-                add(&mut needs, &wallet.canonical_bytes(), priced(follow, record.price()));
+                add(
+                    &mut needs,
+                    &wallet.canonical_bytes(),
+                    priced(follow, record.price()),
+                );
             }
         }
         for record in data.iter().filter(|r| self.gates(r)) {
@@ -152,8 +156,16 @@ impl Firing {
         })
     }
 
-    pub fn charge(&self, record: &SealRecord, phlo: i64, reserve: i64) -> Result<(), InterpreterError> {
-        let mut state = self.state.lock().map_err(|_| InterpreterError::FiringExhausted)?;
+    pub fn charge(
+        &self,
+        record: &SealRecord,
+        phlo: i64,
+        reserve: i64,
+    ) -> Result<(), InterpreterError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| InterpreterError::FiringExhausted)?;
         if state.exhausted {
             return Err(InterpreterError::FiringExhausted);
         }
@@ -231,7 +243,9 @@ pub fn take_precharged() -> bool {
 
 pub fn settling<R>(f: impl FnOnce() -> R) -> R { SETTLING.sync_scope((), f) }
 
-pub fn settled<F: Future>(future: F) -> impl Future<Output = F::Output> { SETTLING.scope((), future) }
+pub fn settled<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    SETTLING.scope((), future)
+}
 
 pub fn is_settling() -> bool { SETTLING.try_with(|_| ()).is_ok() }
 
@@ -239,7 +253,9 @@ static UNBOUNDED: AtomicU64 = AtomicU64::new(0);
 
 pub fn unbounded_charges() -> u64 { UNBOUNDED.load(Ordering::Relaxed) }
 
-pub(crate) fn count_unbounded() { UNBOUNDED.fetch_add(1, Ordering::Relaxed); }
+pub(crate) fn count_unbounded() {
+    UNBOUNDED.fetch_add(1, Ordering::Relaxed);
+}
 
 #[cfg(test)]
 mod tests {
@@ -321,7 +337,10 @@ mod tests {
         let meter = MembraneMeter::play(Arc::new(Fixed(vec![(owner(1), 1_000), (owner(3), 49)])));
         let needs = meter.comm_needs(Some((&r, &[owner(3)])), &[], 1);
         assert_eq!(needs.get(&owner(3).canonical_bytes()), Some(&50));
-        assert!(!meter.hold(&needs), "the named wallet cannot hold the bound");
+        assert!(
+            !meter.hold(&needs),
+            "the named wallet cannot hold the bound"
+        );
         assert!(meter.take().held.is_empty());
     }
 
@@ -377,7 +396,14 @@ mod tests {
             }
             firing.exhausted()
         };
-        let all = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        let all = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
         assert!(all.iter().all(|o| exhausted(100, o)));
         assert!(all.iter().all(|o| !exhausted(110, o)));
     }

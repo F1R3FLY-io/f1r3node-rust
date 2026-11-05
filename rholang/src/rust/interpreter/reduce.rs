@@ -61,7 +61,6 @@ use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::seal::{self, Origin, SealKind, SealRecord};
 use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
-use super::storage::charging_rspace::{consume_issue, produce_issue};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::matcher::has_locally_free::HasLocallyFree;
@@ -73,6 +72,7 @@ use super::metrics_constants::{
 };
 use super::rho_runtime::RhoISpace;
 use super::rho_type::{bigint_to_bytes, bytes_to_bigint, RhoExpression, RhoUnforgeable};
+use super::storage::charging_rspace::{consume_issue, produce_issue};
 use super::substitute::{Substitute, SubstituteTrait};
 use super::system_processes::DeployData;
 use super::util::GeneratedMessage;
@@ -628,7 +628,10 @@ impl DebruijnInterpreter {
             firing.defer(Box::pin(seal::within(
                 seal::current(),
                 membrane::precharged(async move {
-                    reducer.produce_now(chan, data, persistent).await.map(|_| ())
+                    reducer
+                        .produce_now(chan, data, persistent)
+                        .await
+                        .map(|_| ())
                 }),
             )));
             return Ok(DispatchType::Skip);

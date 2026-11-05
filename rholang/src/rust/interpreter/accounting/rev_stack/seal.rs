@@ -348,9 +348,7 @@ mod tests {
         }
     }
 
-    fn only(n: u8) -> Option<Arc<MembraneMeter>> {
-        Some(MembraneMeter::play(Arc::new(Only(n))))
-    }
+    fn only(n: u8) -> Option<Arc<MembraneMeter>> { Some(MembraneMeter::play(Arc::new(Only(n)))) }
 
     fn admits(continuation: &TaggedContinuation) -> bool { admits_comm(continuation, &[]) }
 

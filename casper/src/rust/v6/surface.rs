@@ -156,7 +156,11 @@ pub struct EnvelopeFunding {
 }
 
 impl EnvelopeFunding {
-    pub fn new(purses: Arc<BlockPurses>, committed: Vec<WalletOwner>, runs: u64) -> Arc<dyn Funding> {
+    pub fn new(
+        purses: Arc<BlockPurses>,
+        committed: Vec<WalletOwner>,
+        runs: u64,
+    ) -> Arc<dyn Funding> {
         Arc::new(EnvelopeFunding {
             purses,
             committed,
@@ -296,8 +300,15 @@ mod tests {
         assert_eq!(own.limit(&alice), 3);
         assert_eq!(own.limit(&bob), 3);
         let shared = EnvelopeFunding::new(purses.clone(), vec![bob.clone()], 2);
-        assert_eq!(shared.limit(&alice), 1, "each of two runs holds half of the free 3");
-        assert_eq!(EnvelopeFunding::new(purses.clone(), Vec::new(), 0).limit(&alice), 3);
+        assert_eq!(
+            shared.limit(&alice),
+            1,
+            "each of two runs holds half of the free 3"
+        );
+        assert_eq!(
+            EnvelopeFunding::new(purses.clone(), Vec::new(), 0).limit(&alice),
+            3
+        );
     }
 
     #[test]

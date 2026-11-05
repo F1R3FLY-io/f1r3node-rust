@@ -1312,7 +1312,10 @@ async fn data_on(rm: &RuntimeManager, root: &StateHash, channel: &str) -> usize 
 fn work_of(played: &casper::rust::v6::executor::ExecutedBlock, run: usize, who: &Party) -> u64 {
     played.work[run]
         .iter()
-        .filter(|(s, _)| s.as_ref().is_some_and(|s| s.owner == who.owner.canonical_bytes()))
+        .filter(|(s, _)| {
+            s.as_ref()
+                .is_some_and(|s| s.owner == who.owner.canonical_bytes())
+        })
         .map(|(_, w)| *w)
         .sum()
 }
@@ -1333,7 +1336,12 @@ async fn replays_to(
     proposer: &Party,
 ) -> StateHash {
     executor
-        .replay_recorded(root, played.processed.clone(), &played.gate.entries, block_data(proposer))
+        .replay_recorded(
+            root,
+            played.processed.clone(),
+            &played.gate.entries,
+            block_data(proposer),
+        )
         .await
         .expect("the block replays")
         .settled_root
@@ -1345,7 +1353,11 @@ async fn a_firing_within_its_bound_keeps_its_effects_and_its_installer_pays_its_
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
     let first = executor
-        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(ECHO, 1, &alice, 1_500, 1)],
+            block_data(&proposer),
+        )
         .await
         .expect("the service installs");
     assert!(!first.processed[0].is_failed);
@@ -1363,7 +1375,10 @@ async fn a_firing_within_its_bound_keeps_its_effects_and_its_installer_pays_its_
         played.metered[0].held.get(&alice.owner.canonical_bytes()),
         Some(&firing_hold(1_500, 1))
     );
-    assert_eq!(replays_to(&executor, &root, &played, &proposer).await, played.settled_root);
+    assert_eq!(
+        replays_to(&executor, &root, &played, &proposer).await,
+        played.settled_root
+    );
 }
 
 #[tokio::test]
@@ -1372,11 +1387,23 @@ async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
     let first = executor
-        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(ECHO, 1, &alice, 1_500, 1)],
+            block_data(&proposer),
+        )
         .await
         .expect("the service installs");
     let root = first.settled_root.clone();
-    let call = |bytes: usize| envelope(&format!(r#"@"svc"!({})"#, payload(bytes)), 2, &bob, 50_000, 1);
+    let call = |bytes: usize| {
+        envelope(
+            &format!(r#"@"svc"!({})"#, payload(bytes)),
+            2,
+            &bob,
+            50_000,
+            1,
+        )
+    };
     let within = executor
         .execute(&root, vec![call(8)], block_data(&proposer))
         .await
@@ -1385,14 +1412,24 @@ async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the
         .execute(&root, vec![call(2_000)], block_data(&proposer))
         .await
         .expect("the large call executes");
-    assert!(!passed.processed[0].is_failed, "the client's own run is not affected");
-    assert_eq!(data_on(&rm, &passed.settled_root, "out").await, 0, "the firing keeps nothing");
+    assert!(
+        !passed.processed[0].is_failed,
+        "the client's own run is not affected"
+    );
+    assert_eq!(
+        data_on(&rm, &passed.settled_root, "out").await,
+        0,
+        "the firing keeps nothing"
+    );
     assert_eq!(data_on(&rm, &within.settled_root, "out").await, 1);
     let bound_paid = work_of(&passed, 0, &alice);
     assert!(bound_paid >= 1_500, "{bound_paid}");
     assert!(bound_paid > work_of(&within, 0, &alice));
     for _ in 0..4 {
-        assert_eq!(replays_to(&executor, &root, &passed, &proposer).await, passed.settled_root);
+        assert_eq!(
+            replays_to(&executor, &root, &passed, &proposer).await,
+            passed.settled_root
+        );
     }
 }
 
@@ -1402,12 +1439,22 @@ async fn an_installer_that_cannot_hold_the_bound_is_not_fired_and_pays_nothing()
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
     let first = executor
-        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(ECHO, 1, &alice, 1_500, 1)],
+            block_data(&proposer),
+        )
         .await
         .expect("the service installs");
     let root = first.settled_root.clone();
     let left = balance(&rm, &root, &alice).await;
-    let holding = envelope("Nil", 3, &alice, (left - firing_hold(1_500, 1) + 1) as i64, 1);
+    let holding = envelope(
+        "Nil",
+        3,
+        &alice,
+        (left - firing_hold(1_500, 1) + 1) as i64,
+        1,
+    );
     let call = envelope(&format!(r#"@"svc"!({})"#, payload(8)), 2, &bob, 50_000, 1);
     let held = executor
         .execute(&root, vec![call, holding], block_data(&proposer))
@@ -1418,7 +1465,10 @@ async fn an_installer_that_cannot_hold_the_bound_is_not_fired_and_pays_nothing()
     assert_eq!(data_on(&rm, &held.settled_root, "out").await, 0);
     assert_eq!(work_of(&held, 0, &alice), 0);
     assert!(held.metered[0].held.is_empty());
-    assert_eq!(replays_to(&executor, &root, &held, &proposer).await, held.settled_root);
+    assert_eq!(
+        replays_to(&executor, &root, &held, &proposer).await,
+        held.settled_root
+    );
 }
 
 #[tokio::test]
@@ -1427,7 +1477,11 @@ async fn each_run_holds_at_most_its_share_of_the_installers_free_balance() {
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000), (&carol, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 4);
     let first = executor
-        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(ECHO, 1, &alice, 1_500, 1)],
+            block_data(&proposer),
+        )
         .await
         .expect("the service installs");
     let root = first.settled_root.clone();
@@ -1435,17 +1489,26 @@ async fn each_run_holds_at_most_its_share_of_the_installers_free_balance() {
     let hold = firing_hold(1_500, 1);
     let free = 2 * hold + 10;
     let holding = || envelope("Nil", 3, &alice, (left - free) as i64, 1);
-    let call = |ts: i64, who: &Party| envelope(&format!(r#"@"svc"!({})"#, payload(8)), ts, who, 50_000, 1);
+    let call =
+        |ts: i64, who: &Party| envelope(&format!(r#"@"svc"!({})"#, payload(8)), ts, who, 50_000, 1);
 
     let two = executor
         .execute(&root, vec![call(4, &bob), holding()], block_data(&proposer))
         .await
         .expect("two runs execute");
     assert_eq!(two.gate.admitted(), vec![true, true]);
-    assert_eq!(data_on(&rm, &two.settled_root, "out").await, 1, "free / 2 holds one bound");
+    assert_eq!(
+        data_on(&rm, &two.settled_root, "out").await,
+        1,
+        "free / 2 holds one bound"
+    );
 
     let three = executor
-        .execute(&root, vec![call(4, &bob), call(5, &carol), holding()], block_data(&proposer))
+        .execute(
+            &root,
+            vec![call(4, &bob), call(5, &carol), holding()],
+            block_data(&proposer),
+        )
         .await
         .expect("three runs execute");
     assert_eq!(three.gate.admitted(), vec![true, true, true]);
@@ -1456,13 +1519,19 @@ async fn each_run_holds_at_most_its_share_of_the_installers_free_balance() {
     );
     assert!(three.metered.iter().all(|m| m.held.is_empty()));
     for played in [&two, &three] {
-        assert_eq!(replays_to(&executor, &root, played, &proposer).await, played.settled_root);
+        assert_eq!(
+            replays_to(&executor, &root, played, &proposer).await,
+            played.settled_root
+        );
     }
     let later = executor
         .execute(&root, vec![call(4, &bob), holding()], block_data(&proposer))
         .await
         .expect("a later block executes");
-    assert_eq!(later.settled_root, two.settled_root, "no hold carries into a later block");
+    assert_eq!(
+        later.settled_root, two.settled_root,
+        "no hold carries into a later block"
+    );
 }
 
 #[tokio::test]
