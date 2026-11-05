@@ -2494,13 +2494,6 @@ async fn bridge_query_survives_multi_parent_merge() {
             .map(|record| hex::encode(&record.sig[..8.min(record.sig.len())]))
             .collect::<Vec<_>>()
     );
-    // Non-slash merge scenario must surface an empty rejected_slashes list so
-    // the block creator's dedup step runs as a no-op.
-    assert!(
-        merged.rejected_slashes.is_empty(),
-        "Merge rejected slashes unexpectedly populated: count={}",
-        merged.rejected_slashes.len()
-    );
 
     // --- Query getNonce from merged state ---
     let get_nonce_rho = format!(

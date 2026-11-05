@@ -408,7 +408,6 @@ pub struct MergedPreState {
     /// adjudicated and carries the formation-time duplicate flag. These
     /// travel to the block body as-is; the record IS the consensus content.
     pub rejected_user: Vec<models::rust::casper::protocol::casper_message::RejectedDeploy>,
-    pub rejected_slashes: Vec<crate::rust::merging::rejected_slash::RejectedSlash>,
     /// User sigs whose chains the merge APPLIED from scope: their effects
     /// are in `state`, so executing any of them on top would double-apply.
     /// Empty on the non-merging shapes (genesis, single parent, covering
