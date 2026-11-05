@@ -157,6 +157,11 @@ pub fn normalize_ann_proc<'ast>(
 
         Proc::SimpleType(simple_type) => normalize_simple_type(simple_type, input),
 
+        Proc::FixedPointPattern { scale } => {
+            use crate::rust::interpreter::compiler::normalizer::processes::p_fixed_point_pattern_normalizer::normalize_p_fixed_point_pattern;
+            normalize_p_fixed_point_pattern(scale, proc.span, input, _env, parser)
+        }
+
         Proc::ProcVar(var) => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_var_normalizer::normalize_p_var;
             normalize_p_var(var, input, proc.span)
