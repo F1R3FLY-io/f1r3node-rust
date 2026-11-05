@@ -877,6 +877,76 @@ impl Header {
     }
 }
 
+/// The fields a block hash commits to, with the deploys reduced to their
+/// root, and the block's signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockCommitment {
+    pub header: Header,
+    pub pre_state_hash: ByteString,
+    pub post_state_hash: ByteString,
+    pub bonds_root: ByteString,
+    pub block_number: i64,
+    pub rejected_root: ByteString,
+    pub applied_from_scope_root: ByteString,
+    pub merge_base: ByteString,
+    pub body_extra_bytes: ByteString,
+    pub sender: ByteString,
+    pub sig_algorithm: String,
+    pub seq_num: i32,
+    pub shard_id: String,
+    pub extra_bytes: ByteString,
+    pub deploys_root: ByteString,
+    pub sig: ByteString,
+}
+
+impl BlockCommitment {
+    pub fn from_proto(proto: BlockCommitmentProto) -> Result<Self, String> {
+        Ok(Self {
+            header: Header::from_proto(
+                proto
+                    .header
+                    .ok_or_else(|| "Missing header field".to_string())?,
+            ),
+            pre_state_hash: proto.pre_state_hash,
+            post_state_hash: proto.post_state_hash,
+            bonds_root: proto.bonds_root,
+            block_number: proto.block_number,
+            rejected_root: proto.rejected_root,
+            applied_from_scope_root: proto.applied_from_scope_root,
+            merge_base: proto.merge_base,
+            body_extra_bytes: proto.body_extra_bytes,
+            sender: proto.sender,
+            sig_algorithm: proto.sig_algorithm,
+            seq_num: proto.seq_num,
+            shard_id: proto.shard_id,
+            extra_bytes: proto.extra_bytes,
+            deploys_root: proto.deploys_root,
+            sig: proto.sig,
+        })
+    }
+
+    pub fn to_proto(&self) -> BlockCommitmentProto {
+        BlockCommitmentProto {
+            header: Some(self.header.to_proto()),
+            pre_state_hash: self.pre_state_hash.clone(),
+            post_state_hash: self.post_state_hash.clone(),
+            bonds_root: self.bonds_root.clone(),
+            block_number: self.block_number,
+            rejected_root: self.rejected_root.clone(),
+            applied_from_scope_root: self.applied_from_scope_root.clone(),
+            merge_base: self.merge_base.clone(),
+            body_extra_bytes: self.body_extra_bytes.clone(),
+            sender: self.sender.clone(),
+            sig_algorithm: self.sig_algorithm.clone(),
+            seq_num: self.seq_num,
+            shard_id: self.shard_id.clone(),
+            extra_bytes: self.extra_bytes.clone(),
+            deploys_root: self.deploys_root.clone(),
+            sig: self.sig.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RejectedDeploy {
     pub sig: ByteString,

@@ -396,6 +396,28 @@ message ProcessedDeployProto {
     string systemDeployError      = 6;
 }
 
+// Everything a block's hash commits to, with the deploys reduced to their
+// root, plus the signature: enough to recompute the hash and verify the
+// signature without the block.
+message BlockCommitmentProto {
+  HeaderProto header         = 1 [(scalapb.field).no_box = true];
+  bytes preStateHash         = 2;
+  bytes postStateHash        = 3;
+  bytes bondsRoot            = 4;
+  int64 blockNumber          = 5;
+  bytes rejectedRoot         = 6;
+  bytes appliedFromScopeRoot = 7;
+  bytes mergeBase            = 8;
+  bytes bodyExtraBytes       = 9;
+  bytes sender               = 10;
+  string sigAlgorithm        = 11;
+  int32 seqNum               = 12;
+  string shardId             = 13;
+  bytes extraBytes           = 14;
+  bytes deploysRoot          = 15;
+  bytes sig                  = 16;
+}
+
 message SlashSystemDeployDataProto {
   bytes invalidBlockHash = 1;
   bytes issuerPublicKey = 2;

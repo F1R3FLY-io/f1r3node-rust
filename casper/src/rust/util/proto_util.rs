@@ -13,7 +13,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
+    BlockCommitment, BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
@@ -729,59 +729,99 @@ fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
 /// Build the header-side preimage.  See file-level docstring and
 /// `docs/designs/merkle-block-hash.md` for the field order.  Any change
 /// here is a hard fork — pinned by the `hash_block` golden-hex tests.
-fn header_preimage(block: &BlockMessage) -> Vec<u8> {
+fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
     use prost::Message;
-    let state = &block.body.state;
-    let header_bytes = block.header.to_proto().encode_to_vec();
-    let r_root = rejected_root(block);
-    let afs_root = applied_from_scope_root(block);
-    let b_root = bonds_root(&state.bonds);
+    let header_bytes = commitment.header.to_proto().encode_to_vec();
 
     let mut buf = Vec::with_capacity(
         1 + header_bytes.len()
-            + state.pre_state_hash.len()
-            + state.post_state_hash.len()
-            + 32  // bonds_root
+            + commitment.pre_state_hash.len()
+            + commitment.post_state_hash.len()
+            + commitment.bonds_root.len()
             + 8   // block_number
-            + 32  // rejected_root
-            + 32  // applied_from_scope_root
-            + block.body.merge_base.len()
-            + block.body.extra_bytes.len()
-            + block.sender.len()
-            + block.sig_algorithm.len()
+            + commitment.rejected_root.len()
+            + commitment.applied_from_scope_root.len()
+            + commitment.merge_base.len()
+            + commitment.body_extra_bytes.len()
+            + commitment.sender.len()
+            + commitment.sig_algorithm.len()
             + 4   // seq_num
-            + block.shard_id.len()
-            + block.extra_bytes.len(),
+            + commitment.shard_id.len()
+            + commitment.extra_bytes.len(),
     );
     buf.push(BLOCK_HASH_SCHEME_VERSION);
     buf.extend_from_slice(&header_bytes);
-    buf.extend_from_slice(state.pre_state_hash.as_ref());
-    buf.extend_from_slice(state.post_state_hash.as_ref());
-    buf.extend_from_slice(&b_root);
-    buf.extend_from_slice(&state.block_number.to_le_bytes());
-    buf.extend_from_slice(&r_root);
-    buf.extend_from_slice(&afs_root);
-    buf.extend_from_slice(block.body.merge_base.as_ref());
-    buf.extend_from_slice(block.body.extra_bytes.as_ref());
-    buf.extend_from_slice(block.sender.as_ref());
-    buf.extend_from_slice(block.sig_algorithm.as_bytes());
-    buf.extend_from_slice(&block.seq_num.to_le_bytes());
-    buf.extend_from_slice(block.shard_id.as_bytes());
-    buf.extend_from_slice(block.extra_bytes.as_ref());
+    buf.extend_from_slice(commitment.pre_state_hash.as_ref());
+    buf.extend_from_slice(commitment.post_state_hash.as_ref());
+    buf.extend_from_slice(commitment.bonds_root.as_ref());
+    buf.extend_from_slice(&commitment.block_number.to_le_bytes());
+    buf.extend_from_slice(commitment.rejected_root.as_ref());
+    buf.extend_from_slice(commitment.applied_from_scope_root.as_ref());
+    buf.extend_from_slice(commitment.merge_base.as_ref());
+    buf.extend_from_slice(commitment.body_extra_bytes.as_ref());
+    buf.extend_from_slice(commitment.sender.as_ref());
+    buf.extend_from_slice(commitment.sig_algorithm.as_bytes());
+    buf.extend_from_slice(&commitment.seq_num.to_le_bytes());
+    buf.extend_from_slice(commitment.shard_id.as_bytes());
+    buf.extend_from_slice(commitment.extra_bytes.as_ref());
     buf
 }
 
 /// Combine the header-leaf hash and the deploys root under the TOP
 /// domain byte to produce the final 32-byte block hash.
-fn hash_top(h_header: &[u8; 32], deploys_root: &[u8; 32]) -> [u8; 32] {
-    let mut input = [0u8; 1 + 32 + 32];
-    input[0] = TOP_DOMAIN;
-    input[1..33].copy_from_slice(h_header);
-    input[33..].copy_from_slice(deploys_root);
-    let h = Blake2b256::hash(input.to_vec());
+fn hash_top(h_header: &[u8; 32], deploys_root: &[u8]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(1 + 32 + deploys_root.len());
+    input.push(TOP_DOMAIN);
+    input.extend_from_slice(h_header);
+    input.extend_from_slice(deploys_root);
+    let h = Blake2b256::hash(input);
     let mut out = [0u8; 32];
     out.copy_from_slice(&h);
     out
+}
+
+/// The commitment of `block`, given its deploy leaves in commit order (all
+/// user-deploy leaves, then all system-deploy leaves).
+pub fn block_commitment_with_leaves(
+    block: &BlockMessage,
+    deploys_leaves: &[[u8; 32]],
+) -> BlockCommitment {
+    let state = &block.body.state;
+    let root = |bytes: [u8; 32]| prost::bytes::Bytes::copy_from_slice(&bytes);
+    BlockCommitment {
+        header: block.header.clone(),
+        pre_state_hash: state.pre_state_hash.clone(),
+        post_state_hash: state.post_state_hash.clone(),
+        bonds_root: root(bonds_root(&state.bonds)),
+        block_number: state.block_number,
+        rejected_root: root(rejected_root(block)),
+        applied_from_scope_root: root(applied_from_scope_root(block)),
+        merge_base: block.body.merge_base.clone(),
+        body_extra_bytes: block.body.extra_bytes.clone(),
+        sender: block.sender.clone(),
+        sig_algorithm: block.sig_algorithm.clone(),
+        seq_num: block.seq_num,
+        shard_id: block.shard_id.clone(),
+        extra_bytes: block.extra_bytes.clone(),
+        deploys_root: root(crypto::rust::hash::merkle::merkle_root(
+            &MERKLE_PARAMS,
+            deploys_leaves,
+        )),
+        sig: block.sig.clone(),
+    }
+}
+
+pub fn block_commitment(block: &BlockMessage) -> BlockCommitment {
+    block_commitment_with_leaves(block, &deploys_root_leaves(block))
+}
+
+/// The block hash `commitment` commits to.
+pub fn commitment_hash(commitment: &BlockCommitment) -> BlockHash {
+    let h_header =
+        crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(commitment));
+    hash_top(&h_header, commitment.deploys_root.as_ref())
+        .to_vec()
+        .into()
 }
 
 /// Compute the block hash from a `BlockMessage` alone — recomputes
@@ -802,11 +842,7 @@ pub fn hash_block(block: &BlockMessage) -> BlockHash {
 /// wrong leaves produces a wrong hash (mismatch surfaces at
 /// `Validate::block_hash` on another node).
 pub fn hash_block_with_leaves(block: &BlockMessage, deploys_leaves: &[[u8; 32]]) -> BlockHash {
-    let d_root = crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, deploys_leaves);
-    let h_header =
-        crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(block));
-    let top = hash_top(&h_header, &d_root);
-    top.to_vec().into()
+    commitment_hash(&block_commitment_with_leaves(block, deploys_leaves))
 }
 
 pub fn hash_string(b: &BlockMessage) -> BlockHash {
@@ -1470,6 +1506,48 @@ mod merkle_block_hash_tests {
     }
 
     #[test]
+    fn a_commitment_off_the_wire_hashes_to_its_block() {
+        use prost::Message;
+        let mut b = empty_block();
+        b.body.deploys = vec![processed_deploy(1), processed_deploy(2)];
+        b.body.system_deploys = vec![processed_system_deploy_close()];
+        b.sender = Bytes::from(vec![0x04; 65]);
+        b.sig_algorithm = "secp256k1".to_string();
+        b.sig = Bytes::from(vec![0x30; 70]);
+        b.seq_num = 7;
+        let commitment = block_commitment(&b);
+
+        let wire = commitment.to_proto().encode_to_vec();
+        let decoded = BlockCommitment::from_proto(
+            models::casper::BlockCommitmentProto::decode(wire.as_slice()).expect("decode"),
+        )
+        .expect("from_proto");
+
+        assert_eq!(decoded, commitment);
+        assert_eq!(commitment_hash(&decoded), hash_block(&b));
+        assert_eq!(
+            (decoded.sender, decoded.seq_num, decoded.sig),
+            (b.sender, 7, b.sig)
+        );
+    }
+
+    #[test]
+    fn a_commitment_binds_its_sender_and_sequence_number() {
+        let mut b = empty_block();
+        b.sender = Bytes::from(vec![0x04; 65]);
+        b.seq_num = 7;
+        let commitment = block_commitment(&b);
+        let hash = commitment_hash(&commitment);
+
+        let mut other_seq = commitment.clone();
+        other_seq.seq_num = 8;
+        let mut other_sender = commitment.clone();
+        other_sender.sender = Bytes::from(vec![0x05; 65]);
+        assert_ne!(commitment_hash(&other_seq), hash);
+        assert_ne!(commitment_hash(&other_sender), hash);
+    }
+
+    #[test]
     fn reordering_deploys_changes_block_hash() {
         let d1 = processed_deploy(1);
         let d2 = processed_deploy(2);
@@ -1690,7 +1768,7 @@ mod merkle_block_hash_tests {
         );
 
         // Top-level: combine recomputed d_root with recomputed h_header.
-        let header_preimage_bytes = header_preimage(&b);
+        let header_preimage_bytes = header_preimage(&block_commitment(&b));
         let h_header = merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage_bytes);
         let recomputed_top = hash_top(&h_header, &d_root);
         assert_eq!(
