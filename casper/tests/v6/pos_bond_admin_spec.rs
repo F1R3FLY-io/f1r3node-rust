@@ -644,17 +644,19 @@ async fn move_native(rm: &RuntimeManager, root: &StateHash, from: &WalletOwner, 
 
 async fn withdrawing(rm: &RuntimeManager, root: &StateHash, pk: &PublicKey) -> Option<i64> {
     let query = format!(
-        r#"new ret, rl(`rho:registry:lookup`), posCh, wCh in {{
+        r#"new ret, rl(`rho:registry:lookup`), posCh, wCh, lo, sum in {{
              rl!(`rho:system:pos`, *posCh) |
-             for (@(_, PoS) <- posCh) {{
+             rl!(`rho:lang:listOps`, *lo) |
+             contract sum(@(_, entry), @acc, r) = {{ r!(acc + entry.getOrElse("{pk}".hexToBytes(), 0)) }} |
+             for (@(_, PoS) <- posCh; @(_, ListOps) <- lo) {{
                @PoS!("getWithdrawers", *wCh) |
-               for (@w <- wCh) {{ ret!(w.getOrElse("{}".hexToBytes(), -1)) }}
+               for (@w <- wCh) {{ @ListOps!("fold", w.toList(), 0, *sum, *ret) }}
              }}
            }}"#,
-        hex::encode(&pk.bytes)
+        pk = hex::encode(&pk.bytes)
     );
     let (answer, _) = rm.play_exploratory_deploy(query, root, None, Vec::new()).await.unwrap();
-    RhoNumber::unapply(&answer[0]).filter(|b| *b >= 0)
+    RhoNumber::unapply(&answer[0]).filter(|b| *b > 0)
 }
 
 #[tokio::test]
@@ -687,7 +689,7 @@ async fn a_failed_release_keeps_the_withdrawer_and_the_next_epoch_tries_again() 
 }
 
 #[tokio::test]
-async fn a_bond_made_during_quarantine_replaces_the_quarantined_amount_and_keeps_the_later_end() {
+async fn a_bond_made_during_quarantine_is_released_at_its_own_end_and_the_first_at_its_own() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis, _) = shard(&[&alice], 10, 15).await;
     let executor = BlockExecutor::new(rm.clone(), 2);
@@ -704,23 +706,20 @@ async fn a_bond_made_during_quarantine_replaces_the_quarantined_amount_and_keeps
     let moved_again = run(&executor, &b12, &block(20, vec![], &proposer)).await;
     assert_eq!(
         withdrawing(&rm, &moved_again, &alice.pk).await,
-        Some(500),
-        "the new bond replaces the quarantined amount; quarantine now ends at block 35"
+        Some(1_500),
+        "each amount has its own entry: 1,000 ending at block 25, 500 ending at block 35"
     );
 
     let before = read_wallet_balance(&rm, &moved_again, &alice.owner).await.unwrap();
     let first_end = run(&executor, &moved_again, &block(30, vec![], &proposer)).await;
-    assert_eq!(withdrawing(&rm, &first_end, &alice.pk).await, Some(500), "no release at the old end");
-    assert_eq!(read_wallet_balance(&rm, &first_end, &alice.owner).await.unwrap(), before);
+    assert_eq!(withdrawing(&rm, &first_end, &alice.pk).await, Some(500), "the 1,000 is released at its own end");
+    assert_eq!(read_wallet_balance(&rm, &first_end, &alice.owner).await.unwrap(), before + 1_000);
+    assert_eq!(read_bond_balance(&rm, &first_end, &alice.pk.bytes).await.unwrap(), 500);
 
     let second_end = run(&executor, &first_end, &block(40, vec![], &proposer)).await;
     assert_eq!(withdrawing(&rm, &second_end, &alice.pk).await, None);
-    assert_eq!(read_wallet_balance(&rm, &second_end, &alice.owner).await.unwrap(), before + 500);
-    assert_eq!(
-        read_bond_balance(&rm, &second_end, &alice.pk.bytes).await.unwrap(),
-        1_000,
-        "the first bond stays locked in the native bond: PoS no longer tracks it"
-    );
+    assert_eq!(read_wallet_balance(&rm, &second_end, &alice.owner).await.unwrap(), before + 1_500);
+    assert_eq!(read_bond_balance(&rm, &second_end, &alice.pk.bytes).await.unwrap(), 0, "nothing stays locked");
 }
 
 #[tokio::test]

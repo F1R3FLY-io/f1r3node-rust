@@ -109,3 +109,35 @@ See `docs/rev-stacks/memos/D107-rebond-in-quarantine.md` (revision 4 below).
 - The cross-host fixture is regenerated.
 - Verification (revision 4, release): casper `v6::` 93 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
 - Verification (revision 4, with the pruning in `withdraw`, release): casper `v6::` 93 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
+
+## Revision 5: Decision 114, one release entry for each withdrawn amount
+
+When a validator re-bonds during quarantine and withdraws again, each withdrawn amount now has its own release entry and is released at its own quarantine end. The first amount is no longer locked.
+
+### State
+
+- `releases` maps a quarantine end to `{pk: amount}`. The amount is the bond that moved at that end.
+- The `withdrawers` map is removed. A key's amount in quarantine is the sum of its entries in `releases`. `getWithdrawers` returns `releases`, so callers that need a total add up the entries.
+- New key `pendingEnd`: the quarantine end of the withdrawals of the current epoch. All withdrawals of one epoch share it.
+
+### Changes
+
+| Part | Revision 4 | Now |
+|---|---|---|
+| `withdraw` | when the key was in quarantine, removed it from its old entry, then added it under the new end | records `pendingWithdrawers[pk] = end` and `pendingEnd = end`. It does not touch `releases`. Old entries stay where they are. |
+| `movePendingWithdrawer` | `withdrawers ++ allBonds∩pending` | `releases[pendingEnd] ++= allBonds∩pending`, with the amounts. It is still native. |
+| due entries | a map of keys | a list of `(pk, amount)` pairs from every ended entry. A key with two ended entries appears twice and is released twice. |
+| failed release | the key went back into `releases` under the current block | its amount goes back under the current block. Two failed amounts of one key are added together. |
+| `settleOne` | read `withdrawers[pk]` | adds the key's amounts over the entries of `releases`, one fold step for each end |
+| `committedRewards` | entry deleted on release | not touched. v6 never writes it. Only the slash path deletes from it. |
+
+### Test
+
+`pos_bond_admin_spec::a_bond_made_during_quarantine_is_released_at_its_own_end_and_the_first_at_its_own`, with epoch length 10 and quarantine 15:
+- V1 bonds 1,000 (B1) and withdraws (B2). The close of B10 moves the 1,000 into the entry for block 25.
+- V1 bonds 500 (B11) and withdraws (B12). The close of B20 moves the 500 into the entry for block 35. V1 now has 1,500 in quarantine.
+- The close of B30 releases the 1,000. V1 has 500 in quarantine, and the native bond holds 500.
+- The close of B40 releases the 500. The native bond holds 0.
+
+The failed-release, release, re-bond, pending-bond and equivalence tests pass with the new state shape (17 PoS and genesis-contract tests). The cross-host fixture is regenerated.
+- Verification (revision 5, release): casper `v6::` 93 passed, 0 failed. `genesis::` 118 passed. casper lib 851 passed.
