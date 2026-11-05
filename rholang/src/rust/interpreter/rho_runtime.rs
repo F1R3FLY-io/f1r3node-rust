@@ -1295,7 +1295,6 @@ fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 /// (slice 5.33).
 fn fs_handlers_to_definitions(
     dispatcher: RhoDispatch,
-    space: RhoISpace,
     fs_handles: super::io::handle_table::FileHandleTable,
 ) -> (
     Vec<Definition>,
@@ -1309,7 +1308,6 @@ fn fs_handlers_to_definitions(
     let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
     let fs_processes = FsProcesses::new(
         dispatcher,
-        space,
         fs_handles,
         ConsensusMode::Consensus,
         fs_metering,
@@ -1338,7 +1336,6 @@ fn fs_handlers_to_definitions(
 }
 
 fn dispatch_table_creator(
-    space: RhoISpace,
     dispatcher: RhoDispatch,
     block_data: Arc<tokio::sync::RwLock<BlockData>>,
     invalid_blocks: InvalidBlocks,
@@ -1373,10 +1370,9 @@ fn dispatch_table_creator(
     // The dispatcher clone threaded here is the same `RhoDispatch`
     // instance that every other Definition's handler receives
     // through its `ProcessContext`, so the fs native handlers see
-    // the same reducer / space / dispatcher as the rest of the
+    // the same reducer / dispatcher as the rest of the
     // system-processes layer.
-    let (fs_defs, fs_processes) =
-        fs_handlers_to_definitions(dispatcher.clone(), space.clone(), fs_handles);
+    let (fs_defs, fs_processes) = fs_handlers_to_definitions(dispatcher.clone(), fs_handles);
     all_processes.extend(fs_defs);
 
     // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
@@ -1512,7 +1508,6 @@ async fn setup_reducer(
     let urn_map = Arc::new(urn_map);
 
     let replay_dispatch_table = dispatch_table_creator(
-        charging_rspace.clone(),
         temp_dispatcher.clone(),
         block_data_ref,
         invalid_blocks,
@@ -1983,33 +1978,17 @@ pub async fn create_runtime_from_kv_store(
 
 #[cfg(test)]
 mod tests {
-    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
     use super::*;
     use crate::rust::interpreter::io::handler_trait::{
         EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS,
     };
     use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
-    use crate::rust::interpreter::matcher::r#match::Matcher;
 
-    async fn minimal_dispatch_and_space() -> (RhoDispatch, RhoISpace) {
-        let reducer_cell = Arc::new(std::sync::OnceLock::new());
-        let dispatcher: RhoDispatch = Arc::new(RholangAndScalaDispatcher {
+    fn minimal_dispatcher() -> RhoDispatch {
+        Arc::new(RholangAndScalaDispatcher {
             _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            reducer: reducer_cell,
-        });
-
-        let mut kvm = InMemoryStoreManager::new();
-        let store = kvm.r_space_stores().await.unwrap();
-        let space = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
-            store,
-            Arc::new(Box::new(Matcher)),
-        )
-        .unwrap();
-        let rspace: RhoISpace = Arc::new(Box::new(space));
-
-        (dispatcher, rspace)
+            reducer: Arc::new(std::sync::OnceLock::new()),
+        })
     }
 
     /// Registration-count regression gate: walking `FS_HANDLERS` via
@@ -2022,10 +2001,8 @@ mod tests {
     /// entries after `FsProcesses` construction.
     #[tokio::test]
     async fn fs_handlers_to_definitions_count_matches_registry() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         assert_eq!(
@@ -2046,10 +2023,8 @@ mod tests {
     /// handler at registration — a silent dispatch regression.
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_unique() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         let mut seen = std::collections::HashSet::new();
@@ -2076,10 +2051,8 @@ mod tests {
     /// visibility gate (slices 5.32/5.33/5.35).
     #[tokio::test]
     async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         for def in &defs {
@@ -2103,10 +2076,8 @@ mod tests {
     /// returned Vec.
     #[tokio::test]
     async fn fs_handlers_to_definitions_covers_every_registry_entry() {
-        let (dispatcher, space) = minimal_dispatch_and_space().await;
         let (defs, _fs_processes) = fs_handlers_to_definitions(
-            dispatcher,
-            space,
+            minimal_dispatcher(),
             crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
         );
         let def_urns: std::collections::HashSet<&str> =

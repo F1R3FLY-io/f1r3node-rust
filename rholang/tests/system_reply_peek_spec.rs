@@ -254,6 +254,69 @@ async fn non_deterministic_outputs_survive_normal_and_peek_reply_dispatch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reply_body_error_does_not_fail_the_non_deterministic_call() {
+    let mut manager = InMemoryStoreManager::new();
+    let store = manager.r_space_stores().await.unwrap();
+    let (mut runtime, mut replay, _) = create_runtimes(store, false, &mut Vec::new()).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    install_recorded_service(&runtime, BodyRefs::OLLAMA_MODELS, calls.clone()).await;
+    install_recorded_service(&replay, BodyRefs::OLLAMA_MODELS, calls.clone()).await;
+    let steps = [
+        (
+            r#"for (_ <- @"reply") { if (1) { Nil } else { Nil } }"#,
+            Vec::new(),
+        ),
+        (
+            r#"new svc(`rho:ollama:models`) in { svc!("reply") }"#,
+            vec![InterpreterError::IfConditionTypeError {
+                actual_type: "Int".into(),
+            }],
+        ),
+    ];
+    for (step, (term, expected_errors)) in steps.iter().enumerate() {
+        let rand = Blake2b512Random::create_from_bytes(&step.to_le_bytes());
+        let played = runtime
+            .evaluate(term, Cost::unsafe_max(), HashMap::new(), rand.clone())
+            .await
+            .unwrap();
+        assert_eq!(&played.errors, expected_errors, "play step {step}");
+        let log = runtime.take_event_log().await;
+        if step == 1 {
+            let recorded = log
+                .iter()
+                .flat_map(|event| match event {
+                    Event::IoEvent(IOEvent::Produce(produce)) => std::slice::from_ref(produce),
+                    Event::Comm(comm) => comm.produces.as_slice(),
+                    _ => &[],
+                })
+                .filter(|produce| !produce.is_deterministic || produce.failed)
+                .collect::<Vec<_>>();
+            assert!(!recorded.is_empty());
+            for produce in recorded {
+                assert!(!produce.failed);
+                assert_eq!(produce.output_value, vec![
+                    channel("recorded output").encode_to_vec()
+                ]);
+            }
+        }
+        replay.rig(log).await.unwrap();
+        let replayed = replay
+            .evaluate(term, Cost::unsafe_max(), HashMap::new(), rand)
+            .await
+            .unwrap();
+        assert_eq!(replayed.errors, played.errors, "replay step {step}");
+        assert_eq!(played.cost, replayed.cost);
+        replay.check_replay_data().await.unwrap();
+        replay.take_event_log().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime.create_checkpoint().await.root,
+        replay.create_checkpoint().await.root
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn system_reply_registers_joined_bitmask_channels() {
     let mut manager = InMemoryStoreManager::new();
     let store = manager.r_space_stores().await.unwrap();

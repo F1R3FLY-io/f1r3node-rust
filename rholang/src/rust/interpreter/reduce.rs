@@ -575,6 +575,33 @@ impl DebruijnInterpreter {
         scope.push(handle);
     }
 
+    /// Defers the dispatch when `deferral_scope` allows it; otherwise returns
+    /// it as a future for `join_comm_tasks`.
+    fn dispatch_task(
+        &self,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) -> Option<DispatchFuture> {
+        if let Some(scope) = deferral_scope(&continuation) {
+            self.spawn_deferred_dispatch(
+                scope,
+                continuation,
+                data_list,
+                is_replay,
+                previous_output,
+            );
+            return None;
+        }
+        let reducer = self.clone();
+        Some(Box::pin(async move {
+            reducer
+                .dispatch(continuation, data_list, is_replay, previous_output)
+                .await
+        }))
+    }
+
     async fn dispatch_or_defer(
         &self,
         continuation: TaggedContinuation,
@@ -765,94 +792,31 @@ impl DebruijnInterpreter {
             Some((continuation, data_list, peek)) => {
                 self.register_bitmask_channels(&data_list).await;
                 if let Some((chan, data)) = retry {
-                    // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
-                    let data_list_clone = data_list.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_as_par,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone1
-                                .dispatch(
-                                    continuation,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-
-                    futures.push(Box::pin(
-                        async move { self_clone2.produce(chan, data, true).await },
-                    )
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
-
                     // When a persistent produce triggers a peek COMM, the non-persistent
                     // peeked data on other channels was removed by RSpace. Re-issue it
                     // to preserve peek semantics (data should remain after peek read).
-                    if peek {
-                        futures.extend(self.produce_peeks(data_list).await);
-                    }
-
+                    let peeks = if peek {
+                        self.produce_peeks(data_list.clone())
+                    } else {
+                        Vec::new()
+                    };
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    let reducer = self.clone();
+                    futures.push(Box::pin(
+                        async move { reducer.produce(chan, data, true).await },
+                    ));
+                    futures.extend(peeks);
                     join_comm_tasks(futures).await
                 } else if peek {
-                    // dispatchAndRun
-                    let self_clone = self.clone();
-                    let data_list_clone = data_list.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_as_par,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone
-                                .dispatch(
-                                    continuation,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-                    futures.extend(self.produce_peeks(data_list).await);
-
+                    let peeks = self.produce_peeks(data_list.clone());
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    futures.extend(peeks);
                     join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
@@ -888,86 +852,22 @@ impl DebruijnInterpreter {
         match res {
             Some((continuation, data_list, _peek)) => {
                 if let Some((binds, body, guard)) = retry {
-                    // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list,
-                            is_replay,
-                            previous_output_as_par,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone1
-                                .dispatch(
-                                    continuation,
-                                    data_list,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    let reducer = self.clone();
                     futures.push(Box::pin(async move {
-                        self_clone2.consume(binds, body, true, peek, guard).await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
-
+                        reducer.consume(binds, body, true, peek, guard).await
+                    }));
                     join_comm_tasks(futures).await
                 } else if _peek {
-                    // dispatchAndRun
-                    let self_clone = self.clone();
-                    let data_list_clone = data_list.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_as_par,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone
-                                .dispatch(
-                                    continuation,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-                    futures.extend(self.produce_peeks(data_list).await);
-
+                    let peeks = self.produce_peeks(data_list.clone());
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    futures.extend(peeks);
                     join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
@@ -1018,29 +918,17 @@ impl DebruijnInterpreter {
             .await
     }
 
-    async fn produce_peeks(
+    fn produce_peeks(
         &self,
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
-    ) -> Vec<
-        Pin<
-            Box<
-                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                    + std::marker::Send,
-            >,
-        >,
-    > {
+    ) -> Vec<DispatchFuture> {
         data_list
             .into_iter()
             .filter(|(_, _, _, persist)| !persist)
             .map(|(chan, _, removed_data, _)| {
-                let self_clone = self.clone();
-                Box::pin(async move { self_clone.produce(chan, removed_data, false).await })
-                    as Pin<
-                        Box<
-                            dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                + std::marker::Send,
-                        >,
-                    >
+                let reducer = self.clone();
+                Box::pin(async move { reducer.produce(chan, removed_data, false).await })
+                    as DispatchFuture
             })
             .collect()
     }
