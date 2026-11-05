@@ -28,6 +28,10 @@ The rewrite keeps the old behaviour. One difference had to be fixed on the way: 
 - The close of B30 releases nothing, and the close of B40 releases 500.
 - The native bond still holds 1,000 after B40.
 
+## Ruling
+
+Decision 114: two entries. Each withdrawn amount is released at its own quarantine end. Implemented in revision 5 of the FX-17 epoch log. The rest of this memo is the analysis before the ruling.
+
 ## The issue for review
 
 **b1 is locked for good.** After the second move, PoS has no record of b1, so no close ever releases it. The native bond keeps it, and `RevBondAdmin` will not release it without a PoS call. This was true before Decision 107, and the rewrite keeps it.
