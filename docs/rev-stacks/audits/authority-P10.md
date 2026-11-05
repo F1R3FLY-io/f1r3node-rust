@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29). `patch/FX-17-epoch` at `30258ed83` and `patch/FX-16` at `bed78053e` (revision 30). `patch/FX-17` at `c20ee4eea` and `patch/FX-15-followups` at `c97c2e4b3` (revision 31). `patch/FX-17` at `488122957` (revision 32).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29). `patch/FX-17-epoch` at `30258ed83` and `patch/FX-16` at `bed78053e` (revision 30). `patch/FX-17` at `c20ee4eea` and `patch/FX-15-followups` at `c97c2e4b3` (revision 31). `patch/FX-17` at `488122957` (revisions 32 and 33).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2878,6 +2878,121 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | A later status replaces an earlier one, lane C's gate guarantee for run-time seals, the positions from before FX-17, P11's dependence on liveness, and the earlier known issues | Known issue | Open |
 
 
+## Revision 33 (action A-10): conformance to P12
+
+- **New action A-10:** audit the branch against P12 (design r24, Decision 116).
+- **The gate for A-10:** a gap is blocking only if a node would depend on genesis or on history behind the finalization fringe. Any other gap is a known issue for after the handoff.
+- **Commit audited:** `patch/FX-17` at `488122957`, which contains FX-8b `b7e4d5329` and the `dev` merge of revision 26.
+- **Reference:** design r24 (publications `cab7361`), §"Nothing behind the fringe (P12)", and Decisions 115 and 116.
+- **Method:** a reading of `casper.rs` (the v6 engine construction), `v6/engine.rs`, `v6/store.rs`, `v6/core.rs`, `v6/conservation.rs`, `v6/slash.rs`, `v6/evidence.rs`, `engine/initializing.rs`, `engine/running.rs`, `engine/casper_launch.rs`, `validate.rs` and `finality/block_facts.rs`. No tests were run.
+- **F52 comes first.** F52 is unchanged since revision 32. No fix is on any lane branch. It stays the first blocking item.
+- **Question 25 is answered by Decision 115:** an in-place upgrade rebuilds the missing statuses. It replays each block in the deploy lifespan window from that block's own pre-state, and never from genesis.
+
+### Summary
+
+| Item | Result | Label |
+|---|---|---|
+| 1. Join from the LFB's attested root | Does not conform | **Blocking (P12-1, P12-2)** |
+| 2. Rejoin after an absence longer than retention | Does not conform | **Blocking (P12-3)** |
+| 3. Deployment statuses | The gate window conforms. There is no pruning, and a joiner has no statuses. | Known issue, and part of P12-1 |
+| 4. Evidence and slashing windows | No window is defined | Known issue (P12-4) |
+| 5. The tally rebuild and the status rebuild | The tally rebuild conforms. Decision 115 is not implemented, and two reset paths replay from the anchor. | **Blocking (P12-5)**, and a Decision 115 condition |
+| 6. The deploy lifecycle's fallback | Conforms above the LFB. The fallback is silent. | Known issue (P12-6) |
+| 7. Executor pruning (P1-11) | Memory conforms. The LMDB index is not pruned. | Known issue (P12-7) |
+| Found during the audit: the conservation audit | Needs every wallet since genesis | Known issue (P12-8) |
+
+### 1. Joining from the LFB's attested root
+
+**What `dev` does.**
+- A node that joins with `trim_state` asks for an approved block. The responder (`running.rs`, `ApprovedBlockRequest`) sends its own LFB with `required_sigs: 0` and no signatures.
+- `Validate::approved_block` then accepts the block, because zero signatures meet a requirement of zero. The code comment says that the joiner must trust the bootstrap node.
+- `request_approved_state` then downloads the blocks back to the lifespan bound, and the tuple space at the LFB's `post_state_hash`.
+
+**What v6 then does.**
+- `casper.rs` builds `V6Engine::new(&approved_block, …)`. The executor store is anchored at the approved block, with `anchor_root = approved_block.body.state.post_state_hash`.
+- For a v6 block, `post_state_hash` is the block's own attestation root (`validity.rs` requires `post_state_hash == attestation.root`). That root is the canonical root of an earlier block A that the proposer executed. It is not the canonical root at the LFB.
+- So a trimmed joiner anchors position 0 at the LFB with the root of A. The blocks after A, up to and including the LFB, never run on the joiner. The pre-root of the next record is the canonical root at the LFB, which the joiner does not have.
+
+**P12-1 — blocking: v6 has no working join from an attested finalized state.**
+- The joiner anchors the wrong root, so it either stops at the first replay or computes roots that differ from the network.
+- So in practice, a v6 node can only start from genesis and replay every record. That is the dependency that P12 removes.
+- **Conditions:**
+  1. The anchor is the LFB with the canonical root at the LFB, not the block's attestation root.
+  2. The joiner downloads the tuple space at that root.
+  3. The joiner receives the deployment statuses for the lifespan window below the anchor. The records in the citing blocks that LFS already downloads give these statuses without execution: the `ran` flags, the void reasons, and the unreadable set of each target. The record chain must end at the anchor root.
+  4. A multi-node test: a node joins from the LFB of a running v6 network, replays from there, and attests the same roots as the others.
+
+**P12-2 — blocking: the joiner does not verify an attestation quorum.**
+- A trimmed join trusts one bootstrap node for the block, the root and the state.
+- P12 requires the joiner to verify that more than 2/3 of the bonded stake attested the root.
+- **Condition:** the responder sends the attesting blocks (or their signed attestations) for the LFB's canonical root, and the joiner checks the signatures and the stake before it uses the state.
+- **Question 26:** which bond set verifies the join quorum? P5 reads the bonds at the LFB's canonical root, which is the state under verification. A joiner can use those bonds only together with a trusted earlier reference, for example a checkpoint that the operator configures, or the approved genesis and a chain of bond changes. This choice touches authority, so it is escalated.
+
+### 2. Rejoining after an absence longer than retention
+
+- On restart, `casper_launch.rs` finds the stored approved block and calls `connect_to_existing_network`. The node asks peers for their tips and requests the missing blocks back to its own DAG.
+- The v6 executor resumes its stored prefix (`Opened::Resumed`) and replays every record after its last position.
+- No path detects that the node's LFB is behind the peers' retention, and no path changes to a trimmed rejoin.
+
+**P12-3 — blocking.** After a long absence, the node needs every block between its old LFB and the current fringe. P12 allows peers to prune those blocks. The node then cannot catch up.
+- **Condition:** when the node's LFB is behind the fringe by more than a set bound, or when a missing block cannot be fetched, the node discards its executor prefix and rejoins through the P12-1 path. A test covers a node that restarts after the network has moved beyond its retention.
+
+### 3. Deployment statuses
+
+- **The gate window conforms.** `prior` keeps a status only inside the deploy lifespan. r24 bounds every rule by the fringe and the lifespan, so this window is permitted.
+- **Known issue: statuses are not pruned.** The `e` keys stay forever (lane A2's known issue in `b4ab97899`). An entry with a block number plus the lifespan below the fringe's block number can never apply, so it can be pruned safely.
+- **A joiner has no statuses.** This is condition 3 of P12-1.
+
+### 4. Evidence and slashing windows
+
+- `MemoryEvidenceSink` keeps every piece of evidence in memory, with no window, and loses it on restart.
+- No evidence class has an age limit. `require_no_slashes` refuses slash records until B6.
+- **P12-4 — known issue.** Nothing on the branch needs history behind the fringe, because slashing does not run before B6. Before B6, each evidence class needs a window bounded by the fringe. Evidence about a position behind the fringe cannot be checked by a node that joined after it. The inclusion screen and the misattestation check already use only local roots, and they give no evidence when the root is unknown.
+
+### 5. The tally rebuild and the status rebuild
+
+- **The tally rebuild conforms.** `rebuild_tally` reads only the blocks above the LFB's height, and P5 uses only positions with a local root.
+- **Decision 115 is not implemented** on any lane branch. That is a condition for the in-place upgrade.
+- **P12-5 — blocking: two reset paths replay from the anchor.**
+  - `LmdbRecordStore::open` resets the executor when the stored format version differs (`ReplacedOlderFormat`) or the anchor differs (`ReplacedOtherAnchor`). The executor then starts again at the anchor.
+  - For a node that started from genesis, the anchor is genesis. So a format change or an anchor change makes the node replay from genesis.
+  - **Condition:** a reset rejoins through the P12-1 path. A format change that keeps the store follows Decision 115.
+- **Note on Decision 115:** its replay needs each block's pre-state, which only a node that executed the blocks has. A joiner gets its statuses from the records instead, as in P12-1 condition 3.
+
+### 6. The deploy lifecycle's fallback for records older than retention
+
+- On start, `register_unrun_after` registers the unrun envelopes of each record above the LFB. A record of the LMDB store is read through its citing block in the block store.
+- A citing block is above its target, so the citing block of a record above the LFB is above the LFB, and pruning below the fringe does not remove it. **This conforms.**
+- **P12-6 — known issue: the fallback is silent.**
+  - When a record cannot be read, `register_unrun_after` skips it, and `block_facts` then counts every envelope of the block as applied.
+  - A crash after the LFB commit and before the settle step can leave blocks at or below the LFB unsettled. On restart, they have no unrun entries.
+  - The lifecycle can then report a deployment that did not run as applied. This affects only client status, not consensus.
+  - A missing record should give "unknown", not "applied".
+
+### 7. Executor pruning (P1-11)
+
+- Memory holds only the head and the window of emitted blocks that are not fixed. **This conforms.**
+- **P12-7 — known issue: the LMDB index is not pruned.** The position keys, `ROOT`, `CITER`, `INDEX` and the void counts remain for every position from the anchor. No operation needs them behind the fringe, so they can be rolled off. At present they grow without bound.
+
+### 8. Found during the audit: the conservation audit
+
+- `Conservation::open` builds its wallet index from the anchor block's deploys (`WalletIndex::from_genesis`) and then from each settlement that the node observes. The mints of the other kinds also come from the observed blocks.
+- A node that joins from the LFB has no wallets from before the anchor, so its audit reports false failures.
+- **P12-8 — known issue.** The audit is a local check. It stops no node, and no consensus rule reads it. It is still an operation that needs history from genesis. Before it can run on a joiner, the index must come from the state at the anchor root (the wallet cells and the mint records), not from the blocks since genesis.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| F52 | **Blocking** | First. No fix yet. |
+| P12-1 (no working join from an attested state), P12-2 (no quorum check), P12-3 (no rejoin after a long absence), P12-5 (resets replay from the anchor) | **Blocking** | New |
+| D11, the side-dependent storage reservation, D10 and F47 | **Blocking until merged** | Unchanged |
+| Decision 115 (status rebuild on upgrade) | Condition | Not implemented |
+| Question 26 (the bond set for the join quorum) | Escalated | Open |
+| P12-4, P12-6, P12-7, P12-8, and the status pruning | Known issue | New |
+| The conditions and known issues of revision 32 | — | Unchanged |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -2905,4 +3020,5 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 22. **F39 and F33:** answered on 2026-11-04 (Decision 112: the run-time check is the guard). A pure stack body under a seal bound at run time passes the gate as a token kind, and only the run-time check refuses a wallet outside the deployment's signers. Does the gate refuse an unresolved bound seal on a stack body (which also refuses a token kind passed in at run time), or does the run-time check stay the only guard?
 23. **D10:** answered on 2026-11-04 (Decision 113: the pre-state form, with no lag term). The code applies the per-bond rate to the bonds at the block's true pre-state, with no lag term, because Decision 108 evaluates the pre-charge at execution. Is the §6.3 text of Decision 102 updated to this form?
 24. **F51:** answered on 2026-11-04 (Decision 114: two entries, each released at its own quarantine end). A validator that bonds again in quarantine and withdraws again loses track of its first amount, which stays locked in the native bond. Are the amounts added (lane B's recommendation), kept as two entries, or is the re-bond refused?
-25. **In-place upgrade of a v6 store (revision 32):** an upgraded node lacks the canonical statuses that a node replayed from genesis has, and the two can compute different state roots. Does the handoff support an in-place upgrade of a v6 store from before FX-17, or must such a store be replayed from genesis?
+25. **In-place upgrade of a v6 store (revision 32):** answered on 2026-11-05 (Decision 115: rebuild the statuses by replaying each block in the lifespan window from its own pre-state). an upgraded node lacks the canonical statuses that a node replayed from genesis has, and the two can compute different state roots. Does the handoff support an in-place upgrade of a v6 store from before FX-17, or must such a store be replayed from genesis?
+26. **The bond set for the join quorum (revision 33, P12-2):** P5 reads the bonds at the LFB's canonical root, which is the state that the joiner verifies. Which trusted reference does a joiner use to check that more than 2/3 of the bonded stake attested the root: a checkpoint that the operator configures, the approved genesis with a chain of bond changes, or another source?
