@@ -350,7 +350,15 @@ env:
   #   Clears three startup warnings on every shard. Verified: descends from
   #   2d3a8d4; test_concurrent_bridge_locks passes locally with none of the
   #   warnings on any node.
-  SYSTEM_INTEGRATION_REF: e1e00ee503ea3071c03abb84245cc0d48e441e82
+  # 2026-11-04: e1e00ee -> 61ae9d1 (system-integration MAIN — the #167 merge
+  #   commit). #167 lets test_observer_missing_block_retry accept the two
+  #   floor-cache retry lines the restore loop logs, so the test no longer
+  #   times out when the source pause lands after block download. It also
+  #   moves compose/monitoring.yml to cadvisor 0.60.6, which mounts /var/run
+  #   read-only for Docker 29's containerd store, and adds runtime logs to
+  #   system-integration's own smoke test. No other changes since e1e00ee.
+  #   Verified: descends from e1e00ee (merge-base --is-ancestor).
+  SYSTEM_INTEGRATION_REF: 61ae9d14c4b8b8881fc0a82a2b6eac3fcbe5a797
   # Pinned OCI CLI installer (release tag + sha256). The checksum fails closed
   # if the tag is ever moved. Bump both together when upgrading.
   OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
