@@ -2,9 +2,13 @@
 
 Branch `patch/FX-15-followups`, cut from `patch/FX-8b` (7b60c3880). Design r21, plan r8.23. Names: V1…Vn validators, u1…um deployers, d1…di deployments, B1…Bj blocks, void reasons (a)–(d).
 
-## 1. F33 and F39: the gate refuses every seal whose owner resolves only at run time
+## 1. F33 and F39: seals whose owner resolves only at run time
 
-**Result: the guarantee holds. No term shape gets past the gate.**
+**Corrected 2026-11-05.** The first version of this section said that no term shape gets past the gate. That is wrong. Lane A2 found a shape that the gate admits (FX-8b, 6c43a2c8f): a pure stack body under a seal bound at run time, for example `for (s <- ch) { {% slot :: () %}[s] }`. `region::stack_payer` reads an unresolved bound seal on a stack body as a token kind, so it names no wallet. The 34-shape table below has no stack body, so it did not find this shape.
+
+**Ruling (Decision 112):** the gate does not refuse every seal that resolves only at run time. The run-time check is the guard. `check_region_signature` refuses an owner that is neither a signer of the deployment nor held. Draws on that wallet are charged under Decision 83 and bounded by the meter's per-block ledger. Decision 112 closes F39 and F33.
+
+**Result for the shapes that name a wallet:** items 1 to 5 hold for every seal that the gate names as an owner. The gate refuses such a seal when its owner resolves only at run time. A stack body under such a seal is not named, and only the run-time check refuses it.
 
 The check is `GateLedger::decide` (`v6/gate.rs`): `input.named.iter().any(|s| !admissible(s, &signers))` refuses the deployment with `ForeignSignature`. `input.named` is `region::named_owners(term)`, applied by `executor::classify_envelope` to the term that the runtime also evaluates.
 
@@ -32,7 +36,7 @@ The shapes cover:
 
 Lane B's three shapes are cases of the variable seal in this table. During the work, three candidate shapes were found not to parse. The gate admits such a term as `Unnormalized`, and the run fails. They are reason (c), so they are not in the table.
 
-**F33 and F39 can close.** Lane A1's general guarantee is items 1 to 4.
+**F33 and F39 are closed by Decision 112,** not by this table. Items 1 to 4 are the gate's guarantee for the seals that it names.
 
 ## 2. FX-3 after the `dev` merge (for lane A1)
 
