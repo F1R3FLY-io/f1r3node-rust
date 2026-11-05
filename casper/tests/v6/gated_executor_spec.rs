@@ -1422,3 +1422,81 @@ async fn the_close_cost_is_recorded_not_charged_and_replay_checks_it() {
     let refused = executor.replay(&other, &block).await.unwrap_err().to_string();
     assert!(refused.contains("the close's cost"), "{refused}");
 }
+
+fn static_bound(term: &str) -> Option<u64> {
+    use rholang::rust::interpreter::accounting::delta_sigma::DeltaEstimate;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+    DeltaEstimate::of_source(&Compiler::source_to_adt(term).unwrap(), term.len() as u64).bound()
+}
+
+#[tokio::test]
+async fn a_deployment_with_a_small_static_bound_commits_less_than_its_phlo_limit() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let bound = static_bound(TWO_COMMS).expect("a closed linear term has a bound");
+    assert!(bound < 1_000_000);
+    let played = executor
+        .execute(&pre, vec![envelope(TWO_COMMS, 1, &alice, 1_000_000, 3)], block_data(&proposer))
+        .await
+        .expect("the block executes");
+    let entry = &played.gate.entries[0];
+    assert!(entry.admitted());
+    assert_eq!(entry.delta, bound);
+    assert_eq!(entry.commitments.iter().map(|c| c.amount).sum::<u64>(), 3 * bound);
+    assert!(played.settlement.debited() <= 3 * bound);
+    assert!(!played.runs[0].failed);
+    let again = replay(&executor, &pre, &played, block_data(&proposer)).await;
+    assert_eq!(again.settled_root, played.settled_root);
+    assert_eq!(again.settlement, played.settlement);
+}
+
+#[tokio::test]
+async fn a_recursive_deployment_commits_its_phlo_limit() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let recursive = r#"new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(3) }"#;
+    assert_eq!(static_bound(recursive), None);
+    let played = executor
+        .execute(&pre, vec![envelope(recursive, 1, &alice, 400_000, 2)], block_data(&proposer))
+        .await
+        .expect("the block executes");
+    let entry = &played.gate.entries[0];
+    assert_eq!(entry.delta, 400_000);
+    assert_eq!(entry.commitments.iter().map(|c| c.amount).sum::<u64>(), 800_000);
+    assert!(played.settlement.debited() <= 800_000);
+}
+
+#[tokio::test]
+async fn a_run_never_spends_more_than_its_commitment() {
+    let (alice, proposer) = (party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let failing = r#"new x in { x!(1 + "a") }"#;
+    let bound = static_bound(failing).expect("the term is in the estimated fragment");
+    let below = (bound / 2) as i64;
+    let envelopes = vec![
+        envelope(failing, 1, &alice, 1_000_000, 1),
+        envelope(TWO_COMMS, 2, &alice, below, 1),
+    ];
+    let played = executor
+        .execute(&pre, envelopes, block_data(&proposer))
+        .await
+        .expect("the block executes");
+    assert_eq!(played.gate.entries[0].delta, bound);
+    assert_eq!(played.gate.entries[1].delta, below as u64);
+    assert!(played.runs[0].failed);
+    assert!(played.runs[0].compute_phlo <= bound, "the run's own limit is the committed bound");
+    for charge in &played.settlement.charges {
+        let entry = played
+            .gate
+            .entries
+            .iter()
+            .find(|e| e.envelope_sig == charge.envelope_sig)
+            .unwrap();
+        assert!(charge.comm_rev + charge.compute_rev <= entry.delta * charge.phlo_price);
+    }
+    let again = replay(&executor, &pre, &played, block_data(&proposer)).await;
+    assert_eq!(again.settled_root, played.settled_root);
+}

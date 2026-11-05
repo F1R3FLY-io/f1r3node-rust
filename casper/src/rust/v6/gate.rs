@@ -30,6 +30,7 @@ pub struct GateInput {
     pub phlo_limit: i64,
     pub phlo_price: i64,
     pub prior: Option<Refusal>,
+    pub static_bound: Option<u64>,
 }
 
 impl GateInput {
@@ -68,7 +69,13 @@ impl GateInput {
             phlo_limit: deploy.data.phlo_limit,
             phlo_price: deploy.data.phlo_price,
             prior: None,
+            static_bound: None,
         })
+    }
+
+    pub fn with_static_bound(mut self, bound: Option<u64>) -> Self {
+        self.static_bound = bound;
+        self
     }
 
     pub fn signers(&self) -> Vec<WalletOwner> {
@@ -276,6 +283,15 @@ pub struct PhloLimitDemand;
 
 impl Demand for PhloLimitDemand {
     fn delta(&self, input: &GateInput) -> Option<u64> { u64::try_from(input.phlo_limit).ok() }
+}
+
+pub struct BoundDemand;
+
+impl Demand for BoundDemand {
+    fn delta(&self, input: &GateInput) -> Option<u64> {
+        let limit = u64::try_from(input.phlo_limit).ok()?;
+        Some(input.static_bound.map_or(limit, |bound| bound.min(limit)))
+    }
 }
 
 pub trait WalletReader {
@@ -541,6 +557,7 @@ mod tests {
             sealed: Vec::new(),
             bare_stack: false,
             prior: None,
+            static_bound: None,
         }
     }
 
@@ -721,5 +738,20 @@ mod tests {
             prop_assert_eq!(gate_block(&r, &PhloLimitDemand, &inputs).unwrap(), out.clone());
             prop_assert!(check_recorded(&r, &PhloLimitDemand, &inputs, &out.entries).is_ok());
         }
+    }
+
+    #[test]
+    fn the_bound_demand_commits_the_smaller_of_the_limit_and_the_static_bound() {
+        let os = owners(1);
+        let r = reader(&os, &[10_000]);
+        let small = input(&os[0], 1_000, 2, 0).with_static_bound(Some(300));
+        let large = input(&os[0], 1_000, 2, 1).with_static_bound(Some(5_000));
+        let open = input(&os[0], 1_000, 2, 2);
+        let out = gate_block(&r, &BoundDemand, &[small.clone(), large, open]).unwrap();
+        assert_eq!(out.entries.iter().map(|e| e.delta).collect::<Vec<_>>(), vec![300, 1_000, 1_000]);
+        assert_eq!(out.entries[0].commitments.iter().map(|c| c.amount).sum::<u64>(), 600);
+        assert_eq!(out.table.committed(&wallet_channel_id(&os[0])), 600 + 2_000 + 2_000);
+        assert!(check_recorded(&r, &BoundDemand, &[small.clone()], &out.entries[..1]).is_ok());
+        assert!(check_recorded(&r, &PhloLimitDemand, &[small], &out.entries[..1]).is_err());
     }
 }
