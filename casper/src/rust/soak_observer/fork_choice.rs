@@ -256,7 +256,7 @@ impl<'a> ReferenceForkChoice<'a> {
                 continue;
             };
             self.visited.insert(hash.clone());
-            if block.metadata.invalid || self.snapshot.invalid_blocks.contains_key(hash) {
+            if block.metadata.is_invalid() || self.snapshot.invalid_blocks.contains_key(hash) {
                 counts.invalid += 1;
                 if self.control != ReferenceControl::KeepInvalidMessages {
                     continue;

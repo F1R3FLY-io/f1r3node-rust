@@ -144,7 +144,9 @@ impl Fixture {
                 if index == 0 {
                     InsertMode::Approved
                 } else if invalid.contains(&block.block_hash) {
-                    InsertMode::Invalid
+                    InsertMode::Equivocation {
+                        sibling: BlockHash::from(vec![0xEE; 32]),
+                    }
                 } else {
                     InsertMode::Normal
                 },

@@ -774,7 +774,7 @@ impl CanonicalEncoder {
         }
         self.i64(metadata.block_number)?;
         self.i32(metadata.sequence_number)?;
-        self.bool(metadata.invalid)?;
+        self.bool(metadata.is_invalid())?;
         self.bool(metadata.directly_finalized)?;
         self.bool(metadata.finalized)?;
         self.u32(metadata.fault_tolerance_value.to_bits())?;

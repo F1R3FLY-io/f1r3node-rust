@@ -62,14 +62,16 @@ fn is_equivocation(verdict: &Either<BlockError, ValidBlock>) -> bool {
     )
 }
 
-fn held_invalid(node: &TestNode, hash: &BlockHash) -> Option<bool> {
+/// What `node` records for `hash`: `None` if it does not hold the block,
+/// otherwise the sibling it holds the block as an equivocation with.
+fn held_pair(node: &TestNode, hash: &BlockHash) -> Option<Option<BlockHash>> {
     node.casper
         .block_dag_storage
         .get_representation()
         .expect("dag")
         .lookup(hash)
         .expect("lookup")
-        .map(|meta| meta.invalid)
+        .map(|meta| meta.equivocates)
 }
 
 async fn accept(node: &mut TestNode, block: &BlockMessage, what: &str) {
@@ -107,6 +109,11 @@ async fn validators_that_saw_an_equivocation_in_opposite_orders_accept_each_othe
         assert!(
             is_equivocation(&recorded),
             "v{node} second copy: {recorded:?}"
+        );
+        assert_eq!(
+            held_pair(&nodes[node], &second.block_hash),
+            Some(Some(first.block_hash.clone())),
+            "v{node} records the pair"
         );
     }
 
@@ -196,9 +203,9 @@ async fn sibling_after_chain(chain: usize, arrival: Arrival) {
         "chain {chain}: verdict {verdict:?}"
     );
     assert_eq!(
-        held_invalid(&nodes[1], &sibling.block_hash),
-        Some(true),
-        "chain {chain}: the sibling is held invalid"
+        held_pair(&nodes[1], &sibling.block_hash),
+        Some(Some(blocks[0].block_hash.clone())),
+        "chain {chain}: the sibling is held as an equivocation with b1"
     );
 
     let next = nodes[1]

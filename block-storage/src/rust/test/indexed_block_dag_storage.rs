@@ -13,6 +13,13 @@ use crate::rust::dag::block_dag_key_value_storage::{
 };
 use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 
+fn insert_mode(equivocates: Option<BlockHash>) -> InsertMode {
+    match equivocates {
+        Some(sibling) => InsertMode::Equivocation { sibling },
+        None => InsertMode::Normal,
+    }
+}
+
 pub struct IndexedBlockDagStorage {
     underlying: BlockDagKeyValueStorage,
     id_to_blocks: DashMap<i64, BlockMessage>,
@@ -48,7 +55,7 @@ impl IndexedBlockDagStorage {
         &mut self,
         block: &BlockMessage,
         genesis: &BlockMessage,
-        invalid: bool,
+        equivocates: Option<BlockHash>,
     ) -> Result<BlockMessage, KvStoreError> {
         // P2-12: insert mutates; exclusive lock.
         let _lock_guard = self.underlying.global_lock.write();
@@ -79,14 +86,8 @@ impl IndexedBlockDagStorage {
         modified_block.seq_num = next_creator_seq_num;
         modified_block.body.state = new_post_state;
 
-        self.underlying.insert_internal(
-            &modified_block,
-            if invalid {
-                InsertMode::Invalid
-            } else {
-                InsertMode::Normal
-            },
-        )?;
+        self.underlying
+            .insert_internal(&modified_block, insert_mode(equivocates))?;
         self.id_to_blocks.insert(next_id, modified_block.clone());
         *current_id = next_id;
 
@@ -97,19 +98,13 @@ impl IndexedBlockDagStorage {
         &mut self,
         index: i64,
         block: BlockMessage,
-        invalid: bool,
+        equivocates: Option<BlockHash>,
     ) -> Result<(), KvStoreError> {
         // P2-12: insert mutates; exclusive lock.
         let _lock_guard = self.underlying.global_lock.write();
         self.id_to_blocks.insert(index, block.clone());
-        self.underlying.insert_internal(
-            &block,
-            if invalid {
-                InsertMode::Invalid
-            } else {
-                InsertMode::Normal
-            },
-        )?;
+        self.underlying
+            .insert_internal(&block, insert_mode(equivocates))?;
 
         Ok(())
     }
@@ -204,7 +199,7 @@ mod tests {
             .insert_indexed(
                 &block(0, 0, vec![genesis.block_hash.clone()]),
                 &genesis,
-                false,
+                None,
             )
             .unwrap();
         assert_eq!(first.body.state.block_number, 0);
@@ -214,7 +209,7 @@ mod tests {
             .insert_indexed(
                 &block(0, 0, vec![genesis.block_hash.clone()]),
                 &genesis,
-                false,
+                None,
             )
             .unwrap();
         assert_eq!(second.body.state.block_number, 1);
@@ -239,7 +234,7 @@ mod tests {
             .insert_indexed(
                 &block(0, 3, vec![genesis.block_hash.clone()]),
                 &genesis,
-                false,
+                None,
             )
             .unwrap();
         assert_eq!(inserted.seq_num, 3);
@@ -256,7 +251,7 @@ mod tests {
             .insert_indexed(
                 &block(0, 0, vec![genesis.block_hash.clone()]),
                 &genesis,
-                true,
+                Some(BlockHash::from(vec![6; 32])),
             )
             .unwrap();
 
@@ -274,7 +269,7 @@ mod tests {
         storage.insert(&genesis, InsertMode::Approved).unwrap();
 
         let injected = block(1, 1, vec![genesis.block_hash.clone()]);
-        storage.inject(7, injected.clone(), false).unwrap();
+        storage.inject(7, injected.clone(), None).unwrap();
 
         assert_eq!(storage.lookup_by_id(7).unwrap(), Some(injected.clone()));
         let dag = storage.get_representation().unwrap();

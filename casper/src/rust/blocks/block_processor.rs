@@ -1283,7 +1283,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         };
         let representation = self.block_dag_storage.get_representation()?;
         Ok(match representation.lookup(main_parent)? {
-            Some(parent) if !parent.invalid => {
+            Some(parent) if !parent.is_invalid() => {
                 if parent.weight_map.get(&block.sender).copied().unwrap_or(0) > 0 {
                     SenderAuthorization::Authorized
                 } else {

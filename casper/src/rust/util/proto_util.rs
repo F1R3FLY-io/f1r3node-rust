@@ -1066,7 +1066,7 @@ mod fork_choice_b1_repro_tests {
             weight_map: wm,
             block_number: num,
             sequence_number: num as i32,
-            invalid: false,
+            equivocates: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,

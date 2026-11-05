@@ -1,11 +1,11 @@
-//! Equivocation detection — single-step `check_equivocations` plus the
+//! Equivocation detection — the equivocation verdict plus the
 //! neglected-equivocation RMW path.
 //!
 //! ## Responsibilities
 //!
-//! * [`EquivocationDetector::check_equivocations`] — checks whether a
-//!   freshly-arrived block equivocates against its sender's prior
-//!   creator-justification.
+//! * [`EquivocationDetector::equivocation_of`] — an equivocation is two
+//!   blocks signed by one sender at one sequence number; finds the held
+//!   sibling of a freshly-arrived block.
 //! * [`EquivocationDetector::check_neglected_equivocations_with_update`]
 //!   — atomic RMW over the equivocation tracker that mints
 //!   [`EquivocationRecord`]s for blocks observing equivocations they
@@ -38,7 +38,6 @@ use rspace_plus_plus::rspace::history::Either;
 use shared::rust::store::key_value_store::KvStoreError;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
-use crate::rust::util::proto_util;
 use crate::rust::ValidBlockProcessing;
 
 /// Equivocation detection logic for blockchain consensus
@@ -75,57 +74,62 @@ pub enum NeglectedEquivocationOutcome {
 type CanonicalChildCache = HashMap<(BlockHash, Validator, i64), Option<BlockHash>>;
 
 impl EquivocationDetector {
-    pub async fn check_equivocations(
-        requested_as_dependency: bool,
-        block: &BlockMessage,
+    /// The sender's other held block at `block`'s sequence number: the block
+    /// that makes `block` an equivocation. Found on the sender's own
+    /// justification chain below its latest message, which never moves to a
+    /// lower sequence number.
+    pub fn equivocation_of(
         dag: &KeyValueDagRepresentation,
-    ) -> Result<ValidBlockProcessing, KvStoreError> {
-        // P4-5: per-block hot path; demote info!→debug! per slashing audit.
-        tracing::debug!("Calculate checkEquivocations.");
-
-        let maybe_latest_message_of_creator_hash = dag.latest_message_hash(&block.sender);
-        let maybe_creator_justification = Self::creator_justification_hash(block);
-        let is_not_equivocation =
-            maybe_creator_justification == maybe_latest_message_of_creator_hash;
-
-        if is_not_equivocation {
-            Ok(Either::Right(ValidBlock::Valid))
-        } else if requested_as_dependency {
-            Ok(Either::Left(BlockError::Invalid(
-                InvalidBlock::AdmissibleEquivocation,
-            )))
-        } else {
-            // C15 / Smell-5: render `None` as the literal `<none>` rather
-            // than `unwrap_or_default()` (which prints `BlockHash`'s
-            // default value — an empty `Bytes`, visually indistinguishable
-            // from a zero-hash). Operators reading this log line need to
-            // be able to tell "absent justification" from "all-zero hash".
-            let sender = PrettyPrinter::build_string_no_limit(&block.sender);
-            let creator_justification_hash = maybe_creator_justification
-                .as_ref()
-                .map(|hash| PrettyPrinter::build_string_no_limit(hash))
-                .unwrap_or_else(|| "<none>".to_string());
-            let latest_message_of_creator = maybe_latest_message_of_creator_hash
-                .as_ref()
-                .map(|hash| PrettyPrinter::build_string_no_limit(hash))
-                .unwrap_or_else(|| "<none>".to_string());
-
-            tracing::warn!(
-                "Ignorable equivocation: sender is {}, creator justification is {}, latest message of creator is {}",
-                sender,
-                creator_justification_hash,
-                latest_message_of_creator
-            );
-
-            Ok(Either::Left(BlockError::Invalid(
-                InvalidBlock::IgnorableEquivocation,
-            )))
+        block: &BlockMessage,
+    ) -> Result<Option<BlockHash>, KvStoreError> {
+        let Some(mut hash) = dag.latest_message_hash(&block.sender) else {
+            return Ok(None);
+        };
+        let mut visited = HashSet::new();
+        while visited.insert(hash.clone()) {
+            let Some(meta) = dag.lookup(&hash)? else {
+                return Ok(None);
+            };
+            if meta.sender != block.sender || meta.sequence_number < block.seq_num {
+                return Ok(None);
+            }
+            if meta.sequence_number == block.seq_num {
+                return Ok((meta.block_hash != block.block_hash).then_some(meta.block_hash));
+            }
+            let Some(next) = dag.self_justification(&hash)? else {
+                return Ok(None);
+            };
+            hash = next;
         }
+        Ok(None)
     }
 
-    pub fn creator_justification_hash(block: &BlockMessage) -> Option<BlockHash> {
-        proto_util::creator_justification_block_message(block)
-            .map(|justification| justification.latest_block_hash)
+    /// The verdict on a block that equivocates: admissible when another block
+    /// has requested it as a dependency, ignorable otherwise.
+    pub fn equivocation_verdict(
+        dag: &KeyValueDagRepresentation,
+        block: &BlockMessage,
+        requested_as_dependency: bool,
+    ) -> Result<ValidBlockProcessing, KvStoreError> {
+        let Some(sibling) = Self::equivocation_of(dag, block)? else {
+            return Ok(Either::Right(ValidBlock::Valid));
+        };
+        tracing::warn!(
+            target: "f1r3fly.slashing",
+            sender = %PrettyPrinter::build_string_no_limit(&block.sender),
+            seq_num = block.seq_num,
+            block = %PrettyPrinter::build_string_no_limit(&block.block_hash),
+            sibling = %PrettyPrinter::build_string_no_limit(&sibling),
+            requested_as_dependency,
+            "equivocation"
+        );
+        Ok(Either::Left(BlockError::Invalid(
+            if requested_as_dependency {
+                InvalidBlock::AdmissibleEquivocation
+            } else {
+                InvalidBlock::IgnorableEquivocation
+            },
+        )))
     }
 
     pub async fn check_neglected_equivocations_with_update(
@@ -582,6 +586,7 @@ mod tests {
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
     use super::*;
+    use crate::rust::util::proto_util;
 
     fn validator(id: u8) -> Validator { Bytes::from(vec![id]) }
 
@@ -643,7 +648,7 @@ mod tests {
             weight_map: BTreeMap::new(),
             block_number,
             sequence_number: block.seq_num,
-            invalid: false,
+            equivocates: None,
             directly_finalized: false,
             finalized: false,
             fault_tolerance_value: 0.0,
@@ -687,7 +692,9 @@ mod tests {
                 .entry(block_number)
                 .or_default()
                 .insert(block.block_hash.clone());
-            if let Some(self_parent) = EquivocationDetector::creator_justification_hash(block) {
+            if let Some(self_parent) = proto_util::creator_justification_block_message(block)
+                .map(|justification| justification.latest_block_hash)
+            {
                 dag.self_justification_map
                     .insert(block.block_hash.clone(), self_parent);
             }
@@ -709,6 +716,64 @@ mod tests {
             store.put_block_message(block).unwrap();
         }
         store
+    }
+
+    /// v signs a1 <- a2 <- a3; its latest message is a3.
+    fn chain_of_three() -> (KeyValueDagRepresentation, Validator, [BlockMessage; 3]) {
+        let v = validator(1);
+        let a1 = block(&v, 1, hash(11), None);
+        let a2 = block(&v, 2, hash(12), Some(a1.block_hash.clone()));
+        let a3 = block(&v, 3, hash(13), Some(a2.block_hash.clone()));
+        let mut dag = dag_with(&[a1.clone(), a2.clone(), a3.clone()]);
+        dag.latest_messages_map
+            .insert(v.clone(), a3.block_hash.clone());
+        (dag, v, [a1, a2, a3])
+    }
+
+    #[test]
+    fn a_block_at_a_held_sequence_number_equivocates_with_the_held_block() {
+        let (dag, v, [a1, a2, a3]) = chain_of_three();
+        for (held, seq) in [(&a3, 3), (&a2, 2), (&a1, 1)] {
+            let sibling = block(&v, seq, hash(20 + seq as u8), None);
+            assert_eq!(
+                EquivocationDetector::equivocation_of(&dag, &sibling).unwrap(),
+                Some(held.block_hash.clone()),
+                "seq {seq}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_block_a_new_sequence_number_or_another_sender_is_no_equivocation() {
+        let (dag, v, [_, a2, a3]) = chain_of_three();
+        let next = block(&v, 4, hash(14), Some(a3.block_hash.clone()));
+        let other = block(&validator(2), 2, hash(32), None);
+        assert_eq!(
+            EquivocationDetector::equivocation_of(&dag, &a2).unwrap(),
+            None
+        );
+        assert_eq!(
+            EquivocationDetector::equivocation_of(&dag, &next).unwrap(),
+            None
+        );
+        assert_eq!(
+            EquivocationDetector::equivocation_of(&dag, &other).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_verdict_is_admissible_only_when_requested_as_a_dependency() {
+        let (dag, v, _) = chain_of_three();
+        let sibling = block(&v, 2, hash(22), None);
+        for (requested, expected) in [
+            (true, InvalidBlock::AdmissibleEquivocation),
+            (false, InvalidBlock::IgnorableEquivocation),
+        ] {
+            let verdict =
+                EquivocationDetector::equivocation_verdict(&dag, &sibling, requested).unwrap();
+            assert_eq!(verdict, Either::Left(BlockError::Invalid(expected)));
+        }
     }
 
     #[test]

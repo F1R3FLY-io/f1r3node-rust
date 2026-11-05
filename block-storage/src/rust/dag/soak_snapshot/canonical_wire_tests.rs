@@ -43,7 +43,7 @@ fn metadata(value: &BlockMetadata) -> String {
         list(&value.weight_map, |(key, n)| format!("({}, {})", bytes(key), *n as u64)),
         value.block_number as u64,
         value.sequence_number as u32,
-        value.invalid,
+        value.is_invalid(),
         value.directly_finalized,
         value.finalized,
         value.fault_tolerance_value.to_bits(),
@@ -212,7 +212,7 @@ fn fixture() -> SnapshotData {
             .collect(),
         block_number: -1,
         sequence_number: i32::MIN,
-        invalid: true,
+        equivocates: Some(hash(4)),
         directly_finalized: false,
         finalized: true,
         fault_tolerance_value: f32::from_bits(0x7fc0_1234),
@@ -463,7 +463,7 @@ fn cases() -> Vec<(String, SnapshotData, usize)> {
     meta!("sequence_number", |m: &mut BlockMetadata| m
         .sequence_number =
         i32::MAX);
-    meta!("invalid", |m: &mut BlockMetadata| m.invalid = false);
+    meta!("invalid", |m: &mut BlockMetadata| m.equivocates = None);
     meta!("directly_finalized", |m: &mut BlockMetadata| m
         .directly_finalized =
         true);

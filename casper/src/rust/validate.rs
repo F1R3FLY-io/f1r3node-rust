@@ -10,27 +10,25 @@
 //!
 //! ## Pipeline steps (in order)
 //!
-//! 1. `block_summary` — wire-format + parent + justification structural
+//! 1. `EquivocationDetector::equivocation_verdict` — a second block of the
+//!    sender at a held sequence number is an equivocation.
+//! 2. `block_summary` — wire-format + parent + justification structural
 //!    checks (T-1, T-2).
-//! 2. `validate_block_checkpoint` — replay deploys against the pre-state
+//! 3. `validate_block_checkpoint` — replay deploys against the pre-state
 //!    hash and verify the resulting state matches the block's
 //!    `post_state_hash`.
-//! 3. `bonds_cache` — verify the block's bonds map matches the bonds
+//! 4. `bonds_cache` — verify the block's bonds map matches the bonds
 //!    computed from the parent post-state hash.
-//! 4. `neglected_invalid_block` — reject the block if it has invalid
+//! 5. `neglected_invalid_block` — reject the block if it has invalid
 //!    justifications whose bonded sender is *still* bonded (T-9.7).
-//! 5. `check_neglected_equivocations_with_update` — see Bug #2 / T-9.2.
-//! 6. `phlo_price` — minimum phlo-price check.
-//! 7. `check_equivocations` — direct equivocation check against the
-//!    sender's prior latest message.
+//! 6. `check_neglected_equivocations_with_update` — see Bug #2 / T-9.2.
+//! 7. `phlo_price` — minimum phlo-price check.
 //!
 //! ## Slashing-protocol position
 //!
-//! Steps 4, 5, 7 each surface `InvalidBlock::*Equivocation` /
-//! `NeglectedInvalidBlock` to the dispatcher, which then mints
-//! `EquivocationRecord` evidence and routes the block to the
-//! `engine::multi_parent_casper::validation_dispatcher::dispatch_handle_invalid_block`
-//! path.
+//! An equivocation verdict from step 1 is the only verdict stored: the
+//! dispatcher (`dispatch_handle_invalid_block`) records the block invalid
+//! together with its sibling.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -643,7 +641,7 @@ impl Validate {
             return Either::Right(ValidBlock::Valid);
         }
 
-        let block_metadata = BlockMetadata::from_block(block, false, None, None);
+        let block_metadata = BlockMetadata::from_block(block, None, None, None);
 
         tracing::debug!(target: "f1r3fly.casper", "before-repeat-deploy-get-parents");
         let parents_start = Instant::now();
@@ -1580,27 +1578,12 @@ impl Validate {
 
     /// Justification regression check.
     ///
-    /// Compares justifications previously cited by `b.sender` (taken from
-    /// `cur_senders_block`, the sender's current latest message in the DAG)
-    /// against justifications cited by the new block `b`, and rejects any
-    /// regression — including a regression against the sender's own prior
-    /// creator-justification.
-    ///
-    /// Bug #6 / T-9.6 (post-fix behavior).
-    ///
-    /// The pre-fix code path skipped the sender's own creator-justification,
-    /// delegating self-regression detection to `checkEquivocations`. That left
-    /// a window where a block could point back to an earlier sequence number
-    /// of its own sender without being slashed at the validation boundary.
-    /// The fix is to walk the full `new_lms` map (built from `b.justifications`
-    /// via `to_latest_message_hashes`) without filtering out `b.sender` and
-    /// compare every entry against `cur_lms`; a self-regression therefore now
-    /// produces `InvalidBlock::JustificationRegression` at the loop body below.
-    ///
-    /// Proven sound by `t_9_6_self_regression_detected`,
-    /// `t_9_6_self_regression_complete`, and `t_9_6_self_regression_in_dag` in
-    /// `formal/rocq/slashing/theories/BugFixSelfRegression.v`. See also
-    /// `docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md` §9.6.
+    /// Compares the justifications the sender's current latest message cites
+    /// for other validators against those the new block `b` cites, and rejects
+    /// any that move back to a lower sequence number. The sender's own entry is
+    /// not compared: a block that cites its own sender below its latest message
+    /// shares a sequence number with a held block of that sender, and the
+    /// equivocation check has already judged it.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
@@ -1621,11 +1604,6 @@ impl Validate {
                 let cur_lms =
                     proto_util::to_latest_message_hashes(&cur_senders_block.justifications);
 
-                // Self-regression is checked here too: include the sender's
-                // self-justification so a block that points back to its own
-                // earlier sequence number is detected as JustificationRegression.
-                // See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.6.
-
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {
                         let msg = format!(
@@ -1642,6 +1620,9 @@ impl Validate {
                 // the prior semantics; the iterator skips senders absent from
                 // `cur_lms` (no justification to compare against).
                 for (sender, new_justification_hash) in &new_lms {
+                    if *sender == b.sender {
+                        continue;
+                    }
                     let Some(cur_justification_hash) = cur_lms.get(sender) else {
                         continue;
                     };
@@ -1663,7 +1644,7 @@ impl Validate {
                         }
                     };
 
-                    if !new_justification.invalid
+                    if !new_justification.is_invalid()
                         && new_justification.sequence_number < cur_justification.sequence_number
                     {
                         log_warn(cur_justification_hash, new_justification_hash, sender);
@@ -1745,7 +1726,7 @@ impl Validate {
                 target_activation_epoch,
                 epoch_length,
                 bond,
-                metadata.invalid,
+                metadata.is_invalid(),
             ) {
                 Ok(authorized) => authorized,
                 Err(error) => {
@@ -1769,7 +1750,7 @@ impl Validate {
                     )))
                 }
             };
-            if !metadata.invalid {
+            if !metadata.is_invalid() {
                 continue;
             }
 
@@ -1784,7 +1765,7 @@ impl Validate {
                 current_epoch,
                 epoch_length,
                 bond,
-                metadata.invalid,
+                metadata.is_invalid(),
             ) {
                 Ok(required) => required,
                 Err(error) => {
@@ -1979,7 +1960,7 @@ mod merge_recovery_validation_tests {
                 weight_map: BTreeMap::new(),
                 block_number,
                 sequence_number: block_number as i32,
-                invalid,
+                equivocates: invalid.then(|| hash(0xEE)),
                 directly_finalized: false,
                 finalized: false,
                 fault_tolerance_value: 0.0,

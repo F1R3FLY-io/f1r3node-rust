@@ -240,7 +240,7 @@ mod tests {
     ) {
         db.put_one(
             BlockHashSerde(block.block_hash.clone()),
-            BlockMetadata::from_block(block, false, None, None),
+            BlockMetadata::from_block(block, None, None, None),
         )
         .unwrap();
     }

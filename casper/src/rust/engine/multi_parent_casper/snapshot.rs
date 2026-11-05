@@ -199,7 +199,7 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
         &dag,
         &this.block_store,
         valid_latest_msgs.values(),
-        BlockMetadata::from_block(&this.approved_block, false, None, None),
+        BlockMetadata::from_block(&this.approved_block, None, None, None),
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.casper_shard_conf.fault_tolerance_threshold_ppm,
         ),

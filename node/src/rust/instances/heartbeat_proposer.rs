@@ -1592,7 +1592,7 @@ mod tests {
                 weight_map: BTreeMap::new(),
                 block_number,
                 sequence_number: block_number as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: finalized,
                 finalized,
                 fault_tolerance_value: 1.0,

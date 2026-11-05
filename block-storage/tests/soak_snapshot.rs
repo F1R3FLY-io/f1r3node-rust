@@ -516,7 +516,7 @@ fn captured_data_survives_later_live_mutations() {
         .unwrap();
     metadata_store(fx.handle("block-metadata"))
         .put_one(BlockHashSerde(fx.chain[1].block_hash.clone()), {
-            let mut m = BlockMetadata::from_block(&fx.chain[1], false, None, None);
+            let mut m = BlockMetadata::from_block(&fx.chain[1], None, None, None);
             m.finalized = true;
             m
         })
@@ -613,7 +613,7 @@ fn scratch_views_share_no_mutable_stores_with_each_other_or_production() {
     {
         let mut index = view_a.representation.block_metadata_index.write();
         let mut extra =
-            BlockMetadata::from_block(&child(7, vec![g.clone()], None), false, None, None);
+            BlockMetadata::from_block(&child(7, vec![g.clone()], None), None, None, None);
         extra.finalized = true;
         index.add(extra.clone()).unwrap();
         assert!(index.contains(&extra.block_hash));
@@ -1308,7 +1308,7 @@ impl<'a> CanonicalReader<'a> {
         }
         assert_eq!(i64::from_be_bytes(self.fixed()), value.block_number);
         assert_eq!(i32::from_be_bytes(self.fixed()), value.sequence_number);
-        self.flag(value.invalid);
+        self.flag(value.is_invalid());
         self.flag(value.directly_finalized);
         self.flag(value.finalized);
         assert_eq!(

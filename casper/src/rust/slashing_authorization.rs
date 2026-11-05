@@ -256,7 +256,7 @@ pub fn offenders_with_evidence_in_epoch_of(
     let epoch = epoch_for_block_number(block_number, epoch_length)?;
     let mut offenders = HashSet::new();
     for metadata in invalid_blocks {
-        if metadata.invalid && evidence_epoch(&metadata, epoch_length)? == epoch {
+        if metadata.is_invalid() && evidence_epoch(&metadata, epoch_length)? == epoch {
             offenders.insert(metadata.sender);
         }
     }
@@ -298,7 +298,7 @@ pub fn authorized_slash_candidates(
     // the resulting Vec is what feeds the block body.
     let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
     for metadata in snapshot.dag.invalid_blocks() {
-        if !metadata.invalid {
+        if !metadata.is_invalid() {
             continue;
         }
         // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
@@ -466,7 +466,7 @@ pub fn validate_received_slash_deploys(
                 hash: hex::encode(invalid_block_hash),
             })?;
 
-        if !metadata.invalid {
+        if !metadata.is_invalid() {
             return Err(SlashAuthError::ReferencesValidBlock {
                 hash: hex::encode(invalid_block_hash),
             }
@@ -501,7 +501,7 @@ pub fn validate_received_slash_deploys(
             target_activation_epoch,
             epoch_length,
             bond,
-            metadata.invalid,
+            metadata.is_invalid(),
         )
         .map_err(SlashAuthError::from)?;
         if !authorized {

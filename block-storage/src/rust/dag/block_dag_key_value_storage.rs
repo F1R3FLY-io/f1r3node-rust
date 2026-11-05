@@ -73,16 +73,16 @@ pub type DeployId = shared::rust::ByteString;
 /// [`BlockDagKeyValueStorage::insert`]. The two booleans are not
 /// independent — an approved block is by definition not invalid — and
 /// the enum encodes that invariant at the type level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InsertMode {
     /// Standard insertion: block is valid and not the approved (genesis)
     /// block. Used for all non-genesis valid blocks accepted into the
     /// DAG.
     Normal,
-    /// Block has failed validation and is being recorded for evidence
-    /// but is not eligible for fork-choice. Used by
-    /// `dispatch_handle_invalid_block`.
-    Invalid,
+    /// The block is an equivocation: `sibling` is the sender's other held
+    /// block at the same sequence number. Stored invalid, with its pair, and
+    /// not eligible for fork choice.
+    Equivocation { sibling: BlockHash },
     /// Genesis / approved-block insertion. Marks the block as the
     /// initial finalization root.
     Approved,
@@ -503,7 +503,7 @@ impl KeyValueDagRepresentation {
         for (validator, block_hash) in latest_message_hashes {
             if self
                 .lookup(block_hash)?
-                .map(|metadata| metadata.invalid)
+                .map(|metadata| metadata.is_invalid())
                 .unwrap_or(false)
             {
                 result.insert(validator.clone(), block_hash.clone());
@@ -517,7 +517,7 @@ impl KeyValueDagRepresentation {
         let mut invalid_block_hashes = HashMap::new();
         for block in invalid_blocks {
             if let Some(metadata) = self.lookup(&block.block_hash)? {
-                if metadata.invalid {
+                if metadata.is_invalid() {
                     invalid_block_hashes.insert(metadata.block_hash, metadata.sender);
                 }
             }
@@ -1283,7 +1283,11 @@ impl BlockDagKeyValueStorage {
         // Phase 8 (A-6): derive the per-branch booleans directly from the
         // enum via `matches!`. The previous `mode.flags()` projection
         // shim survived a Phase-4 transition; it is no longer needed.
-        let invalid = matches!(mode, InsertMode::Invalid);
+        let equivocates = match &mode {
+            InsertMode::Equivocation { sibling } => Some(sibling.clone()),
+            _ => None,
+        };
+        let invalid = equivocates.is_some();
         let approved = matches!(mode, InsertMode::Approved);
         let settled_history = matches!(mode, InsertMode::SettledHistory);
         let sender_is_empty = block.sender.is_empty();
@@ -1491,7 +1495,7 @@ impl BlockDagKeyValueStorage {
                 drop(lifecycle_guard);
             }
 
-            let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
+            let block_metadata = BlockMetadata::from_block(block, equivocates, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);

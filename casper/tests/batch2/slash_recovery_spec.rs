@@ -28,7 +28,9 @@ use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 fn observe_slashable_evidence(node: &TestNode, block: &BlockMessage) {
     node.casper
         .block_dag_storage
-        .insert(block, InsertMode::Invalid)
+        .insert(block, InsertMode::Equivocation {
+            sibling: models::rust::block_hash::BlockHash::from(vec![0xEE; 32]),
+        })
         .expect("record invalid evidence");
     let base_seq = checked_base_seq(block.seq_num).expect("evidence block has positive seq");
     node.casper

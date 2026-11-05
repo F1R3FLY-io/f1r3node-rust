@@ -56,7 +56,9 @@ fn put_block(
         .insert(
             block,
             if invalid {
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Equivocation {
+                    sibling: models::rust::block_hash::BlockHash::from(vec![0xEE; 32]),
+                }
             } else {
                 block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
             },

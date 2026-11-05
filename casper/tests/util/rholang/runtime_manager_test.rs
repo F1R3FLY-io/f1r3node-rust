@@ -4407,7 +4407,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
             weight_map: StdBTreeMap::new(),
             block_number: n as i64,
             sequence_number: meta_seq,
-            invalid: false,
+            equivocates: None,
             directly_finalized: true,
             finalized: true,
             fault_tolerance_value: 1.0,
