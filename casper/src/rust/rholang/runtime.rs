@@ -36,8 +36,6 @@ use num_bigint::BigInt;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::has_cost::HasCost;
 use rholang::rust::interpreter::accounting::comm_ledger::Surface;
-use rholang::rust::interpreter::accounting::rev_stack::compute::compute_wallet_owner;
-use rholang::rust::interpreter::accounting::rev_stack::{RevStacks, WalletOwner};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
@@ -90,7 +88,7 @@ fn exploratory_key_pair() -> &'static (PrivateKey, PublicKey) {
 
 pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
-    pub close_charge: Option<crate::rust::v6::close_charge::CloseCharge>,
+    pub close_phlo: Option<std::sync::Arc<parking_lot::Mutex<Option<u64>>>>,
     pub trace_close_failure: bool,
 }
 
@@ -104,19 +102,10 @@ impl RuntimeOps {
     pub fn new(runtime: RhoRuntimeImpl) -> Self {
         Self {
             runtime,
-            close_charge: None,
+            close_phlo: None,
             trace_close_failure: false,
         }
     }
-}
-
-fn native_cells(
-    runtime: &RhoRuntimeImpl,
-) -> Option<std::sync::Arc<dyn rholang::rust::interpreter::accounting::rev_stack::ops::CellStore>> {
-    runtime.reducer.space.hot_store().map(|store| {
-        std::sync::Arc::new(rholang::rust::interpreter::accounting::rev_stack::HotStoreCells(store))
-            as std::sync::Arc<dyn rholang::rust::interpreter::accounting::rev_stack::ops::CellStore>
-    })
 }
 
 /// RAII guard that temporarily disables the reducer's fs-native URN
@@ -1026,7 +1015,6 @@ impl RuntimeOps {
 
         let wrapper_pre = wrapper_pre_start.elapsed();
         self.runtime.cost.comm_ledger().reset();
-        let close_payer = self.close_payer(system_deploy).await?;
         let eval_result = self.evaluate_system_source(system_deploy).await?;
         if let Some(rss_kb) = crate::rust::util::rholang::mem_profiler::read_vm_rss_kb() {
             tracing::debug!(target: "f1r3fly.casper.mem_profile", step = "after_evaluate_system_source", rss_kb);
@@ -1094,9 +1082,7 @@ impl RuntimeOps {
 
         let work = self.runtime.cost.comm_ledger().take_work();
         let cells = self.runtime.cost.comm_ledger().take_surfaces();
-        if let Some((proposer, close)) = close_payer {
-            self.charge_close(&proposer, &close, &cells, &work)?;
-        }
+        self.record_close_phlo(system_deploy, &cells, &work);
         let mut recorded = work;
         for (surface, n) in cells.iter().filter(|(s, _)| s.is_some()) {
             let w = recorded.entry(surface.clone()).or_insert(0);
@@ -1106,46 +1092,24 @@ impl RuntimeOps {
         Ok((r, eval_result))
     }
 
-    async fn close_payer<S: SystemDeployTrait>(
+    fn record_close_phlo<S: SystemDeployTrait>(
         &self,
         system_deploy: &S,
-    ) -> Result<Option<(WalletOwner, crate::rust::v6::close_charge::CloseCharge)>, CasperError> {
-        let Some(close) = self.close_charge else {
-            return Ok(None);
-        };
-        if system_deploy.as_any().downcast_ref::<CloseBlockDeploy>().is_none() {
-            return Ok(None);
-        }
-        let sender = self.runtime.block_data_ref.read().await.sender.clone();
-        Ok(crate::rust::v6::close_charge::proposer(&sender.bytes).map(|p| (p, close)))
-    }
-
-    fn charge_close(
-        &self,
-        proposer: &WalletOwner,
-        close: &crate::rust::v6::close_charge::CloseCharge,
         cells: &std::collections::BTreeMap<Option<Surface>, u64>,
         work: &std::collections::BTreeMap<Option<Surface>, u64>,
-    ) -> Result<(), CasperError> {
+    ) {
+        let Some(sink) = &self.close_phlo else {
+            return;
+        };
+        if system_deploy.as_any().downcast_ref::<CloseBlockDeploy>().is_none() {
+            return;
+        }
         let phlo = cells
             .get(&None)
             .copied()
             .unwrap_or(0)
             .saturating_add(work.get(&None).copied().unwrap_or(0));
-        let store = native_cells(&self.runtime)
-            .ok_or_else(|| CasperError::RuntimeError("the close has no native REV layer".into()))?;
-        let stacks = RevStacks::new(store);
-        let balance = stacks
-            .balance(proposer)
-            .map_err(|e| CasperError::RuntimeError(format!("the proposer's balance: {e}")))?;
-        let charged = close.charge(phlo, balance);
-        if charged == 0 {
-            return Ok(());
-        }
-        stacks
-            .transfer(proposer, &compute_wallet_owner(), charged)
-            .map(|_| ())
-            .map_err(|e| CasperError::RuntimeError(format!("the close charge: {e}")))
+        *sink.lock() = Some(phlo);
     }
 
     fn charge_recorded_work(

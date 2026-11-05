@@ -161,7 +161,7 @@ async fn run(executor: &BlockExecutor, root: &StateHash, block: &BlockMessage) -
     run_record(executor, root, block).await.post_root().clone()
 }
 
-async fn close_charge(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord) -> u64 {
+async fn close_work_charge(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord) -> u64 {
     let compute = compute_wallet_owner();
     let before = read_wallet_balance(rm, pre, &compute).await.unwrap();
     let after = read_wallet_balance(rm, record.post_root(), &compute).await.unwrap();
@@ -278,7 +278,7 @@ async fn two_pos_bonds_on_one_native_bond_admit_the_first_and_release_the_rest()
     assert_eq!(read_bond_balance(&rm, &post, &alice.pk.bytes).await.unwrap(), 1_000);
     assert_eq!(
         read_wallet_balance(&rm, &post, &alice.owner).await.unwrap(),
-        1_000_000 - 1_500 - charge + 500 - close_charge(&rm, &genesis, &record).await
+        1_000_000 - 1_500 - charge + 500 - close_work_charge(&rm, &genesis, &record).await
     );
 }
 
@@ -312,7 +312,7 @@ async fn a_pending_bond_backed_only_by_a_withdrawn_bond_is_dropped() {
     assert_eq!(read_bond_balance(&rm, &rebonded, &alice.pk.bytes).await.unwrap(), 1_000);
     assert_eq!(
         read_wallet_balance(&rm, &rebonded, &alice.owner).await.unwrap(),
-        before - record.settlement().unwrap().debited() - close_charge(&rm, &withdrawn, &record).await
+        before - record.settlement().unwrap().debited() - close_work_charge(&rm, &withdrawn, &record).await
     );
 }
 

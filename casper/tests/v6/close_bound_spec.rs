@@ -7,7 +7,6 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::backend::ExecutionBackend;
 use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
-use casper::rust::v6::close_charge::{pre_charge_phlo, CloseCharge};
 use casper::rust::v6::executor::BlockExecutor;
 use casper::rust::v6::genesis_wallets::read_wallet_balance;
 use casper::rust::v6::record::ExecutionRecord;
@@ -29,10 +28,9 @@ use crate::util::rholang::resources::mk_runtime_manager;
 
 const FUNDS: u128 = 1_000_000_000_000_000;
 
-const MEASURE: CloseCharge = CloseCharge {
-    price: 1,
-    pre_charge: (FUNDS / 2) as u64,
-};
+fn close_bound(bonds: u64) -> u64 {
+    200_000 + 13_000 * bonds
+}
 
 struct Party {
     sk: PrivateKey,
@@ -114,7 +112,9 @@ fn block(number: i64, deploys: Vec<ProcessedDeploy>, proposer: &Party) -> BlockM
 async fn close_phlo(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord, proposer: &Party) -> u64 {
     let settlement = record.settlement().unwrap();
     let before = read_wallet_balance(rm, pre, &proposer.owner).await.unwrap() + settlement.proposer_credit;
-    before - read_wallet_balance(rm, record.post_root(), &proposer.owner).await.unwrap()
+    assert_eq!(read_wallet_balance(rm, record.post_root(), &proposer.owner).await.unwrap(), before);
+    assert!(record.close_phlo() > 0);
+    record.close_phlo()
 }
 
 fn bonds_term(count: usize) -> String {
@@ -146,7 +146,7 @@ async fn measure(validators: usize, epoch_length: i32, bonds: usize) -> u64 {
     let mut funded: Vec<&Party> = bonders.iter().collect();
     funded.push(&proposer);
     let (rm, genesis) = shard(&funded, validators, epoch_length).await;
-    let executor = BlockExecutor::new(rm.clone(), 8).with_close_charge(MEASURE);
+    let executor = BlockExecutor::new(rm.clone(), 8);
     let deploys = bonders
         .iter()
         .enumerate()
@@ -171,7 +171,7 @@ async fn measure(validators: usize, epoch_length: i32, bonds: usize) -> u64 {
 }
 
 #[tokio::test]
-async fn the_close_stays_inside_its_pre_charge() {
+async fn the_recorded_close_cost_stays_inside_the_measured_bound_and_is_not_charged() {
     for (validators, epoch_length, bonds) in [
         (1, 1000, 0),
         (1, 1, 0),
@@ -183,16 +183,16 @@ async fn the_close_stays_inside_its_pre_charge() {
         (100, 1, 64),
     ] {
         let phlo = measure(validators, epoch_length, bonds).await;
-        let bound = pre_charge_phlo((validators + bonds) as u64);
+        let bound = close_bound((validators + bonds) as u64);
         assert!(phlo <= bound, "{phlo} > {bound}");
     }
 }
 
 #[tokio::test]
-async fn an_epoch_with_many_withdrawers_stays_inside_its_pre_charge() {
+async fn an_epoch_with_many_withdrawers_stays_inside_the_measured_bound() {
     for withdrawers in [10, 30] {
         for (bonds, phlo) in withdrawers_close(100, withdrawers).await {
-            let bound = pre_charge_phlo(bonds);
+            let bound = close_bound(bonds);
             assert!(phlo <= bound, "{withdrawers} withdrawers, {bonds} bonds: {phlo} > {bound}");
         }
     }
@@ -221,7 +221,7 @@ async fn withdrawers_close(validators: usize, withdrawers: usize) -> [(u64, u64)
         })
         .collect();
     let (rm, genesis) = shard_with(&[&proposer], keys, 1000, 0).await;
-    let executor = BlockExecutor::new(rm.clone(), 2).with_close_charge(MEASURE);
+    let executor = BlockExecutor::new(rm.clone(), 2);
     let mut root = genesis;
     for (i, who) in parties.iter().take(withdrawers).enumerate() {
         let n = i as i64 + 1;
@@ -245,7 +245,7 @@ async fn withdrawers_close(validators: usize, withdrawers: usize) -> [(u64, u64)
 }
 
 #[tokio::test]
-#[ignore = "measures the close for the FX-16 pre-charge terms"]
+#[ignore = "measures the recorded close cost for B6"]
 async fn measure_the_close_per_bond() {
     for validators in [10, 50, 100, 150, 200] {
         measure(validators, 1000, 0).await;
@@ -254,7 +254,7 @@ async fn measure_the_close_per_bond() {
 }
 
 #[tokio::test]
-#[ignore = "measures the close for the FX-16 pre-charge terms"]
+#[ignore = "measures the recorded close cost for B6"]
 async fn measure_the_close_per_released_withdrawer() {
     for withdrawers in [0, 10, 30, 60, 99] {
         withdrawers_close(100, withdrawers).await;

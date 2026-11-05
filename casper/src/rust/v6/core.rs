@@ -1480,7 +1480,7 @@ mod tests {
         b2.unreadable = vec![];
         c.emit(carrying("b1", 10, &["d1"], vec![]));
         c.emit(b2);
-        let void = BlockRecord::voided(h("b2"), h("r1"), &[h("d1")], VoidReason::CloseUncovered)
+        let void = BlockRecord::voided(h("b2"), h("r1"), &[h("d1")], VoidReason::SlashRecords)
             .with_failed_close();
         c.emit(carrying("b3", 12, &["d1"], vec![void.clone()]));
         assert!(matches!(c.next_action(), Action::Replay { .. }));

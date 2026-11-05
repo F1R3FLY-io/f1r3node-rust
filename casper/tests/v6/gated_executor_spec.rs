@@ -1362,10 +1362,11 @@ async fn a_process_with_new_hashes_the_same_in_every_deploy_and_is_funded_across
 }
 
 #[tokio::test]
-async fn the_close_pre_charge_is_held_before_any_envelope_and_replay_holds_it_too() {
+async fn the_close_cost_is_recorded_not_charged_and_replay_checks_it() {
     use casper::rust::v6::backend::ExecutionBackend;
     use casper::rust::v6::executor::BlockExecutor;
     use casper::rust::v6::gate::Verdict;
+    use casper::rust::v6::genesis_wallets::read_wallet_balance;
     use casper::rust::v6::record::ExecutionRecord;
     use models::rust::casper::protocol::casper_message::{
         BlockMessage, Body, F1r3flyState, Header, ProcessedDeploy,
@@ -1375,7 +1376,7 @@ async fn the_close_pre_charge_is_held_before_any_envelope_and_replay_holds_it_to
     let proposer = party();
     let (rm, pre) = shard(&[(&proposer, 3_000)]).await;
     let block = BlockMessage {
-        block_hash: Bytes::from_static(b"v6-close-precharge"),
+        block_hash: Bytes::from_static(b"v6-close-cost"),
         header: Header {
             parents_hash_list: vec![],
             timestamp: 1,
@@ -1405,20 +1406,19 @@ async fn the_close_pre_charge_is_held_before_any_envelope_and_replay_holds_it_to
         shard_id: "root".to_string(),
         extra_bytes: Bytes::new(),
     };
-    let open = BlockExecutor::new(rm.clone(), 2);
-    let held = BlockExecutor::new(rm.clone(), 2).with_close_charge(
-        casper::rust::v6::close_charge::CloseCharge {
-            price: 0,
-            pre_charge: 2_500,
-        },
-    );
-    let free = open.execute(&pre, &block).await.expect("the block executes");
-    assert_eq!(free.gate()[0].verdict, Verdict::Admitted);
-    let record = held.execute(&pre, &block).await.expect("the block executes");
-    assert!(matches!(record.gate()[0].verdict, Verdict::Refused(_)));
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let record = executor.execute(&pre, &block).await.expect("the block executes");
+    assert_eq!(record.gate()[0].verdict, Verdict::Admitted);
+    assert!(record.close_phlo() > 0);
     assert_eq!(
-        &held.replay(&record, &block).await.expect("the held block replays"),
+        read_wallet_balance(&rm, record.post_root(), &proposer.owner).await.unwrap(),
+        3_000 - record.settlement().unwrap().debited() + record.settlement().unwrap().proposer_credit
+    );
+    assert_eq!(
+        &executor.replay(&record, &block).await.expect("the block replays"),
         record.post_root()
     );
-    assert!(open.replay(&record, &block).await.is_err());
+    let other = record.clone().with_close_phlo(record.close_phlo() + 1);
+    let refused = executor.replay(&other, &block).await.unwrap_err().to_string();
+    assert!(refused.contains("the close's cost"), "{refused}");
 }

@@ -702,11 +702,11 @@ mod tests {
         let db: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
         let citers = Arc::new(Citers::default());
         let (mut store, _) = open(&db, &citers, "g", "r0");
-        let void = |target: &str| BlockRecord::voided(h(target), h("r0"), &[], VoidReason::CloseUncovered);
+        let void = |target: &str| BlockRecord::voided(h(target), h("r0"), &[], VoidReason::UnreadableTerms);
         for target in ["b1", "b2"] {
             citers.cite("c", void(target));
             let marks = FixMarks {
-                void: Some((h("V1"), VoidReason::CloseUncovered)),
+                void: Some((h("V1"), VoidReason::UnreadableTerms)),
                 statuses: vec![(h(&format!("d-{target}")), PriorEntry {
                     block_number: 7,
                     position: 1,
@@ -718,9 +718,9 @@ mod tests {
         let (reopened, opened) = open(&db, &citers, "g", "r0");
         assert_eq!(opened, Opened::Resumed);
         assert_eq!(RecordStore::<BlockRecord>::canonical_len(&reopened), 3);
-        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::CloseUncovered), 2);
+        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::UnreadableTerms), 2);
         assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V1"), VoidReason::CloseFailed), 0);
-        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V2"), VoidReason::CloseUncovered), 0);
+        assert_eq!(RecordStore::<BlockRecord>::void_count(&reopened, &h("V2"), VoidReason::UnreadableTerms), 0);
         assert_eq!(
             RecordStore::<BlockRecord>::prior(&reopened, b"d-b2"),
             Some(PriorEntry {

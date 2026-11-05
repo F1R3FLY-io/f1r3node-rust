@@ -345,7 +345,6 @@ pub struct Gate<'a, R: WalletReader, D: Demand> {
     balances: HashMap<WalletId, RevAmount>,
     table: CommitmentTable,
     entries: Vec<GateEntry>,
-    close_hold: Option<Commitment>,
 }
 
 impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
@@ -356,20 +355,7 @@ impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
             balances: HashMap::new(),
             table: CommitmentTable::default(),
             entries: Vec::new(),
-            close_hold: None,
         }
-    }
-
-    pub fn hold_close(&mut self, proposer: &WalletOwner, precharge: RevAmount) -> Result<RevAmount, CasperError> {
-        let wallet = wallet_channel_id(proposer);
-        let balance = self.balance(&wallet, proposer)?;
-        let held = precharge.min(balance.saturating_sub(self.table.committed(&wallet)));
-        let hold = Commitment { wallet, amount: held };
-        if held > 0 {
-            self.table.add(std::slice::from_ref(&hold));
-        }
-        self.close_hold = Some(hold);
-        Ok(held)
     }
 
     pub fn admit(&mut self, input: &GateInput) -> Result<&GateEntry, CasperError> {
@@ -385,7 +371,6 @@ impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
         GateOutcome {
             entries: self.entries,
             table: self.table,
-            close_hold: self.close_hold,
         }
     }
 
@@ -462,7 +447,6 @@ impl<'a, R: WalletReader, D: Demand> Gate<'a, R, D> {
 pub struct GateOutcome {
     pub entries: Vec<GateEntry>,
     pub table: CommitmentTable,
-    pub close_hold: Option<Commitment>,
 }
 
 impl GateOutcome {
@@ -493,19 +477,7 @@ pub fn gate_block<R: WalletReader, D: Demand>(
     demand: &D,
     inputs: &[GateInput],
 ) -> Result<GateOutcome, CasperError> {
-    gate_block_with_close(reader, demand, inputs, None)
-}
-
-pub fn gate_block_with_close<R: WalletReader, D: Demand>(
-    reader: &R,
-    demand: &D,
-    inputs: &[GateInput],
-    close: Option<(&WalletOwner, RevAmount)>,
-) -> Result<GateOutcome, CasperError> {
     let mut gate = Gate::new(reader, demand);
-    if let Some((proposer, precharge)) = close {
-        gate.hold_close(proposer, precharge)?;
-    }
     for input in inputs {
         gate.admit(input)?;
     }
@@ -518,18 +490,7 @@ pub fn check_recorded<R: WalletReader, D: Demand>(
     inputs: &[GateInput],
     recorded: &[GateEntry],
 ) -> Result<GateOutcome, String> {
-    check_recorded_with_close(reader, demand, inputs, recorded, None)
-}
-
-pub fn check_recorded_with_close<R: WalletReader, D: Demand>(
-    reader: &R,
-    demand: &D,
-    inputs: &[GateInput],
-    recorded: &[GateEntry],
-    close: Option<(&WalletOwner, RevAmount)>,
-) -> Result<GateOutcome, String> {
-    let outcome =
-        gate_block_with_close(reader, demand, inputs, close).map_err(|e| e.to_string())?;
+    let outcome = gate_block(reader, demand, inputs).map_err(|e| e.to_string())?;
     if outcome.entries.len() != recorded.len() {
         return Err(format!(
             "the record holds {} gate entries for {} envelopes",
@@ -760,21 +721,5 @@ mod tests {
             prop_assert_eq!(gate_block(&r, &PhloLimitDemand, &inputs).unwrap(), out.clone());
             prop_assert!(check_recorded(&r, &PhloLimitDemand, &inputs, &out.entries).is_ok());
         }
-    }
-
-    #[test]
-    fn the_close_hold_comes_before_any_envelope_and_limits_the_proposer() {
-        let os = owners(1);
-        let r = reader(&os, &[100]);
-        let inputs = vec![input(&os[0], 10, 5, 0)];
-        let open = gate_block(&r, &PhloLimitDemand, &inputs).unwrap();
-        assert!(open.entries[0].admitted());
-        let held = gate_block_with_close(&r, &PhloLimitDemand, &inputs, Some((&os[0], 60))).unwrap();
-        assert_eq!(held.close_hold.as_ref().map(|h| h.amount), Some(60));
-        assert!(!held.entries[0].admitted());
-        assert!(check_recorded_with_close(&r, &PhloLimitDemand, &inputs, &held.entries, Some((&os[0], 60))).is_ok());
-        assert!(check_recorded(&r, &PhloLimitDemand, &inputs, &held.entries).is_err());
-        let short = gate_block_with_close(&r, &PhloLimitDemand, &[], Some((&os[0], 500))).unwrap();
-        assert_eq!(short.close_hold.map(|h| h.amount), Some(100));
     }
 }
