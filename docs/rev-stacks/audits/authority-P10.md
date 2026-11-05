@@ -3298,6 +3298,77 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | The P12 track | Parked | `patch/FX-18-handoff` stays off FX-17 and FX-8b |
 
 
+## Revision 39 (actions A-8 and A-9): FX-19 (Decision 120) and FX-22 (Decision 122)
+
+- **Rulings recorded:**
+  - **Decision 125:** option (i), the share free(W) / n, was already ruled before revision 38.
+  - **Decision 127:** a firing limit for each seal now. Lane B adds the syntax and the elaboration.
+  - **Decision 128:** FX-22's estimate stays conservative, as a known issue.
+  - **Decision 129:** lane C's FX-19 choices are accepted.
+- My FX-19 and FX-21 conditions of revision 38 are passed to lanes C and B.
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b, FX-19, FX-20, FX-21, FX-22 or any tag.
+- **Commits read:**
+  - `patch/FX-19` at `10e218add` (lane C), cut from FX-17 `0b01b1663`.
+  - `patch/FX-22` at `369cad52b` (lane A2), cut from FX-20 `91e3a02b7`.
+- **Method:** a reading of the logs, `membrane.rs`, `dispatch.rs`, `seal.rs`, `reduce.rs` (`deployment_record`) and `surface.rs` on FX-19, and of `delta_sigma.rs` and the FX-22 log. No tests were run.
+
+### FX-19: Decision 120 conforms
+
+| Condition | Result |
+|---|---|
+| Option (i): the share is rounded down, and n counts only the envelopes that the gate admitted | **Met.** `EnvelopeFunding::limit` is free(W) / runs in integer arithmetic, so it rounds down. `runs` is the number of admitted envelopes, with a floor of 1. |
+| The bound comes only from the installer's signed deployment | **Met by reading.** `SealOrigin.phlo_limit` is set in `deployment_record` from the deployment data of the signed deployment. The seal record travels with the stored continuation and the datum, which the reducer writes. **Open:** the test that a term received at run time cannot change the bound of a stored continuation is not in the test list. |
+| A discarded firing charges W exactly b and leaves no storage cell | **Met.** The issue cost of each operation, its storage and reservation included, adds to the firing's cost. When the cost passes the limit, `Firing::charge` clears the buffer. `finish` then puts only the limit on the payer's surface, and none of the earlier charges. Test: `a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the_bound`, replayed four times. |
+| Replay recomputes each body's cost | **Met.** Play and replay run the same firing code. A logged COMM whose hold fails in replay fails the replay. A firing kept in play and discarded in replay, or the reverse, gives a different tuple space and a different root. |
+| A charge to a wallet that the firing does not hold | **Met.** It exhausts the firing, so no wallet is drawn without a hold. |
+
+**The refusal machinery is removed** from `membrane.rs`, `surface.rs` and `v6/stops.rs`. Play and replay use the same check. The trace-based checks of revision 15 and Decisions 86 and 89 no longer apply to this path.
+
+**Lane C's known issues 1 to 4 are accepted** as known issues. Issue 3 (a client pays for its own work in a firing that is then discarded) is accepted. It needs a body that seals with the client's own key.
+
+**Lane C's finding 5 (the bound is the whole phlo limit of the installing deployment) is answered by Decision 127.** Until lane B's syntax lands, FX-19 holds the deployment's limit for each firing. The two changed tests show the effect.
+
+**One check for lane C, a condition and not a defect:** after a firing within its bound, `dispatch.rs` writes the buffered operations to the tuple space before it returns the body's own error (`for op in ops { op.await? }` and then `evaluated?`). So a body that fails for a reason other than exhaustion can keep part of its operations. The memo's rule is that a firing is kept or discarded whole.
+- If an error in the body fails the whole run, and the run's effects are then discarded, the rule holds.
+- If the run's effects stay, the body's error must discard the buffer, as exhaustion does.
+
+A test covers a firing whose body fails with a seal refusal (Decision 112).
+
+**Merge conditions:**
+- FX-19 is cut from FX-17, and FX-20 and FX-22 change the same executor paths. The merge into FX-8b needs the suites on the merged tip.
+- Lane A2's format patch (the refusal event leaves the format, and tag 4 is reserved) follows FX-19.
+- FX-21 must keep `SealOrigin.phlo_limit` (field 4) when it writes seal records.
+
+### FX-22: Decision 122 conforms
+
+| Condition of revision 37 | Result |
+|---|---|
+| The estimate is an upper bound for every term shape | **Met for the shapes that get an estimate.** An estimate exists only in a fragment with these properties: closed, linear and affine terms, a COMM bound from P3-01, and expressions of fixed cost. For each node, it uses a size bound that follows from the schedule. Any other term gets no estimate. The corpus test and the property test on 64 generated terms find no run above its estimate. The run is limited to Δ, so no run can spend more than its commitment, whatever the estimate. |
+| The same on every node | **Met.** The estimate is a pure function of the normalized term, the source length and `ScheduleBound`. The gate, the executor, the replay and the inclusion screen all use `BoundDemand`. |
+| An estimate that cannot be computed is refused, not admitted at 0 | **Met in the form of Decision 122.** No estimate gives Δ = `phloLimit`, as before, and not 0. All arithmetic is checked, and an overflow gives no estimate. |
+
+**Two notes:**
+1. **`ScheduleBound` is node configuration.** Δ decides the commitment and the run's limit, so every node must use the same values, or nodes compute different commitments and different roots. **Condition:** `ScheduleBound` is a shard constant (genesis or the shard configuration), or a fixed code constant. It must not be a value that each node sets for itself.
+2. **The run's limit is applied to a copy of the deployment (FX-22 D3).** Inside the fragment, no system process reads the deployment data, so the copy cannot be observed. Outside the fragment the copy is identical. **Accepted.**
+
+**Decision 128:** the 15 to 170 times margin is a known issue. **Known issue:** most deployments that touch the registry or a wallet are outside the fragment, and they commit `phloLimit` as before.
+
+**Merge condition:** FX-22 carries FX-20, so it merges after or together with FX-20, and after FX-19 in the order that lane A2 gives. The suites must run on the merged tip.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decision 119 (FX-20), Decision 120 (FX-19), Decision 122 (FX-22) | — | **Conform.** Merges into FX-8b pending, with suites. |
+| The FX-19 check on a body error inside a kept firing, the test that a received term cannot change a bound, and `ScheduleBound` as a shard constant | Conditions | New |
+| Decision 121 (FX-21) and Decision 127 (lane B's syntax for the firing limit) | **To be audited when the code lands** | FX-21 conditions of revision 38 passed to lane B |
+| Lane A2's format patch after FX-19 | Condition | Open |
+| The SIGSEGV run, the `dev` merge, Decision 123 | Conditions | Open |
+| Lane C's FX-19 known issues 1 to 4, the datum consumed by a firing that passes its bound, the loose estimate (Decision 128), terms outside the fragment | Known issue | Open |
+| D10, F47 | Known issue for B6 | Unchanged |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
