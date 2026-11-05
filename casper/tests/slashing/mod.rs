@@ -29,6 +29,7 @@
 
 mod generators;
 mod harness;
+mod equivocation_agreement;
 mod integration_helpers;
 mod integration_t_admissible_equivocation;
 mod integration_t_contains_future_deploy;
