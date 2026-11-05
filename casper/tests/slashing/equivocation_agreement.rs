@@ -85,23 +85,52 @@ async fn accept(node: &mut TestNode, block: &BlockMessage, what: &str) {
 async fn validators_that_saw_an_equivocation_in_opposite_orders_accept_each_others_slash() {
     let (mut nodes, shard_id) = network(3, None).await;
 
-    let b1 = nodes[0].create_block_unsafe(&[deploy(0, &shard_id)]).await.expect("b1");
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
     let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(1, &shard_id)])
         .await
         .expect("sibling");
 
     for (node, first, second) in [(1, &b1, &sibling), (2, &sibling, &b1)] {
-        accept(&mut nodes[node], first, &format!("v{node} accepts the first copy")).await;
-        let recorded = nodes[node].process_block(second.clone()).await.expect("second copy");
-        assert!(is_equivocation(&recorded), "v{node} second copy: {recorded:?}");
+        accept(
+            &mut nodes[node],
+            first,
+            &format!("v{node} accepts the first copy"),
+        )
+        .await;
+        let recorded = nodes[node]
+            .process_block(second.clone())
+            .await
+            .expect("second copy");
+        assert!(
+            is_equivocation(&recorded),
+            "v{node} second copy: {recorded:?}"
+        );
     }
 
-    let from_v1 = nodes[1].create_block_unsafe(&[deploy(10, &shard_id)]).await.expect("v1");
-    let from_v2 = nodes[2].create_block_unsafe(&[deploy(11, &shard_id)]).await.expect("v2");
-    assert!(carries_slash(&from_v1) && carries_slash(&from_v2), "both slash v0");
+    let from_v1 = nodes[1]
+        .create_block_unsafe(&[deploy(10, &shard_id)])
+        .await
+        .expect("v1");
+    let from_v2 = nodes[2]
+        .create_block_unsafe(&[deploy(11, &shard_id)])
+        .await
+        .expect("v2");
+    assert!(
+        carries_slash(&from_v1) && carries_slash(&from_v2),
+        "both slash v0"
+    );
 
-    let v2_judges_v1 = nodes[2].process_block(from_v1.clone()).await.expect("v2 judges");
-    let v1_judges_v2 = nodes[1].process_block(from_v2.clone()).await.expect("v1 judges");
+    let v2_judges_v1 = nodes[2]
+        .process_block(from_v1.clone())
+        .await
+        .expect("v2 judges");
+    let v1_judges_v2 = nodes[1]
+        .process_block(from_v2.clone())
+        .await
+        .expect("v1 judges");
     assert!(
         matches!(v2_judges_v1, Either::Right(ValidBlock::Valid))
             && matches!(v1_judges_v2, Either::Right(ValidBlock::Valid)),
@@ -120,11 +149,17 @@ enum Arrival {
 async fn sibling_after_chain(chain: usize, arrival: Arrival) {
     let (mut nodes, shard_id) = network(3, None).await;
 
-    let b1 = nodes[0].create_block_unsafe(&[deploy(0, &shard_id)]).await.expect("b1");
+    let b1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("b1");
     let sibling = equivocate_block(&mut nodes[0], &b1, vec![deploy(100, &shard_id)])
         .await
         .expect("sibling");
-    nodes[0].process_block(b1.clone()).await.expect("v0 adopts b1");
+    nodes[0]
+        .process_block(b1.clone())
+        .await
+        .expect("v0 adopts b1");
     let mut blocks = vec![b1];
     for nonce in 1..chain as i32 {
         blocks.push(
@@ -148,7 +183,10 @@ async fn sibling_after_chain(chain: usize, arrival: Arrival) {
             )
             .expect("the sibling is a requested dependency");
     }
-    let verdict = nodes[1].process_block(sibling.clone()).await.expect("sibling");
+    let verdict = nodes[1]
+        .process_block(sibling.clone())
+        .await
+        .expect("sibling");
     let expected = match arrival {
         Arrival::Ignorable => InvalidBlock::IgnorableEquivocation,
         Arrival::Admissible => InvalidBlock::AdmissibleEquivocation,
@@ -163,8 +201,14 @@ async fn sibling_after_chain(chain: usize, arrival: Arrival) {
         "chain {chain}: the sibling is held invalid"
     );
 
-    let next = nodes[1].create_block_unsafe(&[deploy(10, &shard_id)]).await.expect("v1");
-    assert!(carries_slash(&next), "chain {chain}: v1's next block slashes v0");
+    let next = nodes[1]
+        .create_block_unsafe(&[deploy(10, &shard_id)])
+        .await
+        .expect("v1");
+    assert!(
+        carries_slash(&next),
+        "chain {chain}: v1's next block slashes v0"
+    );
 }
 
 #[serial_test::serial]
@@ -188,21 +232,31 @@ async fn a_sibling_below_a_longer_chain_is_a_slashed_equivocation() {
 async fn a_validator_that_saw_one_sibling_may_cite_it_without_slashing() {
     let (mut nodes, shard_id) = network(3, None).await;
 
-    let a1 = nodes[0].create_block_unsafe(&[deploy(0, &shard_id)]).await.expect("a1");
+    let a1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("a1");
     let x = equivocate_block(&mut nodes[0], &a1, vec![deploy(100, &shard_id)])
         .await
         .expect("x");
 
     accept(&mut nodes[1], &a1, "v1 accepts a1").await;
     let flagged = nodes[1].process_block(x.clone()).await.expect("v1 x");
-    assert!(is_equivocation(&flagged), "v1 holds x as the equivocation: {flagged:?}");
+    assert!(
+        is_equivocation(&flagged),
+        "v1 holds x as the equivocation: {flagged:?}"
+    );
 
     accept(&mut nodes[2], &x, "v2 accepts x").await;
     let r = nodes[2]
         .add_block_from_deploys(&[deploy(10, &shard_id)])
         .await
         .expect("r");
-    assert_eq!(cites(&r, &x.sender), Some(x.block_hash.clone()), "r cites x");
+    assert_eq!(
+        cites(&r, &x.sender),
+        Some(x.block_hash.clone()),
+        "r cites x"
+    );
     assert!(!carries_slash(&r), "v2 holds no pair, so r slashes nothing");
 
     accept(&mut nodes[1], &r, "v1 judges r").await;
@@ -215,11 +269,17 @@ async fn a_validator_that_saw_one_sibling_may_cite_it_without_slashing() {
 async fn a_block_extending_a_recorded_equivocation_without_a_sibling_is_valid() {
     let (mut nodes, shard_id) = network(3, None).await;
 
-    let a1 = nodes[0].create_block_unsafe(&[deploy(0, &shard_id)]).await.expect("a1");
+    let a1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("a1");
     let x = equivocate_block(&mut nodes[0], &a1, vec![deploy(100, &shard_id)])
         .await
         .expect("x");
-    nodes[0].process_block(a1.clone()).await.expect("v0 adopts a1");
+    nodes[0]
+        .process_block(a1.clone())
+        .await
+        .expect("v0 adopts a1");
     let a2 = nodes[0]
         .add_block_from_deploys(&[deploy(1, &shard_id)])
         .await
@@ -227,7 +287,10 @@ async fn a_block_extending_a_recorded_equivocation_without_a_sibling_is_valid() 
 
     accept(&mut nodes[2], &x, "v2 accepts x").await;
     let flagged = nodes[2].process_block(a1.clone()).await.expect("v2 a1");
-    assert!(is_equivocation(&flagged), "v2 holds a1 as the equivocation: {flagged:?}");
+    assert!(
+        is_equivocation(&flagged),
+        "v2 holds a1 as the equivocation: {flagged:?}"
+    );
     accept(&mut nodes[2], &a2, "v2 judges a2").await;
 }
 
@@ -240,13 +303,22 @@ async fn a_block_extending_a_recorded_equivocation_without_a_sibling_is_valid() 
 async fn siblings_in_different_epochs_are_slashed_alike_whichever_was_flagged() {
     let (mut nodes, shard_id) = network(3, Some(2)).await;
 
-    let a1 = nodes[0].create_block_unsafe(&[deploy(0, &shard_id)]).await.expect("a1");
+    let a1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("a1");
     let c1 = nodes[1]
         .add_block_from_deploys(&[deploy(1, &shard_id)])
         .await
         .expect("c1");
-    nodes[0].process_block(c1.clone()).await.expect("v0 holds c1");
-    let x = nodes[0].create_block_unsafe(&[deploy(2, &shard_id)]).await.expect("x");
+    nodes[0]
+        .process_block(c1.clone())
+        .await
+        .expect("v0 holds c1");
+    let x = nodes[0]
+        .create_block_unsafe(&[deploy(2, &shard_id)])
+        .await
+        .expect("x");
     assert_eq!(x.seq_num, a1.seq_num, "x is a1's sibling");
     assert_eq!(
         (a1.body.state.block_number, x.body.state.block_number),
@@ -257,14 +329,26 @@ async fn siblings_in_different_epochs_are_slashed_alike_whichever_was_flagged() 
     accept(&mut nodes[2], &c1, "v2 accepts c1").await;
     accept(&mut nodes[2], &a1, "v2 accepts a1").await;
     let v2_flags = nodes[2].process_block(x.clone()).await.expect("v2 x");
-    assert!(is_equivocation(&v2_flags), "v2 holds x as the equivocation: {v2_flags:?}");
+    assert!(
+        is_equivocation(&v2_flags),
+        "v2 holds x as the equivocation: {v2_flags:?}"
+    );
 
     accept(&mut nodes[1], &x, "v1 accepts x").await;
     let v1_flags = nodes[1].process_block(a1.clone()).await.expect("v1 a1");
-    assert!(is_equivocation(&v1_flags), "v1 holds a1 as the equivocation: {v1_flags:?}");
+    assert!(
+        is_equivocation(&v1_flags),
+        "v1 holds a1 as the equivocation: {v1_flags:?}"
+    );
 
-    let from_v1 = nodes[1].create_block_unsafe(&[deploy(10, &shard_id)]).await.expect("v1");
-    let from_v2 = nodes[2].create_block_unsafe(&[deploy(11, &shard_id)]).await.expect("v2");
+    let from_v1 = nodes[1]
+        .create_block_unsafe(&[deploy(10, &shard_id)])
+        .await
+        .expect("v1");
+    let from_v2 = nodes[2]
+        .create_block_unsafe(&[deploy(11, &shard_id)])
+        .await
+        .expect("v2");
     assert!(
         carries_slash(&from_v1) && carries_slash(&from_v2),
         "both slash v0: v1 {}, v2 {}",
@@ -272,8 +356,14 @@ async fn siblings_in_different_epochs_are_slashed_alike_whichever_was_flagged() 
         carries_slash(&from_v2)
     );
 
-    let v2_judges_v1 = nodes[2].process_block(from_v1.clone()).await.expect("v2 judges");
-    let v1_judges_v2 = nodes[1].process_block(from_v2.clone()).await.expect("v1 judges");
+    let v2_judges_v1 = nodes[2]
+        .process_block(from_v1.clone())
+        .await
+        .expect("v2 judges");
+    let v1_judges_v2 = nodes[1]
+        .process_block(from_v2.clone())
+        .await
+        .expect("v1 judges");
     assert!(
         matches!(v2_judges_v1, Either::Right(ValidBlock::Valid))
             && matches!(v1_judges_v2, Either::Right(ValidBlock::Valid)),
