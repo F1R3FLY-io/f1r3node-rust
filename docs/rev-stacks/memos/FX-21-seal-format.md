@@ -21,16 +21,16 @@ message CostSignedTerm {
 message ElaboratedSeal {
   int32      kind         = 1;  // 0 deployment, 1 signed, 2 process (# P)
   SealOrigin origin       = 2;  // the admitting envelope: signature, signers, phloPrice
-  uint64     firing_limit = 3;  // phlo, the declared bound of each firing (FX-19)
+  uint64     phlo_limit = 3;  // phlo, the declared bound of each firing (FX-19)
 }
 ```
 
 - `signature` stays as it is. The owner is still resolved from it at run time (`signature_owner` after substitution), because a seal can name a bound variable.
 - `kind` replaces the kind that `check_region_signature` derives today.
 - `origin` is the `SealOrigin` message that `SealRecordProto` already uses.
-- `firing_limit` is FX-19's `phlo_limit`. Lane C's bound is b = `firing_limit` × `origin.phlo_price`.
+- `phlo_limit` is FX-19's `phlo_limit`. Lane C's bound is b = `phlo_limit` × `origin.phlo_price`.
 
-**Question C1:** is `firing_limit` on every seal acceptable, with FX-19 reading it only when a sealed receive is stored? The alternative is a limit only on the seals of continuations, but the normalizer cannot always tell which seals will be stored (a `for` in a received process, for example).
+**Question C1:** is `phlo_limit` on every seal acceptable, with FX-19 reading it only when a sealed receive is stored? The alternative is a limit only on the seals of continuations, but the normalizer cannot always tell which seals will be stored (a `for` in a received process, for example).
 
 ## 2. Where the limit comes from
 
@@ -68,3 +68,18 @@ message ElaboratedSeal {
 2. The elaboration context and the pass (§3).
 3. The reducer reads the term's seal and checks its origin (§4).
 4. `forms_spec` becomes a normalizer test: each sugar elaborates to exactly its form. The current execution tests stay as a second check of the cost shape.
+
+## 6. Alignment with FX-19 (revision 2, 2026-11-05)
+
+Lane C's FX-19 is in build, and its seal must carry the installing deployment's limit and price. To keep one format for both lanes:
+
+| Value | In the term (`ElaboratedSeal`, lane B) | In the stored record (`SealRecordProto`, lane C) |
+|---|---|---|
+| Limit | `phlo_limit = 3` | `uint64 phlo_limit = 5` (field 4 stays reserved) |
+| Price | `origin.phlo_price` | `origin.phlo_price` (already present) |
+| Owner | `signature`, resolved at run time | `owner` (already present) |
+| Kind | `kind = 1` | `kind` (already present) |
+
+- The name is `phlo_limit` in both messages, as in the FX-19 memo. Revision 1 of this memo called it `firing_limit`.
+- **Lane C can build FX-19 now on `SealRecordProto.phlo_limit`.** Until FX-21 lands, the reducer fills it from the deployment's `phloLimit` when it installs the deployment seal. After FX-21, the reducer copies it from the term's `ElaboratedSeal` when it stores a receive. FX-19's candidate test, charge and refund read only the stored record, so they do not change when FX-21 lands.
+- **Question C5:** confirm field number 5 and the name `phlo_limit`, so that the two branches merge without a conflict in `RhoTypes.proto`.
