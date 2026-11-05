@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 
 pub const LFB_POINTER_KEY: &str = "lfb";
 
+pub const ORDER_POINTER_KEY: &str = "order";
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum OrderOutcome {
+    Committed(LfbPointer),
+    Refused(CommitRefusal),
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FinalizationCommitMarker {
     pub directly: BlockHashSerde,

@@ -2643,3 +2643,48 @@ async fn contains_block_agrees_with_the_representation_through_bootstrap() {
     }
     assert!(dag_storage.contains_block(&b1.block_hash));
 }
+
+#[tokio::test]
+async fn the_order_floor_moves_on_its_own_and_bounds_the_lfb() {
+    use block_storage::rust::dag::finalization_commit::{CommitOutcome, CommitRefusal, OrderOutcome};
+    let mut kvm = InMemoryStoreManager::new();
+    let (dag_storage, genesis, b1, b2, b3) = chain_of_three(&mut kvm).await;
+    assert_eq!(dag_storage.order_floor().unwrap(), genesis.block_hash);
+
+    let OrderOutcome::Committed(pointer) = dag_storage
+        .commit_order(b2.block_hash.clone(), |_, now| {
+            assert_eq!(*now, genesis.block_hash);
+            Ok(())
+        })
+        .unwrap()
+    else {
+        panic!("the order floor moves");
+    };
+    assert_eq!((pointer.height, pointer.commit_epoch), (2, 1));
+    assert_eq!(dag_storage.order_floor().unwrap(), b2.block_hash);
+    assert_eq!(
+        dag_storage.get_representation().unwrap().last_finalized_block(),
+        genesis.block_hash,
+        "the order floor does not finalize state"
+    );
+    assert!(dag_storage.pending_finalization_events().unwrap().is_empty());
+    assert!(matches!(
+        dag_storage.commit_order(b1.block_hash.clone(), |_, _| Ok(())).unwrap(),
+        OrderOutcome::Refused(CommitRefusal::NotHigher { lfb_height: 2 })
+    ));
+
+    assert!(matches!(
+        dag_storage.commit_lfb(b3.block_hash.clone(), 0.5, |_| Ok(())).unwrap(),
+        CommitOutcome::Refused(CommitRefusal::StateChanged(_))
+    ));
+    assert!(matches!(
+        dag_storage.commit_lfb(b1.block_hash.clone(), 0.5, |_| Ok(())).unwrap(),
+        CommitOutcome::Committed(_)
+    ));
+    dag_storage.check_floor_order().unwrap();
+
+    let reopened = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+    assert_eq!(reopened.order_floor().unwrap(), b2.block_hash);
+    assert_eq!(reopened.get_representation().unwrap().last_finalized_block(), b1.block_hash);
+    reopened.check_floor_order().unwrap();
+}
