@@ -6,6 +6,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use prost::Message;
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingBlockLimits {
@@ -147,11 +148,59 @@ impl Inner {
 
 pub struct PendingBlocks {
     inner: Mutex<Inner>,
+    capacity_changes: watch::Sender<u64>,
+}
+
+pub struct PendingCapacity {
+    blocks: usize,
+    bytes: usize,
+    per_sender: HashMap<Bytes, usize>,
+    max_per_sender: usize,
+}
+
+pub struct PendingRecoveryBudget<'a> {
+    pending: &'a PendingBlocks,
+    capacity: PendingCapacity,
+    requests: usize,
+    displacement_requested: bool,
+}
+
+impl PendingRecoveryBudget<'_> {
+    pub fn reserve(&mut self, sender: &Bytes, bytes: usize) -> bool {
+        if !self.displacement_requested && self.capacity.reserve(sender, bytes) {
+            self.requests += 1;
+            return true;
+        }
+        if self.requests == 0
+            && self
+                .pending
+                .can_insert_solicited_without_displacing_solicited(sender, bytes)
+        {
+            self.displacement_requested = true;
+            self.requests += 1;
+            return true;
+        }
+        false
+    }
+}
+
+impl PendingCapacity {
+    pub fn reserve(&mut self, sender: &Bytes, bytes: usize) -> bool {
+        let occupied = self.per_sender.get(sender).copied().unwrap_or(0);
+        if self.blocks == 0 || self.bytes < bytes || occupied >= self.max_per_sender {
+            return false;
+        }
+        self.blocks -= 1;
+        self.bytes -= bytes;
+        self.per_sender.insert(sender.clone(), occupied + 1);
+        true
+    }
 }
 
 impl PendingBlocks {
     pub fn new(limits: PendingBlockLimits) -> Self {
         Self {
+            capacity_changes: watch::channel(0).0,
             inner: Mutex::new(Inner {
                 limits,
                 entries: HashMap::new(),
@@ -181,6 +230,9 @@ impl PendingBlocks {
                 None => break,
             }
         }
+        drop(inner);
+        self.capacity_changes
+            .send_modify(|generation| *generation += 1);
         evicted
     }
 
@@ -190,10 +242,28 @@ impl PendingBlocks {
         } else {
             PendingClass::Unsolicited
         };
-        self.insert_as(block, class)
+        self.insert_inner(block, class, None)
+    }
+
+    pub fn insert_replacing(
+        &self,
+        block: &BlockMessage,
+        victim: &BlockHash,
+        class: PendingClass,
+    ) -> PendingOutcome {
+        self.insert_inner(block, class, Some(victim))
     }
 
     pub fn insert_as(&self, block: &BlockMessage, class: PendingClass) -> PendingOutcome {
+        self.insert_inner(block, class, None)
+    }
+
+    fn insert_inner(
+        &self,
+        block: &BlockMessage,
+        class: PendingClass,
+        replacement: Option<&BlockHash>,
+    ) -> PendingOutcome {
         let encoded = Bytes::from(block.to_proto().encode_to_vec());
         let bytes = encoded.len();
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -210,18 +280,38 @@ impl PendingBlocks {
         if bytes > limits.max_bytes {
             return outcome(PendingInsert::TooLarge);
         }
-        let sender_victim =
-            if inner.per_sender.get(&block.sender).copied().unwrap_or(0) >= limits.max_per_sender {
-                match (class == PendingClass::Solicited)
-                    .then(|| inner.oldest_unsolicited_from(&block.sender))
-                    .flatten()
-                {
-                    Some(victim) => Some(victim),
-                    None => return outcome(PendingInsert::SenderLimitReached),
-                }
-            } else {
-                None
-            };
+        // A sender with no entry has no blocks in the area.
+        let sender_count = inner.per_sender.get(&block.sender).copied().unwrap_or(0);
+        // Over the cap only after `set_limits` lowered it: a replacement would
+        // keep the sender there, so nothing from it is admitted.
+        if sender_count > limits.max_per_sender {
+            return outcome(PendingInsert::SenderLimitReached);
+        }
+        let sender_full = sender_count >= limits.max_per_sender;
+        let area_full = inner.entries.len() + 1 > limits.max_blocks
+            || inner.bytes.saturating_add(bytes) > limits.max_bytes;
+        let replacement = replacement
+            .filter(|hash| {
+                inner
+                    .entries
+                    .get(*hash)
+                    .is_some_and(|entry| entry.sender == block.sender)
+            })
+            .cloned();
+        let sender_victim = if sender_full {
+            match (class == PendingClass::Solicited)
+                .then(|| inner.oldest_unsolicited_from(&block.sender))
+                .flatten()
+                .or(replacement)
+            {
+                Some(victim) => Some(victim),
+                None => return outcome(PendingInsert::SenderLimitReached),
+            }
+        } else if area_full {
+            replacement
+        } else {
+            None
+        };
         if !inner.can_fit(bytes, class) {
             return outcome(PendingInsert::AreaFull);
         }
@@ -260,6 +350,11 @@ impl PendingBlocks {
             class,
             seq,
         });
+        drop(inner);
+        if !evicted.is_empty() {
+            self.capacity_changes
+                .send_modify(|generation| *generation += 1);
+        }
         PendingOutcome {
             status: PendingInsert::Accepted,
             evicted,
@@ -274,6 +369,11 @@ impl PendingBlocks {
         decode(&encoded)
     }
 
+    pub fn sender_of(&self, hash: &BlockHash) -> Option<Bytes> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.entries.get(hash).map(|entry| entry.sender.clone())
+    }
+
     pub fn contains(&self, hash: &BlockHash) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.entries.contains_key(hash)
@@ -281,7 +381,62 @@ impl PendingBlocks {
 
     pub fn remove(&self, hash: &BlockHash) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner.remove(hash).is_some()
+        let removed = inner.remove(hash).is_some();
+        drop(inner);
+        if removed {
+            self.capacity_changes
+                .send_modify(|generation| *generation += 1);
+        }
+        removed
+    }
+
+    pub fn subscribe_capacity_changes(&self) -> watch::Receiver<u64> {
+        self.capacity_changes.subscribe()
+    }
+
+    pub fn available_capacity(&self) -> PendingCapacity {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        PendingCapacity {
+            blocks: inner.limits.max_blocks.saturating_sub(inner.entries.len()),
+            bytes: inner.limits.max_bytes.saturating_sub(inner.bytes),
+            per_sender: inner.per_sender.clone(),
+            max_per_sender: inner.limits.max_per_sender,
+        }
+    }
+
+    pub fn recovery_budget(&self) -> PendingRecoveryBudget<'_> {
+        PendingRecoveryBudget {
+            pending: self,
+            capacity: self.available_capacity(),
+            requests: 0,
+            displacement_requested: false,
+        }
+    }
+
+    fn can_insert_solicited_without_displacing_solicited(
+        &self,
+        sender: &Bytes,
+        bytes: usize,
+    ) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let limits = inner.limits;
+        let solicited = PendingClass::Solicited.index();
+        if inner.tiers[solicited].len() == inner.entries.len()
+            || inner.tiers[solicited].len() >= limits.max_blocks
+            || inner.tier_bytes[solicited].saturating_add(bytes) > limits.max_bytes
+        {
+            return false;
+        }
+        let solicited_from_sender = inner.tiers[solicited]
+            .values()
+            .filter(|hash| {
+                inner
+                    .entries
+                    .get(*hash)
+                    .is_some_and(|entry| entry.sender.as_ref() == sender.as_ref())
+            })
+            .count();
+        solicited_from_sender < limits.max_per_sender
     }
 
     pub fn len(&self) -> usize {
@@ -567,5 +722,99 @@ mod tests {
         assert!(outcome.evicted.is_empty());
         assert!(area.contains(&block(2, 2).block_hash));
         assert_eq!(area.len(), 2);
+    }
+
+    #[test]
+    fn deferred_block_waits_for_capacity_in_both_area_and_sender() {
+        let first = block(1, 7);
+        let second = block(2, 7);
+        let area = PendingBlocks::new(limits(1, usize::MAX, 1));
+        let mut changes = area.subscribe_capacity_changes();
+        area.insert(&first, true);
+
+        assert!(!area
+            .available_capacity()
+            .reserve(&second.sender, second.to_proto().encoded_len()));
+        assert!(area.remove(&first.block_hash));
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert!(area
+            .available_capacity()
+            .reserve(&second.sender, second.to_proto().encoded_len()));
+        let mut capacity = area.available_capacity();
+        assert!(capacity.reserve(&second.sender, second.to_proto().encoded_len()));
+        assert!(!capacity.reserve(&first.sender, first.to_proto().encoded_len()));
+
+        area.set_limits(limits(0, usize::MAX, 1));
+        assert!(changes.has_changed().unwrap());
+        assert!(!area
+            .available_capacity()
+            .reserve(&second.sender, second.to_proto().encoded_len()));
+    }
+
+    #[test]
+    fn requested_parent_replaces_only_a_named_same_sender_block() {
+        let child = block(1, 7);
+        let parent = block(2, 7);
+        let other = block(3, 8);
+        let area = PendingBlocks::new(limits(2, usize::MAX, 1));
+        assert_eq!(area.insert(&child, true).status, PendingInsert::Accepted);
+        assert_eq!(area.insert(&other, true).status, PendingInsert::Accepted);
+
+        let refused = area.insert_replacing(&parent, &other.block_hash, PendingClass::Solicited);
+        assert_eq!(refused.status, PendingInsert::SenderLimitReached);
+        assert!(refused.evicted.is_empty());
+
+        let admitted = area.insert_replacing(&parent, &child.block_hash, PendingClass::Solicited);
+        assert_eq!(admitted.status, PendingInsert::Accepted);
+        assert_eq!(admitted.evicted, vec![child.block_hash.clone()]);
+        assert!(area.contains(&parent.block_hash));
+        assert!(area.contains(&other.block_hash));
+        assert!(!area.contains(&child.block_hash));
+    }
+
+    #[test]
+    fn replacing_a_child_does_not_promote_an_unsolicited_parent() {
+        let child = block(1, 7);
+        let other = block(2, 8);
+        let parent = block(3, 7);
+        let newcomer = block(4, 9);
+        let area = PendingBlocks::new(limits(2, usize::MAX, 1));
+        assert_eq!(area.insert(&child, false).status, PendingInsert::Accepted);
+        assert_eq!(area.insert(&other, true).status, PendingInsert::Accepted);
+        assert_eq!(
+            area.insert_replacing(&parent, &child.block_hash, PendingClass::Unsolicited)
+                .status,
+            PendingInsert::Accepted
+        );
+
+        assert_eq!(
+            area.insert(&newcomer, false).status,
+            PendingInsert::Accepted
+        );
+        assert!(!area.contains(&parent.block_hash));
+        assert!(area.contains(&other.block_hash));
+    }
+
+    #[test]
+    fn a_sender_above_a_lowered_cap_cannot_replace_its_way_in() {
+        let child = block(1, 7);
+        let sibling = block(2, 7);
+        let parent = block(3, 7);
+        let area = PendingBlocks::new(limits(10, usize::MAX, 2));
+        assert_eq!(area.insert(&child, true).status, PendingInsert::Accepted);
+        assert_eq!(area.insert(&sibling, true).status, PendingInsert::Accepted);
+
+        area.set_limits(limits(10, usize::MAX, 1));
+        let refused = area.insert_replacing(&parent, &child.block_hash, PendingClass::Solicited);
+        assert_eq!(refused.status, PendingInsert::SenderLimitReached);
+        assert!(refused.evicted.is_empty());
+        assert!(area.contains(&child.block_hash));
+
+        area.set_limits(limits(10, usize::MAX, 0));
+        assert_eq!(
+            area.insert(&block(4, 8), true).status,
+            PendingInsert::SenderLimitReached
+        );
     }
 }

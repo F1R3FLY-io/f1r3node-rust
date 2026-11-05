@@ -11,7 +11,7 @@ use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
-use shared::rust::ByteString;
+use shared::rust::{BitVector, ByteString};
 
 use super::deploy_record_quarantine::{DeployRecordQuarantine, VerifiedMetadata};
 
@@ -153,6 +153,50 @@ pub struct KeyValueDeployStore<N: DeployStoreName> {
     _name: PhantomData<N>,
 }
 
+pub struct PreparedDeploy {
+    key: BitVector,
+    value: BitVector,
+    metadata: DeployMetadata,
+}
+
+pub struct DeployRecordSnapshot {
+    key: BitVector,
+    value: Option<BitVector>,
+    verified: bool,
+}
+
+impl DeployRecordSnapshot {
+    pub fn is_present(&self) -> bool { self.verified }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum PreparedInsertResult {
+    Inserted,
+    AlreadyPresent,
+    Changed,
+}
+
+#[derive(Debug)]
+pub enum DeployPreparationError {
+    InvalidSignature,
+    UnsupportedAlgorithm(String),
+    Serialization(KvStoreError),
+}
+
+impl From<DeployPreparationError> for KvStoreError {
+    fn from(error: DeployPreparationError) -> Self {
+        match error {
+            DeployPreparationError::InvalidSignature => {
+                Self::SerializationError("Invalid deploy signature".to_string())
+            }
+            DeployPreparationError::UnsupportedAlgorithm(algorithm) => {
+                Self::SerializationError(format!("Unknown signature algorithm: {algorithm}"))
+            }
+            DeployPreparationError::Serialization(error) => error,
+        }
+    }
+}
+
 pub type KeyValueDeployStorage = KeyValueDeployStore<DeployStorageName>;
 /// Per-node local buffer of deploys rejected during multi-parent merge.
 ///
@@ -173,13 +217,14 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         store: Arc<dyn KeyValueStore>,
         quarantine: Arc<dyn KeyValueStore>,
     ) -> Result<Self, KvStoreError> {
+        let quarantine = DeployRecordQuarantine::new(N::NAME, quarantine);
         let storage = Self {
             store: KeyValueTypedStoreImpl::with_value_codec(
                 store,
                 super::deploy_codec::encode,
                 super::deploy_codec::decode,
             ),
-            quarantine: DeployRecordQuarantine::new(N::NAME, quarantine),
+            quarantine,
             metadata: Arc::default(),
             _name: PhantomData,
         };
@@ -226,12 +271,51 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
     }
 
     pub fn add(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
+        let prepared = deploys
+            .iter()
+            .map(|deploy| self.prepare(deploy))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.add_prepared(prepared)
+    }
+
+    pub fn prepare(&self, deploy: &Signed<DeployData>) -> Result<PreparedDeploy, KvStoreError> {
+        let value = self.store.encode_value(deploy)?;
+        self.prepare_value(deploy, value)
+    }
+
+    pub fn prepare_checked(
+        &self,
+        deploy: &Signed<DeployData>,
+    ) -> Result<PreparedDeploy, DeployPreparationError> {
+        let value = super::deploy_codec::encode_checked(deploy)?;
+        self.prepare_value(deploy, value)
+            .map_err(DeployPreparationError::Serialization)
+    }
+
+    fn prepare_value(
+        &self,
+        deploy: &Signed<DeployData>,
+        value: BitVector,
+    ) -> Result<PreparedDeploy, KvStoreError> {
+        Ok(PreparedDeploy {
+            key: self.store.encode_key(&deploy.sig.to_vec())?,
+            value,
+            metadata: DeployMetadata::from(deploy),
+        })
+    }
+
+    pub fn add_prepared(&self, deploys: Vec<PreparedDeploy>) -> Result<(), KvStoreError> {
+        let additions = deploys
+            .iter()
+            .map(|deploy| deploy.metadata.clone())
+            .collect();
+        let records = deploys
+            .into_iter()
+            .map(|deploy| (deploy.key, deploy.value))
+            .collect();
         let mut cache = self.metadata.lock();
         let before = store_revision(self.store.raw_store());
-        let additions = deploys.iter().map(DeployMetadata::from).collect();
-        let result = self
-            .store
-            .put(deploys.into_iter().map(|d| (d.sig.to_vec(), d)).collect());
+        let result = self.store.raw_store().put(records);
         cache.update(
             before,
             store_revision(self.store.raw_store()),
@@ -245,42 +329,107 @@ impl<N: DeployStoreName> KeyValueDeployStore<N> {
         result
     }
 
-    pub fn add_if_absent(&self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
+    pub fn add_prepared_if_absent(&self, deploy: PreparedDeploy) -> Result<bool, KvStoreError> {
+        if self.quarantine.contains(&self.store, &deploy.key)? {
+            return Ok(false);
+        }
         let mut cache = self.metadata.lock();
         let before = store_revision(self.store.raw_store());
-        let metadata = DeployMetadata::from(&deploy);
-        let result = self.store.put_one_if_absent(deploy.sig.to_vec(), deploy);
+        let result = self
+            .store
+            .raw_store()
+            .put_one_if_absent(deploy.key.clone(), deploy.value);
         let writes = usize::from(matches!(result, Ok(true)));
         cache.update(
             before,
             store_revision(self.store.raw_store()),
             writes,
-            vec![metadata],
+            vec![deploy.metadata],
             Vec::new(),
         );
         if result.is_err() {
             cache.revision = None;
         }
-        result
+        let inserted = result?;
+        if !inserted && !self.quarantine.contains(&self.store, &deploy.key)? {
+            return Err(KvStoreError::InvalidArgument(
+                "Deploy insertion was blocked by an invalid or concurrently changed record"
+                    .to_string(),
+            ));
+        }
+        Ok(inserted)
+    }
+
+    pub fn add_if_absent(&self, deploy: Signed<DeployData>) -> Result<bool, KvStoreError> {
+        self.add_prepared_if_absent(self.prepare(&deploy)?)
     }
 
     pub fn contains_sig(&self, sig: &[u8]) -> Result<bool, KvStoreError> {
-        let key: ByteString = sig.to_vec();
-        Ok(self
+        self.quarantine
+            .contains(&self.store, &self.store.encode_key(&sig.to_vec())?)
+    }
+
+    pub fn inspect_sig(&self, sig: &[u8]) -> Result<DeployRecordSnapshot, KvStoreError> {
+        let key = self.store.encode_key(&sig.to_vec())?;
+        let (value, verified) = self.quarantine.inspect(&self.store, &key)?;
+        Ok(DeployRecordSnapshot {
+            key,
+            value,
+            verified,
+        })
+    }
+
+    pub fn matches_snapshot(&self, snapshot: &DeployRecordSnapshot) -> Result<bool, KvStoreError> {
+        Ok(self.store.raw_store().get_one(&snapshot.key)? == snapshot.value)
+    }
+
+    pub fn add_prepared_if_unchanged(
+        &self,
+        deploy: &PreparedDeploy,
+        snapshot: &DeployRecordSnapshot,
+    ) -> Result<PreparedInsertResult, KvStoreError> {
+        if deploy.key != snapshot.key {
+            return Err(KvStoreError::InvalidArgument(
+                "Deploy snapshot belongs to a different signature".to_string(),
+            ));
+        }
+        if !self.matches_snapshot(snapshot)? {
+            return Ok(PreparedInsertResult::Changed);
+        }
+        if snapshot.verified {
+            return Ok(PreparedInsertResult::AlreadyPresent);
+        }
+        if snapshot.value.is_some() {
+            return Err(KvStoreError::InvalidArgument(
+                "Deploy insertion was blocked by an invalid record".to_string(),
+            ));
+        }
+        let mut cache = self.metadata.lock();
+        let before = store_revision(self.store.raw_store());
+        let result = self
             .store
-            .contains(vec![key])?
-            .into_iter()
-            .next()
-            .unwrap_or(false))
+            .raw_store()
+            .put_one_if_absent(deploy.key.clone(), deploy.value.clone());
+        let writes = usize::from(matches!(result, Ok(true)));
+        cache.update(
+            before,
+            store_revision(self.store.raw_store()),
+            writes,
+            vec![deploy.metadata.clone()],
+            Vec::new(),
+        );
+        if result.is_err() {
+            cache.revision = None;
+        }
+        Ok(if result? {
+            PreparedInsertResult::Inserted
+        } else {
+            PreparedInsertResult::Changed
+        })
     }
 
     pub fn sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
-        let mut sigs = Vec::new();
-        self.store.raw_store().iterate_while(&mut |key, _| {
-            sigs.push(self.store.decode_key(&key)?);
-            Ok(true)
-        })?;
-        Ok(sigs)
+        self.quarantine.sigs(&self.store)
     }
 
     pub fn remove(&self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -568,6 +717,150 @@ mod tests {
         assert!(storage.add_if_absent(d1.clone()).unwrap());
         assert!(!storage.add_if_absent(d1).unwrap());
         assert_eq!(storage.read_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn prepared_deploy_keeps_the_verified_bytes_when_the_source_changes() {
+        let storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        let mut source = deploy(1);
+        let expected = source.clone();
+        let prepared = storage.prepare(&source).unwrap();
+        assert!(!storage.non_empty().unwrap());
+
+        source.data.phlo_limit += 1;
+        assert!(storage.prepare(&source).is_err());
+        assert!(storage.add_prepared_if_absent(prepared).unwrap());
+        assert_eq!(storage.read_all().unwrap(), HashSet::from([expected]));
+    }
+
+    #[test]
+    fn checked_insertion_rejects_an_outdated_absence_snapshot() {
+        let storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        let candidate = deploy(1);
+        let absent = storage.inspect_sig(&candidate.sig).unwrap();
+        assert!(!absent.is_present());
+        storage.add(vec![candidate.clone()]).unwrap();
+        assert_eq!(
+            storage
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
+                .unwrap(),
+            PreparedInsertResult::Changed
+        );
+        let present = storage.inspect_sig(&candidate.sig).unwrap();
+        assert!(present.is_present());
+        assert_eq!(
+            storage
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &present)
+                .unwrap(),
+            PreparedInsertResult::AlreadyPresent
+        );
+    }
+
+    #[test]
+    fn checked_insertion_requires_a_fresh_snapshot_after_quarantining() {
+        let live: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let quarantine: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
+        let storage = KeyValueDeployStorage::from_stores(live.clone(), quarantine.clone()).unwrap();
+        let candidate = deploy(1);
+        let key = storage.store.encode_key(&candidate.sig.to_vec()).unwrap();
+        live.put_one(key.clone(), vec![0xff]).unwrap();
+        let damaged = storage.inspect_sig(&candidate.sig).unwrap();
+        assert!(!damaged.is_present());
+        assert_eq!(
+            storage
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &damaged)
+                .unwrap(),
+            PreparedInsertResult::Changed
+        );
+        let absent = storage.inspect_sig(&candidate.sig).unwrap();
+        assert_eq!(
+            storage
+                .add_prepared_if_unchanged(&storage.prepare(&candidate).unwrap(), &absent)
+                .unwrap(),
+            PreparedInsertResult::Inserted
+        );
+        assert_eq!(quarantine.get_one(&key).unwrap(), Some(vec![0xff]));
+        assert_eq!(storage.read_all().unwrap(), HashSet::from([candidate]));
+    }
+
+    #[test]
+    fn checked_insertion_does_not_decode_an_already_inspected_duplicate() {
+        let mut storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        let candidate = deploy(1);
+        storage.add(vec![candidate.clone()]).unwrap();
+        let present = storage.inspect_sig(&candidate.sig).unwrap();
+        let prepared = storage.prepare(&candidate).unwrap();
+        storage.store = KeyValueTypedStoreImpl::with_value_codec(
+            storage.store.raw_store().clone(),
+            super::super::deploy_codec::encode,
+            |_| panic!("A checked insertion must not decode or verify a record"),
+        );
+        assert_eq!(
+            storage
+                .add_prepared_if_unchanged(&prepared, &present)
+                .unwrap(),
+            PreparedInsertResult::AlreadyPresent
+        );
+    }
+
+    #[test]
+    fn prepared_deploy_is_encoded_once_and_inserted_once_across_handles() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static ENCODED: AtomicUsize = AtomicUsize::new(0);
+        fn encode(deploy: &Signed<DeployData>) -> Result<BitVector, KvStoreError> {
+            ENCODED.fetch_add(1, Ordering::SeqCst);
+            super::super::deploy_codec::encode(deploy)
+        }
+
+        let mut storage = KeyValueDeployStorage::from_stores(
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
+        storage.store = KeyValueTypedStoreImpl::with_value_codec(
+            storage.store.raw_store().clone(),
+            encode,
+            super::super::deploy_codec::decode,
+        );
+        let source = deploy(1);
+        let prepared = (0..8)
+            .map(|_| storage.prepare(&source).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ENCODED.load(Ordering::SeqCst), 8);
+        assert!(!storage.non_empty().unwrap());
+        let barrier = Arc::new(Barrier::new(8));
+        let handles = prepared
+            .into_iter()
+            .map(|prepared| {
+                let storage = storage.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    storage.add_prepared_if_absent(prepared).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let inserted = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|inserted| *inserted)
+            .count();
+        assert_eq!(inserted, 1);
+        assert_eq!(ENCODED.load(Ordering::SeqCst), 8);
+        assert_eq!(storage.read_all().unwrap(), HashSet::from([source]));
     }
 
     #[tokio::test]

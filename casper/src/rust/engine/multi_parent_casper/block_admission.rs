@@ -9,7 +9,9 @@ use std::collections::HashSet;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
-use block_storage::rust::deploy::key_value_deploy_storage::MetadataSnapshot;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    DeployPreparationError, MetadataSnapshot, PreparedInsertResult,
+};
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
@@ -158,15 +160,30 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
 
+    let preparation = this.deploy_storage.prepare_checked(&deploy);
     const MAX_REFRESH_ATTEMPTS: usize = 3;
     let mut refresh_changes = [None; MAX_REFRESH_ATTEMPTS];
     let shard_cap = this.casper_shard_conf.max_user_deploys_per_block as usize;
     for changed_component in &mut refresh_changes {
         let deploy_storage = this.deploy_storage.as_ref();
         let rejected_deploys = this.rejected_deploy_buffer.lock()?.clone();
-        if deploy_storage.contains_sig(&deploy_id)? || rejected_deploys.contains_sig(&deploy_id)? {
+        let pool_record = deploy_storage.inspect_sig(&deploy_id)?;
+        let rejected_record = rejected_deploys.inspect_sig(&deploy_id)?;
+        if pool_record.is_present() || rejected_record.is_present() {
             return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
         }
+        let prepared = match preparation {
+            Ok(ref prepared) => prepared,
+            Err(DeployPreparationError::InvalidSignature) => {
+                return Ok(Either::Left(DeployError::signature_verification_failed()));
+            }
+            Err(DeployPreparationError::UnsupportedAlgorithm(algorithm)) => {
+                return Ok(Either::Left(DeployError::unknown_signature_algorithm(
+                    algorithm,
+                )));
+            }
+            Err(DeployPreparationError::Serialization(error)) => return Err(error.into()),
+        };
         let mut capacity = this.deploy_admission.capacity(shard_cap);
         let (cached_revision, cached_window, cached_book, observed_book_revision) = {
             let cache = this.deploy_admission.reservations.lock();
@@ -356,9 +373,22 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
             }
         };
         drop(cache);
-        if !deploy_storage.add_if_absent(deploy)? {
-            return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+        let rejected_guard = this.rejected_deploy_buffer.lock()?;
+        if !rejected_guard.matches_snapshot(&rejected_record)? {
+            *changed_component = Some("rejected");
+            continue;
         }
+        match deploy_storage.add_prepared_if_unchanged(prepared, &pool_record)? {
+            PreparedInsertResult::Inserted => {}
+            PreparedInsertResult::AlreadyPresent => {
+                return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
+            }
+            PreparedInsertResult::Changed => {
+                *changed_component = Some("pool");
+                continue;
+            }
+        }
+        drop(rejected_guard);
         let (_, commit_time) = queue_bounds(&dag, this.casper_shard_conf.deploy_lifespan)?;
         let commit_window = FreshWindow {
             now_millis: commit_time,
