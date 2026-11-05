@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use heed::types::Bytes;
-use heed::{Database, Env, RoTxn, WithoutTls};
+use heed::{Database, Env, RoTxn, WithTls};
 
 use super::key_value_store::KeyValueStore;
 use super::lmdb_key_value_store::LmdbKeyValueStore;
@@ -132,9 +132,9 @@ impl ReadUsage {
 }
 
 struct EnvSession {
-    env: Arc<Env<WithoutTls>>,
+    env: Arc<Env>,
     path: PathBuf,
-    txn: RoTxn<'static, WithoutTls>,
+    txn: RoTxn<'static, WithTls>,
     last_txn_id_before_open: usize,
     txn_id: usize,
 }

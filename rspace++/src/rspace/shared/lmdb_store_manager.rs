@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use heed::types::SerdeBincode;
-use heed::{Database, Env, WithoutTls};
+use heed::{Database, Env};
 use shared::rust::store::key_value_store::KeyValueStore;
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 use tokio::sync::Mutex;
@@ -19,13 +19,13 @@ pub struct LmdbStoreManager {
     dir_path: PathBuf,
     max_env_size: usize,
     max_dbs: u32,
-    env: Arc<Mutex<Option<Arc<Env<WithoutTls>>>>>,
+    env: Arc<Mutex<Option<Arc<Env>>>>,
     dbs: Arc<Mutex<HashMap<String, DbEnv>>>,
 }
 
 #[derive(Clone)]
 struct DbEnv {
-    env: Arc<Env<WithoutTls>>,
+    env: Arc<Env>,
     db: Database<SerdeBincode<Vec<u8>>, SerdeBincode<Vec<u8>>>,
 }
 
@@ -88,25 +88,10 @@ impl KeyValueStoreManager for LmdbStoreManager {
     }
 
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
-        // Drop our Arc<Env> clones. The env_cache holds Weak refs, so when
-        // the last consumer drops, the cache entry auto-evicts on the next
-        // lookup and heed closes the LMDB file handles.
         let mut dbs = self.dbs.lock().await;
         dbs.clear();
         let mut env_slot = self.env.lock().await;
         *env_slot = None;
         Ok(())
-    }
-}
-
-// Ensures LMDB environment is closed when the manager is dropped.
-impl Drop for LmdbStoreManager {
-    fn drop(&mut self) {
-        if let Ok(mut dbs) = self.dbs.try_lock() {
-            dbs.clear();
-        }
-        if let Ok(mut env_slot) = self.env.try_lock() {
-            *env_slot = None;
-        }
     }
 }

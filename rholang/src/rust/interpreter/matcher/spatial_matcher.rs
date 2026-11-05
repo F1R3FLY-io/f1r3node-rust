@@ -154,6 +154,74 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            Some(ConnInt32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GInt32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint64(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint16(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint16(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint8(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint8(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GDouble(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFloat32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigInt(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigInt(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigRat(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigRat(_)),
+                }) => Some(()),
+                _ => None,
+            },
+
+            Some(ConnFixedPointBody(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFixedPoint(gfp)),
+                }) => {
+                    let scale_target = Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(GInt(gfp.scale as i64)),
+                    }]);
+                    let scale_pattern = body.scale.unwrap_or_default();
+                    self.spatial_match(scale_target, scale_pattern)
+                }
+                _ => None,
+            },
+
             None => None,
         }
     }

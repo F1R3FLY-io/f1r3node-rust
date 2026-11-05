@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use heed::types::{Bytes, SerdeBincode};
-use heed::{Database, Env, EnvOpenOptions, WithoutTls};
+use heed::{Database, Env, EnvOpenOptions};
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
 use shared::rust::store::soak_snapshot::{
@@ -13,12 +13,12 @@ use shared::rust::ByteBuffer;
 
 struct Fixture {
     _dir: tempfile::TempDir,
-    env: Arc<Env<WithoutTls>>,
+    env: Arc<Env>,
 }
 
 fn open_env() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let mut builder = EnvOpenOptions::new().read_txn_without_tls();
+    let mut builder = EnvOpenOptions::new();
     builder.map_size(16 * 1024 * 1024);
     builder.max_dbs(8);
     let env = unsafe { builder.open(dir.path()).unwrap() };
@@ -28,10 +28,7 @@ fn open_env() -> Fixture {
     }
 }
 
-fn open_store(
-    env: &Arc<Env<WithoutTls>>,
-    name: &str,
-) -> (Arc<dyn KeyValueStore>, Arc<LmdbKeyValueStore>) {
+fn open_store(env: &Arc<Env>, name: &str) -> (Arc<dyn KeyValueStore>, Arc<LmdbKeyValueStore>) {
     let mut wtxn = env.write_txn().unwrap();
     let db: Database<SerdeBincode<ByteBuffer>, SerdeBincode<ByteBuffer>> =
         env.create_database(&mut wtxn, Some(name)).unwrap();
@@ -60,7 +57,7 @@ fn kv(pairs: &[(&str, &str)]) -> Vec<(ByteBuffer, ByteBuffer)> {
 fn key(name: &str) -> ByteBuffer { name.as_bytes().to_vec() }
 
 fn write_from_other_thread(
-    env: Arc<Env<WithoutTls>>,
+    env: Arc<Env>,
     store: Arc<LmdbKeyValueStore>,
     pairs: Vec<(ByteBuffer, ByteBuffer)>,
 ) {
@@ -238,14 +235,11 @@ fn total_bytes_records_and_operations_budgets_are_enforced() {
             ..
         })
     ));
-    let mut while_open = BoundedLmdbReader::open(&[&store], limits()).unwrap();
-    assert_eq!(
-        while_open.read_value(&store, &key("c")).unwrap(),
-        Some(b"3".to_vec())
-    );
-    assert_eq!(while_open.usage().records, 1);
-    assert_eq!(by_records.usage().records, 2);
-    while_open.validate().unwrap();
+    let while_open = BoundedLmdbReader::open(&[&store], limits());
+    assert!(matches!(
+        while_open.err(),
+        Some(SnapshotError::ReadFailed(_))
+    ));
     drop(by_records);
 
     let mut by_operations = BoundedLmdbReader::open(&[&store], ReadLimits {
@@ -395,7 +389,7 @@ fn unchanged_environment_validates_and_stored_bytes_are_untouched() {
 }
 
 #[test]
-fn stores_in_one_environment_share_one_transaction_and_allow_independent_reads() {
+fn stores_in_one_environment_share_one_transaction_and_a_second_same_thread_reader_fails() {
     let fixture = open_env();
     let (a, _) = open_store(&fixture.env, "a");
     let (b, _) = open_store(&fixture.env, "b");
@@ -413,11 +407,12 @@ fn stores_in_one_environment_share_one_transaction_and_allow_independent_reads()
         Some(b"b".to_vec())
     );
 
-    let nested = fixture.env.read_txn().unwrap();
-    assert_eq!(nested.id(), reader.identities()[0].txn_id);
+    let nested = fixture.env.read_txn();
+    assert!(nested.is_err());
     drop(nested);
 
-    assert_eq!(a.get_one(&key("k")).unwrap(), Some(b"a".to_vec()));
+    let same_thread_trait_read = a.get_one(&key("k"));
+    assert!(same_thread_trait_read.is_err());
 
     reader.validate().unwrap();
     assert_eq!(a.get_one(&key("k")).unwrap(), Some(b"a".to_vec()));

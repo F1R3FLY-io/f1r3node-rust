@@ -1,58 +1,46 @@
 // Process-global cache of opened LMDB environments, keyed by directory path.
 //
-// Why this exists: heed 0.22 rejects duplicate env opens of the same directory
-// with EnvAlreadyOpened. Any code that opens the same path more than once must
-// share a single Env handle. The cache mediates this for all LMDB consumers in
-// the workspace (LmdbStoreManager, LmdbDirStoreManager,
-// get_or_create_rspace_store).
+// heed 0.22 rejects a second open of the same directory with EnvAlreadyOpened,
+// so every LMDB consumer in the workspace (LmdbStoreManager,
+// LmdbDirStoreManager, get_or_create_rspace_store) shares one Env per path
+// through this cache.
 //
-// Lifecycle (Weak-ref semantics): the cache stores Weak<Env> entries. Consumers
-// receive Arc<Env> clones. Once the last Arc<Env> for a given path drops, the
-// inner heed::Env releases its file handles and the cached Weak becomes dead.
-// The next lookup detects the dead Weak, evicts it, and opens a fresh env. This
-// gives bounded growth (one live entry per active path) without ever risking
-// EnvAlreadyOpened on outstanding clones.
+// The cache keeps each environment open until the process exits. Read
+// transactions use thread-local reader slots, and LMDB releases a slot from a
+// destructor that runs when its thread exits. Closing an environment while a
+// thread that once read from it is exiting lets that destructor write into the
+// unmapped reader table. An environment that is never closed cannot race a
+// thread exit.
 //
-// Map size is locked at first open per path. heed does not allow resizing the
-// mmap after env creation, so subsequent get_or_open_env calls for the same
-// path return the cached Env regardless of the requested map_size.
-//
-// Locking: a single StdMutex guards the HashMap. The critical section on the
-// hot path is HashMap::get + Weak::upgrade (an Arc bump if alive). The slow
-// path (env_builder.open) only runs on cache miss — once per unique path until
-// all consumers drop, then again. Per-path lock granularity would add
-// complexity without measurable benefit.
+// Map size and max_dbs are honored only on the first open of a path. heed does
+// not resize the map after creation, so later calls return the cached Env
+// regardless of the requested size.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
-use heed::{Env, EnvOpenOptions, WithoutTls};
+use heed::{Env, EnvOpenOptions};
 
-static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Weak<Env<WithoutTls>>>>> = OnceLock::new();
+static ENV_CACHE: OnceLock<StdMutex<HashMap<PathBuf, Arc<Env>>>> = OnceLock::new();
 
-/// Open an LMDB environment for `dir_path`, or return a clone of the cached
-/// handle if one is already alive. Map size and max_dbs are honored only on
-/// the first open per path.
+/// Open the LMDB environment for `dir_path`, or return the cached handle. Map
+/// size and max_dbs are honored only on the first open of a path.
 pub fn get_or_open_env(
     dir_path: &Path,
     max_env_size: usize,
     max_dbs: u32,
-) -> Result<Arc<Env<WithoutTls>>, heed::Error> {
+) -> Result<Arc<Env>, heed::Error> {
     let cache = ENV_CACHE.get_or_init(|| StdMutex::new(HashMap::new()));
     let mut cache_lock = cache.lock().expect("LMDB env cache mutex poisoned");
 
-    if let Some(weak) = cache_lock.get(dir_path) {
-        if let Some(arc) = weak.upgrade() {
-            return Ok(arc);
-        }
-        // Last consumer dropped — evict the dead Weak and fall through to reopen.
-        cache_lock.remove(dir_path);
+    if let Some(env) = cache_lock.get(dir_path) {
+        return Ok(env.clone());
     }
 
     fs::create_dir_all(dir_path)?;
-    let mut env_builder = EnvOpenOptions::new().read_txn_without_tls();
+    let mut env_builder = EnvOpenOptions::new();
     env_builder.map_size(max_env_size);
     env_builder.max_dbs(max_dbs);
     env_builder.max_readers(2048);
@@ -63,57 +51,27 @@ pub fn get_or_open_env(
     //      networked storage without explicit configuration).
     //   3. The same Env is not opened more than once in this process.
     // We uphold (3) via ENV_CACHE: this call only runs after a cache miss
-    // under the cache mutex, so no concurrent open of the same path is
-    // possible. (1) and (2) are responsibilities of the caller's deployment
+    // under the cache mutex, and cached environments are never evicted.
+    // (1) and (2) are responsibilities of the caller's deployment
     // configuration.
-    let env = unsafe { env_builder.open(dir_path)? };
-    let arc = Arc::new(env);
-    cache_lock.insert(dir_path.to_path_buf(), Arc::downgrade(&arc));
-    Ok(arc)
+    let env = Arc::new(unsafe { env_builder.open(dir_path)? });
+    cache_lock.insert(dir_path.to_path_buf(), env.clone());
+    Ok(env)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Barrier;
-
     use super::*;
 
     #[test]
-    fn independent_read_transactions_can_share_a_thread() {
+    fn environment_stays_open_after_every_consumer_drops() {
         let dir = tempfile::tempdir().unwrap();
-        let env = get_or_open_env(dir.path(), 1024 * 1024, 1).unwrap();
-        let first = env.read_txn().unwrap();
-        let second = env.read_txn().unwrap();
-        assert_eq!(first.id(), second.id());
+        let first = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        let address = Arc::as_ptr(&first);
         drop(first);
-        let third = env.read_txn().unwrap();
-        assert_eq!(second.id(), third.id());
-    }
 
-    #[test]
-    fn environment_can_close_while_reader_threads_exit() {
-        let dir = tempfile::tempdir().unwrap();
-        for _ in 0..256 {
-            let env = get_or_open_env(dir.path(), 1024 * 1024, 1).unwrap();
-            let weak = Arc::downgrade(&env);
-            let barrier = Arc::new(Barrier::new(9));
-            let threads: Vec<_> = (0..8)
-                .map(|_| {
-                    let env = env.clone();
-                    let barrier = barrier.clone();
-                    std::thread::spawn(move || {
-                        drop(env.read_txn().unwrap());
-                        drop(env);
-                        barrier.wait();
-                    })
-                })
-                .collect();
-            barrier.wait();
-            drop(env);
-            for thread in threads {
-                thread.join().unwrap();
-            }
-            assert!(weak.upgrade().is_none());
-        }
+        let second = get_or_open_env(dir.path(), 1 << 20, 4).unwrap();
+        assert_eq!(Arc::as_ptr(&second), address);
+        assert!(second.read_txn().is_ok());
     }
 }
