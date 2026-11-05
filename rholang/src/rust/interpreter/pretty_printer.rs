@@ -898,6 +898,23 @@ impl PrettyPrinter {
                     ConnectiveInstance::ConnString(_) => Ok(String::from("String")),
                     ConnectiveInstance::ConnUri(_) => Ok(String::from("Uri")),
                     ConnectiveInstance::ConnByteArray(_) => Ok(String::from("ByteArray")),
+                    ConnectiveInstance::ConnInt32(_) => Ok(String::from("Int32")),
+                    ConnectiveInstance::ConnUint64(_) => Ok(String::from("UInt64")),
+                    ConnectiveInstance::ConnUint32(_) => Ok(String::from("UInt32")),
+                    ConnectiveInstance::ConnUint16(_) => Ok(String::from("UInt16")),
+                    ConnectiveInstance::ConnUint8(_) => Ok(String::from("UInt8")),
+                    ConnectiveInstance::ConnFloat64(_) => Ok(String::from("Float64")),
+                    ConnectiveInstance::ConnFloat32(_) => Ok(String::from("Float32")),
+                    ConnectiveInstance::ConnBigInt(_) => Ok(String::from("BigInt")),
+                    ConnectiveInstance::ConnBigRat(_) => Ok(String::from("BigRat")),
+                    ConnectiveInstance::ConnFixedPointBody(body) => {
+                        let default_par = Par::default();
+                        let scale = body.scale.as_ref().unwrap_or(&default_par);
+                        Ok(format!(
+                            "FixedPoint({})",
+                            self.build_string_from_message(scale)
+                        ))
+                    }
                 },
                 None => Ok(String::new()),
             }
