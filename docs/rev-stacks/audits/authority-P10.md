@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29). `patch/FX-17-epoch` at `30258ed83` and `patch/FX-16` at `bed78053e` (revision 30).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2673,6 +2673,59 @@ The invariant height(LFB) ≤ height(order) cannot break by a crash. The order i
 | FX-17 takes FX-17-epoch with the early-release fix and Decision 114 | Merge condition | Open |
 | The unpruned deployment statuses (lane A2) | Known issue | New. Accepted: the window makes pruning safe. |
 | F51 (until Decision 114 lands) and the known issues of revision 28 except F39 and F33 | Known issue | Open |
+
+
+## Revision 30 (action A-8): Decision 114 on FX-17-epoch, and the bound after it
+
+- **Commits audited:**
+  - `patch/FX-17-epoch` at `30258ed83` (lane B): Decision 114.
+  - `patch/FX-16` at `bed78053e`: the re-measured bound.
+  - `patch/FX-8b` at `b7e4d5329`: it records Decision 112 in the log and has no code change.
+- **Reference:** design r23 (publications `c032466`).
+- **Method:** a reading of the PoSV6 diff and the logs. No tests were run.
+- **Not changed:** FX-17 (`994f70ae0`), and the FX-8b suite counts.
+
+### Decision 114 (`30258ed83`)
+
+**What changes:**
+- `releases` maps a quarantine end to `{pk: amount}`, and the `withdrawers` map is removed. A key's amount in quarantine is the sum of its entries.
+- `withdraw` records the key in `pendingWithdrawers` and sets `pendingEnd`, and it does not touch `releases`.
+- `movePendingWithdrawer` adds the moved bonds, with their amounts, to `releases[pendingEnd]` in one native expression.
+- The due entries become a list of `(pk, amount)` pairs. A key with two ended entries is released twice, once with each amount.
+- A failed release puts its amount back under the current block.
+- `settleOne` adds the key's amounts over the entries of `releases`, which is one fold step for each end, to check the native bond.
+
+| Check (revision 28's list) | Result |
+|---|---|
+| Each entry is released at its own quarantine end | **Holds.** An entry is due only when its end is at or below the current block, and each `(pk, amount)` pair is released with its own amount. `a_bond_made_during_quarantine_is_released_at_its_own_end_and_the_first_at_its_own`: 1,000 is released at block 30 (end 25) and 500 at block 40 (end 35). |
+| No amount is stranded | **Holds.** The second withdrawal no longer replaces the first amount. |
+| The native bond is fully released | **Holds.** The test reads a native bond of 0 after the second release. |
+| The close stays linear | **Holds.** Lane B re-measured, and every case is cheaper than in revision 5, because the state no longer carries `withdrawers`. The smallest margin is 1.65, at 99 withdrawers (911,605 phlo against 1,500,000). The added fold in `settleOne` runs once for each end still in quarantine, and at most one bond registration merges in a block. |
+| No key is released twice for one amount | **Holds.** Due entries leave `releases` (`rest.delete(end)`). A failed amount comes back under the current block only, and failed amounts of one key are added together. |
+
+**F51 is closed** on `patch/FX-17-epoch`. It closes on FX-8b when the branch merges through FX-17.
+
+**Two notes from the reading (known issues, Low):**
+1. **One `pendingEnd` for each epoch close.** `end` is computed from the epoch of the block in which `withdraw` runs. A withdrawal in the boundary block of an epoch and a withdrawal in the block before it can both be pending at the same move. Both then take the last `pendingEnd` that was written, which is the later end. The earlier withdrawal is released one epoch late, never early. **Reason for the label:** the error is a delay of the validator's own release, and it is in the safe direction.
+2. **Map joins on a key collision.** Two map joins keep one amount when a key is already present: `++` in the move, and `++ failed` in the retry. The rules as read reach no collision. A key cannot bond again until it has left `allBonds`, so it cannot have two amounts under one end, and due entries are deleted before failed amounts come back. **Reason for the label:** no path to it is known. Summing the amounts on a join would remove the case.
+
+`committedRewards` is no longer cleared on release. Lane B states that v6 never writes it, and only the slash path deletes from it. Accepted, with the B6 condition on slashing that already stands.
+
+### Merge requirement
+
+FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, and the cross-host fixture must then be written again. FX-17 still has `acf9fff28`, which has the early release and the stranded amount.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| D11 (P11 seam) | **Blocking** | First half on `patch/FX-17` |
+| (d) replayed in play mode | **Blocking** | Waits for the close trace in the (d) record |
+| D10 | **Blocking until merged** | On `patch/FX-17` |
+| F47 (99 withdrawers) | **Blocking until merged** | Margin 1.65 on `patch/FX-16` and `patch/FX-17-epoch` |
+| FX-17 conditions (revision 29), FX-17 takes `30258ed83`, the FX-8b suite counts | Conditions | Open |
+| F51 | — | Closed on `patch/FX-17-epoch` |
+| The two notes above, and the known issues of revision 29 | Known issue | Open |
 
 
 ## Open questions for review
