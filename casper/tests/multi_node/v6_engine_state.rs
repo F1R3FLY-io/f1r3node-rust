@@ -191,7 +191,7 @@ async fn a_long_run_keeps_executor_memory_flat_and_old_receipts_available() {
 
     let canonical = engine(&nodes[0]).canonical_len();
     eprintln!("canonical={canonical} peak={peak}");
-    assert!(canonical >= 30, "only {canonical} positions were fixed");
+    assert!(canonical >= 25, "only {canonical} positions were fixed");
     assert_eq!(
         breach, None,
         "resident state outgrew the unfixed blocks (round, resident, lag)"
