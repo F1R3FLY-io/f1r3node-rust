@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29). `patch/FX-17-epoch` at `30258ed83` and `patch/FX-16` at `bed78053e` (revision 30). `patch/FX-17` at `c20ee4eea` and `patch/FX-15-followups` at `c97c2e4b3` (revision 31).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29). `patch/FX-17-epoch` at `30258ed83` and `patch/FX-16` at `bed78053e` (revision 30). `patch/FX-17` at `c20ee4eea` and `patch/FX-15-followups` at `c97c2e4b3` (revision 31). `patch/FX-17` at `488122957` (revision 32).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -2809,6 +2809,75 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | The positions from before FX-17, P11's dependence on liveness, the two Decision 114 notes, and the known issues of revision 29 | Known issue | Open |
 
 
+## Revision 32 (actions A-8 and A-9): FX-17 completion, and the repeat rule
+
+- **Commits audited:** `patch/FX-17` at `488122957` (lane A2): `d89ff0c64` (inclusion screen, LFB consumer map, restart test) and `488122957` (full-suite counts).
+- **No change:** `patch/FX-8b` stays at `b7e4d5329`, `patch/FX-15-followups` at `c97c2e4b3`, and `patch/FX-17-epoch` at `30258ed83`.
+- **Reference:** design r23 (publications `c032466`).
+- **Method:** a reading of `core.rs` (`statuses`, `prior`, `prior_at`), `engine.rs` (`check_inclusion`, the replay and execute actions), `store.rs` (the prior codec), `linearizer.rs` (`epoch_order`), `validity.rs` and `executor.rs` (`with_prior`) at `488122957`. A probe test could not run, because the pinned toolchain `nightly-2026-02-09` cannot be downloaded through the proxy. The finding below therefore rests on the reading. The test that lane A2 adds for the fix is the evidence that closes it.
+
+### F52 — High, blocking: a deployment can run twice when its carriers have the same block number
+
+**The rule.** Decision 109 makes `AlreadyIncluded` the gate refusal for a deployment that a canonical record already ran. For v6 blocks, `repeat_deploy` no longer runs at acceptance (`b4ab97899`). So the gate's prior is the only check that stops a second run.
+
+**What the code does.**
+- `ExecutorCore::prior(target)` keeps a status only if the carrier's block number n satisfies n < number(target) and n + `deploy_lifespan` > number(target).
+- `epoch_order` emits blocks in topological order, and breaks ties by (block number, hash). Two blocks with the same number are both emitted, one after the other.
+- Validators that propose at the same height often carry the same deployment, because the deployment reaches each of them.
+
+**Result.**
+- When two blocks with the same number both carry deployment d, the record of the first block runs d. The prior of the second block does not show the status, because n < number(target) is false. So the gate admits d again, and d runs a second time.
+- The same result occurs when a later block in the order has a lower block number than the first carrier.
+- The condition that the deploy lifespan needs is the upper bound. The lower bound must be "the carrier is earlier in the order", that is, a lower position. Each `PriorEntry` now holds its position (`d89ff0c64`), so the data for that test is present.
+
+**The within-block duplicate check (revision 29's condition) is still not present.**
+- `validity.rs` refuses a duplicate record, but not a duplicate envelope in one block.
+- `with_prior` gives every copy of an envelope the same status, so two copies in one block with no prior both run.
+- r23 keeps this check at acceptance.
+
+**Reason for the label.** A signed deployment that runs twice spends the deployer's funds twice and repeats its effects. That is a safety finding of High severity, and a divergence from the repeat rule of r23. All nodes compute the same order, so the nodes do not disagree. The fault is in the rule, not in consensus between nodes.
+
+**Conditions to close F52:**
+1. The prior keeps a status when the carrier's position is lower than the target's position and the carrier's block number plus the lifespan is above the target's block number.
+2. A within-block duplicate check, at acceptance or in the gate, admits only the first copy.
+3. Two tests:
+   - Two blocks with the same number carry one deployment, and the second record refuses it with `AlreadyIncluded`.
+   - One block carries a deployment twice, and only the first copy runs.
+4. A statement about the speculative path. `prior` applies the same window to the speculative records ahead of the target, so the fix must change both paths.
+
+### FX-17: the open conditions from revision 31
+
+| Condition | Result |
+|---|---|
+| The inclusion screen on canonical statuses | **Met, with a known issue (below).** `check_inclusion` adds an `InclusionViolation` for each envelope that a canonical record at or below the attested position ran, or that a void block discarded. `prior_at` compares positions. Test: `core::an_inclusion_counts_only_records_at_or_below_the_attested_position`. |
+| The LFB consumer map | **Met.** The table in section 7 of the FX-17 log gives one floor for each call site. Each assignment agrees with P11: ordering and the gates use the order floor, and state, retention, the lifecycle, the bonds and the API use the LFB. |
+| The engine-level crash test | **Met.** `multi_node::v6_engine_state::a_restart_after_an_order_commit_keeps_both_floors_and_the_same_state_floor`. The storage test covers the crash between the two commits. |
+| Full suites on the FX-17 tip | **Met** at `d89ff0c64`. casper `--test mod` 1,311 passed, casper lib 898, node 469, rholang 2,462. One shared failure (`bounded_file::a_failed_rotation_keeps_the_active_file_writable`) occurs because the runs use root. It fails the same way at `6c43a2c8f`. Accepted as environmental. |
+| The within-block duplicate check | **Not present.** Part of F52. |
+| The two (d) tests | **Open.** No test rejects a (d) record whose traced close succeeds. No test runs the honest (d) record under 1, 2 and 4 workers. |
+| FX-17 takes `30258ed83` and `c97c2e4b3` | **Open.** Neither commit is in `patch/FX-17`. |
+
+**Known issue: a later status replaces an earlier one.** The store keeps one status for each envelope, and a later put replaces it. A (d) void that carries an envelope that already ran writes `Discarded` over `Included`. The inclusion screen then misses a repeat at an attested position between the two carriers. The gate still refuses the repeat, so only evidence is lost. With the F52 fix, the gate decision does not depend on which entry is kept. Keeping the first entry is the simpler rule.
+
+**Question 25: an in-place upgrade of a v6 store.**
+- A store from before `b4ab97899` has no statuses. A store written between `b4ab97899` and `d89ff0c64` has 9-byte statuses, which `decode_prior` now reads as absent.
+- An upgraded node then lacks the statuses for the blocks inside the lifespan. A node that replays from genesis has them. The two nodes can then make different gate decisions and compute different state roots.
+- FX-17 says that it supports a store from before FX-17 for the order floor and the position index. The statuses are different, because they change the state root.
+- **The question:** does the handoff support an in-place upgrade of a v6 store? If yes, this is blocking, and the upgrade must rebuild the statuses or replay. If no, the handoff notes must say that a v6 store from before FX-17 is replayed from genesis, and this becomes a known issue.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| F52 (the repeat rule for carriers with the same block number, and the within-block duplicate) | **Blocking** | New |
+| D11 (P11 seam) | **Blocking** | Complete on `patch/FX-17`. Merge into FX-8b pending. |
+| The side-dependent storage reservation | **Blocking until merged** | Fixed on `patch/FX-15-followups` |
+| D10, F47 | **Blocking until merged** | On `patch/FX-17` and `patch/FX-17-epoch` |
+| An in-place upgrade of a v6 store | Question 25 | Blocking or known issue, by the answer |
+| The two (d) tests, FX-17 takes `30258ed83` and `c97c2e4b3`, the FX-8b suite counts, the SIGSEGV run with `--test-threads=1` | Conditions | Open |
+| A later status replaces an earlier one, lane C's gate guarantee for run-time seals, the positions from before FX-17, P11's dependence on liveness, and the earlier known issues | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -2836,3 +2905,4 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 22. **F39 and F33:** answered on 2026-11-04 (Decision 112: the run-time check is the guard). A pure stack body under a seal bound at run time passes the gate as a token kind, and only the run-time check refuses a wallet outside the deployment's signers. Does the gate refuse an unresolved bound seal on a stack body (which also refuses a token kind passed in at run time), or does the run-time check stay the only guard?
 23. **D10:** answered on 2026-11-04 (Decision 113: the pre-state form, with no lag term). The code applies the per-bond rate to the bonds at the block's true pre-state, with no lag term, because Decision 108 evaluates the pre-charge at execution. Is the §6.3 text of Decision 102 updated to this form?
 24. **F51:** answered on 2026-11-04 (Decision 114: two entries, each released at its own quarantine end). A validator that bonds again in quarantine and withdraws again loses track of its first amount, which stays locked in the native bond. Are the amounts added (lane B's recommendation), kept as two entries, or is the re-bond refused?
+25. **In-place upgrade of a v6 store (revision 32):** an upgraded node lacks the canonical statuses that a node replayed from genesis has, and the two can compute different state roots. Does the handoff support an in-place upgrade of a v6 store from before FX-17, or must such a store be replayed from genesis?
