@@ -328,6 +328,8 @@ pub struct RhoRuntimeImpl {
 }
 
 impl RhoRuntimeImpl {
+    pub async fn is_replay(&self) -> bool { self.reducer.space.is_replay().await }
+
     fn reset_files(&mut self, root: &Blake2b256Hash) {
         // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
         // state root.  Every block boundary triggers a reset via this

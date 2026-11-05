@@ -7,9 +7,10 @@ use block_storage::rust::dag::block_dag_key_value_storage::{
 use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
 use block_storage::rust::deploy::offer_rejection::OfferRejection;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
+use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, F1r3flyState, Header, ProcessedDeploy,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, ProcessedDeploy,
 };
 use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -26,7 +27,8 @@ use super::lag::{Lag, LagGate, Transition};
 use super::linearizer::{Advance, Linearizer};
 use super::price::{effective_price, FixedPriceHook, NodePriceConf, PriceHook};
 use super::propose::{pack_records, select_envelopes, SelectionContext};
-use super::record::ExecutionRecord;
+use super::gate::GateInput;
+use super::record::{ExecutionRecord, VoidReason};
 use super::resource_policy::ShardResourcePolicy;
 use super::store::{
     LmdbRecordStore, MemoryRecordStore, Opened, RecordSource, RecordStore, Retention,
@@ -378,6 +380,44 @@ impl<R: ExecutionRecord> V6Engine<R> {
         Ok(())
     }
 
+    pub fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
+        self.core.lock().void_count(proposer, reason)
+    }
+
+    fn release_voided(&self, target: &BlockHash, reason: VoidReason) -> Result<(), CasperError> {
+        let block = self.load(target)?;
+        let dropped = |deploy: &Signed<DeployData>| match reason {
+            VoidReason::CloseFailed => true,
+            VoidReason::UnreadableTerms => GateInput::from_deploy(deploy, Vec::new()).is_err(),
+            VoidReason::CloseUncovered | VoidReason::SlashRecords => false,
+        };
+        let (dropped, kept): (Vec<_>, Vec<_>) = block
+            .body
+            .deploys
+            .iter()
+            .map(|processed| processed.deploy.clone())
+            .partition(|deploy| dropped(deploy));
+        for deploy in &dropped {
+            self.deploy_storage.record_rejection(OfferRejection {
+                deploy_id: deploy.sig.to_vec(),
+                pre_state_root: None,
+                block_number: block.body.state.block_number,
+                reason: format!("void block, reason ({})", reason.label()),
+            })?;
+        }
+        if !kept.is_empty() {
+            self.deploy_storage.add(kept)?;
+        }
+        tracing::info!(
+            target: "f1r3fly.v6",
+            block = %hex::encode(target),
+            reason = reason.label(),
+            dropped = dropped.len(),
+            "a canonical record voids the block"
+        );
+        Ok(())
+    }
+
     fn load(&self, hash: &BlockHash) -> Result<BlockMessage, CasperError> {
         self.block_store
             .get(hash)?
@@ -481,6 +521,10 @@ impl<R: ExecutionRecord> V6Engine<R> {
                 self.core.lock().apply_execute(record);
                 progressed = true;
             }
+        }
+        let voided = self.core.lock().take_voided();
+        for (target, reason) in voided {
+            self.release_voided(&target, reason)?;
         }
         let check = self.core.lock().next_inclusion_check();
         if let Some(check) = check {

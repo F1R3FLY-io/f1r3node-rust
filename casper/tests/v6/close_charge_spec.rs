@@ -9,7 +9,7 @@ use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
 use casper::rust::v6::close_charge::{pre_charge, shard_floor, CloseCharge};
 use casper::rust::v6::executor::BlockExecutor;
 use casper::rust::v6::genesis_wallets::read_wallet_balance;
-use casper::rust::v6::record::ExecutionRecord;
+use casper::rust::v6::record::{ExecutionRecord, VoidReason};
 use casper::rust::v6::resource_policy::{ShardResourcePolicy, PROTOCOL_V6};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
@@ -356,4 +356,99 @@ async fn the_consensus_close_charge_reads_the_bonds_and_the_floor_at_the_pre_sta
 
 async fn close_paid(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord, proposer: &Party) -> u64 {
     close(rm, pre, record, proposer).await.proposer
+}
+
+struct OneSlash;
+
+impl casper::rust::v6::slash::SlashSource for OneSlash {
+    fn slashes(
+        &self,
+        _block: &BlockMessage,
+    ) -> Result<Vec<casper::rust::v6::slash::SlashRecord>, casper::rust::errors::CasperError> {
+        Ok(vec![casper::rust::v6::slash::SlashRecord {
+            evidence: [7; 32],
+            offender: Bytes::from_static(b"V2"),
+        }])
+    }
+}
+
+async fn void_replays(executor: &BlockExecutor, pre: &StateHash, b: &BlockMessage, reason: VoidReason) -> BlockRecord {
+    let record = executor.execute(pre, b).await.expect("a void block executes");
+    assert_eq!(record.void_reason(), Some(reason));
+    assert_eq!(record.post_root(), pre);
+    if reason != VoidReason::CloseFailed {
+        for entry in record.executed() {
+            assert_eq!(entry.outcome, EnvelopeOutcome::Voided);
+        }
+    }
+    let replayed = executor.replay(&record, b).await.expect("the void record replays");
+    assert_eq!(&replayed, pre);
+    record
+}
+
+#[tokio::test]
+async fn a_block_whose_proposer_cannot_cover_the_close_is_void_for_reason_a() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice]).await;
+    let executor = charging(&rm, &genesis).await;
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
+    let record = void_replays(&executor, &genesis, &b, VoidReason::CloseUncovered).await;
+
+    let normal = BlockExecutor::new(rm.clone(), 2).execute(&genesis, &b).await.unwrap();
+    assert_eq!(normal.void_reason(), None);
+    let refused = executor.replay(&normal, &b).await.unwrap_err().to_string();
+    assert!(refused.contains("void for reason (a), and the record is not"), "{refused}");
+    let refused = BlockExecutor::new(rm.clone(), 2).replay(&record, &b).await.unwrap_err().to_string();
+    assert!(refused.contains("the record is void for reason (a), and the block is not"), "{refused}");
+}
+
+#[tokio::test]
+async fn a_block_with_slash_records_is_void_for_reason_b() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis).await.with_slash_source(Arc::new(OneSlash));
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
+    void_replays(&executor, &genesis, &b, VoidReason::SlashRecords).await;
+}
+
+#[tokio::test]
+async fn a_block_with_terms_the_gate_cannot_read_is_void_for_reason_c() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis).await;
+    let mut unreadable = envelope("Nil", 2, &alice);
+    unreadable.deploy.pk = PublicKey::from_bytes(&[1, 2, 3]);
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice), unreadable], &proposer);
+    void_replays(&executor, &genesis, &b, VoidReason::UnreadableTerms).await;
+}
+
+#[tokio::test]
+async fn a_block_whose_close_fails_is_void_for_reason_d_and_replay_runs_the_close() {
+    let proposer = party();
+    let (rm, _) = shard(&[&proposer]).await;
+    let empty = RuntimeManager::empty_state_hash_fixed();
+    let executor = BlockExecutor::new(rm.clone(), 2);
+    let b = block(1, vec![], &proposer);
+    let record = void_replays(&executor, &empty, &b, VoidReason::CloseFailed).await;
+    assert!(record.system_deploys().is_empty());
+}
+
+#[tokio::test]
+async fn a_valid_block_with_a_void_record_is_rejected() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis).await;
+    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
+    let normal = run_record(&executor, &genesis, &b).await;
+    for reason in [
+        VoidReason::CloseUncovered,
+        VoidReason::SlashRecords,
+        VoidReason::UnreadableTerms,
+    ] {
+        let forged = BlockRecord::voided(b.block_hash.clone(), genesis.clone(), normal.envelope_ids(), reason);
+        assert!(executor.replay(&forged, &b).await.is_err(), "reason ({})", reason.label());
+    }
+    let forged = BlockRecord::decode(&normal.encode()).unwrap().with_failed_close();
+    let refused = executor.replay(&forged, &b).await.unwrap_err().to_string();
+    assert!(refused.contains("the close runs"), "{refused}");
 }

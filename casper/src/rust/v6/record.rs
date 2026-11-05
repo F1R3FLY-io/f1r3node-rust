@@ -22,6 +22,49 @@ pub struct Footprint {
     pub channels: Vec<[u8; 32]>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum VoidReason {
+    CloseUncovered,
+    SlashRecords,
+    UnreadableTerms,
+    CloseFailed,
+}
+
+impl VoidReason {
+    pub fn tag(self) -> u32 {
+        match self {
+            VoidReason::CloseUncovered => 1,
+            VoidReason::SlashRecords => 2,
+            VoidReason::UnreadableTerms => 3,
+            VoidReason::CloseFailed => 4,
+        }
+    }
+
+    pub fn from_tag(tag: u32) -> Result<Option<Self>, String> {
+        match tag {
+            0 => Ok(None),
+            1 => Ok(Some(VoidReason::CloseUncovered)),
+            2 => Ok(Some(VoidReason::SlashRecords)),
+            3 => Ok(Some(VoidReason::UnreadableTerms)),
+            4 => Ok(Some(VoidReason::CloseFailed)),
+            other => Err(format!("unknown void reason {other}")),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            VoidReason::CloseUncovered => "a",
+            VoidReason::SlashRecords => "b",
+            VoidReason::UnreadableTerms => "c",
+            VoidReason::CloseFailed => "d",
+        }
+    }
+
+    pub fn slashable(self) -> bool {
+        matches!(self, VoidReason::SlashRecords | VoidReason::UnreadableTerms)
+    }
+}
+
 pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static {
     fn target(&self) -> &BlockHash;
 
@@ -38,6 +81,8 @@ pub trait ExecutionRecord: Clone + std::fmt::Debug + PartialEq + Send + Sync + '
     fn encoded_len(&self) -> usize { self.encode().len() }
 
     fn footprint(&self) -> Option<Footprint> { None }
+
+    fn void_reason(&self) -> Option<VoidReason> { None }
 
     fn digest(&self) -> RecordDigest {
         domain_digest(RECORD_DIGEST_DOMAIN, &self.encode())

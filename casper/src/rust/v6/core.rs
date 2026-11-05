@@ -5,7 +5,7 @@ use prost::bytes::Bytes;
 
 use super::body::{Attestation, StateHash};
 use super::evidence::{Evidence, InvalidRecordReason, Offence};
-use super::record::ExecutionRecord;
+use super::record::{ExecutionRecord, VoidReason};
 use super::store::{MemoryRecordStore, RecordStore, Retention};
 
 #[derive(Clone, Debug)]
@@ -89,6 +89,7 @@ pub struct ExecutorCore<R: ExecutionRecord> {
     inclusion_seen: HashSet<BlockHash>,
     evidence: Vec<Evidence>,
     store_error: Option<String>,
+    voided: VecDeque<(BlockHash, VoidReason)>,
 }
 
 impl<R: ExecutionRecord> ExecutorCore<R> {
@@ -120,6 +121,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             inclusion_seen: HashSet::new(),
             evidence: Vec::new(),
             store_error: None,
+            voided: VecDeque::new(),
         }
     }
 
@@ -139,6 +141,7 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
         self.inclusion_due.clear();
         self.inclusion_seen.clear();
         self.store_error = None;
+        self.voided.clear();
         Ok(())
     }
 
@@ -204,6 +207,12 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
     }
 
     pub fn take_store_error(&mut self) -> Option<String> { self.store_error.take() }
+
+    pub fn take_voided(&mut self) -> Vec<(BlockHash, VoidReason)> { self.voided.drain(..).collect() }
+
+    pub fn void_count(&self, proposer: &Bytes, reason: VoidReason) -> u64 {
+        self.store.void_count(proposer, reason)
+    }
 
     fn sender_of(&self, block: &BlockHash) -> Bytes {
         self.senders.get(block).cloned().unwrap_or_default()
@@ -485,9 +494,32 @@ impl<R: ExecutionRecord> ExecutorCore<R> {
             .get(&target)
             .is_some_and(|pending| pending.iter().any(|p| p.root != root));
         let encoded = misattested.then(|| record.encode());
-        if let Err(error) = self.store.fix(target.clone(), citer, record) {
+        let void = record.void_reason();
+        let proposer = self.sender_of(&target);
+        let fixed = match void {
+            Some(reason) => self
+                .store
+                .fix_void(target.clone(), citer.clone(), record, &proposer, reason),
+            None => self.store.fix(target.clone(), citer.clone(), record),
+        };
+        if let Err(error) = fixed {
             self.store_error = Some(error.to_string());
             return;
+        }
+        if let Some(reason) = void {
+            metrics::counter!(
+                crate::rust::metrics_constants::V6_VOID_BLOCKS_METRIC,
+                "source" => crate::rust::metrics_constants::CASPER_METRICS_SOURCE,
+                "reason" => reason.label()
+            )
+            .increment(1);
+            self.evidence.push(Evidence {
+                offender: proposer,
+                citer,
+                target: target.clone(),
+                offence: Offence::VoidBlock { reason },
+            });
+            self.voided.push_back((target.clone(), reason));
         }
         match self.spec.front() {
             Some(own)
@@ -1080,5 +1112,23 @@ mod tests {
         assert_eq!(c.executed(&h("b1")), Some(h("r1")));
         assert_eq!(c.speculation_len(), 0);
         assert!(c.records_to_cite(&h("v1"), 10).is_empty());
+    }
+
+    #[test]
+    fn a_fixed_void_record_is_evidence_and_counts_against_its_proposer() {
+        let mut core = core();
+        core.emit(block("b1", "V1", vec![]));
+        let void = BlockRecord::voided(h("b1"), h("r0"), &[], VoidReason::UnreadableTerms);
+        core.emit(block("b2", "V2", vec![void.clone()]));
+        assert!(matches!(core.next_action(), Action::Replay { .. }));
+        core.apply_replay(&h("b1"), &h("b2"), &void, Ok(h("r0")));
+        assert_eq!(core.canonical_len(), 2);
+        assert_eq!(core.void_count(&h("V1"), VoidReason::UnreadableTerms), 1);
+        assert_eq!(core.take_voided(), vec![(h("b1"), VoidReason::UnreadableTerms)]);
+        let evidence = core.take_evidence();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].offender, h("V1"));
+        assert_eq!(evidence[0].offence, Offence::VoidBlock { reason: VoidReason::UnreadableTerms });
+        assert!(evidence[0].offence.slashable());
     }
 }

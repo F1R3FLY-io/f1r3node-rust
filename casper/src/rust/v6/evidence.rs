@@ -5,7 +5,7 @@ use prost::bytes::Bytes;
 use prost::Message;
 
 use super::body::StateHash;
-use super::record::domain_digest;
+use super::record::{domain_digest, VoidReason};
 
 pub const EVIDENCE_DIGEST_DOMAIN: &[u8] = b"f1r3node:v6-evidence:v1";
 
@@ -15,6 +15,7 @@ pub type EvidenceDigest = [u8; 32];
 pub enum EvidenceClass {
     Safety,
     Inclusion,
+    Void,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +38,9 @@ pub enum Offence {
     InclusionViolation {
         envelope_id: Bytes,
         cause: String,
+    },
+    VoidBlock {
+        reason: VoidReason,
     },
 }
 
@@ -75,6 +79,7 @@ pub struct EvidenceProto {
 const KIND_INVALID_RECORD: u32 = 1;
 const KIND_MISATTESTATION: u32 = 2;
 const KIND_INCLUSION: u32 = 3;
+const KIND_VOID_BLOCK: u32 = 4;
 const REASON_REPLAY: u32 = 1;
 const REASON_ENVELOPES: u32 = 2;
 
@@ -83,6 +88,14 @@ impl Offence {
         match self {
             Offence::InvalidRecord { .. } | Offence::Misattestation { .. } => EvidenceClass::Safety,
             Offence::InclusionViolation { .. } => EvidenceClass::Inclusion,
+            Offence::VoidBlock { .. } => EvidenceClass::Void,
+        }
+    }
+
+    pub fn slashable(&self) -> bool {
+        match self {
+            Offence::VoidBlock { reason } => reason.slashable(),
+            _ => true,
         }
     }
 }
@@ -120,6 +133,10 @@ impl Evidence {
                 proto.kind = KIND_INCLUSION;
                 proto.envelope_id = envelope_id.clone();
                 proto.cause = cause.clone();
+            }
+            Offence::VoidBlock { reason } => {
+                proto.kind = KIND_VOID_BLOCK;
+                proto.reason = reason.tag();
             }
         }
         proto
@@ -189,6 +206,21 @@ impl Evidence {
                 Offence::InclusionViolation {
                     envelope_id: proto.envelope_id,
                     cause: proto.cause,
+                }
+            }
+            KIND_VOID_BLOCK => {
+                unused(!proto.record.is_empty(), "record")?;
+                unused(
+                    !proto.attested.is_empty() || !proto.executed.is_empty(),
+                    "root",
+                )?;
+                unused(
+                    !proto.envelope_id.is_empty() || !proto.cause.is_empty(),
+                    "inclusion field",
+                )?;
+                Offence::VoidBlock {
+                    reason: VoidReason::from_tag(proto.reason)?
+                        .ok_or("void-block evidence needs a reason")?,
                 }
             }
             other => return Err(format!("unknown v6 evidence kind {other}")),
@@ -278,7 +310,22 @@ mod tests {
                 envelope_id: b("id"),
                 cause: "unfunded".to_string(),
             }),
+            base(Offence::VoidBlock {
+                reason: VoidReason::CloseUncovered,
+            }),
+            base(Offence::VoidBlock {
+                reason: VoidReason::UnreadableTerms,
+            }),
         ]
+    }
+
+    #[test]
+    fn only_void_blocks_the_proposer_could_see_are_slashable() {
+        let slashable = |reason| Offence::VoidBlock { reason }.slashable();
+        assert!(!slashable(VoidReason::CloseUncovered));
+        assert!(slashable(VoidReason::SlashRecords));
+        assert!(slashable(VoidReason::UnreadableTerms));
+        assert!(!slashable(VoidReason::CloseFailed));
     }
 
     #[test]
@@ -303,6 +350,8 @@ mod tests {
             EvidenceClass::Safety,
             EvidenceClass::Safety,
             EvidenceClass::Inclusion,
+            EvidenceClass::Void,
+            EvidenceClass::Void,
         ]);
     }
 

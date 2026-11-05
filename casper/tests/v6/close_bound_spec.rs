@@ -31,7 +31,7 @@ const FUNDS: u128 = 1_000_000_000_000_000;
 
 const MEASURE: CloseCharge = CloseCharge {
     price: 1,
-    pre_charge: u64::MAX,
+    pre_charge: (FUNDS / 2) as u64,
 };
 
 struct Party {
@@ -189,7 +189,6 @@ async fn the_close_stays_inside_its_pre_charge() {
 }
 
 #[tokio::test]
-#[ignore = "blocked: moving and filtering withdrawers still carry the PoS state by value (D107 loop memo)"]
 async fn an_epoch_with_many_withdrawers_stays_inside_its_pre_charge() {
     for withdrawers in [10, 30] {
         for (bonds, phlo) in withdrawers_close(100, withdrawers).await {

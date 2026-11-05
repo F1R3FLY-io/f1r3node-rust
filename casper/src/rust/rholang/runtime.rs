@@ -1035,8 +1035,10 @@ impl RuntimeOps {
             None => {
                 // INSTRUMENT (temporary): dump the leftover replay COMMs — names
                 // the consume the closeBlock stalled on at replay.
-                if let Err(e) = self.runtime.check_replay_data().await {
-                    tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                if self.runtime.is_replay().await {
+                    if let Err(e) = self.runtime.check_replay_data().await {
+                        tracing::error!(target: "f1r3fly.casper.replay_block", kind = system_deploy_kind(system_deploy), "system-deploy ConsumeFailed replay stall (THIS is the deploy that returned None): {}", e);
+                    }
                 }
                 Err(CasperError::SystemRuntimeError(
                     SystemDeployPlatformFailure::ConsumeFailed,
