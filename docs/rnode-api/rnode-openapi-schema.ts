@@ -167,7 +167,7 @@ export interface definitions {
     /**
      * in units of 10^-8 REV
      */
-    phloPrice?: number;
+    phloPrice?: string;
     validAfterBlockNumber?: number;
   };
   /**
