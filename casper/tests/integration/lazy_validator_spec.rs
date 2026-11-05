@@ -60,9 +60,21 @@ async fn an_idle_validator_is_ejected_and_slashed_by_the_committee_alone() {
     let idle_key: Validator = identity(&nodes[idle]);
     let honest: Vec<usize> = (0..nodes.len()).filter(|i| *i != idle).collect();
 
+    // One block per round: the idle bucket drains from full to the threshold,
+    // stays below it for the observation window, then the claim runs to its
+    // deadline and the grace to its end, with an epoch to spare.
+    let params = *nodes[0].casper.bucket_view().params();
+    let chain = nodes[0].casper.chain_parameters;
+    let drain = (1_000_000 - params.theta_eject_ppm).div_ceil(params.lambda_ppm) as i64;
+    let rounds = drain
+        + params.eject_observation_blocks as i64
+        + params.claim_deadline_blocks
+        + chain.window_basis().ejection_grace_blocks()
+        + chain.epoch_length as i64;
+
     let mut ejected_at = None;
     let mut expiring = None;
-    for round in 0..600 {
+    for round in 0..rounds as usize {
         let proposer = honest[round % honest.len()];
         let block = propose_by_own_view(&mut nodes[proposer]).await;
         admit_everywhere(&mut nodes, &block).await;
