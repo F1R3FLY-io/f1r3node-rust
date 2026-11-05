@@ -253,6 +253,7 @@ mod tests {
             },
             sigs: vec![],
             floor_seed: None,
+            v6_join: None,
         }
     }
 

@@ -238,6 +238,16 @@ message ApprovedBlockProto  {
   // the signed envelope. Absent from peers that predate it, which the receiver
   // handles by deferring rather than by assuming a floor.
   FinalizedFloorSeedProto floorSeed     = 3;
+  V6JoinProofProto v6Join               = 4;
+}
+
+// The proof a v6 joiner checks before it uses the responder's state: the
+// canonical root at the LFB's position, the blocks whose records chain from
+// that root, and the signed blocks whose attestations make the quorum.
+message V6JoinProofProto {
+  bytes anchorRoot                     = 1;
+  repeated BlockMessageProto citers    = 2;
+  repeated BlockMessageProto attesters = 3;
 }
 
 // The finalized-floor cache for a set of blocks, shipped so a restored node

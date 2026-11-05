@@ -696,9 +696,50 @@ pub struct ApprovedBlock {
     /// Absent from peers that predate the seed, and from the non-trim response
     /// (a node syncing from genesis derives its own floors).
     pub floor_seed: Option<FinalizedFloorSeed>,
+    pub v6_join: Option<V6JoinProof>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct V6JoinProof {
+    pub anchor_root: prost::bytes::Bytes,
+    pub citers: Vec<BlockMessage>,
+    pub attesters: Vec<BlockMessage>,
+}
+
+impl V6JoinProof {
+    pub fn from_proto(proto: V6JoinProofProto) -> Result<Self, String> {
+        Ok(V6JoinProof {
+            anchor_root: proto.anchor_root,
+            citers: proto
+                .citers
+                .into_iter()
+                .map(BlockMessage::from_proto)
+                .collect::<Result<_, _>>()?,
+            attesters: proto
+                .attesters
+                .into_iter()
+                .map(BlockMessage::from_proto)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+
+    pub fn to_proto(self) -> V6JoinProofProto {
+        V6JoinProofProto {
+            anchor_root: self.anchor_root,
+            citers: self.citers.iter().map(BlockMessage::to_proto).collect(),
+            attesters: self.attesters.iter().map(BlockMessage::to_proto).collect(),
+        }
+    }
 }
 
 impl ApprovedBlock {
+    pub fn state_root(&self) -> prost::bytes::Bytes {
+        match &self.v6_join {
+            Some(proof) => proof.anchor_root.clone(),
+            None => self.candidate.block.body.state.post_state_hash.clone(),
+        }
+    }
+
     pub fn from_proto(proto: ApprovedBlockProto) -> Result<Self, String> {
         Ok(Self {
             candidate: ApprovedBlockCandidate::from_proto(
@@ -708,6 +749,7 @@ impl ApprovedBlock {
             )?,
             sigs: proto.sigs,
             floor_seed: proto.floor_seed.map(FinalizedFloorSeed::from_proto),
+            v6_join: proto.v6_join.map(V6JoinProof::from_proto).transpose()?,
         })
     }
 
@@ -716,6 +758,7 @@ impl ApprovedBlock {
             candidate: Some(self.candidate.to_proto()),
             sigs: self.sigs,
             floor_seed: self.floor_seed.map(FinalizedFloorSeed::to_proto),
+            v6_join: self.v6_join.map(V6JoinProof::to_proto),
         }
     }
 }
@@ -2167,11 +2210,13 @@ mod approved_block_tests {
             candidate: candidate(),
             sigs: vec![],
             floor_seed: Some(seed.clone()),
+            v6_join: None,
         };
         let bare = ApprovedBlock {
             candidate: candidate(),
             sigs: vec![],
             floor_seed: None,
+            v6_join: None,
         };
 
         assert_eq!(

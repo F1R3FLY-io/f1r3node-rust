@@ -388,6 +388,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     sigs: vec![],
                     // Filled in below, and only for a trimmed response.
                     floor_seed: None,
+                    v6_join: None,
                 };
 
                 let approved_block = if abr.trim_state {

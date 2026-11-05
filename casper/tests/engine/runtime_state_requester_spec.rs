@@ -202,6 +202,7 @@ fn running(
                 required_sigs: 0,
             },
             floor_seed: None,
+            v6_join: None,
             sigs: Vec::new(),
         },
         Arc::new(|| {

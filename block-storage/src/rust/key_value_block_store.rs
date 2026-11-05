@@ -848,6 +848,7 @@ mod tests {
             candidate,
             sigs: vec![],
             floor_seed: None,
+            v6_join: None,
         }
     }
 

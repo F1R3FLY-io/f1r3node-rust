@@ -316,6 +316,17 @@ pub enum Opened {
     ReplacedOlderFormat,
 }
 
+pub fn stored_anchor(db: &dyn KeyValueStore) -> Result<Option<(BlockHash, StateHash)>, KvStoreError> {
+    let Some(bytes) = db.get_one(&META_KEY.to_vec())? else {
+        return Ok(None);
+    };
+    let meta = ExecutorMetaProto::decode(bytes.as_slice()).map_err(|error| corrupt(&error.to_string()))?;
+    if meta.version != EXECUTOR_STATE_VERSION {
+        return Ok(None);
+    }
+    Ok(Some((meta.anchor, meta.anchor_root)))
+}
+
 impl<R: ExecutionRecord> LmdbRecordStore<R> {
     pub fn open(
         db: Arc<dyn KeyValueStore>,

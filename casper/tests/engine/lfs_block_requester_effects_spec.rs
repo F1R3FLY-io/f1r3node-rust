@@ -86,6 +86,7 @@ fn create_approved_block(block: BlockMessage) -> ApprovedBlock {
     ApprovedBlock {
         candidate,
         floor_seed: None,
+        v6_join: None,
         sigs: Vec::new(), // Empty signatures list
     }
 }

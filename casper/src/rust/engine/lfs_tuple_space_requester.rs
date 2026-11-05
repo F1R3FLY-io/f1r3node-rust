@@ -657,10 +657,9 @@ pub async fn stream<T: TupleSpaceRequesterOps>(
     ),
     CasperError,
 > {
-    use crate::rust::util::proto_util;
 
     // 1. Extract state hash (Scala: Blake2b256Hash.fromByteString(ProtoUtil.postStateHash(approvedBlock.candidate.block)))
-    let state_hash_bytes = proto_util::post_state_hash(&approved_block.candidate.block);
+    let state_hash_bytes = approved_block.state_root();
     let state_hash = Blake2b256Hash::from_bytes(state_hash_bytes.to_vec());
 
     // 2. Create start request (Scala: val startRequest: StatePartPath = Seq((stateHash, None)))

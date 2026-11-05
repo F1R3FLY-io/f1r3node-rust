@@ -355,6 +355,7 @@ impl<T: TransportLayer + Send + Sync> ApproveBlockProtocolImpl<T> {
             candidate: self.candidate.clone(),
             sigs: signatures.into_iter().map(|s| s.0).collect(),
             floor_seed: None,
+            v6_join: None,
         };
 
         // Set LastApprovedBlock

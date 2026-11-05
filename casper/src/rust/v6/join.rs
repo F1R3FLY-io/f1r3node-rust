@@ -9,12 +9,7 @@ use super::body::{StateHash, V6Records};
 use super::record::ExecutionRecord;
 use crate::rust::validate::Validate;
 
-#[derive(Clone, Debug, Default)]
-pub struct JoinProof {
-    pub anchor_root: StateHash,
-    pub citers: Vec<BlockMessage>,
-    pub attesters: Vec<BlockMessage>,
-}
+pub use models::rust::casper::protocol::casper_message::V6JoinProof as JoinProof;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinRefusal {

@@ -289,6 +289,7 @@ impl GenesisValidatorSpec {
                 required_sigs: fixture.required_sigs,
             },
             floor_seed: None,
+            v6_join: None,
             sigs: Vec::new(),
         };
 

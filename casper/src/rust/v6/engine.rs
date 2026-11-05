@@ -89,11 +89,15 @@ impl V6Engine<BlockRecord> {
         deploy_lifespan: i64,
     ) -> Result<Arc<Self>, CasperError> {
         let source: Arc<dyn RecordSource<BlockRecord>> = Arc::new(block_store.clone());
+        let anchor_root = match super::store::stored_anchor(&*dag_storage.v6_executor_state())? {
+            Some((anchor, root)) if anchor == genesis.block_hash => root,
+            _ => genesis.body.state.post_state_hash.clone(),
+        };
         let (store, opened) = LmdbRecordStore::<BlockRecord>::open(
             dag_storage.v6_executor_state(),
             source,
             genesis.block_hash.clone(),
-            genesis.body.state.post_state_hash.clone(),
+            anchor_root,
         )?;
         match opened {
             Opened::Resumed => tracing::info!(
