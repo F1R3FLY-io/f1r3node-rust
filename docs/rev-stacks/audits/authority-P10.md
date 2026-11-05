@@ -1,6 +1,6 @@
 # A-6: authority audit of patch/P2-integration and patch/P3-04 against P10 and P9, with the A-7 re-audit of the fixes
 
-- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29). `patch/FX-17-epoch` at `30258ed83` and `patch/FX-16` at `bed78053e` (revision 30). `patch/FX-17` at `c20ee4eea` and `patch/FX-15-followups` at `c97c2e4b3` (revision 31). `patch/FX-17` at `488122957` (revisions 32 and 33).
+- **Branch audited:** `patch/P2-integration` at `3b5a7e90a` (revision 1). `patch/P3-04` at `45bfb2246`, which includes P3-07b and the `# P` seal rule (revision 2, below). `patch/FX-1` at `8886c8c9a` and `patch/FX-4` at `0fbf80c85` (revision 3, action A-7). `patch/FX-2` at `4aed4d852` and `patch/FX-3` at `df0db3146` (revision 4). `patch/FX-3` at `d3c5d383a`, `patch/FX-5` at `c0d48af7f`, `patch/FX-2-refunds` at `38c8ca21c` and `patch/FX-7` at `d1c1a5df0` (revision 5, action A-8). `patch/FX-6` at `ead0663ef`, route tests (revision 6). `patch/FX-8b` at `1c281b7a0` (revision 7). `patch/FX-11` at `1b2d387e1` (revision 8). `patch/FX-8b` at `c41ccb87b` and `patch/FX-13` at `ecd2b0169` (revision 9). `patch/D76` at `427d72396` (revision 10). `patch/FX-8b` at `e17e3ed32` (revision 11). `patch/FX-12` at `435568f9d`, `patch/D76` at `1502a4e98`, `patch/FX-14` at `c334f9287` and `patch/FX-8b` at `f00a2da3d` (revision 12). `patch/FX-12` at `d7537c771` and `patch/FX-14` at `e5c574656` (revision 13). Design r12 and Decision 88, with no code change (revision 14). `patch/FX-8b` at `aea9b529d` and `patch/FX-14` at `2bfaaf942` (revision 15). `patch/FX-12` at `eab30238f`, `patch/FX-14` at `cc3168032` and `patch/FX-8b` at `4e20959b8` (revision 16). `patch/FX-8b` at `4a74b0e34`, `patch/FX-15-replay` at `b5537b44b` and `patch/FX-15-settle` at `0f1d037f7` (revision 17). `patch/Q-32` at `d3df10dd3`, `patch/FX-15-replay` at `fac9aca5a`, `patch/FX-15-settle` at `dda77b2c5` and `patch/FX-16` at `8d0a837b5` (revision 18). `patch/FX-15` at `fc3a6ca72` (revision 19). Q-33 revision 2 at `1d62fac6f` and `patch/FX-17-epoch` at `214571b2e` (revision 20). `patch/FX-15` at `e30313108` and `patch/FX-16` at `a51dd79fc` (revision 21). `patch/FX-15-charging` at `c345b400d` (revision 22). Q-33 revision 3 at `191f74ccb`, `patch/FX-8b` at `efa511e93`, `patch/FX-17-epoch` at `dcb3ce695`, `patch/FX-16` at `bee4c599f`, `patch/FX-15` at `432dc390f` and `patch/FX-15-close` at `34e6c842d` (revision 23). `patch/FX-15-charging` at `dea48f13d` (revision 24). `patch/FX-8b` at `f7af68ca8` (revision 25). `patch/FX-8b` at `7b60c3880`, `patch/FX-17-epoch` at `acf9fff28` and `patch/FX-16` at `a35c37a16` (revision 26). The deploy store at `7b60c3880` and the PoSV6 release path at `acf9fff28` (revision 27). `patch/FX-8b` at `6c43a2c8f`, `patch/FX-17` at `b7c9a1de8` and `patch/FX-17-epoch` at `86bb14a74` (revision 28). `patch/FX-17` at `994f70ae0` (revision 29). `patch/FX-17-epoch` at `30258ed83` and `patch/FX-16` at `bed78053e` (revision 30). `patch/FX-17` at `c20ee4eea` and `patch/FX-15-followups` at `c97c2e4b3` (revision 31). `patch/FX-17` at `488122957` (revisions 32 and 33). `patch/FX-17` at `dbc3dca9b` and `patch/FX-18` at `5993b5379` (revision 35).
 - **Design:** stall-loop design revision 8, §4.6, §4.7, §6.1 (P9, P10) and §6.9. Paper: `cost-accounting-as-monad/continued-gslt-cost-v2.tex`, §§3–6 and §8 (capabilities).
 - **Auditor:** lane A1. Lane A1 wrote none of the native REV code.
 - **Scope:** revision 1 gives findings only. Revision 2 adds the four suspects that lanes B and C reported, each with a severity and a proposed fix, and audits the code that P3-04 adds. Each proposed fix becomes a patch or a decision after review.
@@ -3034,6 +3034,85 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | A-10 items 9 and 10 | Checks for FX-18 | New |
 | D11, the side-dependent storage reservation, D10 and F47 | **Blocking until merged** | Unchanged |
 | P12-4, P12-6, P12-7, P12-8, the status pruning, and the earlier known issues | Known issue | Recorded in plan r8.29 |
+
+
+## Revision 35 (actions A-8, A-9 and A-10): F52 closed, FX-17 merges, and the first FX-18 commit
+
+- **Commits audited:**
+  - `patch/FX-17` at `dbc3dca9b` (lane A2): `eae1a57c7` (F52 and the two (d) tests), `36168ae0a` (merge of FX-17-epoch `30258ed83`) and `dbc3dca9b` (merge of FX-15-followups `c97c2e4b3`).
+  - `patch/FX-18` at `5993b5379` (lane A2), cut from FX-17 `dbc3dca9b`: the plan (`1599af723`), the join-proof interface (`c6aced883`) and `v6::join::verify_join` (`5993b5379`).
+- **Reference:** design r25 (publications `b66423f`), Decisions 115 to 117, plan r8.29.
+- **Method:** a reading of the diffs and of `v6/join.rs`. No tests were run, because the pinned toolchain still cannot be downloaded.
+
+### F52: closed on `patch/FX-17` at `eae1a57c7`
+
+| Condition of revision 32 | Result |
+|---|---|
+| 1. A status is prior when the carrier's position is lower and its block number plus the lifespan is above the target's | **Met.** `in_window` compares `entry.position < index`, and keeps the lifespan bound by block number. |
+| 2. Only the first copy in a block runs | **Met** in the gate, not at acceptance. `with_prior` gives every later copy of an envelope the status `Included`, so the gate refuses it with `AlreadyIncluded` in play and in replay. The refusal is in the record, and replay checks it. This is an equal place for the check. |
+| 3. Tests | **Met.** `core::a_carrier_earlier_in_the_order_is_prior_whatever_its_block_number` (same number, lower number, and the speculative path) and `close_charge_spec::a_deployment_twice_in_one_block_runs_only_its_first_copy`. |
+| 4. Both paths | **Met.** The stored path and the speculative path use the same `in_window`. A speculative status does not replace a stored one (`or_insert`). |
+| Known issue: a later status replaced an earlier one | **Closed.** Both stores keep the first status, and the LMDB store also refuses a second row in one put. Test: `core::the_first_status_of_an_envelope_is_kept`. |
+
+- **Label:** F52 is **closed**, with one condition: the full suites on the FX-17 tip. The last posted counts are at `d89ff0c64`, before F52 and the two merges.
+
+### The two (d) tests: closed
+
+- `close_charge_spec::a_d_record_whose_traced_close_succeeds_is_rejected` relabels a normal close as failed, and replay rejects it.
+- `close_charge_spec::an_honest_d_record_replays_under_one_two_and_four_workers` gives the same (d) record under 1, 2 and 4 workers, and each record replays under each count.
+- **The (d) item of revision 29 is closed.**
+
+### The FX-17 merges
+
+- **`30258ed83` (Decision 114) is in FX-17.** The cross-host fixture (`genesis.bin`, `block.bin`, `record.bin`) is written again. **The merge condition is met.** F51 is closed on FX-17.
+- **`c97c2e4b3` is in FX-17.** The deterministic storage reservation is now on the integration path. **The blocking item becomes "blocking until FX-17 merges into FX-8b"**, together with D11, D10 and F47.
+- **Lane C's gate claim is not yet corrected.** The FX-15-followups log is unchanged. This stays a known issue with a documentation condition.
+
+**Lane A2's timing finding (`FX-18-plan.md`): my decision.**
+- `a_long_run_keeps_executor_memory_flat_and_old_receipts_available` fixes 29 positions after Decision 114 in the time that gave 31 before. Its bound is 30.
+- The test checks memory flatness and receipt service. Its position count is a liveness floor for the test, not a consensus bound. The close's consensus bound is the pre-charge, which Decision 114 keeps at a margin of 1.65.
+- **Decision (reversible, logged here):** lane A1 accepts a lower floor in this test, 25 positions, with the memory checks unchanged. Lane B may still speed up the close, but the handoff does not wait for it.
+- **Condition:** if a later change makes the close slower again, the margin of `the_close_stays_inside_its_pre_charge` decides, not this test.
+
+### FX-18 at `5993b5379`: the plan, the interface and `verify_join`
+
+**The plan conforms to Decision 117 and to revision 33.**
+- The anchor is the LFB with R(L), the canonical root at the LFB's position, and the state download is at R(L). (P12-1 condition 1.)
+- The join proof travels beside `floorSeed`, outside the signed candidate.
+- The steps are: the handoff chain from the checkpoint, then the signatures, then the record chain, then the quorum.
+- The rejoin, the resets and Decision 115 are planned as revision 33 asked.
+- The four tests that the plan lists cover the conditions of P12-1, P12-2 and P12-3.
+
+**Items 9 and 10 are not yet in the interface.**
+- `ValidatorSetHandoffProto` lists "the new set, the epoch, and the signatures of the previous set". It does not say which epoch index the handoff carries. Item 9 needs the index of the PoS counter.
+- Lane C's interface line covers the statuses from the records, but not the returned deployments of a void for reason (a) or (b). Item 10 needs them.
+- These are conditions on lanes B and C before their code.
+
+**F53 — High, blocking: the quorum check does not bind the anchor root.**
+- `verify_join` builds its chain of roots from the records in the proof's citer blocks. It keys each step by the root value only, and it accepts a citer block from any valid signature, bonded or not.
+- So a chain can start at a forged anchor root and still contain, at a later position, a root that honest validators attested. The honest attestations then count toward the quorum, and the joiner accepts the forged anchor root.
+- `a_forged_anchor_root_is_rejected` covers only a forged chain that never reaches an attested root. It does not cover a forged chain that joins the honest chain later.
+- **Effect:** a single responder can give a joiner a state at L that no quorum attested. The joiner then serves that state, and it stops at its first replay, or computes roots that differ from the network. This defeats the purpose of P12-2 and of Decision 117.
+- **Reason for the label:** an authority and safety finding of High severity (Decision 88). The trust that P12-2 removes from the bootstrap node comes back.
+- **Conditions to close F53:**
+  1. The joiner binds R(L) to the attested root by execution. After it downloads the state at R(L), it replays the cited records from L to the attested position, and accepts the anchor only if the replay reaches the attested root. Replay needs only the state at R(L) and the blocks above L, so P12 holds.
+  2. Alternatively, the quorum is counted on attestations whose attested position is L itself. The replay is then not needed, but such a quorum is rare in practice, because validators attest their newest executed position.
+  3. A test: a proof whose chain starts at a forged anchor root and reaches an honestly attested root is refused.
+- **Known issue, liveness only:** `chain` keeps one record for each pre-root. When two records in the proof have the same pre-root, the order of the proof decides which one is followed. A responder can make an honest proof fail, but it can also refuse to answer. The joiner must try other responders.
+
+**The bond set at L.** `verify_join` takes the bond set in force at L as an argument. Lane B's handoff chain, which gives that set, is not built yet. **Condition:** the bond set at L is the set of the last certified handoff at or below L. A test covers a bond change at an epoch boundary between the checkpoint and L.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| F52 | — | **Closed** on FX-17 `eae1a57c7`. Condition: suites on the FX-17 tip. |
+| The (d) item, F51, the FX-17 merge conditions | — | **Closed** on FX-17 |
+| F53 (the quorum does not bind the anchor root) | **Blocking** | New, on FX-18 |
+| P12-1, P12-2, P12-3, P12-5 | **Blocking** | FX-18 in progress. Only `verify_join` has landed. |
+| D11, D10, F47 and the deterministic storage reservation | **Blocking until FX-17 merges into FX-8b** | All four are in FX-17 |
+| Items 9 and 10 in the FX-18 interface, the bond set at L, the suites on the FX-17 tip, the `dev` 8e6517d63 merge, the SIGSEGV run | Conditions | Open |
+| Lane C's gate claim, the proof-order liveness issue, P12-4, P12-6, P12-7, P12-8, the status pruning, and the earlier known issues | Known issue | Open |
 
 
 ## Open questions for review
