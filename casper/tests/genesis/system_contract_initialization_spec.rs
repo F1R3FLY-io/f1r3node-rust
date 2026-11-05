@@ -170,7 +170,7 @@ async fn delegated_stake_is_visible_to_runtime_bonds_and_pos_queries() {
     );
     let (pars, _cost) = node
         .runtime_manager
-        .play_exploratory_deploy(query, &state_hash, None)
+        .play_exploratory_deploy(query, &state_hash, None, Vec::new())
         .await
         .expect("Delegation query should execute");
     let amount = pars

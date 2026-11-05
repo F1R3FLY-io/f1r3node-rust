@@ -370,6 +370,7 @@ impl WebApiImpl {
             false,
             self.dev_mode,
             None,
+            Vec::new(),
         )
         .await?;
 

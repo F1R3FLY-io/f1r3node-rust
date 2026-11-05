@@ -924,11 +924,11 @@ async fn run_block_index_cache_bound_test() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: i64::MAX.into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
