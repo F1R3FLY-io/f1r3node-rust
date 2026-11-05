@@ -6,7 +6,6 @@ use casper::rust::util::construct_deploy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use casper::rust::v6::backend::ExecutionBackend;
 use casper::rust::v6::block_record::{BlockRecord, EnvelopeOutcome};
-use casper::rust::v6::close_charge::{pre_charge, shard_floor, CloseCharge};
 use casper::rust::v6::executor::BlockExecutor;
 use casper::rust::v6::genesis_wallets::read_wallet_balance;
 use casper::rust::v6::record::{ExecutionRecord, VoidReason};
@@ -163,79 +162,57 @@ fn bond_term(continuation: &str) -> String {
     )
 }
 
-async fn charging(rm: &Arc<RuntimeManager>, root: &StateHash) -> BlockExecutor {
-    let floor = shard_floor(rm, root).await.unwrap();
-    BlockExecutor::new(rm.clone(), 2).with_close_charge(CloseCharge::new(1, floor))
+fn charging(rm: &Arc<RuntimeManager>, _root: &StateHash) -> BlockExecutor {
+    BlockExecutor::new(rm.clone(), 2)
 }
 
 #[tokio::test]
-async fn the_proposer_pays_for_the_close_pos_code_and_the_rest_of_the_pre_charge_stays() {
+async fn the_close_cost_is_recorded_and_nobody_is_charged_for_it() {
     let (alice, proposer, other) = (party(), party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer, &other]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
 
     let record = run_record(&executor, &genesis, &block(1, vec![], &proposer)).await;
     let charged = close(&rm, &genesis, &record, &proposer).await;
-    assert!(charged.proposer > 0, "the close's PoS code is charged");
-    assert!(charged.proposer < pre_charge(1, 1), "only the actual work is charged");
-    assert_eq!(charged.compute, charged.proposer, "the charge goes to the compute wallet");
-    let settlement = record.settlement().unwrap();
-    assert_eq!(
-        balance(&rm, record.post_root(), &proposer.owner).await,
-        FUNDS + settlement.proposer_credit - charged.proposer
-    );
+    assert!(record.close_phlo() > 0, "the close's PoS code is metered");
+    assert_eq!(charged.proposer, 0, "the proposer is not charged");
+    assert_eq!(charged.compute, 0, "the compute wallet gets nothing from the close");
 
     let by_other = run_record(&executor, &genesis, &block(1, vec![], &other)).await;
-    assert_eq!(close(&rm, &genesis, &by_other, &other).await.proposer, charged.proposer);
-    assert_eq!(balance(&rm, by_other.post_root(), &proposer.owner).await, FUNDS);
+    assert_eq!(by_other.close_phlo(), record.close_phlo());
+    assert_eq!(close(&rm, &genesis, &by_other, &other).await.proposer, 0);
 }
 
 #[tokio::test]
-async fn the_close_is_priced_at_the_shard_floor() {
+async fn the_close_cost_is_phlo_and_does_not_follow_the_shard_floor() {
     let proposer = party();
     let (rm1, genesis1) = shard_at_floor(&[&proposer], 1).await;
     let (rm3, genesis3) = shard_at_floor(&[&proposer], 3).await;
-    assert_eq!(shard_floor(&rm3, &genesis3).await.unwrap(), 3);
-    let at1 = run_record(&charging(&rm1, &genesis1).await, &genesis1, &block(1, vec![], &proposer)).await;
-    let at3 = run_record(&charging(&rm3, &genesis3).await, &genesis3, &block(1, vec![], &proposer)).await;
-    let phlo = close(&rm1, &genesis1, &at1, &proposer).await.proposer;
-    assert_eq!(close(&rm3, &genesis3, &at3, &proposer).await.proposer, 3 * phlo);
+    let at1 = run_record(&charging(&rm1, &genesis1), &genesis1, &block(1, vec![], &proposer)).await;
+    let at3 = run_record(&charging(&rm3, &genesis3), &genesis3, &block(1, vec![], &proposer)).await;
+    assert_eq!(at1.close_phlo(), at3.close_phlo());
+    assert_eq!(close(&rm3, &genesis3, &at3, &proposer).await.proposer, 0);
 }
 
 #[tokio::test]
-async fn the_charge_is_capped_at_the_pre_charge() {
+async fn a_record_with_another_close_cost_does_not_replay() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
-    let small = CloseCharge {
-        price: 1,
-        pre_charge: 1_000,
-    };
-    let executor = BlockExecutor::new(rm.clone(), 2).with_close_charge(small);
-    let record = run_record(&executor, &genesis, &block(1, vec![], &proposer)).await;
-    assert_eq!(close(&rm, &genesis, &record, &proposer).await.proposer, 1_000);
-}
-
-#[tokio::test]
-async fn the_close_charge_is_inside_the_post_state_root() {
-    let (alice, proposer) = (party(), party());
-    let (rm, genesis) = shard(&[&alice, &proposer]).await;
-    let executor = charging(&rm, &genesis).await;
-    let free_executor = BlockExecutor::new(rm.clone(), 2);
+    let executor = charging(&rm, &genesis);
     let b = block(1, vec![envelope("new x in { x!(1) }", 1, &alice)], &proposer);
-
-    let charged = run_record(&executor, &genesis, &b).await;
-    let free = free_executor.execute(&genesis, &b).await.unwrap();
-    assert_ne!(charged.post_root(), free.post_root());
-    assert_eq!(charged.mid_root(), free.mid_root());
-    assert!(executor.replay(&free, &b).await.is_err(), "a record without the charge does not replay");
-    assert!(free_executor.replay(&charged, &b).await.is_err(), "nor does a charged record replay uncharged");
+    let record = run_record(&executor, &genesis, &b).await;
+    for kappa in [0, record.close_phlo() - 1, record.close_phlo() + 1] {
+        let forged = BlockRecord::decode(&record.encode()).unwrap().with_close_phlo(kappa);
+        let refused = executor.replay(&forged, &b).await.unwrap_err().to_string();
+        assert!(refused.contains("the close's cost"), "{refused}");
+    }
 }
 
 #[tokio::test]
 async fn a_continuation_fired_in_the_close_charges_its_installer() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
     let heavy = "new y in { y!(1) | for (_ <- y) { new z in { z!(2) | for (_ <- z) { Nil } } } }";
 
     let light = run_record(&executor, &genesis, &block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer)).await;
@@ -243,6 +220,7 @@ async fn a_continuation_fired_in_the_close_charges_its_installer() {
 
     let light_close = close(&rm, &genesis, &light, &proposer).await;
     let loaded_close = close(&rm, &genesis, &loaded, &proposer).await;
+    assert_eq!((light_close.proposer, loaded_close.proposer), (0, 0));
     let installer_pays = |close: &Close| close.compute - close.proposer;
     assert!(installer_pays(&loaded_close) > installer_pays(&light_close));
     let light_left = balance(&rm, light.post_root(), &alice.owner).await;
@@ -263,7 +241,7 @@ async fn genesis_charges_nobody() {
 async fn no_deployment_makes_the_close_fail() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, genesis) = shard(&[&alice, &bob, &proposer]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
     let endless = r#"contract @"spin"(@n) = { @"spin"!(n + 1) } | @"spin"!(0)"#;
     let junk = r#"new rl(`rho:registry:lookup`), posCh, ret in {
         rl!(`rho:system:pos`, *posCh) |
@@ -300,7 +278,7 @@ async fn no_deployment_makes_the_close_fail() {
 async fn substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_the_proposer() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
     let wide =
         r#"@"wide"!([h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h, h])"#;
     let thin = r#"@"wide"!(Nil)"#;
@@ -321,41 +299,10 @@ async fn substitution_into_a_continuation_fired_in_the_close_is_not_charged_to_t
         "the installer pays for the wider body"
     );
     assert_eq!(
-        closes[1].proposer, closes[0].proposer,
-        "the proposer's close charge does not change"
+        (closes[0].proposer, closes[1].proposer),
+        (0, 0),
+        "the proposer is not charged for the close"
     );
-}
-
-#[tokio::test]
-async fn the_consensus_close_charge_reads_the_bonds_and_the_floor_at_the_pre_state() {
-    let (alice, proposer) = (party(), party());
-    let (rm, genesis) = shard_at_floor(&[&alice, &proposer], 3).await;
-    let bonded = rm
-        .compute_bonds(&genesis)
-        .await
-        .unwrap()
-        .iter()
-        .filter(|bond| bond.stake > 0)
-        .count() as u64;
-    assert!(bonded > 0);
-    let close = CloseCharge::at(&rm, &genesis).await.unwrap();
-    assert_eq!(close, CloseCharge::new(bonded, 3));
-    assert_eq!(close.pre_charge, 3 * (200_000 + 13_000 * bonded));
-
-    let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
-    let consensus = BlockExecutor::new(rm.clone(), 2).with_consensus_close_charge();
-    let fixed = BlockExecutor::new(rm.clone(), 2).with_close_charge(close);
-    let by_consensus = run_record(&consensus, &genesis, &b).await;
-    let by_fixed = run_record(&fixed, &genesis, &b).await;
-    assert_eq!(by_consensus.post_root(), by_fixed.post_root());
-    assert!(close_paid(&rm, &genesis, &by_consensus, &proposer).await > 0);
-    assert!(fixed.replay(&by_consensus, &b).await.is_ok());
-    let off = BlockExecutor::new(rm.clone(), 2);
-    assert!(off.replay(&by_consensus, &b).await.is_err(), "a replay without the close charge does not match");
-}
-
-async fn close_paid(rm: &RuntimeManager, pre: &StateHash, record: &BlockRecord, proposer: &Party) -> u64 {
-    close(rm, pre, record, proposer).await.proposer
 }
 
 struct OneSlash;
@@ -387,26 +334,23 @@ async fn void_replays(executor: &BlockExecutor, pre: &StateHash, b: &BlockMessag
 }
 
 #[tokio::test]
-async fn a_block_whose_proposer_cannot_cover_the_close_is_void_for_reason_a() {
+async fn a_proposer_with_no_funds_closes_its_block_and_reason_a_stays_reserved() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
     let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
-    let record = void_replays(&executor, &genesis, &b, VoidReason::CloseUncovered).await;
-
-    let normal = BlockExecutor::new(rm.clone(), 2).execute(&genesis, &b).await.unwrap();
-    assert_eq!(normal.void_reason(), None);
-    let refused = executor.replay(&normal, &b).await.unwrap_err().to_string();
-    assert!(refused.contains("void for reason (a), and the record is not"), "{refused}");
-    let refused = BlockExecutor::new(rm.clone(), 2).replay(&record, &b).await.unwrap_err().to_string();
-    assert!(refused.contains("the record is void for reason (a), and the block is not"), "{refused}");
+    let record = run_record(&executor, &genesis, &b).await;
+    assert_eq!(record.void_reason(), None);
+    assert!(record.close_phlo() > 0);
+    assert_eq!(balance(&rm, record.post_root(), &proposer.owner).await, record.settlement().unwrap().proposer_credit);
+    assert!(VoidReason::from_tag(casper::rust::v6::record::RESERVED_CLOSE_UNCOVERED).is_err());
 }
 
 #[tokio::test]
 async fn a_block_with_slash_records_is_void_for_reason_b() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
-    let executor = charging(&rm, &genesis).await.with_slash_source(Arc::new(OneSlash));
+    let executor = charging(&rm, &genesis).with_slash_source(Arc::new(OneSlash));
     let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
     void_replays(&executor, &genesis, &b, VoidReason::SlashRecords).await;
 }
@@ -415,7 +359,7 @@ async fn a_block_with_slash_records_is_void_for_reason_b() {
 async fn a_block_with_terms_the_gate_cannot_read_is_void_for_reason_c() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
     let mut unreadable = envelope("Nil", 2, &alice);
     unreadable.deploy.pk = PublicKey::from_bytes(&[1, 2, 3]);
     let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice), unreadable], &proposer);
@@ -437,11 +381,10 @@ async fn a_block_whose_close_fails_is_void_for_reason_d_and_replay_runs_the_clos
 async fn a_valid_block_with_a_void_record_is_rejected() {
     let (alice, proposer) = (party(), party());
     let (rm, genesis) = shard(&[&alice, &proposer]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
     let b = block(1, vec![envelope(&bond_term("Nil"), 1, &alice)], &proposer);
     let normal = run_record(&executor, &genesis, &b).await;
     for reason in [
-        VoidReason::CloseUncovered,
         VoidReason::SlashRecords,
         VoidReason::UnreadableTerms,
     ] {

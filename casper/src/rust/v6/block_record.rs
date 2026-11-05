@@ -51,6 +51,8 @@ pub struct BlockRecordProto {
     pub settlement: Option<SettlementProto>,
     #[prost(uint32, tag = "13")]
     pub void_reason: u32,
+    #[prost(uint64, tag = "20")]
+    pub close_phlo: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,6 +131,7 @@ pub struct BlockRecord {
     gate: Vec<GateEntry>,
     settlement: Option<Settlement>,
     void_reason: Option<VoidReason>,
+    close_phlo: u64,
 }
 
 impl BlockRecord {
@@ -169,8 +172,16 @@ impl BlockRecord {
     pub fn with_failed_close(mut self) -> Self {
         self.post_root = self.pre_root.clone();
         self.void_reason = Some(VoidReason::CloseFailed);
+        self.close_phlo = 0;
         self
     }
+
+    pub fn with_close_phlo(mut self, close_phlo: u64) -> Self {
+        self.close_phlo = close_phlo;
+        self
+    }
+
+    pub fn close_phlo(&self) -> u64 { self.close_phlo }
 
     #[cfg(test)]
     pub(crate) fn empty(target: BlockHash, pre_root: StateHash, post_root: StateHash) -> Self {
@@ -219,6 +230,7 @@ impl BlockRecord {
             gate: Vec::new(),
             settlement: None,
             void_reason: None,
+            close_phlo: 0,
         })
     }
 
@@ -273,6 +285,7 @@ impl BlockRecord {
             gate: self.gate.iter().map(GateEntry::to_proto).collect(),
             settlement: self.settlement.as_ref().map(Settlement::to_proto),
             void_reason: self.void_reason.map_or(0, VoidReason::tag),
+            close_phlo: self.close_phlo,
         }
     }
 
@@ -316,9 +329,9 @@ impl BlockRecord {
             } else {
                 record.system_deploys.is_empty()
             };
-            if record.post_root != record.pre_root || !traced {
+            if record.post_root != record.pre_root || !traced || proto.close_phlo != 0 {
                 return Err(
-                    "a void record leaves the state unchanged, and only a (d) record carries its failed close"
+                    "a void record leaves the state unchanged, records no close cost, and only a (d) record carries its failed close"
                         .into(),
                 );
             }
@@ -331,6 +344,7 @@ impl BlockRecord {
             }
         }
         record.void_reason = void_reason;
+        record.close_phlo = proto.close_phlo;
         Ok(record)
     }
 }
@@ -521,5 +535,21 @@ mod tests {
             ])
             .is_err());
         assert_eq!(BlockRecord::decode(&record().encode()).unwrap().gate(), &[]);
+    }
+
+    #[test]
+    fn the_close_cost_rides_in_field_20_and_a_void_record_has_none() {
+        let closed = record().with_close_phlo(41_000);
+        let proto = closed.to_proto();
+        assert_eq!(proto.close_phlo, 41_000);
+        let decoded = BlockRecord::decode(&closed.encode()).unwrap();
+        assert_eq!(decoded.close_phlo(), 41_000);
+        assert_eq!(decoded, closed);
+        assert_ne!(decoded, record());
+        let mut void = BlockRecord::voided(b("t"), b("pre"), &[b("a")], VoidReason::SlashRecords).to_proto();
+        assert!(BlockRecord::from_proto(void.clone()).is_ok());
+        void.close_phlo = 1;
+        assert!(BlockRecord::from_proto(void).is_err());
+        assert_eq!(record().with_close_phlo(9).with_failed_close().close_phlo(), 0);
     }
 }

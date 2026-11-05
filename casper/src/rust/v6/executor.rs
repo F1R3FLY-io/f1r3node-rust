@@ -19,7 +19,7 @@ use rholang::rust::interpreter::accounting::rev_stack::reserve::{
 };
 use rholang::rust::interpreter::accounting::membrane::{BlockLedger, Funding, MembraneMeter, Metered, Refusal};
 use rholang::rust::interpreter::accounting::rev_stack::{
-    wallet_channel_id, wallet_channel_id_of, HotStoreCells, RevAmount, WalletOwner,
+    wallet_channel_id, wallet_channel_id_of, HotStoreCells, WalletOwner,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
@@ -36,8 +36,8 @@ use super::body::StateHash;
 use super::conservation::Conservation;
 use super::footprint::{footprint, Footprint};
 use super::gate::{
-    check_recorded_with_close, gate_block_with_close, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
-    PhloLimitDemand, StoreReader, WalletReader,
+    check_recorded, gate_block, resolve_joint_wallets, GateEntry, GateInput, GateOutcome,
+    PhloLimitDemand, StoreReader,
 };
 use super::merge::{merge_runs, RunEffect};
 use super::record::{ExecutionRecord, Prior, VoidReason};
@@ -189,18 +189,6 @@ impl EnvelopeExecutor {
     pub fn with_boxcar(mut self, boxcar: Boxcar) -> Self {
         self.boxcar = boxcar;
         self
-    }
-
-    fn close_hold(
-        block_data: &BlockData,
-        precharge: RevAmount,
-    ) -> Result<Option<(WalletOwner, RevAmount)>, CasperError> {
-        if precharge == 0 {
-            return Ok(None);
-        }
-        let proposer = WalletOwner::from_public_key(&block_data.sender)
-            .map_err(|e| invalid(format!("the block sender has no wallet: {e}")))?;
-        Ok(Some((proposer, precharge)))
     }
 }
 
@@ -577,7 +565,7 @@ impl EnvelopeExecutor {
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        self.execute_held(pre_root, envelopes, block_data, 0, &Prior::new()).await
+        self.execute_held(pre_root, envelopes, block_data, &Prior::new()).await
     }
 
     pub async fn execute_held(
@@ -585,20 +573,13 @@ impl EnvelopeExecutor {
         pre_root: &StateHash,
         envelopes: Vec<Signed<DeployData>>,
         block_data: BlockData,
-        close_precharge: RevAmount,
         prior: &Prior,
     ) -> Result<ExecutedBlock, CasperError> {
         let started = std::time::Instant::now();
         let mut inputs = with_prior(gate_inputs(envelopes.iter())?, prior);
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let close = Self::close_hold(&block_data, close_precharge)?;
-        let gate = gate_block_with_close(
-            &reader,
-            &PhloLimitDemand,
-            &inputs,
-            close.as_ref().map(|(owner, amount)| (owner, *amount)),
-        )?;
+        let gate = gate_block(&reader, &PhloLimitDemand, &inputs)?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), gate.table.clone()));
         let ledger = BlockLedger::new();
         let gate_time = started.elapsed();
@@ -679,7 +660,7 @@ impl EnvelopeExecutor {
         recorded_gate: &[GateEntry],
         block_data: BlockData,
     ) -> Result<ExecutedBlock, CasperError> {
-        self.replay_held(pre_root, recorded, recorded_work, recorded_gate, block_data, 0, &Prior::new())
+        self.replay_held(pre_root, recorded, recorded_work, recorded_gate, block_data, &Prior::new())
             .await
     }
 
@@ -690,20 +671,12 @@ impl EnvelopeExecutor {
         recorded_work: Option<Vec<Surfaces>>,
         recorded_gate: &[GateEntry],
         block_data: BlockData,
-        close_precharge: RevAmount,
         prior: &Prior,
     ) -> Result<ExecutedBlock, CasperError> {
         let mut inputs = with_prior(gate_inputs(recorded.iter().map(|p| &p.deploy))?, prior);
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let close = Self::close_hold(&block_data, close_precharge)?;
-        let gate = check_recorded_with_close(
-            &reader,
-            &PhloLimitDemand,
-            &inputs,
-            recorded_gate,
-            close.as_ref().map(|(owner, amount)| (owner, *amount)),
-        )
+        let gate = check_recorded(&reader, &PhloLimitDemand, &inputs, recorded_gate)
             .map_err(|e| invalid(format!("the recorded gate does not replay: {e}")))?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), gate.table.clone()));
         let logged = recorded
@@ -866,17 +839,6 @@ pub struct BlockExecutor {
     runtime_manager: Arc<RuntimeManager>,
     slashes: Arc<dyn SlashSource>,
     conservation: Option<Arc<Conservation>>,
-    close_charge: CloseChargeSource,
-    close_charges: parking_lot::Mutex<std::collections::VecDeque<(StateHash, super::close_charge::CloseCharge)>>,
-}
-
-const CLOSE_CHARGES_KEPT: usize = 64;
-
-#[derive(Clone, Copy)]
-enum CloseChargeSource {
-    Off,
-    Fixed(super::close_charge::CloseCharge),
-    Consensus,
 }
 
 impl BlockExecutor {
@@ -885,7 +847,6 @@ impl BlockExecutor {
         pre_root: &StateHash,
         executed: &ExecutedBlock,
         logged: Option<&[Refusal]>,
-        close: Option<super::close_charge::CloseCharge>,
     ) -> Result<(SystemGate, Arc<MembraneMeter>, Arc<dyn Funding>), CasperError> {
         let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
         let purses = Arc::new(BlockPurses::new(Box::new(reader), executed.gate.table.clone()));
@@ -896,7 +857,7 @@ impl BlockExecutor {
         };
         let gate = SystemGate {
             funding: Some(meter.clone()),
-            close,
+            close_phlo: Arc::default(),
         };
         Ok((gate, meter, funding))
     }
@@ -907,60 +868,18 @@ impl BlockExecutor {
             runtime_manager,
             slashes: Arc::new(NoSlashing),
             conservation: None,
-            close_charge: CloseChargeSource::Off,
-            close_charges: parking_lot::Mutex::new(std::collections::VecDeque::new()),
-        }
-    }
-
-    async fn close_charge_at(
-        &self,
-        pre_root: &StateHash,
-    ) -> Result<Option<super::close_charge::CloseCharge>, CasperError> {
-        match self.close_charge {
-            CloseChargeSource::Off => Ok(None),
-            CloseChargeSource::Fixed(close) => Ok(Some(close)),
-            CloseChargeSource::Consensus => {
-                let kept = self
-                    .close_charges
-                    .lock()
-                    .iter()
-                    .find(|(root, _)| root == pre_root)
-                    .map(|(_, close)| *close);
-                if let Some(close) = kept {
-                    return Ok(Some(close));
-                }
-                let close = super::close_charge::CloseCharge::at(&self.runtime_manager, pre_root).await?;
-                let mut kept = self.close_charges.lock();
-                kept.push_back((pre_root.clone(), close));
-                if kept.len() > CLOSE_CHARGES_KEPT {
-                    kept.pop_front();
-                }
-                Ok(Some(close))
-            }
         }
     }
 
     pub async fn void_before_runs(
         &self,
-        pre_root: &StateHash,
         block: &BlockMessage,
-        close: Option<super::close_charge::CloseCharge>,
     ) -> Result<Option<VoidReason>, CasperError> {
         if !self.slashes.slashes(block)?.is_empty() {
             return Ok(Some(VoidReason::SlashRecords));
         }
         if gate_inputs(block.body.deploys.iter().map(|p| &p.deploy)).is_err() {
             return Ok(Some(VoidReason::UnreadableTerms));
-        }
-        let Some(close) = close.filter(|close| close.pre_charge > 0) else {
-            return Ok(None);
-        };
-        let Some(proposer) = super::close_charge::proposer(&block.sender) else {
-            return Ok(Some(VoidReason::CloseUncovered));
-        };
-        let reader = StoreReader::at(&self.runtime_manager, pre_root).await?;
-        if reader.balance(&proposer)? < close.pre_charge {
-            return Ok(Some(VoidReason::CloseUncovered));
         }
         Ok(None)
     }
@@ -979,8 +898,7 @@ impl BlockExecutor {
         block: &BlockMessage,
         prior: &Prior,
     ) -> Result<(BlockRecord, BlockTimings), CasperError> {
-        let close = self.close_charge_at(pre_root).await?;
-        if let Some(reason) = self.void_before_runs(pre_root, block, close).await? {
+        if let Some(reason) = self.void_before_runs(block).await? {
             return Ok((
                 BlockRecord::voided(
                     block.block_hash.clone(),
@@ -1003,12 +921,12 @@ impl BlockExecutor {
                 pre_root,
                 envelopes,
                 block_data(block),
-                close.map_or(0, |close| close.pre_charge),
                 prior,
             )
             .await?;
         let started = std::time::Instant::now();
-        let (gate, close_meter, _) = self.close_gate(pre_root, &executed, None, close).await?;
+        let (gate, close_meter, _) = self.close_gate(pre_root, &executed, None).await?;
+        let close_phlo = gate.close_phlo.clone();
         let closed = self
             .runtime_manager
             .compute_state_gated(
@@ -1060,7 +978,11 @@ impl BlockExecutor {
             system_deploys,
         )
         .and_then(|record| record.with_gate(executed.gate.entries.clone()))
-        .map(|record| record.with_settlement(executed.settlement.clone()))
+        .map(|record| {
+            record
+                .with_settlement(executed.settlement.clone())
+                .with_close_phlo(close_phlo.lock().unwrap_or(0))
+        })
         .map_err(CasperError::RuntimeError)?;
         let timings = BlockTimings {
             envelopes: executed.timings,
@@ -1069,16 +991,6 @@ impl BlockExecutor {
             record: started.elapsed(),
         };
         Ok((record, timings))
-    }
-
-    pub fn with_close_charge(mut self, close: super::close_charge::CloseCharge) -> Self {
-        self.close_charge = CloseChargeSource::Fixed(close);
-        self
-    }
-
-    pub fn with_consensus_close_charge(mut self) -> Self {
-        self.close_charge = CloseChargeSource::Consensus;
-        self
     }
 
     pub fn with_conservation(mut self, conservation: Arc<Conservation>) -> Self {
@@ -1237,8 +1149,7 @@ impl ExecutionBackend for BlockExecutor {
         if record.target() != &block.block_hash {
             return Err(mismatch("the record executes another block"));
         }
-        let close = self.close_charge_at(record.pre_root()).await?;
-        let predicted = self.void_before_runs(record.pre_root(), block, close).await?;
+        let predicted = self.void_before_runs(block).await?;
         match (record.void_reason(), predicted) {
             (Some(recorded), Some(predicted)) if recorded == predicted => {
                 let expected = BlockRecord::voided(
@@ -1301,7 +1212,6 @@ impl ExecutionBackend for BlockExecutor {
                 Some(recorded.iter().map(|entry| entry.work.clone()).collect()),
                 record.gate(),
                 block_data(block),
-                close.map_or(0, |close| close.pre_charge),
                 prior,
             )
             .await?;
@@ -1317,8 +1227,9 @@ impl ExecutionBackend for BlockExecutor {
         let close_logged = super::stops::system_refusals(record.system_deploys())
             .map_err(|e| mismatch(&format!("a close refusal does not decode: {e}")))?;
         let (gate, close_meter, close_funding) = self
-            .close_gate(record.pre_root(), &replayed, Some(&close_logged), close)
+            .close_gate(record.pre_root(), &replayed, Some(&close_logged))
             .await?;
+        let close_phlo = gate.close_phlo.clone();
         let replayed_close = self
             .runtime_manager
             .replay_compute_state_gated(
@@ -1343,6 +1254,9 @@ impl ExecutionBackend for BlockExecutor {
         };
         if post_root != *record.post_root() {
             return Err(mismatch("post-state root"));
+        }
+        if close_phlo.lock().unwrap_or(0) != record.close_phlo() {
+            return Err(mismatch("the close's cost"));
         }
         let closed = close_meter.take();
         accept_metered(

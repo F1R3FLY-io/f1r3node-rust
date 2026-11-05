@@ -264,14 +264,14 @@ impl Default for ReplayLock {
 #[derive(Clone, Default)]
 pub struct SystemGate {
     pub funding: Option<Arc<rholang::rust::interpreter::accounting::membrane::MembraneMeter>>,
-    pub close: Option<crate::rust::v6::close_charge::CloseCharge>,
+    pub close_phlo: Arc<parking_lot::Mutex<Option<u64>>>,
 }
 
 impl SystemGate {
     fn apply(&self, runtime_ops: &mut RuntimeOps) {
         runtime_ops.runtime.set_seal_records(true);
         runtime_ops.runtime.set_funding(self.funding.clone());
-        runtime_ops.close_charge = self.close;
+        runtime_ops.close_phlo = Some(self.close_phlo.clone());
         runtime_ops.trace_close_failure = true;
     }
 }
@@ -481,7 +481,6 @@ impl RuntimeManager {
         usr_processed: &[ProcessedDeploy],
         sys_processed: &[ProcessedSystemDeploy],
         is_genesis: bool,
-        close: Option<&crate::rust::v6::close_charge::CloseCharge>,
     ) -> Vec<u8> {
         #[inline]
         fn push_len_prefixed(bytes: &mut Vec<u8>, data: &[u8]) {
@@ -491,13 +490,6 @@ impl RuntimeManager {
 
         // Fingerprint replay-relevant payload so cache keys stay safe under adversarial input.
         let mut bytes = Vec::new();
-        match close {
-            Some(close) => {
-                bytes.push(1);
-                bytes.extend_from_slice(&close.fingerprint());
-            }
-            None => bytes.push(0),
-        }
         bytes.extend_from_slice(&(usr_processed.len() as u64).to_le_bytes());
         for pd in usr_processed {
             push_len_prefixed(&mut bytes, &pd.deploy.sig);
@@ -779,7 +771,6 @@ impl RuntimeManager {
         if let Some(gate) = &gate {
             gate.apply(&mut runtime_ops);
         }
-        let close = gate.as_ref().and_then(|g| g.close);
 
         // Block data used for mergeable key
         let sender = block_data.sender.clone();
@@ -827,7 +818,7 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
             let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false, close.as_ref());
+                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
                 let key = ReplayCacheKey::new(
@@ -938,7 +929,7 @@ impl RuntimeManager {
         if let Some(ref cache) = self.replay_cache {
             let all_logs = Self::collect_replay_logs(&usr_processed, &sys_processed);
             let replay_payload_hash =
-                Self::replay_payload_hash(&usr_processed, &sys_processed, false, None);
+                Self::replay_payload_hash(&usr_processed, &sys_processed, false);
 
             if !all_logs.is_empty() && all_logs.len() <= replay_cache_event_log_cap {
                 let key = ReplayCacheKey::new(
@@ -1063,8 +1054,7 @@ impl RuntimeManager {
     ) -> Result<StateHash, CasperError> {
         let sender = block_data.sender.clone();
         let seq_num = block_data.seq_num;
-        let close = gate.as_ref().and_then(|g| g.close);
-        let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis, close.as_ref());
+        let replay_payload_hash = Self::replay_payload_hash(&terms, &system_deploys, is_genesis);
 
         // Step 1: Check replay cache (deterministic replay delta)
         let replay_cache_key = ReplayCacheKey::new(

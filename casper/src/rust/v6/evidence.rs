@@ -311,7 +311,7 @@ mod tests {
                 cause: "unfunded".to_string(),
             }),
             base(Offence::VoidBlock {
-                reason: VoidReason::CloseUncovered,
+                reason: VoidReason::CloseFailed,
             }),
             base(Offence::VoidBlock {
                 reason: VoidReason::UnreadableTerms,
@@ -322,7 +322,6 @@ mod tests {
     #[test]
     fn only_void_blocks_the_proposer_could_see_are_slashable() {
         let slashable = |reason| Offence::VoidBlock { reason }.slashable();
-        assert!(!slashable(VoidReason::CloseUncovered));
         assert!(slashable(VoidReason::SlashRecords));
         assert!(slashable(VoidReason::UnreadableTerms));
         assert!(!slashable(VoidReason::CloseFailed));
@@ -389,6 +388,11 @@ mod tests {
             },
             EvidenceProto {
                 kind: KIND_INCLUSION,
+                ..EvidenceProto::default()
+            },
+            EvidenceProto {
+                kind: KIND_VOID_BLOCK,
+                reason: super::super::record::RESERVED_CLOSE_UNCOVERED,
                 ..EvidenceProto::default()
             },
             EvidenceProto {

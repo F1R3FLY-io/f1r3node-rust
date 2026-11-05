@@ -124,8 +124,7 @@ impl V6Engine<BlockRecord> {
         )?;
         let backend = Arc::new(
             BlockExecutor::new(runtime_manager.clone(), workers)
-                .with_conservation(conservation.clone())
-                .with_consensus_close_charge(),
+                .with_conservation(conservation.clone()),
         );
         let parts = V6Parts {
             backend,
@@ -451,7 +450,7 @@ impl<R: ExecutionRecord> V6Engine<R> {
         let dropped = |deploy: &Signed<DeployData>| match reason {
             VoidReason::CloseFailed => true,
             VoidReason::UnreadableTerms => GateInput::from_deploy(deploy, Vec::new()).is_err(),
-            VoidReason::CloseUncovered | VoidReason::SlashRecords => false,
+            VoidReason::SlashRecords => false,
         };
         let (dropped, kept): (Vec<_>, Vec<_>) = block
             .body

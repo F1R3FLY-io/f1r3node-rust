@@ -22,9 +22,10 @@ pub struct Footprint {
     pub channels: Vec<[u8; 32]>,
 }
 
+pub const RESERVED_CLOSE_UNCOVERED: u32 = 1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum VoidReason {
-    CloseUncovered,
     SlashRecords,
     UnreadableTerms,
     CloseFailed,
@@ -33,7 +34,6 @@ pub enum VoidReason {
 impl VoidReason {
     pub fn tag(self) -> u32 {
         match self {
-            VoidReason::CloseUncovered => 1,
             VoidReason::SlashRecords => 2,
             VoidReason::UnreadableTerms => 3,
             VoidReason::CloseFailed => 4,
@@ -43,7 +43,8 @@ impl VoidReason {
     pub fn from_tag(tag: u32) -> Result<Option<Self>, String> {
         match tag {
             0 => Ok(None),
-            1 => Ok(Some(VoidReason::CloseUncovered)),
+            // Tag 1 is void reason (a), the uncovered close. It is reserved for B6 (Decision 119); do not reuse it.
+            RESERVED_CLOSE_UNCOVERED => Err("void reason 1, (a), is reserved for B6".to_string()),
             2 => Ok(Some(VoidReason::SlashRecords)),
             3 => Ok(Some(VoidReason::UnreadableTerms)),
             4 => Ok(Some(VoidReason::CloseFailed)),
@@ -53,7 +54,6 @@ impl VoidReason {
 
     pub fn label(self) -> &'static str {
         match self {
-            VoidReason::CloseUncovered => "a",
             VoidReason::SlashRecords => "b",
             VoidReason::UnreadableTerms => "c",
             VoidReason::CloseFailed => "d",
