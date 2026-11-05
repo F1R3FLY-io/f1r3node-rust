@@ -1,49 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crypto::rust::hash::blake2b256::Blake2b256;
-
-use super::comm_ledger::Surface;
-use super::rev_stack::seal::SealRecord;
+use super::comm_ledger::{CommLedger, Surface};
+use super::costs::comm_event_storage_cost;
+use super::rev_stack::seal::{purse_of, SealRecord};
 use super::rev_stack::{RevAmount, WalletOwner};
-
-pub const STEP_DOMAIN: &[u8] = b"f1r3fly/step/v1";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StepSource {
-    Evaluation = 1,
-    Restore = 2,
-    Comm = 3,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RefusalKind {
-    Charge = 1,
-    Cell = 2,
-}
-
-impl RefusalKind {
-    pub fn tag(self) -> u32 { self as u32 }
-
-    pub fn from_tag(tag: u32) -> Option<Self> {
-        match tag {
-            1 => Some(RefusalKind::Charge),
-            2 => Some(RefusalKind::Cell),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Refusal {
-    pub surface: Surface,
-    pub step: Vec<u8>,
-    pub kind: RefusalKind,
-    pub drawn: RevAmount,
-    pub charge: RevAmount,
-}
+use crate::rust::interpreter::errors::InterpreterError;
 
 pub trait Funding: Send + Sync {
     fn gates(&self, record: &SealRecord) -> bool;
@@ -51,151 +16,15 @@ pub trait Funding: Send + Sync {
     fn limit(&self, wallet: &WalletOwner) -> RevAmount;
 }
 
-pub fn step_base(source: StepSource, content: &[u8], random_state: &[u8]) -> Vec<u8> {
-    let mut input = Vec::with_capacity(STEP_DOMAIN.len() + 9 + content.len() + random_state.len());
-    input.extend_from_slice(STEP_DOMAIN);
-    input.push(source as u8);
-    input.extend_from_slice(&(content.len() as u32).to_be_bytes());
-    input.extend_from_slice(content);
-    input.extend_from_slice(&(random_state.len() as u32).to_be_bytes());
-    input.extend_from_slice(random_state);
-    Blake2b256::hash(input)
-}
-
-pub fn step_id(base: &[u8], position: u64) -> Vec<u8> {
-    let mut input = Vec::with_capacity(base.len() + 8);
-    input.extend_from_slice(base);
-    input.extend_from_slice(&position.to_be_bytes());
-    Blake2b256::hash(input)
-}
-
-pub struct StepScope {
-    base: Vec<u8>,
-    next: AtomicU64,
-    prepaid: bool,
-}
-
-impl StepScope {
-    pub fn new(base: Vec<u8>) -> Arc<Self> {
-        Arc::new(StepScope {
-            base,
-            next: AtomicU64::new(0),
-            prepaid: false,
-        })
-    }
-
-    pub fn prepaid(base: Vec<u8>) -> Arc<Self> {
-        Arc::new(StepScope {
-            base,
-            next: AtomicU64::new(0),
-            prepaid: true,
-        })
-    }
-
-    fn take(&self) -> (Vec<u8>, u64) {
-        (self.base.clone(), self.next.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-tokio::task_local! {
-    static STEP: Arc<StepScope>;
-    static FOLLOW_UP: i64;
-}
-
-pub async fn following<F: Future>(phlo: i64, future: F) -> F::Output {
-    FOLLOW_UP.scope(phlo, future).await
-}
-
-pub fn follow_up() -> i64 { FOLLOW_UP.try_with(|phlo| *phlo).unwrap_or(0) }
-
-pub async fn stepping<F: Future>(scope: Arc<StepScope>, future: F) -> F::Output {
-    STEP.scope(scope, future).await
-}
-
-static UNSCOPED: AtomicU64 = AtomicU64::new(0);
-
-pub fn unscoped_charges() -> u64 { UNSCOPED.load(Ordering::Relaxed) }
-
-fn next_position(record: &SealRecord) -> (Vec<u8>, u64) {
-    STEP.try_with(|scope| scope.take()).unwrap_or_else(|_| {
-        UNSCOPED.fetch_add(1, Ordering::Relaxed);
-        (
-            step_base(
-                StepSource::Evaluation,
-                &record.owner.canonical_bytes(),
-                b"unscoped",
-            ),
-            0,
-        )
-    })
-}
-
-#[cfg(test)]
-fn next_step(record: &SealRecord) -> Vec<u8> {
-    let (base, position) = next_position(record);
-    step_id(&base, position)
-}
-
-pub fn in_step_scope() -> bool { STEP.try_with(|_| ()).is_ok() }
-
-pub fn settling<R>(f: impl FnOnce() -> R) -> R {
-    STEP.sync_scope(StepScope::prepaid(Vec::new()), f)
-}
-
-fn prepaid() -> bool { STEP.try_with(|scope| scope.prepaid).unwrap_or(false) }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Admission {
-    Ungated,
-    Admitted,
-    Refused,
-}
-
-#[derive(Default)]
-struct LedgerState {
-    drawn: BTreeMap<Vec<u8>, RevAmount>,
-    stopped: BTreeSet<Vec<u8>>,
-}
-
-#[derive(Default)]
-pub struct BlockLedger {
-    state: Mutex<LedgerState>,
-}
-
-impl BlockLedger {
-    pub fn new() -> Arc<Self> { Arc::new(BlockLedger::default()) }
-
-    pub fn drawn(&self) -> BTreeMap<Vec<u8>, RevAmount> {
-        self.state
-            .lock()
-            .map(|s| s.drawn.clone())
-            .unwrap_or_default()
-    }
-}
-
-#[derive(Default)]
-struct RunState {
-    drawn: BTreeMap<Vec<u8>, RevAmount>,
-    refusals: BTreeMap<Vec<u8>, Refusal>,
-    reached: BTreeMap<Vec<u8>, RevAmount>,
-}
-
-pub struct ReplayRefusals {
-    steps: BTreeSet<Vec<u8>>,
-    owners: BTreeSet<Vec<u8>>,
-}
-
 pub struct MembraneMeter {
     funding: Arc<dyn Funding>,
-    ledger: Arc<BlockLedger>,
-    replay: Option<ReplayRefusals>,
-    run: Mutex<RunState>,
+    replay: bool,
+    held: Mutex<BTreeMap<Vec<u8>, RevAmount>>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Metered {
-    pub refusals: Vec<Refusal>,
-    pub drawn: BTreeMap<Vec<u8>, RevAmount>,
-    pub reached: BTreeMap<Vec<u8>, RevAmount>,
+    pub held: BTreeMap<Vec<u8>, RevAmount>,
 }
 
 fn add(map: &mut BTreeMap<Vec<u8>, RevAmount>, key: &[u8], amount: RevAmount) {
@@ -203,256 +32,214 @@ fn add(map: &mut BTreeMap<Vec<u8>, RevAmount>, key: &[u8], amount: RevAmount) {
     *entry = entry.saturating_add(amount);
 }
 
-impl MembraneMeter {
-    pub fn play(funding: Arc<dyn Funding>, ledger: Arc<BlockLedger>) -> Arc<Self> {
-        Arc::new(MembraneMeter {
-            funding,
-            ledger,
-            replay: None,
-            run: Mutex::new(RunState::default()),
-        })
-    }
+fn priced(phlo: i64, price: u64) -> RevAmount { (phlo.max(0) as u64).saturating_mul(price) }
 
-    pub fn replay(
-        funding: Arc<dyn Funding>,
-        ledger: Arc<BlockLedger>,
-        logged: &[Refusal],
-    ) -> Arc<Self> {
+fn limit_of(record: &SealRecord) -> i64 { record.origin.phlo_limit.min(i64::MAX as u64) as i64 }
+
+pub fn firing_wallets(record: &SealRecord, named: &[WalletOwner]) -> BTreeSet<Vec<u8>> {
+    record
+        .purse()
+        .iter()
+        .chain(named.iter())
+        .flat_map(purse_of)
+        .map(|wallet| wallet.canonical_bytes())
+        .collect()
+}
+
+impl MembraneMeter {
+    pub fn play(funding: Arc<dyn Funding>) -> Arc<Self> { Self::new(funding, false) }
+
+    pub fn replay(funding: Arc<dyn Funding>) -> Arc<Self> { Self::new(funding, true) }
+
+    fn new(funding: Arc<dyn Funding>, replay: bool) -> Arc<Self> {
         Arc::new(MembraneMeter {
             funding,
-            ledger,
-            replay: Some(ReplayRefusals {
-                steps: logged.iter().map(|r| r.step.clone()).collect(),
-                owners: logged
-                    .iter()
-                    .flat_map(|r| {
-                        let mut keys = vec![r.surface.owner.clone()];
-                        if let Some(owner) = WalletOwner::from_canonical_bytes(&r.surface.owner) {
-                            keys.extend(
-                                super::rev_stack::seal::purse_of(&owner)
-                                    .iter()
-                                    .map(WalletOwner::canonical_bytes),
-                            );
-                        }
-                        keys
-                    })
-                    .collect(),
-            }),
-            run: Mutex::new(RunState::default()),
+            replay,
+            held: Mutex::new(BTreeMap::new()),
         })
     }
 
     pub fn gates(&self, record: &SealRecord) -> bool { self.funding.gates(record) }
 
-    pub fn is_replay(&self) -> bool { self.replay.is_some() }
+    pub fn is_replay(&self) -> bool { self.replay }
 
-    pub fn admit_charge(&self, record: &SealRecord, phlo: i64) -> Admission {
-        if phlo <= 0 || !self.funding.gates(record) {
-            return Admission::Ungated;
-        }
-        if prepaid() {
-            return Admission::Admitted;
-        }
-        let charge = (phlo as u64).saturating_mul(record.price());
-        let (base, position) = next_position(record);
-        let step = || step_id(&base, position);
-        let mut ledger = match self.ledger.state.lock() {
-            Ok(ledger) => ledger,
-            Err(_) => return Admission::Refused,
-        };
-        let mut run = match self.run.lock() {
-            Ok(run) => run,
-            Err(_) => return Admission::Refused,
-        };
-        let wallets = record.purse();
-        if let Some(logged) = &self.replay {
-            let watched = wallets
-                .iter()
-                .any(|w| logged.owners.contains(&w.canonical_bytes()));
-            if watched {
-                let step = step();
-                if logged.steps.contains(&step) {
-                    run.reached.insert(step, charge);
-                    return Admission::Refused;
-                }
-            }
-        } else if let Some((wallet, drawn)) = self.short(
-            &ledger,
-            &wallets
-                .iter()
-                .map(|w| (w.clone(), charge))
-                .collect::<Vec<_>>(),
-        ) {
-            let step = step();
-            run.refusals.entry(step.clone()).or_insert(Refusal {
-                surface: Surface::of(record),
-                step,
-                kind: RefusalKind::Charge,
-                drawn,
-                charge,
-            });
-            ledger.stopped.insert(wallet);
-            return Admission::Refused;
-        }
-        for wallet in &wallets {
-            add(&mut ledger.drawn, &wallet.canonical_bytes(), charge);
-            add(&mut run.drawn, &wallet.canonical_bytes(), charge);
-        }
-        Admission::Admitted
-    }
-
-    fn short(
+    pub fn comm_needs(
         &self,
-        ledger: &LedgerState,
-        needs: &[(WalletOwner, RevAmount)],
-    ) -> Option<(Vec<u8>, RevAmount)> {
-        let mut total: BTreeMap<Vec<u8>, RevAmount> = BTreeMap::new();
-        for (wallet, need) in needs {
-            add(&mut total, &wallet.canonical_bytes(), *need);
-        }
-        needs.iter().find_map(|(wallet, _)| {
-            let key = wallet.canonical_bytes();
-            let drawn = ledger.drawn.get(&key).copied().unwrap_or(0);
-            let need = total.get(&key).copied().unwrap_or(0);
-            (ledger.stopped.contains(&key)
-                || drawn.saturating_add(need) > self.funding.limit(wallet))
-            .then_some((key, drawn))
-        })
-    }
-
-    fn comm_needs(
-        &self,
-        records: &[SealRecord],
-        trigger: Option<&SealRecord>,
-        follow_up: i64,
-    ) -> Vec<(SealRecord, RevAmount)> {
-        let mut needs: Vec<(SealRecord, RevAmount)> = Vec::new();
-        for record in records {
-            if self.funding.gates(record)
-                && !needs
-                    .iter()
-                    .any(|(r, _)| Surface::of(r) == Surface::of(record))
-            {
-                needs.push((record.clone(), record.price()));
+        continuation: Option<(&SealRecord, &[WalletOwner])>,
+        data: &[SealRecord],
+        channels: usize,
+    ) -> BTreeMap<Vec<u8>, RevAmount> {
+        let mut needs = BTreeMap::new();
+        if let Some((record, named)) = continuation.filter(|(r, _)| self.gates(r)) {
+            let bound = priced(limit_of(record), record.price());
+            for wallet in firing_wallets(record, named) {
+                add(&mut needs, &wallet, bound);
+            }
+            let follow = 1 + comm_event_storage_cost(channels as i64).value;
+            for wallet in record.purse() {
+                add(&mut needs, &wallet.canonical_bytes(), priced(follow, record.price()));
             }
         }
-        if let Some(trigger) = trigger.filter(|t| self.funding.gates(t) && follow_up > 0) {
-            let extra = (follow_up as u64).saturating_mul(trigger.price());
-            match needs
-                .iter_mut()
-                .find(|(r, _)| Surface::of(r) == Surface::of(trigger))
-            {
-                Some((_, need)) => *need = need.saturating_add(extra),
-                None => needs.push((trigger.clone(), extra)),
+        for record in data.iter().filter(|r| self.gates(r)) {
+            for wallet in record.purse() {
+                add(&mut needs, &wallet.canonical_bytes(), record.price());
             }
         }
-        needs.sort_by_key(|(r, _)| Surface::of(r));
         needs
     }
 
-    pub fn stopped(&self, record: &SealRecord) -> bool {
-        if self.replay.is_some() || !self.funding.gates(record) {
-            return false;
-        }
-        self.ledger.state.lock().is_ok_and(|ledger| {
-            record
-                .purse()
-                .iter()
-                .any(|wallet| ledger.stopped.contains(&wallet.canonical_bytes()))
-        })
-    }
-
-    pub fn admit_comm(
-        &self,
-        records: &[SealRecord],
-        trigger: Option<&SealRecord>,
-        follow_up: i64,
-        base: impl FnOnce() -> Vec<u8>,
-    ) -> bool {
-        if self.replay.is_some() {
-            return true;
-        }
-        let needs = self.comm_needs(records, trigger, follow_up);
+    pub fn hold(&self, needs: &BTreeMap<Vec<u8>, RevAmount>) -> bool {
         if needs.is_empty() {
             return true;
         }
-        let mut ledger = match self.ledger.state.lock() {
-            Ok(ledger) => ledger,
-            Err(_) => return false,
+        let Ok(mut held) = self.held.lock() else {
+            return false;
         };
-        let mut run = match self.run.lock() {
-            Ok(run) => run,
-            Err(_) => return false,
-        };
-        let per_wallet: Vec<(WalletOwner, RevAmount)> = needs
-            .iter()
-            .flat_map(|(r, need)| r.purse().into_iter().map(move |w| (w, *need)))
-            .collect();
-        if self.short(&ledger, &per_wallet).is_none() {
-            for (record, need) in &needs {
-                for wallet in record.purse() {
-                    add(&mut ledger.drawn, &wallet.canonical_bytes(), *need);
-                    add(&mut run.drawn, &wallet.canonical_bytes(), *need);
-                }
-            }
-            return true;
-        }
-        let base = base();
-        for (i, (record, need)) in needs.iter().enumerate() {
-            let wallets: Vec<(WalletOwner, RevAmount)> =
-                record.purse().into_iter().map(|w| (w, *need)).collect();
-            let Some((wallet, drawn)) = self.short(&ledger, &wallets).or_else(|| {
-                let shared: Vec<(WalletOwner, RevAmount)> = per_wallet
-                    .iter()
-                    .filter(|(w, _)| wallets.iter().any(|(x, _)| x == w))
-                    .cloned()
-                    .collect();
-                self.short(&ledger, &shared)
-            }) else {
-                continue;
+        let fits = needs.iter().all(|(wallet, need)| {
+            let Some(owner) = WalletOwner::from_canonical_bytes(wallet) else {
+                return false;
             };
-            let step = step_id(&base, i as u64);
-            run.refusals.entry(step.clone()).or_insert(Refusal {
-                surface: Surface::of(record),
-                step,
-                kind: RefusalKind::Cell,
-                drawn,
-                charge: *need,
-            });
-            ledger.stopped.insert(wallet);
-        }
-        false
-    }
-
-    pub fn draw_comm_in_replay(
-        &self,
-        records: &[SealRecord],
-        trigger: Option<&SealRecord>,
-        follow_up: i64,
-    ) {
-        if self.replay.is_none() {
-            return;
-        }
-        let needs = self.comm_needs(records, trigger, follow_up);
-        if let (Ok(mut ledger), Ok(mut run)) = (self.ledger.state.lock(), self.run.lock()) {
-            for (record, need) in &needs {
-                for wallet in record.purse() {
-                    add(&mut ledger.drawn, &wallet.canonical_bytes(), *need);
-                    add(&mut run.drawn, &wallet.canonical_bytes(), *need);
-                }
+            held.get(wallet)
+                .copied()
+                .unwrap_or(0)
+                .checked_add(*need)
+                .is_some_and(|total| total <= self.funding.limit(&owner))
+        });
+        if fits {
+            for (wallet, need) in needs {
+                add(&mut held, wallet, *need);
             }
         }
+        fits
     }
 
     pub fn take(&self) -> Metered {
-        let run = std::mem::take(&mut *self.run.lock().expect("membrane meter lock"));
         Metered {
-            refusals: run.refusals.into_values().collect(),
-            drawn: run.drawn,
-            reached: run.reached,
+            held: std::mem::take(&mut *self.held.lock().expect("membrane meter lock")),
         }
     }
 }
+
+pub type Deferred = Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + Send>>;
+
+#[derive(Default)]
+struct FiringState {
+    cost: i64,
+    exhausted: bool,
+    work: Vec<(Surface, i64)>,
+    ops: Vec<Deferred>,
+}
+
+pub struct Firing {
+    payer: SealRecord,
+    wallets: BTreeSet<Vec<u8>>,
+    limit: i64,
+    state: Mutex<FiringState>,
+}
+
+pub enum Finished {
+    Exhausted,
+    Within(Vec<Deferred>),
+}
+
+impl Firing {
+    pub fn new(payer: SealRecord, named: &[WalletOwner]) -> Arc<Self> {
+        Arc::new(Firing {
+            wallets: firing_wallets(&payer, named),
+            limit: limit_of(&payer),
+            payer,
+            state: Mutex::new(FiringState::default()),
+        })
+    }
+
+    pub fn charge(&self, record: &SealRecord, phlo: i64, reserve: i64) -> Result<(), InterpreterError> {
+        let mut state = self.state.lock().map_err(|_| InterpreterError::FiringExhausted)?;
+        if state.exhausted {
+            return Err(InterpreterError::FiringExhausted);
+        }
+        let covered = record
+            .purse()
+            .iter()
+            .all(|wallet| self.wallets.contains(&wallet.canonical_bytes()));
+        state.cost = state
+            .cost
+            .saturating_add(phlo.max(0))
+            .saturating_add(reserve.max(0));
+        if !covered || state.cost > self.limit {
+            state.exhausted = true;
+            state.ops.clear();
+            return Err(InterpreterError::FiringExhausted);
+        }
+        state.work.push((Surface::of(record), phlo));
+        Ok(())
+    }
+
+    pub fn defer(&self, op: Deferred) {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.exhausted {
+                state.ops.push(op);
+            }
+        }
+    }
+
+    pub fn exhausted(&self) -> bool { self.state.lock().map(|s| s.exhausted).unwrap_or(true) }
+
+    pub fn finish(&self, ledger: &CommLedger) -> Finished {
+        let state = std::mem::take(&mut *self.state.lock().expect("firing lock"));
+        if state.exhausted {
+            ledger.on_work(Some(Surface::of(&self.payer)), self.limit);
+            return Finished::Exhausted;
+        }
+        for (surface, phlo) in state.work {
+            ledger.on_work(Some(surface), phlo);
+        }
+        Finished::Within(state.ops)
+    }
+}
+
+tokio::task_local! {
+    static FIRING: Arc<Firing>;
+    static PRECHARGED: Arc<AtomicBool>;
+    static SETTLING: ();
+}
+
+pub fn firing() -> Option<Arc<Firing>> { FIRING.try_with(Arc::clone).ok() }
+
+pub async fn firing_scope<F: Future>(firing: Arc<Firing>, future: F) -> F::Output {
+    FIRING.scope(firing, future).await
+}
+
+pub fn inherit_firing<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    let firing = firing();
+    async move {
+        match firing {
+            Some(firing) => FIRING.scope(firing, future).await,
+            None => future.await,
+        }
+    }
+}
+
+pub fn precharged<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    PRECHARGED.scope(Arc::new(AtomicBool::new(true)), future)
+}
+
+pub fn take_precharged() -> bool {
+    PRECHARGED
+        .try_with(|flag| flag.swap(false, Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+pub fn settling<R>(f: impl FnOnce() -> R) -> R { SETTLING.sync_scope((), f) }
+
+pub fn settled<F: Future>(future: F) -> impl Future<Output = F::Output> { SETTLING.scope((), future) }
+
+pub fn is_settling() -> bool { SETTLING.try_with(|_| ()).is_ok() }
+
+static UNBOUNDED: AtomicU64 = AtomicU64::new(0);
+
+pub fn unbounded_charges() -> u64 { UNBOUNDED.load(Ordering::Relaxed) }
+
+pub(crate) fn count_unbounded() { UNBOUNDED.fetch_add(1, Ordering::Relaxed); }
 
 #[cfg(test)]
 mod tests {
@@ -470,228 +257,148 @@ mod tests {
             self.0
                 .iter()
                 .find(|(w, _)| w == wallet)
-                .map_or(0, |(_, a)| *a)
+                .map(|(_, l)| *l)
+                .unwrap_or(0)
         }
     }
 
     fn owner(n: u8) -> WalletOwner { WalletOwner::Unforgeable(vec![n; 32]) }
 
-    fn record(n: u8, price: u64) -> SealRecord {
+    fn record(n: u8, price: u64, limit: u64) -> SealRecord {
         SealRecord {
             owner: owner(n),
             kind: SealKind::Process,
             origin: Origin {
-                envelope: vec![n; 64],
-                signers: Vec::new(),
+                envelope: vec![n],
+                signers: vec![owner(n)],
                 phlo_price: price,
+                phlo_limit: limit,
             },
         }
     }
 
-    fn funding() -> Arc<dyn Funding> { Arc::new(Fixed(vec![(owner(1), 10), (owner(2), 100)])) }
+    fn follow(channels: i64) -> u64 { (1 + comm_event_storage_cost(channels).value) as u64 }
 
-    fn scope() -> Arc<StepScope> {
-        StepScope::new(step_base(StepSource::Evaluation, b"term", b"rand"))
-    }
-
-    #[tokio::test]
-    async fn work_under_a_membrane_stops_at_the_first_step_it_cannot_pay() {
-        let meter = MembraneMeter::play(funding(), BlockLedger::new());
-        let alice = record(1, 2);
-        let seen = stepping(scope(), async {
-            vec![
-                meter.admit_charge(&alice, 3),
-                meter.admit_charge(&alice, 1),
-                meter.admit_charge(&alice, 2),
-                meter.admit_charge(&alice, 1),
-                meter.admit_charge(&record(2, 1), 50),
-                meter.admit_charge(&record(9, 1), 1_000),
-                meter.admit_charge(&alice, 0),
-            ]
-        })
-        .await;
+    #[test]
+    fn a_firing_holds_its_bound_and_the_comm_follow_up_on_the_installer() {
+        let meter = MembraneMeter::play(Arc::new(Fixed(vec![(owner(1), 1_000_000)])));
+        let needs = meter.comm_needs(Some((&record(1, 2, 100), &[])), &[], 1);
         assert_eq!(
-            seen,
-            vec![
-                Admission::Admitted,
-                Admission::Admitted,
-                Admission::Refused,
-                Admission::Refused,
-                Admission::Admitted,
-                Admission::Ungated,
-                Admission::Ungated,
-            ]
+            needs.get(&owner(1).canonical_bytes()),
+            Some(&(2 * (100 + follow(1))))
         );
-        let metered = meter.take();
-        assert_eq!(metered.drawn.get(&owner(1).canonical_bytes()), Some(&8));
-        assert_eq!(metered.drawn.get(&owner(2).canonical_bytes()), Some(&50));
-        assert_eq!(metered.refusals.len(), 2);
-        assert!(metered
-            .refusals
-            .iter()
-            .all(|r| r.drawn == 8 && r.kind == RefusalKind::Charge));
-        assert!(metered.refusals.iter().any(|r| r.drawn + r.charge > 10));
+        assert!(meter.hold(&needs));
+        assert_eq!(meter.take().held, needs);
     }
 
-    #[tokio::test]
-    async fn one_ledger_is_shared_by_the_runs_of_a_block() {
-        let ledger = BlockLedger::new();
-        let first = MembraneMeter::play(funding(), ledger.clone());
-        let second = MembraneMeter::play(funding(), ledger.clone());
-        let alice = record(1, 1);
-        let seen = stepping(scope(), async {
-            [
-                first.admit_charge(&alice, 6),
-                second.admit_charge(&alice, 4),
-                second.admit_charge(&alice, 1),
-                first.admit_charge(&alice, 0),
-                first.admit_charge(&alice, 1),
-            ]
-        })
-        .await;
+    #[test]
+    fn the_holds_of_a_run_never_pass_its_share_whatever_their_order() {
+        let share = 3 * 2 * (100 + follow(1));
+        let meter = MembraneMeter::play(Arc::new(Fixed(vec![(owner(1), share)])));
+        let needs = meter.comm_needs(Some((&record(1, 2, 100), &[])), &[], 1);
+        assert!(meter.hold(&needs));
+        assert!(meter.hold(&needs));
+        assert!(meter.hold(&needs));
+        assert!(!meter.hold(&needs), "a fourth firing passes the share");
         assert_eq!(
-            seen,
-            [
-                Admission::Admitted,
-                Admission::Admitted,
-                Admission::Refused,
-                Admission::Ungated,
-                Admission::Refused,
-            ]
+            meter.take().held.get(&owner(1).canonical_bytes()),
+            Some(&share)
         );
-        assert_eq!(ledger.drawn().get(&owner(1).canonical_bytes()), Some(&10));
-        let (a, b) = (first.take(), second.take());
-        assert_eq!(a.drawn.get(&owner(1).canonical_bytes()), Some(&6));
-        assert_eq!(b.drawn.get(&owner(1).canonical_bytes()), Some(&4));
-        assert!(a.refusals.iter().chain(&b.refusals).all(|r| r.drawn == 10));
     }
 
-    #[tokio::test]
-    async fn the_step_identity_is_the_scope_and_the_position_in_it() {
-        let base = step_base(StepSource::Evaluation, b"term", b"rand");
-        let ids = |scope: Arc<StepScope>| async move {
-            stepping(scope, async {
-                (next_step(&record(1, 1)), next_step(&record(1, 1)))
-            })
-            .await
-        };
-        let (a0, a1) = ids(StepScope::new(base.clone())).await;
-        let (b0, b1) = ids(StepScope::new(base.clone())).await;
-        assert_eq!((a0.clone(), a1.clone()), (b0, b1));
-        assert_ne!(a0, a1);
-        assert_eq!(a0, step_id(&base, 0));
-        assert_ne!(base, step_base(StepSource::Restore, b"term", b"rand"));
-        assert_ne!(base, step_base(StepSource::Evaluation, b"term", b"other"));
-        assert_ne!(base, step_base(StepSource::Evaluation, b"terms", b"rand"));
+    #[test]
+    fn an_ungated_record_holds_nothing_and_a_gated_datum_holds_its_cell() {
+        let meter = MembraneMeter::play(Arc::new(Fixed(vec![(owner(2), 5)])));
+        let needs = meter.comm_needs(Some((&record(9, 2, 100), &[])), &[record(2, 5, 0)], 1);
+        assert_eq!(needs, BTreeMap::from([(owner(2).canonical_bytes(), 5)]));
+        assert!(meter.hold(&needs));
+        assert!(!meter.hold(&needs));
     }
 
-    #[tokio::test]
-    async fn replay_refuses_exactly_the_logged_steps_and_counts_the_rest() {
-        let alice = record(1, 2);
-        let play = MembraneMeter::play(funding(), BlockLedger::new());
-        stepping(scope(), async {
-            for phlo in [3, 1, 2, 1] {
-                play.admit_charge(&alice, phlo);
+    #[test]
+    fn a_wallet_that_the_stored_body_names_holds_the_bound_too() {
+        let r = record(1, 1, 50);
+        let meter = MembraneMeter::play(Arc::new(Fixed(vec![(owner(1), 1_000), (owner(3), 49)])));
+        let needs = meter.comm_needs(Some((&r, &[owner(3)])), &[], 1);
+        assert_eq!(needs.get(&owner(3).canonical_bytes()), Some(&50));
+        assert!(!meter.hold(&needs), "the named wallet cannot hold the bound");
+        assert!(meter.take().held.is_empty());
+    }
+
+    #[test]
+    fn a_firing_within_its_bound_pays_what_it_worked() {
+        let firing = Firing::new(record(1, 2, 100), &[]);
+        firing.charge(&record(1, 2, 100), 30, 10).unwrap();
+        firing.charge(&record(1, 2, 100), 20, 0).unwrap();
+        let ledger = CommLedger::default();
+        assert!(matches!(firing.finish(&ledger), Finished::Within(ops) if ops.is_empty()));
+        let work = ledger.take_work();
+        assert_eq!(work.get(&Some(Surface::of(&record(1, 2, 100)))), Some(&50));
+    }
+
+    #[test]
+    fn a_firing_that_passes_its_bound_pays_the_bound_and_keeps_nothing() {
+        let firing = Firing::new(record(1, 2, 100), &[]);
+        firing.charge(&record(1, 2, 100), 60, 0).unwrap();
+        firing.defer(Box::pin(async { Ok(()) }));
+        assert_eq!(
+            firing.charge(&record(1, 2, 100), 30, 20),
+            Err(InterpreterError::FiringExhausted)
+        );
+        assert_eq!(
+            firing.charge(&record(1, 2, 100), 1, 0),
+            Err(InterpreterError::FiringExhausted)
+        );
+        let ledger = CommLedger::default();
+        assert!(matches!(firing.finish(&ledger), Finished::Exhausted));
+        let work = ledger.take_work();
+        assert_eq!(work.get(&Some(Surface::of(&record(1, 2, 100)))), Some(&100));
+        assert_eq!(work.len(), 1);
+    }
+
+    #[test]
+    fn a_charge_to_a_wallet_that_the_firing_does_not_hold_exhausts_it() {
+        let firing = Firing::new(record(1, 2, 100), &[]);
+        assert_eq!(
+            firing.charge(&record(4, 2, 100), 1, 0),
+            Err(InterpreterError::FiringExhausted)
+        );
+        assert!(firing.exhausted());
+    }
+
+    #[test]
+    fn the_exhaustion_does_not_depend_on_the_order_of_the_charges() {
+        let charges = [(40, 5), (30, 0), (25, 10)];
+        let exhausted = |limit: u64, order: &[usize]| {
+            let firing = Firing::new(record(1, 1, limit), &[]);
+            for i in order {
+                let (phlo, reserve) = charges[*i];
+                let _ = firing.charge(&record(1, 1, limit), phlo, reserve);
             }
-        })
-        .await;
-        let logged = play.take().refusals;
-        let ledger = BlockLedger::new();
-        let replay = MembraneMeter::replay(funding(), ledger.clone(), &logged);
-        let seen = stepping(scope(), async {
-            [3, 1, 2, 1].map(|phlo| replay.admit_charge(&alice, phlo))
-        })
-        .await;
-        assert_eq!(
-            seen,
-            [
-                Admission::Admitted,
-                Admission::Admitted,
-                Admission::Refused,
-                Admission::Refused
-            ]
-        );
-        let metered = replay.take();
-        assert!(metered.refusals.is_empty());
-        assert_eq!(ledger.drawn().get(&owner(1).canonical_bytes()), Some(&8));
-        assert_eq!(
-            metered.reached,
-            logged
-                .iter()
-                .map(|r| (r.step.clone(), r.charge))
-                .collect::<BTreeMap<_, _>>()
-        );
-    }
-
-    #[test]
-    fn a_comm_is_admitted_with_its_cells_and_the_storage_it_causes() {
-        let meter = MembraneMeter::play(funding(), BlockLedger::new());
-        let alice = record(1, 1);
-        let bob = record(2, 30);
-        let free = record(9, 1_000);
-        assert!(meter.admit_comm(
-            &[alice.clone(), bob.clone(), free.clone()],
-            None,
-            0,
-            || vec![1]
-        ));
-        assert!(meter.admit_comm(&[bob.clone()], Some(&alice), 4, || vec![2]));
-        assert!(!meter.admit_comm(&[bob.clone()], Some(&alice), 6, || vec![3]));
-        assert!(meter.admit_comm(&[bob.clone()], None, 0, || vec![4]));
-        assert!(!meter.admit_comm(&[alice.clone()], None, 0, || vec![5]));
-        let metered = meter.take();
-        assert_eq!(metered.drawn.get(&owner(1).canonical_bytes()), Some(&5));
-        assert_eq!(metered.drawn.get(&owner(2).canonical_bytes()), Some(&90));
-        assert_eq!(metered.refusals.len(), 2);
-        assert!(metered
-            .refusals
-            .iter()
-            .all(|r| r.surface == Surface::of(&alice)
-                && r.kind == RefusalKind::Cell
-                && r.drawn == 5));
-        let ledger = BlockLedger::new();
-        let replay = MembraneMeter::replay(funding(), ledger.clone(), &metered.refusals);
-        assert!(replay.admit_comm(&[bob.clone()], Some(&alice), 6, || vec![3]));
-        replay.draw_comm_in_replay(&[alice.clone(), alice.clone(), free], Some(&alice), 4);
-        assert_eq!(ledger.drawn().get(&owner(1).canonical_bytes()), Some(&5));
+            firing.exhausted()
+        };
+        let all = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        assert!(all.iter().all(|o| exhausted(100, o)));
+        assert!(all.iter().all(|o| !exhausted(110, o)));
     }
 
     #[tokio::test]
-    async fn prepaid_storage_is_never_refused_and_draws_nothing() {
-        let meter = MembraneMeter::play(funding(), BlockLedger::new());
-        let alice = record(1, 2);
-        let restore = StepScope::prepaid(step_base(StepSource::Restore, b"", b"item"));
-        let seen = stepping(restore, async {
-            [
-                meter.admit_charge(&alice, 100),
-                meter.admit_charge(&alice, 100),
-            ]
+    async fn the_firing_scope_is_inherited_and_the_precharge_is_taken_once() {
+        let firing = Firing::new(record(1, 1, 10), &[]);
+        let seen = firing_scope(firing.clone(), async {
+            let here = super::firing().is_some();
+            let inherited = tokio::spawn(inherit_firing(async { super::firing().is_some() }))
+                .await
+                .unwrap();
+            let bare = tokio::spawn(async { super::firing().is_some() })
+                .await
+                .unwrap();
+            (here, inherited, bare)
         })
         .await;
-        assert_eq!(seen, [Admission::Admitted, Admission::Admitted]);
-        let settled = settling(|| meter.admit_charge(&alice, 100));
-        assert_eq!(settled, Admission::Admitted);
-        let metered = meter.take();
-        assert!(metered.drawn.is_empty() && metered.refusals.is_empty());
-    }
-
-    #[test]
-    fn a_stopped_wallet_is_seen_in_play_and_never_in_replay() {
-        let ledger = BlockLedger::new();
-        let play = MembraneMeter::play(funding(), ledger.clone());
-        let alice = record(1, 1);
-        assert!(!play.stopped(&alice));
-        assert!(!play.admit_comm(&[alice.clone()], Some(&alice), 20, || vec![1]));
-        assert!(play.stopped(&alice));
-        assert!(!play.stopped(&record(2, 1)));
-        assert!(!play.stopped(&record(9, 1)));
-        let replay = MembraneMeter::replay(funding(), ledger, &[]);
-        assert!(!replay.stopped(&alice));
-    }
-
-    #[tokio::test]
-    async fn the_follow_up_is_scoped() {
-        assert_eq!(follow_up(), 0);
-        assert_eq!(following(7, async { follow_up() }).await, 7);
+        assert_eq!(seen, (true, true, false));
+        let taken = precharged(async { (take_precharged(), take_precharged()) }).await;
+        assert_eq!(taken, (true, false));
+        assert!(!take_precharged());
     }
 }

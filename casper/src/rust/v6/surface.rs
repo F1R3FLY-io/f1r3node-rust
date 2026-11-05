@@ -1,9 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::accounting::comm_ledger::Surface;
-use rholang::rust::interpreter::accounting::membrane::{Refusal, RefusalKind};
 use rholang::rust::interpreter::accounting::rev_stack::channel::wallet_channel_id;
 use rholang::rust::interpreter::accounting::rev_stack::seal::{purse_of, Funding, SealRecord};
 use rholang::rust::interpreter::accounting::rev_stack::{RevAmount, WalletOwner};
@@ -153,18 +152,25 @@ impl BlockPurses {
 pub struct EnvelopeFunding {
     purses: Arc<BlockPurses>,
     committed: Vec<WalletOwner>,
+    runs: u64,
 }
 
 impl EnvelopeFunding {
-    pub fn new(purses: Arc<BlockPurses>, committed: Vec<WalletOwner>) -> Arc<dyn Funding> {
-        Arc::new(EnvelopeFunding { purses, committed })
+    pub fn new(purses: Arc<BlockPurses>, committed: Vec<WalletOwner>, runs: u64) -> Arc<dyn Funding> {
+        Arc::new(EnvelopeFunding {
+            purses,
+            committed,
+            runs: runs.max(1),
+        })
     }
 }
 
 impl Funding for EnvelopeFunding {
     fn gates(&self, record: &SealRecord) -> bool { !self.committed.contains(&record.owner) }
 
-    fn limit(&self, wallet: &WalletOwner) -> RevAmount { self.purses.free(wallet).unwrap_or(0) }
+    fn limit(&self, wallet: &WalletOwner) -> RevAmount {
+        self.purses.free(wallet).unwrap_or(0) / self.runs
+    }
 }
 
 pub struct CloseFunding {
@@ -200,63 +206,6 @@ impl Funding for CloseFunding {
                 .unwrap_or(0),
         )
     }
-}
-
-pub fn accept_metered(
-    limit: &dyn Fn(&WalletOwner) -> RevAmount,
-    logged: &[Refusal],
-    drawn: &BTreeMap<Vec<u8>, RevAmount>,
-    reached: &BTreeMap<Vec<u8>, RevAmount>,
-) -> Result<(), String> {
-    let mut steps = BTreeSet::new();
-    let mut stops: BTreeMap<Vec<u8>, (RevAmount, bool)> = BTreeMap::new();
-    for refusal in logged {
-        if !steps.insert(refusal.step.clone()) {
-            return Err("two refusals name one step".to_string());
-        }
-        if refusal.kind == RefusalKind::Charge {
-            match reached.get(&refusal.step) {
-                None => return Err("a refused step was not reached".to_string()),
-                Some(charge) if *charge != refusal.charge => {
-                    return Err("a refused step's charge is forged".to_string())
-                }
-                Some(_) => {}
-            }
-        }
-        let owner = WalletOwner::from_canonical_bytes(&refusal.surface.owner)
-            .ok_or_else(|| "a refusal names no wallet".to_string())?;
-        let wallet = purse_of(&owner)
-            .into_iter()
-            .find(|wallet| {
-                let limit = limit(wallet);
-                let worked = drawn.get(&wallet.canonical_bytes()).copied().unwrap_or(0);
-                refusal.drawn <= limit && refusal.drawn == worked
-            })
-            .ok_or_else(|| "a refusal's drawn amount is not the wallet's total".to_string())?;
-        let limit = limit(&wallet);
-        let unpayable = limit - refusal.drawn < refusal.charge;
-        let stop = stops
-            .entry(wallet.canonical_bytes())
-            .or_insert((refusal.drawn, false));
-        if stop.0 != refusal.drawn {
-            return Err("the refusals of one wallet carry different drawn amounts".to_string());
-        }
-        stop.1 |= unpayable;
-    }
-    if stops.values().any(|(_, unpayable)| !unpayable) {
-        return Err("a membrane stopped at a step that it could pay".to_string());
-    }
-    for (wallet, worked) in drawn {
-        if stops.contains_key(wallet) {
-            continue;
-        }
-        let owner = WalletOwner::from_canonical_bytes(wallet)
-            .ok_or_else(|| "a drawn amount names no wallet".to_string())?;
-        if *worked > limit(&owner) {
-            return Err("work under a membrane exceeds what its wallet can pay".to_string());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -317,6 +266,7 @@ mod tests {
                 envelope: vec![envelope; 64],
                 signers: Vec::new(),
                 phlo_price: price,
+                phlo_limit: 0,
             },
         }
     }
@@ -340,11 +290,14 @@ mod tests {
         let pair = WalletOwner::Compound(vec![alice.clone(), bob.clone()]);
         assert!(purses.funds_cell(&stored(pair.clone(), 1, 3)));
         assert!(!purses.funds_cell(&stored(pair.clone(), 1, 4)));
-        let own = EnvelopeFunding::new(purses.clone(), vec![bob.clone()]);
+        let own = EnvelopeFunding::new(purses.clone(), vec![bob.clone()], 1);
         assert!(!own.gates(&stored(bob.clone(), 1, 9)));
         assert!(own.gates(&stored(alice.clone(), 1, 9)));
         assert_eq!(own.limit(&alice), 3);
         assert_eq!(own.limit(&bob), 3);
+        let shared = EnvelopeFunding::new(purses.clone(), vec![bob.clone()], 2);
+        assert_eq!(shared.limit(&alice), 1, "each of two runs holds half of the free 3");
+        assert_eq!(EnvelopeFunding::new(purses.clone(), Vec::new(), 0).limit(&alice), 3);
     }
 
     #[test]

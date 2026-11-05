@@ -111,6 +111,7 @@ mod tests {
                 envelope: vec![9; 64],
                 signers: vec![WalletOwner::Unforgeable(vec![owner; 32])],
                 phlo_price: 1,
+                phlo_limit: 0,
             },
         })
     }

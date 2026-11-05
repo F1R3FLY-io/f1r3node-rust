@@ -55,6 +55,7 @@ async fn run(runtime: &RhoRuntimeImpl, key: &[u8], cosigners: &[&[u8]], envelope
             deploy_id: vec![envelope; 4],
             cosigners: cosigners.iter().map(|c| PublicKey::from_bytes(c)).collect(),
             phlo_price: 1,
+            phlo_limit: 0,
         })
         .await;
     let mut env = HashMap::from([("rho:system:deployerId".to_string(), id(key))]);

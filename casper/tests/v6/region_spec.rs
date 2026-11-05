@@ -1283,7 +1283,6 @@ async fn an_unfunded_stored_receive_is_not_a_match_candidate_in_play_or_replay()
             .replay_recorded(
                 &root,
                 played.processed.clone(),
-                Some(played.work.clone()),
                 &played.gate.entries,
                 block_data(&proposer),
             )
@@ -1302,191 +1301,168 @@ async fn an_unfunded_stored_receive_is_not_a_match_candidate_in_play_or_replay()
         .is_err());
 }
 
-#[tokio::test]
-async fn work_under_an_underfunded_installer_stops_and_the_client_pays_nothing_for_it() {
-    use rholang::rust::interpreter::accounting::rev_stack::process::process_owner;
-    use rholang::rust::interpreter::compiler::compiler::Compiler;
-    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
-    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
-
-    let (alice, bob, proposer) = (party(), party(), party());
-    let (rm, genesis_root) = shard(&[(&bob, 100_000)]).await;
-    let service = r#"contract @"svc"(_) = {
-        new loop in { contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(300) }
-    }"#;
-    let process = process_owner(&Compiler::source_to_adt(service).unwrap());
-    let mut runtime = rm.spawn_runtime().await.unwrap();
-    runtime
-        .reset(&Blake2b256Hash::from_bytes_prost(&genesis_root))
+async fn data_on(rm: &RuntimeManager, root: &StateHash, channel: &str) -> usize {
+    cells_at(rm, root)
         .await
-        .unwrap();
-    RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap())
-        .deposit(&process, 200_000)
-        .unwrap();
-    let pre = runtime.create_checkpoint().await.root.to_bytes_prost();
-    let executor = EnvelopeExecutor::new(rm.clone(), 4);
-    let sealed = format!("{{% {service} %}}[# {{ {service} }}]");
+        .unwrap()
+        .get_data(&RhoString::create_par(channel.to_string()))
+        .len()
+}
+
+fn work_of(played: &casper::rust::v6::executor::ExecutedBlock, run: usize, who: &Party) -> u64 {
+    played.work[run]
+        .iter()
+        .filter(|(s, _)| s.as_ref().is_some_and(|s| s.owner == who.owner.canonical_bytes()))
+        .map(|(_, w)| *w)
+        .sum()
+}
+
+fn payload(bytes: usize) -> String { format!("{:?}", vec![7u8; bytes]).replace(' ', "") }
+
+fn firing_hold(limit: u64, channels: i64) -> u64 {
+    use rholang::rust::interpreter::accounting::costs::comm_event_storage_cost;
+    limit + 1 + comm_event_storage_cost(channels).value as u64
+}
+
+const ECHO: &str = r#"contract @"svc"(@x) = { @"out"!(x) }"#;
+
+async fn replays_to(
+    executor: &EnvelopeExecutor,
+    root: &StateHash,
+    played: &casper::rust::v6::executor::ExecutedBlock,
+    proposer: &Party,
+) -> StateHash {
+    executor
+        .replay_recorded(root, played.processed.clone(), &played.gate.entries, block_data(proposer))
+        .await
+        .expect("the block replays")
+        .settled_root
+}
+
+#[tokio::test]
+async fn a_firing_within_its_bound_keeps_its_effects_and_its_installer_pays_its_work() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
     let first = executor
-        .execute(
-            &pre,
-            vec![envelope(&sealed, 1, &alice, 1_000, 1)],
-            block_data(&proposer),
-        )
+        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
         .await
         .expect("the service installs");
-    assert_eq!(
-        first.gate.admitted(),
-        vec![true],
-        "{:?}",
-        first.gate.entries[0].verdict
-    );
+    assert!(!first.processed[0].is_failed);
     let root = first.settled_root.clone();
-    let left = read_wallet_balance(&rm, &root, &process).await.unwrap();
-    let call = || envelope(r#"@"svc"!(0)"#, 2, &bob, 1_000, 1);
-
-    let funded = executor
-        .execute(&root, vec![call()], block_data(&proposer))
+    let call = envelope(&format!(r#"@"svc"!({})"#, payload(8)), 2, &bob, 50_000, 1);
+    let played = executor
+        .execute(&root, vec![call], block_data(&proposer))
         .await
-        .expect("the funded call executes");
-    assert!(
-        !funded.processed[0].is_failed,
-        "{:?} {:?} {:?}",
-        funded.processed[0].cost, funded.metered[0], funded.work[0]
+        .expect("the call executes");
+    assert!(!played.processed[0].is_failed);
+    assert_eq!(data_on(&rm, &played.settled_root, "out").await, 1);
+    let worked = work_of(&played, 0, &alice);
+    assert!(worked > 0 && worked < 1_500, "{worked}");
+    assert_eq!(
+        played.metered[0].held.get(&alice.owner.canonical_bytes()),
+        Some(&firing_hold(1_500, 1))
     );
-    assert!(funded.metered[0].refusals.is_empty());
-    let full = funded.metered[0].drawn[&process.canonical_bytes()];
-    assert!(full > 600, "{full}");
+    assert_eq!(replays_to(&executor, &root, &played, &proposer).await, played.settled_root);
+}
 
-    let room = 200;
-    let holding = envelope(&sealed, 3, &alice, (left - room) as i64, 1);
-    let held = executor
-        .execute(&root, vec![call(), holding], block_data(&proposer))
+#[tokio::test]
+async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the_bound() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let first = executor
+        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
         .await
-        .expect("the held call executes");
+        .expect("the service installs");
+    let root = first.settled_root.clone();
+    let call = |bytes: usize| envelope(&format!(r#"@"svc"!({})"#, payload(bytes)), 2, &bob, 50_000, 1);
+    let within = executor
+        .execute(&root, vec![call(8)], block_data(&proposer))
+        .await
+        .expect("the small call executes");
+    let passed = executor
+        .execute(&root, vec![call(2_000)], block_data(&proposer))
+        .await
+        .expect("the large call executes");
+    assert!(!passed.processed[0].is_failed, "the client's own run is not affected");
+    assert_eq!(data_on(&rm, &passed.settled_root, "out").await, 0, "the firing keeps nothing");
+    assert_eq!(data_on(&rm, &within.settled_root, "out").await, 1);
+    let bound_paid = work_of(&passed, 0, &alice);
+    assert!(bound_paid >= 1_500, "{bound_paid}");
+    assert!(bound_paid > work_of(&within, 0, &alice));
+    for _ in 0..4 {
+        assert_eq!(replays_to(&executor, &root, &passed, &proposer).await, passed.settled_root);
+    }
+}
+
+#[tokio::test]
+async fn an_installer_that_cannot_hold_the_bound_is_not_fired_and_pays_nothing() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let first = executor
+        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
+        .await
+        .expect("the service installs");
+    let root = first.settled_root.clone();
+    let left = balance(&rm, &root, &alice).await;
+    let holding = envelope("Nil", 3, &alice, (left - firing_hold(1_500, 1) + 1) as i64, 1);
+    let call = envelope(&format!(r#"@"svc"!({})"#, payload(8)), 2, &bob, 50_000, 1);
+    let held = executor
+        .execute(&root, vec![call, holding], block_data(&proposer))
+        .await
+        .expect("the block executes");
     assert_eq!(held.gate.admitted(), vec![true, true]);
     assert!(!held.processed[0].is_failed);
-    let meter = &held.metered[0];
-    assert!(!meter.refusals.is_empty());
-    let drawn = meter.drawn[&process.canonical_bytes()];
-    assert!(drawn <= room, "{drawn}");
-    assert!(meter.refusals.iter().all(|r| r.drawn == drawn));
-    assert!(meter.refusals.iter().any(|r| drawn + r.charge > room));
-    assert_eq!(paid(&held, &bob), paid(&funded, &bob));
+    assert_eq!(data_on(&rm, &held.settled_root, "out").await, 0);
+    assert_eq!(work_of(&held, 0, &alice), 0);
+    assert!(held.metered[0].held.is_empty());
+    assert_eq!(replays_to(&executor, &root, &held, &proposer).await, held.settled_root);
+}
 
-    let logged: Vec<_> = held.metered.iter().map(|m| m.refusals.clone()).collect();
-    for _ in 0..8 {
-        let again = executor
-            .replay_with_refusals(
-                &root,
-                held.processed.clone(),
-                &held.gate.entries,
-                block_data(&proposer),
-                logged.clone(),
-                Some(held.work.clone()),
-            )
-            .await
-            .expect("the stopped call replays");
-        assert_eq!(again.settled_root, held.settled_root);
-        assert_eq!(again.metered[0].drawn, meter.drawn);
-        assert_eq!(again.settlement, held.settlement);
-    }
-
-    let unlogged = executor
-        .replay_with_refusals(
-            &root,
-            held.processed.clone(),
-            &held.gate.entries,
-            block_data(&proposer),
-            vec![Vec::new(); held.processed.len()],
-            Some(held.work.clone()),
-        )
-        .await;
-    assert!(unlogged.map_or(true, |r| r.settled_root != held.settled_root));
-    let from_log = executor
-        .replay_recorded(
-            &root,
-            held.processed.clone(),
-            Some(held.work.clone()),
-            &held.gate.entries,
-            block_data(&proposer),
-        )
+#[tokio::test]
+async fn each_run_holds_at_most_its_share_of_the_installers_free_balance() {
+    let (alice, bob, carol, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000), (&carol, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 4);
+    let first = executor
+        .execute(&pre, vec![envelope(ECHO, 1, &alice, 1_500, 1)], block_data(&proposer))
         .await
-        .expect("the refusals in the deploy log replay");
-    assert_eq!(from_log.settled_root, held.settled_root);
-    assert_eq!(from_log.settlement, held.settlement);
+        .expect("the service installs");
+    let root = first.settled_root.clone();
+    let left = balance(&rm, &root, &alice).await;
+    let hold = firing_hold(1_500, 1);
+    let free = 2 * hold + 10;
+    let holding = || envelope("Nil", 3, &alice, (left - free) as i64, 1);
+    let call = |ts: i64, who: &Party| envelope(&format!(r#"@"svc"!({})"#, payload(8)), ts, who, 50_000, 1);
 
-    let mut early = logged.clone();
-    early[0].iter_mut().for_each(|r| r.drawn = 0);
-    assert!(executor
-        .replay_with_refusals(
-            &root,
-            held.processed.clone(),
-            &held.gate.entries,
-            block_data(&proposer),
-            early,
-            Some(held.work.clone())
-        )
+    let two = executor
+        .execute(&root, vec![call(4, &bob), holding()], block_data(&proposer))
         .await
-        .is_err());
+        .expect("two runs execute");
+    assert_eq!(two.gate.admitted(), vec![true, true]);
+    assert_eq!(data_on(&rm, &two.settled_root, "out").await, 1, "free / 2 holds one bound");
 
-    let replays = |logged: Vec<Vec<_>>| {
-        let (executor, root, held) = (&executor, &root, &held);
-        let proposer = &proposer;
-        async move {
-            executor
-                .replay_with_refusals(
-                    root,
-                    held.processed.clone(),
-                    &held.gate.entries,
-                    block_data(proposer),
-                    logged,
-                    Some(held.work.clone()),
-                )
-                .await
-                .map(|again| again.settled_root == held.settled_root)
-                .unwrap_or(false)
-        }
-    };
-    let mut high = logged.clone();
-    high[0].iter_mut().for_each(|r| r.drawn += 1);
-    assert!(!replays(high).await, "a drawn amount set too high");
-
-    let tighter = executor
-        .execute(
-            &root,
-            vec![
-                call(),
-                envelope(&sealed, 3, &alice, (left - room / 2) as i64, 1),
-            ],
-            block_data(&proposer),
-        )
+    let three = executor
+        .execute(&root, vec![call(4, &bob), call(5, &carol), holding()], block_data(&proposer))
         .await
-        .expect("the tighter call executes");
-    let earlier: Vec<_> = tighter.metered.iter().map(|m| m.refusals.clone()).collect();
-    assert!(!earlier[0].is_empty());
-    assert!(earlier[0]
-        .iter()
-        .all(|r| !logged[0].iter().any(|l| l.step == r.step)));
-    assert!(
-        !replays(earlier).await,
-        "an admitted step changed to refused"
+        .expect("three runs execute");
+    assert_eq!(three.gate.admitted(), vec![true, true, true]);
+    assert_eq!(
+        data_on(&rm, &three.settled_root, "out").await,
+        0,
+        "free / 3 is less than one bound, so neither call fires"
     );
-
-    let after = executor
-        .execute(&root, vec![call()], block_data(&proposer))
+    assert!(three.metered.iter().all(|m| m.held.is_empty()));
+    for played in [&two, &three] {
+        assert_eq!(replays_to(&executor, &root, played, &proposer).await, played.settled_root);
+    }
+    let later = executor
+        .execute(&root, vec![call(4, &bob), holding()], block_data(&proposer))
         .await
         .expect("a later block executes");
-    assert!(
-        after.metered[0].refusals.is_empty(),
-        "no stop carries into a later block"
-    );
-    assert_eq!(after.metered[0].drawn[&process.canonical_bytes()], full);
-    assert_eq!(after.settled_root, funded.settled_root);
-    assert_eq!(
-        rholang::rust::interpreter::accounting::membrane::unscoped_charges(),
-        0,
-        "every gated charge has a step identity"
-    );
+    assert_eq!(later.settled_root, two.settled_root, "no hold carries into a later block");
 }
 
 #[tokio::test]

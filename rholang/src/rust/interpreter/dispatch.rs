@@ -51,6 +51,7 @@ impl RholangAndScalaDispatcher {
     ) -> Result<DispatchType, InterpreterError> {
         let record = seal::of_continuation(&continuation)
             .map_err(|e| InterpreterError::ReduceError(e.to_string()))?;
+        let named = seal::body_owners(&continuation);
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -72,21 +73,27 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    let gated = match (seal::meter(), record.as_ref()) {
-                        (Some(meter), Some(r)) => meter.gates(r),
-                        _ => false,
+                    let firing = match (seal::meter(), record.as_ref()) {
+                        (Some(meter), Some(r)) if meter.gates(r) => {
+                            Some(membrane::Firing::new(r.clone(), &named))
+                        }
+                        _ => None,
                     };
-                    let evaluation =
-                        seal::within(record, reducer.eval(body, &env, merged_rand.clone()));
-                    if gated {
-                        let scope = membrane::StepScope::new(membrane::step_base(
-                            membrane::StepSource::Comm,
-                            &[],
-                            &merged_rand.to_bytes(),
-                        ));
-                        membrane::stepping(scope, evaluation).await?;
-                    } else {
-                        evaluation.await?;
+                    let evaluation = seal::within(record, reducer.eval(body, &env, merged_rand));
+                    match firing {
+                        Some(firing) => {
+                            let evaluated = membrane::firing_scope(firing.clone(), evaluation).await;
+                            match firing.finish(reducer.cost.comm_ledger()) {
+                                membrane::Finished::Exhausted => {}
+                                membrane::Finished::Within(ops) => {
+                                    for op in ops {
+                                        op.await?;
+                                    }
+                                    evaluated?;
+                                }
+                            }
+                        }
+                        None => evaluation.await?,
                     }
 
                     Ok(DispatchType::DeterministicCall)
