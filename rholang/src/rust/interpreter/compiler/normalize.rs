@@ -157,6 +157,11 @@ pub fn normalize_ann_proc<'ast>(
 
         Proc::SimpleType(simple_type) => normalize_simple_type(simple_type, input),
 
+        Proc::FixedPointPattern { scale } => {
+            use crate::rust::interpreter::compiler::normalizer::processes::p_fixed_point_pattern_normalizer::normalize_p_fixed_point_pattern;
+            normalize_p_fixed_point_pattern(scale, proc.span, input, _env, parser)
+        }
+
         Proc::ProcVar(var) => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_var_normalizer::normalize_p_var;
             normalize_p_var(var, input, proc.span)
@@ -451,14 +456,6 @@ pub fn normalize_ann_proc<'ast>(
         // Bad - handle parsing errors
         Proc::Bad => Err(InterpreterError::ParserError(
             "Bad process node indicates parsing error".to_string(),
-        )),
-
-        // FixedPointPattern was added by rholang-rs#100 (numeric type
-        // connectives). The downstream Connective enum doesn't yet
-        // carry a scale-pattern variant; for now report as unsupported
-        // so build stays green until BACKLOG wires the proto path.
-        Proc::FixedPointPattern { .. } => Err(InterpreterError::ParserError(
-            "FixedPoint scale pattern normalization not yet implemented".to_string(),
         )),
     }
 }

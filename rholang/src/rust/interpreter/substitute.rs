@@ -296,9 +296,31 @@ impl Substitute {
                     | ConnectiveInstance::ConnString(_)
                     | ConnectiveInstance::ConnUri(_)
                     | ConnectiveInstance::ConnByteArray(_)
-                    | ConnectiveInstance::ConnType(_)),
+                    | ConnectiveInstance::ConnType(_)
+                    | ConnectiveInstance::ConnInt32(_)
+                    | ConnectiveInstance::ConnUint64(_)
+                    | ConnectiveInstance::ConnUint32(_)
+                    | ConnectiveInstance::ConnUint16(_)
+                    | ConnectiveInstance::ConnUint8(_)
+                    | ConnectiveInstance::ConnFloat64(_)
+                    | ConnectiveInstance::ConnFloat32(_)
+                    | ConnectiveInstance::ConnBigInt(_)
+                    | ConnectiveInstance::ConnBigRat(_)),
                 ) => {
                     prepend(&mut par, &mut acc_conns, instance);
+                }
+                Some(ConnectiveInstance::ConnFixedPointBody(body)) => {
+                    let scale = body
+                        .scale
+                        .map(|p| self.substitute_no_sort(p, depth, env))
+                        .transpose()?;
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
+                        ConnectiveInstance::ConnFixedPointBody(
+                            models::rhoapi::ConnFixedPointBody { scale },
+                        ),
+                    );
                 }
                 None => {}
             }

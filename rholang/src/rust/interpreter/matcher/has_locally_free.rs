@@ -235,8 +235,25 @@ impl HasLocallyFree for Connective {
         match &self.connective_instance {
             None | Some(VarRefBody(_)) => false,
             Some(
-                ConnAndBody(_) | ConnOrBody(_) | ConnNotBody(_) | ConnBool(_) | ConnInt(_)
-                | ConnString(_) | ConnUri(_) | ConnByteArray(_) | ConnType(_),
+                ConnAndBody(_)
+                | ConnOrBody(_)
+                | ConnNotBody(_)
+                | ConnBool(_)
+                | ConnInt(_)
+                | ConnString(_)
+                | ConnUri(_)
+                | ConnByteArray(_)
+                | ConnType(_)
+                | ConnInt32(_)
+                | ConnUint64(_)
+                | ConnUint32(_)
+                | ConnUint16(_)
+                | ConnUint8(_)
+                | ConnFloat64(_)
+                | ConnFloat32(_)
+                | ConnBigInt(_)
+                | ConnBigRat(_)
+                | ConnFixedPointBody(_),
             ) => true,
         }
     }
@@ -247,6 +264,11 @@ impl HasLocallyFree for Connective {
                 index,
                 depth: var_depth,
             })) if depth == *var_depth => create_bit_vector(&[*index as usize]),
+            Some(ConnFixedPointBody(body)) => body
+                .scale
+                .as_ref()
+                .map(|p| p.locally_free(depth))
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }

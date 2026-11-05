@@ -154,6 +154,74 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            Some(ConnInt32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GInt32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint64(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint16(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint16(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnUint8(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GUint8(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat64(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GDouble(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnFloat32(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFloat32(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigInt(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigInt(_)),
+                }) => Some(()),
+                _ => None,
+            },
+            Some(ConnBigRat(_)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GBigRat(_)),
+                }) => Some(()),
+                _ => None,
+            },
+
+            Some(ConnFixedPointBody(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(GFixedPoint(gfp)),
+                }) => {
+                    let scale_target = Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(GInt(gfp.scale as i64)),
+                    }]);
+                    let scale_pattern = body.scale.unwrap_or_default();
+                    self.spatial_match(scale_target, scale_pattern)
+                }
+                _ => None,
+            },
+
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
             // Type". For now, match the universe constant, Pi types, and
@@ -169,7 +237,17 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                         | Some(ConnString(_))
                         | Some(ConnUri(_))
                         | Some(ConnByteArray(_))
-                        | Some(ConnType(_)) => Some(()),
+                        | Some(ConnType(_))
+                        | Some(ConnInt32(_))
+                        | Some(ConnUint64(_))
+                        | Some(ConnUint32(_))
+                        | Some(ConnUint16(_))
+                        | Some(ConnUint8(_))
+                        | Some(ConnFloat64(_))
+                        | Some(ConnFloat32(_))
+                        | Some(ConnBigInt(_))
+                        | Some(ConnBigRat(_))
+                        | Some(ConnFixedPointBody(_)) => Some(()),
                         _ => None,
                     },
                     None => None,

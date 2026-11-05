@@ -281,7 +281,19 @@ fn synth_connective(conn: &Connective) -> Result<Par, TypeError> {
         | ConnectiveInstance::ConnString(_)
         | ConnectiveInstance::ConnUri(_)
         | ConnectiveInstance::ConnByteArray(_)
-        | ConnectiveInstance::ConnType(_) => Ok(type_par(ConnectiveInstance::ConnType(true))),
+        | ConnectiveInstance::ConnType(_)
+        | ConnectiveInstance::ConnInt32(_)
+        | ConnectiveInstance::ConnUint64(_)
+        | ConnectiveInstance::ConnUint32(_)
+        | ConnectiveInstance::ConnUint16(_)
+        | ConnectiveInstance::ConnUint8(_)
+        | ConnectiveInstance::ConnFloat64(_)
+        | ConnectiveInstance::ConnFloat32(_)
+        | ConnectiveInstance::ConnBigInt(_)
+        | ConnectiveInstance::ConnBigRat(_)
+        | ConnectiveInstance::ConnFixedPointBody(_) => {
+            Ok(type_par(ConnectiveInstance::ConnType(true)))
+        }
         other => Err(TypeError::Unsupported(format!(
             "no typing rule for connective kind yet: {:?}",
             discriminant_name_conn(other)
@@ -360,6 +372,16 @@ fn discriminant_name_conn(inst: &ConnectiveInstance) -> &'static str {
         ConnectiveInstance::ConnUri(_) => "ConnUri",
         ConnectiveInstance::ConnByteArray(_) => "ConnByteArray",
         ConnectiveInstance::ConnType(_) => "ConnType",
+        ConnectiveInstance::ConnInt32(_) => "ConnInt32",
+        ConnectiveInstance::ConnUint64(_) => "ConnUint64",
+        ConnectiveInstance::ConnUint32(_) => "ConnUint32",
+        ConnectiveInstance::ConnUint16(_) => "ConnUint16",
+        ConnectiveInstance::ConnUint8(_) => "ConnUint8",
+        ConnectiveInstance::ConnFloat64(_) => "ConnFloat64",
+        ConnectiveInstance::ConnFloat32(_) => "ConnFloat32",
+        ConnectiveInstance::ConnBigInt(_) => "ConnBigInt",
+        ConnectiveInstance::ConnBigRat(_) => "ConnBigRat",
+        ConnectiveInstance::ConnFixedPointBody(_) => "ConnFixedPoint",
     }
 }
 

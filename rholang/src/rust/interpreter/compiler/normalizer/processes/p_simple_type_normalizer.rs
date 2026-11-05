@@ -12,25 +12,21 @@ pub fn normalize_simple_type<'ast>(
 ) -> Result<ProcVisitOutputs, InterpreterError> {
     let connective_instance = match simple_type {
         SimpleType::Bool => ConnectiveInstance::ConnBool(true),
-        SimpleType::Int => ConnectiveInstance::ConnInt(true),
+        // `Int` and `Int64` are source aliases for the same i64 connective.
+        SimpleType::Int | SimpleType::Int64 => ConnectiveInstance::ConnInt(true),
+        SimpleType::Int32 => ConnectiveInstance::ConnInt32(true),
+        SimpleType::UInt64 => ConnectiveInstance::ConnUint64(true),
+        SimpleType::UInt32 => ConnectiveInstance::ConnUint32(true),
+        SimpleType::UInt16 => ConnectiveInstance::ConnUint16(true),
+        SimpleType::UInt8 => ConnectiveInstance::ConnUint8(true),
+        SimpleType::Float64 => ConnectiveInstance::ConnFloat64(true),
+        SimpleType::Float32 => ConnectiveInstance::ConnFloat32(true),
+        SimpleType::BigInt => ConnectiveInstance::ConnBigInt(true),
+        SimpleType::BigRat => ConnectiveInstance::ConnBigRat(true),
         SimpleType::String => ConnectiveInstance::ConnString(true),
         SimpleType::Uri => ConnectiveInstance::ConnUri(true),
         SimpleType::ByteArray => ConnectiveInstance::ConnByteArray(true),
         SimpleType::Type => ConnectiveInstance::ConnType(true),
-        // Numeric sub-type connectives added by F1R3FLY-io/rholang-rs#100.
-        // Pending matching ConnectiveInstance tags in RhoTypes.proto
-        // (BACKLOG: wire proto variants), all narrower numeric types map
-        // to ConnInt so the parser-side SimpleType enum stays complete.
-        SimpleType::Int64
-        | SimpleType::Int32
-        | SimpleType::UInt64
-        | SimpleType::UInt32
-        | SimpleType::UInt16
-        | SimpleType::UInt8
-        | SimpleType::Float64
-        | SimpleType::Float32
-        | SimpleType::BigInt
-        | SimpleType::BigRat => ConnectiveInstance::ConnInt(true),
     };
 
     let connective = Connective {
