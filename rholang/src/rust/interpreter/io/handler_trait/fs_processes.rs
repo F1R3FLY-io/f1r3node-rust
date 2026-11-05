@@ -88,12 +88,11 @@ impl FsProcesses {
 
     /// Per-call `ContractCall` instance for the dispatcher's
     /// step-1 `unapply` call.  Each call to this method clones
-    /// `space` and `dispatcher` (Arc bumps — cheap).  Centralized
+    /// `dispatcher` (an Arc bump — cheap).  Centralized
     /// here so the dispatcher doesn't reach into `FsProcesses`
     /// field-wise.
     pub fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
     }

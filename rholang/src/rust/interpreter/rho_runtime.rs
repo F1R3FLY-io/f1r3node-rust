@@ -1407,7 +1407,6 @@ fn dispatch_table_creator(
 
     for def in all_processes.iter_mut() {
         let tuple = def.to_dispatch_table(ProcessContext::create(
-            space.clone(),
             dispatcher.clone(),
             block_data.clone(),
             invalid_blocks.clone(),

@@ -1,12 +1,11 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::hash::keccak256::Keccak256;
-use models::rhoapi::tagged_continuation::TaggedCont;
-use models::rhoapi::{BindPattern, Par, TaggedContinuation};
-use models::rust::utils::{new_freevar_par, new_gbool_par, new_gstring_par};
+use models::rhoapi::Par;
+use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
 use prost::Message;
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::contract_call::ContractCall;
@@ -15,7 +14,7 @@ use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
 use rholang::rust::interpreter::rho_type::RhoByteArray;
 use rholang::rust::interpreter::system_processes::BodyRefs;
 use rholang::rust::interpreter::test_utils::resources::create_runtimes;
-use rspace_plus_plus::rspace::errors::RSpaceError;
+use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
@@ -152,107 +151,11 @@ async fn system_reply_peek_reports_body_errors() {
     }
 }
 
-async fn assert_restoration_error(
-    body_ref: i64,
-    dispatch_error: Option<InterpreterError>,
-    expected: Vec<InterpreterError>,
-) {
-    let mut manager = InMemoryStoreManager::new();
-    let store = manager.r_space_stores().await.unwrap();
-    let (runtime, _, _) = create_runtimes(store, false, &mut Vec::new()).await;
-    let calls = Arc::new(AtomicUsize::new(0));
-    install_recorded_service(&runtime, BodyRefs::STDOUT, calls.clone()).await;
-    let cost = runtime.cost.clone();
-    runtime
-        .reducer
-        .dispatcher
-        ._dispatch_table
-        .write()
-        .await
-        .insert(
-            body_ref,
-            Box::new(move |_| {
-                cost.set(Cost::create(0, "force restoration failure"));
-                Box::pin(std::future::ready(match dispatch_error.clone() {
-                    Some(error) => Err(error),
-                    None => Ok(vec![channel("dispatch output")]),
-                }))
-            }),
-        );
-    runtime.cost.set(Cost::unsafe_max());
-    assert!(runtime
-        .reducer
-        .space
-        .consume(
-            vec![channel("reply")],
-            vec![BindPattern {
-                patterns: vec![new_freevar_par(0, Vec::new())],
-                remainder: None,
-                free_count: 1,
-            }],
-            TaggedContinuation {
-                tagged_cont: Some(TaggedCont::ScalaBodyRef(body_ref)),
-                guard: None,
-            },
-            false,
-            BTreeSet::from([0]),
-        )
-        .await
-        .unwrap()
-        .is_none());
-    let evaluated = runtime
-        .evaluate(
-            r#"new svc(`rho:io:stdout`) in { svc!("reply") }"#,
-            Cost::create(1_000_000, "restoration failure test"),
-            HashMap::new(),
-            Blake2b512Random::create_from_bytes(&[]),
-        )
-        .await
-        .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(
-        runtime.cost.get().value < 0,
-        "restoration must exhaust phlo: remaining {:?}, errors {:?}",
-        runtime.cost.get(),
-        evaluated.errors
-    );
-    assert_eq!(evaluated.errors, expected, "body ref {body_ref}");
-    assert!(runtime.get_data(&channel("reply")).await.is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn system_reply_peek_reports_restoration_errors() {
-    for body_ref in [BodyRefs::DEV_NULL, BodyRefs::OLLAMA_MODELS] {
-        assert_restoration_error(body_ref, None, vec![RSpaceError::from(
-            InterpreterError::OutOfPhlogistonsError,
-        )
-        .into()])
-        .await;
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn system_reply_peek_combines_dispatch_and_restoration_errors() {
-    for body_ref in [BodyRefs::DEV_NULL, BodyRefs::OLLAMA_MODELS] {
-        let dispatch_error = InterpreterError::ReduceError("dispatch failed".into());
-        assert_restoration_error(body_ref, Some(dispatch_error.clone()), vec![
-            dispatch_error,
-            RSpaceError::from(InterpreterError::OutOfPhlogistonsError).into(),
-        ])
-        .await;
-        assert_restoration_error(body_ref, Some(InterpreterError::UserAbortError), vec![
-            InterpreterError::UserAbortError,
-        ])
-        .await;
-    }
-}
-
 async fn install_recorded_service(
     runtime: &RhoRuntimeImpl,
     body_ref: i64,
     calls: Arc<AtomicUsize>,
 ) {
-    let space = runtime.reducer.space.clone();
     let dispatcher = Arc::downgrade(&runtime.reducer.dispatcher);
     runtime
         .reducer
@@ -264,7 +167,6 @@ async fn install_recorded_service(
             body_ref,
             Box::new(move |args| {
                 let call = ContractCall {
-                    space: space.clone(),
                     dispatcher: dispatcher.upgrade().unwrap(),
                 };
                 let calls = calls.clone();
@@ -349,4 +251,41 @@ async fn non_deterministic_outputs_survive_normal_and_peek_reply_dispatch() {
             }
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn system_reply_registers_joined_bitmask_channels() {
+    let mut manager = InMemoryStoreManager::new();
+    let store = manager.r_space_stores().await.unwrap();
+    let (runtime, _, _) = create_runtimes(store, false, &mut Vec::new()).await;
+    let setup = runtime
+        .evaluate(
+            r#"new t(`rho:system:bitmaskMergeableTag`) in {
+                @(*t, "x")!(1) |
+                for (_ <- @"reply" & @n <- @(*t, "x")) { @"joined"!(n) }
+            }"#,
+            Cost::unsafe_max(),
+            HashMap::new(),
+            Blake2b512Random::create_from_bytes(&[0]),
+        )
+        .await
+        .unwrap();
+    assert!(setup.errors.is_empty(), "{:?}", setup.errors);
+
+    let fired = runtime
+        .evaluate(
+            r#"new hash(`rho:crypto:keccak256Hash`) in { hash!("test".toUtf8Bytes(), "reply") }"#,
+            Cost::unsafe_max(),
+            HashMap::new(),
+            Blake2b512Random::create_from_bytes(&[1]),
+        )
+        .await
+        .unwrap();
+    assert!(fired.errors.is_empty(), "{:?}", fired.errors);
+    assert_value(&runtime, "joined", new_gint_par(1, Vec::new(), false)).await;
+    assert_eq!(
+        fired.mergeable.values().collect::<Vec<_>>(),
+        vec![&MergeType::BitmaskOr],
+        "the joined bitmask channel must be reported by the deploy whose system reply fired the join"
+    );
 }

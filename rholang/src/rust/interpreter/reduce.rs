@@ -218,6 +218,76 @@ fn join_error(err: JoinError) -> InterpreterError {
     }
 }
 
+type DispatchFuture = Pin<
+    Box<dyn futures::Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send>,
+>;
+
+/// Runs a COMM's dispatch and the produces that accompany it (a persistent
+/// retry, peek restorations) as parallel tasks. Only the dispatch can return
+/// `FailedNonDeterministicCall`; it counts as a failure. On its own it is
+/// returned unchanged, so `produce_inner` records the producing event as
+/// failed; with other errors it is aggregated with them.
+async fn join_comm_tasks(futures: Vec<DispatchFuture>) -> Result<DispatchType, InterpreterError> {
+    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+        futures.into_iter().map(spawn_in_dispatch_scope).collect();
+    let mut errors = Vec::new();
+    let mut non_deterministic_failure = false;
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(DispatchType::FailedNonDeterministicCall(error))) => {
+                non_deterministic_failure = true;
+                errors.push(error);
+            }
+            Ok(Err(error)) => errors.push(error),
+            Err(error) => errors.push(join_error(error)),
+            Ok(Ok(_)) => {}
+        }
+    }
+    if non_deterministic_failure && errors.len() == 1 {
+        return Ok(DispatchType::FailedNonDeterministicCall(errors.remove(0)));
+    }
+    aggregate_evaluator_errors(errors)
+}
+
+fn aggregate_evaluator_errors(
+    errors: Vec<InterpreterError>,
+) -> Result<DispatchType, InterpreterError> {
+    match errors.as_slice() {
+        // No errors
+        [] => Ok(DispatchType::Skip),
+
+        // Out Of Phlogiston or User Abort error is always single
+        // - if one execution path hits these, the whole evaluation stops as well
+        // UserAbortError takes precedence over OutOfPhlogistonsError
+        // Use single-pass find() to avoid double iteration
+        err_list
+            if err_list
+                .iter()
+                .find(|e| matches!(e, InterpreterError::UserAbortError))
+                .is_some() =>
+        {
+            Err(InterpreterError::UserAbortError)
+        }
+
+        err_list
+            if err_list
+                .iter()
+                .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
+                .is_some() =>
+        {
+            Err(InterpreterError::OutOfPhlogistonsError)
+        }
+
+        // Rethrow single error
+        [ex] => Err(ex.clone()),
+
+        // Collect errors from parallel execution
+        err_list => Err(InterpreterError::AggregateError {
+            interpreter_errors: err_list.to_vec(),
+        }),
+    }
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -441,7 +511,7 @@ impl DebruijnInterpreter {
             metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
                 .increment(join_start.elapsed().as_nanos() as u64);
 
-            match self.aggregate_evaluator_errors(flattened_results) {
+            match aggregate_evaluator_errors(flattened_results) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -478,7 +548,7 @@ impl DebruijnInterpreter {
             }
         }
 
-        self.aggregate_evaluator_errors(errors).map(|_| ())
+        aggregate_evaluator_errors(errors).map(|_| ())
     }
 
     /// Spawns the dispatch of a Rholang-body continuation as a task of `scope`
@@ -533,7 +603,7 @@ impl DebruijnInterpreter {
      * @param data  The par objects holding the processes being sent.
      * @param persistent  True if the write should remain in the tuplespace indefinitely.
      */
-    fn produce<'a>(
+    pub(super) fn produce<'a>(
         &'a self,
         chan: Par,
         data: ListParWithRandom,
@@ -747,22 +817,7 @@ impl DebruijnInterpreter {
                         futures.extend(self.produce_peeks(data_list).await);
                     }
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    join_comm_tasks(futures).await
                 } else if peek {
                     // dispatchAndRun
                     let self_clone = self.clone();
@@ -798,22 +853,7 @@ impl DebruijnInterpreter {
                     }
                     futures.extend(self.produce_peeks(data_list).await);
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
                         continuation,
@@ -892,22 +932,7 @@ impl DebruijnInterpreter {
                             >,
                         >);
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    join_comm_tasks(futures).await
                 } else if _peek {
                     // dispatchAndRun
                     let self_clone = self.clone();
@@ -943,22 +968,7 @@ impl DebruijnInterpreter {
                     }
                     futures.extend(self.produce_peeks(data_list).await);
 
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
                         continuation,
@@ -1006,27 +1016,6 @@ impl DebruijnInterpreter {
                 previous_output,
             )
             .await
-    }
-
-    pub(super) async fn restore_peeked_data(
-        &self,
-        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
-    ) -> Result<(), InterpreterError> {
-        let handles: Vec<_> = self
-            .produce_peeks(data_list)
-            .await
-            .into_iter()
-            .map(spawn_in_dispatch_scope)
-            .collect();
-        let mut errors = Vec::new();
-        for handle in handles {
-            match handle.await {
-                Ok(Err(error)) => errors.push(error),
-                Err(error) => errors.push(join_error(error)),
-                Ok(Ok(_)) => {}
-            }
-        }
-        self.aggregate_evaluator_errors(errors).map(|_| ())
     }
 
     async fn produce_peeks(
@@ -1132,46 +1121,6 @@ impl DebruijnInterpreter {
         }
 
         result
-    }
-
-    pub(super) fn aggregate_evaluator_errors(
-        &self,
-        errors: Vec<InterpreterError>,
-    ) -> Result<DispatchType, InterpreterError> {
-        match errors.as_slice() {
-            // No errors
-            [] => Ok(DispatchType::Skip),
-
-            // Out Of Phlogiston or User Abort error is always single
-            // - if one execution path hits these, the whole evaluation stops as well
-            // UserAbortError takes precedence over OutOfPhlogistonsError
-            // Use single-pass find() to avoid double iteration
-            err_list
-                if err_list
-                    .iter()
-                    .find(|e| matches!(e, InterpreterError::UserAbortError))
-                    .is_some() =>
-            {
-                Err(InterpreterError::UserAbortError)
-            }
-
-            err_list
-                if err_list
-                    .iter()
-                    .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
-                    .is_some() =>
-            {
-                Err(InterpreterError::OutOfPhlogistonsError)
-            }
-
-            // Rethrow single error
-            [ex] => Err(ex.clone()),
-
-            // Collect errors from parallel execution
-            err_list => Err(InterpreterError::AggregateError {
-                interpreter_errors: err_list.to_vec(),
-            }),
-        }
     }
 
     async fn generated_message_eval(
@@ -8163,6 +8112,76 @@ fn describe_par_type(par: &Par) -> String {
         }
     } else {
         "non-boolean process".to_string()
+    }
+}
+
+#[cfg(test)]
+mod join_comm_tasks_tests {
+    use super::*;
+
+    fn ready(result: Result<DispatchType, InterpreterError>) -> DispatchFuture {
+        Box::pin(std::future::ready(result))
+    }
+
+    fn dispatch_failure() -> InterpreterError {
+        InterpreterError::ReduceError("dispatch failed".to_string())
+    }
+
+    #[tokio::test]
+    async fn a_failed_non_deterministic_dispatch_alone_is_returned_unchanged() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                dispatch_failure(),
+            ))),
+            ready(Ok(DispatchType::Skip)),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Ok(DispatchType::FailedNonDeterministicCall(error)) if error == dispatch_failure()
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_non_deterministic_dispatch_is_aggregated_with_a_restoration_error() {
+        let restoration = InterpreterError::ReduceError("restoration failed".to_string());
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                dispatch_failure(),
+            ))),
+            ready(Err(restoration.clone())),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Err(InterpreterError::AggregateError { interpreter_errors })
+                if interpreter_errors == vec![dispatch_failure(), restoration]
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_restoration_error_after_a_successful_dispatch_is_returned() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::DeterministicCall)),
+            ready(Err(InterpreterError::OutOfPhlogistonsError)),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Err(InterpreterError::OutOfPhlogistonsError)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_user_abort_takes_priority_over_a_failed_non_deterministic_dispatch() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                InterpreterError::UserAbortError,
+            ))),
+            ready(Err(InterpreterError::OutOfPhlogistonsError)),
+        ])
+        .await;
+        assert!(matches!(result, Err(InterpreterError::UserAbortError)));
     }
 }
 
