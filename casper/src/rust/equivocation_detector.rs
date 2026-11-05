@@ -134,13 +134,22 @@ impl EquivocationDetector {
         block_store: &KeyValueBlockStore,
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
+        post_state_bonds: &[Bond],
+        slashable: &HashSet<Validator>,
     ) -> Result<ValidBlockProcessing, KvStoreError> {
         // P4-5: per-block hot path; demote info!→debug! per slashing audit.
         tracing::debug!("Calculate checkNeglectedEquivocationsWithUpdate");
 
-        let outcome =
-            Self::check_neglected_equivocation(block, dag, block_store, genesis, block_dag_storage)
-                .await?;
+        let outcome = Self::check_neglected_equivocation(
+            block,
+            dag,
+            block_store,
+            genesis,
+            block_dag_storage,
+            post_state_bonds,
+            slashable,
+        )
+        .await?;
 
         // P2-15: the outcome enum makes the detect/record/oblivious decision
         // a first-class value. Callers convert it to a validation verdict;
@@ -174,27 +183,30 @@ impl EquivocationDetector {
     /// The entire `tracker.data()` → decide → `tracker.add(...)` flow runs
     /// inside the `access_equivocations_tracker` closure to preserve Bug #2
     /// / T-9.2 atomicity.
+    ///
+    /// A block owes a slash only where it may issue one: the equivocator is in
+    /// `slashable` (it has evidence the block's epoch authorizes) and still
+    /// holds stake in the block's post-state, so a block that carries the
+    /// slash owes nothing.
     async fn check_neglected_equivocation(
         block: &BlockMessage,
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
         genesis: &BlockMessage,
         block_dag_storage: &BlockDagKeyValueStorage,
+        post_state_bonds: &[Bond],
+        slashable: &HashSet<Validator>,
     ) -> Result<NeglectedEquivocationOutcome, KvStoreError> {
-        // C14 / Perf-6: hoist `latest_messages` and `bonds` out of the
-        // per-equivocation-record loop. Both are computed solely from
-        // `block`; recomputing them inside the loop is O(B+J) work per
-        // record, for total O((B+J)·|records|). Hoisting collapses
-        // this to O(B+J+|records|·setup) and removes a per-iteration
-        // BTreeMap construction.
         let latest_messages = Self::to_latest_message_hashes(&block.justifications);
-        let bonds = proto_util::bonds(block);
 
         block_dag_storage.access_equivocations_tracker(|tracker| {
             let equivocations = tracker.data()?;
             let mut canonical_child_cache = CanonicalChildCache::new();
             let mut recorded: Vec<EquivocationRecord> = Vec::new();
             for equivocation_record in equivocations {
+                if !slashable.contains(&equivocation_record.equivocator) {
+                    continue;
+                }
                 let status = Self::get_equivocation_discovery_status(
                     dag,
                     block_store,
@@ -202,7 +214,7 @@ impl EquivocationDetector {
                     genesis,
                     &mut canonical_child_cache,
                     &latest_messages,
-                    &bonds,
+                    post_state_bonds,
                 )?;
                 match status {
                     EquivocationDiscoveryStatus::EquivocationNeglected => {
@@ -236,9 +248,6 @@ impl EquivocationDetector {
         })
     }
 
-    // C14 / Perf-6: `block` is no longer needed here — `latest_messages`
-    // and `bonds` (both derived from `block`) are precomputed once
-    // by the caller (`check_neglected_equivocation`) and passed in.
     fn get_equivocation_discovery_status(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,

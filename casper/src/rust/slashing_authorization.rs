@@ -27,7 +27,7 @@
 // audit-corpus artifacts preserved on the `analysis/slashing` branch.
 //
 use std::collections::btree_map::Entry;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
@@ -246,6 +246,23 @@ fn evidence_epoch(metadata: &BlockMetadata, epoch_length: i32) -> Result<Epoch, 
     epoch_for_block_number(metadata.block_number, epoch_length)
 }
 
+/// The senders of the invalid blocks whose evidence epoch is the epoch of
+/// `block_number`: the offenders a block at that height may slash.
+pub fn offenders_with_evidence_in_epoch_of(
+    invalid_blocks: impl IntoIterator<Item = BlockMetadata>,
+    block_number: i64,
+    epoch_length: i32,
+) -> Result<HashSet<Validator>, DomainError> {
+    let epoch = epoch_for_block_number(block_number, epoch_length)?;
+    let mut offenders = HashSet::new();
+    for metadata in invalid_blocks {
+        if metadata.invalid && evidence_epoch(&metadata, epoch_length)? == epoch {
+            offenders.insert(metadata.sender);
+        }
+    }
+    Ok(offenders)
+}
+
 /// Proposer-side enumeration of slash candidates for the block being built.
 ///
 /// At most one candidate per offender is emitted, even when the DAG contains
@@ -276,30 +293,6 @@ pub fn authorized_slash_candidates(
     // `From` impl in `errors.rs`).
     let current_epoch =
         epoch_for_block_number(proposed_block_num, epoch_length).map_err(SlashAuthError::from)?;
-
-    // A proposal view that trails this node's OWN finalized frontier is a
-    // catch-up view: the finalizer walks the whole DAG while the snapshot's
-    // epoch derives from justification-fed latest messages, and on a restored
-    // joiner the two clocks separate by whole epochs. Slashes issued from
-    // such a view match its stale epoch and are DOA at every live peer
-    // (receive rule 2), minting UnauthorizedSlashDeploy verdicts on the
-    // carriers instead of punishing anyone. Issuance waits until the view
-    // catches its own frontier; peers with current views lose nothing. An
-    // LFB without local metadata proves no lag, so issuance proceeds.
-    if let Some(lfb_metadata) = snapshot.dag.lookup(&snapshot.last_finalized_block)? {
-        let lfb_epoch = epoch_for_block_number(lfb_metadata.block_number, epoch_length)
-            .map_err(SlashAuthError::from)?;
-        if lfb_epoch > current_epoch {
-            tracing::debug!(
-                lfb_number = lfb_metadata.block_number,
-                lfb_epoch = lfb_epoch.get(),
-                current_epoch = current_epoch.get(),
-                "slash issuance suppressed: proposal view trails this node's \
-                 finalized frontier (mid-catch-up)"
-            );
-            return Ok(Vec::new());
-        }
-    }
 
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
