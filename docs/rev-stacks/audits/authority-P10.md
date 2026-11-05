@@ -3115,6 +3115,44 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | Lane C's gate claim, the proof-order liveness issue, P12-4, P12-6, P12-7, P12-8, the status pruning, and the earlier known issues | Known issue | Open |
 
 
+## Revision 36: rulings of 2026-11-05 (morning) on the P12 track
+
+- **Rulings recorded:**
+  - **F53 moves to the P12 track.** It does not block the handoff.
+  - **Lane C's FX-18 finding goes to the P12 track with F53.** A joiner cannot choose the canonical record without execution. Lane C's fix is a digest chain. Neither the finding nor the fix blocks the handoff.
+  - **Lane C's log correction (`c8c15ffe7`) closes the handoff condition** for lane C's gate claim. Lane A2 merges it into FX-17.
+- **Commits read:** `c8c15ffe7` on `patch/FX-15-followups`.
+
+### Lane C's log correction (`c8c15ffe7`)
+
+- Section 1 of the FX-15 follow-ups log now says that a pure stack body under a seal bound at run time passes the gate, and that `stack_payer` names no wallet for it. Revision 31 found the same thing.
+- The log states the gate's guarantee only for the seals that the gate names as an owner. It credits Decision 112, not the 34-shape table, with the closure of F33 and F39.
+- **The correction is accurate. The known issue of revision 31 is closed.** It is not yet in `patch/FX-17` at `dbc3dca9b`. The merge is lane A2's.
+
+### How the labels change
+
+- **F53:** the label changes from blocking to **P12 track**. The finding and its conditions in revision 35 stay as written.
+- **Item 10 (the void hook, revision 34):** lane C's finding is the general form of this item. A joiner that takes its statuses from the records must first know which record is canonical. Item 10 therefore moves to the P12 track together with lane C's finding. Its checks stay as written, and the digest chain must meet them.
+- **The reading that I apply (reversible):** P12-1, P12-2, P12-3 and P12-5 stay blocking for the handoff under Decision 116, as gaps that make a node depend on genesis. Two things go to the P12 track:
+  - the binding of the anchor root to the attested quorum (F53);
+  - the choice of the canonical record without execution (lane C's finding).
+
+  So P12-2 is closed for the handoff when the checkpoint, the handoff chain and the quorum check land with their tests. F53 follows on the P12 track. A ruling that differs from this reading changes only these labels.
+- **New commits for the next check:** `patch/FX-18` at `915e1c418` (P12-1: the join proof on the approved block, the state download at the anchor root, and a stored anchor) and `patch/FX-18-handoff` at `dacacc41a` (lane B's handoff record, item 9).
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| P12-1, P12-2, P12-3, P12-5 | **Blocking** | FX-18 in progress |
+| D11, D10, F47 and the deterministic storage reservation | **Blocking until FX-17 merges into FX-8b** | Unchanged |
+| F53, lane C's canonical-record finding and its digest chain, item 10 | P12 track | Not blocking the handoff |
+| Item 9 (the handoff carries the PoS epoch counter) | Check on lane B's handoff record | `dacacc41a` to be read |
+| Lane C's gate claim | — | **Closed** by `c8c15ffe7`. Merge into FX-17 pending. |
+| The suites on the FX-17 tip, the `dev` 8e6517d63 merge, the SIGSEGV run | Conditions | Open |
+| The proof-order liveness issue, P12-4, P12-6, P12-7, P12-8, the status pruning, and the earlier known issues | Known issue | Open |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
