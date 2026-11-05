@@ -2993,6 +2993,49 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | The conditions and known issues of revision 32 | — | Unchanged |
 
 
+## Revision 34 (action A-10): Decision 117, FX-18, and two items added to the A-10 list
+
+- **Reference:** design r25 (publications `b66423f`) and plan r8.29.
+- **Question 26 is answered by Decision 117.** A joiner takes its trusted bond set from a checkpoint in its node configuration: a finalized block and its bond set, refreshed with each release. It verifies forward through the validator-set handoffs at epoch boundaries. More than 2/3 of the previous set's stake certifies each handoff. It then checks the LFB's attestation quorum against the bond set so established, anchors at the LFB's own attested root, and takes the deployment statuses for the lifespan window from the records that it downloads, without execution.
+- **FX-18 closes P12-1, P12-2, P12-3 and P12-5:**
+  - Lane A2: the join, the rejoin and the executor resets, and the Decision 115 status rebuild.
+  - Lane B: the certified validator-set handoff at each epoch close.
+  - Lane C: the statuses from the downloaded records.
+- **Recorded in plan r8.29:** the conditions and the known issues of revision 33 (P12-4, P12-6, P12-7, P12-8, and the status pruning).
+- **Order of the watch:** F52 first, then FX-18.
+
+### Two items added to the A-10 list
+
+**9. Lane B's slashing-epoch item (revision 20).**
+- `slashing_authorization` computes the epoch by arithmetic from the block number. PoSV6 starts an epoch at the first close at or past the boundary (Decision 105). After a void boundary block, PoS can be in the earlier epoch while slashing computes the later one.
+- Under Decision 117, the epoch index also names the handoff record that a joiner verifies. So the epoch must have one source.
+- **Checks for FX-18:**
+  1. The handoff record carries the epoch index of the PoS counter, not an index computed from the block number.
+  2. A joiner verifies the chain of handoffs by that index, with no gap and no repeat when a boundary block is void.
+  3. Slashing reads the same index before B6. Revision 26 joins this item to the F51 release item, so both are settled together.
+  4. A test: a void block at an epoch boundary, followed by the handoff that the next close certifies, which a joiner then verifies.
+- **Label:** blocking for FX-18 if a joiner can fail to verify the handoff chain after a void boundary, because the joiner would then need history behind the fringe. The slashing part stays a known issue until B6.
+
+**10. Lane C's void-hook requirement.**
+- A void block for reason (a) or (b) returns its deployments to the pool. Those deployments carry no status, so a later block can run them. A void for reason (c) or (d) discards its deployments, and the statuses record that.
+- A joiner takes its statuses from the records, without execution (Decision 117). The void record must therefore carry enough for the joiner to tell the returned deployments from the discarded ones, and to know which deployments it must register as unrun for the deploy lifecycle.
+- **Checks for FX-18:**
+  1. The void record carries the returned deployments, or a rule that derives them from the block and the reason alone.
+  2. The statuses that a joiner derives from the records equal, byte for byte, the statuses of a node that executed the window. A test compares the two stores after a window that contains a void block of each reason.
+  3. Under the F52 fix, the derived statuses keep the carrier's position, so the joiner's gate decisions equal those of the other nodes.
+- **Label:** blocking for FX-18 if the derived statuses can differ from the executed ones, because the gate decisions, and so the state roots, would then differ.
+
+### Gate status
+
+| Item | Label | State |
+|---|---|---|
+| F52 | **Blocking** | First. No fix yet. |
+| P12-1, P12-2, P12-3, P12-5 | **Blocking** | Assigned to FX-18 |
+| A-10 items 9 and 10 | Checks for FX-18 | New |
+| D11, the side-dependent storage reservation, D10 and F47 | **Blocking until merged** | Unchanged |
+| P12-4, P12-6, P12-7, P12-8, the status pruning, and the earlier known issues | Known issue | Recorded in plan r8.29 |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
@@ -3021,4 +3064,4 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 23. **D10:** answered on 2026-11-04 (Decision 113: the pre-state form, with no lag term). The code applies the per-bond rate to the bonds at the block's true pre-state, with no lag term, because Decision 108 evaluates the pre-charge at execution. Is the §6.3 text of Decision 102 updated to this form?
 24. **F51:** answered on 2026-11-04 (Decision 114: two entries, each released at its own quarantine end). A validator that bonds again in quarantine and withdraws again loses track of its first amount, which stays locked in the native bond. Are the amounts added (lane B's recommendation), kept as two entries, or is the re-bond refused?
 25. **In-place upgrade of a v6 store (revision 32):** answered on 2026-11-05 (Decision 115: rebuild the statuses by replaying each block in the lifespan window from its own pre-state). an upgraded node lacks the canonical statuses that a node replayed from genesis has, and the two can compute different state roots. Does the handoff support an in-place upgrade of a v6 store from before FX-17, or must such a store be replayed from genesis?
-26. **The bond set for the join quorum (revision 33, P12-2):** P5 reads the bonds at the LFB's canonical root, which is the state that the joiner verifies. Which trusted reference does a joiner use to check that more than 2/3 of the bonded stake attested the root: a checkpoint that the operator configures, the approved genesis with a chain of bond changes, or another source?
+26. **The bond set for the join quorum (revision 33, P12-2):** answered on 2026-11-05 (Decision 117: a configured checkpoint, certified epoch handoffs, then the LFB quorum). P5 reads the bonds at the LFB's canonical root, which is the state that the joiner verifies. Which trusted reference does a joiner use to check that more than 2/3 of the bonded stake attested the root: a checkpoint that the operator configures, the approved genesis with a chain of bond changes, or another source?
