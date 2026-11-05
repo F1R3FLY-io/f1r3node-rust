@@ -1794,6 +1794,268 @@ async fn repeat_deploy_rejects_premature_retry_of_a_live_rejection() {
     .await
 }
 
+fn child_block(
+    block_store: &mut KeyValueBlockStore,
+    block_dag_storage: &mut IndexedBlockDagStorage,
+    parent: &BlockMessage,
+    genesis: &BlockMessage,
+    deploys: Option<Vec<ProcessedDeploy>>,
+) -> BlockMessage {
+    create_block(
+        block_store,
+        block_dag_storage,
+        vec![parent.block_hash.clone()],
+        genesis,
+        None,
+        None,
+        None,
+        deploys,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+async fn floor_context_at_genesis(
+    snapshot: &CasperSnapshot,
+    block_store: &KeyValueBlockStore,
+    parent: &BlockMessage,
+    genesis: &BlockMessage,
+) -> casper::rust::finality::floor_context::FloorContext {
+    let ctx = casper::rust::finality::floor_context::FloorContext::derive(
+        &snapshot.dag,
+        block_store,
+        std::slice::from_ref(&parent.block_hash),
+        &std::collections::BTreeMap::new(),
+        casper::rust::safety::clique_oracle::FtThreshold::from_f32_lossy(1.0),
+    )
+    .await
+    .expect("derive floor context");
+    assert_eq!(ctx.floor.hash, genesis.block_hash);
+    ctx
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_flags_a_floor_live_copy_below_the_tip_window() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let carrier = child_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &genesis,
+            Some(vec![deploy.clone()]),
+        );
+        let mut tip = carrier.clone();
+        for _ in 0..3 {
+            tip = child_block(
+                &mut block_store,
+                &mut block_dag_storage,
+                &tip,
+                &genesis,
+                None,
+            );
+        }
+        assert_eq!(proto_util::block_number(&carrier), 1);
+        assert_eq!(proto_util::block_number(&tip), 4);
+        let candidate = child_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &tip,
+            &genesis,
+            Some(vec![deploy]),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = mk_casper_snapshot(dag);
+        let ctx = floor_context_at_genesis(&snapshot, &block_store, &tip, &genesis).await;
+
+        assert_eq!(
+            Validate::transaction_expiration(&candidate, 3, Some(ctx.floor.block_number)),
+            Either::Right(ValidBlock::Valid),
+            "staging: the deploy must still be live on the floor clock"
+        );
+        assert_eq!(
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx)),
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_below_the_tip_window_does_not_trust_a_pruned_carrier_index() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut tip = child_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &genesis,
+            Some(vec![deploy.clone()]),
+        );
+        for _ in 0..3 {
+            tip = child_block(
+                &mut block_store,
+                &mut block_dag_storage,
+                &tip,
+                &genesis,
+                None,
+            );
+        }
+        let candidate = build_block(
+            vec![tip.block_hash.clone()],
+            None,
+            1786500000000,
+            None,
+            None,
+            Some(vec![deploy.clone()]),
+            None,
+            None,
+            None,
+            Some(5),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        dag.carrier_index
+            .write()
+            .set_watermark_if_absent(0)
+            .expect("certify");
+        dag.prune_carriers_below(2).expect("prune");
+        assert!(dag
+            .carrier_index_proves_absence(&deploy.deploy.sig)
+            .expect("probe"));
+        let mut snapshot = mk_casper_snapshot(dag);
+        let ctx = floor_context_at_genesis(&snapshot, &block_store, &tip, &genesis).await;
+
+        let (result, snapshotter) = record_metrics(|| {
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx))
+        });
+        assert_eq!(
+            result,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidRepeatDeploy)),
+        );
+        assert_eq!(
+            counter_value(&snapshotter, REPEAT_DEPLOY_CARRIER_WATERMARK_ENGAGED_METRIC),
+            0
+        );
+    })
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn repeat_deploy_keeps_the_gate_for_a_rejection_below_the_tip_window() {
+    with_storage(|mut block_store, mut block_dag_storage| async move {
+        let deploy = construct_deploy::basic_processed_deploy(0, None).unwrap();
+        let genesis = create_genesis_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let carrier = child_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &genesis,
+            &genesis,
+            Some(vec![deploy.clone()]),
+        );
+        let mut record = child_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &carrier,
+            &genesis,
+            None,
+        );
+        record.body.rejected_deploys = vec![RejectedDeploy {
+            sig: deploy.deploy.sig.clone(),
+            duplicate: false,
+            carrier: Bytes::new(),
+        }];
+        block_store.put(record.block_hash.clone(), &record).unwrap();
+        let mut tip = record.clone();
+        for _ in 0..3 {
+            tip = child_block(
+                &mut block_store,
+                &mut block_dag_storage,
+                &tip,
+                &genesis,
+                None,
+            );
+        }
+        assert_eq!(proto_util::block_number(&record), 2);
+        assert_eq!(proto_util::block_number(&tip), 5);
+        let candidate = child_block(
+            &mut block_store,
+            &mut block_dag_storage,
+            &tip,
+            &genesis,
+            Some(vec![deploy]),
+        );
+
+        let dag = block_dag_storage
+            .get_representation()
+            .expect("dag representation");
+        let mut snapshot = mk_casper_snapshot(dag);
+        let mut ctx = floor_context_at_genesis(&snapshot, &block_store, &tip, &genesis).await;
+
+        assert_eq!(
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx)),
+            Either::Left(BlockError::Invalid(InvalidBlock::PrematureDeployRetry)),
+            "a record above the floor keeps the gate closed"
+        );
+
+        ctx.floor = casper::rust::finality::floor::Floor {
+            hash: record.block_hash.clone(),
+            block_number: proto_util::block_number(&record),
+        };
+        assert_eq!(
+            Validate::repeat_deploy(&candidate, &mut snapshot, &block_store, 3, Some(&ctx)),
+            Either::Right(ValidBlock::Valid),
+            "a settled rejection keeps the retry legal when its carrier and its \
+             record both sit below the tip window"
+        );
+    })
+    .await
+}
+
 /// Companion to `repeat_deploy_rejects_premature_retry_of_a_live_rejection`.
 /// Tests the case the recovery exemption must NOT cover: a sig whose
 /// canonical inclusion in the block's parent scope is CLEAN. The
