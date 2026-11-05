@@ -17,6 +17,20 @@ pub fn normalize_simple_type<'ast>(
         SimpleType::Uri => ConnectiveInstance::ConnUri(true),
         SimpleType::ByteArray => ConnectiveInstance::ConnByteArray(true),
         SimpleType::Type => ConnectiveInstance::ConnType(true),
+        // Numeric sub-type connectives added by F1R3FLY-io/rholang-rs#100.
+        // Pending matching ConnectiveInstance tags in RhoTypes.proto
+        // (BACKLOG: wire proto variants), all narrower numeric types map
+        // to ConnInt so the parser-side SimpleType enum stays complete.
+        SimpleType::Int64
+        | SimpleType::Int32
+        | SimpleType::UInt64
+        | SimpleType::UInt32
+        | SimpleType::UInt16
+        | SimpleType::UInt8
+        | SimpleType::Float64
+        | SimpleType::Float32
+        | SimpleType::BigInt
+        | SimpleType::BigRat => ConnectiveInstance::ConnInt(true),
     };
 
     let connective = Connective {
