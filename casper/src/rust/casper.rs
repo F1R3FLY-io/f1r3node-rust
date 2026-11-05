@@ -156,6 +156,13 @@ pub trait Casper {
         block: &BlockMessage,
     ) -> Result<KeyValueDagRepresentation, CasperError>;
 
+    fn observe_local_service(
+        &self,
+        _block: &BlockMessage,
+        _sample: crate::rust::deploy_admission::LocalServiceSample,
+    ) {
+    }
+
     fn handle_invalid_block(
         &self,
         block: &BlockMessage,

@@ -249,7 +249,7 @@ async fn a_stale_based_rejecting_merge_never_becomes_the_floor_over_the_settled_
         )
         .await
         .expect("create sibling contender branch");
-        let BlockCreatorResult::Created(block, _pre, _post) = created else {
+        let BlockCreatorResult::Created(block, _pre, _post, _) = created else {
             panic!("create must mint the sibling contender branch");
         };
         nodes[2]

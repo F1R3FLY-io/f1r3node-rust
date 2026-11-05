@@ -58,6 +58,7 @@ use crate::rust::validator_identity::ValidatorIdentity;
  */
 pub struct PreparedUserDeploys {
     pub deploys: HashSet<Signed<DeployData>>,
+    pub admission_candidates: Option<HashSet<Bytes>>,
     pub effective_cap: usize,
     pub cap_hit: bool,
     pub selected_retry_count: usize,
@@ -1152,6 +1153,27 @@ async fn prepare_user_deploys_with_policy(
         .filter(|deploy| !is_retry_candidate(deploy))
         .cloned()
         .collect();
+    let admission_candidates = ordinary_candidates.iter().try_fold(
+        HashSet::new(),
+        |mut candidates, deploy| -> Result<_, CasperError> {
+            if casper_snapshot.dag.deploy_terminal(&deploy.sig)?.is_none()
+                && casper_snapshot
+                    .dag
+                    .deploy_canonical_appearance(&deploy.sig)?
+                    .is_none()
+            {
+                candidates.insert(deploy.sig.clone());
+            }
+            Ok(candidates)
+        },
+    );
+    let admission_candidates = match admission_candidates {
+        Ok(candidates) => Some(candidates),
+        Err(error) => {
+            tracing::warn!(%error, "Failed to measure local deploy inclusion capacity");
+            None
+        }
+    };
     // #194: deliberately does NOT exclude `rejected_in_scope` deploys here.
     // `retry_scope_exempt` (above) only exempts a rejected-in-scope deploy from
     // `blocked_by_scope` when THIS validator also holds it in its own local
@@ -1500,6 +1522,7 @@ async fn prepare_user_deploys_with_policy(
 
     Ok(PreparedUserDeploys {
         deploys: selected,
+        admission_candidates,
         effective_cap: ordinary_cap,
         cap_hit,
         selected_retry_count,
@@ -2923,8 +2946,10 @@ pub async fn create_with_progress(
     let floor_ctx = derive_floor_context(casper_snapshot, block_store).await?;
 
     // Prepare deploys
-    let (user_deploys, _, _) = if selection == super::proposer::DeploySelection::RecoveryEmpty {
-        (HashSet::new(), 0usize, false)
+    let (user_deploys, admission_candidates) = if selection
+        == super::proposer::DeploySelection::RecoveryEmpty
+    {
+        (HashSet::new(), None)
     } else {
         let t = std::time::Instant::now();
         let user_deploys_in_scope =
@@ -3106,7 +3131,7 @@ pub async fn create_with_progress(
         );
         metrics::histogram!(BLOCK_CREATOR_PREPARE_USER_DEPLOYS_TIME_METRIC, "source" => CASPER_METRICS_SOURCE)
             .record(t.elapsed().as_secs_f64());
-        (v, prepared.effective_cap, prepared.cap_hit)
+        (v, prepared.admission_candidates)
     };
     let dummy_deploys = {
         let t = std::time::Instant::now();
@@ -3646,10 +3671,23 @@ pub async fn create_with_progress(
 
     RuntimeManager::trim_allocator();
 
+    let service_sample = admission_candidates.map(|candidates| {
+        let included = signed_block
+            .body
+            .deploys
+            .iter()
+            .filter(|processed| candidates.contains(&processed.deploy.sig))
+            .count();
+        crate::rust::deploy_admission::LocalServiceSample {
+            included,
+            has_remaining_demand: candidates.len() > included,
+        }
+    });
     Ok(BlockCreatorResult::Created(
         signed_block,
         pre_state_hash_for_result,
         post_state_hash_for_result,
+        service_sample,
     ))
 }
 

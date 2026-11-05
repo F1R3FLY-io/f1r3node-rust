@@ -7,12 +7,17 @@ Its total size therefore does not measure fresh pending work.
 Admission bounds all fresh pending signatures, including future deploys.
 An earlier timestamp cannot bypass a full queue.
 An eight-sample window measures first inclusions in accepted local blocks that leave fresh, eligible work waiting.
+Each sample uses the block's selection candidates. Arrivals after selection do not count as unserved demand for that block.
 Three blocks of measured inclusion capacity define the queue budget.
 The estimate does not guarantee execution when service or consensus conditions change.
 
 Before the first sample, capacity is `3 * min(8, shard_cap)`.
 Idle blocks do not reduce capacity.
 Blocks that drain eligible work do not reduce capacity.
+Their actual inclusions can support a gradual increase without entering the sample window.
+Each increase is at most one currently estimated block, rounded up, with a minimum step of one.
+An increased budget cannot exceed three times the observed inclusion count or three configured block limits.
+A new sample with remaining eligible demand clears this recovery budget and uses the existing sample window.
 Future deploys alone do not establish eligible demand.
 A block with eligible demand and no first inclusion contributes zero.
 A zero estimate permits one probe after fresh pending work drains, if the shard cap is positive.

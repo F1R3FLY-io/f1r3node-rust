@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use casper::rust::api::block_api::BlockAPI;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
-use casper::rust::blocks::proposer::proposer::ProposerResult;
+use casper::rust::blocks::proposer::proposer::{BlockCreator, ProposerResult};
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
 use casper::rust::util::construct_deploy;
 use casper::rust::ProposeFunction;
@@ -465,6 +465,266 @@ async fn peer_blocks_do_not_reduce_local_admission_capacity() {
             .unwrap(),
         Either::Left(DeployError::PoolBusy { capacity: 24, .. })
     ));
+}
+
+struct LateArrivalBlockCreator {
+    inner: casper::rust::blocks::proposer::proposer::ProductionBlockCreator,
+    casper: std::sync::Arc<dyn Casper + Send + Sync>,
+    late_deploy: Option<
+        crypto::rust::signatures::signed::Signed<
+            models::rust::casper::protocol::casper_message::DeployData,
+        >,
+    >,
+    block_cap: u32,
+}
+
+impl BlockCreator for LateArrivalBlockCreator {
+    async fn create_block(
+        &mut self,
+        snapshot: &casper::rust::casper::CasperSnapshot,
+        validator: &casper::rust::validator_identity::ValidatorIdentity,
+        dummy: Option<(crypto::rust::private_key::PrivateKey, String)>,
+        selection: casper::rust::blocks::proposer::proposer::DeploySelection,
+    ) -> Result<BlockCreatorResult, casper::rust::errors::CasperError> {
+        let mut snapshot = snapshot.clone();
+        snapshot
+            .on_chain_state
+            .shard_conf
+            .max_user_deploys_per_block = self.block_cap;
+        let created = self
+            .inner
+            .create_block(&snapshot, validator, dummy, selection)
+            .await?;
+        if let Some(deploy) = self.late_deploy.take() {
+            assert!(matches!(self.casper.deploy(deploy)?, Either::Right(_)));
+        }
+        Ok(created)
+    }
+}
+
+async fn propose_with_capacity(
+    node: &TestNode,
+    block_cap: u32,
+    late_deploy: Option<
+        crypto::rust::signatures::signed::Signed<
+            models::rust::casper::protocol::casper_message::DeployData,
+        >,
+    >,
+) -> models::rust::casper::protocol::casper_message::BlockMessage {
+    use std::sync::Arc;
+
+    use casper::rust::blocks::proposer::propose_result::ProposeStatus;
+    use casper::rust::blocks::proposer::proposer::{
+        ProductionBlockCreator, ProductionBlockValidator, ProductionCasperSnapshotProvider,
+        ProductionProposeEffectHandler, Proposer,
+    };
+
+    use crate::add_block::proposer_spec::{
+        AlwaysActiveChecker, OkHeightChecker, OkProposeConstraintStakeChecker,
+    };
+
+    let mut proposer = Proposer::new(
+        Arc::new(node.validator_id_opt.clone().unwrap()),
+        None,
+        ProductionCasperSnapshotProvider,
+        AlwaysActiveChecker,
+        OkProposeConstraintStakeChecker,
+        OkHeightChecker,
+        LateArrivalBlockCreator {
+            inner: ProductionBlockCreator::new(
+                node.deploy_storage.clone(),
+                node.rejected_deploy_buffer.clone(),
+                node.runtime_manager.clone(),
+                node.block_store.clone(),
+            ),
+            casper: node.casper.clone(),
+            late_deploy,
+            block_cap,
+        },
+        ProductionBlockValidator,
+        ProductionProposeEffectHandler::new(
+            node.block_store.clone(),
+            node.block_retriever.clone(),
+            node.tle.clone(),
+            node.connections_cell.clone(),
+            node.rp_conf.clone(),
+            node.casper.event_publisher.clone(),
+        ),
+        true,
+    );
+    let result = proposer.propose(node.casper.clone(), true).await.unwrap();
+    assert!(matches!(
+        result.propose_result.propose_status,
+        ProposeStatus::Success(_)
+    ));
+    result.block_message_opt.unwrap()
+}
+
+#[tokio::test]
+async fn a_drained_initial_queue_recovers_one_estimated_block_of_capacity() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let shard = &genesis.genesis_block.shard_id;
+    let batch: Vec<_> = (0..24).map(|index| queued_deploy(index, shard)).collect();
+    for deploy in &batch {
+        assert!(matches!(
+            node.casper.deploy(deploy.clone()).unwrap(),
+            Either::Right(_)
+        ));
+    }
+    let refused = queued_deploy(24, shard);
+    assert!(matches!(
+        node.casper.deploy(refused.clone()).unwrap(),
+        Either::Left(DeployError::PoolBusy { capacity: 24, .. })
+    ));
+    assert!(!node.deploy_storage.contains_sig(&refused.sig).unwrap());
+
+    let block = propose_with_capacity(&node, 128, None).await;
+    assert_eq!(block.body.deploys.len(), 24);
+    let dag = node.block_dag_storage.get_representation().unwrap();
+    for deploy in &batch {
+        assert!(block
+            .body
+            .deploys
+            .iter()
+            .any(|processed| processed.deploy.sig == deploy.sig));
+        assert!(dag
+            .deploy_canonical_appearance(&deploy.sig)
+            .unwrap()
+            .is_some());
+    }
+    for timestamp in 100..132 {
+        assert!(matches!(
+            node.casper.deploy(queued_deploy(timestamp, shard)).unwrap(),
+            Either::Right(_)
+        ));
+    }
+    assert!(matches!(
+        node.casper.deploy(queued_deploy(132, shard)).unwrap(),
+        Either::Left(DeployError::PoolBusy { capacity: 32, .. })
+    ));
+}
+
+#[tokio::test]
+async fn admission_recovers_gradually_after_a_restricted_block() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    let node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let shard = &genesis.genesis_block.shard_id;
+    let batch: Vec<_> = (0..3).map(|index| queued_deploy(index, shard)).collect();
+    for deploy in &batch {
+        assert!(matches!(
+            node.casper.deploy(deploy.clone()).unwrap(),
+            Either::Right(_)
+        ));
+    }
+    let restricted = propose_with_capacity(&node, 1, None).await;
+    assert_eq!(restricted.body.deploys.len(), 1);
+    let pending: Vec<_> = batch
+        .into_iter()
+        .filter(|deploy| {
+            !restricted
+                .body
+                .deploys
+                .iter()
+                .any(|processed| processed.deploy.sig == deploy.sig)
+        })
+        .collect();
+    assert_eq!(pending.len(), 2);
+    for deploy in &pending {
+        assert!(node.deploy_storage.contains_sig(&deploy.sig).unwrap());
+    }
+    let remaining = propose_with_capacity(&node, 128, None).await;
+    assert_eq!(remaining.body.deploys.len(), 2);
+    for deploy in &pending {
+        assert!(remaining
+            .body
+            .deploys
+            .iter()
+            .any(|processed| processed.deploy.sig == deploy.sig));
+    }
+
+    let mut timestamp = 100;
+    for capacity in [4usize, 6, 8] {
+        let mut accepted = Vec::new();
+        for _ in 0..capacity {
+            let deploy = queued_deploy(timestamp, shard);
+            timestamp += 1;
+            assert!(matches!(
+                node.casper.deploy(deploy.clone()).unwrap(),
+                Either::Right(_)
+            ));
+            accepted.push(deploy);
+        }
+        let refused = queued_deploy(timestamp, shard);
+        timestamp += 1;
+        assert!(matches!(
+            node.casper.deploy(refused.clone()).unwrap(),
+            Either::Left(DeployError::PoolBusy { capacity: observed, .. }) if observed == capacity
+        ));
+        assert!(!node.deploy_storage.contains_sig(&refused.sig).unwrap());
+        if capacity < 8 {
+            let block = propose_with_capacity(&node, 128, None).await;
+            assert_eq!(block.body.deploys.len(), capacity);
+            let dag = node.block_dag_storage.get_representation().unwrap();
+            for deploy in &accepted {
+                assert!(block
+                    .body
+                    .deploys
+                    .iter()
+                    .any(|processed| processed.deploy.sig == deploy.sig));
+                assert!(dag
+                    .deploy_canonical_appearance(&deploy.sig)
+                    .unwrap()
+                    .is_some());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn service_samples_use_the_proposal_selection_before_late_arrivals() {
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .unwrap();
+    for (seeded, block_cap, expected_capacity) in [(0, 128, 24), (1, 128, 24), (3, 1, 3)] {
+        let node = TestNode::standalone(genesis.clone()).await.unwrap();
+        for index in 0..seeded {
+            assert!(matches!(
+                node.casper
+                    .deploy(queued_deploy(index, &genesis.genesis_block.shard_id))
+                    .unwrap(),
+                Either::Right(_)
+            ));
+        }
+        let late = queued_deploy(100, &genesis.genesis_block.shard_id);
+        let block = propose_with_capacity(&node, block_cap, Some(late.clone())).await;
+        let included = seeded.min(block_cap as i64);
+        assert_eq!(block.body.deploys.len(), included as usize);
+        assert!(!block
+            .body
+            .deploys
+            .iter()
+            .any(|deploy| deploy.deploy.sig == late.sig));
+        let pending = seeded - included + 1;
+        for index in 0..(expected_capacity - pending) {
+            let result = node
+                .casper
+                .deploy(queued_deploy(200 + index, &genesis.genesis_block.shard_id))
+                .unwrap();
+            assert!(matches!(result, Either::Right(_)), "{result:?}");
+        }
+        assert!(matches!(
+            node.casper.deploy(queued_deploy(300, &genesis.genesis_block.shard_id)).unwrap(),
+            Either::Left(DeployError::PoolBusy { capacity, .. }) if capacity == expected_capacity as usize
+        ));
+    }
 }
 
 #[tokio::test]
@@ -1229,18 +1489,16 @@ mod admission_regressions {
 
     #[tokio::test]
     async fn lower_service_preserves_reservations_and_admission_resumes_after_drain() {
-        use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
-
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
-        let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+        let node = TestNode::standalone(genesis.clone()).await.unwrap();
         let included = signed_deploy(0, &genesis.genesis_block.shard_id);
-        let block = match node.create_block(&[included]).await.unwrap() {
-            BlockCreatorResult::Created(block, ..) => block,
-            other => panic!("Expected a block: {other:?}"),
-        };
+        assert!(matches!(
+            node.casper.deploy(included.clone()).unwrap(),
+            Either::Right(_)
+        ));
         let seed: Vec<_> = (100..123)
             .map(|timestamp| signed_deploy(timestamp, &genesis.genesis_block.shard_id))
             .collect();
@@ -1250,10 +1508,9 @@ mod admission_regressions {
                 Either::Right(_)
             ));
         }
-        assert!(matches!(
-            node.process_block(block).await.unwrap(),
-            Either::Right(_)
-        ));
+        let block = super::propose_with_capacity(&node, 1, None).await;
+        assert_eq!(block.body.deploys.len(), 1);
+        assert_eq!(block.body.deploys[0].deploy.sig, included.sig);
         let initial_height = height(&node);
         let candidate = signed_deploy(1, &genesis.genesis_block.shard_id);
         assert!(matches!(
@@ -1295,28 +1552,31 @@ mod admission_regressions {
     }
 
     #[tokio::test]
-    async fn zero_service_allows_one_probe_only_after_the_fresh_queue_drains() {
-        use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
-
+    async fn zero_service_sample_allows_one_probe_only_after_the_fresh_queue_drains() {
         let genesis = GenesisBuilder::new()
             .build_genesis_with_parameters(None)
             .await
             .unwrap();
         let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
         node.allow_empty_blocks = true;
-        let empty = match node.create_block(&[]).await.unwrap() {
-            BlockCreatorResult::Created(block, ..) => block,
-            other => panic!("Expected an empty block: {other:?}"),
-        };
+        let empty = node.create_block_unsafe(&[]).await.unwrap();
         let waiting = signed_deploy(100, &genesis.genesis_block.shard_id);
         assert!(matches!(
             node.casper.deploy(waiting.clone()).unwrap(),
             Either::Right(_)
         ));
+        assert!(empty.body.deploys.is_empty());
         assert!(matches!(
-            node.process_block(empty).await.unwrap(),
+            node.process_block(empty.clone()).await.unwrap(),
             Either::Right(_)
         ));
+        node.casper.observe_local_service(
+            &empty,
+            casper::rust::deploy_admission::LocalServiceSample {
+                included: 0,
+                has_remaining_demand: true,
+            },
+        );
         let candidate = signed_deploy(1, &genesis.genesis_block.shard_id);
         assert!(matches!(
             node.casper.deploy(candidate.clone()).unwrap(),

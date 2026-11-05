@@ -338,9 +338,12 @@ fn reserve_deploy<T: TransportLayer + Send + Sync>(
                 *changed_component = Some("reservations");
                 continue;
             }
-            Err(ReserveError::Full { .. }) => {
+            Err(ReserveError::Full { occupied, .. }) => {
                 metrics::counter!(DEPLOY_ADMISSION_REFUSED_METRIC, "source" => CASPER_METRICS_SOURCE)
                 .increment(1);
+                drop(cache);
+                this.deploy_admission
+                    .log_pool_busy(capacity, pending_ahead, occupied);
                 return Ok(Either::Left(DeployError::PoolBusy {
                     pending_ahead,
                     capacity,
@@ -413,65 +416,10 @@ fn deploy_is_fresh(
             .is_none())
 }
 
-fn local_service_sample<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    block: &BlockMessage,
-) -> Result<Option<(usize, bool)>, CasperError> {
-    if !this
-        .validator_id
-        .as_ref()
-        .is_some_and(|id| id.public_key.bytes == block.sender)
-    {
-        return Ok(None);
-    }
-    let storage = this.deploy_storage.as_ref();
-    let rejected = this.rejected_deploy_buffer.lock()?.clone();
-    let dag = this.block_dag_storage.get_representation()?;
-    if dag.contains(&block.block_hash) {
-        return Ok(None);
-    }
-    let (earliest, now) = queue_bounds(&dag, this.casper_shard_conf.deploy_lifespan)?;
-    let window = FreshWindow {
-        earliest_valid_after: earliest,
-        now_millis: now,
-        latest_valid_after: dag
-            .latest_block_number()
-            .saturating_add(1)
-            .saturating_add(this.casper_shard_conf.deploy_lifespan),
-    };
-    let buffered = rejected.metadata_snapshot()?;
-    let pool = storage.metadata_snapshot()?;
-    let mut included = HashSet::new();
-    for processed in &block.body.deploys {
-        let deploy = &processed.deploy;
-        if pool.entries.contains_key(deploy.sig.as_ref())
-            && deploy_is_fresh(&dag, &buffered, &PendingDeploy::from(deploy), window)?
-        {
-            included.insert(deploy.sig.clone());
-        }
-    }
-    let has_remaining_demand = pool.entries.values().try_fold(false, |found, deploy| {
-        Ok::<_, KvStoreError>(
-            found
-                || (!included.contains(deploy.signature.as_slice())
-                    && deploy.valid_after_block_number < block.body.state.block_number
-                    && deploy_is_fresh(&dag, &buffered, deploy, window)?),
-        )
-    })?;
-    Ok(Some((included.len(), has_remaining_demand)))
-}
-
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
 ) -> Result<KeyValueDagRepresentation, CasperError> {
-    let service_sample = match local_service_sample(this, block) {
-        Ok(sample) => sample,
-        Err(error) => {
-            tracing::warn!(%error, "Failed to measure local deploy inclusion capacity");
-            None
-        }
-    };
     // Bug #17 / T-9.20: atomic (DAG insert, casper-buffer remove) pair
     // via the helper. See
     // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.20.
@@ -492,10 +440,6 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             block_hash_serde,
         ),
     )?;
-    if let Some((included, has_remaining_demand)) = service_sample {
-        this.deploy_admission
-            .observe(block.seq_num, included, has_remaining_demand);
-    }
     let insert_ms = insert_start.elapsed().as_millis();
     if insert_ms >= 1_000 {
         tracing::warn!(

@@ -15,6 +15,26 @@ const INITIAL_DEPLOYS_PER_BLOCK: usize = 8;
 struct ServiceSamples {
     inclusions: VecDeque<usize>,
     last_sequence: Option<i32>,
+    recovery_budget: usize,
+}
+
+impl ServiceSamples {
+    fn queue_budget(&self) -> usize {
+        let sampled_budget = if self.inclusions.is_empty() {
+            INITIAL_DEPLOYS_PER_BLOCK.saturating_mul(DEPLOY_QUEUE_BLOCKS)
+        } else {
+            let total: u128 = self.inclusions.iter().map(|count| *count as u128).sum();
+            (total * DEPLOY_QUEUE_BLOCKS as u128 / self.inclusions.len() as u128)
+                .min(usize::MAX as u128) as usize
+        };
+        sampled_budget.max(self.recovery_budget)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LocalServiceSample {
+    pub included: usize,
+    pub has_remaining_demand: bool,
 }
 
 #[derive(Default)]
@@ -39,6 +59,23 @@ pub(crate) struct ReservationCache {
 }
 
 impl DeployAdmission {
+    pub(crate) fn log_pool_busy(&self, capacity: usize, pending_ahead: usize, occupied: usize) {
+        if !tracing::enabled!(target: "f1r3fly.casper.deploy_admission", tracing::Level::DEBUG) {
+            return;
+        }
+        let samples = self.samples.lock();
+        tracing::debug!(
+            target: "f1r3fly.casper.deploy_admission",
+            capacity,
+            pending_ahead,
+            occupied,
+            latest_samples = ?samples.inclusions,
+            latest_sequence = ?samples.last_sequence,
+            recovery_budget = samples.recovery_budget,
+            "Deploy pool busy"
+        );
+    }
+
     pub(crate) fn observe(&self, sequence: i32, included: usize, has_remaining_demand: bool) {
         let mut samples = self.samples.lock();
         if samples.last_sequence.is_some_and(|last| sequence <= last) {
@@ -46,8 +83,15 @@ impl DeployAdmission {
         }
         samples.last_sequence = Some(sequence);
         if !has_remaining_demand {
+            let budget = samples.queue_budget();
+            let supported_budget = included.saturating_mul(DEPLOY_QUEUE_BLOCKS);
+            if supported_budget > budget {
+                let step = budget.div_ceil(DEPLOY_QUEUE_BLOCKS).max(1);
+                samples.recovery_budget = supported_budget.min(budget.saturating_add(step));
+            }
             return;
         }
+        samples.recovery_budget = 0;
         if samples.inclusions.len() == SERVICE_SAMPLE_BLOCKS {
             samples.inclusions.pop_front();
         }
@@ -63,15 +107,10 @@ impl DeployAdmission {
         if shard_cap == 0 {
             return 0;
         }
-        let samples = self.samples.lock();
-        if samples.inclusions.is_empty() {
-            return INITIAL_DEPLOYS_PER_BLOCK
-                .min(shard_cap)
-                .saturating_mul(DEPLOY_QUEUE_BLOCKS);
-        }
-        let total: u128 = samples.inclusions.iter().map(|count| *count as u128).sum();
-        (total * DEPLOY_QUEUE_BLOCKS as u128 / samples.inclusions.len() as u128)
-            .min(shard_cap.saturating_mul(DEPLOY_QUEUE_BLOCKS) as u128) as usize
+        self.samples
+            .lock()
+            .queue_budget()
+            .min(shard_cap.saturating_mul(DEPLOY_QUEUE_BLOCKS))
     }
 }
 
@@ -510,6 +549,113 @@ impl Drop for Reservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drained_capacity_recovers_one_estimated_block_at_a_time() {
+        let admission = DeployAdmission::default();
+        for (sequence, included, expected) in [(1, 24, 32), (2, 32, 43), (3, 43, 58)] {
+            admission.observe(sequence, included, false);
+            assert_eq!(admission.capacity(128), expected);
+        }
+        assert!(admission.samples.lock().inclusions.is_empty());
+    }
+
+    #[test]
+    fn small_drained_batches_do_not_change_the_budget() {
+        let admission = DeployAdmission::default();
+        for (sequence, included) in [(1, 0), (2, 1), (3, 8)] {
+            admission.observe(sequence, included, false);
+            assert_eq!(admission.capacity(128), 24);
+        }
+        assert_eq!(admission.samples.lock().recovery_budget, 0);
+    }
+
+    #[test]
+    fn saturated_samples_reset_recovery_and_keep_the_original_window() {
+        let admission = DeployAdmission::default();
+        admission.observe(1, 24, false);
+        assert_eq!(admission.capacity(128), 32);
+        admission.observe(2, 6, true);
+        assert_eq!(admission.capacity(128), 18);
+        admission.observe(3, 18, false);
+        assert_eq!(admission.capacity(128), 24);
+        admission.observe(4, 24, false);
+        assert_eq!(admission.capacity(128), 32);
+        admission.observe(5, 0, true);
+        assert_eq!(admission.capacity(128), 9);
+        let samples = admission.samples.lock();
+        assert_eq!(samples.recovery_budget, 0);
+        assert_eq!(
+            samples.inclusions.iter().copied().collect::<Vec<_>>(),
+            vec![6, 0]
+        );
+    }
+
+    #[test]
+    fn drained_capacity_recovery_respects_limits_and_saturates_without_overflow() {
+        let admission = DeployAdmission::default();
+        admission.observe(1, usize::MAX, false);
+        assert_eq!(admission.capacity(128), 32);
+        assert_eq!(admission.capacity(4), 12);
+        assert_eq!(admission.capacity(0), 0);
+        for sequence in 2..=256 {
+            admission.observe(sequence, usize::MAX, false);
+            assert!(admission.capacity(128) <= 384);
+        }
+        assert_eq!(admission.capacity(usize::MAX), usize::MAX);
+    }
+
+    #[test]
+    fn an_actual_drained_probe_can_recover_a_zero_service_budget() {
+        let admission = DeployAdmission::default();
+        admission.observe(1, 0, true);
+        admission.observe(2, 0, false);
+        assert_eq!(admission.capacity(128), 0);
+        for (sequence, included, expected) in [(3, 1, 1), (4, 1, 2), (5, 2, 3)] {
+            admission.observe(sequence, included, false);
+            assert_eq!(admission.capacity(128), expected);
+        }
+    }
+
+    #[test]
+    fn repeated_and_older_sequences_do_not_reset_recovery() {
+        let admission = DeployAdmission::default();
+        admission.observe(2, 24, false);
+        admission.observe(2, 0, true);
+        admission.observe(1, 0, true);
+        assert_eq!(admission.capacity(128), 32);
+        admission.observe(3, 6, true);
+        assert_eq!(admission.capacity(128), 18);
+    }
+
+    #[test]
+    fn drained_recovery_does_not_evict_saturated_history() {
+        let admission = DeployAdmission::default();
+        admission.observe(1, 128, true);
+        for sequence in 2..=8 {
+            admission.observe(sequence, 0, true);
+        }
+        assert_eq!(admission.capacity(128), 48);
+        admission.observe(9, 24, false);
+        assert_eq!(admission.capacity(128), 64);
+        {
+            let samples = admission.samples.lock();
+            assert_eq!(samples.inclusions.len(), 8);
+            assert_eq!(samples.inclusions.front(), Some(&128));
+        }
+        admission.observe(10, 0, true);
+        assert_eq!(admission.capacity(128), 0);
+    }
+
+    #[test]
+    fn drained_recovery_never_lowers_a_higher_service_estimate() {
+        let admission = DeployAdmission::default();
+        admission.observe(1, 100, true);
+        admission.observe(2, 1, false);
+        admission.observe(3, 24, false);
+        assert_eq!(admission.capacity(128), 300);
+        assert_eq!(admission.samples.lock().recovery_budget, 0);
+    }
 
     #[test]
     fn selection_order_uses_height_then_timestamp_then_signature() {

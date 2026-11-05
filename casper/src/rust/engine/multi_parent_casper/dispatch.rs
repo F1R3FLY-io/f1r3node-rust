@@ -118,6 +118,25 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_handle_valid_block(self, block).await
     }
 
+    fn observe_local_service(
+        &self,
+        block: &BlockMessage,
+        sample: crate::rust::deploy_admission::LocalServiceSample,
+    ) {
+        if self
+            .validator_id
+            .as_ref()
+            .is_some_and(|id| id.public_key.bytes == block.sender)
+            && super::block_admission::admit_dag_contains(self, &block.block_hash)
+        {
+            self.deploy_admission.observe(
+                block.seq_num,
+                sample.included,
+                sample.has_remaining_demand,
+            );
+        }
+    }
+
     fn handle_invalid_block(
         &self,
         block: &BlockMessage,
