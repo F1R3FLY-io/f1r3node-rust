@@ -3205,6 +3205,99 @@ FX-17 must take `patch/FX-17-epoch` at `30258ed83` before it merges into FX-8b, 
 | The earlier known issues | Known issue | Open |
 
 
+## Revision 38 (actions A-8 and A-9): FX-8b takes FX-17, FX-20 (Decision 119), and the FX-19 and FX-21 memos
+
+- **The ruling of revision 37 holds.** `dacacc41a` (`patch/FX-18-handoff`) is not an ancestor of `patch/FX-17` (`0b01b1663`), `patch/FX-8b` (`b2bc4a75e`) or any tag.
+- **Commits read:**
+  - `patch/FX-8b` at `b2bc4a75e` (lane A2): the merge of FX-17 `0b01b1663`, with the full-suite counts.
+  - `patch/FX-20` at `91e3a02b7` (lane A2), cut from FX-8b `b2bc4a75e`: Decision 119, and the record-format memo to lane C.
+  - `patch/FX-19` at `527665315` (lane C): the memo for Decision 120. No code yet.
+  - `patch/FX-21` at `b7c05b109` (lane B): the seal-format memo for Decision 121. No code yet.
+  - `patch/FX-18-memo` at `b4718cc13` (lane C): the digest-chain memo, P12 track. Noted only.
+- **Reference:** design r26 (publications `671a704`), Decisions 118 to 123.
+- **Method:** a reading of the diffs, of the memos, and of `executor.rs`, `runtime.rs`, `record.rs` and `block_record.rs` on FX-20. No tests were run.
+
+### FX-8b takes FX-17 (`b2bc4a75e`)
+
+- The merge changes only `FX-8b.md` against FX-17. No file needed a resolution.
+- **D11 and the deterministic storage reservation are now on FX-8b. Both blocking items are closed.**
+- **Full suites at `0b01b1663`:** casper `--test mod` 1,314 passed and 1 failed, casper lib 900, rholang 2,463, node 469, comm 437 after one rerun. Lane A2's three labels are accepted:
+  - The root-only `shared` failure, as before.
+  - A `comm` timing test that failed once and passes alone.
+  - the long-run test under parallel load, which fixes 34 positions alone. Its count depends on the load of the machine, not on the code.
+- **Still open:** the SIGSEGV run with `--test-threads=1`, and the `dev` merge (`dev` is now at `3b5daabb4`).
+
+### FX-20: Decision 119 conforms
+
+| Check of revision 37 | Result |
+|---|---|
+| κ is in the record | **Met.** `BlockRecordProto` field 20, `close_phlo`. κ is the cells and the work of the close's own PoS code (the surface `None`), as the comm ledger meters them. |
+| Replay reproduces κ | **Met.** `replay_after` reads κ from the replayed close and rejects a record whose κ differs. Test: `a_record_with_another_close_cost_does_not_replay`. The cell that carries κ out of the runtime is made new for each close in `close_gate`, so two blocks cannot share it. |
+| The pre-charge, the hold and void reason (a) are removed from play, replay and the void handling | **Met.** No reference to `CloseCharge`, `close_precharge`, `hold_close`, `close_payer`, `charge_close` or `CloseUncovered` remains in `casper`, `rholang` or `node`. The proposer pays nothing (`a_proposer_with_no_funds_closes_its_block_and_reason_a_stays_reserved`). |
+| No record can carry reason (a) | **Met.** Tag 1 is reserved. `VoidReason::from_tag(1)` is an error, so a record or a void-block evidence with tag 1 does not decode. **This answers question 1 of revision 37.** |
+| Reasons (b), (c) and (d), Decisions 101 and 109 and the traced (d) close are unchanged | **Met.** A void record must carry κ = 0, and `with_failed_close` sets it. |
+
+**The (d) record and κ.** A platform failure of the close, the only failure that gives (d), returns from the system-deploy wrapper before the runtime writes κ. So the replay of an honest (d) record finds no κ and compares 0 with 0. A failure that the close returns as a result is not (d). Play stops with an error, as before. **No defect.**
+
+**FX-20's two labels are accepted:**
+- The interim gating of the continuations that the close fires stays until FX-19, as a known issue.
+- `close_bound_spec` keeps the measured bound (200,000 + 13,000 per bond) as data for B6, and checks κ directly. **Accepted.**
+
+**Condition:** FX-20 merges into FX-8b, with the suites on the merged tip.
+
+**Question 2 of revision 37 is answered** by lane A2's format memo. The refusal event leaves the format in a patch after FX-19, tag 4 is reserved, and a decoder that finds tag 4 refuses the event.
+
+### The FX-19 memo (Decision 120): review before code
+
+**The rule is deterministic as stated.**
+- The operations of a firing are held in a buffer until its body ends, so a firing that passes its bound leaves no effect.
+- A bound is held until its run ends. So the logged firings of a run are covered in any order if they are covered together, and replay can check them in its own order.
+- **Agreed.**
+
+**Option (i) or (ii): my recommendation is (i).**
+- Under (i), each run takes the share free(W) / n. This keeps each run independent of the others, so there is no state between runs and no new reason to drop a client's envelope.
+- Under (ii), a client's envelope can be dropped because of a contract that it called. That is a new failure mode that clients cannot predict.
+- **Condition:** the memo must give the rounding of free(W) / n (down) and say that n counts only the envelopes that the gate admitted.
+
+**Conditions for the code:**
+1. **Authority (P10):** the bound comes from the installer's own signed deployment (its `phloLimit` and `phloPrice`), read from the seal record that the reducer wrote at install time. No received term can set it. A test installs a continuation, and checks that a term received at run time cannot change the bound of that continuation.
+2. **A firing that passes its bound consumes the datum.** The memo says that the client's own work is not affected. The client's datum is still consumed with no effect. **Known issue for the handoff notes,** not a defect. The client sees it in the logged COMM.
+3. **The storage of a discarded firing:** the storage that the body reserved at issue (c97c2e4b3) is part of its cost. A test shows that a discarded firing charges W exactly b, and that no storage cell from the firing stays.
+4. **Replay** recomputes each body's cost and rejects a record in which a firing that passes its bound is not discarded, or in which a covered firing is discarded.
+
+### The FX-21 memo (Decision 121): review before code
+
+**The elaborated seal is a field of `CostSignedTerm`.** The kind, the origin and the per-firing limit are written only by the pass. The owner is still resolved from the signature at run time.
+
+**Conditions for the code:**
+1. **The run-time signer check stays, whatever kind the term names. High if it is dropped.**
+   - The memo says that `kind` replaces the kind that `check_region_signature` derives today. The kind must not replace the check that the owner is a signer of the origin's envelope or is held (Decision 112, `held_or_signed`).
+   - A term of kind deployment must still resolve to the deployer of its own origin.
+   - A test: a term with the origin of its own envelope, kind deployment, and an owner that is not a signer of that envelope is refused.
+2. **The origin check at entry** (memo §4) must apply to every way that a term reaches the reducer:
+   - The top level of a deployment.
+   - A quoted process that is received and then evaluated.
+   - The body of a stored continuation when it fires.
+   - a term that a system process returns.
+
+   A test for each.
+3. **The reducer refuses a user deployment that is not one sealed term of kind deployment** (memo question C4). Exploratory deployments are not elaborated, and they must not change state.
+4. **The two copies of the seal** (memo question C3): `TaggedContinuation.seal` and the term's seal must agree when a receive is stored. A test stores a receive and compares the two.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| D11, the deterministic storage reservation | — | **Closed** on FX-8b `b2bc4a75e` |
+| Decision 119 | — | **Conforms** on FX-20. Merge into FX-8b pending. |
+| Decisions 120 and 121 | **To be audited when the code lands** | Memos reviewed. Conditions above. |
+| Decision 122 | **To be audited when the code lands** | No branch yet |
+| The SIGSEGV run, the `dev` merge, Decision 123 | Conditions | Open |
+| The datum consumed by a firing that passes its bound | Known issue | New |
+| D10, F47 | Known issue for B6 | Unchanged |
+| The P12 track | Parked | `patch/FX-18-handoff` stays off FX-17 and FX-8b |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
