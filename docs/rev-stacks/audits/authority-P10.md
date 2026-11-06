@@ -3697,6 +3697,80 @@ After these: my final read, and the tag.
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 46 (actions A-8 and A-9): FX-8b takes FX-19 (Decisions 132 and 133) and FX-21, and the failed-run charge
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b (`e3edaf623`), FX-19, FX-19-format, FX-20, FX-21, FX-22, Q-35-memo or any tag.
+- **Commits read:**
+  - `patch/FX-8b` at `e3edaf623` (lane A2): the merges of FX-19 `59cb1f0c5` (`3ce70bd40`), FX-21 `0991d5768` (`a8d1d0f57`) and FX-19 `6214a1053` (`7e53d6052`), and the fixture.
+  - `patch/FX-19` at `821c4bee0` (lane C): the Decision 133 tests and the log.
+- **No change:** the Q-35 parser pin (no `rev-stacks/syntax-dev` commit is named yet), and there is no tag.
+- **Method:** a reading of the logs, of the `executor.rs` merge diff and of the Decision 133 tests. No tests were run.
+
+### The failed-run charge after FX-22: no longer blocking
+
+Lane A2 reports two numbers for a failed run:
+- **The wallet debit** comes from the settlement. The settlement charges the cells and the work that the run's membrane metered, and it caps the charge at Δ. In `gated_executor_spec::a_run_never_spends_more_than_its_commitment` (`1 / 0`, Δ = 5,014, `phloLimit` 1,000,000), the run is debited 102.
+- **The record's `compute_phlo`** is the run's evaluation limit, Δ, for each error kind that dev charges in full.
+
+So the debit never passes the commitment, and the linear proof of the gate holds. **The blocking label of revisions 44 and 45 is removed.**
+- **Known issue, for a charging ruling:** for a failed run, the record's `compute_phlo` (Δ) and the settled debit (the metered work) differ. Replay checks both numbers, so nodes cannot disagree. Which number a failed run must pay is Meredith's choice. The handoff notes must say that the debit, not `compute_phlo`, is what a wallet pays.
+
+### The FX-21 and FX-22 interaction: met
+
+- Play calls `process_deploy_limited(envelope, Δ)`. Replay sets `run_limit` to Δ around `replay_deploy_e` and clears it before it checks the result, so an error cannot leave a stale limit on the runtime.
+- The record keeps the signed envelope, and the seal keeps the signed `phloLimit`. FX-22's `limited()` copy is removed.
+- **Merge check 1 of revision 44 is met.**
+
+### Decision 134: met
+
+`close_charge_spec::a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_void_record_replays`:
+- a bond deployment installs a handle continuation that the close fires, and the body passes its bound;
+- the close fails with `FiringExhausted`, and the block is void for reason (d) with κ = 0;
+- the deployment's own entry stays `Completed`;
+- the record replays under 1, 2 and 4 workers.
+
+**Merge check 3 of revision 44 is met.**
+
+### Decision 133: met, with one test condition
+
+- **How it works.** When a receive is stored, `continuation_seal` writes into the stored record the limit of the continuation's own seal. It does this only when the body is that one sealed term and the seal is own. FX-19 bounds each firing by the stored record's limit, so lane C's code does not change. A seal deeper in P has no running total of its own, because its limit applies when that seal is itself stored and fires. This agrees with the ruling.
+- **Tests, each with replay:**
+  - N smaller than m: P passes n, the run fails, and the owner pays exactly n and one cell.
+  - N larger than m: P runs to completion under n.
+  - P with no seal: P is bounded by m.
+- **Test condition:** in all three tests, the inner seal t and the outer seal s1 are the same deployer (`d`). The tests do not show who pays when t and s1 differ. The bound is t's n, and the payer on exhaustion is the stored record's purse.
+  - Both owners must be signers of the installing deployment, so no authority result changes.
+  - A test with two signers must show that the owner who pays matches the ruling. The answer goes in the FX-19 log.
+  - **Known issue until then.**
+
+### The FX-21 revision 2 condition: open
+
+The case of a sealed term that runs outside every seal in a run that records seals (revision 44) is not addressed in the FX-21 or FX-8b logs. **The condition stays.** Lane B states the case, or restores the refusal.
+
+### Merge conditions
+
+| Condition | State |
+|---|---|
+| 1. `dev` merged, with the parser pinned to the `rev-stacks/syntax-dev` commit that holds `743752b` and `4e22339` (Q-35) | **Open.** No commit named. |
+| 2. FX-19 (with `6735761a8` and Decisions 132 and 133) and FX-21 merged, with the fixture written again | **Met** at `e3edaf623`. `821c4bee0` changes only the FX-19 log, and FX-8b does not need it. |
+| 3. The full suites on the merged tip | **Open.** Lane A2 posts subsets: `--test mod v6::` 143, `multi_node::v6` 11, `forms_spec` 15, `delta_sigma_spec` 8, `elaboration_spec` 20, `seal_record_spec` 7. Lane C's full run on FX-19 after the FX-21 merge (casper `--test mod` 1,334, rholang 2,471, node 469) is not on the FX-8b tip. |
+| 4. The single-threaded run | **Open** |
+
+After these: my final read, and the tag.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decisions 119 to 122 and 130 to 134 | — | **On FX-8b** at `e3edaf623` |
+| The failed-run charge | — | **No longer blocking.** Known issue: `compute_phlo` and the debit differ, for a charging ruling. |
+| The payer under Decision 133 when the inner and outer seals differ | Known issue | A test with two signers |
+| The sealed term outside every seal (FX-21 revision 2) | Condition | Open |
+| Merge conditions 1, 3 and 4 | Conditions | Open |
+| The final read and the tag | — | After the merge conditions |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
