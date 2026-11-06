@@ -3426,6 +3426,49 @@ No `CloseCharge`, pre-charge or refusal log remains on the merged paths. The cro
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 41 (actions A-8 and A-9): FX-8b takes FX-19-format and FX-22
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b (`818e72d6c`), FX-19, FX-19-format, FX-20, FX-21, FX-22 or any tag.
+- **Commits read:**
+  - `patch/FX-19-format` at `e1073055d` (lane A2).
+  - `patch/FX-8b` at `818e72d6c` (lane A2): the merges of FX-19-format (`a61d45834`) and FX-22 (`818e72d6c`).
+- **No change:** FX-21 is still a memo, there is no ruling on errors inside a firing, and there is no handoff tag.
+- **Method:** a reading of the diffs and of the FX-8b log. No tests were run.
+
+### FX-19-format (`e1073055d`): conforms
+
+- `RefusalEventProto` and `Event::Refusal` are removed. `EventProto` reserves tag 4 and the name `refusal`.
+- A decoder that finds tag 4 refuses the event. Test: `an_event_with_the_reserved_refusal_tag_does_not_decode`.
+- The refusal arms are removed from `event_converter.rs`, `replay_cache.rs` and `footprint.rs`, and dev's `to_rspace_event` is restored.
+- **This is the format patch that revision 38 asked for. The condition is closed.**
+
+### FX-22 merged into FX-8b (`818e72d6c`)
+
+- `executor.rs` had six conflicts with FX-19. The resolution keeps FX-19's metering (`EnvelopeFunding` with the count of admitted runs, no refusal log, no `BlockLedger`) and FX-22's committed amount for each run and its replay. **The resolution is correct.**
+- **Two FX-19 tests changed**, and the change is correct. The tests held the installer's balance with a `Nil` deployment and a large `phloLimit`. Under FX-22, `Nil` commits only its estimate, so the balance stayed free. The tests now hold the balance with a deployment outside the estimated fragment, which commits its full `phloLimit`.
+
+**Lane A2's interaction note: accepted for FX-22, with a condition for Decision 127.**
+- The run evaluates a copy of the deployment limited to Δ (FX-22 D3). So for a deployment in the estimated fragment, the seal that FX-19 writes carries Δ, not the signed `phloLimit`.
+- In the fragment, every channel is a private name that cannot leave the term, so its stored code can never fire. **No effect now. Accepted.**
+- **Condition for Decision 127 and FX-21:** the default firing limit of a seal must come from the signed deployment, not from the copy that the run evaluates. Otherwise, a later widening of the fragment would silently give stored code a smaller bound than the one that the installer signed. A test installs stored code from a deployment whose Δ is smaller than its `phloLimit`, and checks the seal's limit.
+
+### Open conditions
+
+- **`6735761a8` is still not in FX-8b.** The condition tests of revision 40 must reach the handoff branch.
+- **The full suites on the merged tip.** Lane A2 posts the v6 subsets (casper lib `v6::` 127, `--test mod v6::` 126, `multi_node::v6` 11, `forms_spec` 5, `delta_sigma_spec` 8). The full suites are needed after three merges.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decisions 119, 120 and 122 and the format patch | — | **On FX-8b** at `818e72d6c`. Conditions: the full suites, and FX-8b takes `6735761a8`. |
+| Decision 121 (FX-21) and Decision 127 (lane B's firing-limit syntax) | **To be audited when the code lands** | New condition: the default limit comes from the signed deployment |
+| The SIGSEGV run, the `dev` merge, Decision 123 | Conditions | Open |
+| Errors inside a firing (lane C's known issue 8) | Known issue | For a ruling |
+| The earlier known issues, D10 and F47 for B6 | Known issue | Unchanged |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
