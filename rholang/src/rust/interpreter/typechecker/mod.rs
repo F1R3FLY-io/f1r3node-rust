@@ -1,11 +1,13 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-vii (integer arithmetic): synthesis (`synth`) for ground
-//! literals, `SimpleType` connectives, Pi well-formedness, dependent
-//! application, fully-annotated lambdas, β-definitional equality in
-//! `check`, and the integer binary operators (`+`, `-`, `*`, `/`, `%`),
-//! each `Int × Int → Int`. Remaining phases add comparison/boolean
-//! operators and process-level typing.
+//! Phase 2c-viii (comparison and boolean operators): synthesis
+//! (`synth`) for ground literals, `SimpleType` connectives, Pi
+//! well-formedness, dependent application, fully-annotated lambdas,
+//! β-definitional equality in `check`, the integer binary operators,
+//! `ENeg` (`Int → Int`), the comparison operators (`<`, `≤`, `>`, `≥`
+//! on `Int`; `==` / `!=` on any shared type), and the boolean
+//! connectives (`&&`, `||`, `!`). Remaining phases add process-level
+//! typing.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -326,6 +328,41 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
             Ok(int_ty)
         }
 
+        // Integer ordering comparisons. `Int × Int → Bool`.
+        ExprInstance::ELtBody(e) => synth_int_cmp(_ctx, e.p1.as_ref(), e.p2.as_ref(), "ELt"),
+        ExprInstance::ELteBody(e) => synth_int_cmp(_ctx, e.p1.as_ref(), e.p2.as_ref(), "ELte"),
+        ExprInstance::EGtBody(e) => synth_int_cmp(_ctx, e.p1.as_ref(), e.p2.as_ref(), "EGt"),
+        ExprInstance::EGteBody(e) => synth_int_cmp(_ctx, e.p1.as_ref(), e.p2.as_ref(), "EGte"),
+
+        // Equality / inequality. Both operands must have the same type
+        // (up to β-def-eq); result is Bool.
+        ExprInstance::EEqBody(e) => synth_poly_eq(_ctx, e.p1.as_ref(), e.p2.as_ref(), "EEq"),
+        ExprInstance::ENeqBody(e) => synth_poly_eq(_ctx, e.p1.as_ref(), e.p2.as_ref(), "ENeq"),
+
+        // Boolean logical operators. `Bool × Bool → Bool` / `Bool → Bool`.
+        ExprInstance::EAndBody(e) => synth_bool_binop(_ctx, e.p1.as_ref(), e.p2.as_ref(), "EAnd"),
+        ExprInstance::EOrBody(e) => synth_bool_binop(_ctx, e.p1.as_ref(), e.p2.as_ref(), "EOr"),
+        ExprInstance::ENotBody(e) => {
+            let p = e
+                .p
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("ENot with no p".to_string()))?;
+            let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+            check(_ctx, p, &bool_ty)?;
+            Ok(bool_ty)
+        }
+
+        // Integer negation. `Int → Int`.
+        ExprInstance::ENegBody(e) => {
+            let p = e
+                .p
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("ENeg with no p".to_string()))?;
+            let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+            check(_ctx, p, &int_ty)?;
+            Ok(int_ty)
+        }
+
         // A bound variable's type is its entry in the context.
         ExprInstance::EVarBody(evar) => {
             let v = evar
@@ -504,6 +541,59 @@ fn single_expr(par: &Par) -> Option<&ExprInstance> {
         return None;
     }
     par.exprs.first()?.expr_instance.as_ref()
+}
+
+/// Shared helper for ELt/ELte/EGt/EGte — both operands must be Int;
+/// result is Bool.
+fn synth_int_cmp(
+    ctx: &Context,
+    p1: Option<&Par>,
+    p2: Option<&Par>,
+    label: &'static str,
+) -> Result<Par, TypeError> {
+    let p1 = p1.ok_or_else(|| TypeError::NotWellFormed(format!("{label} with no p1")))?;
+    let p2 = p2.ok_or_else(|| TypeError::NotWellFormed(format!("{label} with no p2")))?;
+    let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+    check(ctx, p1, &int_ty)?;
+    check(ctx, p2, &int_ty)?;
+    Ok(type_par(ConnectiveInstance::ConnBool(true)))
+}
+
+/// Shared helper for EEq/ENeq — operands must share a type (up to
+/// β-def-eq); result is Bool.
+fn synth_poly_eq(
+    ctx: &Context,
+    p1: Option<&Par>,
+    p2: Option<&Par>,
+    label: &'static str,
+) -> Result<Par, TypeError> {
+    let p1 = p1.ok_or_else(|| TypeError::NotWellFormed(format!("{label} with no p1")))?;
+    let p2 = p2.ok_or_else(|| TypeError::NotWellFormed(format!("{label} with no p2")))?;
+    let t1 = synth(ctx, p1)?;
+    let t2 = synth(ctx, p2)?;
+    if !def_eq(&t1, &t2) {
+        return Err(TypeError::Mismatch {
+            expected: Box::new(t1),
+            actual: Box::new(t2),
+        });
+    }
+    Ok(type_par(ConnectiveInstance::ConnBool(true)))
+}
+
+/// Shared helper for EAnd/EOr — both operands must be Bool; result
+/// is Bool.
+fn synth_bool_binop(
+    ctx: &Context,
+    p1: Option<&Par>,
+    p2: Option<&Par>,
+    label: &'static str,
+) -> Result<Par, TypeError> {
+    let p1 = p1.ok_or_else(|| TypeError::NotWellFormed(format!("{label} with no p1")))?;
+    let p2 = p2.ok_or_else(|| TypeError::NotWellFormed(format!("{label} with no p2")))?;
+    let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+    check(ctx, p1, &bool_ty)?;
+    check(ctx, p2, &bool_ty)?;
+    Ok(bool_ty)
 }
 
 /// Wrap the given param types and codomain into a Pi Par. Used by
@@ -1342,6 +1432,104 @@ mod tests {
             let ty = synth(&ctx, &par).unwrap();
             assert!(def_eq(&ty, &int_ty));
         }
+    }
+
+    #[test]
+    fn synth_elt_int_int_is_bool() {
+        use models::rhoapi::{ELt, Expr};
+        let ctx = Context::new();
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ELtBody(ELt {
+                p1: Some(gint_par(1)),
+                p2: Some(gint_par(2)),
+            })),
+        }]);
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &bool_ty));
+    }
+
+    #[test]
+    fn synth_eeq_requires_matching_operand_types() {
+        use models::rhoapi::{EEq, Expr};
+        let ctx = Context::new();
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        // Int == Int → Bool.
+        let ok_par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EEqBody(EEq {
+                p1: Some(gint_par(1)),
+                p2: Some(gint_par(2)),
+            })),
+        }]);
+        let ty = synth(&ctx, &ok_par).unwrap();
+        assert!(def_eq(&ty, &bool_ty));
+
+        // Int == String → Mismatch.
+        let bad_par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EEqBody(EEq {
+                p1: Some(gint_par(1)),
+                p2: Some(gstring_par("x")),
+            })),
+        }]);
+        let err = synth(&ctx, &bad_par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_eand_bool_bool_is_bool() {
+        use models::rhoapi::{EAnd, Expr};
+        let ctx = Context::new();
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EAndBody(EAnd {
+                p1: Some(gbool_par(true)),
+                p2: Some(gbool_par(false)),
+            })),
+        }]);
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &bool_ty));
+    }
+
+    #[test]
+    fn synth_enot_bool_is_bool() {
+        use models::rhoapi::{ENot, Expr};
+        let ctx = Context::new();
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(gbool_par(true)),
+            })),
+        }]);
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &bool_ty));
+    }
+
+    #[test]
+    fn synth_eneg_int_is_int() {
+        use models::rhoapi::{ENeg, Expr};
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ENegBody(ENeg {
+                p: Some(gint_par(5)),
+            })),
+        }]);
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &int_ty));
+    }
+
+    #[test]
+    fn synth_eand_rejects_int_operand() {
+        use models::rhoapi::{EAnd, Expr};
+        let ctx = Context::new();
+        let par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EAndBody(EAnd {
+                p1: Some(gbool_par(true)),
+                p2: Some(gint_par(42)),
+            })),
+        }]);
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
     }
 
     #[test]
