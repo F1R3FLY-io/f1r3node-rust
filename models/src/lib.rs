@@ -983,6 +983,7 @@ impl PartialEq for ConnectiveInstance {
             (ConnectiveInstance::ConnSet(a), ConnectiveInstance::ConnSet(b)) => a == b,
             (ConnectiveInstance::ConnMap(a), ConnectiveInstance::ConnMap(b)) => a == b,
             (ConnectiveInstance::ConnTuple(a), ConnectiveInstance::ConnTuple(b)) => a == b,
+            (ConnectiveInstance::ConnProc(a), ConnectiveInstance::ConnProc(b)) => a == b,
             _ => false,
         }
     }
@@ -1015,6 +1016,7 @@ impl Hash for ConnectiveInstance {
             ConnectiveInstance::ConnSet(a) => a.hash(state),
             ConnectiveInstance::ConnMap(a) => a.hash(state),
             ConnectiveInstance::ConnTuple(a) => a.hash(state),
+            ConnectiveInstance::ConnProc(a) => a.hash(state),
         }
     }
 }

@@ -289,6 +289,24 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            // CoC Phase 5.1: `Proc` pattern matches any target that is
+            // itself a well-formed process (sends/receives/news/
+            // matches/bundles/conditionals/unforgeables present).
+            Some(ConnProc(_)) => {
+                let is_process = !target.sends.is_empty()
+                    || !target.receives.is_empty()
+                    || !target.news.is_empty()
+                    || !target.matches.is_empty()
+                    || !target.bundles.is_empty()
+                    || !target.conditionals.is_empty()
+                    || !target.unforgeables.is_empty();
+                if is_process {
+                    Some(())
+                } else {
+                    None
+                }
+            }
+
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
             // Type". For now, match the universe constant, Pi types, and

@@ -297,6 +297,7 @@ impl Substitute {
                     | ConnectiveInstance::ConnUri(_)
                     | ConnectiveInstance::ConnByteArray(_)
                     | ConnectiveInstance::ConnType(_)
+                    | ConnectiveInstance::ConnProc(_)
                     | ConnectiveInstance::ConnInt32(_)
                     | ConnectiveInstance::ConnUint64(_)
                     | ConnectiveInstance::ConnUint32(_)

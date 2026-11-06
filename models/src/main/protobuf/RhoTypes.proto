@@ -583,6 +583,11 @@ message Connective {
     // each slot carries its own type. Matcher requires arity match
     // and per-slot spatial match.
     ConnTupleBody conn_tuple = 24;
+    // CoC Phase 5.1: `Proc` type — the universe of well-formed
+    // processes. Process-level constructs (sends, receives, news,
+    // matches, bundles, conditionals, unforgeables) synthesize to
+    // this type. `Proc` itself has type `Type`.
+    bool conn_proc = 25;
   }
 }
 

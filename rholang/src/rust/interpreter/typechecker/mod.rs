@@ -1,13 +1,14 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 4.4 (collection types): synthesis (`synth`) for ground
-//! literals, `SimpleType` connectives, Pi well-formedness, dependent
-//! application, fully-annotated lambdas, β-definitional equality in
-//! `check`, the integer binary operators, `ENeg`, comparison operators,
-//! the boolean connectives on values, the logical type connectives,
-//! and the four collection kinds: `List<T>`, `Set<T>`, `Map<K, V>`,
-//! `Tuple<T_0, …, T_{n-1}>`. Process-level typing remains a future
-//! phase.
+//! Phase 5.1 (process-level typing, shallow): synthesis (`synth`) for
+//! ground literals, `SimpleType` connectives, Pi well-formedness,
+//! dependent application, fully-annotated lambdas, β-definitional
+//! equality in `check`, the integer binary operators, `ENeg`,
+//! comparison operators, the boolean connectives on values, the
+//! logical type connectives, the four collection kinds, and any Par
+//! carrying process-level content (sends/receives/news/matches/
+//! bundles/conditionals/unforgeables) — these synthesize to `Proc`.
+//! Recursive typechecking of process sub-terms lands in Phase 5.2.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -92,21 +93,13 @@ impl From<TypeError> for InterpreterError {
 
 /// Synthesize the type of `par` in `ctx`. Returns a `Par` whose shape
 /// is a well-formed type (currently: a single-connective Par for base
-/// types, or `Type` itself).
+/// types, `Type` itself, a Pi, or `Proc` for a process-level Par).
 pub fn synth(ctx: &Context, par: &Par) -> Result<Par, TypeError> {
-    // Phase 2c-ii only looks at single-expression or single-connective
-    // Pars; process-level content (sends, receives, news) is unsupported.
-    if !par.sends.is_empty()
-        || !par.receives.is_empty()
-        || !par.news.is_empty()
-        || !par.matches.is_empty()
-        || !par.bundles.is_empty()
-        || !par.conditionals.is_empty()
-        || !par.unforgeables.is_empty()
-    {
-        return Err(TypeError::Unsupported(
-            "process-level construct cannot yet be typechecked".to_string(),
-        ));
+    // Phase 5.1: a Par whose only content is process-level (sends,
+    // receives, news, matches, bundles, conditionals, unforgeables)
+    // synthesizes to `Proc`. Sub-term typechecking lands in Phase 5.2.
+    if has_process_content(par) && par.exprs.is_empty() && par.connectives.is_empty() {
+        return Ok(type_par(ConnectiveInstance::ConnProc(true)));
     }
 
     match (par.exprs.first(), par.connectives.first()) {
@@ -714,6 +707,18 @@ fn build_pi(param_types: Vec<Par>, codomain: Par) -> Par {
     par
 }
 
+/// True iff `par` carries any process-level content (send, receive,
+/// new, match, bundle, conditional, unforgeable).
+fn has_process_content(par: &Par) -> bool {
+    !par.sends.is_empty()
+        || !par.receives.is_empty()
+        || !par.news.is_empty()
+        || !par.matches.is_empty()
+        || !par.bundles.is_empty()
+        || !par.conditionals.is_empty()
+        || !par.unforgeables.is_empty()
+}
+
 /// A lambda's `param_types[i]` is `Par::default()` when the source
 /// left slot `i` un-annotated. Treated as "no annotation; accept the
 /// Pi's type here".
@@ -774,6 +779,7 @@ fn synth_connective(ctx: &Context, conn: &Connective) -> Result<Par, TypeError> 
         | ConnectiveInstance::ConnUri(_)
         | ConnectiveInstance::ConnByteArray(_)
         | ConnectiveInstance::ConnType(_)
+        | ConnectiveInstance::ConnProc(_)
         | ConnectiveInstance::ConnInt32(_)
         | ConnectiveInstance::ConnUint64(_)
         | ConnectiveInstance::ConnUint32(_)
@@ -936,6 +942,7 @@ fn discriminant_name_conn(inst: &ConnectiveInstance) -> &'static str {
         ConnectiveInstance::ConnSet(_) => "ConnSet",
         ConnectiveInstance::ConnMap(_) => "ConnMap",
         ConnectiveInstance::ConnTuple(_) => "ConnTuple",
+        ConnectiveInstance::ConnProc(_) => "ConnProc",
     }
 }
 
@@ -1959,6 +1966,59 @@ mod tests {
         ));
         let err = synth(&ctx, &bad).unwrap_err();
         assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    fn send_par(channel: Par, data: Vec<Par>) -> Par {
+        use models::rhoapi::Send;
+        let mut par = Par::default();
+        par.sends.push(Send {
+            chan: Some(channel),
+            data,
+            persistent: false,
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+        par
+    }
+
+    fn new_par(bind_count: i32, body: Par) -> Par {
+        use models::rhoapi::New;
+        let mut par = Par::default();
+        par.news.push(New {
+            bind_count,
+            p: Some(body),
+            uri: Vec::new(),
+            injections: std::collections::BTreeMap::new(),
+            locally_free: Vec::new(),
+        });
+        par
+    }
+
+    #[test]
+    fn synth_send_is_proc() {
+        let ctx = Context::new();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let par = send_par(gstring_par("ch"), vec![gint_par(1)]);
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_new_is_proc() {
+        let ctx = Context::new();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let par = new_par(1, Par::default());
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_proc_connective_is_type() {
+        // `Proc` itself has type Type.
+        let ctx = Context::new();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let ty = synth(&ctx, &proc_ty).unwrap();
+        assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
     }
 
     #[test]

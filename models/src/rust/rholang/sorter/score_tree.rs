@@ -290,6 +290,7 @@ impl Score {
     pub const CONNECTIVE_SET: i32 = 421;
     pub const CONNECTIVE_MAP: i32 = 422;
     pub const CONNECTIVE_TUPLE: i32 = 423;
+    pub const CONNECTIVE_PROC: i32 = 424;
 
     pub const PAR: i32 = 999;
 }

@@ -257,7 +257,8 @@ impl HasLocallyFree for Connective {
                 | ConnList(_)
                 | ConnSet(_)
                 | ConnMap(_)
-                | ConnTuple(_),
+                | ConnTuple(_)
+                | ConnProc(_),
             ) => true,
         }
     }

@@ -1001,6 +1001,7 @@ impl PrettyPrinter {
                             .collect();
                         Ok(format!("Tuple<{}>", parts.join(", ")))
                     }
+                    ConnectiveInstance::ConnProc(_) => Ok(String::from("Proc")),
                 },
                 None => Ok(String::new()),
             }

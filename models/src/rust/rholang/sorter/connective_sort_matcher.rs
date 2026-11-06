@@ -293,6 +293,10 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                 }
             }
 
+            Some(ConnectiveInstance::ConnProc(b)) => {
+                scored_simple(Score::CONNECTIVE_PROC, *b, ConnectiveInstance::ConnProc)
+            }
+
             None => ScoredTerm {
                 term: Connective::default(),
                 score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),

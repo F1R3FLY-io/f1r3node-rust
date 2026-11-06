@@ -231,6 +231,15 @@ impl ParCount {
 
                 (p_count_1.clone(), p_count_1)
             }
+
+            // CoC Phase 5.1: `Proc` matches a single process. The
+            // par-count is deliberately 1 (any single sub-process).
+            Some(ConnProc(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
         }
     }
 }
