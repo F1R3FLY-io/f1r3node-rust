@@ -10,7 +10,7 @@ use prost::bytes::Bytes;
 use super::body::StateHash;
 use super::executor::gate_inputs;
 use super::gate::{
-    gate_block, resolve_joint_wallets, PhloLimitDemand, Refusal, StoreReader, Verdict,
+    gate_block, resolve_joint_wallets, BoundDemand, Refusal, StoreReader, Verdict,
 };
 use crate::rust::errors::CasperError;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -77,7 +77,7 @@ impl InclusionScreen for GateScreen {
         let reader = StoreReader::at(&self.runtime_manager, root).await?;
         let mut inputs = gate_inputs(envelopes.iter().map(|p| &p.deploy))?;
         resolve_joint_wallets(&reader, &mut inputs)?;
-        let outcome = gate_block(&reader, &PhloLimitDemand, &inputs)?;
+        let outcome = gate_block(&reader, &BoundDemand, &inputs)?;
         Ok(outcome
             .entries
             .into_iter()

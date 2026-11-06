@@ -226,3 +226,11 @@ Full suites at 0b01b1663 (release, `/tmp` cleared before each crate): rholang 2,
   - `replay_recorded` takes FX-19's signature without the pre-charge argument.
 - **Cross-host fixture.** FX-19's regenerated fixture has no κ, so its replay fails with "the close's cost". The fixture is written again on the merged tree. This is the same cause as FX-20 D4.
 - Results on the merged tree: casper lib `v6::` 126 passed; `--test mod v6::` 123 passed, 9 ignored; `multi_node::v6` 11 passed.
+
+## FX-19-format and FX-22 merged (2026-11-05)
+
+- `patch/FX-19-format` at e1073055d is merged (a61d45834): `Event::Refusal` and `RefusalEventProto` are removed, and `EventProto` tag 4 is reserved.
+- `patch/FX-22` at 369cad52b is merged: the gate commits min(`phloLimit`, the static estimate), and each run is limited to it. The loose estimate stays for the handoff (Decision 128). `executor.rs` had six conflicts with FX-19. The resolution keeps FX-19's metering (`EnvelopeFunding` with the admitted-run count, no refusal log, no `BlockLedger`) and FX-22's `committed` argument to `run` and `replay_one`.
+- **Two FX-19 tests changed.** `region_spec::an_installer_that_cannot_hold_the_bound_is_not_fired_and_pays_nothing` and `each_run_holds_at_most_its_share_of_the_installers_free_balance` held the installer's balance with a `Nil` deployment and a large `phloLimit`. Under FX-22, `Nil` commits only its static estimate, so the balance stayed free and the calls fired. The tests now hold the balance with `@"hold"!(0)`. That deployment sends on a public channel, so it has no estimate and commits its `phloLimit`.
+- **Interaction, known issue (Decision 88).** FX-19 seals stored code with the installing deployment's `phloLimit`. The run evaluates a copy limited to Δ, so for a deployment in the estimated fragment the seal carries Δ. Reason this has no effect now: in the fragment every channel is a private name that cannot leave the term, so its stored code can never fire.
+- Results on the merged tree: casper lib `v6::` 127 passed; `--test mod v6::` 126 passed, 9 ignored (with the two tests above changed); `multi_node::v6` 11 passed; `forms_spec` 5 passed; `rholang --test delta_sigma_spec` 8 passed.

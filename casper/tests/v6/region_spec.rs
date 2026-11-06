@@ -1433,6 +1433,8 @@ async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the
     }
 }
 
+const HOLD: &str = r#"@"hold"!(0)"#;
+
 #[tokio::test]
 async fn an_installer_that_cannot_hold_the_bound_is_not_fired_and_pays_nothing() {
     let (alice, bob, proposer) = (party(), party(), party());
@@ -1449,7 +1451,7 @@ async fn an_installer_that_cannot_hold_the_bound_is_not_fired_and_pays_nothing()
     let root = first.settled_root.clone();
     let left = balance(&rm, &root, &alice).await;
     let holding = envelope(
-        "Nil",
+        HOLD,
         3,
         &alice,
         (left - firing_hold(1_500, 1) + 1) as i64,
@@ -1488,7 +1490,7 @@ async fn each_run_holds_at_most_its_share_of_the_installers_free_balance() {
     let left = balance(&rm, &root, &alice).await;
     let hold = firing_hold(1_500, 1);
     let free = 2 * hold + 10;
-    let holding = || envelope("Nil", 3, &alice, (left - free) as i64, 1);
+    let holding = || envelope(HOLD, 3, &alice, (left - free) as i64, 1);
     let call =
         |ts: i64, who: &Party| envelope(&format!(r#"@"svc"!({})"#, payload(8)), ts, who, 50_000, 1);
 
