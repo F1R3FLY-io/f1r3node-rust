@@ -24,8 +24,8 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryResponse,
-    StoreItemsMessage, StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, StoreItemsMessage,
+    StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
@@ -95,13 +95,9 @@ pub struct Initializing<T: TransportLayer + Send + Sync + Clone + 'static> {
     >,
     block_message_rx: Arc<Mutex<Option<mpsc::Receiver<BlockMessage>>>>,
     tuple_space_rx: Arc<Mutex<Option<mpsc::Receiver<StoreItemsMessage>>>>,
-    /// Receives `MergeableEntryResponse` routed from `handle_message_recv`.
-    /// Drained by `lfs_block_requester::stream` during `request_approved_state`.
-    mergeable_message_rx: Arc<Mutex<Option<mpsc::Receiver<MergeableEntryResponse>>>>,
     // Senders to enqueue messages from `handle` (producer side)
     pub block_message_tx: Arc<Mutex<Option<mpsc::Sender<BlockMessage>>>>,
     pub tuple_space_tx: Arc<Mutex<Option<mpsc::Sender<StoreItemsMessage>>>>,
-    pub mergeable_message_tx: Arc<Mutex<Option<mpsc::Sender<MergeableEntryResponse>>>>,
     block_message_queue_pending: Arc<AtomicUsize>,
     tuple_space_queue_pending: Arc<AtomicUsize>,
     trim_state: bool,
@@ -319,8 +315,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         block_message_rx: mpsc::Receiver<BlockMessage>,
         tuple_space_tx: mpsc::Sender<StoreItemsMessage>,
         tuple_space_rx: mpsc::Receiver<StoreItemsMessage>,
-        mergeable_message_tx: mpsc::Sender<MergeableEntryResponse>,
-        mergeable_message_rx: mpsc::Receiver<MergeableEntryResponse>,
         trim_state: bool,
         disable_state_exporter: bool,
         event_publisher: F1r3flyEvents,
@@ -351,10 +345,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             the_init,
             block_message_rx: Arc::new(Mutex::new(Some(block_message_rx))),
             tuple_space_rx: Arc::new(Mutex::new(Some(tuple_space_rx))),
-            mergeable_message_rx: Arc::new(Mutex::new(Some(mergeable_message_rx))),
             block_message_tx: Arc::new(Mutex::new(Some(block_message_tx))),
             tuple_space_tx: Arc::new(Mutex::new(Some(tuple_space_tx))),
-            mergeable_message_tx: Arc::new(Mutex::new(Some(mergeable_message_tx))),
             block_message_queue_pending: Arc::new(AtomicUsize::new(0)),
             tuple_space_queue_pending: Arc::new(AtomicUsize::new(0)),
             trim_state,
@@ -539,23 +531,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                 } else {
                     tracing::warn!(
                         "block_message_tx sender is None; block message channel not available (message not enqueued)"
-                    );
-                }
-                Ok(())
-            }
-            CasperMessage::MergeableEntryResponse(resp) => {
-                // Forward to the channel drained by lfs_block_requester::stream.
-                let sender = self.mergeable_message_tx.lock().unwrap().as_ref().cloned();
-                if let Some(tx) = sender {
-                    if let Err(e) = tx.send(resp).await {
-                        tracing::warn!(
-                            "Failed to enqueue MergeableEntryResponse into mergeable channel: {:?}",
-                            e
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        "mergeable_message_tx sender is None; mergeable channel not available (message dropped)"
                     );
                 }
                 Ok(())
@@ -807,8 +782,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(SYNC_CHANNEL_CAPACITY);
         let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(SYNC_CHANNEL_CAPACITY);
-        let (mergeable_tx, mergeable_rx) =
-            mpsc::channel::<MergeableEntryResponse>(SYNC_CHANNEL_CAPACITY);
         let (floor_cache_tx, floor_cache_rx) =
             mpsc::channel::<FloorCacheResponse>(FLOOR_CACHE_CHANNEL_CAPACITY);
 
@@ -816,16 +789,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         install_slot(&self.block_message_rx, block_rx, "block_message_rx")?;
         install_slot(&self.tuple_space_tx, tuple_tx, "tuple_space_tx")?;
         install_slot(&self.tuple_space_rx, tuple_rx, "tuple_space_rx")?;
-        install_slot(
-            &self.mergeable_message_tx,
-            mergeable_tx,
-            "mergeable_message_tx",
-        )?;
-        install_slot(
-            &self.mergeable_message_rx,
-            mergeable_rx,
-            "mergeable_message_rx",
-        )?;
         install_slot(&self.floor_cache_tx, floor_cache_tx, "floor_cache_tx")?;
         install_slot(&self.floor_cache_rx, floor_cache_rx, "floor_cache_rx")?;
 
@@ -915,17 +878,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     CasperError::RuntimeError("Block message receiver not available".to_string())
                 })?;
 
-        let mergeable_response_rx = self
-            .mergeable_message_rx
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| {
-                CasperError::RuntimeError(
-                    "Mergeable-entry response receiver not available".to_string(),
-                )
-            })?;
-
         // Create block requester wrapper with needed components and stream
         let mut block_requester = BlockRequesterWrapper::new(
             &self.transport_layer,
@@ -956,7 +908,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 &empty_queue,
                 response_message_rx,
                 self.block_message_queue_pending.clone(),
-                mergeable_response_rx,
                 min_block_number_for_deploy_lifespan,
                 lfs_request_timeout,
                 &mut block_requester,

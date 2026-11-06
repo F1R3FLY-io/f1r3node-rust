@@ -10,9 +10,7 @@ use async_stream::stream;
 use async_trait::async_trait;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
-use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, MergeableEntryResponse,
-};
+use models::rust::casper::protocol::casper_message::{ApprovedBlock, BlockMessage};
 use models::rust::validator::Validator;
 use tokio::sync::{mpsc, Semaphore};
 
@@ -731,7 +729,6 @@ pub async fn stream<'a, T: BlockRequesterOps>(
     initial_response_messages: &'a VecDeque<BlockMessage>,
     response_message_receiver: mpsc::Receiver<BlockMessage>,
     response_queue_pending: Arc<AtomicUsize>,
-    mergeable_response_receiver: mpsc::Receiver<MergeableEntryResponse>,
     initial_minimum_height: i64,
     request_timeout: Duration,
     block_ops: &'a mut T,
@@ -796,7 +793,6 @@ pub async fn stream<'a, T: BlockRequesterOps>(
         initial_response_messages,
         response_message_receiver,
         response_queue_pending,
-        mergeable_response_receiver,
         request_timeout,
         max_request_timeout,
     )
@@ -823,7 +819,6 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
     initial_response_messages: &'a VecDeque<BlockMessage>,
     mut response_message_receiver: mpsc::Receiver<BlockMessage>,
     response_queue_pending: Arc<AtomicUsize>,
-    mut mergeable_response_receiver: mpsc::Receiver<MergeableEntryResponse>,
     request_timeout: Duration,
     max_request_timeout: Duration,
 ) -> Result<impl futures::stream::Stream<Item = ST<BlockHash>> + use<'a, T>, CasperError> {
@@ -966,13 +961,6 @@ async fn create_stream_with_processor<'a, T: BlockRequesterOps>(
                             idle_timeout = Box::pin(tokio::time::sleep(current_timeout));
                         }
                     }
-                }
-
-                Some(mergeable_resp) = mergeable_response_receiver.recv() => {
-                    tracing::debug!(
-                        block = ?mergeable_resp.block_hash,
-                        "Ignoring remote mergeable entry; entries are rebuilt locally"
-                    );
                 }
 
                 // Process initial messages with highest priority (before network messages)
@@ -1353,7 +1341,6 @@ mod window_tests {
             let (request_tx, request_rx) = mpsc::channel(2);
             let (hash_tx, hash_rx) = mpsc::channel(1);
             let (message_tx, message_rx) = mpsc::channel(1);
-            let (_mergeable_tx, mergeable_rx) = mpsc::channel(1);
             let initial = VecDeque::new();
             let processor = StreamProcessor::new(&mut ops, state, HashMap::new(), hash_tx);
             let stream = create_stream_with_processor(
@@ -1364,7 +1351,6 @@ mod window_tests {
                 &initial,
                 message_rx,
                 Arc::new(AtomicUsize::new(1)),
-                mergeable_rx,
                 Duration::from_secs(10),
                 Duration::from_secs(40),
             )

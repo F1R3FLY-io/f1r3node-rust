@@ -541,7 +541,7 @@ pub fn unsigned_block_proto_with_leaves(
 }
 
 // =========================================================================
-// Block hash — Merkle scheme v1
+// Block hash — Merkle scheme v2
 // =========================================================================
 //
 // Shape:
@@ -550,10 +550,11 @@ pub fn unsigned_block_proto_with_leaves(
 //
 // where `deploys_root` is a Merkle root over per-deploy leaves (user
 // deploys first, then system deploys, in commit order) and
-// `header_preimage` concatenates header + body-state + metadata fields
+// `header_preimage` concatenates header + body-state + metadata fields,
+// each variable-length field preceded by its u32 little-endian length,
 // together with Merkle roots of the bonds, justifications, rejected-deploy
-// and applied-from-scope lists.  See `docs/designs/merkle-block-hash.md` for
-// the full recipe.  Hard-fork surface: the domain-byte constants below
+// and applied-from-scope lists; `header_preimage` gives the field order.
+// Hard-fork surface: the domain-byte constants below
 // pin the shape — any change flips every block hash on-network.
 //
 // This is a per-release hard fork for each shard.  Shards running an
@@ -571,7 +572,7 @@ pub fn unsigned_block_proto_with_leaves(
 
 /// Scheme-version byte prepended to the header preimage.  Bumping this
 /// constant is a hard fork — see the file-level docstring.
-pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x01;
+pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x02;
 
 /// Interior-node domain byte used by `MERKLE_PARAMS`.
 const INTERIOR_DOMAIN: u8 = 0x01;
@@ -741,9 +742,8 @@ fn justifications_root(justifications: &[Justification]) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Build the header-side preimage.  See file-level docstring and
-/// `docs/designs/merkle-block-hash.md` for the field order.  Any change
-/// here is a hard fork — pinned by the `hash_block` golden-hex tests.
+/// Build the header-side preimage.  Any change here is a hard fork —
+/// pinned by the `hash_block` golden-hex tests.
 fn header_preimage(block: &BlockMessage) -> Vec<u8> {
     use prost::Message;
     let BlockMessage {
@@ -781,7 +781,8 @@ fn header_preimage(block: &BlockMessage) -> Vec<u8> {
     let j_root = justifications_root(justifications);
 
     let mut buf = Vec::with_capacity(
-        1 + header_bytes.len()
+        1 + 9 * 4 // length prefixes
+            + header_bytes.len()
             + pre_state_hash.len()
             + post_state_hash.len()
             + 32  // bonds_root
@@ -797,22 +798,28 @@ fn header_preimage(block: &BlockMessage) -> Vec<u8> {
             + shard_id.len()
             + extra_bytes.len(),
     );
+    // Every variable-length field carries its length, so no byte can move
+    // from one field to its neighbour without changing the preimage.
+    let push_field = |buf: &mut Vec<u8>, field: &[u8]| {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field);
+    };
     buf.push(BLOCK_HASH_SCHEME_VERSION);
-    buf.extend_from_slice(&header_bytes);
-    buf.extend_from_slice(pre_state_hash.as_ref());
-    buf.extend_from_slice(post_state_hash.as_ref());
+    push_field(&mut buf, &header_bytes);
+    push_field(&mut buf, pre_state_hash.as_ref());
+    push_field(&mut buf, post_state_hash.as_ref());
     buf.extend_from_slice(&b_root);
     buf.extend_from_slice(&j_root);
     buf.extend_from_slice(&block_number.to_le_bytes());
     buf.extend_from_slice(&r_root);
     buf.extend_from_slice(&afs_root);
-    buf.extend_from_slice(merge_base.as_ref());
-    buf.extend_from_slice(body_extra_bytes.as_ref());
-    buf.extend_from_slice(sender.as_ref());
-    buf.extend_from_slice(sig_algorithm.as_bytes());
+    push_field(&mut buf, merge_base.as_ref());
+    push_field(&mut buf, body_extra_bytes.as_ref());
+    push_field(&mut buf, sender.as_ref());
+    push_field(&mut buf, sig_algorithm.as_bytes());
     buf.extend_from_slice(&seq_num.to_le_bytes());
-    buf.extend_from_slice(shard_id.as_bytes());
-    buf.extend_from_slice(extra_bytes.as_ref());
+    push_field(&mut buf, shard_id.as_bytes());
+    push_field(&mut buf, extra_bytes.as_ref());
     buf
 }
 
@@ -2257,7 +2264,7 @@ mod merkle_block_hash_tests {
         // pre/post state hashes, sender = 33 zero bytes, timestamp =
         // 1_700_000_000_000, version = 1, shard_id = "test-shard",
         // sig_algorithm = "secp256k1".
-        const EXPECTED: &str = "249c70aa27fa8353d0373e13d6e9fc8ed4f50fc77d40bf901531fdbd4bc3884f";
+        const EXPECTED: &str = "3f3b12cd4da91b6c00c49db707da5c3ca210a65c8b9c0cffef6aa79e95d3e992";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
 
@@ -2395,6 +2402,53 @@ mod hash_block_tests {
         moved_to_extra_bytes.extra_bytes = [vec![2; 65], vec![2; 32]].concat().into();
 
         for mutated in [changed, removed, added, moved_to_extra_bytes] {
+            assert_ne!(hash_block(&mutated), original);
+        }
+    }
+
+    #[test]
+    fn moving_bytes_between_adjacent_fields_changes_the_hash() {
+        use prost::bytes::Bytes;
+
+        let mut block = get_random_block_default();
+        block.body.merge_base = vec![7; 32].into();
+        block.body.extra_bytes = vec![8; 4].into();
+        block.extra_bytes = vec![9; 4].into();
+        block.sig_algorithm = "secp256k1".to_string();
+        block.shard_id = "root".to_string();
+        let original = hash_block(&block);
+        let join = |a: &[u8], b: &[u8]| -> Bytes { [a, b].concat().into() };
+
+        let mut pre_into_post = block.clone();
+        let pre = block.body.state.pre_state_hash.clone();
+        pre_into_post.body.state.pre_state_hash = pre.slice(..pre.len() - 1);
+        pre_into_post.body.state.post_state_hash =
+            join(&pre[pre.len() - 1..], &block.body.state.post_state_hash);
+
+        let mut merge_base_into_body_extra = block.clone();
+        merge_base_into_body_extra.body.merge_base = Bytes::new();
+        merge_base_into_body_extra.body.extra_bytes =
+            join(&block.body.merge_base, &block.body.extra_bytes);
+
+        let mut body_extra_into_sender = block.clone();
+        body_extra_into_sender.body.extra_bytes = Bytes::new();
+        body_extra_into_sender.sender = join(&block.body.extra_bytes, &block.sender);
+
+        let mut sig_algorithm_into_sender = block.clone();
+        sig_algorithm_into_sender.sender = join(&block.sender, b"s");
+        sig_algorithm_into_sender.sig_algorithm = "ecp256k1".to_string();
+
+        let mut shard_id_into_extra = block.clone();
+        shard_id_into_extra.shard_id = String::new();
+        shard_id_into_extra.extra_bytes = join(b"root", &block.extra_bytes);
+
+        for mutated in [
+            pre_into_post,
+            merge_base_into_body_extra,
+            body_extra_into_sender,
+            sig_algorithm_into_sender,
+            shard_id_into_extra,
+        ] {
             assert_ne!(hash_block(&mutated), original);
         }
     }
