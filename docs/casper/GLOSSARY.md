@@ -163,7 +163,7 @@ canonical here).
 
 The equivocation detector is the detection-pipeline component that returns an
 `InvalidBlock` verdict for a (validator, sequence) pair — the `detect(v, s)`
-label in the slashing LTS, realized in Rust as `check_equivocations` and
+label in the slashing LTS, realized in Rust as `equivocation_verdict` and
 modeled by the detector [model](#model) family.
 
 **Preferred usage.** Use for the component; use "detector model" for its
@@ -172,7 +172,8 @@ multi-validator — which is why parking the only three-validator detector
 model in the exhaustive tier left a coverage gap.
 *Distinguish from* [Model](#model): the detector is code under verification;
 a detector model is one artifact verifying it.
-*Avoid*: "tracker" (the tracker is the storage-side record keeper, §05).
+*Avoid*: "tracker" (the former storage-side record keeper, now removed. An
+equivocation is stored as the invalid block that names its sibling).
 
 ### Slash closure
 

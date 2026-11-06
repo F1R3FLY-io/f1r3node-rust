@@ -62,13 +62,13 @@ pub fn generate_close_deploy_random_seed_from_pk(pk: PublicKey, seq_num: i32) ->
 pub fn generate_slash_deploy_random_seed(
     validator: Validator,
     seq_num: i32,
-    invalid_block_hash: &BlockHash,
+    cited_block_hash: &BlockHash,
 ) -> Blake2b512Random {
     let seed: Vec<u8> = serialize_int32_fixed(SYSTEM_DEPLOY_PREFIX)
         .into_iter()
         .chain(validator)
         .chain(serialize_int32_fixed(seq_num))
-        .chain(invalid_block_hash.iter().copied())
+        .chain(cited_block_hash.iter().copied())
         .collect();
     Tools::rng(&seed).split_byte(1)
 }
@@ -88,33 +88,31 @@ mod tests {
     use super::*;
 
     /// Two slashes in the same block, same proposer, same seq_num, different
-    /// equivocators must produce distinct rng seeds. Without
-    /// `invalid_block_hash` in the seed input, the slash contract's
+    /// equivocators must produce distinct rng seeds. Without the cited block
+    /// in the seed input, the slash contract's
     /// `new rl, poSCh, ...` allocations would alias unforgeable channel
     /// names across slashes in the same block, corrupting tuplespace state
     /// and the per-slash return-channel routing.
     #[test]
-    fn slash_seed_differs_per_invalid_block_hash() {
+    fn slash_seed_differs_per_cited_block_hash() {
         let validator: Validator = Bytes::from(vec![0xAA; 32]);
         let seq_num = 7;
-        let invalid_block_a: BlockHash = Bytes::from(vec![0x11; 32]);
-        let invalid_block_b: BlockHash = Bytes::from(vec![0x22; 32]);
+        let cited_block_a: BlockHash = Bytes::from(vec![0x11; 32]);
+        let cited_block_b: BlockHash = Bytes::from(vec![0x22; 32]);
 
-        let seed_a =
-            generate_slash_deploy_random_seed(validator.clone(), seq_num, &invalid_block_a);
-        let seed_b =
-            generate_slash_deploy_random_seed(validator.clone(), seq_num, &invalid_block_b);
+        let seed_a = generate_slash_deploy_random_seed(validator.clone(), seq_num, &cited_block_a);
+        let seed_b = generate_slash_deploy_random_seed(validator.clone(), seq_num, &cited_block_b);
 
         assert_ne!(
             seed_a.to_bytes(),
             seed_b.to_bytes(),
-            "two distinct invalid_block_hashes must produce distinct slash seeds; \
+            "two distinct cited blocks must produce distinct slash seeds; \
              without this, multi-slash blocks emit SlashDeploys with identical rng \
              which alias the unforgeable channel names allocated by the slash contract"
         );
     }
 
-    /// Same proposer, same seq_num, same invalid_block_hash must produce the
+    /// Same proposer, same seq_num, same cited block must produce the
     /// SAME seed across calls. Replay determinism depends on this — a validator
     /// re-running a historical slash must reconstruct the exact rng state used
     /// at original execution.
@@ -122,12 +120,12 @@ mod tests {
     fn slash_seed_is_deterministic_for_same_inputs() {
         let validator: Validator = Bytes::from(vec![0xBB; 32]);
         let seq_num = 13;
-        let invalid_block: BlockHash = Bytes::from(vec![0x33; 32]);
+        let cited_block: BlockHash = Bytes::from(vec![0x33; 32]);
 
         let seed_first =
-            generate_slash_deploy_random_seed(validator.clone(), seq_num, &invalid_block);
+            generate_slash_deploy_random_seed(validator.clone(), seq_num, &cited_block);
         let seed_second =
-            generate_slash_deploy_random_seed(validator.clone(), seq_num, &invalid_block);
+            generate_slash_deploy_random_seed(validator.clone(), seq_num, &cited_block);
 
         assert_eq!(
             seed_first.to_bytes(),

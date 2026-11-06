@@ -450,54 +450,71 @@ When the synchrony constraint blocks proposals:
 
 ## 9. Equivocation & Slashing
 
-### Equivocation Types
+### Equivocation
 
-| Type | What happened | Detection | Action |
-|------|--------------|-----------|--------|
-| Simple | Validator created two blocks at same sequence number | Creator justification != latest message | Block rejected |
-| Admissible | Equivocating block needed as dependency by another block | Same as simple, but block is in dependency chain | Stored as invalid in DAG for tracking |
-| Ignorable | Equivocating block arrived unsolicited | Same as simple, not needed as dependency | Dropped entirely |
-| Neglected | Validator had evidence of equivocation but didn't slash | Justifications reference known equivocator | Block rejected (no stake penalty: the neglect verdict is view-relative and is demoted from evidence minting pending re-promotion — see the slashing-specification amendment) |
+An equivocation is two distinct blocks signed by one sender at one sequence
+number, on this shard and chain. Validation judges a block in this order,
+before any other check that could discard it:
+
+1. A block of another shard or chain is refused as `InvalidShardId` or
+   `InvalidChainId`.
+2. A block whose sender and sequence number match a different held block is
+   an equivocation (`EquivocationDetector::equivocation_of`, a lookup in the
+   DAG's `(sender, seq)` index).
+
+The verdict is the same in any arrival order.
+
+| Verdict | When | Action |
+|---------|------|--------|
+| `AdmissibleEquivocation` | The block was requested as a dependency of another block | Stored invalid in the DAG with its sibling |
+| `IgnorableEquivocation` | The block arrived unsolicited | Stored invalid in the DAG with its sibling |
+| `NeglectedEquivocation` | Both blocks of a pair are in the block's justifications and the block leaves their sender bonded | Block rejected, no stake penalty |
+
+Only the two equivocation verdicts store their block. Every other invalid
+block, a neglecting one included, is dropped without becoming evidence.
+Those verdicts depend on the receiver's own state, so two honest nodes can
+disagree on them.
 
 ### Slashing Flow
 
-1. Equivocation detected during block validation
-2. `EquivocationRecord` created and stored persistently
-3. Honest validators emit a `SlashDeploy` from their `invalid_latest_messages` (`prepare_slashing_deploys` in `block_creator.rs`); only validators with non-zero stake who are in `active_validators` can be slashed
-4. `SlashDeploy` executes PoS contract to remove equivocator from bonds
-5. Equivocator loses entire stake; PoS slash is idempotent for already-slashed validators (returns true with no further state change)
+1. The stored invalid block's metadata records its sibling (`BlockMetadata::equivocates`).
+2. A bonded proposer issues one `SlashDeploy` per bonded offender whose pair it holds (`slashing_authorization::authorized_slash_candidates`, called from `prepare_slashing_deploys`).
+3. The slash carries both blocks' commitments, ordered by block hash. The evidence is self-contained: any node can check it without its own DAG.
+4. A receiver accepts the block's slashes only if each slash meets all of these conditions (`validate_received_slash_deploys`):
+   - The block's sender issued it.
+   - Both commitments hash to blocks that one sender signed at one sequence number, on this shard and chain.
+   - Its offender has positive stake in the bonds of the block's parents.
+   - No other slash in the block targets the same offender.
 
-### Multi-Parent Merge & Slash Recovery
+   A rejected slash makes the block `UnauthorizedSlashDeploy`.
+5. `SlashDeploy` executes the PoS contract, which zeroes the equivocator's bond. A slash of an already-slashed validator changes nothing.
 
-A `SlashDeploy` issued in one parent can be **rejected** by cost-optimal merge resolution when the merge proposer combines parents — the slash chain may be the loser of a conflict and dropped from canonical state. PR #488 closes this gap with a recovery loop in `block_creator::create`:
-
-1. Before block assembly, the proposer runs `compute_parents_post_state` on its tip set. The merge engine returns `(pre_state, rejected_user_sigs, rejected_slashes)`.
-2. `merging::rejected_slash::filter_recoverable` deduplicates rejected slashes by `invalid_block_hash` and drops any that the proposer's own `prepare_slashing_deploys` already covers.
-3. The proposer re-issues each surviving `RejectedSlash` under its own validator identity, so the slash effect lands in the merge block regardless of the merge's rejection decision.
-4. Re-issued slashes ride the same code path as own-detected slashes; PoS idempotency makes the re-issue safe even if the equivocator has already been slashed in a parent.
+An equivocation is slashable while its sender is bonded. There is no
+evidence epoch. Nodes that saw the two blocks in different orders issue
+byte-identical evidence and accept each other's slashes.
 
 ### Multi-Slash Blocks
 
-A single block can carry more than one `SlashDeploy`:
-- own + recovered for distinct equivocators, or
-- two own slashes for two equivocators in `invalid_latest_messages`, or
-- recovered slashes for multiple equivocators surfaced by the merge.
-
-Each `SlashDeploy`'s RNG is keyed on `(validator, seq_num, invalid_block_hash)` (`util::rholang::system_deploy_util::generate_slash_deploy_random_seed`). Without `invalid_block_hash` in the seed, two slashes in the same block from the same proposer would alias the unforgeable channel names allocated by the slash contract, corrupting tuplespace state and the per-slash return-channel routing.
+A single block can carry one `SlashDeploy` per offender. The RNG of each
+`SlashDeploy` is keyed on `(validator, seq_num, cited_block_hash)`. The
+cited block is the lower-hash block of the evidence
+(`util::rholang::system_deploy_util::generate_slash_deploy_random_seed`).
+Without the cited block in the seed, two slashes of one proposer in one
+block would alias the unforgeable channel names of the slash contract.
 
 ### Empty-Block Skip
 
-Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production default) skip block creation when there is no work — but recovered rejected slashes count as work. The skip predicate evaluates `all_deploys.is_empty() && !has_slashing_deploys && recovered_rejected_slashes.is_empty()`, so a proposer that wakes with no user deploys and no own-detected slashes still proposes when the parent merge has produced rejected slashes that need recovery.
+Heartbeat-disabled proposers (`allow_empty_blocks = false`, the production
+default) skip block creation when there is no work. Slashes count as work.
+A proposer with no user deploys still proposes when it has an offender to
+slash.
 
 ### Two-Level Slashing
 
-- **Level 1**: Direct equivocator — loses entire stake (live)
-- **Level 2**: Validator that neglected to report equivocation — block
-  rejected; the stake penalty is currently inactive. Neglect verdicts are
-  judged against the receiver's own tracker (view-relative), so they are
-  demoted from evidence minting until shown admission-order-free — see the
-  slashing-specification amendment. Level-2 stake loss resumes on
-  re-promotion; the collusion-irrationality argument holds fully only then.
+- **Level 1**: Direct equivocator — loses entire stake.
+- **Level 2**: A block that neglects an equivocation it can see is rejected.
+  The block has both blocks of the pair in its justifications and leaves
+  their sender bonded. The neglecting validator keeps its stake.
 
 ---
 
@@ -569,15 +586,15 @@ See [F1R3FLY-io/f1r3node issues](https://github.com/F1R3FLY-io/f1r3node/issues) 
 |------|------|
 | `casper/src/rust/merging/dag_merger.rs` | Multi-parent state merge |
 | `casper/src/rust/merging/conflict_set_merger.rs` | Deploy conflict resolution |
-| `casper/src/rust/merging/rejected_slash.rs` | `RejectedSlash` type and `filter_recoverable` dedup for slash recovery |
 
 ### Slashing
 | File | Role |
 |------|------|
-| `casper/src/rust/equivocation_detector.rs` | Equivocation types and detection |
-| `casper/src/rust/util/rholang/system_deploy_util.rs` | System-deploy RNG seeds (slash seed keyed on `invalid_block_hash`) |
+| `casper/src/rust/equivocation_detector.rs` | Equivocation verdict and neglect check |
+| `casper/src/rust/slashing_authorization.rs` | Slash candidates and received-slash authorization |
+| `casper/src/rust/util/rholang/system_deploy_util.rs` | System-deploy RNG seeds (slash seed keyed on the cited block) |
 | `casper/src/rust/util/rholang/costacc/slash_deploy.rs` | `SlashDeploy` system-deploy definition |
-| `casper/src/rust/blocks/proposer/block_creator.rs` | `prepare_slashing_deploys`, `filter_slashable_invalid_messages`, slash recovery loop |
+| `casper/src/rust/blocks/proposer/block_creator.rs` | `prepare_slashing_deploys` |
 
 ### Liveness
 | File | Role |

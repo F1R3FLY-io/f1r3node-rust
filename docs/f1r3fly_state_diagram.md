@@ -173,9 +173,9 @@ flowchart TD
 
 **Bonds Cache Validation** (`Validate.bondsCache`): Verifies block's cached validator bonds exactly match current PoS contract state, ensuring authentic stake verification.
 
-**Neglected Invalid Blocks** (`Validate.neglectedInvalidBlock`): Detects when bonded validators reference known invalid blocks in justifications, preventing Byzantine fault avoidance.
+**Equivocation Detection** (`EquivocationDetector::equivocation_verdict`): A block whose sender and sequence number match a different held block is an equivocation. It is stored invalid with that sibling.
 
-**Equivocation Detection** (`EquivocationDetector.checkNeglectedEquivocationsWithUpdate`): Identifies double-voting by comparing creator's self-justification with latest DAG message, maintaining equivocation tracker.
+**Neglected Equivocations** (`EquivocationDetector::check_neglected_equivocations`): Rejects a block whose justifications show both blocks of an equivocation while leaving its sender bonded.
 
 **Clique Oracle Safety** (`SafetyOracle`): Computes mathematical finality via `(cliqueWeight * 2 - totalStake) / totalStake`, finding maximum validator cliques that agree on target blocks.
 
