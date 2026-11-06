@@ -380,6 +380,18 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
             Ok(type_par(ConnectiveInstance::ConnList(element)))
         }
 
+        // Set literal `Set(e_0, …)` or `{e_0, …}` — same element-type
+        // LUB logic as EList, wrapped in ConnSet.
+        ExprInstance::ESetBody(set) => {
+            let element_types: Vec<Par> = set
+                .ps
+                .iter()
+                .map(|p| synth(_ctx, p))
+                .collect::<Result<_, _>>()?;
+            let element = lub_types(element_types);
+            Ok(type_par(ConnectiveInstance::ConnSet(element)))
+        }
+
         // A bound variable's type is its entry in the context.
         ExprInstance::EVarBody(evar) => {
             let v = evar
@@ -757,6 +769,14 @@ fn synth_connective(ctx: &Context, conn: &Connective) -> Result<Par, TypeError> 
             Ok(type_univ)
         }
 
+        // `Set<T>` — same well-formedness rule as List<T>.
+        ConnectiveInstance::ConnSet(element) => {
+            if !is_empty_par(element) {
+                check(ctx, element, &type_univ)?;
+            }
+            Ok(type_univ)
+        }
+
         other => Err(TypeError::Unsupported(format!(
             "no typing rule for connective kind yet: {:?}",
             discriminant_name_conn(other)
@@ -850,6 +870,7 @@ fn discriminant_name_conn(inst: &ConnectiveInstance) -> &'static str {
         ConnectiveInstance::ConnBigRat(_) => "ConnBigRat",
         ConnectiveInstance::ConnFixedPointBody(_) => "ConnFixedPoint",
         ConnectiveInstance::ConnList(_) => "ConnList",
+        ConnectiveInstance::ConnSet(_) => "ConnSet",
     }
 }
 
@@ -1720,6 +1741,39 @@ mod tests {
         let bad = type_par(ConnectiveInstance::ConnList(gint_par(42)));
         let err = synth(&ctx, &bad).unwrap_err();
         assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    fn eset_par(elements: Vec<Par>) -> Par {
+        use models::rhoapi::{ESet, Expr};
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    #[test]
+    fn synth_set_of_ints_is_set_of_int() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let par = eset_par(vec![gint_par(1), gint_par(2)]);
+        let ty = synth(&ctx, &par).unwrap();
+        match ty.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+            Some(ConnectiveInstance::ConnSet(elem)) => assert!(def_eq(elem, &int_ty)),
+            other => panic!("expected ConnSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synth_conn_set_type_is_type_when_element_is_type() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let set_ty = type_par(ConnectiveInstance::ConnSet(int_ty));
+        let ty = synth(&ctx, &set_ty).unwrap();
+        assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
     }
 
     #[test]

@@ -572,6 +572,9 @@ message Connective {
     // the matcher succeeds when every target element has the element
     // type.
     Par conn_list = 21;
+    // CoC Phase 4.2: `Set<T>` type. Semantics mirror `conn_list`
+    // against ESet targets.
+    Par conn_set = 22;
   }
 }
 

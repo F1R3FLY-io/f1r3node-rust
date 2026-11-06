@@ -240,6 +240,20 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            // CoC Phase 4.2: `Set<T>` pattern — identical shape to
+            // ConnList but against ESet targets.
+            Some(ConnSet(element_pattern)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(ESetBody(set)),
+                }) => {
+                    for element in &set.ps {
+                        self.spatial_match(element.clone(), element_pattern.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
+
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
             // Type". For now, match the universe constant, Pi types, and

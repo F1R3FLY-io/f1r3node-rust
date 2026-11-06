@@ -330,6 +330,14 @@ impl Substitute {
                         ConnectiveInstance::ConnList(element),
                     );
                 }
+                Some(ConnectiveInstance::ConnSet(element)) => {
+                    let element = self.substitute_no_sort(element, depth, env)?;
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
+                        ConnectiveInstance::ConnSet(element),
+                    );
+                }
                 None => {}
             }
         }

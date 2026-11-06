@@ -206,6 +206,14 @@ impl ParCount {
 
                 (p_count_1.clone(), p_count_1)
             }
+
+            // CoC Phase 4.2: `Set<T>` matches a single set value.
+            Some(ConnSet(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
         }
     }
 }

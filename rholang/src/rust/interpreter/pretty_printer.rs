@@ -979,6 +979,10 @@ impl PrettyPrinter {
                         "List<{}>",
                         self.build_string_from_message(element)
                     )),
+                    ConnectiveInstance::ConnSet(element) => Ok(format!(
+                        "Set<{}>",
+                        self.build_string_from_message(element)
+                    )),
                 },
                 None => Ok(String::new()),
             }

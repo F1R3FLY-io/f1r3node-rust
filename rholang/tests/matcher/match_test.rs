@@ -2483,6 +2483,42 @@ mod coc_list_patterns {
         let pattern = conn_list_pattern(int_type_pattern());
         assert!(assert_spatial_match(target, pattern, None).is_ok());
     }
+
+    fn set_par(elements: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn conn_set_pattern(element_pattern: Par) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnSet(element_pattern)),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn homogeneous_set_matches_set_of_int_pattern() {
+        let target = set_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gint_par(2, Vec::new(), false),
+        ]);
+        let pattern = conn_set_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn list_target_rejects_set_pattern() {
+        let target = list_par(vec![new_gint_par(1, Vec::new(), false)]);
+        let pattern = conn_set_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
 }
 
 // CoC Phase 3.1: Pi-shaped patterns typecheck via the typechecker.
