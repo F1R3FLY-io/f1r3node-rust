@@ -3535,6 +3535,58 @@ No `CloseCharge`, pre-charge or refusal log remains on the merged paths. The cro
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 43: rulings of 2026-11-06 (plan r9.3)
+
+### Rulings recorded
+
+- **Decision 130 (FX-21 decision 12): the running membrane.** A seal written inside data is checked against the membrane of the continuation that receives it.
+  - The origin check on received processes (revision 38, condition 2 for FX-21) is removed.
+  - The run-time owner check stays as the guard. It refuses any wallet that is not a signer of the running deployment or held.
+  - **Effect on this audit:**
+    - The writer-origin recommendation of revision 42 is closed by the ruling.
+    - The stack-body consistency condition of revision 42 is closed. Stack bodies already follow the running membrane, so regions and stack bodies now have one rule.
+    - `region_spec::data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there` must run again, not stay ignored.
+- **Decision 131: the smaller deployment seal, built now.** The cost known issue of revision 42 (about 120 phlo more for each stored continuation) is narrowed. It is measured again when the change lands.
+- **Decision 132: any error inside a firing fails the whole enclosing run.** This includes a firing that passes its declared bound.
+  - Lane C's known issue 8 is closed by the ruling.
+  - **The known issue "a firing over its bound consumes the client's message with no effect" is withdrawn** (revisions 38 and 41). A failed run leaves no effect, so the datum is not consumed.
+
+### Checks for the code that implements the rulings
+
+**Lane C, FX-19 under Decision 132:**
+1. A firing over its bound fails the whole run. No effect of the run stays, and the datum and the stored continuation both stay as they were before the run.
+2. The seal's owner is still charged exactly the bound (b at the seal's price), and nothing more. The run's own deployer pays its own charges, as for any failed run.
+3. Replay agrees: the failed run, the owner's charge and the settlement replay, and a record that changes any one of them is rejected.
+4. `region_spec::a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_no_storage` and `close_charge_spec::replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one` are changed to the new outcome, not removed.
+5. **For the close:** a firing that the close causes and that passes its bound now fails the close, which makes the block void for reason (d). The (d) record, its κ of 0 and its replay must hold for this cause. A test covers it.
+
+**Lane B, FX-21 rework:**
+1. **Decision 130:** a sealed term in received data is checked against the receiving continuation's membrane. The run-time owner check is unchanged. A test: a received region whose owner is not a signer of the running deployment and is not held is refused.
+2. **Decision 131:** the smaller deployment seal. The digest or the reference must name exactly one deployer, and the normalizer must still resolve it to that deployer's `GDeployerId`. The cost table of FX-21 section 2a is measured again.
+3. **The default limit** comes from the signed `phloLimit`, not the copy limited to Δ. The test runs on the tree that has FX-22.
+
+### Merge conditions (unchanged)
+
+1. `dev` is merged, and the parser is pinned to `rev-stacks/syntax-dev` at `743752b`.
+2. FX-19 (with `6735761a8` and the Decision 132 change) and FX-21 are merged into FX-8b, and the cross-host fixture is written again.
+3. The full suites run on the merged tip.
+4. The single-threaded run (`--test-threads=1`) runs for the SIGSEGV.
+
+After these: my final read of the merged tip, and then the tag (Decision 123).
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decisions 130 to 132 | **To be audited when the code lands** | Checks above |
+| The four merge conditions | Conditions | Open |
+| The final read and the tag | — | After the merge conditions |
+| The cost of elaboration | Known issue | Narrowed by Decision 131, to be measured again |
+| The datum consumed by a firing over its bound, errors inside a firing, writer origin, the stack-body exception | — | **Closed by Decisions 130 and 132** |
+| The earlier known issues, D10 and F47 for B6 | Known issue | Unchanged |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
