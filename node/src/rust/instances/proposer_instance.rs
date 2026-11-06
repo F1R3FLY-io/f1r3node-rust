@@ -409,8 +409,9 @@ impl<T: TransportLayer + Send + Sync + 'static> ProposerInstance<T> {
 
 /// Classify a propose-call error into the failure the channels report and
 /// the block to request, if any. `BlockNotHeld` carries the floor
-/// machinery's fetch-and-retry contract; everything else is a genuine bug
-/// the heartbeat should back off on.
+/// machinery's fetch-and-retry contract and a floor-distance refusal is a
+/// hold until finality advances; everything else is a genuine bug the
+/// heartbeat should back off on.
 pub(crate) fn classify_propose_error(
     error: &CasperError,
 ) -> (ProposeFailure, Option<models::rust::block_hash::BlockHash>) {
@@ -419,6 +420,7 @@ pub(crate) fn classify_propose_error(
             ProposeFailure::MissingBlock(hash.clone()),
             Some(hash.clone()),
         ),
+        CasperError::FloorDistanceExceeded { .. } => (ProposeFailure::FloorDistanceHold, None),
         _ => (ProposeFailure::BugError, None),
     }
 }
@@ -486,6 +488,20 @@ mod tests {
             classify_propose_error(&CasperError::RuntimeError("genuinely broken".to_string()));
         assert!(request.is_none());
         assert!(matches!(failure, ProposeFailure::BugError));
+    }
+
+    /// A floor-distance refusal is a hold until finality advances: it must not
+    /// escalate the heartbeat's bug backoff.
+    #[test]
+    fn floor_distance_refusal_classifies_as_a_hold() {
+        let (failure, request) = classify_propose_error(&CasperError::FloorDistanceExceeded {
+            distance: 257,
+            cap: 256,
+            floor_block: 425,
+            parents: 4,
+        });
+        assert!(request.is_none());
+        assert!(matches!(failure, ProposeFailure::FloorDistanceHold));
     }
 
     #[test]
