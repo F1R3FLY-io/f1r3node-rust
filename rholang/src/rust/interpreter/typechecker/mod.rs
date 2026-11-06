@@ -1,9 +1,10 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-iii (Pi formation): synthesis (`synth`) for ground literals,
-//! `SimpleType` connectives, Pi well-formedness, and non-dependent
-//! application. Remaining phases add dependent-codomain substitution,
-//! definitional equality, and process-level typing.
+//! Phase 2c-iv (dependent application): synthesis (`synth`) for ground
+//! literals, `SimpleType` connectives, Pi well-formedness, and
+//! application with dependent-codomain substitution. Remaining phases
+//! add β-definitional equality, process-level typing, and lambda param
+//! annotations.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -15,7 +16,11 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{Connective, Par};
 
+use crate::rust::interpreter::accounting::costs::Cost;
+use crate::rust::interpreter::accounting::CostManager;
+use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 
 /// Typing context — a stack of `Par` types indexed by De Bruijn level.
 /// Entry at position 0 is the innermost binder. Mirrors the parser's
@@ -177,9 +182,16 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
         )),
 
         // Function application: synth fun → Pi; check each arg against
-        // the corresponding param type; return the codomain. Phase 2c-iii
-        // omits dependent substitution of the arg into the codomain —
-        // that's Phase 2c-iv.
+        // the corresponding param type; substitute args into the
+        // codomain and return the result.
+        //
+        // Convention: BoundVar(i) in the codomain refers to param i (same
+        // layout the Pi-formation and check-against-Pi rules use). We
+        // build an Env so that `env.get(i) = arg_i` by pushing args in
+        // reverse (last-pushed = highest-indexed by de Bruijn lookup,
+        // but env.get(i) looks up level-i-1 so the first-pushed binding
+        // ends up at the highest index). The Substitute helper handles
+        // shifts for nested binders inside the codomain.
         ExprInstance::EAppBody(app) => {
             let fun_par = app
                 .fun
@@ -203,11 +215,12 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
                 check(_ctx, arg, pt)?;
             }
 
-            // Return codomain as the application's type. Non-dependent
-            // for now; dependent codomains need param substitution.
-            pi.codomain
+            let codomain = pi
+                .codomain
                 .clone()
-                .ok_or_else(|| TypeError::NotWellFormed("EPi with no codomain".to_string()))
+                .ok_or_else(|| TypeError::NotWellFormed("EPi with no codomain".to_string()))?;
+
+            substitute_args_into_codomain(&app.args, codomain)
         }
 
         // A bound variable's type is its entry in the context.
@@ -293,6 +306,33 @@ fn single_expr(par: &Par) -> Option<&ExprInstance> {
     par.exprs.first()?.expr_instance.as_ref()
 }
 
+/// Substitute a list of application arguments into a Pi codomain.
+///
+/// The codomain was synthesized under a ctx extended with the Pi's
+/// `param_types` (in `.rev()` order — see the Pi-formation and
+/// check-against-Pi paths), which makes `BoundVar(i)` in the codomain
+/// refer to `param_types[i]`. For a well-typed `f(arg_0, …, arg_{n-1})`,
+/// replacing `BoundVar(i)` with `arg_i` yields the result type.
+///
+/// We delegate to the runtime `Substitute` with an unbounded cost
+/// budget — Substitute already handles de Bruijn shifts for nested
+/// binders inside the codomain. `Env::extended(args.iter().rev())`
+/// pushes `arg_{n-1}` first and `arg_0` last; `env.get(i)` resolves
+/// `BoundVar(i)` to `bindings[len - i - 1]`, so `BoundVar(0)` recovers
+/// the last-pushed arg (`arg_0`), and so on.
+fn substitute_args_into_codomain(args: &[Par], codomain: Par) -> Result<Par, TypeError> {
+    if args.is_empty() {
+        return Ok(codomain);
+    }
+    let subst = Substitute {
+        cost: CostManager::new(Cost::unsafe_max()),
+    };
+    let env = Env::new().extended(args.iter().rev().cloned());
+    subst
+        .substitute_no_sort(codomain, 0, &env)
+        .map_err(|e| TypeError::NotWellFormed(format!("codomain substitution failed: {e:?}")))
+}
+
 fn synth_connective(conn: &Connective) -> Result<Par, TypeError> {
     let inst = conn
         .connective_instance
@@ -330,11 +370,15 @@ fn synth_connective(conn: &Connective) -> Result<Par, TypeError> {
 
 /// Build a Par carrying a single [`Connective`] with the given instance.
 /// Used throughout the typechecker to express base-type and universe
-/// values.
+/// values. Sets `connective_used: true` so the resulting Par matches
+/// what the normalizer produces for base-type patterns (via
+/// `prepend_connective`) and what `substitute` recomputes after a walk.
 fn type_par(instance: ConnectiveInstance) -> Par {
-    Par::default().with_connectives(vec![Connective {
+    let mut par = Par::default().with_connectives(vec![Connective {
         connective_instance: Some(instance),
-    }])
+    }]);
+    par.connective_used = true;
+    par
 }
 
 fn discriminant_name(inst: &ExprInstance) -> &'static str {
@@ -530,18 +574,23 @@ mod tests {
         assert_eq!(ctx.depth(), 1);
     }
 
-    // Helper: build a Pi `(_: A) -> B` for tests.
+    // Helper: build a Pi `(_: A) -> B` for tests. Propagates
+    // `connective_used` from the subterms so the result matches
+    // normalizer output.
     fn pi_par(param_ty: Par, codomain: Par) -> Par {
         use models::rhoapi::{EPi, Expr};
-        Par::default().with_exprs(vec![Expr {
+        let conn_used = param_ty.connective_used || codomain.connective_used;
+        let mut par = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EPiBody(EPi {
                 bind_count: 1,
                 param_types: vec![param_ty],
                 codomain: Some(codomain),
                 locally_free: Vec::new(),
-                connective_used: false,
+                connective_used: conn_used,
             })),
-        }])
+        }]);
+        par.connective_used = conn_used;
+        par
     }
 
     // Helper: build a lambda `(_) => body` for tests.
@@ -767,5 +816,101 @@ mod tests {
             connective_of(&ty),
             Some(ConnectiveInstance::ConnType(_))
         ));
+    }
+
+    // Build an EApp Par `fun(args...)`.
+    fn app_par(fun: Par, args: Vec<Par>) -> Par {
+        use models::rhoapi::{EApp, Expr};
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EAppBody(EApp {
+                fun: Some(fun),
+                args,
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    // Build a Par that carries an int-typed function `f : Int -> Int`
+    // via the context. Returns (ctx with f bound, bvar reference to f).
+    fn ctx_with_int_endo() -> (Context, Par) {
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let endo = pi_par(int_ty.clone(), int_ty);
+        (Context::new().extend(endo), bvar_par(0))
+    }
+
+    #[test]
+    fn synth_app_dependent_identity_returns_arg_type() {
+        // `id : (A: Type) -> A -> A` applied to `Int` should give
+        // `Int -> Int` (the codomain `A -> A` with `BoundVar(0) := Int`).
+        // We model `id`'s type in the ctx: Pi((A: Type)) -> Pi((_: A)) -> A.
+        // Then `id(Int)` has type Pi((_: Int)) -> Int (after sub).
+        let type_univ = type_par(ConnectiveInstance::ConnType(true));
+        // Inner Pi is `(_: A) -> A` where A is BoundVar(0) in the outer scope.
+        let inner_pi = pi_par(bvar_par(0), bvar_par(1));
+        let outer_pi = pi_par(type_univ, inner_pi);
+
+        let ctx = Context::new().extend(outer_pi);
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let app = app_par(bvar_par(0), vec![int_ty.clone()]);
+
+        let ty = synth(&ctx, &app).unwrap();
+        // Expected shape: `(_: Int) -> Int`. Substitute does not refresh
+        // the outer `connective_used` book-keeping, so we compare the
+        // EPi structure rather than full Par equality.
+        let pi = match single_expr(&ty) {
+            Some(ExprInstance::EPiBody(pi)) => pi,
+            other => panic!("expected EPi, got {other:?}"),
+        };
+        assert_eq!(pi.bind_count, 1);
+        assert_eq!(pi.param_types.len(), 1);
+        assert_eq!(
+            pi.param_types[0].connectives.first().and_then(|c| c.connective_instance.as_ref()),
+            Some(&ConnectiveInstance::ConnInt(true))
+        );
+        assert_eq!(
+            pi.codomain
+                .as_ref()
+                .and_then(|p| p.connectives.first())
+                .and_then(|c| c.connective_instance.as_ref()),
+            Some(&ConnectiveInstance::ConnInt(true))
+        );
+    }
+
+    #[test]
+    fn synth_app_non_dependent_returns_codomain_unchanged() {
+        // `f : Int -> Int` applied to `42` → `Int`. Non-dependent codomain
+        // has no BoundVar refs, so substitution is a no-op.
+        let (ctx, f_ref) = ctx_with_int_endo();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let app = app_par(f_ref, vec![gint_par(42)]);
+
+        let ty = synth(&ctx, &app).unwrap();
+        assert_eq!(ty, int_ty);
+    }
+
+    #[test]
+    fn synth_app_preserves_lambda_in_codomain() {
+        // `const : (A: Type) -> (B: Type) -> A -> B -> A`.
+        // Model `const`'s type as nested Pis; `const(Int)` should sub
+        // BoundVar(0) := Int in the remaining `(B: Type) -> A -> B -> A`.
+        // After one app, the type's innermost reference to A is
+        // BoundVar(2) (crossed B, then x: A, then y: B). We only verify
+        // that substitution produces a well-formed Pi-of-Pi here.
+        let type_univ = type_par(ConnectiveInstance::ConnType(true));
+        // const_ty = Pi((A: Type)) -> Pi((B: Type)) -> A.
+        let inner = pi_par(type_univ.clone(), bvar_par(1));
+        let const_ty = pi_par(type_univ, inner);
+
+        let ctx = Context::new().extend(const_ty);
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let app = app_par(bvar_par(0), vec![int_ty.clone()]);
+
+        let ty = synth(&ctx, &app).unwrap();
+        // After substituting A := Int in `Pi((B: Type)) -> A`, we expect
+        // `Pi((B: Type)) -> Int` (since A is BoundVar(1), crossing B's
+        // binder shifts it, but substitution swaps it for Int).
+        let expected = pi_par(type_par(ConnectiveInstance::ConnType(true)), int_ty);
+        assert_eq!(ty, expected);
     }
 }
