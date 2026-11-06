@@ -1717,6 +1717,83 @@ async fn a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_n
     assert_eq!(replays_to(&executor, &root, &over, &proposer).await, after);
 }
 
+struct Innermost {
+    played: casper::rust::v6::executor::ExecutedBlock,
+    out: usize,
+    paid: u64,
+    replayed: StateHash,
+}
+
+async fn innermost(install: &str, bytes: usize) -> Innermost {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let first = executor
+        .execute(&pre, vec![envelope(install, 1, &alice, 30_000, 1)], block_data(&proposer))
+        .await
+        .expect("the service installs");
+    assert!(!first.processed[0].is_failed, "{:?}", first.processed[0]);
+    let root = first.settled_root.clone();
+    let before = balance(&rm, &root, &alice).await;
+    let call = envelope(&format!(r#"@"svc"!({})"#, payload(bytes)), 2, &bob, 50_000, 1);
+    let played = executor
+        .execute(&root, vec![call], block_data(&proposer))
+        .await
+        .expect("the call executes");
+    Innermost {
+        out: data_on(&rm, &played.settled_root, "out").await,
+        paid: before - balance(&rm, &played.settled_root, &alice).await,
+        replayed: replays_to(&executor, &root, &played, &proposer).await,
+        played,
+    }
+}
+
+fn layered(inner: Option<u64>, outer: u64) -> String {
+    let body = match inner {
+        Some(n) => format!(r#"{{% @"out"!(x) %}}[d ; {n}]"#),
+        None => r#"@"out"!(x)"#.to_string(),
+    };
+    format!(
+        r#"new d(`rho:system:deployerId`) in {{ {{% contract @"svc"(@x) = {{ {body} }} %}}[d ; {outer}] }}"#
+    )
+}
+
+#[tokio::test]
+async fn the_innermost_seal_bounds_the_firing_when_it_is_smaller_than_the_enclosing_one() {
+    let run = innermost(&layered(Some(1_500), 20_000), 2_000).await;
+    assert!(run.played.processed[0].is_failed, "P passes n = 1,500, so the run fails");
+    assert_eq!(run.out, 0);
+    assert_eq!(run.paid, 1_500 + 1, "the owner pays n and one cell, not m");
+    assert_eq!(run.replayed, run.played.settled_root);
+}
+
+#[tokio::test]
+async fn the_innermost_seal_bounds_the_firing_when_it_is_larger_than_the_enclosing_one() {
+    let past_m = innermost(&layered(None, 1_500), 400).await;
+    assert!(past_m.played.processed[0].is_failed, "this payload passes m = 1,500");
+    let run = innermost(&layered(Some(20_000), 1_500), 400).await;
+    assert!(
+        !run.played.processed[0].is_failed,
+        "P fits n = 20,000 though it passes m = 1,500"
+    );
+    assert_eq!(run.out, 1);
+    assert!(run.paid > 1_500 + 1 && run.paid < 20_000, "{}", run.paid);
+    assert_eq!(run.replayed, run.played.settled_root);
+}
+
+#[tokio::test]
+async fn an_undecorated_continuation_is_bounded_by_the_enclosing_seal() {
+    let over = innermost(&layered(None, 1_500), 2_000).await;
+    assert!(over.played.processed[0].is_failed, "P passes m = 1,500, so the run fails");
+    assert_eq!(over.out, 0);
+    assert_eq!(over.paid, 1_500 + 1);
+    assert_eq!(over.replayed, over.played.settled_root);
+    let within = innermost(&layered(None, 1_500), 8).await;
+    assert!(!within.played.processed[0].is_failed);
+    assert_eq!(within.out, 1);
+    assert_eq!(within.replayed, within.played.settled_root);
+}
+
 #[tokio::test]
 async fn substitution_into_a_fired_continuation_is_charged_to_its_installer() {
     let (alice, bob, proposer) = (party(), party(), party());
