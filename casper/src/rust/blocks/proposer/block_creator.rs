@@ -3342,6 +3342,7 @@ pub async fn create_with_progress(
         applied_from_scope,
         merge_base,
         shard_id,
+        casper_snapshot.chain_id.clone(),
         casper_version,
         &block_hash_leaves,
     );
@@ -3451,6 +3452,7 @@ fn package_block(
     applied_from_scope: Vec<Bytes>,
     merge_base: Option<BlockHash>,
     shard_id: String,
+    chain_id: BlockHash,
     version: i64,
     block_hash_leaves: &[[u8; 32]],
 ) -> BlockMessage {
@@ -3478,6 +3480,7 @@ fn package_block(
         timestamp: block_data.time_stamp,
         version,
         extra_bytes: Bytes::new(),
+        chain_id,
     };
 
     proto_util::unsigned_block_proto_with_leaves(
@@ -3543,6 +3546,7 @@ mod tests {
             Vec::new(),
             None,
             "test".to_string(),
+            BlockHash::new(),
             1,
             &[],
         );

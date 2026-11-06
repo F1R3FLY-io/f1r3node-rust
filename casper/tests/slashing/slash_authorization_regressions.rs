@@ -30,8 +30,13 @@ use rspace_plus_plus::rspace::history::Either;
 
 use super::detector_totality_helpers::{block, justification, DetectorFixture};
 
+const CHAIN: [u8; 32] = [0xC1; 32];
+
 fn snapshot(fixture: &DetectorFixture, bonded: &[Bytes]) -> CasperSnapshot {
+    let mut shard_conf = CasperShardConf::new();
+    shard_conf.shard_name = "root".to_string();
     CasperSnapshot {
+        chain_id: Bytes::from_static(&CHAIN),
         dag: fixture
             .dag_storage
             .get_representation()
@@ -45,7 +50,7 @@ fn snapshot(fixture: &DetectorFixture, bonded: &[Bytes]) -> CasperSnapshot {
         max_block_num: 10_000,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
-            shard_conf: CasperShardConf::new(),
+            shard_conf,
             bonds_map: bonded
                 .iter()
                 .map(|validator| (validator.clone(), 100))
@@ -62,6 +67,7 @@ fn public(key: &PrivateKey) -> Bytes { Secp256k1.to_public(key).bytes.into() }
 /// A block at `seq_num` signed by `key`, told apart from its siblings by `nonce`.
 fn signed(key: &PrivateKey, seq_num: i32, nonce: u8) -> BlockMessage {
     let mut b = block(nonce, public(key), seq_num, vec![], vec![]);
+    b.header.chain_id = Bytes::from_static(&CHAIN);
     b.sig_algorithm = Secp256k1::name();
     b.block_hash = proto_util::hash_block(&b);
     b.sig = Secp256k1.sign(&b.block_hash, &key.bytes).into();
@@ -222,6 +228,45 @@ async fn a_received_slash_whose_evidence_is_not_an_equivocation_is_rejected() {
             reason: "the blocks have different sequence numbers"
         }
     );
+}
+
+/// A block `key` signed at `seq_num` for shard `shard` of chain `chain`.
+fn signed_elsewhere(key: &PrivateKey, seq_num: i32, shard: &str, chain: &[u8]) -> BlockMessage {
+    let mut b = block(2, public(key), seq_num, vec![], vec![]);
+    b.shard_id = shard.to_string();
+    b.header.chain_id = Bytes::copy_from_slice(chain);
+    b.sig_algorithm = Secp256k1::name();
+    b.block_hash = proto_util::hash_block(&b);
+    b.sig = Secp256k1.sign(&b.block_hash, &key.bytes).into();
+    b
+}
+
+#[tokio::test]
+async fn a_received_slash_citing_a_block_of_another_shard_or_chain_is_rejected() {
+    let fixture = DetectorFixture::new().await;
+    let (offender, proposer) = (key(0x11), public(&key(0x22)));
+    let here = signed(&offender, 3, 1);
+    for elsewhere in [
+        signed_elsewhere(&offender, 3, "root-other", &CHAIN),
+        signed_elsewhere(&offender, 3, "root", &[0xC2; 32]),
+    ] {
+        let block = carrier(&proposer, vec![slash(
+            evidence(&here, &elsewhere),
+            &proposer,
+        )]);
+        assert_eq!(
+            auth_error(validate_received_slash_deploys(
+                &block,
+                &snapshot(&fixture, &[public(&offender), proposer.clone()])
+            )),
+            SlashAuthError::NotAnEquivocation {
+                reason: "a block belongs to another shard or chain"
+            },
+            "shard {}, chain {}",
+            elsewhere.shard_id,
+            hex::encode(&elsewhere.header.chain_id)
+        );
+    }
 }
 
 #[tokio::test]

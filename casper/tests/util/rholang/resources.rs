@@ -565,5 +565,6 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },
+        chain_id: Bytes::new(),
     }
 }

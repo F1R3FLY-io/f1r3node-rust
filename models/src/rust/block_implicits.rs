@@ -196,6 +196,7 @@ pub fn block_element_gen(
                         timestamp,
                         version,
                         extra_bytes: prost::bytes::Bytes::new(),
+                        chain_id: prost::bytes::Bytes::new(),
                     },
                     body: Body {
                         state: F1r3flyState {

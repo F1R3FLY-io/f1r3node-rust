@@ -332,6 +332,7 @@ message HeaderProto {
   int64 timestamp  = 5;
   int64 version    = 6;
   bytes extraBytes = 7;
+  bytes chainId    = 8; //genesis block hash of the block's chain; empty in the genesis block
 }
 
 /**

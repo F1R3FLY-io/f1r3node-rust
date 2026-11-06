@@ -481,6 +481,7 @@ pub fn block_header(parent_hashes: Vec<ByteString>, version: i64, timestamp: i64
         timestamp,
         version,
         extra_bytes: prost::bytes::Bytes::new(),
+        chain_id: prost::bytes::Bytes::new(),
     }
 }
 
@@ -1353,6 +1354,7 @@ mod merkle_block_hash_tests {
                 timestamp: 1_700_000_000_000,
                 version: 1,
                 extra_bytes: Bytes::new(),
+                chain_id: Bytes::new(),
             },
             body: Body {
                 state: F1r3flyState {

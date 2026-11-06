@@ -855,6 +855,9 @@ pub struct Header {
     pub timestamp: i64,
     pub version: i64,
     pub extra_bytes: ByteString,
+    /// The genesis block hash of the chain the block belongs to; empty in
+    /// the genesis block.
+    pub chain_id: ByteString,
 }
 
 impl Header {
@@ -864,6 +867,7 @@ impl Header {
             timestamp: proto.timestamp,
             version: proto.version,
             extra_bytes: proto.extra_bytes,
+            chain_id: proto.chain_id,
         }
     }
 
@@ -873,6 +877,7 @@ impl Header {
             timestamp: self.timestamp,
             version: self.version,
             extra_bytes: self.extra_bytes.clone(),
+            chain_id: self.chain_id.clone(),
         }
     }
 }
@@ -1899,6 +1904,7 @@ mod approved_block_tests {
                     timestamp: 0,
                     version: 0,
                     extra_bytes: Bytes::new(),
+                    chain_id: Bytes::new(),
                 },
                 body: Body {
                     state: F1r3flyState {
@@ -2292,6 +2298,7 @@ mod tests {
                 timestamp: i64::from(seed),
                 version: 1,
                 extra_bytes: Bytes::new(),
+                chain_id: Bytes::from(vec![seed; 32]),
             },
             pre_state_hash: Bytes::from(vec![seed; 32]),
             post_state_hash: Bytes::from(vec![seed + 1; 32]),

@@ -302,6 +302,40 @@ async fn a_stored_equivocation_does_not_hide_a_later_sibling() {
     }
 }
 
+/// v0 signs a1, and the same block for another chain. v1 holds a1 and refuses
+/// the other chain's block without holding it as an equivocation.
+#[serial_test::serial]
+#[tokio::test]
+async fn a_block_of_another_chain_is_refused_not_taken_for_an_equivocation() {
+    let (mut nodes, shard_id) = network(3, None).await;
+
+    let a1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("a1");
+    let mut foreign = a1.clone();
+    foreign.header.chain_id = prost::bytes::Bytes::from(vec![0xC2; 32]);
+    let foreign = nodes[0]
+        .validator_id_opt
+        .as_ref()
+        .expect("v0 identity")
+        .sign_block(&foreign);
+
+    accept(&mut nodes[1], &a1, "v1 accepts a1").await;
+    let verdict = nodes[1]
+        .process_block(foreign.clone())
+        .await
+        .expect("foreign");
+    assert!(
+        matches!(
+            verdict,
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidChainId))
+        ),
+        "{verdict:?}"
+    );
+    assert_eq!(held_pair(&nodes[1], &foreign.block_hash), None);
+}
+
 /// v1 receives a1 then x and holds x as the equivocation. v2 receives only x,
 /// so holds no pair, and proposes r citing x without a slash. v1 accepts r.
 #[serial_test::serial]

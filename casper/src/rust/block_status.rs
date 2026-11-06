@@ -93,6 +93,8 @@ pub enum InvalidBlock {
     InvalidFollows,
     InvalidSequenceNumber,
     InvalidShardId,
+    // InvalidChainId: the block names a chain other than this node's genesis.
+    InvalidChainId,
     JustificationRegression,
     NeglectedEquivocation,
     InvalidTransaction,
@@ -164,6 +166,8 @@ impl BlockStatus {
     }
 
     pub fn invalid_shard_id() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidShardId) }
+
+    pub fn invalid_chain_id() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidChainId) }
 
     pub fn justification_regression() -> BlockError {
         BlockError::Invalid(InvalidBlock::JustificationRegression)
@@ -276,6 +280,8 @@ impl InvalidBlock {
             //     declines the block identically — admission does all the
             //     enforcement, and a gate rule in its proving phase must
             //     never be able to burn honest stake through its own bugs.
+            //   • InvalidChainId: a block of another chain; it says nothing
+            //     about conduct on this one.
             //   • NotOfInterest: local node filtering decision.
             //   • LowDeployCost: per-deploy cost threshold; rejected at
             //     admission, not on-chain accountable.
@@ -291,6 +297,7 @@ impl InvalidBlock {
             | InvalidBlock::InvalidFollows
             | InvalidBlock::InvalidSequenceNumber
             | InvalidBlock::InvalidShardId
+            | InvalidBlock::InvalidChainId
             | InvalidBlock::JustificationRegression
             | InvalidBlock::NeglectedEquivocation
             | InvalidBlock::InvalidTransaction

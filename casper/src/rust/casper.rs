@@ -435,6 +435,9 @@ pub struct CasperSnapshot {
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
+    /// The genesis block hash: the chain every block of this node's shard
+    /// names in its header.
+    pub chain_id: BlockHash,
 }
 
 impl CasperSnapshot {
@@ -449,8 +452,9 @@ impl CasperSnapshot {
             .is_some_and(|stake| *stake > 0))
     }
 
-    pub fn new(dag: KeyValueDagRepresentation) -> Self {
+    pub fn new(dag: KeyValueDagRepresentation, chain_id: BlockHash) -> Self {
         Self {
+            chain_id,
             dag,
             last_finalized_block: BlockHash::default(),
             parents: vec![],
@@ -702,7 +706,7 @@ pub mod test_helpers {
                 )),
             };
 
-            CasperSnapshot::new(dag)
+            CasperSnapshot::new(dag, BlockHash::from(vec![0xC1; 32]))
         }
 
         pub fn bond_validator_in_snapshot(

@@ -238,6 +238,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         max_block_num,
         max_seq_nums,
         on_chain_state,
+        chain_id: Bytes::new(),
     }
 }
 

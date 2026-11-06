@@ -10,23 +10,25 @@
 //!
 //! ## Pipeline steps (in order)
 //!
-//! 1. `EquivocationDetector::equivocation_verdict` — a second block of the
+//! 1. `shard_identifier`, `chain_identifier` — the block belongs to this
+//!    node's shard and chain.
+//! 2. `EquivocationDetector::equivocation_verdict` — a second block of the
 //!    sender at a held sequence number is an equivocation.
-//! 2. `block_summary` — wire-format + parent + justification structural
+//! 3. `block_summary` — wire-format + parent + justification structural
 //!    checks (T-1, T-2).
-//! 3. `validate_block_checkpoint` — replay deploys against the pre-state
+//! 4. `validate_block_checkpoint` — replay deploys against the pre-state
 //!    hash and verify the resulting state matches the block's
 //!    `post_state_hash`.
-//! 4. `bonds_cache` — verify the block's bonds map matches the bonds
+//! 5. `bonds_cache` — verify the block's bonds map matches the bonds
 //!    computed from the parent post-state hash.
-//! 5. `check_neglected_equivocations` — reject the block if both blocks of
+//! 6. `check_neglected_equivocations` — reject the block if both blocks of
 //!    an equivocation are in its justifications and it leaves the
 //!    equivocator bonded.
-//! 6. `phlo_price` — minimum phlo-price check.
+//! 7. `phlo_price` — minimum phlo-price check.
 //!
 //! ## Slashing-protocol position
 //!
-//! An equivocation verdict from step 1 is the only verdict stored: the
+//! An equivocation verdict from step 2 is the only verdict stored: the
 //! dispatcher (`dispatch_handle_invalid_block`) records the block invalid
 //! together with its sibling.
 
@@ -359,14 +361,6 @@ impl Validate {
         match __step!(
             BLOCK_VALIDATION_TIMESTAMP_TIME_METRIC,
             Self::timestamp(block, block_store)
-        ) {
-            Either::Left(err) => return Either::Left(err),
-            Either::Right(_) => {}
-        }
-        tracing::debug!(target: "f1r3fly.casper", "before-shard-identifier-validation");
-        match __step!(
-            BLOCK_VALIDATION_SHARD_IDENTIFIER_TIME_METRIC,
-            Self::shard_identifier(block, shard_id)
         ) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
@@ -1163,6 +1157,25 @@ impl Validate {
                 )
             );
             Either::Left(BlockError::Invalid(InvalidBlock::InvalidShardId))
+        }
+    }
+
+    pub fn chain_identifier(b: &BlockMessage, chain_id: &BlockHash) -> ValidBlockProcessing {
+        if b.header.chain_id == *chain_id {
+            Either::Right(ValidBlock::Valid)
+        } else {
+            tracing::warn!(
+                "{}",
+                Self::ignore(
+                    b,
+                    &format!(
+                        "got chain identifier {} while {} was expected.",
+                        hex::encode(&b.header.chain_id),
+                        hex::encode(chain_id)
+                    )
+                )
+            );
+            Either::Left(BlockError::Invalid(InvalidBlock::InvalidChainId))
         }
     }
 

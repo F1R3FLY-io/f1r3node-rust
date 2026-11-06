@@ -238,6 +238,7 @@ pub async fn equivocate_block(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -374,6 +375,7 @@ pub async fn propose_with_explicit_justifications(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,
@@ -569,6 +571,7 @@ pub async fn propose_with_block_mutation(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let mut unsigned = proto_util::unsigned_block_proto(
         body,
@@ -693,6 +696,7 @@ pub async fn propose_neglecting_block(
         timestamp: block_data.time_stamp,
         version: casper_version,
         extra_bytes: Bytes::new(),
+        chain_id: snapshot.chain_id.clone(),
     };
     let unsigned = proto_util::unsigned_block_proto(
         body,

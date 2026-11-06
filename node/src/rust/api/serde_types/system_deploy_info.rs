@@ -84,6 +84,8 @@ pub struct HeaderSerde {
     pub version: i64,
     #[serde(rename = "extraBytes", with = "base64_bytes")]
     pub extra_bytes: Vec<u8>,
+    #[serde(rename = "chainId", with = "base64_bytes")]
+    pub chain_id: Vec<u8>,
 }
 
 impl From<HeaderProto> for HeaderSerde {
@@ -93,6 +95,7 @@ impl From<HeaderProto> for HeaderSerde {
             timestamp: data.timestamp,
             version: data.version,
             extra_bytes: data.extra_bytes.to_vec(),
+            chain_id: data.chain_id.to_vec(),
         }
     }
 }
@@ -104,6 +107,7 @@ impl From<HeaderSerde> for HeaderProto {
             timestamp: data.timestamp,
             version: data.version,
             extra_bytes: data.extra_bytes.into(),
+            chain_id: data.chain_id.into(),
         }
     }
 }
@@ -534,6 +538,7 @@ mod tests {
                 timestamp: i64::from(seed),
                 version: 1,
                 extra_bytes: vec![seed].into(),
+                chain_id: vec![seed + 3; 32].into(),
             }),
             pre_state_hash: vec![seed; 32].into(),
             post_state_hash: vec![seed + 2; 32].into(),

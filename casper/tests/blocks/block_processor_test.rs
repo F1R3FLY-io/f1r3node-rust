@@ -320,6 +320,7 @@ async fn block_processor_components_should_work_together() {
             timestamp: 0,
             version: 1,
             extra_bytes: prost::bytes::Bytes::new(),
+            chain_id: fixture.test_block.header.chain_id.clone(),
         },
         body: fixture.test_block.body.clone(), // Use same body as test block
         justifications: vec![],

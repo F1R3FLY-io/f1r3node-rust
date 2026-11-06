@@ -71,6 +71,17 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     snapshot: &mut CasperSnapshot,
     skip_checkpoint_and_bonds: bool,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    // A block of another shard or chain is foreign: nothing else is judged of
+    // it, so it is never taken for an equivocation of a key it shares.
+    for verdict in [
+        Validate::shard_identifier(block, &this.casper_shard_conf.shard_name),
+        Validate::chain_identifier(block, &snapshot.chain_id),
+    ] {
+        if let Either::Left(error) = verdict {
+            return Ok(Either::Left(error));
+        }
+    }
+
     // Authorization comes before every other check: a sender without stake in
     // the block's main parent is rejected before the summary walk and replay.
     match Validate::block_sender_has_weight(block, &this.approved_block, &this.block_store) {

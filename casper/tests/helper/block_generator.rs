@@ -22,7 +22,7 @@ use models::rust::validator::Validator;
 use rholang::rust::interpreter::system_processes::BlockData;
 
 pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
-    CasperSnapshot::new(dag)
+    CasperSnapshot::new(dag, BlockHash::new())
 }
 
 pub async fn step(

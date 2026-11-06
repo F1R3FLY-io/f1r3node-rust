@@ -405,6 +405,7 @@ mod tests {
                 timestamp: 0,
                 version: 0,
                 extra_bytes: Bytes::new(),
+                chain_id: Bytes::new(),
             },
             body: Body {
                 state: F1r3flyState {

@@ -45,7 +45,9 @@ use crate::util::rholang::resources::mk_test_rnode_store_manager_from_genesis;
 
 const SHARD_ID: &str = "root-shard";
 
-fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot { CasperSnapshot::new(dag) }
+fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
+    CasperSnapshot::new(dag, prost::bytes::Bytes::new())
+}
 
 fn record_metrics<T>(f: impl FnOnce() -> T) -> (T, Snapshotter) {
     let recorder = DebuggingRecorder::new();

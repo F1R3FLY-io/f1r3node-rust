@@ -65,12 +65,23 @@ pub fn checked_next_seq(max_seq: u64) -> Option<i32> {
         .and_then(|seq| i32::try_from(seq).ok())
 }
 
-/// The validator `evidence` proves equivocated: both commitments hash to
-/// blocks their common sender signed, at one sequence number, and the two
-/// hashes differ and are in order.
-pub fn equivocator_proven_by(evidence: &EquivocationEvidence) -> Result<Validator, SlashAuthError> {
+/// The validator `evidence` proves equivocated on the chain `chain_id` of
+/// shard `shard_id`: both commitments hash to blocks their common sender
+/// signed for that chain, at one sequence number, and the two hashes differ
+/// and are in order.
+pub fn equivocator_proven_by(
+    evidence: &EquivocationEvidence,
+    shard_id: &str,
+    chain_id: &[u8],
+) -> Result<Validator, SlashAuthError> {
     let reject = |reason| Err(SlashAuthError::NotAnEquivocation { reason });
     let (first, second) = (&evidence.first, &evidence.second);
+    if [first, second]
+        .iter()
+        .any(|block| block.shard_id != shard_id || block.header.chain_id != chain_id)
+    {
+        return reject("a block belongs to another shard or chain");
+    }
     if first.sender != second.sender {
         return reject("the blocks have different senders");
     }
@@ -204,7 +215,11 @@ pub fn validate_received_slash_deploys(
             }
             .into());
         }
-        let offender = equivocator_proven_by(evidence)?;
+        let offender = equivocator_proven_by(
+            evidence,
+            &snapshot.on_chain_state.shard_conf.shard_name,
+            &snapshot.chain_id,
+        )?;
         if !bonded(snapshot, &offender) {
             return Err(SlashAuthError::TargetNotBonded {
                 validator: hex::encode(&offender),
@@ -231,17 +246,33 @@ mod tests {
 
     use super::*;
 
-    /// A block at `seq_num` signed by the key `secret`, distinguished by `nonce`.
-    fn signed_commitment(secret: &PrivateKey, seq_num: i32, nonce: u8) -> BlockCommitment {
+    const SHARD: &str = "root";
+    const CHAIN: [u8; 32] = [0xC1; 32];
+
+    /// A block of `shard` and `chain` at `seq_num` signed by the key
+    /// `secret`, distinguished by `nonce`.
+    fn signed_for(
+        secret: &PrivateKey,
+        seq_num: i32,
+        nonce: u8,
+        shard: &str,
+        chain: &[u8],
+    ) -> BlockCommitment {
         let secp = Secp256k1;
         let mut block = get_random_block_default();
         block.sender = secp.to_public(secret).bytes.into();
         block.sig_algorithm = Secp256k1::name();
         block.seq_num = seq_num;
         block.extra_bytes = vec![nonce].into();
+        block.shard_id = shard.to_string();
+        block.header.chain_id = chain.to_vec().into();
         let hash = proto_util::hash_block(&block);
         block.sig = secp.sign(&hash, &secret.bytes).into();
         proto_util::block_commitment(&block)
+    }
+
+    fn signed_commitment(secret: &PrivateKey, seq_num: i32, nonce: u8) -> BlockCommitment {
+        signed_for(secret, seq_num, nonce, SHARD, &CHAIN)
     }
 
     fn ordered(a: BlockCommitment, b: BlockCommitment) -> EquivocationEvidence {
@@ -268,7 +299,7 @@ mod tests {
             signed_commitment(&secret, 4, 2),
         );
         assert_eq!(
-            equivocator_proven_by(&evidence),
+            equivocator_proven_by(&evidence, SHARD, &CHAIN),
             Ok(evidence.first.sender.clone())
         );
     }
@@ -295,8 +326,20 @@ mod tests {
         let mut altered_block = b.clone();
         altered_block.post_state_hash = vec![0xAB; 32].into();
         let altered = ordered(a.clone(), altered_block);
+        let other_shard = ordered(a.clone(), signed_for(&secret, 4, 2, "other", &CHAIN));
+        let other_chain = ordered(a.clone(), signed_for(&secret, 4, 2, SHARD, &[0xC2; 32]));
 
         for (name, evidence, reason) in [
+            (
+                "a block of another shard",
+                other_shard,
+                "a block belongs to another shard or chain",
+            ),
+            (
+                "a block of another chain",
+                other_chain,
+                "a block belongs to another shard or chain",
+            ),
             ("same block", same_block, "the two blocks are one block"),
             (
                 "different sequence numbers",
@@ -321,7 +364,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                equivocator_proven_by(&evidence),
+                equivocator_proven_by(&evidence, SHARD, &CHAIN),
                 Err(SlashAuthError::NotAnEquivocation { reason }),
                 "{name}"
             );

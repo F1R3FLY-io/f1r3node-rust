@@ -515,8 +515,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let invalid_blocks = dag.invalid_blocks_map()?;
     let last_finalized_block = dag.last_finalized_block();
     record_dag_cardinality_metrics(&dag);
+    let chain_id = this.block_dag_storage.genesis_hash()?.ok_or_else(|| {
+        CasperError::RuntimeError(
+            "the genesis hash is unknown, so the node's chain identity is unknown".to_string(),
+        )
+    })?;
 
     Ok(CasperSnapshot {
+        chain_id,
         dag,
         last_finalized_block,
         parents,
