@@ -272,6 +272,7 @@ impl Substitute {
                 depth,
                 env,
             )?),
+            seal: term.seal,
         })
     }
 

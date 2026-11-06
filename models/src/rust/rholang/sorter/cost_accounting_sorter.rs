@@ -122,10 +122,12 @@ pub fn sort_signed_term(term: &CostSignedTerm) -> ScoredTerm<CostSignedTerm> {
         term: CostSignedTerm {
             body: term.body.as_ref().map(|_| body.term),
             signature: term.signature.as_ref().map(|_| signature.term),
+            seal: term.seal.clone(),
         },
         score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIGNED_TERM, vec![
             signature.score,
             body.score,
+            seal_score(term.seal.as_ref()),
         ]),
     }
 }
@@ -136,6 +138,18 @@ pub fn sort_stack(stack: &CostStack) -> ScoredTerm<CostStack> {
         term: CostStack { cells },
         score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_STACK, scores),
     }
+}
+
+fn seal_score(seal: Option<&crate::rhoapi::ElaboratedSeal>) -> Tree<ScoreAtom> {
+    let Some(seal) = seal else {
+        return Tree::<ScoreAtom>::create_leaf_from_i64(-1);
+    };
+    let children = vec![
+        Tree::<ScoreAtom>::create_leaf_from_i64(seal.kind as i64),
+        Tree::<ScoreAtom>::create_leaf_from_bytes(seal.origin.clone()),
+        Tree::<ScoreAtom>::create_leaf_from_i64(seal.phlo_limit as i64),
+    ];
+    Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIGNED_TERM, children)
 }
 
 #[cfg(test)]
@@ -201,6 +215,7 @@ mod tests {
         let term = CostSignedTerm {
             body: Some(Par::default().with_exprs(vec![e(2), e(1)])),
             signature: Some(ground(1)),
+            seal: None,
         };
         assert_eq!(
             sort_signed_term(&term).term.body,

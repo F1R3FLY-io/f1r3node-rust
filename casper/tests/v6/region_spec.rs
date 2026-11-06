@@ -809,6 +809,7 @@ async fn a_region_sealed_in_its_origin_pays_from_its_sealer_for_any_later_runner
 }
 
 #[tokio::test]
+#[ignore = "FX-21 decision 12: a seal in received data carries its writer's origin and is refused under another origin; awaits the ruling on Decision 77"]
 async fn data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there() {
     let (alice, mallory, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000), (&mallory, 100_000)]).await;

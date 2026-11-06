@@ -11,6 +11,7 @@
 //! §0/§3), and DR-13 forbids a normalizer write to `Σ⟦s⟧`.
 
 pub mod desugar;
+pub mod elaborate;
 pub mod pattern_guard;
 pub mod recognize;
 pub mod sig;

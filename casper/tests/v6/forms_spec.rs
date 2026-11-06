@@ -274,9 +274,11 @@ async fn work_that_stored_code_pays_for_does_not_count_against_the_clients_limit
     let heavy = (0..12).fold("Nil".to_string(), |inner, _| {
         format!("new y in {{ y!(1) | for (_ <- y) {{ {inner} }} }}")
     });
-    let stored = format!(r#"for (_ <- @"x") {{ {heavy} }}"#);
+    let stored = format!(
+        r#"new d(`rho:system:deployerId`) in {{ {{% for (_ <- @"x") {{ {heavy} }} %}}[d ; 20000] }}"#
+    );
     let mut install = envelope(&stored, 1, &bob, 1);
-    install.data.phlo_limit = 5_000;
+    install.data.phlo_limit = 100_000;
     let install = Signed::create(install.data, Box::new(Secp256k1), bob.sk.clone()).unwrap();
     let installed = play(&executor, &pre, install, &proposer).await;
 
@@ -294,4 +296,179 @@ async fn work_that_stored_code_pays_for_does_not_count_against_the_clients_limit
     let client = charge(&fired, &alice).expect("the client pays its own part");
     assert!(client.comm_phlo + client.compute_phlo <= limit as u64);
     assert!(fired.runs[0].compute_phlo <= limit as u64, "the run's meter counts the client's own work only");
+}
+
+mod elaboration {
+    use std::collections::HashMap;
+
+    use models::rhoapi::cost_signature::Value;
+    use models::rhoapi::g_unforgeable::UnfInstance;
+    use models::rhoapi::{CostSignature, GDeployerId, GUnforgeable, Par, SealOrigin};
+    use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
+    use models::rust::rholang::sorter::sortable::Sortable;
+    use rholang::rust::interpreter::accounting::rev_stack::seal::origin_digest;
+    use rholang::rust::interpreter::compiler::compiler::Compiler;
+    use rholang::rust::interpreter::compiler::normalizer::cost_accounting::elaborate::{
+        KIND_DEPLOYMENT, KIND_PROCESS, KIND_SIGNED,
+    };
+    use rholang::rust::interpreter::compiler::normalizer::cost_accounting::sig::canon_ground;
+
+    use super::BODY;
+
+    const LIMIT: u64 = 9_000;
+
+    fn id(key: u8) -> Par {
+        Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GDeployerIdBody(GDeployerId {
+                public_key: vec![key; 65],
+            })),
+        }])
+    }
+
+    fn env() -> HashMap<String, Par> {
+        HashMap::from([
+            ("rho:system:deployerId".to_string(), id(4)),
+            ("rho:system:cosignerId:0".to_string(), id(9)),
+        ])
+    }
+
+    fn origin() -> SealOrigin {
+        SealOrigin {
+            envelope: vec![7; 4],
+            signers: vec![vec![4; 65], vec![9; 65]],
+            phlo_price: 3,
+            phlo_limit: LIMIT,
+        }
+    }
+
+    fn elaborated(sugar: &str) -> Par {
+        ParSortMatcher::sort_match(&Compiler::source_to_adt_elaborated(sugar, env(), origin()).unwrap()).term
+    }
+
+    fn to_deployment(par: &mut Par) {
+        let u1 = CostSignature {
+            value: Some(Value::Ground(canon_ground("u1"))),
+        };
+        for term in par.cost_signed_terms.iter_mut() {
+            if term.signature.as_ref() == Some(&u1) {
+                term.signature = Some(CostSignature {
+                    value: Some(Value::Name(ParSortMatcher::sort_match(&id(4)).term)),
+                });
+                term.seal.as_mut().unwrap().kind = KIND_DEPLOYMENT;
+            }
+            term.body.iter_mut().for_each(to_deployment);
+        }
+        for receive in par.receives.iter_mut() {
+            receive.body.iter_mut().for_each(to_deployment);
+        }
+        for new in par.news.iter_mut() {
+            new.p.iter_mut().for_each(to_deployment);
+        }
+        for m in par.matches.iter_mut() {
+            for case in m.cases.iter_mut() {
+                case.source.iter_mut().for_each(to_deployment);
+            }
+        }
+    }
+
+    fn form(explicit: &str) -> Par {
+        let mut par = Compiler::source_to_adt_explicit(explicit, env(), origin()).unwrap();
+        to_deployment(&mut par);
+        ParSortMatcher::sort_match(&par).term
+    }
+
+    fn body_under(seal: &str) -> String {
+        format!("new y in {{ y!(1) | for (_ <- y) {{ {{% Nil %}}[{seal}] }} }}")
+    }
+
+    const NAMES: &str = r#"new d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`) in"#;
+
+    #[test]
+    fn the_implicit_seal_elaborates_to_the_two_party_form_for_the_installer() {
+        let sugar = format!(r#"for (_ <- @"x") {{ {BODY} }}"#);
+        let explicit = format!(r#"{{% for (_ <- @"x") {{ {{% {} %}}[u1] }} %}}[u1]"#, body_under("u1"));
+        assert_eq!(elaborated(&sugar), form(&explicit));
+    }
+
+    #[test]
+    fn a_redex_under_the_implicit_seal_elaborates_to_the_one_party_form() {
+        let sugar = format!(r#"for (_ <- @"x") {{ {BODY} }} | @"x"!(1)"#);
+        let explicit = format!(
+            r#"{{% for (_ <- @"x") {{ {{% {} %}}[u1] }} | @"x"!(1) %}}[u1]"#,
+            body_under("u1")
+        );
+        assert_eq!(elaborated(&sugar), form(&explicit));
+    }
+
+    #[test]
+    fn the_lollipop_elaborates_to_s1_for_the_comm_and_s2_for_the_continuation() {
+        let sugar = format!(r#"{NAMES} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d -o c] | @"x"!(1) }}"#);
+        let explicit = format!(
+            r#"{{% {NAMES} {{ {{% for (_ <- @"x") {{ {{% {} %}}[c] }} %}}[d] | @"x"!(1) }} %}}[u1]"#,
+            body_under("c")
+        );
+        assert_eq!(elaborated(&sugar), form(&explicit));
+    }
+
+    #[test]
+    fn a_nested_region_elaborates_to_its_compound_seal() {
+        let sugar = format!(r#"{NAMES} {{ {{% {{% {BODY} %}}[c] %}}[d] | @"z"!(0) }}"#);
+        let explicit = format!(
+            r#"{{% {NAMES} {{ {{% {} %}}[d (*) c] | @"z"!(0) }} %}}[u1]"#,
+            body_under("c")
+        );
+        assert_eq!(elaborated(&sugar), form(&explicit));
+    }
+
+    #[test]
+    fn a_hash_sealed_region_keeps_its_body_and_takes_the_process_kind() {
+        let p = r#"@"h"!(1)"#;
+        let sugar = format!(r#"{{% {p} %}}[# {{ {p} }}] | @"z"!(0)"#);
+        let explicit = format!(r#"{{% {{% {p} %}}[# {{ {p} }}] | @"z"!(0) %}}[u1]"#);
+        let par = elaborated(&sugar);
+        assert_eq!(par, form(&explicit));
+        let region = &par.cost_signed_terms[0].body.as_ref().unwrap().cost_signed_terms[0];
+        assert_eq!(region.seal.as_ref().unwrap().kind, KIND_PROCESS);
+    }
+
+    #[test]
+    fn a_declared_limit_seals_the_region_and_its_continuations() {
+        let sugar = format!(r#"{NAMES} {{ {{% for (_ <- @"x") {{ {BODY} }} %}}[d ; 5000] | @"z"!(0) }}"#);
+        let explicit = format!(
+            r#"{{% {NAMES} {{ {{% for (_ <- @"x") {{ {{% {} %}}[d ; 5000] }} %}}[d ; 5000] | @"z"!(0) }} %}}[u1]"#,
+            body_under("d ; 5000")
+        );
+        let par = elaborated(&sugar);
+        assert_eq!(par, form(&explicit));
+        let region = &par.cost_signed_terms[0].body.as_ref().unwrap().news[0].p.as_ref().unwrap().cost_signed_terms[0];
+        let seal = region.seal.as_ref().unwrap();
+        assert_eq!((seal.kind, seal.phlo_limit), (KIND_SIGNED, 5_000));
+    }
+
+    #[test]
+    fn an_undeclared_limit_is_the_deployments_limit() {
+        let par = elaborated(r#"for (_ <- @"x") { Nil }"#);
+        let top = &par.cost_signed_terms[0];
+        let seal = top.seal.as_ref().unwrap();
+        assert_eq!(seal.kind, KIND_DEPLOYMENT);
+        assert_eq!(seal.origin, origin_digest(&origin()));
+        assert_eq!(seal.phlo_limit, LIMIT);
+        let continuation = &top.body.as_ref().unwrap().receives[0].body.as_ref().unwrap().cost_signed_terms[0];
+        assert_eq!(continuation.seal, top.seal);
+    }
+
+    #[test]
+    fn a_process_sent_as_data_is_not_elaborated() {
+        let par = elaborated(r#"@"x"!(for (_ <- @"y") { Nil })"#);
+        let sent = &par.cost_signed_terms[0].body.as_ref().unwrap().sends[0].data[0];
+        assert!(sent.receives[0].body.as_ref().unwrap().cost_signed_terms.is_empty());
+    }
+
+    #[test]
+    fn a_binder_that_shadows_its_seal_is_refused() {
+        let sugar = r#"new d(`rho:system:deployerId`) in { {% for (d <- @"x") { Nil } %}[d] }"#;
+        let error = Compiler::source_to_adt_elaborated(sugar, env(), origin()).unwrap_err();
+        assert!(format!("{error:?}").contains("rebound"), "{error:?}");
+    }
+
 }

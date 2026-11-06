@@ -83,3 +83,7 @@ Lane C's FX-19 is in build, and its seal must carry the installing deployment's 
 - The name is `phlo_limit` in both messages, as in the FX-19 memo. Revision 1 of this memo called it `firing_limit`.
 - **Lane C can build FX-19 now on `SealRecordProto.phlo_limit`.** Until FX-21 lands, the reducer fills it from the deployment's `phloLimit` when it installs the deployment seal. After FX-21, the reducer copies it from the term's `ElaboratedSeal` when it stores a receive. FX-19's candidate test, charge and refund read only the stored record, so they do not change when FX-21 lands.
 - **Question C5:** confirm field number 5 and the name `phlo_limit`, so that the two branches merge without a conflict in `RhoTypes.proto`.
+
+## 7. Ruling (revision 3, 2026-11-05)
+
+Decision 127 adopted lane C's built format: `SealOrigin.phlo_limit`, field 4. Section 6's field 5 on `SealRecordProto` is withdrawn. The term carries `CostSignedTerm.seal = ElaboratedSeal { kind = 1, origin = 2, phlo_limit = 3 }`. `origin` is a digest of the envelope, the price and the signers, and `phlo_limit` is the seal's declared limit (`{% P %}[ s ; n ]`) or the deployment's `phloLimit`. The built pass is described in the FX-21 log.

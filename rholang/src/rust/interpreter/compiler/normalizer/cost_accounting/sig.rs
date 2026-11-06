@@ -24,6 +24,21 @@ pub fn signature_to_wire<'ast>(
     parser: &'ast RholangParser<'ast>,
 ) -> Result<(CostSignature, FreeMap<VarSort>), InterpreterError> {
     match sig {
+        Signature::Ground(_) if super::elaborate::is_deployment_signature(sig) => {
+            match super::elaborate::current() {
+                Some(elaboration) => Ok((
+                    CostSignature {
+                        value: Some(CostSignatureValue::Name(
+                            ParSortMatcher::sort_match(&elaboration.deployer).term,
+                        )),
+                    },
+                    free_map,
+                )),
+                None => Err(InterpreterError::NormalizerError(
+                    "cost-accounting: the deployment seal is written only by elaboration".to_string(),
+                )),
+            }
+        }
         Signature::Ground(name) => match name {
             Name::NameVar(Var::Id(id)) => match bound_map_chain.get(id.name) {
                 Some(ctx) if ctx.typ == VarSort::NameSort => Ok((

@@ -137,14 +137,18 @@ pub fn normalize_ann_proc<'ast>(
     }
 
     match &proc.proc {
+        Proc::FixedPointPattern { .. } => Err(InterpreterError::NormalizerError(
+            "the FixedPoint type pattern has no connective on this branch".to_string(),
+        )),
+
         Proc::Nil => Ok(ProcVisitOutputs {
             par: input.par.clone(),
             free_map: input.free_map.clone(),
         }),
 
-        Proc::SignedTerm { proc: inner, sig } => {
+        Proc::SignedTerm { proc: inner, sig, limit } => {
             use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_signed_term;
-            recognize_signed_term(inner, sig, input, _env, parser)
+            recognize_signed_term(inner, sig, *limit, input, _env, parser)
         }
         Proc::TokenStack { stack } => {
             use crate::rust::interpreter::compiler::normalizer::cost_accounting::recognize::recognize_token_stack;
