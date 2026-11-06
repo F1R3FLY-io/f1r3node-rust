@@ -98,11 +98,6 @@ impl ReplayCacheEntry {
                     Self::normalize_produce(produce);
                 }
             }
-            Event::Refusal(refusal) => {
-                refusal.owner = owned_bytes(&refusal.owner);
-                refusal.envelope = owned_bytes(&refusal.envelope);
-                refusal.step = owned_bytes(&refusal.step);
-            }
         }
     }
 
@@ -116,11 +111,6 @@ impl ReplayCacheEntry {
 
     fn event_heap_bytes(event: &Event) -> usize {
         match event {
-            Event::Refusal(refusal) => refusal
-                .owner
-                .len()
-                .saturating_add(refusal.envelope.len())
-                .saturating_add(refusal.step.len()),
             Event::Produce(produce) => Self::produce_heap_bytes(produce),
             Event::Consume(consume) => consume
                 .channels_hashes

@@ -2945,7 +2945,6 @@ async fn concurrent_registry_inserts_should_not_conflict() {
                         }
                     }
                 }
-                CasperEvent::Refusal(_) => {}
             }
         }
 
