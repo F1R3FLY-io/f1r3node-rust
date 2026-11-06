@@ -9,8 +9,8 @@
  * async support while maintaining the same flexibility as the original Scala version.
  */
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -26,11 +26,13 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, CasperMessage};
+use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
 use shared::rust::store::key_value_store::MissingBlockContext;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
+use tokio::task::JoinHandle;
 
 use crate::rust::block_status::{BlockError, InvalidBlock};
 use crate::rust::casper::{Casper, CasperSnapshot};
@@ -191,13 +193,14 @@ impl CheckedBlock {
         block: BlockMessage,
         source: &'static str,
     ) -> Result<Self, (Box<BlockMessage>, IntegrityFailure)> {
-        let failure = if !(Validate::format_of_fields(&block) && Validate::block_signature(&block))
-        {
+        let failure = if !Validate::format_of_fields(&block) {
             IntegrityFailure::Malformed
-        } else if matches!(Validate::block_hash(&block), Either::Left(_)) {
-            IntegrityFailure::HashMismatch
         } else {
-            return Ok(Self(block));
+            match Validate::block_hash_and_signature(&block) {
+                Ok(()) => return Ok(Self(block)),
+                Err(InvalidBlock::InvalidBlockHash) => IntegrityFailure::HashMismatch,
+                Err(_) => IntegrityFailure::Malformed,
+            }
         };
         metrics::counter!(BLOCK_INTEGRITY_REJECTED_METRIC, "source" => source, "reason" => failure.reason())
             .increment(1);
@@ -347,6 +350,8 @@ const VALIDATION_ERROR_QUARANTINE_MS: u64 = 120_000;
 /// Admission cap on the shared in-flight block set. Must not exceed the
 /// node's block-processor queue capacity.
 pub const MAX_BLOCKS_IN_PROCESSING: usize = 512;
+pub const MAX_PARALLEL_RECEIPT_VERIFICATIONS: usize = 2;
+pub const MAX_PENDING_RECEIPT_VERIFICATIONS_PER_PEER: usize = 16;
 /// The node warns when its oldest in-flight marker is older than this. The
 /// marker is kept: an old marker means a block that is still queued or still
 /// processing, for example a long replay (#407).
@@ -421,6 +426,345 @@ pub fn mark_in_flight(blocks: &Arc<InFlightBlocks>, hash: BlockHash) -> InFlight
     InFlightMark::Marked(guard)
 }
 
+pub async fn discard_corrupt_pendant<T: TransportLayer + Send + Sync>(
+    block: &BlockMessage,
+    store: &KeyValueBlockStore,
+    buffer: &CasperBufferKeyValueStorage,
+    retriever: &BlockRetriever<T>,
+) -> Result<(), CasperError> {
+    if !store.remove_if_matches(block)?
+        && store
+            .get(&block.block_hash)?
+            .is_some_and(|current| current != *block)
+    {
+        return Ok(());
+    }
+    store.discard_pending(&block.block_hash);
+    let needed =
+        buffer.discard_copy_preserving_dependents(BlockHashSerde(block.block_hash.clone()))?;
+    retriever.forget_hash_tracking(&block.block_hash)?;
+    if needed {
+        retriever
+            .admit_hash(
+                block.block_hash.clone(),
+                None,
+                AdmitHashReason::MissingDependencyRequested,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+impl CheckedBlock {
+    pub fn verify(block: BlockMessage) -> Result<Self, InvalidBlock> {
+        Validate::block_hash_and_signature(&block)?;
+        if !Validate::format_of_fields(&block) {
+            return Err(InvalidBlock::InvalidFormat);
+        }
+        Ok(Self(block))
+    }
+}
+
+impl std::ops::Deref for CheckedBlock {
+    type Target = BlockMessage;
+
+    fn deref(&self) -> &BlockMessage { &self.0 }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReceiptRefusal {
+    Invalid(InvalidBlock),
+    Overloaded,
+    AlreadyInFlight,
+    InFlightCapReached,
+}
+
+struct HashVerificationSlot {
+    users: usize,
+    mutex: Arc<tokio::sync::Mutex<()>>,
+}
+
+type HashVerificationMap = dashmap::DashMap<BlockHash, HashVerificationSlot>;
+
+struct HashVerificationTicket {
+    entries: Arc<HashVerificationMap>,
+    hash: BlockHash,
+    mutex: Arc<tokio::sync::Mutex<()>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for HashVerificationTicket {
+    fn drop(&mut self) {
+        self.guard.take();
+        if let dashmap::mapref::entry::Entry::Occupied(mut entry) =
+            self.entries.entry(self.hash.clone())
+        {
+            if Arc::ptr_eq(&entry.get().mutex, &self.mutex) {
+                entry.get_mut().users -= 1;
+                if entry.get().users == 0 {
+                    entry.remove();
+                }
+            }
+        }
+    }
+}
+
+struct PeerVerificationSlots {
+    generation: u64,
+    users: usize,
+    pending: Arc<tokio::sync::Semaphore>,
+    running: Arc<tokio::sync::Semaphore>,
+}
+
+type PeerVerificationMap = dashmap::DashMap<prost::bytes::Bytes, PeerVerificationSlots>;
+
+struct VerificationTicket {
+    per_peer: Arc<PeerVerificationMap>,
+    peer: prost::bytes::Bytes,
+    generation: u64,
+    permits: Vec<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl Drop for VerificationTicket {
+    fn drop(&mut self) {
+        self.permits.clear();
+        if let dashmap::mapref::entry::Entry::Occupied(mut entry) =
+            self.per_peer.entry(self.peer.clone())
+        {
+            if entry.get().generation == self.generation {
+                let slots = entry.get_mut();
+                slots.users = slots.users.saturating_sub(1);
+                if slots.users == 0 {
+                    entry.remove();
+                }
+            }
+        }
+    }
+}
+
+struct ActiveVerification(Arc<AtomicUsize>);
+
+impl ActiveVerification {
+    fn start(active: Arc<AtomicUsize>, peak_active: &AtomicUsize) -> Self {
+        let now = active.fetch_add(1, Ordering::AcqRel) + 1;
+        peak_active.fetch_max(now, Ordering::AcqRel);
+        Self(active)
+    }
+}
+
+impl Drop for ActiveVerification {
+    fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+}
+
+pub struct ReceiptVerifier {
+    pending: Arc<tokio::sync::Semaphore>,
+    running: Arc<tokio::sync::Semaphore>,
+    max_pending_per_peer: usize,
+    per_peer: Arc<PeerVerificationMap>,
+    next_generation: AtomicU64,
+    active: Arc<AtomicUsize>,
+    peak_active: Arc<AtomicUsize>,
+    by_hash: Arc<HashVerificationMap>,
+}
+
+impl ReceiptVerifier {
+    pub fn new(max_parallel: usize, max_pending: usize, max_pending_per_peer: usize) -> Self {
+        Self {
+            pending: Arc::new(tokio::sync::Semaphore::new(max_pending)),
+            running: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
+            max_pending_per_peer,
+            per_peer: Arc::new(dashmap::DashMap::new()),
+            next_generation: AtomicU64::new(0),
+            active: Arc::new(AtomicUsize::new(0)),
+            peak_active: Arc::new(AtomicUsize::new(0)),
+            by_hash: Arc::new(HashVerificationMap::new()),
+        }
+    }
+
+    fn admit(
+        &self,
+        peer: &prost::bytes::Bytes,
+        pending: tokio::sync::OwnedSemaphorePermit,
+    ) -> (
+        VerificationTicket,
+        Arc<tokio::sync::Semaphore>,
+        Arc<tokio::sync::Semaphore>,
+    ) {
+        let (generation, peer_pending, peer_running) = {
+            let mut slots =
+                self.per_peer
+                    .entry(peer.clone())
+                    .or_insert_with(|| PeerVerificationSlots {
+                        generation: self.next_generation.fetch_add(1, Ordering::Relaxed),
+                        users: 0,
+                        pending: Arc::new(tokio::sync::Semaphore::new(self.max_pending_per_peer)),
+                        running: Arc::new(tokio::sync::Semaphore::new(1)),
+                    });
+            slots.users += 1;
+            (
+                slots.generation,
+                slots.pending.clone(),
+                slots.running.clone(),
+            )
+        };
+        let ticket = VerificationTicket {
+            per_peer: self.per_peer.clone(),
+            peer: peer.clone(),
+            generation,
+            permits: vec![pending],
+        };
+        (ticket, peer_pending, peer_running)
+    }
+
+    pub fn shared() -> &'static ReceiptVerifier {
+        static VERIFIER: std::sync::LazyLock<ReceiptVerifier> = std::sync::LazyLock::new(|| {
+            ReceiptVerifier::new(
+                MAX_PARALLEL_RECEIPT_VERIFICATIONS,
+                MAX_BLOCKS_IN_PROCESSING,
+                MAX_PENDING_RECEIPT_VERIFICATIONS_PER_PEER,
+            )
+        });
+        &VERIFIER
+    }
+
+    pub async fn verify(
+        &self,
+        peer: &prost::bytes::Bytes,
+        block: BlockMessage,
+    ) -> Result<CheckedBlock, ReceiptRefusal> {
+        self.verify_with(peer, block, CheckedBlock::verify).await
+    }
+
+    pub async fn verify_and_mark(
+        &self,
+        peer: &prost::bytes::Bytes,
+        block: BlockMessage,
+        blocks: &Arc<InFlightBlocks>,
+    ) -> Result<(CheckedBlock, InFlightBlockGuard), ReceiptRefusal> {
+        self.verify_and_mark_with(peer, block, blocks, CheckedBlock::verify)
+            .await
+    }
+
+    async fn verify_and_mark_with<F>(
+        &self,
+        peer: &prost::bytes::Bytes,
+        block: BlockMessage,
+        blocks: &Arc<InFlightBlocks>,
+        check: F,
+    ) -> Result<(CheckedBlock, InFlightBlockGuard), ReceiptRefusal>
+    where
+        F: FnOnce(BlockMessage) -> Result<CheckedBlock, InvalidBlock> + Send + 'static,
+    {
+        if blocks.contains(&block.block_hash) {
+            return Err(ReceiptRefusal::AlreadyInFlight);
+        }
+        let processing = blocks.clone();
+        self.perform_verification(peer, block, Some(blocks.clone()), move |block| {
+            let verified = check(block).map_err(ReceiptRefusal::Invalid)?;
+            match mark_in_flight(&processing, verified.block_hash.clone()) {
+                InFlightMark::Marked(guard) => Ok((verified, guard)),
+                InFlightMark::AlreadyInFlight => Err(ReceiptRefusal::AlreadyInFlight),
+                InFlightMark::CapReached => Err(ReceiptRefusal::InFlightCapReached),
+            }
+        })
+        .await
+    }
+
+    async fn verify_with<F>(
+        &self,
+        peer: &prost::bytes::Bytes,
+        block: BlockMessage,
+        check: F,
+    ) -> Result<CheckedBlock, ReceiptRefusal>
+    where
+        F: FnOnce(BlockMessage) -> Result<CheckedBlock, InvalidBlock> + Send + 'static,
+    {
+        self.perform_verification(peer, block, None, move |block| {
+            check(block).map_err(ReceiptRefusal::Invalid)
+        })
+        .await
+    }
+
+    async fn perform_verification<R, F>(
+        &self,
+        peer: &prost::bytes::Bytes,
+        block: BlockMessage,
+        admission: Option<Arc<InFlightBlocks>>,
+        check: F,
+    ) -> Result<R, ReceiptRefusal>
+    where
+        R: Send + 'static,
+        F: FnOnce(BlockMessage) -> Result<R, ReceiptRefusal> + Send + 'static,
+    {
+        let Ok(pending) = self.pending.clone().try_acquire_owned() else {
+            return Err(ReceiptRefusal::Overloaded);
+        };
+        let (mut ticket, peer_pending, peer_running) = self.admit(peer, pending);
+
+        let peer_pending = peer_pending
+            .try_acquire_owned()
+            .map_err(|_| ReceiptRefusal::Overloaded)?;
+        ticket.permits.push(peer_pending);
+        let hash_ticket = if let Some(blocks) = admission {
+            let hash = block.block_hash.clone();
+            let mutex = {
+                let mut slot =
+                    self.by_hash
+                        .entry(hash.clone())
+                        .or_insert_with(|| HashVerificationSlot {
+                            users: 0,
+                            mutex: Arc::new(tokio::sync::Mutex::new(())),
+                        });
+                slot.users += 1;
+                slot.mutex.clone()
+            };
+            let mut hash_ticket = HashVerificationTicket {
+                entries: self.by_hash.clone(),
+                hash: hash.clone(),
+                mutex,
+                guard: None,
+            };
+            hash_ticket.guard = Some(hash_ticket.mutex.clone().lock_owned().await);
+            if blocks.contains(&hash) {
+                return Err(ReceiptRefusal::AlreadyInFlight);
+            }
+            Some(hash_ticket)
+        } else {
+            None
+        };
+        let peer_running = peer_running
+            .acquire_owned()
+            .await
+            .map_err(|_| ReceiptRefusal::Overloaded)?;
+        ticket.permits.push(peer_running);
+        let running = self
+            .running
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| ReceiptRefusal::Overloaded)?;
+        ticket.permits.push(running);
+
+        let active = self.active.clone();
+        let peak_active = self.peak_active.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ticket = ticket;
+            let _hash_ticket = hash_ticket;
+            let _active = ActiveVerification::start(active, &peak_active);
+            check(block)
+        })
+        .await
+        .unwrap_or_else(|join_error| {
+            tracing::error!(error = %join_error, "block verification task failed");
+            Err(ReceiptRefusal::Invalid(InvalidBlock::InvalidFormat))
+        })
+    }
+
+    pub fn peak_active(&self) -> usize { self.peak_active.load(Ordering::Acquire) }
+
+    pub fn tracked_peers(&self) -> usize { self.per_peer.len() }
+}
+
 /// An item of the block processing queue. The guard keeps the block's
 /// in-flight marker while the item exists.
 pub type BlockQueueItem = (
@@ -478,7 +822,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         let block = checked.block();
         // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed = casper.dag_contains(&block.block_hash)
-            || casper.buffer_waits_on_dependency(&block.block_hash);
+            || (casper.buffer_waits_on_dependency(&block.block_hash)
+                && self.dependencies.holds_body(&block.block_hash)?);
 
         let shard_of_interest = casper.get_approved_block().map(|approved_block| {
             approved_block
@@ -626,6 +971,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                 .clear_missing_dependency_attempts(&block.block_hash)?;
             // store pendant block in buffer, it will be removed once block is validated and added to DAG
             self.dependencies.commit_to_buffer(block, None).await?;
+            if !self.dependencies.holds_body(&block.block_hash)? {
+                let has_dependents = self.dependencies.has_buffered_dependents(&block.block_hash);
+                self.dependencies
+                    .release_evicted_pending(std::slice::from_ref(&block.block_hash))
+                    .await?;
+                if !has_dependents {
+                    self.dependencies.ack_processed(block).await?;
+                }
+                return Ok(false);
+            }
         } else {
             if self
                 .dependencies
@@ -933,16 +1288,44 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     }
 
     pub async fn drop_refused(&self, block: &BlockMessage) -> Result<(), CasperError> {
-        if self.dependencies.discard_copy(block)? {
-            self.purge_from_buffer_and_ack(block).await?;
+        if self
+            .dependencies
+            .block_store
+            .get(&block.block_hash)?
+            .is_none()
+            && !self
+                .dependencies
+                .casper_buffer
+                .contains(&BlockHashSerde(block.block_hash.clone()))
+            && !self
+                .dependencies
+                .casper_buffer
+                .is_pendant(&BlockHashSerde(block.block_hash.clone()))
+        {
+            return Ok(());
         }
-        Ok(())
+        self.discard_corrupt_pendant(block).await
     }
 
     /// Best-effort purge for stale/uninteresting blocks to prevent infinite buffer requeue loops.
     pub async fn purge_from_buffer_and_ack(&self, block: &BlockMessage) -> Result<(), CasperError> {
         self.dependencies.remove_from_buffer(block).await?;
         self.dependencies.ack_processed(block).await
+    }
+
+    pub async fn discard_corrupt_pendant(&self, block: &BlockMessage) -> Result<(), CasperError> {
+        discard_corrupt_pendant(
+            block,
+            &self.dependencies.block_store,
+            &self.dependencies.casper_buffer,
+            &self.dependencies.block_retriever,
+        )
+        .await?;
+        self.dependencies
+            .clear_missing_dependency_attempts(&block.block_hash)?;
+        self.dependencies
+            .clear_missing_dependency_quarantine(&block.block_hash)?;
+        Ok(())
     }
 
     /// See [`BlockProcessorDependencies::note_validation_failure`].
@@ -1005,6 +1388,32 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
     /// announce holds one until its sends resolve, so slow peers cap the task
     /// count at the permit count instead of block-rate x send-timeout.
     announce_permits: Arc<tokio::sync::Semaphore>,
+    deferred_pending: Arc<DeferredPending>,
+}
+
+struct DeferredPending {
+    entries: Mutex<HashMap<BlockHash, (Bytes, usize)>>,
+    wake: Arc<Notify>,
+    worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for DeferredPending {
+    fn drop(&mut self) {
+        if let Some(worker) = self
+            .worker
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            worker.abort();
+        }
+    }
+}
+
+fn has_buffered_dependents(casper_buffer: &CasperBufferKeyValueStorage, hash: &BlockHash) -> bool {
+    casper_buffer
+        .get_children(&BlockHashSerde(hash.clone()))
+        .is_some_and(|children| !children.is_empty())
 }
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
@@ -1035,6 +1444,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             settled_admissions: Arc::new(AtomicU64::new(0)),
             state_root_fetch_tx,
             announce_permits: Arc::new(tokio::sync::Semaphore::new(ANNOUNCE_MAX_IN_FLIGHT)),
+            deferred_pending: Arc::new(DeferredPending {
+                entries: Mutex::new(HashMap::new()),
+                wake: Arc::new(Notify::new()),
+                worker: Mutex::new(None),
+            }),
         }
     }
 
@@ -1278,17 +1692,66 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         };
         let outcome = self.block_store.put_pending_as(block, class)?;
         self.release_evicted_pending(&outcome.evicted).await?;
+        if matches!(
+            outcome.status,
+            PendingInsert::SenderLimitReached | PendingInsert::AreaFull
+        ) && self.has_buffered_dependents(&block.block_hash)
+        {
+            if let Some(descendant) = self.pending_descendant(block) {
+                let replacement =
+                    self.block_store
+                        .put_pending_replacing(block, &descendant.block_hash, class)?;
+                if replacement.evicted.contains(&descendant.block_hash) {
+                    self.defer_pending(&descendant);
+                }
+                let other_evictions: Vec<_> = replacement
+                    .evicted
+                    .into_iter()
+                    .filter(|hash| hash != &descendant.block_hash)
+                    .collect();
+                self.release_evicted_pending(&other_evictions).await?;
+                return Ok(replacement.status);
+            }
+        }
         Ok(outcome.status)
+    }
+
+    fn pending_descendant(&self, block: &BlockMessage) -> Option<BlockMessage> {
+        let mut queue = VecDeque::from([block.block_hash.clone()]);
+        let mut seen = HashSet::new();
+        let mut candidate = None;
+        let pending = self.block_store.pending_blocks();
+        while let Some(parent) = queue.pop_front() {
+            for child in self
+                .casper_buffer
+                .get_children(&BlockHashSerde(parent))
+                .into_iter()
+                .flatten()
+            {
+                if !seen.insert(child.0.clone()) {
+                    continue;
+                }
+                if pending
+                    .sender_of(&child.0)
+                    .is_some_and(|sender| sender == block.sender)
+                {
+                    candidate = Some(child.0.clone());
+                }
+                queue.push_back(child.0);
+            }
+        }
+        candidate.and_then(|hash| pending.get(&hash))
     }
 
     pub async fn release_evicted_pending(&self, evicted: &[BlockHash]) -> Result<(), CasperError> {
         for hash in evicted {
             let has_dependents = self.has_buffered_dependents(hash);
-            self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
             if has_dependents {
                 self.block_retriever
                     .recover_dependency(hash.clone())
                     .await?;
+            } else {
+                self.casper_buffer.remove(BlockHashSerde(hash.clone()))?;
             }
             tracing::debug!(
                 "Pending block {} evicted; dependents waiting: {}.",
@@ -1305,18 +1768,145 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         refusal: PendingInsert,
     ) -> Result<(), CasperError> {
         if refusal != PendingInsert::TooLarge && self.has_buffered_dependents(&block.block_hash) {
-            self.block_retriever
-                .recover_dependency(block.block_hash.clone())
-                .await
+            self.defer_pending(block);
         } else {
-            self.ack_processed(block).await
+            self.ack_processed(block).await?;
         }
+        Ok(())
+    }
+
+    fn defer_pending(&self, block: &BlockMessage) {
+        let bytes = block.to_proto().encoded_len();
+        self.deferred_pending
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(block.block_hash.clone(), (block.sender.clone(), bytes));
+        self.start_deferred_pending_worker();
+        self.deferred_pending.wake.notify_one();
+    }
+
+    fn start_deferred_pending_worker(&self) {
+        let mut worker = self
+            .deferred_pending
+            .worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if worker.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return;
+        }
+        let state = Arc::downgrade(&self.deferred_pending);
+        let block_store = self.block_store.clone();
+        let casper_buffer = self.casper_buffer.clone();
+        let block_retriever = self.block_retriever.clone();
+        let mut capacity_changes = block_store.pending_blocks().subscribe_capacity_changes();
+        let recovery_cooldown =
+            Duration::from_millis(BlockRetriever::<T>::DEPENDENCY_RECOVERY_COOLDOWN_MS);
+        *worker = Some(tokio::spawn(async move {
+            loop {
+                let Some(state) = state.upgrade() else { break };
+                let candidates: Vec<_> = state
+                    .entries
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .map(|(hash, entry)| (hash.clone(), entry.clone()))
+                    .collect();
+                let pending = block_store.pending_blocks();
+                let mut budget = pending.recovery_budget();
+                let mut ready = Vec::new();
+                let mut discard = Vec::new();
+                for (hash, (sender, bytes)) in candidates {
+                    let hash_serde = BlockHashSerde(hash.clone());
+                    if !has_buffered_dependents(&casper_buffer, &hash)
+                        && !casper_buffer.contains(&hash_serde)
+                        && !casper_buffer.is_pendant(&hash_serde)
+                    {
+                        discard.push((hash, sender, bytes));
+                        continue;
+                    }
+                    match block_store.contains_key(&hash) {
+                        Ok(true) => {
+                            discard.push((hash, sender, bytes));
+                            continue;
+                        }
+                        Err(err) => {
+                            tracing::warn!(%err, "Could not inspect deferred pending block");
+                            continue;
+                        }
+                        Ok(false) => {}
+                    }
+                    if casper_buffer
+                            .get_parents(&hash_serde)
+                            .is_some_and(|parents| {
+                                parents.iter().any(|parent| {
+                                    match block_store.contains_key(&parent.0) {
+                                        Ok(present) => !present,
+                                        Err(err) => {
+                                            tracing::warn!(%err, "Could not inspect deferred pending parent");
+                                            true
+                                        }
+                                    }
+                                })
+                            })
+                        {
+                            continue;
+                        }
+                    if budget.reserve(&sender, bytes) {
+                        ready.push((hash, sender, bytes));
+                    }
+                }
+                {
+                    let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
+                    for (hash, sender, bytes) in discard {
+                        if entries.get(&hash) == Some(&(sender, bytes)) {
+                            entries.remove(&hash);
+                        }
+                    }
+                    ready.retain(|(hash, sender, bytes)| {
+                        if entries.get(hash) == Some(&(sender.clone(), *bytes)) {
+                            entries.remove(hash);
+                            true
+                        } else {
+                            false
+                        }
+                    });
+                }
+                let mut retry_deferred = false;
+                for (hash, sender, bytes) in ready {
+                    let requested = match block_retriever.try_recover_dependency(hash.clone()).await
+                    {
+                        Ok(requested) => requested,
+                        Err(err) => {
+                            tracing::warn!(%err, "Could not retry deferred pending dependency");
+                            false
+                        }
+                    };
+                    if !requested {
+                        state
+                            .entries
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .entry(hash)
+                            .or_insert((sender, bytes));
+                        retry_deferred = true;
+                    }
+                }
+                let wake = state.wake.clone();
+                drop(state);
+                tokio::select! {
+                    result = capacity_changes.changed() => {
+                        if result.is_err() { break; }
+                    }
+                    _ = wake.notified() => {}
+                    _ = tokio::time::sleep(recovery_cooldown), if retry_deferred => {}
+                }
+            }
+        }));
     }
 
     fn has_buffered_dependents(&self, hash: &BlockHash) -> bool {
-        self.casper_buffer
-            .get_children(&BlockHashSerde(hash.clone()))
-            .is_some_and(|children| !children.is_empty())
+        has_buffered_dependents(&self.casper_buffer, hash)
     }
 
     pub fn holds_body(&self, hash: &BlockHash) -> Result<bool, CasperError> {
@@ -2345,5 +2935,397 @@ mod tests {
                 "{status:?} is a verdict and must be settled, not retried"
             );
         }
+    }
+
+    async fn flood(
+        verifier: Arc<ReceiptVerifier>,
+        peers: Vec<(prost::bytes::Bytes, BlockMessage)>,
+    ) -> Vec<Result<CheckedBlock, ReceiptRefusal>> {
+        let tasks: Vec<_> = peers
+            .into_iter()
+            .map(|(peer, block)| {
+                let verifier = verifier.clone();
+                tokio::spawn(async move { verifier.verify(&peer, block).await })
+            })
+            .collect();
+        let mut results = Vec::new();
+        for task in tasks {
+            results.push(task.await.expect("verification task"));
+        }
+        results
+    }
+
+    fn count(results: &[Result<CheckedBlock, ReceiptRefusal>], refusal: ReceiptRefusal) -> usize {
+        results
+            .iter()
+            .filter(|result| result.as_ref().err() == Some(&refusal))
+            .count()
+    }
+
+    async fn hold_verification(
+        verifier: Arc<ReceiptVerifier>,
+        peer: prost::bytes::Bytes,
+        block: BlockMessage,
+    ) -> (
+        tokio::task::JoinHandle<Result<CheckedBlock, ReceiptRefusal>>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let task = tokio::spawn(async move {
+            verifier
+                .verify_with(&peer, block, move |block| {
+                    started_tx.send(()).expect("verification started");
+                    release_rx
+                        .recv_timeout(Duration::from_secs(30))
+                        .expect("release verification");
+                    CheckedBlock::verify(block)
+                })
+                .await
+        });
+        started_rx.await.expect("verification started");
+        (task, release_tx)
+    }
+
+    async fn wait_for_pending_permits(verifier: &ReceiptVerifier, available: usize) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while verifier.pending.available_permits() != available {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("pending verification state");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn receipt_verification_stays_bounded_under_a_flood_of_invalid_blocks() {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use models::rust::block_implicits::get_random_block_default;
+
+        use crate::rust::validator_identity::ValidatorIdentity;
+
+        let mut large = get_random_block_default();
+        large.extra_bytes = vec![0u8; 4 * 1024 * 1024].into();
+        let attacker = prost::bytes::Bytes::from_static(b"attacker");
+        let invalid_hash = ReceiptRefusal::Invalid(InvalidBlock::InvalidBlockHash);
+
+        let single_peer = Arc::new(ReceiptVerifier::new(2, 512, 16));
+        let (first, release) =
+            hold_verification(single_peer.clone(), attacker.clone(), large.clone()).await;
+        let waiters: Vec<_> = (0..15)
+            .map(|_| {
+                let verifier = single_peer.clone();
+                let peer = attacker.clone();
+                let block = large.clone();
+                tokio::spawn(async move { verifier.verify(&peer, block).await })
+            })
+            .collect();
+        wait_for_pending_permits(&single_peer, 496).await;
+        let mut results = flood(
+            single_peer.clone(),
+            (0..184)
+                .map(|_| (attacker.clone(), large.clone()))
+                .collect(),
+        )
+        .await;
+        release.send(()).expect("release first check");
+        results.push(first.await.expect("first check"));
+        for waiter in waiters {
+            results.push(waiter.await.expect("pending check"));
+        }
+        let overloaded = count(&results, ReceiptRefusal::Overloaded);
+        assert_eq!(overloaded, 184);
+        assert_eq!(overloaded + count(&results, invalid_hash.clone()), 200);
+        assert_eq!(single_peer.peak_active(), 1);
+        assert_eq!(single_peer.tracked_peers(), 0);
+
+        let small_global = Arc::new(ReceiptVerifier::new(2, 8, 16));
+        let (first, release_first) = hold_verification(
+            small_global.clone(),
+            prost::bytes::Bytes::from_static(b"first"),
+            large.clone(),
+        )
+        .await;
+        let (second, release_second) = hold_verification(
+            small_global.clone(),
+            prost::bytes::Bytes::from_static(b"second"),
+            large.clone(),
+        )
+        .await;
+        let waiters: Vec<_> = (0..6u8)
+            .map(|i| {
+                let verifier = small_global.clone();
+                let block = large.clone();
+                tokio::spawn(async move {
+                    verifier
+                        .verify(&prost::bytes::Bytes::from(vec![i; 20]), block)
+                        .await
+                })
+            })
+            .collect();
+        wait_for_pending_permits(&small_global, 0).await;
+        let mut results = flood(
+            small_global.clone(),
+            (20..62u8)
+                .map(|i| (prost::bytes::Bytes::from(vec![i; 20]), large.clone()))
+                .collect(),
+        )
+        .await;
+        release_first.send(()).expect("release first check");
+        release_second.send(()).expect("release second check");
+        results.push(first.await.expect("first check"));
+        results.push(second.await.expect("second check"));
+        for waiter in waiters {
+            results.push(waiter.await.expect("pending check"));
+        }
+        assert_eq!(count(&results, ReceiptRefusal::Overloaded), 42);
+        assert_eq!(results.len(), 50);
+        assert!(small_global.peak_active() <= 2);
+        assert_eq!(small_global.tracked_peers(), 0);
+
+        let (secret_key, _) = Secp256k1.new_key_pair();
+        let honest = ValidatorIdentity::new(&secret_key).sign_block(&get_random_block_default());
+        let mixed = Arc::new(ReceiptVerifier::new(2, 512, 16));
+        let (first, release) =
+            hold_verification(mixed.clone(), attacker.clone(), large.clone()).await;
+        let waiters: Vec<_> = (0..15)
+            .map(|_| {
+                let verifier = mixed.clone();
+                let peer = attacker.clone();
+                let block = large.clone();
+                tokio::spawn(async move { verifier.verify(&peer, block).await })
+            })
+            .collect();
+        wait_for_pending_permits(&mixed, 496).await;
+        let mut results = flood(
+            mixed.clone(),
+            (0..8u8)
+                .map(|i| (prost::bytes::Bytes::from(vec![i; 20]), honest.clone()))
+                .collect(),
+        )
+        .await;
+        results.extend(
+            flood(
+                mixed.clone(),
+                (0..184)
+                    .map(|_| (attacker.clone(), large.clone()))
+                    .collect(),
+            )
+            .await,
+        );
+        release.send(()).expect("release first check");
+        results.push(first.await.expect("first check"));
+        for waiter in waiters {
+            results.push(waiter.await.expect("pending check"));
+        }
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 8);
+        assert!(mixed.peak_active() <= 2);
+        assert_eq!(mixed.tracked_peers(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_copies_share_verification_but_a_forged_first_copy_does_not_claim_the_hash()
+    {
+        use crypto::rust::signatures::secp256k1::Secp256k1;
+        use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+        use models::rust::block_implicits::get_random_block_default;
+
+        use crate::rust::validator_identity::ValidatorIdentity;
+
+        let (secret, _) = Secp256k1.new_key_pair();
+        let original = ValidatorIdentity::new(&secret).sign_block(&get_random_block_default());
+        for forged_first in [false, true] {
+            let verifier = Arc::new(ReceiptVerifier::new(2, 8, 4));
+            let blocks = Arc::new(InFlightBlocks::new());
+            let checks = Arc::new(AtomicUsize::new(0));
+            let mut first_block = original.clone();
+            if forged_first {
+                first_block.extra_bytes =
+                    prost::bytes::Bytes::from_static(b"changed after signing");
+            }
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let first = {
+                let verifier = verifier.clone();
+                let blocks = blocks.clone();
+                let checks = checks.clone();
+                tokio::spawn(async move {
+                    verifier
+                        .verify_and_mark_with(
+                            &prost::bytes::Bytes::from_static(b"first"),
+                            first_block,
+                            &blocks,
+                            move |block| {
+                                checks.fetch_add(1, Ordering::SeqCst);
+                                started_tx.send(()).expect("verification started");
+                                release_rx
+                                    .recv_timeout(Duration::from_secs(30))
+                                    .expect("release");
+                                CheckedBlock::verify(block)
+                            },
+                        )
+                        .await
+                })
+            };
+            started_rx.await.expect("first verification started");
+            let second = {
+                let verifier = verifier.clone();
+                let blocks = blocks.clone();
+                let checks = checks.clone();
+                let original = original.clone();
+                tokio::spawn(async move {
+                    verifier
+                        .verify_and_mark_with(
+                            &prost::bytes::Bytes::from_static(b"second"),
+                            original,
+                            &blocks,
+                            move |block| {
+                                checks.fetch_add(1, Ordering::SeqCst);
+                                CheckedBlock::verify(block)
+                            },
+                        )
+                        .await
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while verifier.pending.available_permits() != 6 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("second copy admitted to bounded pending work");
+            let cancelled = {
+                let verifier = verifier.clone();
+                let blocks = blocks.clone();
+                let original = original.clone();
+                tokio::spawn(async move {
+                    verifier
+                        .verify_and_mark(
+                            &prost::bytes::Bytes::from_static(b"cancelled"),
+                            original,
+                            &blocks,
+                        )
+                        .await
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while verifier.pending.available_permits() != 5 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("cancelled copy admitted to bounded pending work");
+            cancelled.abort();
+            assert!(cancelled.await.expect_err("cancelled task").is_cancelled());
+            assert_eq!(verifier.pending.available_permits(), 6);
+            release_tx.send(()).expect("release first verification");
+            let first = first.await.expect("first task");
+            let second = second.await.expect("second task");
+            if forged_first {
+                assert!(matches!(first, Err(ReceiptRefusal::Invalid(_))));
+                assert!(second.is_ok());
+                assert_eq!(checks.load(Ordering::SeqCst), 2);
+            } else {
+                assert!(first.is_ok());
+                assert!(matches!(second, Err(ReceiptRefusal::AlreadyInFlight)));
+                assert_eq!(checks.load(Ordering::SeqCst), 1);
+            }
+            assert_eq!(blocks.len(), 1);
+            assert!(verifier.by_hash.is_empty());
+            assert_eq!(verifier.tracked_peers(), 0);
+            assert_eq!(verifier.pending.available_permits(), 8);
+            drop(first);
+            drop(second);
+            assert!(blocks.is_empty());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancelled_caller_keeps_its_verification_slot_until_the_check_ends() {
+        use models::rust::block_implicits::get_random_block_default;
+
+        let verifier = Arc::new(ReceiptVerifier::new(1, 8, 8));
+        let block = get_random_block_default();
+        let (first, release_tx) = hold_verification(
+            verifier.clone(),
+            prost::bytes::Bytes::from_static(b"first"),
+            block.clone(),
+        )
+        .await;
+        first.abort();
+        assert!(first
+            .await
+            .expect_err("first caller cancelled")
+            .is_cancelled());
+
+        let second = {
+            let verifier = verifier.clone();
+            tokio::spawn(async move {
+                verifier
+                    .verify(&prost::bytes::Bytes::from_static(b"second"), block)
+                    .await
+            })
+        };
+        wait_for_pending_permits(&verifier, 6).await;
+        assert_eq!(verifier.running.available_permits(), 0);
+        assert!(!second.is_finished());
+
+        release_tx.send(()).expect("release first check");
+        assert!(second.await.expect("second caller").is_err());
+        assert_eq!(verifier.peak_active(), 1);
+        assert_eq!(verifier.tracked_peers(), 0);
+    }
+
+    #[test]
+    fn the_last_verification_ticket_removes_its_peer_entry() {
+        let verifier = ReceiptVerifier::new(2, 8, 8);
+        let peer = prost::bytes::Bytes::from_static(b"peer");
+        let pending = || {
+            verifier
+                .pending
+                .clone()
+                .try_acquire_owned()
+                .expect("pending permit")
+        };
+
+        for _ in 0..500 {
+            let (first, ..) = verifier.admit(&peer, pending());
+            let (second, ..) = verifier.admit(&peer, pending());
+            let barrier = std::sync::Barrier::new(3);
+            let third = std::thread::scope(|scope| {
+                for ticket in [first, second] {
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        drop(ticket);
+                    });
+                }
+                scope
+                    .spawn(|| {
+                        barrier.wait();
+                        verifier.admit(&peer, pending()).0
+                    })
+                    .join()
+                    .expect("admission thread")
+            });
+            drop(third);
+            assert_eq!(verifier.tracked_peers(), 0);
+        }
+
+        let (stale, ..) = verifier.admit(&peer, pending());
+        let stale_generation = stale.generation;
+        drop(stale);
+        let (current, ..) = verifier.admit(&peer, pending());
+        drop(VerificationTicket {
+            per_peer: verifier.per_peer.clone(),
+            peer: peer.clone(),
+            generation: stale_generation,
+            permits: vec![],
+        });
+        assert_eq!(verifier.tracked_peers(), 1);
+        drop(current);
+        assert_eq!(verifier.tracked_peers(), 0);
+        assert_eq!(verifier.pending.available_permits(), 8);
     }
 }

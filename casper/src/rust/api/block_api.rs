@@ -1265,6 +1265,7 @@ impl BlockAPI {
     pub async fn visualize_dag<R: 'static, V, VFut>(
         engine_cell: &EngineCell,
         depth: i32,
+        max_depth_limit: i32,
         start_block_number: i32,
         visualizer: V,
         serialize: tokio::sync::oneshot::Receiver<R>,
@@ -1307,11 +1308,13 @@ impl BlockAPI {
             Ok(result)
         }
 
+        let effective_depth = clamp_depth(depth, max_depth_limit, "visualize-dag");
+
         let eng = engine_cell.get().await;
         if let Some(casper) = eng.with_casper() {
             casper_response(
                 casper.as_ref(),
-                depth,
+                effective_depth,
                 start_block_number,
                 visualizer,
                 serialize,
