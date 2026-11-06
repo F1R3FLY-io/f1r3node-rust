@@ -903,26 +903,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mergeable_entry_request_for_an_absent_block_is_silent() {
-        let fixture = TestFixture::new().await;
-
-        fixture
-            .engine
-            .handle(
-                fixture.local.clone(),
-                CasperMessage::MergeableEntryRequest(
-                    models::rust::casper::protocol::casper_message::MergeableEntryRequest {
-                        block_hash: Bytes::from_static(b"absent-mergeable-block"),
-                    },
-                ),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(fixture.transport_layer.request_count(), 0);
-    }
-
-    #[tokio::test]
     async fn init_can_only_run_once() {
         let fixture = TestFixture::new().await;
 

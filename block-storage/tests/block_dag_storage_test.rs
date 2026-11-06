@@ -87,6 +87,35 @@ async fn create_dag_storage(genesis: &BlockMessage) -> BlockDagKeyValueStorage {
     dag_storage
 }
 
+#[tokio::test]
+async fn slash_evidence_is_invalid_metadata_without_a_latest_message_update() {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    use prost::bytes::Bytes;
+
+    let genesis = genesis_block();
+    let storage = create_dag_storage(&genesis).await;
+    let before = storage.get_representation().unwrap();
+    let mut evidence = chain_block(100, vec![Bytes::from(vec![0x70; 32])]);
+    evidence.sender = genesis.sender.clone();
+    evidence.seq_num = genesis.seq_num.saturating_add(100);
+    evidence.block_hash = Bytes::from(vec![0x71; 32]);
+    let dag = storage
+        .insert(&evidence, InsertMode::SlashEvidence)
+        .unwrap();
+
+    assert_eq!(dag.latest_message_hashes(), before.latest_message_hashes());
+    assert_eq!(dag.latest_block_number(), before.latest_block_number());
+    assert_eq!(
+        dag.resident_counts().blocks,
+        before.resident_counts().blocks
+    );
+    assert!(!before.contains(&evidence.block_hash).unwrap());
+    assert!(dag.contains(&evidence.block_hash).unwrap());
+    let metadata = dag.lookup(&evidence.block_hash).unwrap().unwrap();
+    assert!(metadata.invalid);
+    assert_eq!(metadata.sender, evidence.sender);
+}
+
 fn proptest_config() -> ProptestConfig {
     init_logger();
 

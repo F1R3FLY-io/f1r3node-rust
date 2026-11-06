@@ -28,6 +28,7 @@ use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresenta
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
+use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -324,43 +325,46 @@ impl Estimator {
             // Saves one clone per node and one Vec allocation. Preallocate
             // visited/result to a reasonable capacity for typical fork-choice
             // BFS sizes (≤ ~few hundred blocks).
-            let mut result = score_map;
-            let mut queue: VecDeque<BlockHash> = VecDeque::from(vec![latest_block_hash.clone()]);
-            let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
+            in_blocking(|| {
+                let mut result = score_map;
+                let mut queue: VecDeque<BlockHash> =
+                    VecDeque::from(vec![latest_block_hash.clone()]);
+                let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
 
-            while let Some(hash) = queue.pop_front() {
-                meter.step(WorkKind::Traversal)?;
-                if !visited.insert(hash.clone()) {
-                    continue;
-                }
-                meter.allocate(1, std::mem::size_of::<BlockHash>())?;
-                let validator_weight = proto_util::weight_from_validator_by_dag_metered(
-                    meter, block_dag, &hash, validator,
-                )?;
-                // B3: fail loudly on score overflow rather than wrapping. Reachable
-                // only if the cumulative bonded weight on a block exceeds i64::MAX —
-                // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
-                // so this can only ever reject an already-invalid state, never a valid one.
-                if !result.contains_key(&hash) {
-                    meter.allocate(1, std::mem::size_of::<(BlockHash, i64)>())?;
-                }
-                let entry = result.entry(hash.clone()).or_insert(0);
-                *entry = entry.checked_add(validator_weight).ok_or_else(|| {
-                    KvStoreError::InvalidArgument(
-                        "fork-choice score overflow: cumulative validator weight exceeds i64 \
+                while let Some(hash) = queue.pop_front() {
+                    meter.step(WorkKind::Traversal)?;
+                    if !visited.insert(hash.clone()) {
+                        continue;
+                    }
+                    meter.allocate(1, std::mem::size_of::<BlockHash>())?;
+                    let validator_weight = proto_util::weight_from_validator_by_dag_metered(
+                        meter, block_dag, &hash, validator,
+                    )?;
+                    // B3: fail loudly on score overflow rather than wrapping. Reachable
+                    // only if the cumulative bonded weight on a block exceeds i64::MAX —
+                    // a supply-cap violation (total bonded stake ≤ i64::MAX by construction),
+                    // so this can only ever reject an already-invalid state, never a valid one.
+                    if !result.contains_key(&hash) {
+                        meter.allocate(1, std::mem::size_of::<(BlockHash, i64)>())?;
+                    }
+                    let entry = result.entry(hash.clone()).or_insert(0);
+                    *entry = entry.checked_add(validator_weight).ok_or_else(|| {
+                        KvStoreError::InvalidArgument(
+                            "fork-choice score overflow: cumulative validator weight exceeds i64 \
                          (total bonded stake must be ≤ i64::MAX by the supply cap)"
-                            .to_string(),
-                    )
-                })?;
-                for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
-                    if !visited.contains(&parent) {
-                        meter.step(WorkKind::Traversal)?;
-                        queue.push_back(parent);
+                                .to_string(),
+                        )
+                    })?;
+                    for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
+                        if !visited.contains(&parent) {
+                            meter.step(WorkKind::Traversal)?;
+                            queue.push_back(parent);
+                        }
                     }
                 }
-            }
 
-            Ok(result)
+                Ok(result)
+            })
         }
 
         // TODO: Scala message - Since map scores are additive it should be possible to do this in parallel

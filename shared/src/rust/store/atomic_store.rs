@@ -9,6 +9,7 @@ use super::key_value_store::{KeyValueStore, KvStoreError};
 use super::lmdb_key_value_store::LmdbKeyValueStore;
 use super::memory_key_value_store::{MemoryEnvironment, MemoryKeyValueStore, MemoryState};
 use super::soak_snapshot::encode_length_prefixed;
+use crate::rust::blocking::in_blocking;
 
 type LmdbDatabase = Database<SerdeBincode<Vec<u8>>, SerdeBincode<Vec<u8>>>;
 type Changes = BTreeMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>;
@@ -249,7 +250,7 @@ impl AtomicStoreGroup {
         f: impl FnOnce(&mut AtomicTransaction<'_>) -> Result<T, KvStoreError>,
     ) -> Result<T, KvStoreError> {
         match &self.backend {
-            Backend::Lmdb { env, databases } => {
+            Backend::Lmdb { env, databases } => in_blocking(|| {
                 let mut transaction = AtomicTransaction {
                     inner: TransactionInner::Lmdb {
                         txn: env.write_txn()?,
@@ -262,7 +263,7 @@ impl AtomicStoreGroup {
                 };
                 txn.commit()?;
                 Ok(result)
-            }
+            }),
             Backend::Memory { env, tables } => {
                 let mut state = env.state.write().unwrap_or_else(|e| e.into_inner());
                 let (result, changes) = {
@@ -325,10 +326,10 @@ impl AtomicStoreGroup {
         limit: usize,
     ) -> Result<StorePage, KvStoreError> {
         match &self.backend {
-            Backend::Lmdb { env, databases } => {
+            Backend::Lmdb { env, databases } => in_blocking(|| {
                 let txn = env.read_txn()?;
                 scan_lmdb(*slot(databases, index)?, &txn, lower, upper, after, limit)
-            }
+            }),
             Backend::Memory { env, tables } => {
                 let state = env.state.read().unwrap_or_else(|e| e.into_inner());
                 scan_memory(
@@ -542,6 +543,48 @@ mod tests {
                 Some(b"two".to_vec())
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn lmdb_atomic_transaction_hands_off_its_worker() {
+        let fixture = lmdb();
+        let group = fixture.group.clone();
+        let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let waiting = released.clone();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let transaction = tokio::spawn(async move {
+            group
+                .transaction(|tx| {
+                    tx.put(0, b"key".to_vec(), b"value".to_vec())?;
+                    entered.send(()).unwrap();
+                    let (lock, changed) = &*waiting;
+                    let (finished, _) = changed
+                        .wait_timeout_while(
+                            lock.lock().unwrap(),
+                            std::time::Duration::from_secs(5),
+                            |finished| !*finished,
+                        )
+                        .unwrap();
+                    assert!(
+                        *finished,
+                        "atomic LMDB transaction held the only Tokio worker"
+                    );
+                    Ok(())
+                })
+                .unwrap();
+        });
+        let other_task = tokio::spawn(async move {
+            started.await.unwrap();
+            let (lock, changed) = &*released;
+            *lock.lock().unwrap() = true;
+            changed.notify_one();
+        });
+        transaction.await.unwrap();
+        other_task.await.unwrap();
+        assert_eq!(
+            fixture.group.get(0, b"key").unwrap(),
+            Some(b"value".to_vec())
+        );
     }
 
     #[test]

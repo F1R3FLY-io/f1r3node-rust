@@ -254,17 +254,6 @@ impl InitializingSpec {
             Bytes::new(),
             models::casper::ForkChoiceTipRequestProto::default(),
         ));
-        // After the genesis BlockMessage lands and is saved, the joiner fires
-        // a MergeableEntryRequest for the same hash.
-        expected_requests.push(packet_with_content(
-            &local_for_expected,
-            &fixture.network_id,
-            Bytes::new(),
-            models::casper::MergeableEntryRequestProto {
-                block_hash: genesis.block_hash.clone(),
-            },
-        ));
-
         let test = async {
             engine_cell.set(initializing_engine.clone()).await;
 
@@ -414,9 +403,6 @@ async fn create_initializing_engine_with_dag(
     // Create engine-specific channels (each Initializing instance needs its own)
     let (block_tx, block_rx) = mpsc::channel::<BlockMessage>(50);
     let (tuple_tx, tuple_rx) = mpsc::channel::<StoreItemsMessage>(50);
-    // Mergeable-channels sync channel.
-    let (mergeable_tx, mergeable_rx) =
-        mpsc::channel::<models::rust::casper::protocol::casper_message::MergeableEntryResponse>(50);
     let (block_processing_queue_tx, _block_processing_queue_rx) = mpsc::channel(1024);
 
     // Use all stores and managers from fixture (matching Scala's Setup pattern)
@@ -440,8 +426,6 @@ async fn create_initializing_engine_with_dag(
         block_rx,
         tuple_tx,
         tuple_rx,
-        mergeable_tx,
-        mergeable_rx,
         true,
         false,
         fixture.event_publisher.clone(),
