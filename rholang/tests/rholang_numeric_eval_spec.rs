@@ -532,3 +532,69 @@ async fn to_bigint_rejects_non_integers() {
     })
     .await
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn is_bigint_checks_the_evaluated_type_without_conversion() {
+    with_runtime("is-bigint-types-", |mut runtime| async move {
+        let cases = [
+            ("1n", true),
+            ("0n", true),
+            ("(-1n)", true),
+            ("100000000000000000000n", true),
+            ("(2n + 3n)", true),
+            ("1.toBigInt()", true),
+            ("1", false),
+            ("\"1\"", false),
+            ("true", false),
+            ("1.0f64", false),
+            ("Nil", false),
+            ("[1n]", false),
+            ("(1n, 2n)", false),
+            ("{1: 2n}", false),
+            ("Set(1n)", false),
+            ("(1n | 2n)", false),
+            ("(1n | @999!(0))", false),
+        ];
+        for (channel, (value, expected)) in cases.iter().enumerate() {
+            eval_ok(&mut runtime, &format!("@{}!({}.isBigInt())", channel, value)).await;
+            assert!(
+                has_par_with_bool(&channel_data(&runtime, int_channel(channel as i64)).await, *expected),
+                "unexpected isBigInt result for {}", value
+            );
+        }
+        eval_ok(&mut runtime, "new x, ch in { @90!((*x).isBigInt()) | ch!(100000000000000000000n) | for (@value <- ch) { @91!(value.isBigInt()) | @92!(value.isBigInt() and true) } }").await;
+        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(90)).await, false));
+        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(91)).await, true));
+        assert!(has_par_with_bool(&channel_data(&runtime, int_channel(92)).await, true));
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn is_bigint_rejects_arguments() {
+    with_runtime("is-bigint-arity-", |mut runtime| async move {
+        for term in ["@0!(1n.isBigInt(1))", "@0!(Nil.isBigInt(1, 2))"] {
+            let result = execute(&mut runtime, term).await.unwrap();
+            assert!(result.errors.iter().any(|error| matches!(error,
+                InterpreterError::MethodArgumentNumberMismatch { method, expected: 0, .. } if method == "isBigInt"
+            )), "unexpected errors: {:?}", result.errors);
+        }
+    }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn is_bigint_charges_the_method_call_cost() {
+    use rholang::rust::interpreter::accounting::costs::{method_call_cost, parsing_cost};
+    with_runtime("is-bigint-cost-", |mut runtime| async move {
+        let literal_term = "@0!(true)";
+        let method_term = "@1!(1n.isBigInt())";
+        let literal = execute(&mut runtime, literal_term).await.unwrap();
+        let method = execute(&mut runtime, method_term).await.unwrap();
+        assert!(literal.errors.is_empty() && method.errors.is_empty());
+        assert_eq!(
+            method.cost.value - parsing_cost(method_term).value - literal.cost.value
+                + parsing_cost(literal_term).value,
+            method_call_cost().value
+        );
+    })
+    .await;
+}

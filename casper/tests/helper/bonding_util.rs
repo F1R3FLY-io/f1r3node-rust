@@ -22,7 +22,7 @@ pub fn bonding_deploy(
 new retCh, PoSCh, rl(`rho:registry:lookup`), stdout(`rho:io:stdout`), deployerId(`rho:system:deployerId`) in {{
   rl!(`rho:system:pos`, *PoSCh) |
   for(@(_, PoS) <- PoSCh) {{
-    @PoS!("bond", *deployerId, {amount}, *retCh)
+    @PoS!("bond", *deployerId, {amount}n, *retCh)
   }}
 }}
 "#

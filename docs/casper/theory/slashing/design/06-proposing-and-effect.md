@@ -165,13 +165,15 @@ The activity flow:
      an honest deployer by submitting a bogus `blockHash`). The
      stricter rejection is intentional and is the only safe choice
      under Bug #12 / T-9.13.
-6. **Read the offender's bond:** `valBond ← state.allBonds[validator]`.
-7. **Zero-bond branch:** if `valBond ≤ 0`, return `(true, Nil)` with no
-   state mutation. This is the idempotent recovery path used by
-   merge-rejected slash reissue.
-8. **Transfer** positive `valBond` to the Coop vault via
-   `@posVault!("transfer", coopMultiVaultAddr, valBond, posAuthKey,
-   *transferDoneCh)`.
+6. **Read the offender's slash exposure:** `valBond ← state.allBonds[validator]`,
+   `valDelegated ← state.delegatedTotals[validator]`, and
+   `slashedPending` from pending undelegations for the validator.
+7. **Zero-exposure branch:** if `valBond + valDelegated + slashedPending ≤ 0`,
+   return `(true, Nil)` with no state mutation. This is the idempotent
+   recovery path used by merge-rejected slash reissue.
+8. **Transfer** positive slash exposure to the Coop vault via
+   `@posVault!("transfer", coopMultiVaultAddr,
+   valBond + valDelegated + slashedPending, posAuthKey, *transferDoneCh)`.
 9. **Handle transfer result** on `transferDoneCh`:
    - On **success**: atomically construct the new state in one
      `stateUpdateCh!` write in the `slash` method:
@@ -201,30 +203,34 @@ deploy semantics:
 
 ```
 slash(ps, v) =
-  | ps.allBonds[v] = 0   ⟹  (ps, true)              -- idempotent
+  | slash_exposure(ps, v) = 0 ⟹ (ps, true)          -- idempotent
   | otherwise:
       let b = ps.allBonds[v]
-      transfer(coopVault, b)
+      let d = ps.delegatedTotals[v]
+      let p = ps.pendingUndelegationTotals[v]
+      transfer(coopVault, b + d + p)
       ps' = { allBonds[v] := 0;
+              delegatedTotals \\ {v};
+              pendingUndelegationTotals \\ {v};
               activeValidators \\ {v};
-              coopVaultBalance += b }
+              coopVaultBalance += b + d + p }
       return (ps', true)
 ```
 
 Theorems:
 
 - **T-7 (Slash zeros bond).** *(`slash_zeros_bond`,
-  `PoSContract.v:75`.)* For every `ps` and `v`,
+  `PoSContract.v:87`.)* For every `ps` and `v`,
   `(slash(ps, v)).fst.allBonds[v] = 0`. Proven by direct unfolding;
   TLC verifies the corresponding `Inv_BondsZeroAfterSlash` in
   `MC_SlashFlow.tla`.
 
 - **T-8 (Slash transfers stake).** *(`slash_transfers_stake`,
-  `PoSContract.v:95`.)* If the transfer succeeds, then
-  `ps'.coopVaultBalance = ps.coopVaultBalance + ps.allBonds[v]`.
+  `PoSContract.v:107`.)* If the transfer succeeds, then Coop vault receives
+  `allBonds[v] + delegatedTotals[v] + pendingUndelegationTotals[v]`.
 
 - **T-Idem (Slash idempotence; alias T-9).** *(`slash_idempotent`,
-  `PoSContract.v:117`.)* For every `ps` and `v`, a second slash on
+  `PoSContract.v:140`.)* For every `ps` and `v`, a second slash on
   the same validator is a no-op:
 
   ```

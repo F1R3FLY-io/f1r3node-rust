@@ -47,8 +47,11 @@ use prost::bytes::Bytes;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
-    pks.into_iter().map(|pk| (pk, 100)).collect()
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+    pks.into_iter()
+        .map(|pk| (pk, 100))
+        .map(|(key, stake)| (key, stake.into()))
+        .collect()
 }
 
 async fn equal_three_node_network() -> (Vec<TestNode>, String, BlockMessage) {

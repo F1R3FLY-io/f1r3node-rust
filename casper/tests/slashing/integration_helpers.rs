@@ -17,6 +17,7 @@ use casper::rust::util::rholang::system_deploy_enum::SystemDeployEnum;
 use casper::rust::util::rholang::{interpreter_util, system_deploy_util};
 use crypto::rust::signatures::signed::Signed;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
+use num_traits::ToPrimitive;
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 
@@ -50,20 +51,38 @@ pub async fn production_snapshot_at(
     // adapter's expected `&[(Bytes, i64)]`.
     let bonds_table: Vec<(Bytes, i64)> = bonds
         .iter()
-        .map(|b| (b.validator.clone(), b.stake))
+        .map(|b| {
+            (
+                b.validator.clone(),
+                b.stake.to_i64().expect("finite slashing fixture stake"),
+            )
+        })
         .collect();
     let active_table: Vec<Bytes> = active_set.to_vec();
 
     // Coop-vault formula per design §14.6 stake-conservation
     // invariant: genesis_total_stake = sum(current_bonds) + coop_vault
     // (modulo bond-floor residue from already-slashed validators).
-    let genesis_total: i64 = genesis_block.body.state.bonds.iter().map(|b| b.stake).sum();
-    let current_total: i64 = bonds.iter().map(|b| b.stake).sum();
+    let genesis_total: i64 = genesis_block
+        .body
+        .state
+        .bonds
+        .iter()
+        .map(|b| b.stake.to_i64().expect("finite slashing fixture stake"))
+        .sum();
+    let current_total: i64 = bonds
+        .iter()
+        .map(|b| b.stake.to_i64().expect("finite slashing fixture stake"))
+        .sum();
     // Bond-floor residue: bonds at the test-mode floor (typically 1)
     // are validators that have been slashed but still hold the floor
     // amount. `coop_vault = genesis_total - current_total - residue`.
     let bond_floor: i64 = 1;
-    let residue: i64 = bonds.iter().filter(|b| b.stake == bond_floor).count() as i64 * bond_floor;
+    let residue: i64 = bonds
+        .iter()
+        .filter(|b| b.stake == bond_floor.into())
+        .count() as i64
+        * bond_floor;
     let coop_vault = genesis_total - current_total - residue;
 
     SlashingProductionAdapter::snapshot(

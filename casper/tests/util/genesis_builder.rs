@@ -88,11 +88,12 @@ impl GenesisBuilder {
         self
     }
 
-    pub fn create_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+    pub fn create_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
         validators
             .into_iter()
             .enumerate()
             .map(|(i, v)| (v, (i as i64) * 2 + 1))
+            .map(|(key, stake)| (key, stake.into()))
             .collect()
     }
 
@@ -133,7 +134,7 @@ impl GenesisBuilder {
         let header = Header {
             parents_hash_list: vec![],
             timestamp: 0, // Using 0 like in GenesisBuilder
-            version: 1,
+            version: casper::rust::casper::CASPER_PROTOCOL_VERSION,
             extra_bytes: bytes::Bytes::new(),
         };
 
@@ -153,7 +154,7 @@ impl GenesisBuilder {
 
     #[allow(clippy::type_complexity)]
     pub fn build_genesis_parameters_with_defaults(
-        bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, i64>>,
+        bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt>>,
         validators_num: Option<usize>,
     ) -> GenesisParameters {
         let bonds_function = bonds_function.unwrap_or(Self::create_bonds);
@@ -177,7 +178,7 @@ impl GenesisBuilder {
 
     pub fn build_genesis_parameters(
         validator_key_pairs: Vec<(PrivateKey, PublicKey)>,
-        bonds: &HashMap<PublicKey, i64>,
+        bonds: &HashMap<PublicKey, num_bigint::BigInt>,
     ) -> GenesisParameters {
         let mut genesis_vaults: Vec<(PrivateKey, PublicKey)> = vec![
             (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
@@ -217,8 +218,8 @@ impl GenesisBuilder {
             shard_id: "root".to_string(),
             timestamp: 0,
             proof_of_stake: ProofOfStake {
-                minimum_bond: 1,
-                maximum_bond: i64::MAX,
+                minimum_bond: 1.into(),
+                maximum_bond: i64::MAX.into(),
                 // Epoch length is set to large number to prevent trigger of epoch change
                 // in PoS close block method, which causes block merge conflicts
                 // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
@@ -233,7 +234,7 @@ impl GenesisBuilder {
                     .iter()
                     .map(|(pk, stake)| Validator {
                         pk: pk.clone(),
-                        stake: *stake,
+                        stake: stake.clone(),
                     })
                     .collect(),
                 pos_multi_sig_public_keys: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.to_vec(),
@@ -242,7 +243,7 @@ impl GenesisBuilder {
             vaults,
             supply: i64::MAX,
             block_number: 0,
-            version: 1,
+            version: casper::rust::casper::CASPER_PROTOCOL_VERSION,
             native_token_name: "F1R3CAP".to_string(),
             native_token_symbol: "F1R3".to_string(),
             native_token_decimals: 8,

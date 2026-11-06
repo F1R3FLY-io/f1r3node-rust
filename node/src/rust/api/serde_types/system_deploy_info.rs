@@ -16,14 +16,18 @@ use super::base64_bytes;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BondInfoSerde {
     pub validator: String,
-    pub stake: i64,
+    pub stake: String,
 }
 
 impl From<BondInfo> for BondInfoSerde {
     fn from(data: BondInfo) -> Self {
         Self {
             validator: data.validator,
-            stake: data.stake,
+            stake: if data.stake_big_int.is_empty() {
+                data.stake.to_string()
+            } else {
+                data.stake_big_int
+            },
         }
     }
 }
@@ -32,7 +36,8 @@ impl From<BondInfoSerde> for BondInfo {
     fn from(data: BondInfoSerde) -> Self {
         Self {
             validator: data.validator,
-            stake: data.stake,
+            stake: data.stake.parse().unwrap_or_default(),
+            stake_big_int: data.stake,
         }
     }
 }
@@ -474,11 +479,12 @@ mod tests {
     #[test]
     fn bond_info_roundtrips() {
         let proto = BondInfo {
+            stake_big_int: "500".to_string(),
             validator: "validator-key".to_string(),
-            stake: 500,
+            stake: 500.into(),
         };
         let serde: BondInfoSerde = proto.clone().into();
-        assert_eq!(serde.stake, 500);
+        assert_eq!(serde.stake, "500");
         let back: BondInfo = serde.into();
         assert_eq!(back, proto);
     }

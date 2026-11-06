@@ -45,11 +45,11 @@ impl TestContext {
             .build_genesis_with_parameters(Some(params))
             .await?;
 
-        let bonds: HashMap<PublicKey, i64> = genesis_params
+        let bonds: HashMap<PublicKey, num_bigint::BigInt> = genesis_params
             .proof_of_stake
             .validators
             .iter()
-            .map(|v| (v.pk.clone(), v.stake))
+            .map(|v| (v.pk.clone(), v.stake.clone()))
             .collect();
 
         let required_sigs = (bonds.len() - 1) as i32;

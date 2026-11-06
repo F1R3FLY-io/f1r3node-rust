@@ -5,6 +5,9 @@ use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
+use num_rational::BigRational;
+use num_traits::ToPrimitive;
 use prost::bytes::Bytes;
 use shared::rust::dag::observation_work::{CheckedWork, WorkKind, WorkMeter};
 
@@ -40,9 +43,12 @@ impl std::fmt::Display for ReferenceError {
 pub struct ReferenceOracle {
     pub decision: bool,
     pub original_bits: u32,
-    pub total_stake: Option<i64>,
-    pub agreeing_stake: Option<i64>,
-    pub clique_weight: Option<i64>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    pub total_stake: Option<BigInt>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    pub agreeing_stake: Option<BigInt>,
+    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    pub clique_weight: Option<BigInt>,
 }
 
 pub struct Reference<'a> {
@@ -159,18 +165,16 @@ impl<'a> Reference<'a> {
         if committee.len() > 16 {
             return Err(ReferenceError::Unavailable("reference_committee_limit"));
         }
-        let mut total = 0i64;
-        let mut agreeing = 0i64;
+        let mut total = BigInt::from(0);
+        let mut agreeing = BigInt::from(0);
         self.meter.allocate(committee.len(), 256)?;
         let mut validators = Vec::new();
         for (validator, weight) in committee {
             self.meter.step(WorkKind::Oracle)?;
-            if *weight < 0 {
+            if *weight < BigInt::from(0) {
                 return Err(ReferenceError::Unavailable("negative_stake"));
             }
-            total = total
-                .checked_add(*weight)
-                .ok_or(ReferenceError::Unavailable("stake_overflow"))?;
+            total += weight;
             let agrees = match latest.get(validator) {
                 None => false,
                 Some(hash) => match self.main_contains(target, hash) {
@@ -179,13 +183,11 @@ impl<'a> Reference<'a> {
                 },
             };
             if agrees {
-                agreeing = agreeing
-                    .checked_add(*weight)
-                    .ok_or(ReferenceError::Unavailable("stake_overflow"))?;
-                validators.push((validator, *weight));
+                agreeing += weight;
+                validators.push((validator, weight.clone()));
             }
         }
-        if total <= 0 {
+        if total <= BigInt::from(0) {
             return Ok(ReferenceOracle {
                 decision: false,
                 original_bits: minimum,
@@ -194,7 +196,7 @@ impl<'a> Reference<'a> {
                 clique_weight: None,
             });
         }
-        if i128::from(agreeing) * 2 <= i128::from(total) {
+        if &agreeing * 2 <= total {
             return Ok(ReferenceOracle {
                 decision: false,
                 original_bits: minimum,
@@ -237,19 +239,17 @@ impl<'a> Reference<'a> {
                 }
             }
         }
-        let mut best = 0i64;
+        let mut best = BigInt::from(0);
         for subset in 1usize..(1usize << n) {
             self.meter.expand(0)?;
-            let mut weight = 0i64;
+            let mut weight = BigInt::from(0);
             let mut clique = true;
             for a in 0..n {
                 self.meter.step(WorkKind::Clique)?;
                 if subset & (1 << a) == 0 {
                     continue;
                 }
-                weight = weight
-                    .checked_add(validators[a].1)
-                    .ok_or(ReferenceError::Unavailable("stake_overflow"))?;
+                weight += &validators[a].1;
                 for (b, connected) in edges[a].iter().enumerate().skip(a + 1) {
                     self.meter.step(WorkKind::Clique)?;
                     if subset & (1 << b) != 0 && !connected {
@@ -261,19 +261,13 @@ impl<'a> Reference<'a> {
                 best = best.max(weight);
             }
         }
-        let lhs = i128::from(best)
-            .checked_mul(2)
-            .and_then(|v| v.checked_mul(1_000_000))
-            .ok_or(ReferenceError::Unavailable("threshold_overflow"))?;
-        let rhs = i128::from(total)
-            .checked_mul(1_000_000 + i128::from(self.threshold))
-            .ok_or(ReferenceError::Unavailable("threshold_overflow"))?;
+        let lhs = &best * 2 * 1_000_000;
+        let rhs = &total * (BigInt::from(1_000_000) + self.threshold);
         let decision = if strict { lhs > rhs } else { lhs >= rhs };
-        let original_bits = if agreeing as f32 <= total as f32 / 2.0 {
-            minimum
-        } else {
-            ((best as f32 * 2.0 - total as f32) / total as f32).to_bits()
-        };
+        let original_bits = BigRational::new(&best * 2 - &total, total.clone())
+            .to_f32()
+            .ok_or(ReferenceError::Unavailable("invalid_fault_tolerance"))?
+            .to_bits();
         Ok(ReferenceOracle {
             decision,
             original_bits,

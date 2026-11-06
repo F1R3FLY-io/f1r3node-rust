@@ -689,9 +689,9 @@ mod tests {
                 frrd_drop_peer_after_retries: Some(111111),
                 bonds_file: Some("/var/lib/rnode/genesis/bonds1.txt".to_string()),
                 wallets_file: Some("/var/lib/rnode/genesis/wallets1.txt".to_string()),
-                bond_minimum: Some(111111),
+                bond_minimum: Some(111111.into()),
                 genesis_block_number: Some(222),
-                bond_maximum: Some(111111),
+                bond_maximum: Some(111111.into()),
                 epoch_length: Some(111111),
                 quarantine_length: Some(111111),
                 number_of_active_validators: Some(111111),
@@ -831,8 +831,8 @@ mod tests {
                     genesis_data_dir: "/var/lib/rnode/genesis".to_string(),
                     bonds_file: "".to_string(),
                     wallets_file: "".to_string(),
-                    bond_minimum: 1,
-                    bond_maximum: 1000000000,
+                    bond_minimum: 1.into(),
+                    bond_maximum: 1000000000.into(),
                     epoch_length: 10000,
                     quarantine_length: 10000,
                     number_of_active_validators: 5,
@@ -1177,11 +1177,11 @@ mod tests {
         );
         assert_eq!(
             default_config.casper.genesis_block_data.bond_minimum,
-            111111
+            111111.into()
         );
         assert_eq!(
             default_config.casper.genesis_block_data.bond_maximum,
-            111111
+            111111.into()
         );
         assert_eq!(
             default_config.casper.genesis_block_data.epoch_length,

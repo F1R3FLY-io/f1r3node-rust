@@ -1,5 +1,11 @@
 # Slashing — Mechanized Rocq Proofs
 
+> **PR #54 proposal scope:** The verdict lists and formal taxonomy below describe historical behavior.
+> They do not prove the current Rust verdict set or the BigInt proposal.
+> Current production code permits slashing only for admissible or ignorable equivocation.
+> The proposal adds `InvalidDeployCost` as a non-slashable admission rejection.
+> The models do not include that verdict. Updating the historical taxonomy proofs remains separate work.
+
 This directory contains the kernel-checked formal verification of the slashing
 logic. The headline result is `main_slashing_algorithm_correct`: every detected
 admissible/ignorable equivocation leads to bond zeroing, witness recording,

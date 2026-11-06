@@ -81,9 +81,9 @@ activate EST #C8E6C9
 loop per surviving validator, down supporting chain
   EST -[#2E7D32]> BND : weight_from_validator_by_dag(block, v)
   activate BND
-  BND --[#2E7D32]> EST : bonded i64 weight (B1: typed Err if missing)
+  BND --[#2E7D32]> EST : bonded BigInt weight (B1: typed Err if missing)
   deactivate BND
-  EST -[#546E7A]> EST : score[block] += weight (checked_add, B3)
+  EST -[#546E7A]> EST : score[block] += weight (BigInt addition, B3)
 end
 deactivate EST
 

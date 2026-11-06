@@ -33,6 +33,7 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, CasperMessage, DeployData, Justification,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -45,8 +46,9 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 13] = [
+const STORES: [&str; 14] = [
     "block-metadata",
+    "block-metadata-schema",
     "equivocation-tracker",
     "latest-messages",
     "invalid-blocks",
@@ -97,7 +99,7 @@ impl Fixture {
                 Some(vec![]),
                 Some(vec![Bond {
                     validator: validator.clone(),
-                    stake: 100,
+                    stake: 100.into(),
                 }]),
                 Some("root".to_string()),
                 None,
@@ -249,7 +251,10 @@ impl MultiParentCasper for AttachedCasper {
     async fn fetch_dependencies(&self) -> Result<(), CasperError> {
         panic!("observer invoked consensus")
     }
-    fn normalized_initial_fault(&self, _: HashMap<Validator, u64>) -> Result<f32, CasperError> {
+    fn normalized_initial_fault(
+        &self,
+        _: HashMap<Validator, num_bigint::BigInt>,
+    ) -> Result<f32, CasperError> {
         panic!("observer read the equivocation tracker")
     }
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError> {
@@ -1243,7 +1248,7 @@ fn bonded_block(
         .iter()
         .map(|(v, stake)| Bond {
             validator: Bytes::from(vec![*v; 65]),
-            stake: *stake,
+            stake: (*stake).into(),
         })
         .collect();
     block
@@ -1694,15 +1699,19 @@ fn clique_matches_exhaustive_subsets_for_all_five_vertex_graphs() {
                 expected = expected.max(vertices.iter().map(|v| weights[v]).sum());
             }
         }
+        let weights = weights
+            .iter()
+            .map(|(key, value)| (*key, (*value).into()))
+            .collect();
         let meter = meter(work_limits());
         assert_eq!(
             Clique::find_maximum_clique_by_weight_metered(&meter, &edges, &weights).unwrap(),
-            expected,
+            expected.into(),
             "graph {graph}"
         );
         assert_eq!(
             Clique::find_maximum_clique_by_weight(&edges, &weights),
-            expected
+            expected.into()
         );
     }
 }
@@ -1730,6 +1739,10 @@ fn clique_stops_at_each_work_limit() {
         }),
     ] {
         let meter = meter(limits);
+        let weights = weights
+            .iter()
+            .map(|(key, value)| (*key, (*value).into()))
+            .collect();
         let error =
             Clique::find_maximum_clique_by_weight_metered(&meter, &edges, &weights).unwrap_err();
         assert!(error.to_string().contains(name), "{error}");
@@ -1868,11 +1881,11 @@ fn graph_block(
     block.body.state.bonds = vec![
         Bond {
             validator: Bytes::from(vec![7; 65]),
-            stake: 6,
+            stake: 6.into(),
         },
         Bond {
             validator: Bytes::from(vec![8; 65]),
-            stake: 4,
+            stake: 4.into(),
         },
     ];
     block.body.merge_base = Bytes::new();
@@ -1901,8 +1914,8 @@ async fn reference_detects_wrong_threshold_traversal_and_clique_controls() {
         .oracle(target, &captured.latest_messages, false)
         .unwrap();
     assert!(!expected.decision);
-    assert_eq!(expected.agreeing_stake, Some(6));
-    assert_eq!(expected.clique_weight, Some(6));
+    assert_eq!(expected.agreeing_stake, Some(6.into()));
+    assert_eq!(expected.clique_weight, Some(6.into()));
     let mut scratch = captured.scratch_view().unwrap();
     let measured = CliqueOracle::ft_witnessed_exact(
         target,
@@ -2296,7 +2309,7 @@ fn update_display_metadata(
 }
 
 #[tokio::test]
-async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
+async fn display_rejects_negative_stakes_before_projection() {
     use casper::rust::soak_observer::display::calculate;
     let fixture = Fixture::new().await;
     add_display_record(&fixture, 7, 0);
@@ -2304,8 +2317,14 @@ async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
     for weights in [
         BTreeMap::from([(validator(7), -1), (validator(8), 1)]),
         BTreeMap::from([(validator(7), -1)]),
+        BTreeMap::from([(validator(7), 1), (validator(8), -1)]),
     ] {
-        update_display_metadata(&fixture, |m| m.weight_map = weights);
+        update_display_metadata(&fixture, |m| {
+            m.weight_map = weights
+                .into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect()
+        });
         let before = fixture.stored();
         let (snapshot, tracker) = display_capture(&fixture);
         assert_eq!(
@@ -2317,7 +2336,7 @@ async fn display_checked_sums_refuse_total_and_record_multiplicity_overflow() {
                 &meter(work_limits())
             )
             .unwrap_err(),
-            "initial_fault_weight_overflow"
+            "negative_stake"
         );
         assert_eq!(before, fixture.stored());
     }
@@ -2333,11 +2352,11 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
     for (a, b, fault_bits) in [
         (0, 0, 0),
         (1, 2, 0x3f2a_aaab),
-        (16_777_217, 16_777_219, 0x3f7f_fffe),
+        (16_777_217, 16_777_219, 0x3f7f_ffff),
         (i64::MAX / 2, i64::MAX / 2, 0x3f80_0000),
     ] {
         update_display_metadata(&fixture, |m| {
-            m.weight_map = BTreeMap::from([(validator(7), a), (validator(8), b)])
+            m.weight_map = BTreeMap::from([(validator(7), a.into()), (validator(8), b.into())])
         });
         let before = fixture.stored();
         let (snapshot, tracker) = display_capture(&fixture);
@@ -2367,6 +2386,43 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
             assert_eq!(inputs.matched_records, 2);
             assert_eq!(inputs.distinct_equivocators, 1);
         }
+        assert_eq!(before, fixture.stored());
+    }
+}
+
+#[tokio::test]
+async fn display_preserves_bigint_totals_and_record_multiplicity_above_machine_ranges() {
+    use casper::rust::soak_observer::display::calculate;
+    let fixture = Fixture::new().await;
+    add_display_record(&fixture, 7, 0);
+    add_display_record(&fixture, 7, 1);
+    add_display_record(&fixture, 9, 0);
+    for shift in [64usize, 128, 1024] {
+        let unit = BigInt::from(1) << shift;
+        let a = &unit * BigInt::from(3);
+        let b = &unit * BigInt::from(5);
+        update_display_metadata(&fixture, |m| {
+            m.weight_map = BTreeMap::from([(validator(7), a), (validator(8), b)])
+        });
+        let before = fixture.stored();
+        let (snapshot, tracker) = display_capture(&fixture);
+        let (actual, inputs) = calculate(
+            &snapshot,
+            &tracker,
+            &fixture.chain[1].block_hash,
+            Some(("original_oracle", 1f32.to_bits())),
+            &meter(work_limits()),
+        )
+        .unwrap();
+        assert_eq!(actual, 0.25f32.to_bits());
+        assert_eq!(inputs.initial_fault_bits, 0.75f32.to_bits());
+        assert_eq!(
+            inputs.equivocating_weight,
+            (&unit * BigInt::from(6)).to_string()
+        );
+        assert_eq!(inputs.total_weight, (&unit * BigInt::from(8)).to_string());
+        assert_eq!(inputs.matched_records, 2);
+        assert_eq!(inputs.distinct_equivocators, 1);
         assert_eq!(before, fixture.stored());
     }
 }

@@ -52,10 +52,11 @@ use crate::util::genesis_builder::GenesisBuilder;
 /// validator witnesses anything alone — every finalization step requires a
 /// mutual-visibility pair, giving the staging the witnessing LAG the live
 /// erasure depended on — and v0+v1 form a clique without v2.
-fn lagged_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, i64> {
+fn lagged_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
     pks.into_iter()
         .enumerate()
         .map(|(i, pk)| (pk, if i == 2 { 4 } else { 3 }))
+        .map(|(key, stake)| (key, stake.into()))
         .collect()
 }
 

@@ -225,7 +225,7 @@ pub fn snapshot(
             .insert(metadata.block_hash.clone(), metadata.block_number);
         dag.height_map
             .entry(metadata.block_number)
-            .or_insert_with(imbl::HashSet::new)
+            .or_default()
             .insert(metadata.block_hash.clone());
         if metadata.invalid {
             dag.invalid_blocks_set.insert(metadata.clone());
@@ -235,7 +235,10 @@ pub fn snapshot(
             .add(metadata)
             .expect("metadata insert");
     }
-    let bonds_map = bonds.iter().cloned().collect::<HashMap<_, _>>();
+    let bonds_map = bonds
+        .iter()
+        .map(|(validator, stake)| (validator.clone(), (*stake).into()))
+        .collect::<HashMap<_, _>>();
     let active_validators = bonds.into_iter().map(|(validator, _)| validator).collect();
     CasperSnapshot {
         dag,

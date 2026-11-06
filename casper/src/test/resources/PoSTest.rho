@@ -16,6 +16,12 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_make_pos_succeeds,
       test_close_block_finishes,
       test_bonding_succeeds,
+      test_delegation_succeeds,
+      test_undelegation_succeeds,
+      test_delegator_rewards_claim_succeeds,
+      test_bigint_delegator_rewards_claim_succeeds,
+      test_delegator_rewards_claim,
+      test_withdraw_converts_active_delegations_to_pending,
       test_withdraw_succeeds,
       test_validator_is_paid_after_withdraw,
       test_multiple_bonding_succeeds,
@@ -23,7 +29,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_bonding_fails_if_already_bonded,
       test_bonding_fails_if_bond_too_small,
       test_bonding_fails_if_not_positive,
-      test_bonding_fails_if_not_int,
+      test_bonding_fails_if_not_bigint,
       test_bonding_fails_if_bond_too_large,
       test_pay_succeeds,
       test_refund_succeeds,
@@ -31,6 +37,14 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
       test_dont_reward_inactive_validators,
       test_bonding_failure,
       test_slashing_vaults_and_state,
+      test_pending_undelegation_slashed_before_completion,
+      test_partial_undelegation_slashed_active_and_pending,
+      test_slash_only_affects_target_validator_across_multiple_delegators,
+      test_slash_one_validator_preserves_other_validator_delegation,
+      test_slash_removes_only_target_validator_delegator_rewards,
+      test_delegate_rejects_when_effective_bond_would_exceed_maximum,
+      test_close_block_excludes_pending_undelegations_from_effective_bonds,
+      test_same_epoch_slash_is_not_rewarded_by_close_block,
       getPosBalance, getCoopBalance,
       closeBlock
     in {
@@ -54,8 +68,13 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("PoS is created with empty rewards", *test_make_pos_succeeds),
               ("closeBlock finishes successfully", *test_close_block_finishes),
               ("bonding success", *test_bonding_succeeds),
+              ("delegation success", *test_delegation_succeeds),
+              ("undelegation success", *test_undelegation_succeeds),
+              ("delegator rewards can be claimed", *test_delegator_rewards_claim_succeeds),
+              ("delegator rewards above Int range can be claimed", *test_bigint_delegator_rewards_claim_succeeds),
               ("withdraw succeeds", *test_withdraw_succeeds),
               ("validator is paid after withdraw", *test_validator_is_paid_after_withdraw),
+              ("withdraw converts active delegations to pending undelegations", *test_withdraw_converts_active_delegations_to_pending),
               ("bonding fails if deposit fails", *test_bonding_fails_if_deposit_fails),
               ("multiple bondings work", *test_multiple_bonding_succeeds),
               ("payment works", *test_pay_succeeds),
@@ -63,12 +82,20 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
               ("bonding fails if already bonded", *test_bonding_fails_if_already_bonded),
               ("bonding fails if bond is too small", *test_bonding_fails_if_bond_too_small),
               ("bonding fails if bond is not positive", *test_bonding_fails_if_not_positive),
-              ("bonding fails if bond is not an Int", *test_bonding_fails_if_not_int),
+              ("bonding fails if bond is not a BigInt", *test_bonding_fails_if_not_bigint),
               ("bonding fails if bond is too large", *test_bonding_fails_if_bond_too_large),
               ("payment is not distributed to inactive validators", *test_dont_reward_inactive_validators),
               // TODO we should reimplement the random test in the future when it is available
               ("commited random matches its image", *test_commit_random),
-              ("Slashing transfers funds appropriately", *test_slashing_vaults_and_state)
+              ("Slashing transfers funds appropriately", *test_slashing_vaults_and_state),
+              ("pending undelegation is slashed before completion", *test_pending_undelegation_slashed_before_completion),
+              ("slash handles active and pending delegated exposure", *test_partial_undelegation_slashed_active_and_pending),
+              ("slash only affects target validator across multiple delegators", *test_slash_only_affects_target_validator_across_multiple_delegators),
+              ("slash one validator preserves delegation to another", *test_slash_one_validator_preserves_other_validator_delegation),
+              ("slash removes only target validator delegator rewards", *test_slash_removes_only_target_validator_delegator_rewards),
+              ("delegate enforces maximum effective bond cap", *test_delegate_rejects_when_effective_bond_would_exceed_maximum),
+              ("closeBlock excludes pending undelegations from effective bonds", *test_close_block_excludes_pending_undelegations_from_effective_bonds),
+              ("same-epoch slash is not rewarded by closeBlock", *test_same_epoch_slash_is_not_rewarded_by_close_block)
             ]
           ) |
 
@@ -160,7 +187,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                      @initialUserBalance <- initialUserBalanceCh &
                      @initialCoopBalance <- initialCoopBalanceCh &
                      @initialBonds       <- initialBondsCh) {
-                  match 100 {
+                  match 100n {
                     bondAmt => {
                       @PoS!("bond", userDeployerId, bondAmt, *retCh) |
                       for (@(true, _) <- retCh) {
@@ -185,6 +212,301 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                             ],
                             *ackCh
                           )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Tests that a user can delegate to an existing validator and the effective bonds reflect that delegation.
+          contract test_delegation_succeeds(rhoSpec, _, ackCh) = {
+            new validatorSetupCh, delegatorSetupCh, bondCh, delegateCh,
+                initialPosBalanceCh, finalPosBalanceCh,
+                initialDelegatorBalanceCh, finalDelegatorBalanceCh,
+                selfBondsCh, effectiveBondsCh, delegationsCh, validatorDelegatorsCh, delegatedTotalsCh
+            in {
+              prepareUser!("6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a", *validatorSetupCh) |
+              prepareUser!("7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", *delegatorSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, @delegatorVault, @delegatorDeployerId <- delegatorSetupCh) {
+                match (100n, 40n) {
+                  (validatorBond, delegationAmt) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      getPosBalance!(*initialPosBalanceCh) |
+                      @delegatorVault!("balance", *initialDelegatorBalanceCh) |
+                      for (@initialPosBalance <- initialPosBalanceCh &
+                           @initialDelegatorBalance <- initialDelegatorBalanceCh) {
+                        @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                        for (@(true, _) <- delegateCh) {
+                          getPosBalance!(*finalPosBalanceCh) |
+                          @delegatorVault!("balance", *finalDelegatorBalanceCh) |
+                          @PoS!("getBonds", *selfBondsCh) |
+                          @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                          @PoS!("getDelegations", *delegationsCh) |
+                          @PoS!("getValidatorDelegators", *validatorDelegatorsCh) |
+                          @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                          for (@finalPosBalance <- finalPosBalanceCh &
+                               @finalDelegatorBalance <- finalDelegatorBalanceCh &
+                               @selfBonds <- selfBondsCh &
+                               @effectiveBonds <- effectiveBondsCh &
+                               @delegations <- delegationsCh &
+                               @validatorDelegators <- validatorDelegatorsCh &
+                               @delegatedTotals <- delegatedTotalsCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                ((validatorBond, "==", selfBonds.get(validatorPubKey)), "self-bond map is unchanged by delegation"),
+                                ((validatorBond + delegationAmt, "==", effectiveBonds.get(validatorPubKey)), "delegated stake increases validator effective bond"),
+                                ((delegationAmt, "==", delegations.getOrElse(delegatorPubKey, {}).getOrElse(validatorPubKey, 0n)), "delegation map tracks delegated stake"),
+                                ((true, "==", validatorDelegators.getOrElse(validatorPubKey, {}).contains(delegatorPubKey)), "validator delegator index tracks delegation ownership"),
+                                ((delegationAmt, "==", delegatedTotals.getOrElse(validatorPubKey, 0n)), "delegated total tracks delegated stake per validator"),
+                                (((delegationAmt).toBigInt(), "==", finalPosBalance - initialPosBalance), "PoS vault receives delegated amount"),
+                                (((delegationAmt).toBigInt(), "==", initialDelegatorBalance - finalDelegatorBalance), "delegator vault pays delegated amount")
+                              ],
+                              *ackCh
+                            )
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Tests that undelegation enters cooldown, then can be completed to transfer principal back.
+          contract test_undelegation_succeeds(rhoSpec, _, ackCh) = {
+            new validatorSetupCh, delegatorSetupCh, bondCh, delegateCh, undelegateCh, completeUndelegateCh, prematureCompleteCh,
+                initialPosBalanceCh, requestPosBalanceCh, finalPosBalanceCh,
+                initialDelegatorBalanceCh, requestDelegatorBalanceCh, finalDelegatorBalanceCh,
+                selfBondsCh, effectiveBondsCh, delegationsCh, validatorDelegatorsCh, delegatedTotalsCh, pendingUndelegationsCh,
+                epochCh, setBlockData(`rho:test:block:data:set`), blockDataCh
+            in {
+              prepareUser!("8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c", *validatorSetupCh) |
+              prepareUser!("9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d", *delegatorSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, @delegatorVault, @delegatorDeployerId <- delegatorSetupCh) {
+                match (100n, 60n, 60n, 10) {
+                  (validatorBond, delegationAmt, undelegationAmt, requestBlock) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                      for (@(true, _) <- delegateCh) {
+                        getPosBalance!(*initialPosBalanceCh) |
+                        @delegatorVault!("balance", *initialDelegatorBalanceCh) |
+                        @PoS!("getEpochLength", *epochCh) |
+                        for (@initialPosBalance <- initialPosBalanceCh &
+                             @initialDelegatorBalance <- initialDelegatorBalanceCh &
+                             @epochLength <- epochCh) {
+                          setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                          for (_ <- blockDataCh) {
+                            @PoS!("undelegate", delegatorDeployerId, validatorPubKey, undelegationAmt, *undelegateCh) |
+                            for (@(true, _) <- undelegateCh) {
+                              getPosBalance!(*requestPosBalanceCh) |
+                              @delegatorVault!("balance", *requestDelegatorBalanceCh) |
+                              @PoS!("getBonds", *selfBondsCh) |
+                              @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                              @PoS!("getDelegations", *delegationsCh) |
+                              @PoS!("getValidatorDelegators", *validatorDelegatorsCh) |
+                              @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                              @PoS!("getPendingUndelegations", *pendingUndelegationsCh) |
+                              for (@requestPosBalance <- requestPosBalanceCh &
+                                   @requestDelegatorBalance <- requestDelegatorBalanceCh &
+                                   @selfBonds <- selfBondsCh &
+                                   @effectiveBonds <- effectiveBondsCh &
+                                   @delegations <- delegationsCh &
+                                   @validatorDelegators <- validatorDelegatorsCh &
+                                   @delegatedTotals <- delegatedTotalsCh &
+                                   @pendingUndelegations <- pendingUndelegationsCh) {
+                                setBlockData!("blockNumber", requestBlock + epochLength - 1, *blockDataCh) |
+                                for (_ <- blockDataCh) {
+                                  @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *prematureCompleteCh) |
+                                  for (@(false, earlyMsg) <- prematureCompleteCh) {
+                                    setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                    for (_ <- blockDataCh) {
+                                      @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *completeUndelegateCh) |
+                                      for (@(true, _) <- completeUndelegateCh) {
+                                        getPosBalance!(*finalPosBalanceCh) |
+                                        @delegatorVault!("balance", *finalDelegatorBalanceCh) |
+                                        @PoS!("getPendingUndelegations", *pendingUndelegationsCh) |
+                                        for (@finalPosBalance <- finalPosBalanceCh &
+                                             @finalDelegatorBalance <- finalDelegatorBalanceCh &
+                                             @finalPendingUndelegations <- pendingUndelegationsCh) {
+                                          rhoSpec!("assertMany",
+                                            [
+                                              ((validatorBond, "==", selfBonds.get(validatorPubKey)), "self-bond map is unchanged by undelegation request"),
+                                              ((validatorBond, "==", effectiveBonds.get(validatorPubKey)), "undelegation request immediately reduces validator effective bond"),
+                                              ((false, "==", delegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "delegation entry is removed on undelegation request"),
+                                              ((false, "==", validatorDelegators.getOrElse(validatorPubKey, {}).contains(delegatorPubKey)), "validator delegator index is cleared on full undelegation"),
+                                              ((false, "==", delegatedTotals.contains(validatorPubKey)), "delegated total entry is removed on undelegation request"),
+                                              (((undelegationAmt, requestBlock + epochLength), "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation stores amount and unlock block"),
+                                              ((requestPosBalance, "==", initialPosBalance), "PoS vault does not transfer principal before cooldown completion"),
+                                              ((requestDelegatorBalance, "==", initialDelegatorBalance), "delegator does not receive principal before cooldown completion"),
+                                              (("Undelegation cooldown not finished.", "==", earlyMsg), "early undelegation completion is rejected"),
+                                              (((undelegationAmt).toBigInt(), "==", initialPosBalance - finalPosBalance), "PoS vault sends undelegated amount after cooldown"),
+                                              (((undelegationAmt).toBigInt(), "==", finalDelegatorBalance - initialDelegatorBalance), "delegator receives undelegated amount after cooldown"),
+                                              ((false, "==", finalPendingUndelegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation is cleared after completion")
+                                            ],
+                                            *ackCh
+                                          )
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Tests that delegator rewards accrue on-chain and can be claimed.
+          contract test_delegator_rewards_claim_succeeds(rhoSpec, _, ackCh) = {
+            test_delegator_rewards_claim!(*rhoSpec, 100n, 100n, 0n, *ackCh)
+          } |
+
+          contract test_bigint_delegator_rewards_claim_succeeds(rhoSpec, _, ackCh) = {
+            test_delegator_rewards_claim!(*rhoSpec, 5000n, 10000000000000000000n, 9223372036854775807n, *ackCh)
+          } |
+
+          contract test_delegator_rewards_claim(rhoSpec, @delegationAmt, @chargeAmt, @minimumReward, ackCh) = {
+            new delegatorSetupCh, payerSetupCh, activeValidatorsCh,
+                delegateCh, chargeCh, refundCh, closeBlockCh, claimCh,
+                rewardsBeforeClaimCh, rewardsAfterClaimCh,
+                initialDelegatorBalanceCh, finalDelegatorBalanceCh,
+                epochCh, setBlockData(`rho:test:block:data:set`), blockDataCh
+            in {
+              prepareUser!("cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", *delegatorSetupCh) |
+              prepareUser!("dedededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededededede", *payerSetupCh) |
+              for (@delegatorPubKey, _, @delegatorVault, @delegatorDeployerId <- delegatorSetupCh &
+                   _, _, _, @payerDeployerId <- payerSetupCh) {
+                @PoS!("getActiveValidators", *activeValidatorsCh) |
+                @PoS!("getEpochLength", *epochCh) |
+                for (@activeValidators <- activeValidatorsCh) {
+                  match activeValidators.toList().nth(0) {
+                    targetValidator => {
+                      @PoS!("delegate", delegatorDeployerId, targetValidator, delegationAmt, *delegateCh) |
+                      for (@(true, _) <- delegateCh) {
+                        @PoS!("chargeDeploy", payerDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
+                        @PoS!("refundDeploy", 0, sysAuthToken, *refundCh) |
+                        for (@(true, _) <- chargeCh &
+                             @(true, _) <- refundCh) {
+                          for (@epochLength <- epochCh) {
+                            setBlockData!("blockNumber", epochLength, *blockDataCh) |
+                            for (_ <- blockDataCh) {
+                              closeBlock!(*closeBlockCh) |
+                              for (@(true, _) <- closeBlockCh) {
+                                @delegatorVault!("balance", *initialDelegatorBalanceCh) |
+                                @PoS!("getDelegatorRewards", *rewardsBeforeClaimCh) |
+                                for (@initialDelegatorBalance <- initialDelegatorBalanceCh &
+                                     @rewardsBeforeClaim <- rewardsBeforeClaimCh) {
+                                  @PoS!("claimDelegatorRewards", delegatorDeployerId, *claimCh) |
+                                  for (@(true, _) <- claimCh) {
+                                    @delegatorVault!("balance", *finalDelegatorBalanceCh) |
+                                    @PoS!("getDelegatorRewards", *rewardsAfterClaimCh) |
+                                    for (@finalDelegatorBalance <- finalDelegatorBalanceCh &
+                                         @rewardsAfterClaim <- rewardsAfterClaimCh) {
+                                      rhoSpec!("assertMany",
+                                        [
+                                          ((true, "==", rewardsBeforeClaim.getOrElse(delegatorPubKey, 0n) > minimumReward), "delegator rewards exceed the expected threshold without overflow"),
+                                          ((rewardsBeforeClaim.getOrElse(delegatorPubKey, 0n), "==", finalDelegatorBalance - initialDelegatorBalance), "claimed rewards are transferred to delegator vault"),
+                                          ((0n, "==", rewardsAfterClaim.getOrElse(delegatorPubKey, 0n)), "delegator rewards are cleared after claim")
+                                        ],
+                                        *ackCh
+                                      )
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Tests that validator withdrawal moves delegated stake to pending undelegation.
+          contract test_withdraw_converts_active_delegations_to_pending(rhoSpec, _, ackCh) = {
+            new setBlockData(`rho:test:block:data:set`), setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                blockDataCh, hashCh, invalidBlocksSetCh,
+                validatorSetupCh, delegatorSetupCh, slasherSetupCh, bondCh, delegateCh, withdrawCh, slashCh,
+                pendingWithdrawersCh, delegationsCh, validatorDelegatorsCh, delegatedTotalsCh, pendingUndelegationsCh, effectiveBondsCh,
+                finalPendingWithdrawersCh, finalBondsCh, finalPendingUndelegationsCh,
+                epochCh
+            in {
+              prepareUser!("aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae", *validatorSetupCh) |
+              prepareUser!("bfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbf", *delegatorSetupCh) |
+              prepareUser!("bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc", *slasherSetupCh) |
+              @PoS!("getEpochLength", *epochCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
+                   _, _, _, @slasherDeployerId <- slasherSetupCh &
+                   @epochLength <- epochCh) {
+                match (100n, 30n, 40) {
+                  (validatorBond, delegationAmt, requestBlock) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                      for (@(true, _) <- delegateCh) {
+                        setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                        for (_ <- blockDataCh) {
+                          @PoS!("withdraw", validatorDeployerId, *withdrawCh) |
+                          for (@(true, _) <- withdrawCh) {
+                            @PoS!("getPendingWithdrawer", *pendingWithdrawersCh) |
+                            @PoS!("getDelegations", *delegationsCh) |
+                            @PoS!("getValidatorDelegators", *validatorDelegatorsCh) |
+                            @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                            @PoS!("getPendingUndelegations", *pendingUndelegationsCh) |
+                            @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                            for (@pendingWithdrawers <- pendingWithdrawersCh &
+                                 @delegations <- delegationsCh &
+                                 @validatorDelegators <- validatorDelegatorsCh &
+                                 @delegatedTotals <- delegatedTotalsCh &
+                                 @pendingUndelegations <- pendingUndelegationsCh &
+                                 @effectiveBonds <- effectiveBondsCh) {
+                              computeHash!(validatorPubKey, *hashCh) |
+                              for (@hash <- hashCh) {
+                                setInvalidBlocks!({hash : validatorPubKey}, *invalidBlocksSetCh) |
+                                for (_ <- invalidBlocksSetCh) {
+                                  @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                                  for (@(true, _) <- slashCh) {
+                                    @PoS!("getPendingWithdrawer", *finalPendingWithdrawersCh) |
+                                    @PoS!("getBonds", *finalBondsCh) |
+                                    @PoS!("getPendingUndelegations", *finalPendingUndelegationsCh) |
+                                    for (@finalPendingWithdrawers <- finalPendingWithdrawersCh &
+                                         @finalBonds <- finalBondsCh &
+                                         @finalPendingUndelegations <- finalPendingUndelegationsCh) {
+                                      rhoSpec!("assertMany",
+                                        [
+                                          ((true, "==", pendingWithdrawers.contains(validatorPubKey)), "validator is added to pending withdrawers"),
+                                          ((false, "==", delegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "active delegation entry is removed"),
+                                          ((false, "==", validatorDelegators.contains(validatorPubKey)), "validator delegator index is cleared by withdraw"),
+                                          ((false, "==", delegatedTotals.contains(validatorPubKey)), "delegated total is cleared"),
+                                          (((delegationAmt, requestBlock + epochLength), "==", pendingUndelegations.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "delegated stake becomes pending undelegation"),
+                                          ((validatorBond, "==", effectiveBonds.get(validatorPubKey)), "pending undelegation no longer contributes to effective stake"),
+                                          ((false, "==", finalPendingWithdrawers.contains(validatorPubKey)), "slash clears pending withdrawer state"),
+                                          ((false, "==", finalBonds.contains(validatorPubKey)), "slash removes withdrawn validator bond entry"),
+                                          ((false, "==", finalPendingUndelegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "slash removes pending undelegation created by withdraw")
+                                        ],
+                                        *ackCh
+                                      )
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
                         }
                       }
                     }
@@ -222,7 +544,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                      @epochLength        <- epochCh &
                      @quarantineLength   <- quarantineCh) {
                   // block number is set for after a quarantine period so this validator will appear in the initial and final bonds map in test_validator_is_paid_after_withdraw
-                  match (100, 2 * epochLength * quarantineLength) {
+                  match (100n, 2 * epochLength * quarantineLength) {
                     (bondAmt, blockNumber) => {
                       @PoS!("bond", userDeployerId, bondAmt, *bondCh) |
                       setBlockData!("blockNumber", blockNumber, *blockDataCh) |
@@ -287,7 +609,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                      @initialBonds            <- initialBondsCh &
                      @epochLength             <- epochCh &
                      @quarantineLength        <- quarantineCh) {
-                  match (100, 100, 0, 1) {
+                  match (100n, 100, 0, 1) {
                     (bondAmt, chargeAmt, refundAmt, blockNumber) => {
                       @PoS!("bond", validatorDeployerId, bondAmt, *bondCh) |
                       for (@(true, _) <- bondCh) {
@@ -393,7 +715,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                      @initialUser1Balance <- initialUser1BalanceCh &
                      @initialCoopBalance  <- initialCoopBalanceCh &
                      @initialBonds        <- initialBondsCh) {
-                  match (100, 200) {
+                  match (100n, 200n) {
                     (user1Bond, user2Bond) => {
                       @PoS!("bond", user1DeployerId, user1Bond, *user1BondCh) |
                       for (@(true, _) <- user1BondCh) {
@@ -416,8 +738,8 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                                    @finalBonds        <- finalBondsCh) {
                                 rhoSpec!("assertMany",
                                   [
-                                    ((0, "==", initialBonds.getOrElse(user1PubKey, 0)), "user1's bond is not expected in the initial map"),
-                                    ((0, "==", initialBonds.getOrElse(user2PubKey, 0)), "user2's bond is not expected in the initial map"),
+                                    ((0n, "==", initialBonds.getOrElse(user1PubKey, 0n)), "user1's bond is not expected in the initial map"),
+                                    ((0n, "==", initialBonds.getOrElse(user2PubKey, 0n)), "user2's bond is not expected in the initial map"),
                                     ((user1Bond, "==", finalBonds.get(user1PubKey)), "user1's bond is expected in the final map"),
                                     ((user2Bond, "==", finalBonds.get(user2PubKey)), "user2's bond is expected in the final map"),
                                     ((user1Bond.toBigInt(), "==", initialUser1Balance - finalUser1Balance), "user1's account decreases as expected"),
@@ -442,12 +764,14 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             new setupCh, closeBlockCh, retCh0, retCh1, initialPosBalanceCh, finalPosBalanceCh,
                 initialUser1BalanceCh, finalUser1BalanceCh,
                 initialRewardsCh, finalRewardsCh,
-                computeDelta, deltaRewardsCh, deltaSumCh, sumDelta,
-                isPositive, allRewardsPositiveCh, initialBondsCh, initialActiveCh
+                initialDelegatorRewardsCh, finalDelegatorRewardsCh,
+                computeDelta, computeDelegatorDelta, deltaRewardsCh, deltaDelegatorRewardsCh,
+                validatorDeltaSumCh, delegatorDeltaSumCh, totalDeltaSumCh, sumDelta,
+                isNonNegative, allRewardsPositiveCh, initialBondsCh, initialActiveCh
             in {
               prepareUser!("4444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444", *setupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- setupCh) {
-                match (100, 100, 0) {
+                match (100n, 100, 0) {
                   (validatorBond, userCharge, userRefund) => {
                     @PoS!("bond", validatorDeployerId, validatorBond, *setupCh) |
                     for (@(true, _) <- setupCh) {
@@ -458,11 +782,13 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                         getPosBalance!(*initialPosBalanceCh) |
                         @userVault!("balance", *initialUser1BalanceCh) |
                         @PoS!("getRewards", *initialRewardsCh) |
+                        @PoS!("getDelegatorRewards", *initialDelegatorRewardsCh) |
                         @PoS!("getBonds", *initialBondsCh) |
                         @PoS!("getActiveValidators", *initialActiveCh) |
                         for (@initialPosBalance   <- initialPosBalanceCh &
                              @initialUser1Balance <- initialUser1BalanceCh &
                              @initialRewards      <- initialRewardsCh &
+                             @initialDelegatorRewards <- initialDelegatorRewardsCh &
                              @initialBonds        <- initialBondsCh &
                              @initialActives      <- initialActiveCh) {
                           stdlog!("info", ("bonding distribution and actives before precharge and refund", initialBonds, initialActives, initialRewards)) |
@@ -475,35 +801,45 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                               getPosBalance!(*finalPosBalanceCh) |
                               @userVault!("balance", *finalUser1BalanceCh) |
                               @PoS!("getRewards", *finalRewardsCh) |
+                              @PoS!("getDelegatorRewards", *finalDelegatorRewardsCh) |
                               for (@finalPosBalance   <- finalPosBalanceCh &
                                    @finalUser1Balance <- finalUser1BalanceCh &
-                                   @finalRewards      <- finalRewardsCh) {
+                                   @finalRewards      <- finalRewardsCh &
+                                   @finalDelegatorRewards <- finalDelegatorRewardsCh) {
                                 stdlog!("info", ("Final rewards", finalRewards)) |
                                 @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
+                                @ListOps!("fold", finalDelegatorRewards.toList(), {}, *computeDelegatorDelta, *deltaDelegatorRewardsCh) |
                                 contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
                                   resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0n)))
                                 } |
-                                for (@deltaRewards <- deltaRewardsCh) {
-                                  @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
-                                  contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0n)
+                                contract computeDelegatorDelta(@(pk, finalReward), @acc, resultCh) = {
+                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0n)))
+                                } |
+                                for (@deltaRewards <- deltaRewardsCh &
+                                     @deltaDelegatorRewards <- deltaDelegatorRewardsCh) {
+                                  @ListOps!("forall", deltaRewards, *isNonNegative, *allRewardsPositiveCh) |
+                                  contract isNonNegative(@n, resultCh) = {
+                                    resultCh!(n >= 0n)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *deltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *validatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0n, *sumDelta, *delegatorDeltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
-                                  rhoSpec!("assertMany",
-                                    [
-                                      (((userCharge - userRefund).toBigInt(), "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
-                                      (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                      //TODO: active validator stake-weighted reward
-                                      ((19n, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
-                                      //TODO use arbitrary precision numbers instead of long ints
-                                      ((98n, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
-                                      ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
-                                    ],
-                                    *ackCh
-                                  )
+                                  for (@validatorDeltaSum <- validatorDeltaSumCh &
+                                       @delegatorDeltaSum <- delegatorDeltaSumCh) {
+                                    totalDeltaSumCh!(validatorDeltaSum + delegatorDeltaSum) |
+                                    rhoSpec!("assertMany",
+                                      [
+                                        (((userCharge - userRefund).toBigInt(), "==", initialUser1Balance - finalUser1Balance), "the user account decreases"),
+                                        (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0n) > initialRewards.getOrElse(validatorPubKey, 0n)), "the validator's finalRewards grows"),
+                                        ((98n, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment less rounding"),
+                                        ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
                                 }
                               }
                             }
@@ -524,14 +860,16 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                 posBalanceCh,
                 userBalanceCh,
                 rewardsCh,
+                delegatorRewardsCh,
                 chargeDeployAck,
                 refundDeployAck,
-                computeDelta, deltaRewardsCh, deltaSumCh, sumDelta,
-                isPositive, allRewardsPositiveCh
+                computeDelta, computeDelegatorDelta, deltaRewardsCh, deltaDelegatorRewardsCh,
+                validatorDeltaSumCh, delegatorDeltaSumCh, totalDeltaSumCh, sumDelta,
+                isNonNegative, allRewardsPositiveCh
             in {
               prepareUser!("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", *prepareUserAck) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- prepareUserAck) {
-                match (100, 100, 50) {
+                match (100n, 100, 50) {
                   (validatorBond, userCharge, userRefund) => {
                     @PoS!("bond", validatorDeployerId, validatorBond, *bondAck) |
                     for (@(true, _) <- bondAck) {
@@ -542,9 +880,11 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                         getPosBalance!(*posBalanceCh) |
                         @userVault!("balance", *userBalanceCh) |
                         @PoS!("getRewards", *rewardsCh) |
+                        @PoS!("getDelegatorRewards", *delegatorRewardsCh) |
                         for (@initialPosBalance  <- posBalanceCh &
                              @initialUserBalance <- userBalanceCh &
-                             @initialRewards     <- rewardsCh) {
+                             @initialRewards     <- rewardsCh &
+                             @initialDelegatorRewards <- delegatorRewardsCh) {
                           @PoS!("chargeDeploy", userDeployerId, userCharge, sysAuthToken, *chargeDeployAck) |
                           @PoS!("refundDeploy", userRefund, sysAuthToken, *refundDeployAck) |
                           for (@(true, _) <- chargeDeployAck &
@@ -554,34 +894,44 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
                               getPosBalance!(*posBalanceCh) |
                               @userVault!("balance", *userBalanceCh) |
                               @PoS!("getRewards", *rewardsCh) |
+                              @PoS!("getDelegatorRewards", *delegatorRewardsCh) |
                               for (@finalPosBalance  <- posBalanceCh &
                                    @finalUserBalance <- userBalanceCh &
-                                   @finalRewards     <- rewardsCh) {
+                                   @finalRewards     <- rewardsCh &
+                                   @finalDelegatorRewards <- delegatorRewardsCh) {
                                 @ListOps!("fold", finalRewards.toList(), {}, *computeDelta, *deltaRewardsCh) |
+                                @ListOps!("fold", finalDelegatorRewards.toList(), {}, *computeDelegatorDelta, *deltaDelegatorRewardsCh) |
                                 contract computeDelta(@(pk, finalReward), @acc, resultCh) = {
                                   resultCh!(acc.set(pk, finalReward - initialRewards.getOrElse(pk, 0n)))
                                 } |
-                                for (@deltaRewards <- deltaRewardsCh) {
-                                  @ListOps!("forall", deltaRewards, *isPositive, *allRewardsPositiveCh) |
-                                  contract isPositive(@n, resultCh) = {
-                                    resultCh!(n > 0n)
+                                contract computeDelegatorDelta(@(pk, finalReward), @acc, resultCh) = {
+                                  resultCh!(acc.set(pk, finalReward - initialDelegatorRewards.getOrElse(pk, 0n)))
+                                } |
+                                for (@deltaRewards <- deltaRewardsCh &
+                                     @deltaDelegatorRewards <- deltaDelegatorRewardsCh) {
+                                  @ListOps!("forall", deltaRewards, *isNonNegative, *allRewardsPositiveCh) |
+                                  contract isNonNegative(@n, resultCh) = {
+                                    resultCh!(n >= 0n)
                                   } |
-                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *deltaSumCh) |
+                                  @ListOps!("fold", deltaRewards.toList(), 0n, *sumDelta, *validatorDeltaSumCh) |
+                                  @ListOps!("fold", deltaDelegatorRewards.toList(), 0n, *sumDelta, *delegatorDeltaSumCh) |
                                   contract sumDelta(@(_, delta), @acc, resultCh) = {
                                     resultCh!(acc + delta)
                                   } |
-                                  rhoSpec!("assertMany",
-                                    [
-                                      (((userCharge - userRefund).toBigInt(), "==", initialUserBalance - finalUserBalance), "the user account decreases"),
-                                      (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
-                                      //TODO: active validator stake-weighted reward
-                                      ((8n, "==", finalRewards.get(validatorPubKey)), "the validator's finalRewards is as expected"),
-                                      //TODO use arbitrary precision numbers instead of long ints
-                                      ((50n, "== <-", *deltaSumCh), "the sum difference should equal the payment"),
-                                      ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
-                                    ],
-                                    *ackCh
-                                  )
+                                  for (@validatorDeltaSum <- validatorDeltaSumCh &
+                                       @delegatorDeltaSum <- delegatorDeltaSumCh) {
+                                    totalDeltaSumCh!(validatorDeltaSum + delegatorDeltaSum) |
+                                    rhoSpec!("assertMany",
+                                      [
+                                        (((userCharge - userRefund).toBigInt(), "==", initialUserBalance - finalUserBalance), "the user account decreases"),
+                                        (((userCharge - userRefund).toBigInt(), "==", finalPosBalance - initialPosBalance), "the pos account increases"),
+                                        ((true, "==", finalRewards.getOrElse(validatorPubKey, 0n) > initialRewards.getOrElse(validatorPubKey, 0n)), "the validator's finalRewards grows"),
+                                        ((50n, "== <-", *totalDeltaSumCh), "the reward delta should equal the payment"),
+                                        ((true, "== <-", *allRewardsPositiveCh), "the rewards can only grow")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
                                 }
                               }
                             }
@@ -596,32 +946,31 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
           } |
 
           contract test_bonding_fails_if_deposit_fails(rhoSpec, _, ackCh) = {
-            test_bonding_failure!(*rhoSpec, "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666", 20000, "Bond deposit failed: Insufficient funds", *ackCh)
+            test_bonding_failure!(*rhoSpec, "6666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666", 20000n, "Bond deposit failed: Insufficient funds", *ackCh)
           } |
 
           contract test_bonding_fails_if_bond_too_small(rhoSpec, _, ackCh) = {
             // Positive but below minimum_bond (=2 in this spec's genesis): 0 < 1 < 2 reaches the
             // "less than minimum" gate. (At the builder default minimum_bond=1 this gate is
             // unreachable for integers — no amount satisfies 0 < amount < 1.)
-            test_bonding_failure!(*rhoSpec, "7777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777", 1, "Bond is less than minimum!", *ackCh)
+            test_bonding_failure!(*rhoSpec, "7777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777", 1n, "Bond is less than minimum!", *ackCh)
           } |
 
           contract test_bonding_fails_if_not_positive(rhoSpec, _, ackCh) = {
             // The explicit positive-stake gate (Bug #5 / T-9.5 active_implies_bonded, PoS.rhox):
             // amount <= 0 is rejected before the minimum-bond check.
-            test_bonding_failure!(*rhoSpec, "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f", -1, "Bond amount must be positive.", *ackCh)
+            test_bonding_failure!(*rhoSpec, "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f", -1n, "Bond amount must be positive.", *ackCh)
           } |
 
-          contract test_bonding_fails_if_not_int(rhoSpec, _, ackCh) = {
-            // Stakes stay Int: a BigInt amount is rejected with the contract's own message.
-            test_bonding_failure!(*rhoSpec, "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e", 5n, "Bond amount must be an Int.", *ackCh)
+          contract test_bonding_fails_if_not_bigint(rhoSpec, _, ackCh) = {
+            test_bonding_failure!(*rhoSpec, "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e", 5, "Bond amount must be a BigInt.", *ackCh)
           } |
 
           contract test_bonding_fails_if_bond_too_large(rhoSpec, _, ackCh) = {
             // Above maximum_bond (=100000 in this spec's genesis): the "greater than maximum" gate
             // fires before the deposit step, so the payer needs no funds. (At the builder default
             // maximum_bond=i64::MAX this gate is unreachable for i64 amounts.)
-            test_bonding_failure!(*rhoSpec, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 200000, "Bond is greater than maximum!", *ackCh)
+            test_bonding_failure!(*rhoSpec, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", 200000n, "Bond is greater than maximum!", *ackCh)
           } |
 
           contract test_bonding_fails_if_already_bonded(rhoSpec, _, ackCh) = {
@@ -630,7 +979,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             in {
               prepareUser!("8888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888", *setupCh) |
               for (_, _, _, @userDeployerId <- setupCh) {
-                match (150, 100) {
+                match (150n, 100n) {
                   (userBond1, userBond2) => {
                     @PoS!("bond", userDeployerId, userBond1, *bond1Ch) |
                     for (@(bond1Result, _) <- bond1Ch) {
@@ -695,7 +1044,7 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             in {
               prepareUser!("9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999", *setupCh) |
               for (@validatorPubKey, _, _, @validatorDeployerId <- setupCh) {
-                @PoS!("bond", validatorDeployerId, 100, *setupCh) |
+                @PoS!("bond", validatorDeployerId, 100n, *setupCh) |
                 for (@(true, _) <- setupCh) {
                   prepareUser!("0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", *setupCh) |
                   for (@user1PubKey, _, @user1Vault, @user1DeployerId <- setupCh) {
@@ -792,64 +1141,585 @@ match "047b43d6548b72813b89ac1b9f9ca67624a8b372feedd71d4e2da036384a3e1236812227e
             }
           } |
           // Checks that the slashed validator's bond and rewards are moved from the PoS vault to the Coop vault and
-          // reduced to 0 in the bond and committedRewards maps and that they are immediately moved to the withdrawers map.
+          // removed from the bond and committedRewards maps.
           contract test_slashing_vaults_and_state(rhoSpec, _, ackCh) = {
             new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
-                computeHash(`rho:crypto:keccak256Hash`), hashCh, invalidBlocksSetCh,
-                initialBondSumCh, chargeCh, refundCh, initialCoopBalanceCh, finalCoopBalanceCh,
-                setupCh, slashCh, activeValidatorsCh, withdrawersCh,
+                makeDeployerId(`rho:test:deployerId:make`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                hashCh, invalidBlocksSetCh, slasherDeployerIdCh,
+                slashedValidatorCh, initialCoopBalanceCh, finalCoopBalanceCh,
+                slashCh,
                 initialPosBalanceCh, finalPosBalanceCh,
-                initialUserBalanceCh, finalUserBalanceCh,
-                initialRewardsCh, finalRewardsCh,
-                initialBondsCh, finalBondsCh
+                finalRewardsCh,
+                initialBondsCh, finalBondsCh, finalEffectiveBondsCh
             in {
-              prepareUser!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", *setupCh) |
-              for (_, _, @userVault, @userDeployerId <- setupCh) {
-                @PoS!("getActiveValidators", *activeValidatorsCh) |
-                @PoS!("getBonds", *initialBondsCh) |
-                getCoopBalance!(*initialCoopBalanceCh) |
-                for (@activeValidators   <- activeValidatorsCh &
-                     @initialBonds       <- initialBondsCh &
-                     @initialCoopBalance <- initialCoopBalanceCh) {
-                  match (100, 0) {
-                    (chargeAmt, refundAmt) => {
-                      @PoS!("chargeDeploy", userDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
-                      @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
-                      for (@(true, _) <- chargeCh &
-                           @(true, _) <- refundCh) {
-                        match activeValidators.toList().nth(3) {
-                          slashedValidator => {
-                            computeHash!(slashedValidator, *hashCh) |
-                            for (@hash <- hashCh) {
-                              getPosBalance!(*initialPosBalanceCh) |
-                              @PoS!("getRewards", *initialRewardsCh) |
-                              @userVault!("balance", *initialUserBalanceCh) |
-                              setInvalidBlocks!({hash : slashedValidator}, *invalidBlocksSetCh) |
-                              for (_                   <- invalidBlocksSetCh &
-                                   @initialUserBalance <- initialUserBalanceCh &
-                                   @initialRewards     <- initialRewardsCh &
-                                   @initialPosBalance  <- initialPosBalanceCh) {
-                                @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
+              makeDeployerId!("deployerId", "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc".hexToBytes(), *slasherDeployerIdCh) |
+              slashedValidatorCh!("1111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111".hexToBytes()) |
+              @PoS!("getBonds", *initialBondsCh) |
+              getCoopBalance!(*initialCoopBalanceCh) |
+              for (@userDeployerId     <- slasherDeployerIdCh &
+                   @slashedValidator   <- slashedValidatorCh &
+                   @initialBonds       <- initialBondsCh &
+                   @initialCoopBalance <- initialCoopBalanceCh) {
+                computeHash!(slashedValidator, *hashCh) |
+                for (@hash <- hashCh) {
+                  getPosBalance!(*initialPosBalanceCh) |
+                  setInvalidBlocks!({hash : slashedValidator}, *invalidBlocksSetCh) |
+                  for (_                  <- invalidBlocksSetCh &
+                       @initialPosBalance <- initialPosBalanceCh) {
+                    @PoS!("slash", userDeployerId, hash, sysAuthToken, *slashCh) |
+                    for (@slashResult <- slashCh) {
+                      match slashResult {
+                        (true, _) => {
+                          @PoS!("getBonds", *finalBondsCh) |
+                          @PoS!("getEffectiveBonds", *finalEffectiveBondsCh) |
+                          getPosBalance!(*finalPosBalanceCh) |
+                          @PoS!("getRewards", *finalRewardsCh) |
+                          getCoopBalance!(*finalCoopBalanceCh) |
+                          for (@finalPosBalance  <- finalPosBalanceCh &
+                               @finalBonds       <- finalBondsCh &
+                               @finalEffectiveBonds <- finalEffectiveBondsCh &
+                               @finalRewards     <- finalRewardsCh &
+                               @finalCoopBalance <- finalCoopBalanceCh) {
+                            rhoSpec!("assertMany",
+                              [
+                                ((finalBonds, "==", initialBonds.delete(slashedValidator)), "Slashed validator's bond entry is removed"),
+                                ((false, "==", finalEffectiveBonds.contains(slashedValidator)), "Slashed validator is excluded from effective bonds"),
+                                ((0n, "==", finalRewards.getOrElse(slashedValidator, 0n)), "Slashed validator's rewards are reduced to 0"),
+                                ((finalPosBalance, "==", initialPosBalance - initialBonds.getOrElse(slashedValidator, 0n).toBigInt()), "Slashed validator's funds are transferred out of the PoS vault"),
+                                ((finalCoopBalance, "==", initialCoopBalance + initialBonds.getOrElse(slashedValidator, 0n).toBigInt()), "Slashed validator's funds are transferred to the Coop vault")
+                              ],
+                              *ackCh
+                            )
+                          }
+                        }
+                        _ => {
+                          rhoSpec!("assertMany",
+                            [
+                              ((true, "==", false), "slash should succeed")
+                            ],
+                            *ackCh
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Pending undelegation remains slashable escrow until completeUndelegate.
+          contract test_pending_undelegation_slashed_before_completion(rhoSpec, _, ackCh) = {
+            new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                setBlockData(`rho:test:block:data:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                hashCh, invalidBlocksSetCh, blockDataCh,
+                validatorSetupCh, delegatorSetupCh, slasherSetupCh,
+                bondCh, delegateCh, undelegateCh, slashCh, completeCh,
+                preSlashCompleteCh, pendingBeforeCh, pendingDuringEvidenceCh, pendingAfterCh,
+                epochCh, preSlashPosBalanceCh, postSlashPosBalanceCh,
+                preSlashCoopBalanceCh, postSlashCoopBalanceCh
+            in {
+              prepareUser!("f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1", *validatorSetupCh) |
+              prepareUser!("f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2", *delegatorSetupCh) |
+              prepareUser!("f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3", *slasherSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
+                   _, _, _, @slasherDeployerId <- slasherSetupCh) {
+                match (100n, 60n, 10) {
+                  (validatorBond, delegationAmt, requestBlock) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                      for (@(true, _) <- delegateCh) {
+                        @PoS!("getEpochLength", *epochCh) |
+                        for (@epochLength <- epochCh) {
+                          setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                          for (_ <- blockDataCh) {
+                            @PoS!("undelegate", delegatorDeployerId, validatorPubKey, delegationAmt, *undelegateCh) |
+                            for (@(true, _) <- undelegateCh) {
+                              @PoS!("getPendingUndelegations", *pendingBeforeCh) |
+                              getPosBalance!(*preSlashPosBalanceCh) |
+                              getCoopBalance!(*preSlashCoopBalanceCh) |
+                              computeHash!(validatorPubKey, *hashCh) |
+                              for (@pendingBefore <- pendingBeforeCh &
+                                   @preSlashPosBalance <- preSlashPosBalanceCh &
+                                   @preSlashCoopBalance <- preSlashCoopBalanceCh &
+                                   @hash <- hashCh) {
+                                setInvalidBlocks!({hash : validatorPubKey}, *invalidBlocksSetCh) |
+                                for (_ <- invalidBlocksSetCh) {
+                                  setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                  for (_ <- blockDataCh) {
+                                    @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *preSlashCompleteCh) |
+                                    @PoS!("getPendingUndelegations", *pendingDuringEvidenceCh) |
+                                    for (@(false, preSlashCompleteMsg) <- preSlashCompleteCh &
+                                         @pendingDuringEvidence <- pendingDuringEvidenceCh) {
+                                      @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                                      for (@(true, _) <- slashCh) {
+                                        getPosBalance!(*postSlashPosBalanceCh) |
+                                        getCoopBalance!(*postSlashCoopBalanceCh) |
+                                        @PoS!("getPendingUndelegations", *pendingAfterCh) |
+                                        setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                        for (@postSlashPosBalance <- postSlashPosBalanceCh &
+                                             @postSlashCoopBalance <- postSlashCoopBalanceCh &
+                                             @pendingAfter <- pendingAfterCh &
+                                             _ <- blockDataCh) {
+                                          @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *completeCh) |
+                                          for (@(false, completeMsg) <- completeCh) {
+                                            rhoSpec!("assertMany",
+                                              [
+                                                (((delegationAmt, requestBlock + epochLength), "==", pendingBefore.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "undelegation request is pending before slash"),
+                                                (("Validator has pending slash evidence.", "==", preSlashCompleteMsg), "completeUndelegate cannot escape known slash evidence"),
+                                                (((delegationAmt, requestBlock + epochLength), "==", pendingDuringEvidence.getOrElse(delegatorPubKey, {}).get(validatorPubKey)), "pending undelegation remains escrowed when slash evidence is pending"),
+                                                ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation is removed by slash"),
+                                                (((validatorBond + delegationAmt).toBigInt(), "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates self-bond plus pending undelegation"),
+                                                (((validatorBond + delegationAmt).toBigInt(), "==", postSlashCoopBalance - preSlashCoopBalance), "slash transfers confiscated pending stake to Coop vault"),
+                                                (("No pending undelegation for validator.", "==", completeMsg), "completeUndelegate cannot claim slashed pending stake")
+                                              ],
+                                              *ackCh
+                                            )
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Slash should confiscate both active delegated stake and pending undelegation for a validator.
+          contract test_partial_undelegation_slashed_active_and_pending(rhoSpec, _, ackCh) = {
+            new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                setBlockData(`rho:test:block:data:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                hashCh, invalidBlocksSetCh, blockDataCh,
+                validatorSetupCh, delegatorSetupCh, slasherSetupCh,
+                bondCh, delegateCh, undelegateCh, slashCh, completeCh,
+                epochCh, preSlashPosBalanceCh, postSlashPosBalanceCh,
+                preSlashCoopBalanceCh, postSlashCoopBalanceCh,
+                delegationsAfterCh, validatorDelegatorsAfterCh, totalsAfterCh, pendingAfterCh
+            in {
+              prepareUser!("f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4", *validatorSetupCh) |
+              prepareUser!("f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5", *delegatorSetupCh) |
+              prepareUser!("f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6", *slasherSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
+                   _, _, _, @slasherDeployerId <- slasherSetupCh) {
+                match (100n, 80n, 30n, 20) {
+                  (validatorBond, delegationAmt, undelegationAmt, requestBlock) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      @PoS!("delegate", delegatorDeployerId, validatorPubKey, delegationAmt, *delegateCh) |
+                      for (@(true, _) <- delegateCh) {
+                        @PoS!("getEpochLength", *epochCh) |
+                        for (@epochLength <- epochCh) {
+                          setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                          for (_ <- blockDataCh) {
+                            @PoS!("undelegate", delegatorDeployerId, validatorPubKey, undelegationAmt, *undelegateCh) |
+                            for (@(true, _) <- undelegateCh) {
+                              getPosBalance!(*preSlashPosBalanceCh) |
+                              getCoopBalance!(*preSlashCoopBalanceCh) |
+                              computeHash!(validatorPubKey, *hashCh) |
+                              for (@preSlashPosBalance <- preSlashPosBalanceCh &
+                                   @preSlashCoopBalance <- preSlashCoopBalanceCh &
+                                   @hash <- hashCh) {
+                                setInvalidBlocks!({hash : validatorPubKey}, *invalidBlocksSetCh) |
+                                for (_ <- invalidBlocksSetCh) {
+                                  @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                                  for (@(true, _) <- slashCh) {
+                                    getPosBalance!(*postSlashPosBalanceCh) |
+                                    getCoopBalance!(*postSlashCoopBalanceCh) |
+                                    @PoS!("getDelegations", *delegationsAfterCh) |
+                                    @PoS!("getDelegatedTotals", *totalsAfterCh) |
+                                    @PoS!("getPendingUndelegations", *pendingAfterCh) |
+                                    setBlockData!("blockNumber", requestBlock + epochLength, *blockDataCh) |
+                                    for (@postSlashPosBalance <- postSlashPosBalanceCh &
+                                         @postSlashCoopBalance <- postSlashCoopBalanceCh &
+                                         @delegationsAfter <- delegationsAfterCh &
+                                         @totalsAfter <- totalsAfterCh &
+                                         @pendingAfter <- pendingAfterCh &
+                                         _ <- blockDataCh) {
+                                      @PoS!("completeUndelegate", delegatorDeployerId, validatorPubKey, *completeCh) |
+                                      for (@(false, completeMsg) <- completeCh) {
+                                        rhoSpec!("assertMany",
+                                          [
+                                            (((validatorBond + delegationAmt).toBigInt(), "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates validator self-bond and full delegated exposure"),
+                                            (((validatorBond + delegationAmt).toBigInt(), "==", postSlashCoopBalance - preSlashCoopBalance), "slash moves active+pending delegated exposure to Coop vault"),
+                                            ((false, "==", delegationsAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "active delegation is removed after slash"),
+                                            ((false, "==", totalsAfter.contains(validatorPubKey)), "delegated total for slashed validator is removed"),
+                                            ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "pending undelegation claim is removed after slash"),
+                                            (("No pending undelegation for validator.", "==", completeMsg), "slashed pending undelegation cannot be completed")
+                                          ],
+                                          *ackCh
+                                        )
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Slashing one validator should remove active/pending exposure from all delegators for that validator.
+          contract test_slash_only_affects_target_validator_across_multiple_delegators(rhoSpec, _, ackCh) = {
+            new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                setBlockData(`rho:test:block:data:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                hashCh, invalidBlocksSetCh, blockDataCh,
+                validatorSetupCh, delegator1SetupCh, delegator2SetupCh, slasherSetupCh,
+                bondCh, delegate1Ch, delegate2Ch, undelegateCh, slashCh,
+                preSlashPosBalanceCh, postSlashPosBalanceCh,
+                preSlashCoopBalanceCh, postSlashCoopBalanceCh,
+                delegationsAfterCh, validatorDelegatorsAfterCh, totalsAfterCh, pendingAfterCh
+            in {
+              prepareUser!("f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7", *validatorSetupCh) |
+              prepareUser!("f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8f8", *delegator1SetupCh) |
+              prepareUser!("e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1", *delegator2SetupCh) |
+              prepareUser!("e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2", *slasherSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegator1PubKey, _, _, @delegator1DeployerId <- delegator1SetupCh &
+                   @delegator2PubKey, _, _, @delegator2DeployerId <- delegator2SetupCh &
+                   _, _, _, @slasherDeployerId <- slasherSetupCh) {
+                match (100n, 40n, 30n, 10n, 30) {
+                  (validatorBond, delegation1Amt, delegation2Amt, undelegationAmt, requestBlock) => {
+                    @PoS!("bond", validatorDeployerId, validatorBond, *bondCh) |
+                    for (@(true, _) <- bondCh) {
+                      @PoS!("delegate", delegator1DeployerId, validatorPubKey, delegation1Amt, *delegate1Ch) |
+                      @PoS!("delegate", delegator2DeployerId, validatorPubKey, delegation2Amt, *delegate2Ch) |
+                      for (@(true, _) <- delegate1Ch &
+                           @(true, _) <- delegate2Ch) {
+                        setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                        for (_ <- blockDataCh) {
+                          @PoS!("undelegate", delegator2DeployerId, validatorPubKey, undelegationAmt, *undelegateCh) |
+                          for (@(true, _) <- undelegateCh) {
+                            getPosBalance!(*preSlashPosBalanceCh) |
+                            getCoopBalance!(*preSlashCoopBalanceCh) |
+                            computeHash!(validatorPubKey, *hashCh) |
+                            for (@preSlashPosBalance <- preSlashPosBalanceCh &
+                                 @preSlashCoopBalance <- preSlashCoopBalanceCh &
+                                 @hash <- hashCh) {
+                              setInvalidBlocks!({hash : validatorPubKey}, *invalidBlocksSetCh) |
+                              for (_ <- invalidBlocksSetCh) {
+                                @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
                                 for (@(true, _) <- slashCh) {
-                                  @PoS!("getBonds", *finalBondsCh) |
-                                  getPosBalance!(*finalPosBalanceCh) |
-                                  @userVault!("balance", *finalUserBalanceCh) |
-                                  @PoS!("getRewards", *finalRewardsCh) |
-                                  @PoS!("getWithdrawers", *withdrawersCh) |
-                                  getCoopBalance!(*finalCoopBalanceCh) |
-                                  for (@finalPosBalance  <- finalPosBalanceCh &
-                                       @finalUserBalance <- finalUserBalanceCh &
-                                       @finalBonds       <- finalBondsCh &
-                                       @finalRewards     <- finalRewardsCh &
-                                       @withdrawers      <- withdrawersCh &
-                                       @finalCoopBalance <- finalCoopBalanceCh) {
-                                    stdlog!("info", (initialBonds, finalBonds,slashedValidator)) |
+                                  getPosBalance!(*postSlashPosBalanceCh) |
+                                  getCoopBalance!(*postSlashCoopBalanceCh) |
+                                  @PoS!("getDelegations", *delegationsAfterCh) |
+                                  @PoS!("getValidatorDelegators", *validatorDelegatorsAfterCh) |
+                                  @PoS!("getDelegatedTotals", *totalsAfterCh) |
+                                  @PoS!("getPendingUndelegations", *pendingAfterCh) |
+                                  for (@postSlashPosBalance <- postSlashPosBalanceCh &
+                                       @postSlashCoopBalance <- postSlashCoopBalanceCh &
+                                       @delegationsAfter <- delegationsAfterCh &
+                                       @validatorDelegatorsAfter <- validatorDelegatorsAfterCh &
+                                       @totalsAfter <- totalsAfterCh &
+                                       @pendingAfter <- pendingAfterCh) {
                                     rhoSpec!("assertMany",
                                       [
-                                        ((finalBonds, "==", initialBonds.set(slashedValidator, 0)), "Slashed validator's bond is reduced to 0"),
-                                        ((0n, "==", finalRewards.get(slashedValidator)), "Slashed validator's rewards are reduced to 0"),
-                                        ((finalPosBalance, "==", initialPosBalance - initialBonds.get(slashedValidator).toBigInt()), "Slashed validator's funds are transferred out of the PoS vault"),
-                                        ((finalCoopBalance, "==", initialCoopBalance + initialBonds.get(slashedValidator).toBigInt()), "Slashed validator's funds are transferred to the Coop vault")
+                                        (((validatorBond + delegation1Amt + delegation2Amt).toBigInt(), "==", preSlashPosBalance - postSlashPosBalance), "slash confiscates all delegated exposure for target validator"),
+                                        (((validatorBond + delegation1Amt + delegation2Amt).toBigInt(), "==", postSlashCoopBalance - preSlashCoopBalance), "all confiscated stake is moved to Coop vault"),
+                                        ((false, "==", delegationsAfter.getOrElse(delegator1PubKey, {}).contains(validatorPubKey)), "delegator1 exposure to slashed validator is removed"),
+                                        ((false, "==", delegationsAfter.getOrElse(delegator2PubKey, {}).contains(validatorPubKey)), "delegator2 exposure to slashed validator is removed"),
+                                        ((false, "==", validatorDelegatorsAfter.contains(validatorPubKey)), "validator delegator index is removed for slashed validator"),
+                                        ((false, "==", pendingAfter.getOrElse(delegator2PubKey, {}).contains(validatorPubKey)), "pending undelegation for slashed validator is removed"),
+                                        ((false, "==", totalsAfter.contains(validatorPubKey)), "delegated total entry for slashed validator is removed")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Slashing one validator should not affect delegations to a different validator.
+          contract test_slash_one_validator_preserves_other_validator_delegation(rhoSpec, _, ackCh) = {
+            new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                setBlockData(`rho:test:block:data:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                hashCh, invalidBlocksSetCh, blockDataCh,
+                validator1SetupCh, validator2SetupCh, delegatorSetupCh, slasherSetupCh,
+                bond1Ch, bond2Ch, delegate1Ch, delegate2Ch, undelegateCh, slashCh,
+                delegationsAfterCh, validatorDelegatorsAfterCh, totalsAfterCh, pendingAfterCh, effectiveAfterCh
+            in {
+              prepareUser!("e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3", *validator1SetupCh) |
+              prepareUser!("e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4", *validator2SetupCh) |
+              prepareUser!("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1", *delegatorSetupCh) |
+              prepareUser!("d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2", *slasherSetupCh) |
+              for (@validator1PubKey, _, _, @validator1DeployerId <- validator1SetupCh &
+                   @validator2PubKey, _, _, @validator2DeployerId <- validator2SetupCh &
+                   @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
+                   _, _, _, @slasherDeployerId <- slasherSetupCh) {
+                match (100n, 120n, 50n, 35n, 20n, 40) {
+                  (validator1Bond, validator2Bond, delegationToV1, delegationToV2, undelegationFromV1, requestBlock) => {
+                    @PoS!("bond", validator1DeployerId, validator1Bond, *bond1Ch) |
+                    @PoS!("bond", validator2DeployerId, validator2Bond, *bond2Ch) |
+                    for (@(true, _) <- bond1Ch &
+                         @(true, _) <- bond2Ch) {
+                      @PoS!("delegate", delegatorDeployerId, validator1PubKey, delegationToV1, *delegate1Ch) |
+                      @PoS!("delegate", delegatorDeployerId, validator2PubKey, delegationToV2, *delegate2Ch) |
+                      for (@(true, _) <- delegate1Ch &
+                           @(true, _) <- delegate2Ch) {
+                        setBlockData!("blockNumber", requestBlock, *blockDataCh) |
+                        for (_ <- blockDataCh) {
+                          @PoS!("undelegate", delegatorDeployerId, validator1PubKey, undelegationFromV1, *undelegateCh) |
+                          for (@(true, _) <- undelegateCh) {
+                            computeHash!(validator1PubKey, *hashCh) |
+                            for (@hash <- hashCh) {
+                              setInvalidBlocks!({hash : validator1PubKey}, *invalidBlocksSetCh) |
+                              for (_ <- invalidBlocksSetCh) {
+                                @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                                for (@(true, _) <- slashCh) {
+                                  @PoS!("getDelegations", *delegationsAfterCh) |
+                                  @PoS!("getValidatorDelegators", *validatorDelegatorsAfterCh) |
+                                  @PoS!("getDelegatedTotals", *totalsAfterCh) |
+                                  @PoS!("getPendingUndelegations", *pendingAfterCh) |
+                                  @PoS!("getEffectiveBonds", *effectiveAfterCh) |
+                                  for (@delegationsAfter <- delegationsAfterCh &
+                                       @validatorDelegatorsAfter <- validatorDelegatorsAfterCh &
+                                       @totalsAfter <- totalsAfterCh &
+                                       @pendingAfter <- pendingAfterCh &
+                                       @effectiveAfter <- effectiveAfterCh) {
+                                    rhoSpec!("assertMany",
+                                      [
+                                        ((false, "==", delegationsAfter.getOrElse(delegatorPubKey, {}).contains(validator1PubKey)), "slashed validator delegation entry is removed"),
+                                        ((false, "==", pendingAfter.getOrElse(delegatorPubKey, {}).contains(validator1PubKey)), "slashed validator pending undelegation is removed"),
+                                        ((delegationToV2, "==", delegationsAfter.getOrElse(delegatorPubKey, {}).getOrElse(validator2PubKey, 0n)), "delegation to unslashed validator remains"),
+                                        ((false, "==", validatorDelegatorsAfter.contains(validator1PubKey)), "slashed validator index is removed"),
+                                        ((true, "==", validatorDelegatorsAfter.getOrElse(validator2PubKey, {}).contains(delegatorPubKey)), "unslashed validator index is preserved"),
+                                        ((delegationToV2, "==", totalsAfter.getOrElse(validator2PubKey, 0n)), "delegated total for unslashed validator remains"),
+                                        ((validator2Bond + delegationToV2, "==", effectiveAfter.get(validator2PubKey)), "effective bond for unslashed validator is preserved")
+                                      ],
+                                      *ackCh
+                                    )
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract test_slash_removes_only_target_validator_delegator_rewards(rhoSpec, _, ackCh) = {
+            new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                setBlockData(`rho:test:block:data:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                activeValidatorsCh, epochCh, blockDataCh,
+                delegatorSetupCh, payerSetupCh, slasherSetupCh,
+                delegate1Ch, delegate2Ch, chargeCh, refundCh, closeBlockCh,
+                rewardsBeforeSlashCh, rewardsAfterSlashCh,
+                hashCh, invalidBlocksSetCh, slashCh
+            in {
+              prepareUser!("6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a6a", *delegatorSetupCh) |
+              prepareUser!("7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b", *payerSetupCh) |
+              prepareUser!("8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c8c", *slasherSetupCh) |
+              for (@delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh &
+                   _, _, _, @payerDeployerId <- payerSetupCh &
+                   _, _, _, @slasherDeployerId <- slasherSetupCh) {
+                @PoS!("getActiveValidators", *activeValidatorsCh) |
+                @PoS!("getEpochLength", *epochCh) |
+                for (@activeValidators <- activeValidatorsCh &
+                     @epochLength <- epochCh) {
+                  match (activeValidators.toList().nth(0), activeValidators.toList().nth(1), 100n, 100n, 1000, 0) {
+                    (targetValidator1, targetValidator2, delegation1Amt, delegation2Amt, chargeAmt, refundAmt) => {
+                      @PoS!("delegate", delegatorDeployerId, targetValidator1, delegation1Amt, *delegate1Ch) |
+                      for (@(true, _) <- delegate1Ch) {
+                        @PoS!("delegate", delegatorDeployerId, targetValidator2, delegation2Amt, *delegate2Ch) |
+                        for (@(true, _) <- delegate2Ch) {
+                          @PoS!("chargeDeploy", payerDeployerId, chargeAmt, sysAuthToken, *chargeCh) |
+                          @PoS!("refundDeploy", refundAmt, sysAuthToken, *refundCh) |
+                          for (@(true, _) <- chargeCh &
+                               @(true, _) <- refundCh) {
+                            setBlockData!("blockNumber", epochLength, *blockDataCh) |
+                            for (_ <- blockDataCh) {
+                              closeBlock!(*closeBlockCh) |
+                              for (@(true, _) <- closeBlockCh) {
+                                @PoS!("getDelegatorRewards", *rewardsBeforeSlashCh) |
+                                computeHash!(targetValidator1, *hashCh) |
+                                for (@rewardsBeforeSlash <- rewardsBeforeSlashCh &
+                                     @hash <- hashCh) {
+                                  setInvalidBlocks!({hash : targetValidator1}, *invalidBlocksSetCh) |
+                                  for (_ <- invalidBlocksSetCh) {
+                                    @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                                    for (@(true, _) <- slashCh) {
+                                      @PoS!("getDelegatorRewards", *rewardsAfterSlashCh) |
+                                      for (@rewardsAfterSlash <- rewardsAfterSlashCh) {
+                                        rhoSpec!("assertMany",
+                                          [
+                                            ((true, "==", rewardsBeforeSlash.getOrElse(delegatorPubKey, 0n) > 0n), "delegator rewards accrue before slash"),
+                                            ((true, "==", rewardsAfterSlash.getOrElse(delegatorPubKey, 0n) > 0n), "delegator rewards for unslashed validators remain claimable"),
+                                            ((true, "==", rewardsAfterSlash.getOrElse(delegatorPubKey, 0n) < rewardsBeforeSlash.getOrElse(delegatorPubKey, 0n)), "slash removes rewards attributed to the slashed validator")
+                                          ],
+                                          *ackCh
+                                        )
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // Delegation must respect maximumBond as an effective-stake cap.
+          contract test_delegate_rejects_when_effective_bond_would_exceed_maximum(rhoSpec, _, ackCh) = {
+            new validatorSetupCh, delegatorSetupCh, bondCh, delegateCh,
+                maxBondCh, initialPosBalanceCh, finalPosBalanceCh,
+                delegationsCh, delegatedTotalsCh
+            in {
+              prepareUser!("d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3", *validatorSetupCh) |
+              prepareUser!("d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", *delegatorSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   @delegatorPubKey, _, _, @delegatorDeployerId <- delegatorSetupCh) {
+                @PoS!("bond", validatorDeployerId, 100n, *bondCh) |
+                for (@(true, _) <- bondCh) {
+                  @PoS!("getMaximumBond", *maxBondCh) |
+                  getPosBalance!(*initialPosBalanceCh) |
+                  for (@maximumBond <- maxBondCh &
+                       @initialPosBalance <- initialPosBalanceCh) {
+                    @PoS!("delegate", delegatorDeployerId, validatorPubKey, maximumBond, *delegateCh) |
+                    for (@(false, delegateMsg) <- delegateCh) {
+                      @PoS!("getDelegations", *delegationsCh) |
+                      @PoS!("getDelegatedTotals", *delegatedTotalsCh) |
+                      getPosBalance!(*finalPosBalanceCh) |
+                      for (@delegations <- delegationsCh &
+                           @delegatedTotals <- delegatedTotalsCh &
+                           @finalPosBalance <- finalPosBalanceCh) {
+                        rhoSpec!("assertMany",
+                          [
+                            (("Delegation would exceed validator maximum effective bond.", "==", delegateMsg), "delegation above remaining effective-bond capacity is rejected"),
+                            ((false, "==", delegations.getOrElse(delegatorPubKey, {}).contains(validatorPubKey)), "delegation state is unchanged on cap failure"),
+                            ((0n, "==", delegatedTotals.getOrElse(validatorPubKey, 0n)), "delegated total remains unchanged on cap failure"),
+                            ((initialPosBalance, "==", finalPosBalance), "PoS vault balance is unchanged when delegation is rejected")
+                          ],
+                          *ackCh
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          // closeBlock effective-bond update should exclude pending undelegations.
+          contract test_close_block_excludes_pending_undelegations_from_effective_bonds(rhoSpec, _, ackCh) = {
+            new setBlockData(`rho:test:block:data:set`), blockDataCh,
+                validatorSetupCh, delegatorSetupCh,
+                bondCh, delegateCh, undelegateCh, closeBlockCh,
+                epochCh, effectiveBondsCh
+            in {
+              prepareUser!("c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", *validatorSetupCh) |
+              prepareUser!("c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", *delegatorSetupCh) |
+              for (@validatorPubKey, _, _, @validatorDeployerId <- validatorSetupCh &
+                   _, _, _, @delegatorDeployerId <- delegatorSetupCh) {
+                @PoS!("bond", validatorDeployerId, 100n, *bondCh) |
+                for (@(true, _) <- bondCh) {
+                  @PoS!("delegate", delegatorDeployerId, validatorPubKey, 40n, *delegateCh) |
+                  for (@(true, _) <- delegateCh) {
+                    setBlockData!("blockNumber", 7, *blockDataCh) |
+                    for (_ <- blockDataCh) {
+                      @PoS!("undelegate", delegatorDeployerId, validatorPubKey, 40n, *undelegateCh) |
+                      for (@(true, _) <- undelegateCh) {
+                        @PoS!("getEpochLength", *epochCh) |
+                        for (@epochLength <- epochCh) {
+                          setBlockData!("blockNumber", epochLength, *blockDataCh) |
+                          for (_ <- blockDataCh) {
+                            closeBlock!(*closeBlockCh) |
+                            for (@(true, _) <- closeBlockCh) {
+                              @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                              for (@effectiveBonds <- effectiveBondsCh) {
+                                rhoSpec!("assertMany",
+                                  [
+                                    ((100n, "==", effectiveBonds.get(validatorPubKey)), "pending undelegation is excluded from future effective stake"),
+                                    ((true, "==", effectiveBonds.contains(validatorPubKey)), "validator remains represented in effective bonds by self-bond")
+                                  ],
+                                  *ackCh
+                                )
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } |
+          contract test_same_epoch_slash_is_not_rewarded_by_close_block(rhoSpec, _, ackCh) = {
+            new setInvalidBlocks(`rho:test:casper:invalidBlocks:set`),
+                setBlockData(`rho:test:block:data:set`),
+                computeHash(`rho:crypto:keccak256Hash`),
+                slasherSetupCh, activeValidatorsCh, epochCh, chargeCh, refundCh,
+                hashCh, invalidBlocksSetCh, slashCh, blockDataCh, closeBlockCh,
+                rewardsCh, bondsCh, effectiveBondsCh
+            in {
+              prepareUser!("d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4", *slasherSetupCh) |
+              for (_, _, _, @slasherDeployerId <- slasherSetupCh) {
+                @PoS!("getActiveValidators", *activeValidatorsCh) |
+                @PoS!("getEpochLength", *epochCh) |
+                for (@activeValidators <- activeValidatorsCh &
+                     @epochLength <- epochCh) {
+                  match activeValidators.toList().nth(0) {
+                    targetValidator => {
+                      @PoS!("chargeDeploy", slasherDeployerId, 1000, sysAuthToken, *chargeCh) |
+                      @PoS!("refundDeploy", 0, sysAuthToken, *refundCh) |
+                      for (@(true, _) <- chargeCh &
+                           @(true, _) <- refundCh) {
+                        computeHash!(targetValidator, *hashCh) |
+                        for (@hash <- hashCh) {
+                          setInvalidBlocks!({hash : targetValidator}, *invalidBlocksSetCh) |
+                          for (_ <- invalidBlocksSetCh) {
+                            @PoS!("slash", slasherDeployerId, hash, sysAuthToken, *slashCh) |
+                            for (@(true, _) <- slashCh) {
+                              setBlockData!("blockNumber", epochLength, *blockDataCh) |
+                              for (_ <- blockDataCh) {
+                                closeBlock!(*closeBlockCh) |
+                                for (@(true, _) <- closeBlockCh) {
+                                  @PoS!("getRewards", *rewardsCh) |
+                                  @PoS!("getBonds", *bondsCh) |
+                                  @PoS!("getEffectiveBonds", *effectiveBondsCh) |
+                                  for (@rewards <- rewardsCh &
+                                       @bonds <- bondsCh &
+                                       @effectiveBonds <- effectiveBondsCh) {
+                                    rhoSpec!("assertMany",
+                                      [
+                                        ((false, "==", bonds.contains(targetValidator)), "slashed validator remains absent from bonds after epoch close"),
+                                        ((false, "==", effectiveBonds.contains(targetValidator)), "slashed validator remains absent from effective bonds after epoch close"),
+                                        ((0n, "==", rewards.getOrElse(targetValidator, 0n)), "same-epoch closeBlock does not recreate slashed validator rewards")
                                       ],
                                       *ackCh
                                     )
