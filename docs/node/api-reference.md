@@ -82,7 +82,7 @@ The JSON API therefore gives these values as decimal strings:
 - Requests accept only the string form. `POST /api/deploy` rejects a JSON number in `data.phloPrice`.
 - Parse these fields with an exact integer type, such as JavaScript `BigInt` or Python `int`.
 - Phlo quantities (`cost`, `phloLimit`) stay JSON numbers.
-- Deploy `parameters` keep the JSON format of the deploy request. An `int` value there stays a JSON number.
+- Deploy `parameters` give `int` and `bigInt` values as decimal strings. See [Deploy parameters](#deploy-parameters).
 - The trace report (`GET /reporting/trace`) gives raw Rholang terms in protobuf JSON form. Integers in these terms stay JSON numbers.
 
 **Transfer amounts.** The node reads a transfer amount from a Rholang `Int` or `BigInt` without loss. The vault accepts a transfer only when the amount is in `1..2^256−1`. A failed transfer keeps its requested amount and failure details. Its amount can be zero, negative, or above `2^256−1`. The report extractor does not apply a separate bit limit and does not omit a failed attempt because of its amount.
@@ -321,7 +321,8 @@ The node rejects changes to these fields after signing.
 {
   "parameters": [
     {"name": "items", "value": {"type": "list", "value": [
-      {"type": "int", "value": -42},
+      {"type": "int", "value": "-42"},
+      {"type": "bigInt", "value": "10000000000000000000"},
       {"type": "nil"}
     ]}}
   ]
@@ -337,7 +338,8 @@ new items(`rho:deploy:param:items`), stdout(`rho:io:stdout`) in {
 | JSON `type` | JSON `value` |
 |-------------|--------------|
 | `bool` | A Boolean. |
-| `int` | A signed 64-bit integer. |
+| `int` | A signed 64-bit integer as a canonical decimal string. The Rholang value is an `Int`. |
+| `bigInt` | A canonical decimal string with an absolute value below `2^512`. The Rholang value is a `BigInt`, for example a token amount. |
 | `string` | A string. |
 | `bytes` | An array of integers from 0 through 255. |
 | `tuple`, `list`, `set` | An array of typed values. |

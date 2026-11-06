@@ -371,6 +371,7 @@ message RholangValue {
     RholangMap map_value = 8;
     RholangNil nil_value = 9;
     string uri_value = 10;
+    string big_int_value = 11; // canonical signed decimal, absolute value below 2^512
   }
 }
 

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -17,6 +18,9 @@ pub const MAX_PARAMETER_NAME_BYTES: usize = 256;
 pub const MAX_PARAMETER_DEPTH: usize = 32;
 pub const MAX_PARAMETER_NODES: usize = 10_000;
 pub const MAX_PARAMETER_BYTES: usize = 1024 * 1024;
+pub const MAX_PARAMETER_BIG_INT_BITS: u64 = 512;
+/// `-` plus the 155 digits of `2^512 - 1`. Checked before parsing.
+const MAX_PARAMETER_BIG_INT_TEXT: usize = 156;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -34,7 +38,10 @@ pub struct DeployParameter {
 )]
 pub enum RholangValue {
     Bool(bool),
-    Int(i64),
+    #[schema(value_type = String)]
+    Int(#[serde(with = "shared::rust::decimal::signed")] i64),
+    #[schema(value_type = String)]
+    BigInt(#[serde(with = "big_int_text")] BigInt),
     String(String),
     Bytes(Vec<u8>),
     #[schema(no_recursion)]
@@ -75,6 +82,38 @@ pub enum ParameterError {
     TooLarge,
     #[error("Map keys must be unique Rholang values.")]
     DuplicateMapKey,
+    #[error("A bigInt value must be a canonical decimal integer with an absolute value below 2^{MAX_PARAMETER_BIG_INT_BITS}.")]
+    InvalidBigInt,
+}
+
+fn parse_big_int(text: &str) -> Result<BigInt, ParameterError> {
+    if text.len() > MAX_PARAMETER_BIG_INT_TEXT {
+        return Err(ParameterError::InvalidBigInt);
+    }
+    let value =
+        shared::rust::decimal::parse_signed(text).map_err(|_| ParameterError::InvalidBigInt)?;
+    check_big_int(&value)?;
+    Ok(value)
+}
+
+fn check_big_int(value: &BigInt) -> Result<(), ParameterError> {
+    if value.bits() > MAX_PARAMETER_BIG_INT_BITS {
+        return Err(ParameterError::InvalidBigInt);
+    }
+    Ok(())
+}
+
+mod big_int_text {
+    use num_bigint::BigInt;
+    use serde::{de, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &BigInt, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BigInt, D::Error> {
+        super::parse_big_int(&String::deserialize(deserializer)?).map_err(de::Error::custom)
+    }
 }
 
 #[derive(Default)]
@@ -202,6 +241,10 @@ impl RholangValue {
         match self {
             Self::String(value) | Self::Uri(value) => budget.add_bytes(value.len())?,
             Self::Bytes(value) => budget.add_bytes(value.len())?,
+            Self::BigInt(value) => {
+                check_big_int(value)?;
+                budget.add_bytes(value.to_signed_bytes_be().len())?
+            }
             Self::Tuple(values) | Self::List(values) | Self::Set(values) => {
                 let mut pars = Vec::new();
                 for value in values {
@@ -278,6 +321,7 @@ impl RholangValue {
         let expr_instance = match self {
             Self::Bool(value) => ExprInstance::GBool(*value),
             Self::Int(value) => ExprInstance::GInt(*value),
+            Self::BigInt(value) => ExprInstance::GBigInt(value.to_signed_bytes_be()),
             Self::String(value) => ExprInstance::GString(value.clone()),
             Self::Bytes(value) => ExprInstance::GByteArray(value.clone()),
             Self::Uri(value) => ExprInstance::GUri(value.clone()),
@@ -306,6 +350,7 @@ impl RholangValue {
         let value = match self {
             Self::Bool(value) => Value::BoolValue(*value),
             Self::Int(value) => Value::IntValue(*value),
+            Self::BigInt(value) => Value::BigIntValue(value.to_string()),
             Self::String(value) => Value::StringValue(value.clone()),
             Self::Bytes(value) => Value::BytesValue(value.clone().into()),
             Self::Tuple(values) => Value::TupleValue(sequence(values)),
@@ -341,6 +386,7 @@ impl RholangValue {
         Ok(match proto.value.ok_or(ParameterError::MissingValue)? {
             Value::BoolValue(value) => Self::Bool(value),
             Value::IntValue(value) => Self::Int(value),
+            Value::BigIntValue(value) => Self::BigInt(parse_big_int(&value)?),
             Value::StringValue(value) => {
                 budget.add_bytes(value.len())?;
                 Self::String(value)
@@ -425,6 +471,11 @@ mod tests {
             RholangValue::Int(i64::MIN),
             RholangValue::Int(0),
             RholangValue::Int(i64::MAX),
+            RholangValue::BigInt(BigInt::from(0)),
+            RholangValue::BigInt(-(BigInt::from(1) << 255usize)),
+            RholangValue::BigInt((BigInt::from(1) << 256usize) - 1),
+            RholangValue::BigInt((BigInt::from(1) << 512usize) - 1),
+            RholangValue::BigInt(1 - (BigInt::from(1) << 512usize)),
             RholangValue::String("text\0λ".into()),
             RholangValue::String(String::new()),
             RholangValue::Bytes(vec![0, 127, 255]),
@@ -789,8 +840,14 @@ mod tests {
             );
         }
         for value in [
+            serde_json::json!({"type":"int","value":1}),
             serde_json::json!({"type":"int","value":1.5}),
-            serde_json::json!({"type":"int","value":9223372036854775808u64}),
+            serde_json::json!({"type":"int","value":"9223372036854775808"}),
+            serde_json::json!({"type":"int","value":"-0"}),
+            serde_json::json!({"type":"bigInt","value":1}),
+            serde_json::json!({"type":"bigInt","value":"01"}),
+            serde_json::json!({"type":"bigInt","value":(BigInt::from(1) << 512usize).to_string()}),
+            serde_json::json!({"type":"bigInt","value":"9".repeat(1_000_000)}),
             serde_json::json!({"type":"bytes","value":[256]}),
             serde_json::json!({"type":"unknown","value":1}),
             serde_json::json!({"type":"bool","value":1}),
@@ -805,6 +862,46 @@ mod tests {
             {"name":"input","value":{"type":"nil"}}
         ]);
         assert!(serde_json::from_value::<DeployData>(json).is_err());
+    }
+
+    #[test]
+    fn deploy_parameter_integers_are_decimal_strings_and_big_ints_are_bounded() {
+        assert_eq!(
+            serde_json::to_value(RholangValue::Int(-42)).unwrap(),
+            serde_json::json!({"type":"int","value":"-42"})
+        );
+        let wide: BigInt = (BigInt::from(1) << 256usize) - 1;
+        assert_eq!(
+            serde_json::to_value(RholangValue::BigInt(wide.clone())).unwrap(),
+            serde_json::json!({"type":"bigInt","value":wide.to_string()})
+        );
+        assert_eq!(
+            RholangValue::BigInt(BigInt::from(0)).to_par(),
+            Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(ExprInstance::GBigInt(vec![0])),
+            }])
+        );
+        let too_wide = BigInt::from(1) << 512usize;
+        assert_eq!(
+            check_parameters(&[parameter(RholangValue::BigInt(too_wide.clone()))]),
+            Err(ParameterError::InvalidBigInt)
+        );
+        for text in [
+            too_wide.to_string(),
+            "-0".into(),
+            "+1".into(),
+            "1".repeat(157),
+        ] {
+            assert_eq!(
+                parameters_from_proto(vec![casper::DeployParameter {
+                    name: "input".into(),
+                    value: Some(casper::RholangValue {
+                        value: Some(Value::BigIntValue(text)),
+                    }),
+                }]),
+                Err(ParameterError::InvalidBigInt)
+            );
+        }
     }
 
     #[test]

@@ -908,7 +908,7 @@ mod tests {
         assert_eq!(
             json["parameters"],
             serde_json::json!([
-                {"name": "amount", "value": {"type": "int", "value": 42}}
+                {"name": "amount", "value": {"type": "int", "value": "42"}}
             ])
         );
         assert!(json.get("term").is_some());
