@@ -52,6 +52,7 @@ use rspace_plus_plus::rspace::history::instances::radix_history::RadixHistory;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::{MergeType, NumberChannelsEndVal};
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
@@ -1574,7 +1575,7 @@ impl RuntimeOps {
     pub async fn get_consensus_parameters(
         &mut self,
         start_hash: &StateHash,
-    ) -> Result<Option<(i32, i64, num_bigint::BigInt)>, CasperError> {
+    ) -> Result<Option<(i32, i64, TokenAmount)>, CasperError> {
         // STRICT query — same rationale as the protocol-FTT read: a runtime
         // failure must fail startup, never degrade into the local-config arm.
         let pars = self
@@ -1620,7 +1621,8 @@ impl RuntimeOps {
                     .first()
                     .and_then(|expr| expr.expr_instance.as_ref())
                 {
-                    Some(ExprInstance::GBigInt(bytes)) => bytes_to_bigint(bytes),
+                    Some(ExprInstance::GBigInt(bytes)) => TokenAmount::new(bytes_to_bigint(bytes))
+                        .map_err(|error| bad(&format!("minPhloPrice: {error}")))?,
                     _ => return Err(bad("non-BigInt minPhloPrice")),
                 };
                 // RANGE GATES at the single read choke point. The parent-spread
@@ -1639,7 +1641,6 @@ impl RuntimeOps {
                         "deployLifespan out of range [1, i32::MAX]: {lifespan}"
                     )));
                 }
-                shared::rust::asi_amount::validate(&min_phlo).map_err(|error| bad(&error))?;
                 Ok(Some((mpd as i32, lifespan, min_phlo)))
             }
             other => Err(bad(&format!("expected a 3-tuple, got {other:?}"))),
@@ -1749,14 +1750,13 @@ impl RuntimeOps {
                 }?;
 
                 let stake_amount = match bond.exprs[0].expr_instance.as_ref().unwrap() {
-                    ExprInstance::GBigInt(bytes) => Ok(bytes_to_bigint(bytes)),
+                    ExprInstance::GBigInt(bytes) => TokenAmount::new(bytes_to_bigint(bytes))
+                        .map_err(|error| CasperError::RuntimeError(format!("stake: {error}"))),
                     _ => Err(CasperError::RuntimeError(
                         "Expected BigInt in stake data".to_string(),
                     )),
                 }?;
 
-                shared::rust::asi_amount::validate(&stake_amount)
-                    .map_err(CasperError::RuntimeError)?;
                 Ok(Bond {
                     validator: validator_name,
                     stake: stake_amount,

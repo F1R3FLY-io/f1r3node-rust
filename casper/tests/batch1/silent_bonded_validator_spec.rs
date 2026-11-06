@@ -13,7 +13,9 @@ use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, DEFAULT_VALIDATOR_KEY_PAIRS};
 
-fn equal_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+fn equal_bonds(
+    validators: Vec<PublicKey>,
+) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
     validators
         .into_iter()
         .map(|pk| (pk, 10))
@@ -108,11 +110,11 @@ async fn network_with_newcomer_stake(
         DEFAULT_VALIDATOR_KEY_PAIRS[2].clone(),
         (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
     ];
-    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_key_pairs
+    let bonds: HashMap<PublicKey, shared::rust::token_amount::TokenAmount> = validator_key_pairs
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, (_, pk))| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(i, (_, pk))| (pk.clone(), 2 * i as u64 + 1))
         .map(|(key, stake)| (key, stake.into()))
         .collect();
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);

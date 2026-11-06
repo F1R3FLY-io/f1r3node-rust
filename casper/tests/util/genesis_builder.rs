@@ -23,6 +23,7 @@ use models::rust::casper::protocol::casper_message::{
 };
 use prost::bytes;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use shared::rust::token_amount::TokenAmount;
 use tempfile::TempDir;
 
 use crate::util::rholang::resources::{generate_scope_id, mk_test_rnode_store_manager_shared};
@@ -88,11 +89,11 @@ impl GenesisBuilder {
         self
     }
 
-    pub fn create_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+    pub fn create_bonds(validators: Vec<PublicKey>) -> HashMap<PublicKey, TokenAmount> {
         validators
             .into_iter()
             .enumerate()
-            .map(|(i, v)| (v, (i as i64) * 2 + 1))
+            .map(|(i, v)| (v, (i as u64) * 2 + 1))
             .map(|(key, stake)| (key, stake.into()))
             .collect()
     }
@@ -154,7 +155,7 @@ impl GenesisBuilder {
 
     #[allow(clippy::type_complexity)]
     pub fn build_genesis_parameters_with_defaults(
-        bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt>>,
+        bonds_function: Option<fn(Vec<PublicKey>) -> HashMap<PublicKey, TokenAmount>>,
         validators_num: Option<usize>,
     ) -> GenesisParameters {
         let bonds_function = bonds_function.unwrap_or(Self::create_bonds);
@@ -178,7 +179,7 @@ impl GenesisBuilder {
 
     pub fn build_genesis_parameters(
         validator_key_pairs: Vec<(PrivateKey, PublicKey)>,
-        bonds: &HashMap<PublicKey, num_bigint::BigInt>,
+        bonds: &HashMap<PublicKey, TokenAmount>,
     ) -> GenesisParameters {
         let mut genesis_vaults: Vec<(PrivateKey, PublicKey)> = vec![
             (DEFAULT_SEC.clone(), DEFAULT_PUB.clone()),
@@ -219,7 +220,7 @@ impl GenesisBuilder {
             timestamp: 0,
             proof_of_stake: ProofOfStake {
                 minimum_bond: 1.into(),
-                maximum_bond: i64::MAX.into(),
+                maximum_bond: (i64::MAX as u64).into(),
                 // Epoch length is set to large number to prevent trigger of epoch change
                 // in PoS close block method, which causes block merge conflicts
                 // - epoch change can be set as a parameter in Rholang tests (e.g. PoSSpec)
@@ -241,7 +242,7 @@ impl GenesisBuilder {
                 pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
             },
             vaults,
-            supply: i64::MAX.into(),
+            supply: (i64::MAX as u64).into(),
             block_number: 0,
             version: 1,
             native_token_name: "F1R3CAP".to_string(),

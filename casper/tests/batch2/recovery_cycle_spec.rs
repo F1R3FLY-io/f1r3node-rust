@@ -55,7 +55,7 @@ Nil
 /// the 9_000_000 balance and triggering the merge-engine's
 /// negative-balance rejection.
 const PHLO_LIMIT: i64 = 8;
-const PHLO_PRICE: i64 = 1_000_000;
+const PHLO_PRICE: u64 = 1_000_000;
 
 fn assert_touched_integer_add_channels_single_valued(
     node: &TestNode,

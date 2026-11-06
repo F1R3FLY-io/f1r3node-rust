@@ -81,7 +81,10 @@ async fn consensus_weight_benchmark() {
                 let value = (num_bigint::BigInt::from(1) << 252usize) * multiplier;
                 value.to_string().parse().expect("wide stake support")
             } else {
-                multiplier.into()
+                multiplier
+                    .to_string()
+                    .parse()
+                    .expect("narrow stake support")
             };
             Bond {
                 validator: validator.clone(),
@@ -136,7 +139,15 @@ async fn consensus_weight_benchmark() {
     let weights: HashMap<_, _> = bonds
         .iter()
         .enumerate()
-        .map(|(index, bond)| (index, bond.stake.clone()))
+        .map(|(index, bond)| {
+            (
+                index,
+                bond.stake
+                    .to_string()
+                    .parse()
+                    .expect("clique weight support"),
+            )
+        })
         .collect();
     let mut clique_edges = Vec::new();
     for a in 0..validators {

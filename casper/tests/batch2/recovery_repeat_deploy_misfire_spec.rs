@@ -58,7 +58,7 @@ fn mk_casper_snapshot(
         deploy_lifespan: 50,
         casper_version: 1,
         bond_minimum: 0.into(),
-        bond_maximum: i64::MAX.into(),
+        bond_maximum: (i64::MAX as u64).into(),
         epoch_length: 0,
         quarantine_length: 0,
         min_phlo_price: (0).into(),

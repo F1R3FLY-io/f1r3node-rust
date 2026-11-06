@@ -48,7 +48,7 @@ mod tests {
                 bonds_file: "bonds.txt".to_string(),
                 wallets_file: "wallets.txt".to_string(),
                 bond_minimum: 1.into(),
-                bond_maximum: i64::MAX.into(),
+                bond_maximum: (i64::MAX as u64).into(),
                 epoch_length: 10000,
                 quarantine_length: 50000,
                 number_of_active_validators: 100,

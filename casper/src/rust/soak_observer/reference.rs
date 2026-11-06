@@ -43,11 +43,11 @@ impl std::fmt::Display for ReferenceError {
 pub struct ReferenceOracle {
     pub decision: bool,
     pub original_bits: u32,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::token_amount::decimal::option")]
     pub total_stake: Option<BigInt>,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::token_amount::decimal::option")]
     pub agreeing_stake: Option<BigInt>,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::token_amount::decimal::option")]
     pub clique_weight: Option<BigInt>,
 }
 
@@ -171,10 +171,7 @@ impl<'a> Reference<'a> {
         let mut validators = Vec::new();
         for (validator, weight) in committee {
             self.meter.step(WorkKind::Oracle)?;
-            if *weight < BigInt::from(0) {
-                return Err(ReferenceError::Unavailable("negative_stake"));
-            }
-            total += weight;
+            total += weight.as_bigint();
             let agrees = match latest.get(validator) {
                 None => false,
                 Some(hash) => match self.main_contains(target, hash) {
@@ -183,8 +180,8 @@ impl<'a> Reference<'a> {
                 },
             };
             if agrees {
-                agreeing += weight;
-                validators.push((validator, weight.clone()));
+                agreeing += weight.as_bigint();
+                validators.push((validator, weight.to_bigint()));
             }
         }
         if total <= BigInt::from(0) {

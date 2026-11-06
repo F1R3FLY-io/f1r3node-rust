@@ -3,9 +3,9 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
-use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
+use shared::rust::token_amount::TokenAmount;
 
 use super::casper::protocol::casper_message::{BlockMessage, Bond, F1r3flyState, Justification};
 use crate::casper::BlockMetadataInternal;
@@ -20,7 +20,7 @@ pub struct BlockMetadata {
     pub sender: Bytes,
     pub justifications: Vec<Justification>,
     #[serde(with = "shared::rust::serde_btreemap_bytes")]
-    pub weight_map: BTreeMap<Bytes, BigInt>,
+    pub weight_map: BTreeMap<Bytes, TokenAmount>,
     pub block_number: i64,
     pub sequence_number: i32,
     pub invalid: bool,
@@ -144,7 +144,7 @@ impl BlockMetadata {
         }
     }
 
-    fn weight_map(state: &F1r3flyState) -> BTreeMap<Bytes, BigInt> {
+    fn weight_map(state: &F1r3flyState) -> BTreeMap<Bytes, TokenAmount> {
         state
             .bonds
             .iter()
@@ -220,10 +220,9 @@ mod tests {
     #[test]
     fn bigint_metadata_round_trip_and_invalid_wire_errors() {
         let mut metadata = sample();
-        metadata.weight_map.insert(
-            Bytes::from_static(b"huge"),
-            shared::rust::asi_amount::maximum(),
-        );
+        metadata
+            .weight_map
+            .insert(Bytes::from_static(b"huge"), TokenAmount::max());
         assert_eq!(
             BlockMetadata::from_bytes(&metadata.to_bytes()).unwrap(),
             metadata
@@ -260,10 +259,10 @@ mod tests {
     fn to_proto_maps_weight_map_to_bonds() {
         let proto = sample().to_proto();
         let validators: Vec<&[u8]> = proto.bonds.iter().map(|b| b.validator.as_ref()).collect();
-        let stakes: Vec<BigInt> = proto
+        let stakes: Vec<TokenAmount> = proto
             .bonds
             .iter()
-            .map(|b| shared::rust::asi_amount::decode(&b.stake).unwrap())
+            .map(|b| TokenAmount::from_wire(&b.stake).unwrap())
             .collect();
         assert_eq!(validators, vec![b"v1".as_ref(), b"v2".as_ref()]);
         assert_eq!(stakes, vec![10.into(), 20.into()]);

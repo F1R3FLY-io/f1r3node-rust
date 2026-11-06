@@ -62,7 +62,7 @@ pub struct ForkChoiceResult {
     pub common_ancestor: String,
     pub head: String,
     pub tips: Vec<String>,
-    #[serde(serialize_with = "models::rust::serde_helpers::serialize_decimal_bigint_vec")]
+    #[serde(serialize_with = "shared::rust::token_amount::decimal::serialize_vec")]
     pub tip_scores: Vec<BigInt>,
     pub score_count: usize,
     pub score_digest: String,
@@ -351,7 +351,7 @@ impl<'a> ReferenceForkChoice<'a> {
         Ok(source
             .weight_map
             .get(validator)
-            .cloned()
+            .map(shared::rust::token_amount::TokenAmount::to_bigint)
             .unwrap_or_default())
     }
 

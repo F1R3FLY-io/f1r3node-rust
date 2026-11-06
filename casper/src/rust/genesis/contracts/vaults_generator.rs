@@ -1,18 +1,20 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/contracts/VaultsGenerator.scala
 
+use shared::rust::token_amount::TokenAmount;
+
 use super::vault::Vault;
 
 pub struct VaultsGenerator {
-    pub supply: num_bigint::BigInt,
+    pub supply: TokenAmount,
     pub code: String,
 }
 
 impl VaultsGenerator {
-    pub fn new(supply: num_bigint::BigInt, code: String) -> Self { Self { supply, code } }
+    pub fn new(supply: TokenAmount, code: String) -> Self { Self { supply, code } }
 
     pub fn create_from_user_vaults(
         user_vaults: Vec<Vault>,
-        supply: num_bigint::BigInt,
+        supply: TokenAmount,
         is_last_batch: bool,
     ) -> Self {
         let vault_balance_list = user_vaults

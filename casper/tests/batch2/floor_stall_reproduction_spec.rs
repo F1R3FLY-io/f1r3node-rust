@@ -47,7 +47,7 @@ use prost::bytes::Bytes;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
     pks.into_iter()
         .map(|pk| (pk, 100))
         .map(|(key, stake)| (key, stake.into()))

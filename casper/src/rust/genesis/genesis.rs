@@ -12,6 +12,7 @@ use models::rust::casper::protocol::casper_message::{
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::merging::mergeable_tags;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
+use shared::rust::token_amount::TokenAmount;
 
 use super::contracts::proof_of_stake::ProofOfStake;
 use super::contracts::standard_deploys;
@@ -27,7 +28,7 @@ pub struct Genesis {
     pub block_number: i64,
     pub proof_of_stake: ProofOfStake,
     pub vaults: Vec<Vault>,
-    pub supply: num_bigint::BigInt,
+    pub supply: TokenAmount,
     pub version: i64,
     /// Full display name of the native token (e.g. "F1R3CAP"). Baked into
     /// the `TokenMetadata` Rholang contract at genesis.
@@ -78,7 +79,7 @@ impl Genesis {
         timestamp: i64,
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: num_bigint::BigInt,
+        supply: TokenAmount,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -171,7 +172,7 @@ impl Genesis {
     pub fn default_blessed_terms(
         pos_params: &ProofOfStake,
         vaults: &Vec<Vault>,
-        supply: num_bigint::BigInt,
+        supply: TokenAmount,
         shard_id: &str,
         native_token_name: &str,
         native_token_symbol: &str,
@@ -195,19 +196,32 @@ impl Genesis {
         )
     }
 
+    /// Every token comes from a genesis wallet or bond, and transfers only
+    /// move tokens, so a total within range keeps every balance within range.
+    fn validate_total_allocation(
+        vaults: &[Vault],
+        validators: &[super::contracts::validator::Validator],
+    ) -> Result<(), CasperError> {
+        let wallets = vaults
+            .iter()
+            .map(|vault| vault.initial_balance.as_bigint())
+            .sum::<num_bigint::BigInt>();
+        let bonds = validators
+            .iter()
+            .map(|validator| validator.stake.as_bigint())
+            .sum::<num_bigint::BigInt>();
+        TokenAmount::new(wallets + bonds)
+            .map(|_| ())
+            .map_err(|error| {
+                CasperError::RuntimeError(format!("genesis wallets and bonds in total: {error}"))
+            })
+    }
+
     pub async fn create_genesis_block(
         runtime_manager: &RuntimeManager,
         genesis: &Genesis,
     ) -> Result<BlockMessage, CasperError> {
-        genesis
-            .proof_of_stake
-            .validate_amounts()
-            .map_err(CasperError::RuntimeError)?;
-        shared::rust::asi_amount::validate(&genesis.supply).map_err(CasperError::RuntimeError)?;
-        for vault in &genesis.vaults {
-            shared::rust::asi_amount::validate(&vault.initial_balance)
-                .map_err(CasperError::RuntimeError)?;
-        }
+        Self::validate_total_allocation(&genesis.vaults, &genesis.proof_of_stake.validators)?;
         let blessed_terms = Self::default_blessed_terms(
             &genesis.proof_of_stake,
             &genesis.vaults,
@@ -301,6 +315,29 @@ impl Genesis {
 mod tests {
     use super::*;
 
+    #[test]
+    fn genesis_total_allocation_is_capped_at_the_token_maximum() {
+        use rholang::rust::interpreter::util::vault_address::VaultAddress;
+
+        use super::super::contracts::standard_deploys;
+        use super::super::contracts::validator::Validator;
+
+        let vault = |balance: TokenAmount| Vault {
+            vault_address: VaultAddress::from_public_key(&standard_deploys::POS_GENERATOR_PUB_KEY)
+                .unwrap(),
+            initial_balance: balance,
+        };
+        let validators = [Validator {
+            pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
+            stake: 1.into(),
+        }];
+        let below_bond = TokenAmount::new(TokenAmount::max().into_bigint() - 1u8).unwrap();
+        assert!(Genesis::validate_total_allocation(&[vault(below_bond)], &validators).is_ok());
+        assert!(
+            Genesis::validate_total_allocation(&[vault(TokenAmount::max())], &validators).is_err()
+        );
+    }
+
     /// Pin that default_blessed_terms includes a deploy signed by
     /// FS_GENERATOR_PK — the fs_generator deploy that publishes the
     /// shared Fs cap at genesis.  A regression that silently drops
@@ -314,7 +351,7 @@ mod tests {
 
         let pos_params = ProofOfStake {
             minimum_bond: 1.into(),
-            maximum_bond: (num_bigint::BigInt::from(1) << 256) - 1,
+            maximum_bond: TokenAmount::max(),
             validators: vec![Validator {
                 pk: standard_deploys::POS_GENERATOR_PUB_KEY.clone(),
                 stake: 100.into(),

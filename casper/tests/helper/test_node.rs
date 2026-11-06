@@ -1204,7 +1204,7 @@ impl TestNode {
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
             casper_version: genesis.header.version,
             bond_minimum: 0.into(),
-            bond_maximum: i64::MAX.into(),
+            bond_maximum: (i64::MAX as u64).into(),
             epoch_length: 10000,
             quarantine_length: 20000,
             min_phlo_price: (1).into(),

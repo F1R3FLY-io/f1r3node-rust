@@ -20,11 +20,11 @@ pub struct CliqueOracle;
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ExactOracleResult {
     pub decision: bool,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::token_amount::decimal::option")]
     pub total_stake: Option<BigInt>,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::token_amount::decimal::option")]
     pub agreeing_stake: Option<BigInt>,
-    #[serde(with = "models::rust::serde_helpers::optional_decimal_bigint")]
+    #[serde(with = "shared::rust::token_amount::decimal::option")]
     pub clique_weight: Option<BigInt>,
     pub early_return: Option<&'static str>,
 }
@@ -223,7 +223,7 @@ impl CliqueOracle {
         let mut result = HashMap::new();
         for (validator, weight) in meta.weight_map {
             meter.step(WorkKind::Oracle)?;
-            result.insert(validator, weight);
+            result.insert(validator, weight.into_bigint());
         }
         Ok(result)
     }

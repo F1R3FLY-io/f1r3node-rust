@@ -53,7 +53,7 @@ const CONFLICT_RHO: &str = r#"
 Nil
 "#;
 const PHLO_LIMIT: i64 = 8;
-const PHLO_PRICE: i64 = 1_000_000;
+const PHLO_PRICE: u64 = 1_000_000;
 
 struct ConflictFixture {
     nodes: Vec<TestNode>,

@@ -272,8 +272,6 @@ pub mod builder {
                 node_conf.casper.deploy_lifespan,
             ));
         }
-        shared::rust::asi_amount::validate(&node_conf.casper.min_phlo_price)
-            .map_err(|error| eyre::eyre!("casper.min-phlo-price: {error}"))?;
         if node_conf.casper.genesis_block_data.epoch_length <= 0 {
             return Err(eyre::eyre!(
                 "casper.genesis-block-data.epoch-length ({}) must be positive: epoch \
@@ -721,6 +719,7 @@ mod heartbeat_conf_hocon_tests {
 mod embedded_defaults_tests {
     use std::time::Duration;
 
+    use shared::rust::token_amount::TokenAmount;
     use shared::rust::tracing_init::{LogFormat, LogRotation, LogSink};
 
     use super::*;
@@ -785,7 +784,7 @@ mod embedded_defaults_tests {
         use clap::Parser;
 
         use super::commandline::options::{Options, OptionsSubCommand};
-        let max = shared::rust::asi_amount::MAX_DECIMAL;
+        let max = shared::rust::token_amount::MAX_DECIMAL;
         let parsed = Options::try_parse_from([
             "node",
             "run",
@@ -797,18 +796,15 @@ mod embedded_defaults_tests {
         .unwrap();
         match parsed.subcommand.unwrap() {
             OptionsSubCommand::Run(run) => {
-                assert_eq!(run.bond_maximum, Some(shared::rust::asi_amount::maximum()));
-                assert_eq!(
-                    run.min_phlo_price,
-                    Some(shared::rust::asi_amount::maximum())
-                );
+                assert_eq!(run.bond_maximum, Some(TokenAmount::max()));
+                assert_eq!(run.min_phlo_price, Some(TokenAmount::max()));
             }
             _ => panic!("expected run command"),
         }
         for flag in ["--bond-maximum", "--min-phlo-price"] {
             for value in [
                 "-1".to_string(),
-                (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1)).to_string(),
+                (TokenAmount::max().into_bigint() + 1u8).to_string(),
             ] {
                 assert!(Options::try_parse_from(["node", "run", flag, &value]).is_err());
             }
@@ -816,14 +812,17 @@ mod embedded_defaults_tests {
     }
 
     #[test]
-    fn bigint_bond_limits_reject_values_outside_the_token_range() {
-        for field in ["bond-minimum", "bond-maximum"] {
+    fn token_amount_limits_reject_values_outside_the_token_range() {
+        for field in [
+            "genesis-block-data.bond-minimum",
+            "genesis-block-data.bond-maximum",
+            "min-phlo-price",
+        ] {
             for value in [
                 "-1".to_string(),
-                (shared::rust::asi_amount::maximum() + 1u8).to_string(),
+                (TokenAmount::max().into_bigint() + 1u8).to_string(),
             ] {
-                let override_config =
-                    format!("casper.genesis-block-data {{ {field} = \"{value}\" }}");
+                let override_config = format!("casper.{field} = \"{value}\"");
                 let result: Result<NodeConf, _> = hocon::HoconLoader::new()
                     .load_str(EMBEDDED_DEFAULTS)
                     .unwrap()
@@ -845,7 +844,7 @@ mod embedded_defaults_tests {
         assert_eq!(base.casper.genesis_block_data.bond_minimum, 1.into());
         assert_eq!(
             base.casper.genesis_block_data.bond_maximum,
-            shared::rust::asi_amount::maximum()
+            TokenAmount::max()
         );
         let configured: NodeConf = hocon::HoconLoader::new()
             .load_str(EMBEDDED_DEFAULTS)
@@ -1021,13 +1020,6 @@ mod embedded_defaults_tests {
         assert!(
             builder::validate_config(&cfg).is_err(),
             "deploy-lifespan 0 must fail startup"
-        );
-
-        let mut cfg = base.clone();
-        cfg.casper.min_phlo_price = (-1).into();
-        assert!(
-            builder::validate_config(&cfg).is_err(),
-            "negative min-phlo-price must fail startup"
         );
 
         let mut cfg = base;

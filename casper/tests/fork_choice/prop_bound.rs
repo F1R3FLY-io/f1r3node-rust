@@ -59,11 +59,11 @@ async fn build_two_tip_dag(
     let bonds = vec![
         Bond {
             validator: v1.clone(),
-            stake: stake_v1.into(),
+            stake: u64::try_from(stake_v1).expect("fixture stake").into(),
         },
         Bond {
             validator: v2.clone(),
-            stake: stake_v2.into(),
+            stake: u64::try_from(stake_v2).expect("fixture stake").into(),
         },
     ];
 

@@ -147,7 +147,7 @@ async fn build_fork(
         .zip(shape.stakes.iter())
         .map(|(v, stake)| Bond {
             validator: v.clone(),
-            stake: (*stake).into(),
+            stake: u64::try_from(*stake).expect("fixture stake").into(),
         })
         .collect();
 

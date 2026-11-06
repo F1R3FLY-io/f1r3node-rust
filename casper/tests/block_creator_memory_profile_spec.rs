@@ -112,7 +112,7 @@ fn create_snapshot_with_parent(
     shard_conf.max_number_of_parents = 10;
     shard_conf.casper_version = 1;
     shard_conf.bond_minimum = 0.into();
-    shard_conf.bond_maximum = i64::MAX.into();
+    shard_conf.bond_maximum = (i64::MAX as u64).into();
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
@@ -199,7 +199,7 @@ async fn run_block_creator_create_memory_profile() {
         block_number: 0,
         proof_of_stake: ProofOfStake {
             minimum_bond: 1.into(),
-            maximum_bond: i64::MAX.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
                 stake: 100.into(),
@@ -219,7 +219,7 @@ async fn run_block_creator_create_memory_profile() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX.into(),
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -448,7 +448,7 @@ async fn run_block_creator_phase_split_memory_profile() {
         block_number: 0,
         proof_of_stake: ProofOfStake {
             minimum_bond: 1.into(),
-            maximum_bond: i64::MAX.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
                 stake: 100.into(),
@@ -468,7 +468,7 @@ async fn run_block_creator_phase_split_memory_profile() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX.into(),
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),

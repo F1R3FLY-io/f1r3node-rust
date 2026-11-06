@@ -23,6 +23,7 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_parameters::{DeployParameter, RholangValue};
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
+use shared::rust::token_amount::TokenAmount;
 use tokio::time::sleep;
 use tracing::warn;
 use utoipa::ToSchema;
@@ -254,7 +255,7 @@ pub struct WebApiImpl {
     dev_mode: bool,
     network_id: String,
     shard_id: String,
-    min_phlo_price: num_bigint::BigInt,
+    min_phlo_price: TokenAmount,
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
@@ -278,7 +279,7 @@ impl WebApiImpl {
         dev_mode: bool,
         network_id: String,
         shard_id: String,
-        min_phlo_price: num_bigint::BigInt,
+        min_phlo_price: TokenAmount,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
@@ -952,7 +953,7 @@ impl WebApi for WebApiImpl {
             for (public_key, value) in data {
                 let stake = match value {
                     RhoExpr::ExprBigInt { data } => {
-                        shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?
+                        TokenAmount::parse(data).map_err(|e| eyre!(e))?
                     }
                     other => {
                         return Err(eyre!(
@@ -962,7 +963,7 @@ impl WebApi for WebApiImpl {
                         ))
                     }
                 };
-                total_stake += &stake;
+                total_stake += stake.as_bigint();
                 validators.push(ValidatorInfo {
                     public_key: public_key.clone(),
                     stake,
@@ -1114,7 +1115,7 @@ impl WebApi for WebApiImpl {
             if let Some(value) = data.get(&pubkey) {
                 is_bonded = true;
                 if let RhoExpr::ExprBigInt { data } = value {
-                    stake = Some(shared::rust::asi_amount::parse(data).map_err(|e| eyre!(e))?);
+                    stake = Some(TokenAmount::parse(data).map_err(|e| eyre!(e))?);
                 }
             }
         }
@@ -1591,9 +1592,8 @@ pub struct RegistryResponse {
 pub struct ValidatorInfo {
     #[serde(rename = "publicKey")]
     pub public_key: String,
-    #[serde(with = "shared::rust::asi_amount")]
     #[schema(value_type = String)]
-    pub stake: BigInt,
+    pub stake: TokenAmount,
 }
 
 /// Active validator set response
@@ -1601,7 +1601,7 @@ pub struct ValidatorInfo {
 pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
     #[serde(rename = "totalStake")]
-    #[serde(with = "models::rust::serde_helpers::decimal_bigint")]
+    #[serde(with = "shared::rust::token_amount::decimal")]
     #[schema(value_type = String)]
     pub total_stake: BigInt,
     #[serde(rename = "blockNumber")]
@@ -1668,9 +1668,8 @@ pub struct ValidatorStatusResponse {
     pub public_key: String,
     #[serde(rename = "isBonded")]
     pub is_bonded: bool,
-    #[serde(with = "shared::rust::asi_amount::optional")]
     #[schema(value_type = Option<String>)]
-    pub stake: Option<BigInt>,
+    pub stake: Option<TokenAmount>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "blockHash")]
@@ -2240,7 +2239,7 @@ mod tests {
 
     #[test]
     fn validator_json_uses_canonical_uint256_stakes() {
-        let max = shared::rust::asi_amount::maximum();
+        let max = TokenAmount::max().into_bigint();
         for stake in [
             "0".to_string(),
             (BigInt::from(1) << 128usize).to_string(),
@@ -2279,7 +2278,7 @@ mod tests {
              "blockNumber": 0, "blockHash": "hash"}))
         .unwrap();
         assert!(status.stake.is_none());
-        let total = shared::rust::asi_amount::maximum() * 2u8;
+        let total = TokenAmount::max().into_bigint() * 2u8;
         let response: ValidatorsResponse = serde_json::from_value(serde_json::json!(
             {"validators": [], "totalStake": total.to_string(), "blockNumber": 0, "blockHash": "hash"})).unwrap();
         assert_eq!(response.total_stake, total);

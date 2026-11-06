@@ -378,7 +378,11 @@ pub async fn check(
                     .collect();
                 let validator_weight_map: HashMap<Validator, BigInt> =
                     CliqueOracle::participating_weight_map(
-                        main_parent_meta.weight_map.into_iter().collect(),
+                        main_parent_meta
+                            .weight_map
+                            .into_iter()
+                            .map(|(validator, stake)| (validator, stake.into_bigint()))
+                            .collect(),
                         &snapshot.dag,
                         &latest_messages,
                     )?;

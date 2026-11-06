@@ -99,7 +99,7 @@ async fn our_build_system_should_execute_the_genesis_block() {
 
         vaults.push(Vault {
             vault_address: rev_address,
-            initial_balance: i.into(),
+            initial_balance: (i as u64).into(),
         });
     }
 

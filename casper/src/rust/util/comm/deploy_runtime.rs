@@ -108,7 +108,7 @@ impl DeployRuntime {
     pub async fn deploy_file_program<S: DeployService>(
         svc: &mut S,
         phlo_limit: i64,
-        phlo_price: num_bigint::BigInt,
+        phlo_price: shared::rust::token_amount::TokenAmount,
         valid_after_block: i64,
         private_key: &PrivateKey,
         file: &str,

@@ -24,8 +24,7 @@ pub struct AuthorityInputs {
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    #[serde(with = "shared::rust::asi_amount")]
-    pub min_phlo_price: num_bigint::BigInt,
+    pub min_phlo_price: shared::rust::token_amount::TokenAmount,
     pub approved_block_hash: String,
     pub approved_post_state_hash: String,
 }

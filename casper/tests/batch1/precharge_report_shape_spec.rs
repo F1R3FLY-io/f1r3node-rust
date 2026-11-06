@@ -144,7 +144,7 @@ const VAULT_TRANSFER_TERM: &str = r#"
 /// `PreChargeDeploy { charge_amount: total_phlo_charge(), .. }`. Keep these in
 /// sync with the assertion below.
 const PHLO_LIMIT: i64 = 5_000_000;
-const PHLO_PRICE: i64 = 1;
+const PHLO_PRICE: u64 = 1;
 
 /// Cost-accounted user deploy: the reporting replay yields >= 2 batches, and
 /// `report[0]` is the precharge — exactly one transfer on the transfer

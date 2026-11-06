@@ -74,11 +74,13 @@ impl TestContext {
         // built by `build_genesis_parameters_with_defaults(_, None)`.
         fn bonds_function(
             validators: Vec<crypto::rust::public_key::PublicKey>,
-        ) -> std::collections::HashMap<crypto::rust::public_key::PublicKey, num_bigint::BigInt>
-        {
+        ) -> std::collections::HashMap<
+            crypto::rust::public_key::PublicKey,
+            shared::rust::token_amount::TokenAmount,
+        > {
             validators
                 .into_iter()
-                .zip(vec![100i64, 100, 100, 100])
+                .zip(vec![100u64, 100, 100, 100])
                 .map(|(key, stake)| (key, stake.into()))
                 .collect()
         }

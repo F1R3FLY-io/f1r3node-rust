@@ -100,9 +100,34 @@ async fn vault_issuance_test() {
     // Two known, valid rev addresses issued at genesis with distinct non-zero balances. Distinct
     // values make each per-address assertion load-bearing (a result cannot pass by symmetry).
     const REV_ADDRESS_1: &str = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
-    const BALANCE_1: u128 = 777_000_000;
+    const BALANCE_1: u64 = 777_000_000;
     const REV_ADDRESS_2: &str = "1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M";
-    let balance_2 = shared::rust::asi_amount::maximum();
+
+    // Build genesis whose vault set includes the two issued vaults alongside the default
+    // validator/deployer vaults. Passing explicit parameters (rather than `with_vaults`) makes the
+    // custom vault set part of the genesis-cache key, so this test never shares a cached genesis
+    // with tests that build against the default vault set.
+    let (validator_key_pairs, genesis_vaults, mut genesis_params) =
+        GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+
+    // The second balance takes the whole allocation to exactly 2^256 - 1.
+    let allocated = genesis_params
+        .vaults
+        .iter()
+        .map(|vault| vault.initial_balance.as_bigint())
+        .chain(
+            genesis_params
+                .proof_of_stake
+                .validators
+                .iter()
+                .map(|validator| validator.stake.as_bigint()),
+        )
+        .sum::<num_bigint::BigInt>()
+        + BALANCE_1;
+    let balance_2 = shared::rust::token_amount::TokenAmount::new(
+        shared::rust::token_amount::TokenAmount::max().into_bigint() - allocated,
+    )
+    .unwrap();
 
     let issued_vaults = vec![
         Vault {
@@ -114,13 +139,6 @@ async fn vault_issuance_test() {
             initial_balance: balance_2,
         },
     ];
-
-    // Build genesis whose vault set includes the two issued vaults alongside the default
-    // validator/deployer vaults. Passing explicit parameters (rather than `with_vaults`) makes the
-    // custom vault set part of the genesis-cache key, so this test never shares a cached genesis
-    // with tests that build against the default vault set.
-    let (validator_key_pairs, genesis_vaults, mut genesis_params) =
-        GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
     genesis_params.vaults.extend(issued_vaults.clone());
 
     let genesis_context = GenesisBuilder::new()

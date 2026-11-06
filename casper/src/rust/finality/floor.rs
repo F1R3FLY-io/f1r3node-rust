@@ -1642,7 +1642,7 @@ mod frontier_determinism_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 1i64.into());
+        wm.insert(v.clone(), 1u64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -2201,7 +2201,10 @@ mod frontier_determinism_tests {
     ) -> BlockMetadata {
         let mut weight_map = BTreeMap::new();
         for (validator, weight) in wm {
-            weight_map.insert(validator, weight.into());
+            weight_map.insert(
+                validator,
+                u64::try_from(weight).expect("fixture weight").into(),
+            );
         }
         BlockMetadata {
             block_hash: hash,
@@ -2441,7 +2444,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
-                .map(|(key, stake)| (key, stake.into()))
+                .map(|(key, stake)| (key, u64::try_from(stake).expect("fixture stake").into()))
                 .collect();
             meta
         };
@@ -2472,6 +2475,7 @@ mod frontier_determinism_tests {
                 .expect("metadata")
                 .weight_map
                 .into_iter()
+                .map(|(validator, stake)| (validator, stake.into_bigint()))
                 .collect::<HashMap<_, _>>()
         };
 
@@ -2513,7 +2517,7 @@ mod frontier_determinism_tests {
             meta.weight_map = bonds
                 .iter()
                 .map(|(validator, stake)| ((*validator).clone(), *stake))
-                .map(|(key, stake)| (key, stake.into()))
+                .map(|(key, stake)| (key, u64::try_from(stake).expect("fixture stake").into()))
                 .collect();
             meta
         };

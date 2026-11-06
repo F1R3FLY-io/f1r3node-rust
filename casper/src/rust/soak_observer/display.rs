@@ -96,11 +96,8 @@ pub fn calculate(
                 0,
             )
             .map_err(|e| e.to_string())?;
-        if *weight < BigInt::from(0) {
-            return Err("negative_stake".into());
-        }
-        checked_total += weight;
-        weights.insert(validator.clone(), weight.clone());
+        checked_total += weight.as_bigint();
+        weights.insert(validator.clone(), weight.to_bigint());
     }
     meter
         .allocate(tracker.rows().len(), 32 * std::mem::size_of::<usize>())

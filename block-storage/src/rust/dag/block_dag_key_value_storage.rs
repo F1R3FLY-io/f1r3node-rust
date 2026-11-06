@@ -1871,7 +1871,7 @@ mod tests {
                 })
                 .collect(),
             weight_map: (0..3u8)
-                .map(|v| (validator(v + 10), 1_000_000i64.into()))
+                .map(|v| (validator(v + 10), 1_000_000u64.into()))
                 .collect::<BTreeMap<_, _>>(),
             block_number: i as i64,
             sequence_number: (i / 3) as i32,

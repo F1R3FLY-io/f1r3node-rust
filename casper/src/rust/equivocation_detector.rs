@@ -260,7 +260,7 @@ impl EquivocationDetector {
                 block_store,
                 equivocation_record,
                 latest_messages,
-                &bond.stake,
+                bond.stake.as_bigint(),
                 genesis,
                 canonical_child_cache,
             ),

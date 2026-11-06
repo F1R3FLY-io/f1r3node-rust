@@ -163,7 +163,7 @@ async fn one_floor_derivation_evaluates_each_shared_spine_block_once() {
     );
 }
 
-fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+fn equal_bonds(pks: Vec<PublicKey>) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
     pks.into_iter().map(|pk| (pk, 100.into())).collect()
 }
 

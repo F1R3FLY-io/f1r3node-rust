@@ -121,7 +121,7 @@ mod tests {
             DeployData {
                 term: "Nil".into(),
                 time_stamp: 123,
-                phlo_price: shared::rust::asi_amount::parse(
+                phlo_price: shared::rust::token_amount::TokenAmount::parse(
                     "340282366920938463463374607431768211456",
                 )
                 .unwrap(),

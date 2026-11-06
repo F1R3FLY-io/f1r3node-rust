@@ -3,6 +3,7 @@ use std::path::Path;
 
 use regex::Regex;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::genesis::contracts::vault::Vault;
 
@@ -82,11 +83,10 @@ impl VaultParser {
             })?;
 
             // Parse balance
-            let initial_balance = shared::rust::asi_amount::parse(balance_str).map_err(|_| {
-                VaultParserError::InvalidBalance {
+            let initial_balance =
+                TokenAmount::parse(balance_str).map_err(|_| VaultParserError::InvalidBalance {
                     balance: balance_str.to_string(),
-                }
-            })?;
+                })?;
 
             tracing::info!("Wallet loaded: {}", trimmed_line);
 
@@ -131,10 +131,10 @@ mod tests {
         let path = dir.path().join("wallets.txt");
         let address = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
         for value in [
-            num_bigint::BigInt::from(0),
+            TokenAmount::zero(),
             1.into(),
-            num_bigint::BigInt::from(1u8) << 128,
-            shared::rust::asi_amount::maximum(),
+            TokenAmount::new(num_bigint::BigInt::from(1u8) << 128).unwrap(),
+            TokenAmount::max(),
         ] {
             fs::write(&path, format!("{address},{value}\n")).unwrap();
             assert_eq!(VaultParser::parse(&path).unwrap()[0].initial_balance, value);
@@ -143,7 +143,7 @@ mod tests {
             "-1".to_string(),
             "01".into(),
             "1garbage".into(),
-            (shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1)).to_string(),
+            (TokenAmount::max().into_bigint() + 1u8).to_string(),
         ] {
             fs::write(&path, format!("{address},{value}\n")).unwrap();
             assert!(VaultParser::parse(&path).is_err(), "accepted {value}");
@@ -159,13 +159,13 @@ mod tests {
             &path,
             format!(
                 "# allocation\n  {address},{} # bootstrap node\n",
-                shared::rust::asi_amount::MAX_DECIMAL
+                shared::rust::token_amount::MAX_DECIMAL
             ),
         )
         .unwrap();
         assert_eq!(
             VaultParser::parse(&path).unwrap()[0].initial_balance,
-            shared::rust::asi_amount::maximum()
+            TokenAmount::max()
         );
         let shipped = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../docker/helm/f1r3fly/configs/common/wallets.txt");
@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(vaults.len(), 2);
 
         for vault in vaults {
-            assert!(vault.initial_balance > 0.into());
+            assert!(!vault.initial_balance.is_zero());
         }
     }
 
@@ -337,10 +337,7 @@ mod tests {
         assert_eq!(vaults.len(), 1);
 
         let vault = &vaults[0];
-        assert_eq!(
-            vault.initial_balance,
-            num_bigint::BigInt::from(50_000_000_000_000u64)
-        );
+        assert_eq!(vault.initial_balance, 50_000_000_000_000u64.into());
         assert_eq!(
             vault.vault_address.to_base58(),
             "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP"

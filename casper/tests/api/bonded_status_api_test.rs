@@ -48,11 +48,11 @@ impl TestContext {
             .collect();
 
         // Create bonds for first 3 validators only (n4 is unbonded)
-        let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
+        let bonds: HashMap<PublicKey, shared::rust::token_amount::TokenAmount> = validator_pks
             .iter()
             .take(3)
             .enumerate()
-            .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+            .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
             .map(|(key, stake)| (key, stake.into()))
             .collect();
 

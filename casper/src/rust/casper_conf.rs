@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
+use shared::rust::token_amount::TokenAmount;
 
 /// Casper configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,8 +71,8 @@ pub struct CasperConf {
     #[serde(rename = "genesis-ceremony")]
     pub genesis_ceremony: GenesisCeremony,
 
-    #[serde(rename = "min-phlo-price", with = "shared::rust::asi_amount")]
-    pub min_phlo_price: num_bigint::BigInt,
+    #[serde(rename = "min-phlo-price")]
+    pub min_phlo_price: TokenAmount,
 
     #[serde(rename = "heartbeat")]
     pub heartbeat_conf: HeartbeatConf,
@@ -186,10 +186,10 @@ pub struct GenesisBlockData {
     #[serde(rename = "wallets-file")]
     pub wallets_file: String,
 
-    #[serde(rename = "bond-minimum", with = "shared::rust::asi_amount")]
-    pub bond_minimum: BigInt,
-    #[serde(rename = "bond-maximum", with = "shared::rust::asi_amount")]
-    pub bond_maximum: BigInt,
+    #[serde(rename = "bond-minimum")]
+    pub bond_minimum: TokenAmount,
+    #[serde(rename = "bond-maximum")]
+    pub bond_maximum: TokenAmount,
 
     #[serde(rename = "epoch-length")]
     pub epoch_length: i32,

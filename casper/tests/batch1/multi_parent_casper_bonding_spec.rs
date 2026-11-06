@@ -14,6 +14,7 @@ use casper::rust::engine::engine_with_casper::EngineWithCasper;
 use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::helper::bonding_util;
 use crate::helper::test_node::TestNode;
@@ -42,18 +43,24 @@ async fn multi_parent_casper_should_allow_uint256_bonding() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
+    let bonds: HashMap<PublicKey, TokenAmount> = validator_pks
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
-        .map(|(key, stake)| (key, num_bigint::BigInt::from(stake) << 128))
+        .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
+        .map(|(key, stake)| {
+            (
+                key,
+                TokenAmount::new(num_bigint::BigInt::from(stake) << 128).unwrap(),
+            )
+        })
         .collect();
 
     let mut parameters = GenesisBuilder::build_genesis_parameters(validator_key_pairs, &bonds);
-    parameters.2.proof_of_stake.maximum_bond = shared::rust::asi_amount::maximum();
-    parameters.2.vaults[0].initial_balance <<= 128usize;
-    let amount = num_bigint::BigInt::from(1000) << 128usize;
+    parameters.2.proof_of_stake.maximum_bond = TokenAmount::max();
+    parameters.2.vaults[0].initial_balance =
+        TokenAmount::new(parameters.2.vaults[0].initial_balance.to_bigint() << 128usize).unwrap();
+    let amount = TokenAmount::new(num_bigint::BigInt::from(1000) << 128usize).unwrap();
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
         .await
@@ -149,11 +156,11 @@ async fn a_new_bond_enters_the_lfb_committee_after_an_epoch_boundary() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
+    let bonds: HashMap<PublicKey, TokenAmount> = validator_pks
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
         .map(|(key, stake)| (key, stake.into()))
         .collect();
 
@@ -313,11 +320,11 @@ async fn a_finalized_bond_survives_an_epoch_boundary_merge() {
         .iter()
         .map(|(_, pk)| pk.clone())
         .collect();
-    let bonds: HashMap<PublicKey, num_bigint::BigInt> = validator_pks
+    let bonds: HashMap<PublicKey, TokenAmount> = validator_pks
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, pk)| (pk.clone(), 2 * i as i64 + 1))
+        .map(|(i, pk)| (pk.clone(), 2 * i as u64 + 1))
         .map(|(key, stake)| (key, stake.into()))
         .collect();
 

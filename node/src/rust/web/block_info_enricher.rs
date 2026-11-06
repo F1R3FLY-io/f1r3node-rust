@@ -200,9 +200,9 @@ pub fn extract_transfers_from_report(
 
             let precharge_amount = deploy_info
                 .and_then(|info| {
-                    shared::rust::asi_amount::parse(&info.phlo_price)
+                    shared::rust::token_amount::TokenAmount::parse(&info.phlo_price)
                         .ok()
-                        .map(|price| price * info.phlo_limit)
+                        .map(|price| price.into_bigint() * info.phlo_limit)
                 })
                 .unwrap_or_default();
 
@@ -398,10 +398,13 @@ mod tests {
         let (_, sender) = make_deployer();
         for (amount, success) in [
             (num_bigint::BigInt::from(1u8) << 63, true),
-            (shared::rust::asi_amount::maximum(), true),
+            (
+                shared::rust::token_amount::TokenAmount::max().into_bigint(),
+                true,
+            ),
             (num_bigint::BigInt::from(-1), false),
             (
-                shared::rust::asi_amount::maximum() + num_bigint::BigInt::from(1),
+                shared::rust::token_amount::TokenAmount::max().into_bigint() + 1u8,
                 false,
             ),
         ] {

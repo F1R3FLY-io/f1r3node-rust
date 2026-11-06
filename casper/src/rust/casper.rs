@@ -25,6 +25,7 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
@@ -450,7 +451,7 @@ impl CasperSnapshot {
         Ok(metadata
             .weight_map
             .get(validator)
-            .is_some_and(|stake| *stake > BigInt::from(0)))
+            .is_some_and(|stake| !stake.is_zero()))
     }
 
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
@@ -527,11 +528,11 @@ pub struct CasperShardConf {
     /// re-judgements.
     pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
-    pub bond_minimum: BigInt,
-    pub bond_maximum: BigInt,
+    pub bond_minimum: TokenAmount,
+    pub bond_maximum: TokenAmount,
     pub epoch_length: i32,
     pub quarantine_length: i32,
-    pub min_phlo_price: num_bigint::BigInt,
+    pub min_phlo_price: TokenAmount,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults

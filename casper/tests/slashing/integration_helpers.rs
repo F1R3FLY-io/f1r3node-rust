@@ -54,7 +54,10 @@ pub async fn production_snapshot_at(
         .map(|b| {
             (
                 b.validator.clone(),
-                b.stake.to_i64().expect("finite slashing fixture stake"),
+                b.stake
+                    .as_bigint()
+                    .to_i64()
+                    .expect("finite slashing fixture stake"),
             )
         })
         .collect();
@@ -68,11 +71,21 @@ pub async fn production_snapshot_at(
         .state
         .bonds
         .iter()
-        .map(|b| b.stake.to_i64().expect("finite slashing fixture stake"))
+        .map(|b| {
+            b.stake
+                .as_bigint()
+                .to_i64()
+                .expect("finite slashing fixture stake")
+        })
         .sum();
     let current_total: i64 = bonds
         .iter()
-        .map(|b| b.stake.to_i64().expect("finite slashing fixture stake"))
+        .map(|b| {
+            b.stake
+                .as_bigint()
+                .to_i64()
+                .expect("finite slashing fixture stake")
+        })
         .sum();
     // Bond-floor residue: bonds at the test-mode floor (typically 1)
     // are validators that have been slashed but still hold the floor
@@ -80,7 +93,7 @@ pub async fn production_snapshot_at(
     let bond_floor: i64 = 1;
     let residue: i64 = bonds
         .iter()
-        .filter(|b| b.stake == bond_floor.into())
+        .filter(|b| b.stake == (bond_floor as u64).into())
         .count() as i64
         * bond_floor;
     let coop_vault = genesis_total - current_total - residue;

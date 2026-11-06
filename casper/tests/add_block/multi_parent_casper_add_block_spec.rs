@@ -1580,11 +1580,11 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
 
     let bonds = {
         let mut bonds_map = std::collections::HashMap::new();
-        bonds_map.insert(validator_pks[0].clone(), 3i64.into());
-        bonds_map.insert(validator_pks[1].clone(), 1i64.into());
-        bonds_map.insert(validator_pks[2].clone(), 5i64.into());
-        bonds_map.insert(validator_pks[3].clone(), 2i64.into());
-        bonds_map.insert(validator_pks[4].clone(), 4i64.into());
+        bonds_map.insert(validator_pks[0].clone(), 3u64.into());
+        bonds_map.insert(validator_pks[1].clone(), 1u64.into());
+        bonds_map.insert(validator_pks[2].clone(), 5u64.into());
+        bonds_map.insert(validator_pks[3].clone(), 2u64.into());
+        bonds_map.insert(validator_pks[4].clone(), 4u64.into());
         bonds_map
     };
 

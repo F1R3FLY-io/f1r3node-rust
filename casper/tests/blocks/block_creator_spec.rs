@@ -201,7 +201,7 @@ fn create_snapshot(max_block_num: i64, validator_id: Bytes) -> CasperSnapshot {
         deploy_lifespan: DEPLOY_LIFESPAN,
         casper_version: 1,
         bond_minimum: 0.into(),
-        bond_maximum: i64::MAX.into(),
+        bond_maximum: (i64::MAX as u64).into(),
         epoch_length: 0,
         quarantine_length: 0,
         min_phlo_price: (0).into(),

@@ -1657,7 +1657,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 if parent
                     .weight_map
                     .get(&block.sender)
-                    .is_some_and(|stake| *stake > num_bigint::BigInt::from(0))
+                    .is_some_and(|stake| !stake.is_zero())
                 {
                     SenderAuthorization::Authorized
                 } else {

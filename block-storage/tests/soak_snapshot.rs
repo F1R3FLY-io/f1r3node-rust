@@ -1306,7 +1306,7 @@ impl<'a> CanonicalReader<'a> {
         self.count(value.weight_map.len());
         for (validator, weight) in &value.weight_map {
             assert_eq!(self.bytes(), validator.as_ref());
-            assert_eq!(self.bytes(), weight.to_signed_bytes_be());
+            assert_eq!(self.bytes(), weight.as_bigint().to_signed_bytes_be());
         }
         assert_eq!(i64::from_be_bytes(self.fixed()), value.block_number);
         assert_eq!(i32::from_be_bytes(self.fixed()), value.sequence_number);

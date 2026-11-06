@@ -146,8 +146,8 @@ struct FromInputFilesParams<'a> {
     maybe_bonds_path: Option<&'a str>,
     autogen_shard_size: usize,
     maybe_vaults_path: Option<&'a str>,
-    minimum_bond: i64,
-    maximum_bond: i64,
+    minimum_bond: u64,
+    maximum_bond: u64,
     epoch_length: i32,
     quarantine_length: i32,
     number_of_active_validators: u32,
@@ -162,8 +162,8 @@ impl Default for FromInputFilesParams<'_> {
             maybe_bonds_path: None,
             autogen_shard_size: AUTOGEN_SHARD_SIZE,
             maybe_vaults_path: None,
-            minimum_bond: 1.into(),
-            maximum_bond: i64::MAX,
+            minimum_bond: 1,
+            maximum_bond: i64::MAX as u64,
             epoch_length: 10000,
             quarantine_length: 50000,
             number_of_active_validators: 100,
@@ -243,7 +243,7 @@ async fn from_input_files(
             pos_multi_sig_quorum: DEFAULT_POS_MULTI_SIG_PUBLIC_KEYS.len() as u32 - 1,
         },
         vaults,
-        supply: i64::MAX.into(),
+        supply: (i64::MAX as u64).into(),
         block_number: params.block_number,
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
@@ -364,7 +364,7 @@ async fn genesis_from_input_files_should_create_a_genesis_block_with_the_right_b
                     let pk_bytes = StringOps::decode_hex(v.clone()).expect("Failed to decode hex");
                     Bond {
                         validator: pk_bytes.into(),
-                        stake: (*i as i64).into(),
+                        stake: (*i as u64).into(),
                     }
                 })
                 .collect();
@@ -468,7 +468,7 @@ async fn genesis_from_input_files_should_detect_an_existing_bonds_file_in_the_de
                     let pk_bytes = StringOps::decode_hex(v.clone()).expect("Failed to decode hex");
                     Bond {
                         validator: pk_bytes.into(),
-                        stake: (*i as i64).into(),
+                        stake: (*i as u64).into(),
                     }
                 })
                 .collect();

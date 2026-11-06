@@ -393,7 +393,7 @@ impl TestFixture {
         let deploy_timestamp = 0i64;
 
         // Extract bonds from genesis validators for bap
-        let bonds: HashMap<PublicKey, num_bigint::BigInt> = genesis_params
+        let bonds: HashMap<PublicKey, shared::rust::token_amount::TokenAmount> = genesis_params
             .proof_of_stake
             .validators
             .iter()

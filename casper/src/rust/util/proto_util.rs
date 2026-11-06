@@ -21,6 +21,7 @@ use num_bigint::BigInt;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::dag::observation_work::{NoopWork, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
+use shared::rust::token_amount::TokenAmount;
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
@@ -123,7 +124,7 @@ fn weight_map_from_state(
     state
         .bonds
         .iter()
-        .map(|bond| (bond.validator.clone(), bond.stake.clone()))
+        .map(|bond| (bond.validator.clone(), bond.stake.to_bigint()))
         .collect()
 }
 
@@ -140,7 +141,11 @@ pub fn min_total_validator_weight(
 ) -> Result<BigInt, KvStoreError> {
     dag.lookup(block_hash).map(|block_metadata_opt| {
         let block_metadata = block_metadata_opt.expect("Block metadata should exist");
-        let mut sorted_weights: Vec<BigInt> = block_metadata.weight_map.values().cloned().collect();
+        let mut sorted_weights: Vec<BigInt> = block_metadata
+            .weight_map
+            .values()
+            .map(TokenAmount::to_bigint)
+            .collect();
         sorted_weights.sort();
         sorted_weights
             .iter()
@@ -209,7 +214,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
             Ok(parent_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
+                .map(TokenAmount::to_bigint)
                 .unwrap_or_default())
         }
         None => {
@@ -217,7 +222,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
             Ok(block_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
+                .map(TokenAmount::to_bigint)
                 .unwrap_or_default())
         }
     }
@@ -1099,7 +1104,7 @@ mod fork_choice_b1_repro_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 7i64.into());
+        wm.insert(v.clone(), 7u64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -1715,11 +1720,11 @@ mod merkle_block_hash_tests {
         use prost::Message;
         let first = Bond {
             validator: Bytes::from_static(b"v"),
-            stake: shared::rust::asi_amount::maximum(),
+            stake: TokenAmount::max(),
         };
         let second = Bond {
             validator: Bytes::from_static(b"v\x01"),
-            stake: BigInt::from(1) << 248,
+            stake: TokenAmount::new(BigInt::from(1) << 248).unwrap(),
         };
         let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(
             LEAF_BOND,

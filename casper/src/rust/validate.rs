@@ -518,11 +518,11 @@ impl Validate {
                     parent_bonds
                         .entry(bond.validator.clone())
                         .and_modify(|existing| {
-                            if bond.stake > *existing {
-                                *existing = bond.stake.clone();
+                            if bond.stake.as_bigint() > existing {
+                                *existing = bond.stake.to_bigint();
                             }
                         })
-                        .or_insert_with(|| bond.stake.clone());
+                        .or_insert_with(|| bond.stake.to_bigint());
                 }
             }
             if parent_bonds.is_empty() {
@@ -1745,7 +1745,7 @@ impl Validate {
         let bonds = proto_util::bonds(block);
         let bonds_by_validator: HashMap<&Validator, BigInt> = bonds
             .iter()
-            .map(|bond| (&bond.validator, bond.stake.clone()))
+            .map(|bond| (&bond.validator, bond.stake.to_bigint()))
             .collect();
         let mut slash_targets = HashSet::new();
 
@@ -1973,11 +1973,11 @@ impl Validate {
     /// All of deploys must have greater or equal phloPrice than minPhloPrice
     pub fn phlo_price(
         b: &BlockMessage,
-        min_phlo_price: num_bigint::BigInt,
+        min_phlo_price: &shared::rust::token_amount::TokenAmount,
     ) -> ValidBlockProcessing {
         if b.body.deploys.iter().all(|deploy| {
             deploy.deploy.data.validate_amounts().is_ok()
-                && deploy.deploy.data.phlo_price >= min_phlo_price
+                && deploy.deploy.data.phlo_price >= *min_phlo_price
         }) {
             Either::Right(ValidBlock::Valid)
         } else {

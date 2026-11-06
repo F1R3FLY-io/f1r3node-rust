@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/genesis/contracts/ProofOfStake.scala
 
-use num_bigint::BigInt;
+use shared::rust::token_amount::TokenAmount;
 
 use super::validator::Validator;
 
@@ -9,8 +9,8 @@ use super::validator::Validator;
 // TODO: Remove hardcoded keys from standard deploys: https://rchain.atlassian.net/browse/RCHAIN-3321?atlOrigin=eyJpIjoiNDc0NjE4YzYxOTRkNDcyYjljZDdlOWMxYjE1NWUxNjIiLCJwIjoiaiJ9 - OLD
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProofOfStake {
-    pub minimum_bond: BigInt,
-    pub maximum_bond: BigInt,
+    pub minimum_bond: TokenAmount,
+    pub maximum_bond: TokenAmount,
     pub validators: Vec<Validator>,
     pub epoch_length: i32,
     pub quarantine_length: i32,
@@ -18,22 +18,12 @@ pub struct ProofOfStake {
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: num_bigint::BigInt,
+    pub min_phlo_price: TokenAmount,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
 }
 
 impl ProofOfStake {
-    pub fn validate_amounts(&self) -> Result<(), String> {
-        shared::rust::asi_amount::validate(&self.minimum_bond)?;
-        shared::rust::asi_amount::validate(&self.maximum_bond)?;
-        shared::rust::asi_amount::validate(&self.min_phlo_price)?;
-        for validator in &self.validators {
-            shared::rust::asi_amount::validate(&validator.stake)?;
-        }
-        Ok(())
-    }
-
     pub fn fault_tolerance_threshold_to_ppm(threshold: f32) -> i64 {
         ((threshold as f64) * 1_000_000.0).round() as i64
     }

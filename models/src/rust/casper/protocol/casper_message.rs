@@ -7,6 +7,7 @@ use num_bigint::BigInt;
 use prost::Message;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::{Blake2b256Hash, LENGTH as HASH_LENGTH};
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporterInstance;
+use shared::rust::token_amount::TokenAmount;
 use shared::rust::{Byte, ByteVector};
 
 use crate::casper::system_deploy_data_proto::SystemDeploy;
@@ -1049,7 +1050,7 @@ impl ProcessedDeploy {
     pub fn refund_amount(&self) -> BigInt {
         (BigInt::from(self.deploy.data.phlo_limit) - BigInt::from(self.cost.cost))
             .max(BigInt::from(0))
-            * &self.deploy.data.phlo_price
+            * self.deploy.data.phlo_price.as_bigint()
     }
 
     pub fn empty(deploy: Signed<DeployData>) -> Self {
@@ -1291,9 +1292,9 @@ pub struct DeployData {
     pub term: String,
     #[serde(rename = "timestamp")]
     pub time_stamp: i64,
-    #[serde(rename = "phloPrice", with = "shared::rust::asi_amount")]
+    #[serde(rename = "phloPrice")]
     #[schema(value_type = String)]
-    pub phlo_price: num_bigint::BigInt,
+    pub phlo_price: TokenAmount,
     #[serde(rename = "phloLimit")]
     pub phlo_limit: i64,
     #[serde(rename = "validAfterBlockNumber")]
@@ -1316,14 +1317,15 @@ impl ToMessage for DeployData {
 }
 
 impl DeployData {
-    pub fn total_phlo_charge(&self) -> BigInt { self.phlo_limit * &self.phlo_price }
+    pub fn total_phlo_charge(&self) -> BigInt { self.phlo_limit * self.phlo_price.as_bigint() }
 
     pub fn validate_amounts(&self) -> Result<(), String> {
-        shared::rust::asi_amount::validate(&self.phlo_price)?;
         if self.phlo_limit < 0 {
             return Err("Phlo limit must be non-negative".into());
         }
-        shared::rust::asi_amount::validate(&self.total_phlo_charge())
+        TokenAmount::new(self.total_phlo_charge())
+            .map(|_| ())
+            .map_err(|error| format!("maximum phlo charge: {error}"))
     }
 
     /// Returns true if this deploy has a time-based expiration set
@@ -1354,7 +1356,7 @@ impl DeployData {
         let data = Self {
             term: proto.term,
             time_stamp: proto.timestamp,
-            phlo_price: shared::rust::asi_amount::decode(&proto.phlo_price)?,
+            phlo_price: TokenAmount::from_wire(&proto.phlo_price)?,
             phlo_limit: proto.phlo_limit,
             valid_after_block_number: proto.valid_after_block_number,
             shard_id: proto.shard_id,
@@ -1404,10 +1406,7 @@ impl DeployData {
         DeployDataProto {
             term: dd.term,
             timestamp: dd.time_stamp,
-            phlo_price: shared::rust::asi_amount::encode(&dd.phlo_price)
-                .expect("validated phlo price")
-                .to_vec()
-                .into(),
+            phlo_price: dd.phlo_price.to_wire().to_vec().into(),
             phlo_limit: dd.phlo_limit,
             valid_after_block_number: dd.valid_after_block_number,
             shard_id: dd.shard_id,
@@ -1428,10 +1427,7 @@ impl DeployData {
         DeployDataProto {
             term: dd.data.term.clone(),
             timestamp: dd.data.time_stamp,
-            phlo_price: shared::rust::asi_amount::encode(&dd.data.phlo_price)
-                .expect("validated phlo price")
-                .to_vec()
-                .into(),
+            phlo_price: dd.data.phlo_price.to_wire().to_vec().into(),
             phlo_limit: dd.data.phlo_limit,
             valid_after_block_number: dd.data.valid_after_block_number,
             shard_id: dd.data.shard_id.clone(),
@@ -1612,24 +1608,21 @@ impl CommEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bond {
     pub validator: ByteString,
-    pub stake: BigInt,
+    pub stake: TokenAmount,
 }
 
 impl Bond {
     pub fn from_proto(proto: BondProto) -> Result<Self, String> {
         Ok(Self {
             validator: proto.validator,
-            stake: shared::rust::asi_amount::decode(&proto.stake)?,
+            stake: TokenAmount::from_wire(&proto.stake)?,
         })
     }
 
     pub fn to_proto(self) -> BondProto {
         BondProto {
             validator: self.validator,
-            stake: shared::rust::asi_amount::encode(&self.stake)
-                .expect("validated bond amount")
-                .to_vec()
-                .into(),
+            stake: self.stake.to_wire().to_vec().into(),
         }
     }
 }
@@ -1970,11 +1963,11 @@ mod tests {
             i64::MAX.into(),
             BigInt::from(1) << 63usize,
             BigInt::from(1) << 128usize,
-            shared::rust::asi_amount::maximum(),
+            TokenAmount::max().into_bigint(),
         ] {
             let bond = Bond {
                 validator: Bytes::from_static(b"validator"),
-                stake,
+                stake: TokenAmount::new(stake).unwrap(),
             };
             let wire = bond.clone().to_proto();
             assert_eq!(wire.stake.len(), 32);
@@ -2198,7 +2191,8 @@ mod tests {
             empty
         );
 
-        let expected_refund = (deploy.data.phlo_limit - 100).max(0) * deploy.data.phlo_price;
+        let expected_refund =
+            (deploy.data.phlo_limit - 100).max(0) * deploy.data.phlo_price.as_bigint();
         assert_eq!(processed.refund_amount(), expected_refund);
 
         let info = processed.clone().to_deploy_info();
@@ -2270,19 +2264,19 @@ mod tests {
             i64::MAX.into(),
             BigInt::from(1) << 63,
             BigInt::from(1) << 128,
-            shared::rust::asi_amount::maximum(),
+            TokenAmount::max().into_bigint(),
         ] {
             let mut data = signed_deploy().data;
             data.phlo_limit = 1;
-            data.phlo_price = price.clone();
+            data.phlo_price = TokenAmount::new(price.clone()).unwrap();
             data.validate_amounts().unwrap();
             assert_eq!(data.total_phlo_charge(), price);
             let bytes = DeployData::encode(data.clone());
             let wire = DeployDataProto::decode(bytes.as_slice()).unwrap();
             assert_eq!(wire.phlo_price.len(), 32);
             assert_eq!(
-                shared::rust::asi_amount::decode(&wire.phlo_price).unwrap(),
-                price
+                TokenAmount::from_wire(&wire.phlo_price).unwrap(),
+                data.phlo_price
             );
             assert_eq!(DeployData::decode(bytes).unwrap(), data);
             let json = serde_json::to_value(&data).unwrap();
@@ -2295,18 +2289,13 @@ mod tests {
     fn fee_limits_reject_invalid_prices_and_charges() {
         let mut data = signed_deploy().data;
         data.phlo_limit = 2;
-        data.phlo_price = shared::rust::asi_amount::maximum();
+        data.phlo_price = TokenAmount::max();
         assert_eq!(
             data.total_phlo_charge(),
-            shared::rust::asi_amount::maximum() * 2
+            TokenAmount::max().into_bigint() * 2
         );
         assert!(data.validate_amounts().is_err());
         assert!(DeployData::decode(DeployData::encode(data.clone())).is_err());
-        for price in [BigInt::from(-1), shared::rust::asi_amount::maximum() + 1] {
-            data.phlo_price = price;
-            assert!(data.validate_amounts().is_err());
-            assert!(serde_json::to_value(&data).is_err());
-        }
         data.phlo_price = 1.into();
         data.phlo_limit = -1;
         assert!(data.validate_amounts().is_err());
@@ -2321,7 +2310,7 @@ mod tests {
             serde_json::json!(1),
             serde_json::json!("-1"),
             serde_json::json!("01"),
-            serde_json::json!((shared::rust::asi_amount::maximum() + BigInt::from(1)).to_string()),
+            serde_json::json!((TokenAmount::max().into_bigint() + 1u8).to_string()),
         ] {
             json["phloPrice"] = price;
             assert!(serde_json::from_value::<DeployData>(json.clone()).is_err());
@@ -2334,7 +2323,7 @@ mod tests {
         use crypto::rust::signatures::secp256k1::Secp256k1;
         let mut data = signed_deploy().data;
         data.phlo_limit = 3;
-        data.phlo_price = BigInt::from(1) << 128;
+        data.phlo_price = TokenAmount::new(BigInt::from(1) << 128).unwrap();
         let signed = Signed::create(
             data.clone(),
             Box::new(Secp256k1),
@@ -2346,14 +2335,15 @@ mod tests {
             signed
         );
         let mut tampered = DeployData::to_proto_ref(&signed);
-        tampered.phlo_price = shared::rust::asi_amount::encode(&(&data.phlo_price + 1))
+        tampered.phlo_price = TokenAmount::new(data.phlo_price.as_bigint() + 1)
             .unwrap()
+            .to_wire()
             .to_vec()
             .into();
         assert!(DeployData::from_proto(tampered).is_err());
         let mut processed = ProcessedDeploy::empty(signed);
         processed.cost.cost = 1;
-        assert_eq!(processed.refund_amount(), &data.phlo_price * 2);
+        assert_eq!(processed.refund_amount(), data.phlo_price.as_bigint() * 2);
         processed.cost.cost = u64::MAX;
         assert_eq!(processed.refund_amount(), BigInt::from(0));
     }

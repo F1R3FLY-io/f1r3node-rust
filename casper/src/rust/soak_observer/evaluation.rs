@@ -407,11 +407,8 @@ fn prepare(snapshot: &DetachedDagSnapshot, meter: &mut CheckedWork) -> Result<()
                 .and_then(|n| n.checked_add(1024))
                 .ok_or("metadata_size_overflow")?,
         );
-        for weight in block.metadata.weight_map.values() {
+        for _ in block.metadata.weight_map.values() {
             meter.step(WorkKind::Oracle).map_err(|e| e.to_string())?;
-            if *weight < BigInt::from(0) {
-                return Err("negative_stake".to_string());
-            }
         }
     }
     let mut body_bytes = 0;

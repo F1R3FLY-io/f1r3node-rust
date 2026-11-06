@@ -11,7 +11,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use humantime::parse_duration;
-use num_bigint::BigInt;
+use shared::rust::token_amount::TokenAmount;
 
 use super::cli_static_provisioning::{
     parse_cli_static_dir, parse_cli_static_file, CliStaticDirArg, CliStaticFileArg,
@@ -103,8 +103,8 @@ pub enum OptionsSubCommand {
     Repl,
     Deploy {
         phlo_limit: i64,
-        #[arg(value_parser = shared::rust::asi_amount::parse)]
-        phlo_price: num_bigint::BigInt,
+        #[arg(value_parser = TokenAmount::parse)]
+        phlo_price: TokenAmount,
         valid_after_block: i64,
         #[arg(value_parser = ValueParser::new(PrivateKeyConverter::parse))]
         private_key: Option<PrivateKey>,
@@ -438,16 +438,16 @@ pub struct RunOptions {
     pub wallets_file: Option<String>,
 
     /// Minimum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-minimum", value_parser = shared::rust::asi_amount::parse)]
-    pub bond_minimum: Option<BigInt>,
+    #[arg(long = "bond-minimum", value_parser = TokenAmount::parse)]
+    pub bond_minimum: Option<TokenAmount>,
 
     /// Configure genesis blockNumber for hard fork
     #[arg(long = "genesis-block-number")]
     pub genesis_block_number: Option<i64>,
 
     /// Maximum bond accepted by the PoS contract in the genesis block
-    #[arg(long = "bond-maximum", value_parser = shared::rust::asi_amount::parse)]
-    pub bond_maximum: Option<BigInt>,
+    #[arg(long = "bond-maximum", value_parser = TokenAmount::parse)]
+    pub bond_maximum: Option<TokenAmount>,
 
     /// The length of the validation epoch in blocks
     #[arg(long = "epoch-length")]
@@ -530,8 +530,8 @@ pub struct RunOptions {
 
     /// MinPhloPrice
     #[arg(long = "min-phlo-price")]
-    #[arg(value_parser = shared::rust::asi_amount::parse)]
-    pub min_phlo_price: Option<num_bigint::BigInt>,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub min_phlo_price: Option<TokenAmount>,
 
     /// Enable ceremony master mode (creates genesis block if none found)
     #[arg(long = "ceremony-master-mode", action = ArgAction::SetTrue)]
@@ -696,8 +696,8 @@ pub struct DeployOptions {
 
     /// The price of phlo for this transaction in units dust/phlo
     #[arg(long = "phlo-price")]
-    #[arg(value_parser = shared::rust::asi_amount::parse)]
-    pub phlo_price: num_bigint::BigInt,
+    #[arg(value_parser = TokenAmount::parse)]
+    pub phlo_price: TokenAmount,
 
     /// Set this value to one less than the current block height
     #[arg(long = "valid-after-block-number")]

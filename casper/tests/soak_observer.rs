@@ -1246,7 +1246,7 @@ fn bonded_block(
         .iter()
         .map(|(v, stake)| Bond {
             validator: Bytes::from(vec![*v; 65]),
-            stake: (*stake).into(),
+            stake: u64::try_from(*stake).expect("fixture stake").into(),
         })
         .collect();
     block
@@ -2307,32 +2307,10 @@ fn update_display_metadata(
 }
 
 #[tokio::test]
-async fn display_metadata_rejects_negative_weights_at_storage_boundary() {
-    let fixture = Fixture::new().await;
-    for weights in [
-        BTreeMap::from([(validator(7), -1), (validator(8), 1)]),
-        BTreeMap::from([(validator(7), -1)]),
-    ] {
-        let before = fixture.stored();
-        let result = update_display_metadata(&fixture, |metadata| {
-            metadata.weight_map = weights
-                .into_iter()
-                .map(|(key, value)| (key, value.into()))
-                .collect();
-        });
-        assert!(matches!(
-            result,
-            Err(shared::rust::store::key_value_store::KvStoreError::SerializationError(_))
-        ));
-        assert_eq!(before, fixture.stored());
-    }
-}
-
-#[tokio::test]
 async fn snapshot_and_scratch_view_preserve_uint256_stakes() {
     let original = Fixture::new().await;
     let mut chain = original.chain.clone();
-    let amount = shared::rust::asi_amount::maximum();
+    let amount = shared::rust::token_amount::TokenAmount::max();
     for block in &mut chain {
         block.body.state.bonds[0].stake = amount.clone();
     }
@@ -2367,7 +2345,7 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
         (0, 0, 0),
         (1, 2, 0x3f2a_aaab),
         (16_777_217, 16_777_219, 0x3f7f_ffff),
-        (i64::MAX / 2, i64::MAX / 2, 0x3f80_0000),
+        ((i64::MAX / 2) as u64, (i64::MAX / 2) as u64, 0x3f80_0000),
     ] {
         update_display_metadata(&fixture, |m| {
             m.weight_map = BTreeMap::from([(validator(7), a.into()), (validator(8), b.into())])

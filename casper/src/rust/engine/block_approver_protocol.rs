@@ -11,9 +11,9 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlockCandidate, BlockApproval, ProcessedDeploy, ProcessedSystemDeploy, UnapprovedBlock,
 };
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
-use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
+use shared::rust::token_amount::TokenAmount;
 use tracing::{info, warn};
 
 use crate::rust::errors::CasperError;
@@ -31,16 +31,16 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     validator_id: ValidatorIdentity,
     pub deploy_timestamp: i64,
     pub vaults: Vec<Vault>,
-    pub bonds_bytes: HashMap<Bytes, BigInt>, // helper map keyed by raw bytes
-    pub minimum_bond: BigInt,
-    pub maximum_bond: BigInt,
+    pub bonds_bytes: HashMap<Bytes, TokenAmount>, // helper map keyed by raw bytes
+    pub minimum_bond: TokenAmount,
+    pub maximum_bond: TokenAmount,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: num_bigint::BigInt,
+    pub min_phlo_price: TokenAmount,
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
@@ -77,16 +77,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         validator_id: ValidatorIdentity,
         deploy_timestamp: i64,
         vaults: Vec<Vault>,
-        bonds: HashMap<crypto::rust::public_key::PublicKey, BigInt>,
-        minimum_bond: BigInt,
-        maximum_bond: BigInt,
+        bonds: HashMap<crypto::rust::public_key::PublicKey, TokenAmount>,
+        minimum_bond: TokenAmount,
+        maximum_bond: TokenAmount,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: num_bigint::BigInt,
+        min_phlo_price: TokenAmount,
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
@@ -111,7 +111,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             )));
         }
 
-        let bonds_bytes: HashMap<Bytes, BigInt> = bonds
+        let bonds_bytes: HashMap<Bytes, TokenAmount> = bonds
             .iter()
             .map(|(pk, stake)| (pk.bytes.clone(), stake.clone()))
             .collect();
@@ -181,16 +181,16 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
         required_sigs: i32,
         _deploy_timestamp: i64,
         vaults: &Vec<Vault>,
-        bonds: &HashMap<Bytes, BigInt>,
-        minimum_bond: BigInt,
-        maximum_bond: BigInt,
+        bonds: &HashMap<Bytes, TokenAmount>,
+        minimum_bond: TokenAmount,
+        maximum_bond: TokenAmount,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: num_bigint::BigInt,
+        min_phlo_price: TokenAmount,
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
@@ -213,7 +213,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             return Err("Candidate must not contain system deploys.".to_string());
         }
 
-        let block_bonds: HashMap<Bytes, BigInt> = block
+        let block_bonds: HashMap<Bytes, TokenAmount> = block
             .body
             .state
             .bonds
@@ -286,7 +286,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             crate::rust::genesis::genesis::Genesis::default_blessed_terms(
                 &pos_params,
                 vaults,
-                i64::MAX.into(),
+                (i64::MAX as u64).into(),
                 shard_id,
                 native_token_name,
                 native_token_symbol,
@@ -349,7 +349,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .await
             .map_err(|e| format!("{:?}", e))?;
 
-        let tuplespace_bonds_map: HashMap<Bytes, BigInt> = tuplespace_bonds
+        let tuplespace_bonds_map: HashMap<Bytes, TokenAmount> = tuplespace_bonds
             .into_iter()
             .map(|b| (b.validator, b.stake))
             .collect();

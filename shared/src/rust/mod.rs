@@ -1,4 +1,3 @@
-pub mod asi_amount;
 pub mod blocking;
 pub mod dag;
 pub mod grpc;
@@ -7,6 +6,7 @@ pub mod metrics_constants;
 pub mod metrics_semaphore;
 pub mod shared;
 pub mod store;
+pub mod token_amount;
 pub mod tracing_init;
 
 pub type ByteVector = Vec<u8>;
@@ -61,6 +61,8 @@ pub mod serde_btreemap_bytes {
     use prost::bytes::Bytes;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+    use super::token_amount::TokenAmount;
+
     // Helper struct for serializing Bytes as keys
     #[derive(Eq, Ord, PartialOrd)]
     struct BytesKey(Bytes);
@@ -88,30 +90,27 @@ pub mod serde_btreemap_bytes {
         }
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct Amount(#[serde(with = "super::asi_amount")] num_bigint::BigInt);
-
     pub fn serialize<S>(
-        map: &BTreeMap<Bytes, num_bigint::BigInt>,
+        map: &BTreeMap<Bytes, TokenAmount>,
         serializer: S,
     ) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         map.iter()
-            .map(|(key, value)| (BytesKey(key.clone()), Amount(value.clone())))
+            .map(|(key, value)| (BytesKey(key.clone()), value))
             .collect::<BTreeMap<_, _>>()
             .serialize(serializer)
     }
 
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<BTreeMap<Bytes, num_bigint::BigInt>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<BTreeMap<Bytes, TokenAmount>, D::Error>
     where D: Deserializer<'de> {
-        Ok(BTreeMap::<BytesKey, Amount>::deserialize(deserializer)?
-            .into_iter()
-            .map(|(key, value)| (key.0, value.0))
-            .collect())
+        Ok(
+            BTreeMap::<BytesKey, TokenAmount>::deserialize(deserializer)?
+                .into_iter()
+                .map(|(key, value)| (key.0, value))
+                .collect(),
+        )
     }
 }
 
@@ -185,7 +184,8 @@ mod tests {
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
     struct MapWrapper(
-        #[serde(with = "super::serde_btreemap_bytes")] BTreeMap<Bytes, num_bigint::BigInt>,
+        #[serde(with = "super::serde_btreemap_bytes")]
+        BTreeMap<Bytes, super::token_amount::TokenAmount>,
     );
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -220,8 +220,11 @@ mod tests {
     #[test]
     fn serde_btreemap_bytes_round_trips_through_bincode() {
         let mut map = BTreeMap::new();
-        map.insert(Bytes::from_static(b"alpha"), super::asi_amount::maximum());
-        map.insert(Bytes::from_static(b"beta"), i64::MAX.into());
+        map.insert(
+            Bytes::from_static(b"alpha"),
+            super::token_amount::TokenAmount::max(),
+        );
+        map.insert(Bytes::from_static(b"beta"), u64::MAX.into());
         map.insert(Bytes::new(), 0.into());
         let original = MapWrapper(map);
         let encoded = bincode::serialize(&original).unwrap();

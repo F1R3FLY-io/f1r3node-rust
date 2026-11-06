@@ -42,7 +42,7 @@ pub fn source_deploy(
     source: String,
     timestamp: i64,
     phlo_limit: Option<i64>,
-    phlo_price: Option<num_bigint::BigInt>,
+    phlo_price: Option<shared::rust::token_amount::TokenAmount>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,
@@ -93,7 +93,7 @@ pub fn source_deploy_now(
 pub fn source_deploy_now_full(
     source: String,
     phlo_limit: Option<i64>,
-    phlo_price: Option<num_bigint::BigInt>,
+    phlo_price: Option<shared::rust::token_amount::TokenAmount>,
     sec: Option<PrivateKey>,
     valid_after_block_number: Option<i64>,
     shard_id: Option<String>,

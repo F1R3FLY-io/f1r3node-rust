@@ -296,7 +296,10 @@ proptest! {
             let bonds: Vec<Bond> = validators
                 .iter()
                 .zip(shape.stakes.iter())
-                .map(|(v, stake)| Bond { validator: v.clone(), stake: (*stake).into() })
+                .map(|(v, stake)| Bond {
+                    validator: v.clone(),
+                    stake: u64::try_from(*stake).expect("fixture stake").into(),
+                })
                 .collect();
             let genesis = create_genesis_block(
                 &mut block_store,

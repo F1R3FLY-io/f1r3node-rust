@@ -246,7 +246,9 @@ async fn selected_parent_metadata_matches_block_bonds_after_admission() {
 
 #[tokio::test]
 async fn block_api_rejects_deploy_from_unbonded_validator() {
-    fn bonds_without_first(validators: Vec<PublicKey>) -> HashMap<PublicKey, num_bigint::BigInt> {
+    fn bonds_without_first(
+        validators: Vec<PublicKey>,
+    ) -> HashMap<PublicKey, shared::rust::token_amount::TokenAmount> {
         GenesisBuilder::create_bonds(validators.into_iter().skip(1).collect())
     }
 
@@ -626,7 +628,7 @@ async fn multi_parent_casper_should_reject_deploy_with_phlo_price_lower_than_min
     // The API reads the floor from the running casper's shard conf (1 in the
     // test fixture), so an underpriced deploy is one below that value.
     let min_phlo_price = 1i64;
-    let phlo_price = 0i64;
+    let phlo_price = 0u64;
     let is_node_read_only = false;
     let shard_id = genesis.genesis_block.shard_id.clone();
 
@@ -696,7 +698,7 @@ async fn large_stakes_survive_proposal_peer_replay_and_metadata() {
         .state
         .bonds
         .iter()
-        .all(|bond| bond.stake > i64::MAX.into()));
+        .all(|bond| bond.stake > (i64::MAX as u64).into()));
     let mut nodes = TestNode::create_network(genesis.clone(), 2, None, None, None, None)
         .await
         .unwrap();
@@ -733,6 +735,7 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
     use num_bigint::BigInt;
     use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoMap};
     use rholang::rust::interpreter::util::vault_address::VaultAddress;
+    use shared::rust::token_amount::TokenAmount;
 
     async fn balance(node: &TestNode, hash: &Bytes, address: &str) -> BigInt {
         let source = r#"
@@ -765,12 +768,12 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
         .iter_mut()
         .find(|vault| vault.vault_address == payer)
         .unwrap()
-        .initial_balance = funding.clone();
+        .initial_balance = TokenAmount::new(funding.clone()).unwrap();
     for validator in &mut parameters.2.proof_of_stake.validators {
-        validator.stake = BigInt::from(1) << 190;
+        validator.stake = TokenAmount::new(BigInt::from(1) << 190).unwrap();
     }
-    parameters.2.proof_of_stake.maximum_bond = shared::rust::asi_amount::maximum();
-    parameters.2.proof_of_stake.min_phlo_price = BigInt::from(1) << 65;
+    parameters.2.proof_of_stake.maximum_bond = TokenAmount::max();
+    parameters.2.proof_of_stake.min_phlo_price = TokenAmount::new(BigInt::from(1) << 65).unwrap();
     parameters.2.proof_of_stake.epoch_length = 1;
     let genesis = GenesisBuilder::new()
         .build_genesis_with_parameters(Some(parameters))
@@ -809,7 +812,7 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
             term,
             timestamp,
             Some(5_000_000),
-            Some(price.clone()),
+            Some(TokenAmount::new(price.clone()).unwrap()),
             None,
             None,
             Some(genesis.genesis_block.shard_id.clone()),
@@ -828,7 +831,9 @@ async fn uint256_fees_transfers_and_rewards_survive_peer_replay() {
             processed.deploy.data.total_phlo_charge() - processed.refund_amount(),
             fee
         );
-        assert!(&fee * &block.body.state.bonds[0].stake > shared::rust::asi_amount::maximum());
+        assert!(
+            &fee * block.body.state.bonds[0].stake.as_bigint() > TokenAmount::max().into_bigint()
+        );
         paid += fee;
         for node in &nodes {
             assert!(node.casper.dag_contains(&block.block_hash));

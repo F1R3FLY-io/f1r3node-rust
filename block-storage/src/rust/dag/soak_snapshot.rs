@@ -770,7 +770,7 @@ impl CanonicalEncoder {
         self.u64(metadata.weight_map.len() as u64)?;
         for (validator, weight) in &metadata.weight_map {
             self.bytes(validator)?;
-            self.bytes(&weight.to_signed_bytes_be())?;
+            self.bytes(&weight.as_bigint().to_signed_bytes_be())?;
         }
         self.i64(metadata.block_number)?;
         self.i32(metadata.sequence_number)?;
