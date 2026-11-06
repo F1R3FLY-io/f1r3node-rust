@@ -400,6 +400,11 @@ async fn a_validator_that_saw_one_sibling_may_cite_it_without_slashing() {
         "r cites x"
     );
     assert!(!carries_slash(&r), "v2 holds no pair, so r slashes nothing");
+    assert!(
+        r.header.parents_hash_list.contains(&x.block_hash),
+        "r has x as a parent: {:?}",
+        r.header.parents_hash_list
+    );
 
     accept(&mut nodes[1], &r, "v1 judges r").await;
 }
