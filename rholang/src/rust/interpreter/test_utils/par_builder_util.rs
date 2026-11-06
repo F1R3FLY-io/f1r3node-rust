@@ -112,6 +112,51 @@ impl ParBuilderUtil {
         }
     }
 
+    // CoC Phase 1b + 2b: build a lambda AnnProc with the given surface-
+    // named params (all untyped). Lambdas with type annotations are
+    // built via `create_ast_lambda_typed`. Position metadata is zeroed —
+    // tests don't assert spans.
+    pub fn create_ast_lambda<'ast>(
+        params: &[&'ast str],
+        body: AnnProc<'ast>,
+        parser: &'ast rholang_parser::RholangParser<'ast>,
+    ) -> AnnProc<'ast> {
+        let pairs: Vec<(Id<'ast>, Option<AnnProc<'ast>>)> = params
+            .iter()
+            .map(|name| {
+                (
+                    Id {
+                        name,
+                        pos: SourcePos { line: 0, col: 0 },
+                    },
+                    None,
+                )
+            })
+            .collect();
+        AnnProc {
+            proc: parser.ast_builder().alloc_lambda(&pairs, body),
+            span: SourceSpan {
+                start: SourcePos { line: 0, col: 0 },
+                end: SourcePos { line: 0, col: 0 },
+            },
+        }
+    }
+
+    // CoC Phase 1b: build an application AnnProc `fun(arg_0, ..., arg_{n-1})`.
+    pub fn create_ast_app<'ast>(
+        fun: AnnProc<'ast>,
+        args: Vec<AnnProc<'ast>>,
+        parser: &'ast rholang_parser::RholangParser<'ast>,
+    ) -> AnnProc<'ast> {
+        AnnProc {
+            proc: parser.ast_builder().alloc_app(fun, &args),
+            span: SourceSpan {
+                start: SourcePos { line: 0, col: 0 },
+                end: SourcePos { line: 0, col: 0 },
+            },
+        }
+    }
+
     // Helper for creating "P + R" (add with par of var)
     pub fn create_ast_add_with_par_of_var<'ast>(
         var1: &'ast str,
