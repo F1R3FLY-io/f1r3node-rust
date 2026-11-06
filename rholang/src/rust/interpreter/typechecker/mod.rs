@@ -1,13 +1,14 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-ix (logical type connectives): synthesis (`synth`) for
-//! ground literals, `SimpleType` connectives, Pi well-formedness,
-//! dependent application, fully-annotated lambdas, β-definitional
-//! equality in `check`, the integer binary operators, `ENeg`,
-//! comparison operators, the boolean connectives on values, and the
-//! logical type connectives (`ConnAnd` / `ConnOr` / `ConnNot` whose
-//! inner slots are themselves types). Process-level typing and
-//! collection types remain future phases.
+//! Phase 4.1a (list types): synthesis (`synth`) for ground literals,
+//! `SimpleType` connectives, Pi well-formedness, dependent application,
+//! fully-annotated lambdas, β-definitional equality in `check`, the
+//! integer binary operators, `ENeg`, comparison operators, the boolean
+//! connectives on values, the logical type connectives, and `EList`
+//! (whose type is `List<T>` where `T` is the LUB of element types).
+//! Matcher integration for `ConnList` patterns, and the remaining
+//! collection kinds (Set / Map / Tuple), arrive in later Phase 4
+//! substages.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -364,6 +365,21 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
             Ok(int_ty)
         }
 
+        // List literal `[e_0, …, e_{n-1}]`. Synth each element and
+        // combine their types into a least-upper-bound via `lub_types`
+        // (currently: all equal → that type; empty list → `Par::default()`
+        // sentinel meaning "unknown element"; otherwise ConnOr of
+        // per-element types). The result is `ConnList(element_type)`.
+        ExprInstance::EListBody(list) => {
+            let element_types: Vec<Par> = list
+                .ps
+                .iter()
+                .map(|p| synth(_ctx, p))
+                .collect::<Result<_, _>>()?;
+            let element = lub_types(element_types);
+            Ok(type_par(ConnectiveInstance::ConnList(element)))
+        }
+
         // A bound variable's type is its entry in the context.
         ExprInstance::EVarBody(evar) => {
             let v = evar
@@ -597,6 +613,39 @@ fn synth_bool_binop(
     Ok(bool_ty)
 }
 
+/// Combine a list of element types into a single type via least
+/// upper bound.
+///
+/// - Empty list: `Par::default()` sentinel ("element type unknown").
+/// - All elements β-def-equal: that common type.
+/// - Otherwise: a `ConnOrBody` of the deduplicated element types.
+fn lub_types(mut types: Vec<Par>) -> Par {
+    if types.is_empty() {
+        return Par::default();
+    }
+    if types.len() == 1 {
+        return types.pop().unwrap();
+    }
+    // Deduplicate under β-def-eq.
+    let mut unique: Vec<Par> = Vec::new();
+    for t in types {
+        if !unique.iter().any(|u| def_eq(u, &t)) {
+            unique.push(t);
+        }
+    }
+    if unique.len() == 1 {
+        return unique.pop().unwrap();
+    }
+    use models::rhoapi::ConnectiveBody;
+    let conn_used = unique.iter().any(|p| p.connective_used);
+    let mut par = Par::default().with_connectives(vec![Connective {
+        connective_instance: Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps: unique })),
+    }]);
+    par.connective_used = true;
+    let _ = conn_used;
+    par
+}
+
 /// Wrap the given param types and codomain into a Pi Par. Used by
 /// lambda synthesis to produce the inferred type.
 fn build_pi(param_types: Vec<Par>, codomain: Par) -> Par {
@@ -699,6 +748,15 @@ fn synth_connective(ctx: &Context, conn: &Connective) -> Result<Par, TypeError> 
             Ok(type_univ)
         }
 
+        // `List<T>` is a type when `T` is a type (or empty-Par sentinel
+        // for an unknown element type, which is accepted vacuously).
+        ConnectiveInstance::ConnList(element) => {
+            if !is_empty_par(element) {
+                check(ctx, element, &type_univ)?;
+            }
+            Ok(type_univ)
+        }
+
         other => Err(TypeError::Unsupported(format!(
             "no typing rule for connective kind yet: {:?}",
             discriminant_name_conn(other)
@@ -791,6 +849,7 @@ fn discriminant_name_conn(inst: &ConnectiveInstance) -> &'static str {
         ConnectiveInstance::ConnBigInt(_) => "ConnBigInt",
         ConnectiveInstance::ConnBigRat(_) => "ConnBigRat",
         ConnectiveInstance::ConnFixedPointBody(_) => "ConnFixedPoint",
+        ConnectiveInstance::ConnList(_) => "ConnList",
     }
 }
 
@@ -1586,6 +1645,81 @@ mod tests {
         par.connective_used = true;
         let ty = synth(&ctx, &par).unwrap();
         assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
+    }
+
+    fn elist_par(elements: Vec<Par>) -> Par {
+        use models::rhoapi::{EList, Expr};
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn expect_conn_list(par: &Par) -> &Par {
+        match par.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+            Some(ConnectiveInstance::ConnList(elem)) => elem,
+            other => panic!("expected ConnList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synth_list_of_ints_is_list_of_int() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let par = elist_par(vec![gint_par(1), gint_par(2), gint_par(3)]);
+        let ty = synth(&ctx, &par).unwrap();
+        let elem = expect_conn_list(&ty);
+        assert!(def_eq(elem, &int_ty));
+    }
+
+    #[test]
+    fn synth_empty_list_has_unknown_element() {
+        let ctx = Context::new();
+        let par = elist_par(Vec::new());
+        let ty = synth(&ctx, &par).unwrap();
+        let elem = expect_conn_list(&ty);
+        assert!(is_empty_par(elem), "empty list's element type is Par::default()");
+    }
+
+    #[test]
+    fn synth_heterogeneous_list_has_or_element() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let string_ty = type_par(ConnectiveInstance::ConnString(true));
+        let par = elist_par(vec![gint_par(1), gstring_par("x"), gint_par(2)]);
+        let ty = synth(&ctx, &par).unwrap();
+        let elem = expect_conn_list(&ty);
+        // Should be ConnOr of Int and String.
+        match elem.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+            Some(ConnectiveInstance::ConnOrBody(body)) => {
+                assert_eq!(body.ps.len(), 2, "deduped to two entries");
+                assert!(body.ps.iter().any(|p| def_eq(p, &int_ty)));
+                assert!(body.ps.iter().any(|p| def_eq(p, &string_ty)));
+            }
+            other => panic!("expected ConnOr for heterogeneous list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synth_conn_list_type_is_type_when_element_is_type() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let list_ty = type_par(ConnectiveInstance::ConnList(int_ty));
+        let ty = synth(&ctx, &list_ty).unwrap();
+        assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
+    }
+
+    #[test]
+    fn synth_conn_list_rejects_non_type_element() {
+        let ctx = Context::new();
+        // ConnList(gint_par(42)): element is a value, not a type.
+        let bad = type_par(ConnectiveInstance::ConnList(gint_par(42)));
+        let err = synth(&ctx, &bad).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
     }
 
     #[test]

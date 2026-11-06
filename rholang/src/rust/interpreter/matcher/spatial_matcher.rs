@@ -224,6 +224,12 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            // CoC Phase 4.1a stub: real `List<T>` matching lands in
+            // 4.1b (recursively checks every target element against T).
+            // For now the pattern never matches; typechecker-level tests
+            // exercise synth independently.
+            Some(ConnList(_)) => None,
+
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
             // Type". For now, match the universe constant, Pi types, and

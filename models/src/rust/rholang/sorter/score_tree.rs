@@ -286,6 +286,7 @@ impl Score {
     pub const CONNECTIVE_BIG_RAT: i32 = 417;
     pub const CONNECTIVE_FIXED_POINT: i32 = 418;
     pub const CONNECTIVE_TYPE: i32 = 419;
+    pub const CONNECTIVE_LIST: i32 = 420;
 
     pub const PAR: i32 = 999;
 }

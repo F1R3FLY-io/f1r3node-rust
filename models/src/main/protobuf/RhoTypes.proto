@@ -566,6 +566,12 @@ message Connective {
     // Pattern-matching semantics arrive with the typechecker (Phase 2d
     // onward); for now `Type` flows through as an opaque value.
     bool conn_type = 20;
+    // CoC Phase 4.1: `List<T>` type. The inner Par is the element
+    // type. Empty-Par element means `List<_>` (unknown element). The
+    // typechecker builds this from an EList by LUB-ing element types;
+    // the matcher succeeds when every target element has the element
+    // type.
+    Par conn_list = 21;
   }
 }
 

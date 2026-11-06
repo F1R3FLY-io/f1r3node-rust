@@ -197,6 +197,15 @@ impl ParCount {
 
                 (p_count_1.clone(), p_count_1)
             }
+
+            // CoC Phase 4.1: `List<T>` matches a single list value
+            // (stored on the target's exprs as an EListBody).
+            Some(ConnList(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
         }
     }
 }

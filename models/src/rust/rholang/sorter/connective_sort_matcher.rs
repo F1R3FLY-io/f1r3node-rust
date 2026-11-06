@@ -217,6 +217,21 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                 scored_simple(Score::CONNECTIVE_TYPE, *b, ConnectiveInstance::ConnType)
             }
 
+            Some(ConnectiveInstance::ConnList(element)) => {
+                let scored_element = ParSortMatcher::sort_match(element);
+                ScoredTerm {
+                    term: Connective {
+                        connective_instance: Some(ConnectiveInstance::ConnList(
+                            scored_element.term,
+                        )),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::CONNECTIVE_LIST,
+                        vec![scored_element.score],
+                    ),
+                }
+            }
+
             None => ScoredTerm {
                 term: Connective::default(),
                 score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),

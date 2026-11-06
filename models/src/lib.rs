@@ -979,6 +979,7 @@ impl PartialEq for ConnectiveInstance {
                 ConnectiveInstance::ConnFixedPointBody(a),
                 ConnectiveInstance::ConnFixedPointBody(b),
             ) => a == b,
+            (ConnectiveInstance::ConnList(a), ConnectiveInstance::ConnList(b)) => a == b,
             _ => false,
         }
     }
@@ -1007,6 +1008,7 @@ impl Hash for ConnectiveInstance {
             ConnectiveInstance::ConnBigInt(a) => a.hash(state),
             ConnectiveInstance::ConnBigRat(a) => a.hash(state),
             ConnectiveInstance::ConnFixedPointBody(a) => a.hash(state),
+            ConnectiveInstance::ConnList(a) => a.hash(state),
         }
     }
 }
