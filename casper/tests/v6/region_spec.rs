@@ -1727,13 +1727,23 @@ async fn innermost(install: &str, bytes: usize) -> Innermost {
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
     let first = executor
-        .execute(&pre, vec![envelope(install, 1, &alice, 30_000, 1)], block_data(&proposer))
+        .execute(
+            &pre,
+            vec![envelope(install, 1, &alice, 30_000, 1)],
+            block_data(&proposer),
+        )
         .await
         .expect("the service installs");
     assert!(!first.processed[0].is_failed, "{:?}", first.processed[0]);
     let root = first.settled_root.clone();
     let before = balance(&rm, &root, &alice).await;
-    let call = envelope(&format!(r#"@"svc"!({})"#, payload(bytes)), 2, &bob, 50_000, 1);
+    let call = envelope(
+        &format!(r#"@"svc"!({})"#, payload(bytes)),
+        2,
+        &bob,
+        50_000,
+        1,
+    );
     let played = executor
         .execute(&root, vec![call], block_data(&proposer))
         .await
@@ -1759,7 +1769,10 @@ fn layered(inner: Option<u64>, outer: u64) -> String {
 #[tokio::test]
 async fn the_innermost_seal_bounds_the_firing_when_it_is_smaller_than_the_enclosing_one() {
     let run = innermost(&layered(Some(1_500), 20_000), 2_000).await;
-    assert!(run.played.processed[0].is_failed, "P passes n = 1,500, so the run fails");
+    assert!(
+        run.played.processed[0].is_failed,
+        "P passes n = 1,500, so the run fails"
+    );
     assert_eq!(run.out, 0);
     assert_eq!(run.paid, 1_500 + 1, "the owner pays n and one cell, not m");
     assert_eq!(run.replayed, run.played.settled_root);
@@ -1768,7 +1781,10 @@ async fn the_innermost_seal_bounds_the_firing_when_it_is_smaller_than_the_enclos
 #[tokio::test]
 async fn the_innermost_seal_bounds_the_firing_when_it_is_larger_than_the_enclosing_one() {
     let past_m = innermost(&layered(None, 1_500), 400).await;
-    assert!(past_m.played.processed[0].is_failed, "this payload passes m = 1,500");
+    assert!(
+        past_m.played.processed[0].is_failed,
+        "this payload passes m = 1,500"
+    );
     let run = innermost(&layered(Some(20_000), 1_500), 400).await;
     assert!(
         !run.played.processed[0].is_failed,
@@ -1782,7 +1798,10 @@ async fn the_innermost_seal_bounds_the_firing_when_it_is_larger_than_the_enclosi
 #[tokio::test]
 async fn an_undecorated_continuation_is_bounded_by_the_enclosing_seal() {
     let over = innermost(&layered(None, 1_500), 2_000).await;
-    assert!(over.played.processed[0].is_failed, "P passes m = 1,500, so the run fails");
+    assert!(
+        over.played.processed[0].is_failed,
+        "P passes m = 1,500, so the run fails"
+    );
     assert_eq!(over.out, 0);
     assert_eq!(over.paid, 1_500 + 1);
     assert_eq!(over.replayed, over.played.settled_root);
