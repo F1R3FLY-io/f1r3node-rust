@@ -18,6 +18,7 @@ while (($#)); do
         --independent-sizes) mode=independent; shift ;;
         --help|-h)
             printf '%s\n' 'Usage: run-dag-memory-comparison.sh --reference-bin PATH --candidate-bin PATH --reference-revision SHA --out-dir NEW_DIRECTORY [--apply] [--independent-sizes]' 'Default checkpoint mode runs three independent processes per implementation, each growing through 120k/240k/480k, closing and copying its LMDB fixture at each exact size. Latencies exclude warmup separately in each interval. --independent-sizes instead creates three fresh processes at each size. Both binaries must be built from the same harness source. Default plan only. DAG_MEMORY_COUNTS overrides sizes for smoke runs, which do not meet acceptance. Records all JSONL, binary hashes, CPU/memory information and wall-clock labels; no statistical acceptance is inferred from completion. Use a disk filesystem with at least 30 GiB free, not tmpfs.'
+            printf '%s\n' 'Checkpoint copies are taken with writers quiescent; the process-global LMDB environment remains open. In-process reconstruction is not a restart measurement. Use run-dag-restart-comparison.sh afterward for fresh-process restart and legacy migration.'
             exit 0 ;;
         *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
     esac

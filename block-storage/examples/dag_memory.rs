@@ -107,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut window = 1024i64;
     let mut path = None;
     let mut legacy_migration = false;
+    let mut legacy_fixture = false;
     let mut hold_view = false;
     let mut reopen_existing = false;
     let mut checkpoints = Vec::<usize>::new();
@@ -116,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--blocks" => blocks = args.next().ok_or("missing --blocks value")?.parse()?,
             "--window" => window = args.next().ok_or("missing --window value")?.parse()?,
             "--legacy-migration" => legacy_migration = true,
+            "--legacy-fixture" => legacy_fixture = true,
             "--hold-view" => hold_view = true,
             "--reopen-existing" => reopen_existing = true,
             "--checkpoints" => {
@@ -133,7 +135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--help" => {
                 println!("dag_memory --blocks 120000 --window 1024 --data-dir NEW_DIRECTORY [--legacy-migration] [--hold-view] [--checkpoints 120000,240000,480000]\nCheckpoints must end at --blocks. They continue one deterministic history, close the writer at each exact size, save a sibling .checkpoint-SIZE fixture, and reopen before continuing. Each interval excludes its first min(10000, interval_blocks/2) insertions from latency quantiles; peak counters reset after reopening. Checkpoint mode cannot combine with hold-view or legacy-migration; copied fixtures support separate experiments. Run three independent processes per implementation. JSONL reports Rust requested allocation bytes; Linux GNU reports malloc_usable_size live/peak and allocation rounding overhead separately; allocator arenas/free fragmentation, LMDB mappings and OS page cache are excluded. Other targets report usable sizes unavailable. Fixture: ten validators, seven blocks per height, finality lag 32 heights. --legacy-migration removes only the new schema from this fresh fixture before reopening. --hold-view pins a view across the final 10000 insertions and reports release. Latency quantiles use a bounded deterministic reservoir of 4096 samples, not all observations. Proposal/validation and GC experiments run separately.");
-                println!("--reopen-existing uses an EXISTING stopped-writer checkpoint instead of generating blocks; --blocks must match its count. Add --legacy-migration to remove that copy's new schema before measuring migration. Use separate copies for normal reopen, migration, and GC experiments. It cannot combine with checkpoints or hold-view.");
+                println!("Checkpoint copying releases DAG/storage consumers and stops writes, but the process-global LMDB environment remains open. In-process reopen stages measure warm-environment reconstruction, not process restart. --legacy-migration clears the schema first and therefore measures a warm-environment schema rebuild.");
+                println!("--reopen-existing measures a separate process opening an EXISTING stopped-writer checkpoint; --blocks must match its count. Add --legacy-fixture only for an actual pre-change fixture: it labels migration without clearing schema or opening the environment before timing. It conflicts with --legacy-migration. Use disposable copies for restart, migration, and GC. Reopening cannot combine with checkpoints or hold-view. OS page-cache state is uncontrolled; these are not cold-disk measurements.");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument: {arg}").into()),
@@ -141,6 +144,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if blocks < 2 || window <= 0 {
         return Err("blocks must be >= 2 and window must be positive".into());
+    }
+    if legacy_fixture && (!reopen_existing || legacy_migration) {
+        return Err(
+            "--legacy-fixture requires --reopen-existing and conflicts with --legacy-migration"
+                .into(),
+        );
+    }
+    if legacy_fixture && !backend::WINDOWED {
+        return Err("the reference cannot migrate the new DAG schema".into());
     }
     if hold_view && blocks <= 10_000 {
         return Err("--hold-view requires more than 10000 blocks".into());
@@ -181,9 +193,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &storage,
             window,
             if legacy_migration {
-                "migration"
+                "process_warm_schema_rebuild"
+            } else if legacy_fixture {
+                "process_legacy_migration"
             } else {
-                "reopen"
+                "process_restart"
             },
             blocks,
             start.elapsed().as_secs_f64(),
@@ -336,7 +350,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let fixture = PathBuf::from(format!("{}.checkpoint-{count}", path.display()));
             let copy_start = Instant::now();
             copy_closed_fixture(&path, &fixture)?;
-            println!("{{\"stage\":\"checkpoint_fixture\",\"blocks\":{count},\"closed_writer\":true,\"copy_seconds\":{},\"sibling_suffix\":\".checkpoint-{count}\"}}", copy_start.elapsed().as_secs_f64());
+            println!("{{\"stage\":\"checkpoint_fixture\",\"blocks\":{count},\"active_writers\":0,\"environment_closed\":false,\"copy_seconds\":{},\"sibling_suffix\":\".checkpoint-{count}\"}}", copy_start.elapsed().as_secs_f64());
             store_manager = manager(path.clone());
             reset_peaks();
             let reopen_start = Instant::now();
@@ -344,7 +358,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sample(
                 &storage,
                 window,
-                "checkpoint_reopen",
+                "checkpoint_warm_reconstruction",
                 count,
                 reopen_start.elapsed().as_secs_f64(),
             );
@@ -407,9 +421,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &storage,
         window,
         if legacy_migration {
-            "migration"
+            "warm_schema_rebuild"
         } else {
-            "reopen"
+            "warm_reconstruction"
         },
         blocks,
         start.elapsed().as_secs_f64(),

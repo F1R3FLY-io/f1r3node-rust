@@ -106,6 +106,7 @@ sha256sum "$root/casper/tests/dag_consensus_bench.rs" "$root/casper/tests/dag_co
     printf 'rtk cargo build --release --locked --manifest-path %q -p block-storage --features test-internals --example dag_memory\n' "$root/Cargo.toml"
     printf 'rtk proxy sha256sum %q %q\n' "$out/build/release/examples/dag_memory" "$root/target/release/examples/dag_memory"
     printf 'rtk proxy bash %q --reference-bin %q --candidate-bin %q --reference-revision %q --out-dir %q --apply\n' "$root/scripts/bench/run-dag-memory-comparison.sh" "$out/build/release/examples/dag_memory" "$root/target/release/examples/dag_memory" "$revision" "$out/comparison"
+    printf 'rtk proxy bash %q --reference-bin %q --candidate-bin %q --comparison-dir %q --out-dir %q --apply\n' "$root/scripts/bench/run-dag-restart-comparison.sh" "$out/build/release/examples/dag_memory" "$root/target/release/examples/dag_memory" "$out/comparison" "$out/restart-comparison"
     printf 'rtk cargo test --release --locked --manifest-path %q -p casper --test dag_consensus_bench --no-run --target-dir %q\n' "$out/source/Cargo.toml" "$out/build"
     printf 'rtk cargo test --release --locked --manifest-path %q -p casper --test dag_consensus_bench --no-run\n' "$root/Cargo.toml"
     printf 'rtk proxy bash %q %q %q\n' "$root/scripts/bench/run-dag-consensus-comparison.sh" "$out/source" "$out/consensus-comparison"
