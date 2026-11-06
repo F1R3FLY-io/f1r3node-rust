@@ -2414,3 +2414,81 @@ fn fixed_point_rejects_non_fixed_point_target() {
     let non_fp = new_gint_par(42, Vec::new(), false);
     assert!(assert_spatial_match(non_fp, pattern, None).is_ok());
 }
+
+// CoC Phase 3.1: Pi-shaped patterns typecheck via the typechecker.
+mod coc_type_patterns {
+    use models::rhoapi::expr::ExprInstance;
+
+    use super::*;
+
+    fn type_par_with(instance: connective::ConnectiveInstance) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(instance),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    fn pi_pattern(param_ty: Par, codomain: Par) -> Par {
+        let conn_used = param_ty.connective_used || codomain.connective_used;
+        let mut par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPiBody(EPi {
+                bind_count: 1,
+                param_types: vec![param_ty],
+                codomain: Some(codomain),
+                locally_free: Vec::new(),
+                connective_used: conn_used,
+            })),
+        }]);
+        par.connective_used = conn_used;
+        par
+    }
+
+    fn bvar_par(k: i32) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(var::VarInstance::BoundVar(k)),
+                }),
+            })),
+        }])
+    }
+
+    fn lambda_typed_par(bind_count: i32, body: Par, param_types: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
+                bind_count,
+                body: Some(body),
+                locally_free: Vec::new(),
+                connective_used: false,
+                param_types,
+            })),
+        }])
+    }
+
+    #[test]
+    fn annotated_lambda_matches_corresponding_pi_pattern() {
+        let int_ty = type_par_with(connective::ConnectiveInstance::ConnInt(true));
+        let pattern = pi_pattern(int_ty.clone(), int_ty.clone());
+        let lambda = lambda_typed_par(1, bvar_par(0), vec![int_ty]);
+        assert!(assert_spatial_match(lambda, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn annotated_lambda_rejects_mismatched_pi_pattern() {
+        let int_ty = type_par_with(connective::ConnectiveInstance::ConnInt(true));
+        let bool_ty = type_par_with(connective::ConnectiveInstance::ConnBool(true));
+        // Pattern says Int -> Bool but lambda is (Int) -> Int.
+        let pattern = pi_pattern(int_ty.clone(), bool_ty);
+        let lambda = lambda_typed_par(1, bvar_par(0), vec![int_ty]);
+        assert!(assert_spatial_match(lambda, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn ground_int_rejects_pi_pattern() {
+        let int_ty = type_par_with(connective::ConnectiveInstance::ConnInt(true));
+        let pattern = pi_pattern(int_ty.clone(), int_ty);
+        let not_a_function = new_gint_par(42, Vec::new(), false);
+        assert!(assert_spatial_match(not_a_function, pattern, None).is_ok());
+    }
+}
