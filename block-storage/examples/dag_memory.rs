@@ -11,6 +11,8 @@ use models::rust::validator::Validator;
 mod counting_fixture;
 #[path = "support/backend.rs"]
 mod backend;
+#[path = "support/query_probe.rs"]
+mod query_probe;
 use counting_fixture::{hash, manager, reset_peaks, usable_json, LIVE, PEAK};
 
 fn sample(
@@ -202,6 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             blocks,
             start.elapsed().as_secs_f64(),
         );
+        query_probe::run(&storage, window, blocks, "existing_fixture")?;
         return Ok(());
     }
     std::fs::create_dir(&path)?;
@@ -345,6 +348,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             insertion_latency.report("insertion", interval_from, count, warmup_blocks);
             snapshot_latency.report("snapshot", interval_from, count, warmup_blocks);
             cold_latency.report("cold_metadata", interval_from, count, warmup_blocks);
+            query_probe::run(&storage, window, count, "checkpoint")?;
             drop(storage);
             drop(store_manager);
             let fixture = PathBuf::from(format!("{}.checkpoint-{count}", path.display()));
@@ -362,6 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 count,
                 reopen_start.elapsed().as_secs_f64(),
             );
+            query_probe::run(&storage, window, count, "checkpoint_warm_reconstruction")?;
             reset_peaks();
             interval_from = count;
             warmup_blocks = checkpoints
@@ -408,6 +413,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     insertion_latency.report("insertion", interval_from, blocks, warmup_blocks);
     snapshot_latency.report("snapshot", interval_from, blocks, warmup_blocks);
     cold_latency.report("cold_metadata", interval_from, blocks, warmup_blocks);
+    query_probe::run(&storage, window, blocks, "steady")?;
     drop(storage);
     drop(store_manager);
     if legacy_migration {
@@ -428,5 +434,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         blocks,
         start.elapsed().as_secs_f64(),
     );
+    query_probe::run(&storage, window, blocks, "warm_reconstruction")?;
     Ok(())
 }

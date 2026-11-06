@@ -158,6 +158,66 @@ pub struct KeyValueDagRepresentation {
 }
 
 #[cfg(any(test, feature = "test-internals"))]
+#[path = "resident_diagnostics.rs"]
+mod resident_diagnostics;
+#[cfg(any(test, feature = "test-internals"))]
+pub use resident_diagnostics::{DagLiveResidentDiagnostics, DagResidentDiagnostics};
+
+#[cfg(any(test, feature = "test-internals"))]
+impl BlockDagKeyValueStorage {
+    pub fn live_resident_diagnostics(&self) -> DagLiveResidentDiagnostics {
+        let _guard = self.global_lock.read();
+        let metadata = self.block_metadata_index.read();
+        let state = metadata.dag_state().read();
+        let height_entries: usize = state
+            .resident_height_map
+            .values()
+            .map(|hashes| hashes.len())
+            .sum();
+        assert_eq!(height_entries, state.dag_set.len());
+        assert_eq!(state.block_number_map.len(), state.dag_set.len());
+        assert!(state.resident_height_map.iter().all(|(height, hashes)| {
+            !hashes.is_empty()
+                && *height >= state.cutoff
+                && state.max_height.is_some_and(|maximum| *height <= maximum)
+                && hashes.iter().all(|hash| {
+                    state.dag_set.contains(hash) && state.block_number_map.get(hash) == Some(height)
+                })
+        }));
+        assert!(state.block_number_map.iter().all(|(hash, height)| {
+            state
+                .resident_height_map
+                .get(height)
+                .is_some_and(|hashes| hashes.contains(hash))
+        }));
+        assert_eq!(
+            state.edges,
+            state
+                .child_map
+                .values()
+                .map(|children| children.len())
+                .sum::<usize>()
+        );
+        DagLiveResidentDiagnostics {
+            height_buckets: state.resident_height_map.len(),
+            height_entries,
+            minimum: state
+                .resident_height_map
+                .get_min()
+                .map(|(height, _)| *height),
+            maximum: state
+                .resident_height_map
+                .get_max()
+                .map(|(height, _)| *height),
+            cutoff: state.cutoff,
+            max_height: state.max_height,
+            blocks: state.dag_set.len(),
+            edges: state.edges,
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-internals"))]
 pub struct DagFixture {
     pub history: Option<Arc<DagHistoryIndex>>,
     pub view_sequence: u64,

@@ -28,6 +28,16 @@ git -C "$root" archive "$revision" | tar -x -C "$out/source"
 mkdir -p "$out/source/block-storage/examples/support"
 cp "$root/block-storage/examples/dag_memory.rs" "$out/source/block-storage/examples/dag_memory.rs"
 cp "$root/block-storage/examples/support/counting_fixture.rs" "$out/source/block-storage/examples/support/counting_fixture.rs"
+cp "$root/block-storage/examples/support/query_probe.rs" "$out/source/block-storage/examples/support/query_probe.rs"
+cp "$root/block-storage/src/rust/dag/resident_diagnostics.rs" "$out/source/block-storage/src/rust/dag/resident_diagnostics.rs"
+cat >>"$out/source/block-storage/src/rust/dag/block_dag_key_value_storage.rs" <<'RUST'
+
+#[cfg(any(test, feature = "test-internals"))]
+#[path = "resident_diagnostics.rs"]
+mod resident_diagnostics;
+#[cfg(any(test, feature = "test-internals"))]
+pub use resident_diagnostics::{DagLiveResidentDiagnostics, DagResidentDiagnostics};
+RUST
 cp "$root/block-storage/examples/support/backend.rs" "$out/candidate-backend.rs"
 cat >>"$out/source/block-storage/Cargo.toml" <<'TOML'
 
@@ -37,7 +47,7 @@ required-features = ["test-internals"]
 TOML
 cat >"$out/source/block-storage/examples/support/backend.rs" <<'RUST'
 use std::path::PathBuf;
-use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, KeyValueDagRepresentation};
+use block_storage::rust::dag::block_dag_key_value_storage::{BlockDagKeyValueStorage, DagLiveResidentDiagnostics, DagResidentDiagnostics, KeyValueDagRepresentation};
 use models::rust::block_hash::BlockHash;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -48,7 +58,12 @@ pub async fn open(manager: &mut impl KeyValueStoreManager, _window: i64) -> Resu
 pub fn resident(dag: &KeyValueDagRepresentation) -> (usize, Option<i64>, usize) {
     (dag.dag_set.len(), dag.block_number_map.values().copied().min(), dag.child_map.values().map(|children| children.len()).sum())
 }
+pub fn diagnostics(dag: &KeyValueDagRepresentation) -> DagResidentDiagnostics {
+    dag.resident_diagnostics()
+}
+pub fn live_diagnostics(_storage: &BlockDagKeyValueStorage) -> Option<DagLiveResidentDiagnostics> { None }
 pub fn visible(dag: &KeyValueDagRepresentation, hash: &BlockHash) -> Result<bool, KvStoreError> { Ok(dag.contains(hash)) }
+pub fn children(dag: &KeyValueDagRepresentation, hash: &BlockHash) -> Result<Option<imbl::HashSet<BlockHash>>, KvStoreError> { Ok(dag.children(hash)) }
 pub const WINDOWED: bool = false;
 pub async fn remove_new_schema(_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Err("the reference predates the new schema; use normal mode for latency comparisons".into())
@@ -100,6 +115,7 @@ printf '%s\n' "$revision" >"$out/reference-revision.txt"
 git -C "$root" rev-parse HEAD >"$out/candidate-head.txt"
 git -C "$root" diff --stat >"$out/candidate-diff-stat.txt"
 sha256sum "$root/block-storage/examples/dag_memory.rs" "$root/block-storage/examples/support/counting_fixture.rs" "$root/block-storage/examples/support/backend.rs" "$out/source/block-storage/examples/support/backend.rs" >"$out/workload-sha256.txt"
+sha256sum "$root/block-storage/examples/support/query_probe.rs" "$root/block-storage/src/rust/dag/resident_diagnostics.rs" >>"$out/workload-sha256.txt"
 sha256sum "$root/casper/tests/dag_consensus_bench.rs" "$root/casper/tests/dag_consensus_bench/backend.rs" "$out/source/casper/tests/dag_consensus_bench/backend.rs" "$out/fixed-time-hook.patch" "$out/real-storage-constructor.patch" >>"$out/workload-sha256.txt"
 {
     printf 'rtk cargo build --release --locked --manifest-path %q -p block-storage --features test-internals --example dag_memory --target-dir %q\n' "$out/source/Cargo.toml" "$out/build"

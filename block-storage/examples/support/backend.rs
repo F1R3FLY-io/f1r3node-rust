@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use block_storage::rust::dag::block_dag_key_value_storage::{
-    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+    BlockDagKeyValueStorage, DagLiveResidentDiagnostics, DagResidentDiagnostics,
+    KeyValueDagRepresentation,
 };
 use models::rust::block_hash::BlockHash;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -21,8 +22,20 @@ pub fn resident(dag: &KeyValueDagRepresentation) -> (usize, Option<i64>, usize) 
     let (height, edges) = dag.resident_bounds();
     (dag.resident_counts().blocks, height, edges)
 }
+pub fn diagnostics(dag: &KeyValueDagRepresentation) -> DagResidentDiagnostics {
+    dag.resident_diagnostics()
+}
+pub fn live_diagnostics(storage: &BlockDagKeyValueStorage) -> Option<DagLiveResidentDiagnostics> {
+    Some(storage.live_resident_diagnostics())
+}
 pub fn visible(dag: &KeyValueDagRepresentation, hash: &BlockHash) -> Result<bool, KvStoreError> {
     dag.contains(hash)
+}
+pub fn children(
+    dag: &KeyValueDagRepresentation,
+    hash: &BlockHash,
+) -> Result<Option<imbl::HashSet<BlockHash>>, KvStoreError> {
+    dag.children(hash)
 }
 pub const WINDOWED: bool = true;
 
