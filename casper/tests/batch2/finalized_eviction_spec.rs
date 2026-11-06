@@ -1,7 +1,8 @@
 // The proposer's deploy-pool copy is released when the finalizer writes the
 // deploy's terminal verdict, which happens on the advance that puts the
-// carrier's effect on the adopted LFB's state lineage. Inclusion alone never
-// releases it, and the derived floor, which trails the LFB, is not waited on.
+// carrier's effect on the state lineage of the adopted LFB's floor. Neither
+// inclusion nor the carrier's own finality releases it: a co-finalized
+// sibling can still win the merge above both.
 
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
@@ -67,9 +68,14 @@ async fn network_with_carrier(cell: &str) -> (Vec<TestNode>, Signed<DeployData>)
 }
 
 /// Advance one proposal at a time and stop at the first finalizer cycle that
-/// leaves the carrier finalized. Returns whether the derived floor of the LFB
-/// covered the carrier at that moment.
-async fn finalize_until_carrier_is_finalized(nodes: &mut [TestNode], deploy_sig: &Bytes) -> bool {
+/// leaves the carrier finalized and, when `until_covered`, also covered by the
+/// floor of the LFB. Returns whether that floor covered the carrier at that
+/// moment.
+async fn finalize_until_carrier_is_finalized(
+    nodes: &mut [TestNode],
+    deploy_sig: &Bytes,
+    until_covered: bool,
+) -> bool {
     for _ in 0..16 {
         for proposer in 0..nodes.len() {
             let block = nodes[proposer]
@@ -97,10 +103,13 @@ async fn finalize_until_carrier_is_finalized(nodes: &mut [TestNode], deploy_sig:
                     floor_of_block(&dag, &nodes[0].block_store, &lfb.block_hash, test_ftt())
                         .await
                         .expect("floor of the LFB");
-                return carrier_hash == floor.hash
+                let covered = carrier_hash == floor.hash
                     || dag
                         .is_dag_ancestor(&carrier_hash, &floor.hash)
                         .expect("ancestry");
+                if covered || !until_covered {
+                    return covered;
+                }
             }
         }
     }
@@ -112,7 +121,7 @@ async fn finalize_until_carrier_is_finalized(nodes: &mut [TestNode], deploy_sig:
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn a_finalized_carrier_releases_its_pool_copy_before_floor_coverage() {
+async fn a_finalized_carrier_keeps_its_pool_copy_until_the_floor_covers_it() {
     let (mut nodes, deploy) = network_with_carrier("fe_cell").await;
     let sig: Bytes = deploy.sig.clone();
 
@@ -122,17 +131,23 @@ async fn a_finalized_carrier_releases_its_pool_copy_before_floor_coverage() {
          until the deploy has a terminal verdict",
     );
 
-    let floor_covers_carrier = finalize_until_carrier_is_finalized(&mut nodes, &sig).await;
+    let floor_covers_carrier = finalize_until_carrier_is_finalized(&mut nodes, &sig, false).await;
     assert!(
         !floor_covers_carrier,
         "fixture precondition: the carrier must still be ABOVE the floor when \
          it first finalizes — that is the window this test is about",
     );
     assert!(
+        pool_holds(&nodes[0], &sig),
+        "a finalized carrier above the floor has no verdict yet, so its pool \
+         copy stays",
+    );
+
+    finalize_until_carrier_is_finalized(&mut nodes, &sig, true).await;
+    assert!(
         !pool_holds(&nodes[0], &sig),
-        "the carrier's effect is on the adopted LFB's lineage, so the cycle \
-         that finalized it wrote the verdict and released the pool copy — it \
-         must not wait for the floor to climb over the carrier",
+        "the cycle whose LFB floor covers the carrier writes the verdict and \
+         releases the pool copy",
     );
 }
 
@@ -145,7 +160,7 @@ async fn a_pool_copy_left_behind_its_verdict_is_released_by_the_next_cycle() {
     let (mut nodes, deploy) = network_with_carrier("fe_cell2").await;
     let sig: Bytes = deploy.sig.clone();
 
-    finalize_until_carrier_is_finalized(&mut nodes, &sig).await;
+    finalize_until_carrier_is_finalized(&mut nodes, &sig, true).await;
     assert!(
         !pool_holds(&nodes[0], &sig),
         "fixture precondition: released"

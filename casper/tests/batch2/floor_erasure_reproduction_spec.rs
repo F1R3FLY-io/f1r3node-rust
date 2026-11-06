@@ -27,8 +27,8 @@
 //! unconditional advance, the pre-F world — the r-witnessed probe
 //! designates R and the settled-effect assertion fails. Neutering the
 //! candidate arm ALONE stays green: `floor_of_view`'s guard independently
-//! refuses the uncapturing floor ("does not capture the current LFB;
-//! holding") — the two capture sites are genuine defense in depth.
+//! refuses the uncapturing floor ("does not contain the state of the LFB's
+//! floor; holding") — the two capture sites are genuine defense in depth.
 //! Restored, the spec holds end to end.
 
 use std::collections::HashMap;

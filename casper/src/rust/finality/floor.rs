@@ -491,13 +491,33 @@ async fn decidable_tips_metered<W: WorkMeter>(
     Ok(decidable)
 }
 
+/// The settled position a new LFB must contain. The current LFB's own state
+/// is not settled: a co-finalized sibling at its height can be the base of
+/// the merge above both and reject the LFB's conflicting deploys. Its floor's
+/// state is settled. A restored node cannot read a floor below its restore
+/// window; there the LFB is the restore point whose state the node was handed
+/// as finalized, and checking against it is the only check this node can make.
+async fn containment_reference<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    current: &Floor,
+    ftt: FtThreshold,
+) -> Result<Floor, CasperError> {
+    match floor_of_block_metered(meter, dag, block_store, &current.hash, ftt).await {
+        Ok(floor) if dag.contains(&floor.hash)? => Ok(floor),
+        Ok(_) | Err(CasperError::BlockNotHeld(_, _)) => Ok(current.clone()),
+        Err(other) => Err(other),
+    }
+}
+
 /// The LFB decision over the LIVE view — the one finality clock: derive the
 /// floor of the current frontier (the deduped latest-message blocks, over
 /// the live snapshot) and advance only onto a strictly higher floor whose
-/// state CONTAINS the current LFB's settled effects — the same containment
-/// check the per-block derivation runs, so the read surface can never
-/// designate a state missing settled content. Both the finalization runner
-/// and the API path consume exactly this.
+/// state CONTAINS the state of the current LFB's floor — the same
+/// containment check the per-block derivation runs, so the read surface can
+/// never designate a state missing settled content. Both the finalization
+/// runner and the API path consume exactly this.
 pub async fn floor_of_view(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -599,27 +619,27 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
     }
+    let settled = containment_reference(meter, dag, block_store, current, ftt).await?;
     let mut memo = IntroducedSigsMemo::new();
     match in_blocking(|| {
-        state_contains_metered(meter, dag, block_store, &derived, current, &mut memo)
+        state_contains_metered(meter, dag, block_store, &derived, &settled, &mut memo)
     }) {
         Ok(true) => Ok(FloorOfView::Advance(derived)),
         Ok(false) => {
-            // A refused floor that descends from the current LFB is settled
-            // content a merge deduped, not a divergence.
             tracing::warn!(
                 target: "f1r3fly.finalizer",
                 derived = %PrettyPrinter::build_string_bytes(&derived.hash),
                 derived_number = derived.block_number,
                 current = %PrettyPrinter::build_string_bytes(&current.hash),
-                derived_descends_from_current = match dag
-                    .is_dag_ancestor(&current.hash, &derived.hash)
+                settled = %PrettyPrinter::build_string_bytes(&settled.hash),
+                derived_descends_from_settled = match dag
+                    .is_dag_ancestor(&settled.hash, &derived.hash)
                 {
                     Ok(true) => "yes",
                     Ok(false) => "no",
                     Err(_) => "walk-failed",
                 },
-                "floor-of-view does not capture the current LFB; holding"
+                "floor-of-view does not contain the state of the LFB's floor; holding"
             );
             Ok(FloorOfView::ContainmentHold { derived })
         }
@@ -2455,6 +2475,79 @@ mod frontier_determinism_tests {
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
     }
 
+    /// An LFB whose own deploy a later merge dropped (the co-finalized
+    /// sibling that lost the merge) is not the containment reference: its
+    /// floor is, so a floor built on that merge still advances. Below a
+    /// restore window the floor is not held, or held only as metadata outside
+    /// the DAG, and the LFB stands in.
+    #[tokio::test]
+    async fn containment_is_checked_against_the_lfbs_floor() {
+        let v = val();
+        let (e, c, d, m, t, w) = (h(0), h(1), h(2), h(3), h(4), h(5));
+        let sig = Bytes::from_static(b"sibling_sig_dropped");
+        let mut dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            md(c.clone(), vec![e.clone()], 1, &v),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+            md(t.clone(), vec![m.clone()], 3, &v),
+            md(w.clone(), vec![e.clone()], 1, &v),
+        ]);
+        let store = store_with(vec![
+            body_block(&e, vec![], 0, vec![], None, vec![]),
+            body_block(&c, vec![e.clone()], 1, vec![sig.clone()], None, vec![]),
+            body_block(&d, vec![e.clone()], 1, vec![], None, vec![]),
+            body_block(
+                &m,
+                vec![c.clone(), d.clone()],
+                2,
+                vec![],
+                Some(e.clone()),
+                vec![],
+            ),
+            body_block(&t, vec![m.clone()], 3, vec![], None, vec![]),
+        ]);
+        let at = |hash: &Bytes, n: i64| Floor {
+            hash: hash.clone(),
+            block_number: n,
+        };
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let mut memo = IntroducedSigsMemo::new();
+
+        dag.put_cached_floor(c.clone(), e.clone()).unwrap();
+        let reference = containment_reference(&NoopWork, &dag, &store, &at(&c, 1), thr)
+            .await
+            .unwrap();
+        assert_eq!(reference.hash, e, "the reference is the LFB's floor");
+        assert!(
+            !state_contains(&dag, &store, &at(&t, 3), &at(&c, 1), &mut memo).unwrap(),
+            "against the LFB itself the floor built on the merge would hold"
+        );
+        assert!(
+            state_contains(&dag, &store, &at(&t, 3), &reference, &mut memo).unwrap(),
+            "against the LFB's floor it advances"
+        );
+
+        dag.put_cached_floor(d.clone(), h(9)).unwrap();
+        let restored = containment_reference(&NoopWork, &dag, &store, &at(&d, 1), thr)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.hash, d,
+            "an unheld floor leaves the LFB as the reference"
+        );
+
+        dag.fixture_mut().dag_set.remove(&w);
+        dag.put_cached_floor(m.clone(), w.clone()).unwrap();
+        let metadata_only = containment_reference(&NoopWork, &dag, &store, &at(&m, 2), thr)
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata_only.hash, m,
+            "a floor held only as metadata outside the DAG leaves the LFB as the reference"
+        );
+    }
+
     /// R-COMM: the certifying committee is `bonds_of(floor(B))`, and the bonds a
     /// block carries ARE that set — `Validate::bonds_cache_from_floor` rejects any
     /// other. The oracle must therefore read the target's own committee: a block
@@ -3835,5 +3928,112 @@ mod frontier_determinism_tests {
                 Ok::<(), TestCaseError>(())
             })?;
         }
+    }
+}
+
+#[cfg(test)]
+mod containment_history_tests {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::BlockMessage;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn containment_reference_distinguishes_cold_history_absence_and_corruption() {
+        let mut manager = InMemoryStoreManager::new();
+        let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 1)
+            .await
+            .unwrap();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut manager)
+            .await
+            .unwrap();
+        let mut blocks: Vec<BlockMessage> = Vec::new();
+        for height in 0..=4 {
+            let parents = blocks
+                .last()
+                .map(|parent| vec![parent.block_hash.clone()])
+                .unwrap_or_default();
+            let block = get_random_block(
+                Some(height),
+                Some(height as i32),
+                None,
+                None,
+                Some(vec![9; models::rust::validator::LENGTH].into()),
+                None,
+                Some(height),
+                Some(parents),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some(Vec::new()),
+                Some("test".to_string()),
+                None,
+            );
+            block_store.put_block_message(&block).unwrap();
+            storage
+                .insert(
+                    &block,
+                    if height == 0 {
+                        InsertMode::Approved
+                    } else {
+                        InsertMode::Normal
+                    },
+                )
+                .unwrap();
+            blocks.push(block);
+        }
+        storage
+            .record_directly_finalized(blocks[4].block_hash.clone(), 1.0, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        assert_eq!(dag.resident_bounds().0, Some(3));
+        assert_eq!(dag.resident_counts().blocks, 2);
+        let cold = blocks[1].block_hash.clone();
+        assert!(dag.contains(&cold).unwrap());
+        let current = Floor {
+            hash: blocks[4].block_hash.clone(),
+            block_number: 4,
+        };
+        let ftt = FtThreshold::from_ppm(100_000);
+        dag.put_cached_floor(current.hash.clone(), cold.clone())
+            .unwrap();
+        let selected = containment_reference(&NoopWork, &dag, &block_store, &current, ftt)
+            .await
+            .unwrap();
+        assert_eq!(selected.hash, cold);
+        assert_eq!(selected.block_number, 1);
+
+        let missing = BlockHash::from(vec![0xEE; 32]);
+        assert!(!dag.contains(&missing).unwrap());
+        dag.put_cached_floor(current.hash.clone(), missing).unwrap();
+        let selected = containment_reference(&NoopWork, &dag, &block_store, &current, ftt)
+            .await
+            .unwrap();
+        assert_eq!(selected.hash, current.hash);
+
+        dag.put_cached_floor(current.hash.clone(), cold.clone())
+            .unwrap();
+        let membership = manager
+            .store("dag-membership-v1".to_string())
+            .await
+            .unwrap();
+        let key = cold.to_vec();
+        let original = membership.get(&vec![key.clone()]).unwrap()[0]
+            .clone()
+            .unwrap();
+        membership.put_one(key.clone(), vec![0xff]).unwrap();
+        let result = containment_reference(&NoopWork, &dag, &block_store, &current, ftt).await;
+        assert!(matches!(result, Err(CasperError::KvStoreError(_))));
+        membership.put_one(key, original).unwrap();
+        let selected = containment_reference(&NoopWork, &dag, &block_store, &current, ftt)
+            .await
+            .unwrap();
+        assert_eq!(selected.hash, cold);
     }
 }
