@@ -225,17 +225,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
             .cmp(&a_main)
             .then_with(|| a.block_hash.cmp(&b.block_hash))
     });
-    // The candidate set IS the latest-message frontier, and merging it is
-    // what makes a branch unorphanable: a block that merges every tip keeps
-    // every branch in its cone — the property the finality oracle rests on,
-    // since it infers "cannot be orphaned" from an agreement pattern that
-    // only holds while validators follow the estimator. Parent selection
-    // therefore only ORDERS the frontier (the ghost-first sort above);
-    // it never drops tips to pick a main parent. A recovery-context
-    // collapse to the single top-sorted tip used to live here: under load
-    // it fired on essentially every proposal, the DAG stopped re-merging,
-    // and a block finalized on all five nodes was orphaned three heights
-    // later (ucc gate 38237bb7).
+    // The candidate set IS the latest-message frontier. Parent selection
+    // only ORDERS it (the ghost-first sort above) and never drops tips: a
+    // block that merges every tip keeps every branch's state in its cone,
+    // and a dropped tip's writes and deploys come back only through a later
+    // merge. Fork choice weighs main parents only and the oracle reads main
+    // chains and justifications only, so the main parent must be the GHOST
+    // head; the other parents carry state, not finality testimony. The block
+    // creator's witness block, built only above the floor-distance cap where
+    // no merge can be built at all, is the one block that lists fewer.
     let unfiltered_parents = if sorted_parents_list.is_empty() {
         vec![this.approved_block.clone()]
     } else {
