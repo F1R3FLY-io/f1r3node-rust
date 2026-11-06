@@ -3469,6 +3469,72 @@ No `CloseCharge`, pre-charge or refusal log remains on the merged paths. The cro
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 42 (actions A-8 and A-9): FX-21, the elaboration pass (Decisions 121 and 127)
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b (`818e72d6c`), FX-19, FX-19-format, FX-20, FX-21, FX-22 or any tag.
+- **Commit read:** `patch/FX-21` at `1806574e8` (lane B). It is built on FX-17 `0b01b1663` and lane C's FX-19 `10e218add`, with the `rholang-rs` pin moved to `743752b96`.
+- **No change:** FX-8b stays at `818e72d6c`. There is no ruling on errors inside a firing, and there is no handoff tag.
+- **Method:** a reading of the FX-21 log, `reduce.rs` (`eval_cost_signed_term`), `sig.rs` and `recognize.rs`, and the tests in `elaboration_spec.rs`. No tests were run.
+
+### The conditions of revisions 38 and 41
+
+| Condition | Result |
+|---|---|
+| The run-time signer check stays, whatever kind the term names (High if dropped) | **Met.** `eval_cost_signed_term` calls `check_region_signature` for every region, after the origin check, and takes only the kind and the limit from the term. Test: `a_term_naming_its_own_origin_and_the_deployment_kind_with_an_owner_who_did_not_sign_is_refused`. |
+| The origin check on every way that a term reaches the reducer | **Met for regions.** `eval_cost_signed_term` is the one entry for a sealed term, and it compares the term's origin digest with the running record's digest. Tests: the top level, a received quoted process (`a_received_quoted_process_sealed_by_another_origin_is_refused`) and a stored body (`a_stored_body_fires_under_its_own_seal_and_carries_its_declared_limit`). A term that a system process returns has no test, because no system process returns a caller's term (lane B's known issue 2). **Accepted.** |
+| The reducer refuses a user deployment that is not elaborated | **Met.** `interpreter.rs` requires one sealed term of kind deployment with the deployment's origin. Test: `an_unelaborated_term_is_not_a_deployment`. |
+| `TaggedContinuation.seal` equals the term's seal when a receive is stored | **Met.** The stored record's origin must have the digest of the continuation's term seal, and the stored record takes that seal's limit. Test: `a_receive_whose_continuation_names_another_origin_is_not_stored`. |
+| `SealOrigin.phlo_limit` (field 4) is kept | **Met.** FX-19 reads it unchanged. |
+| Only the installer declares the per-seal limit | **Met.** The limit is written in the installer's own source (`{% P %}[s ; n]`), and the pass copies it to each continuation that it seals. A compound takes the smaller of the two limits. Data is not elaborated. |
+| The default limit comes from the signed deployment, not the copy limited to Δ (revision 41) | **Open.** FX-21 is built before FX-22. The pass reads the deployment's `phloLimit` from the deploy data, and after the FX-22 merge that data is the copy limited to Δ. **Condition:** a test on the merged branch installs stored code from a deployment whose Δ is smaller than its `phloLimit`, and checks the seal's default limit. |
+
+### The rest of the pass
+
+- The deployment seal is written with an identifier that the parser cannot produce, and the normalizer refuses it outside elaboration. **Agreed.**
+- A binder that rebinds a name that its seal uses is refused at compile time. **Agreed.** Without this, the copied seal would change its meaning.
+- A `# P` region is not entered, and its seal is not checked against the origin, because P itself is the authority. **Agreed.**
+- System deployments are not elaborated. A one-shot flag carries the request, so old deploy data cannot elaborate a system deployment. **Agreed.**
+
+### Lane B's decision 12: writer origin, for a ruling
+
+- A seal written in data keeps the origin of the deployment that wrote it. So a sealed term that u2 writes and u1's code runs is refused. Before FX-21, such a seal was checked against the signers of the running code (Decision 77 as built).
+- **My recommendation: the writer-origin reading.**
+  - It is the rule of Decisions 52, 53 and 63, that a seal verifies against the envelope that wrote it. The term now carries enough to check it.
+  - The pattern of Decision 77 can still be written. u2 sends unsealed code, and u1's contract runs it under u1's own seal, so u1 pays by its own choice.
+  - Under the running-origin reading, the origin check for received processes, a condition of revision 38, is lost.
+- **Consistency condition:** in `eval_cost_signed_term`, a pure stack body returns before the origin check, and its payer is checked against the running record. So for stack bodies the running-origin rule stays.
+  - If decision 12 is ruled, stack bodies must follow it too, or the handoff notes must state the exception. A test shows the result for a stack body that another origin wrote, with a named payer.
+  - This is not a new authority gap. It is the rule as built before FX-21. **Known issue until the ruling.**
+
+### Lane B's other items
+
+- **The cost of elaboration** (about 120 phlo more for each stored continuation, +27% on a COMM) is a known issue for the handoff notes. Lane B's smaller deployment seal is a format change for Meredith.
+- **Known issues 1, 3 and 4** are accepted:
+  - Continuations from the normalizer's own desugaring are sealed by the reducer's defaulting.
+  - The deployment-kind label is not checked against the owner, and the owner check bounds it.
+  - lane C's `shares_membrane` changes, so lane C must agree.
+- **The parser pin** moves to `rholang-rs` `743752b96` on `rev-stacks/syntax-dev`. **Condition:** the pin must be a commit on a branch of `rholang-rs` that is kept, and CLAUDE.md's dependency note must be updated with the merge.
+- **The ignored test** `region_spec::data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there` waits for the ruling on decision 12.
+
+### Merge conditions
+
+- FX-21 merges into FX-8b after FX-20, FX-22 and FX-19-format. It changes the term format, so the cross-host fixture is written again on the merged tree.
+- The Δ-copy test above runs on the merged tree.
+- The full suites run on the merged tip. Lane B's casper `--test mod` run had 8 failures, and 7 pass after the changes of its section 5. The full run is needed again.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decision 121 and Decision 127 (FX-21) | — | **Conform**, with the conditions above. Merge into FX-8b pending. |
+| Decision 12 of FX-21 (writer origin) | For a ruling | Recommendation: writer origin. Stack bodies follow it, or the exception is stated. |
+| FX-8b takes `6735761a8`, and the full suites on the merged tip | Conditions | Open |
+| The SIGSEGV run, the `dev` merge, Decision 123 | Conditions | Open |
+| Errors inside a firing (lane C's known issue 8) | Known issue | For a ruling |
+| The cost of elaboration, lane B's known issues 1, 3 and 4, and the earlier known issues | Known issue | Open |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
