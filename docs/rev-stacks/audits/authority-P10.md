@@ -3724,9 +3724,9 @@ So the debit never passes the commitment, and the linear proof of the gate holds
 ### Decision 134: met
 
 `close_charge_spec::a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_void_record_replays`:
-- a bond deployment installs a handle continuation that the close fires, and the body passes its bound;
-- the close fails with `FiringExhausted`, and the block is void for reason (d) with κ = 0;
-- the deployment's own entry stays `Completed`;
+- A bond deployment installs a handle continuation that the close fires, and the body passes its bound.
+- The close fails with `FiringExhausted`, and the block is void for reason (d) with κ = 0.
+- The deployment's own entry stays `Completed`.
 - the record replays under 1, 2 and 4 workers.
 
 **Merge check 3 of revision 44 is met.**
