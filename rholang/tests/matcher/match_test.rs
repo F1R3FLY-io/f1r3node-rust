@@ -2415,6 +2415,76 @@ fn fixed_point_rejects_non_fixed_point_target() {
     assert!(assert_spatial_match(non_fp, pattern, None).is_ok());
 }
 
+// CoC Phase 4.1b: ConnList pattern matching.
+mod coc_list_patterns {
+    use models::rhoapi::expr::ExprInstance;
+
+    use super::*;
+
+    fn list_par(elements: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn conn_list_pattern(element_pattern: Par) -> Par {
+        let conn_used = element_pattern.connective_used || true;
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnList(element_pattern)),
+        }]);
+        par.connective_used = conn_used;
+        par
+    }
+
+    fn int_type_pattern() -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnInt(true)),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn homogeneous_int_list_matches_list_of_int_pattern() {
+        let target = list_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gint_par(2, Vec::new(), false),
+            new_gint_par(3, Vec::new(), false),
+        ]);
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn empty_list_matches_list_of_any_pattern() {
+        let target = list_par(Vec::new());
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn mixed_list_rejects_list_of_int_pattern() {
+        let target = list_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn non_list_target_rejects_list_pattern() {
+        let target = new_gint_par(42, Vec::new(), false);
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+}
+
 // CoC Phase 3.1: Pi-shaped patterns typecheck via the typechecker.
 mod coc_type_patterns {
     use models::rhoapi::expr::ExprInstance;

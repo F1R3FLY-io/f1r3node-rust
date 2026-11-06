@@ -224,11 +224,21 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
-            // CoC Phase 4.1a stub: real `List<T>` matching lands in
-            // 4.1b (recursively checks every target element against T).
-            // For now the pattern never matches; typechecker-level tests
-            // exercise synth independently.
-            Some(ConnList(_)) => None,
+            // CoC Phase 4.1b: `List<T>` pattern matches a target whose
+            // single expression is an EList and every element spatial-
+            // matches `T`. Free-var captures inside `T` accumulate
+            // across elements through the shared `self.free_map`.
+            Some(ConnList(element_pattern)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(EListBody(list)),
+                }) => {
+                    for element in &list.ps {
+                        self.spatial_match(element.clone(), element_pattern.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
 
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
