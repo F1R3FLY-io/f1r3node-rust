@@ -10,7 +10,7 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | Static check | Reads files and history. It runs no program under test. |
 | Script test | Runs a behavioral test of a CI, release, or soak script. It needs no Rust build. |
 | Soak harness test | Builds the `casper-soak` harness and runs the real soak driver, also in Docker containers. |
-| Unit test | Runs `cargo test` for a crate. |
+| Unit test | Runs the tests of a crate once under `cargo llvm-cov` and records the line coverage of that run. |
 | Build | Builds a release artifact or a Docker image. |
 | Integration test | Runs a node network on ephemeral runners. |
 | Setup | Resolves the target commit and the run decisions for the other jobs. |
@@ -29,17 +29,26 @@ This page lists the jobs of `.github/workflows/ci.yml`, `.github/workflows/ci-fo
 | `markdown_link_check` | Markdown Link Check | Static check | `build_base` |
 | `test` | Test (*crate*) | Unit test | `build_base`, `static_checks` |
 | `test_casper` | Test (casper *n*/2) | Unit test | `build_base`, `static_checks` |
-| `coverage` | Coverage (*crate*) | Unit test | `build_base`, `static_checks` |
-| `coverage_summary` | Coverage Summary | Gate | `build_base`, `coverage` |
+| `coverage_summary` | Coverage Summary | Gate | `build_base`, `test`, `test_casper` |
 | `test_casper_gate` | Test Gate (casper) | Gate | `test_casper`, `coverage_summary` |
-| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests`, `soak_harness_tests` |
+| `pipeline` | Integration Pipeline | Build and integration test | `build_base`, `static_checks`, `script_tests` |
 | `integration_tests_amd64` | Integration Gate (amd64) | Gate | `build_base`, `pipeline` |
 | `integration_tests_arm64` | Integration Gate (arm64) | Gate | `build_base`, `pipeline` |
 | `notify_queue_failure` | Notify Queue Failure | Notification | `pipeline`, both integration gates |
 | `release_docker_image` | Release Docker Image | Build | the checks above |
 | `release_packages` | Release Packages | Build | the checks above |
 
-The Integration Pipeline waits for all three of Static Checks, Script Tests, and Soak Harness Tests. A failed inexpensive check therefore does not start ephemeral OCI runners.
+The Integration Pipeline waits for Static Checks and Script Tests. A failed inexpensive check therefore does not start ephemeral OCI runners. Script Tests covers the runner launch, tagging, and reclaim scripts that the pipeline uses.
+
+The Integration Pipeline does not wait for Soak Harness Tests. That job tests only the casper-soak tool, which the pipeline does not run, and it takes approximately 18 minutes. The merge queues and the release jobs still require it.
+
+### Unit tests and coverage
+
+Each Test job runs the tests of its crate one time, under `cargo llvm-cov`, with `.github/scripts/run-crate-tests.sh`. The job writes the line coverage of that run as an lcov file and uploads it as the `coverage-<crate>` artifact. The two casper shards upload `coverage-casper-1` and `coverage-casper-2`. The job writes the report before the doctests run, so doctests do not count toward coverage.
+
+On a pull request, Coverage Summary reads these files with `.github/scripts/coverage-summary.sh`. The script counts each source line of a crate one time, from the `DA` records of the lcov files. A line is covered when any shard ran it. Each crate and the workspace must have at least 80% line coverage. Test Gate (casper) fails when Coverage Summary fails.
+
+The `DA` count can be different from the line totals that `cargo llvm-cov report --json` prints. Across the crates, it gives a result from 0.03 points lower to 1.8 points higher. The script uses the `DA` count because the shards of one crate can be merged line by line only from those records.
 
 ### Static Checks
 
@@ -86,7 +95,7 @@ The job runs these script tests:
 
 ### Casper crash backtraces
 
-The `Test (casper N/2)` and `Coverage (casper)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The `Test (casper N/2)` jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
+The `Test (casper N/2)` jobs keep the core file of a crashed test process. After a failure, `casper-crash-backtraces.sh report` prints a backtrace of every thread to the job log. The jobs also upload it in the `test-logs-casper-*` artifact. The script deletes each core file after it reads the file. It does not change the result of the job. See issue #911.
 
 ### Soak Harness Tests
 
