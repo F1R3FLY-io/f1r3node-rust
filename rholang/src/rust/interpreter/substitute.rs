@@ -6,8 +6,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, EAnd, EApp, EDiv, EEq, EGt, EGte, ELambda, EList, ELt,
     ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-    EPercentPercent, EPi, EPlus, EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par,
-    Receive, ReceiveBind, Send, Var, VarRef,
+    EPercentPercent, EPi, EPlus, EPlusPlus, ETuple, EVar, Expr, Foreach, If, Match, MatchCase, New,
+    Par, Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
@@ -15,6 +15,7 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle};
+use models::rust::rholang::sorter::foreach_sort_matcher::ForeachSortMatcher;
 use models::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
@@ -419,6 +420,7 @@ impl SubstituteTrait<Par> for Substitute {
         let news = self.substitute_all_no_sort(term.news, depth, env)?;
         let matches = self.substitute_all_no_sort(term.matches, depth, env)?;
         let conditionals = self.substitute_all_no_sort(term.conditionals, depth, env)?;
+        let foreaches = self.substitute_all_no_sort(term.foreaches, depth, env)?;
 
         Ok(concatenate_pars(
             exprs,
@@ -432,6 +434,7 @@ impl SubstituteTrait<Par> for Substitute {
                 bundles,
                 connectives: Vec::new(),
                 conditionals,
+                foreaches,
                 locally_free: set_bits_until(term.locally_free, env.shift),
                 connective_used: term.connective_used,
             }),
@@ -655,6 +658,47 @@ impl SubstituteTrait<If> for Substitute {
     fn substitute(&self, term: If, depth: i32, env: &Env<Par>) -> Result<If, InterpreterError> {
         self.substitute_no_sort(term, depth, env)
             .map(|i| IfSortMatcher::sort_match(&i))
+            .map(|st| st.term)
+    }
+}
+
+impl SubstituteTrait<Foreach> for Substitute {
+    fn substitute_no_sort(
+        &self,
+        term: Foreach,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<Foreach, InterpreterError> {
+        // Source and yield_name live in the outer scope. Body lives
+        // under `bind_count` fresh binders, so substitute under a
+        // shifted env — same shape as ELambda's body treatment above.
+        let source_sub =
+            self.substitute_no_sort(unwrap_option_safe(term.source)?, depth, env)?;
+        let yield_sub =
+            self.substitute_no_sort(unwrap_option_safe(term.yield_name)?, depth, env)?;
+        let body_sub = self.substitute_no_sort(
+            unwrap_option_safe(term.body)?,
+            depth,
+            &env.shift(term.bind_count),
+        )?;
+        Ok(Foreach {
+            bind_count: term.bind_count,
+            source: Some(source_sub),
+            body: Some(body_sub),
+            yield_name: Some(yield_sub),
+            locally_free: set_bits_until(term.locally_free, env.shift),
+            connective_used: term.connective_used,
+        })
+    }
+
+    fn substitute(
+        &self,
+        term: Foreach,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<Foreach, InterpreterError> {
+        self.substitute_no_sort(term, depth, env)
+            .map(|f| ForeachSortMatcher::sort_match(&f))
             .map(|st| st.term)
     }
 }

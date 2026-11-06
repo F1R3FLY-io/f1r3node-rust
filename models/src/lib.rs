@@ -416,6 +416,26 @@ impl Hash for If {
     }
 }
 
+impl PartialEq for Foreach {
+    fn eq(&self, other: &Self) -> bool {
+        self.bind_count == other.bind_count
+            && self.source == other.source
+            && self.body == other.body
+            && self.yield_name == other.yield_name
+            && self.connective_used == other.connective_used
+    }
+}
+
+impl Hash for Foreach {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.bind_count.hash(state);
+        self.source.hash(state);
+        self.body.hash(state);
+        self.yield_name.hash(state);
+        self.connective_used.hash(state);
+    }
+}
+
 impl PartialEq for Expr {
     fn eq(&self, other: &Self) -> bool { self.expr_instance == other.expr_instance }
 }
