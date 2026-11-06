@@ -1,12 +1,11 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-vi (β-definitional equality): synthesis (`synth`) for
-//! ground literals, `SimpleType` connectives, Pi well-formedness,
-//! dependent application, and fully-annotated lambdas. `check`
-//! compares types up to β-equivalence, so an inferred type carrying
-//! unreduced `EApp(ELambda, args)` matches the equivalent expected
-//! shape. Remaining phases add process-level typing and typing of the
-//! arithmetic/logical operators.
+//! Phase 2c-vii (integer arithmetic): synthesis (`synth`) for ground
+//! literals, `SimpleType` connectives, Pi well-formedness, dependent
+//! application, fully-annotated lambdas, β-definitional equality in
+//! `check`, and the integer binary operators (`+`, `-`, `*`, `/`, `%`),
+//! each `Int × Int → Int`. Remaining phases add comparison/boolean
+//! operators and process-level typing.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -250,6 +249,81 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
                 .ok_or_else(|| TypeError::NotWellFormed("EPi with no codomain".to_string()))?;
 
             substitute_args_into_codomain(&app.args, codomain)
+        }
+
+        // Integer arithmetic. `EPlus/EMinus/EMult/EDiv/EMod` require
+        // both operands to have type `Int` and return `Int`. Overloads
+        // for other numeric types or string concat (EPlusPlus) aren't
+        // handled yet.
+        ExprInstance::EPlusBody(e) => {
+            let p1 = e
+                .p1
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EPlus with no p1".to_string()))?;
+            let p2 = e
+                .p2
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EPlus with no p2".to_string()))?;
+            let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+            check(_ctx, p1, &int_ty)?;
+            check(_ctx, p2, &int_ty)?;
+            Ok(int_ty)
+        }
+        ExprInstance::EMinusBody(e) => {
+            let p1 = e
+                .p1
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EMinus with no p1".to_string()))?;
+            let p2 = e
+                .p2
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EMinus with no p2".to_string()))?;
+            let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+            check(_ctx, p1, &int_ty)?;
+            check(_ctx, p2, &int_ty)?;
+            Ok(int_ty)
+        }
+        ExprInstance::EMultBody(e) => {
+            let p1 = e
+                .p1
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EMult with no p1".to_string()))?;
+            let p2 = e
+                .p2
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EMult with no p2".to_string()))?;
+            let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+            check(_ctx, p1, &int_ty)?;
+            check(_ctx, p2, &int_ty)?;
+            Ok(int_ty)
+        }
+        ExprInstance::EDivBody(e) => {
+            let p1 = e
+                .p1
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EDiv with no p1".to_string()))?;
+            let p2 = e
+                .p2
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EDiv with no p2".to_string()))?;
+            let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+            check(_ctx, p1, &int_ty)?;
+            check(_ctx, p2, &int_ty)?;
+            Ok(int_ty)
+        }
+        ExprInstance::EModBody(e) => {
+            let p1 = e
+                .p1
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EMod with no p1".to_string()))?;
+            let p2 = e
+                .p2
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("EMod with no p2".to_string()))?;
+            let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+            check(_ctx, p1, &int_ty)?;
+            check(_ctx, p2, &int_ty)?;
+            Ok(int_ty)
         }
 
         // A bound variable's type is its entry in the context.
@@ -1208,6 +1282,66 @@ mod tests {
         let pi_direct = pi_par(int_ty.clone(), int_ty.clone());
         let pi_reducible = pi_par(reducible_param, int_ty);
         assert!(def_eq(&pi_direct, &pi_reducible));
+    }
+
+    // Helper: build an EPlus Par.
+    fn plus_par(p1: Par, p2: Par) -> Par {
+        use models::rhoapi::{EPlus, Expr};
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(p1),
+                p2: Some(p2),
+            })),
+        }])
+    }
+
+    #[test]
+    fn synth_eplus_int_int_is_int() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let e = plus_par(gint_par(1), gint_par(2));
+        let ty = synth(&ctx, &e).unwrap();
+        assert!(def_eq(&ty, &int_ty));
+    }
+
+    #[test]
+    fn synth_eplus_rejects_non_int_operand() {
+        let ctx = Context::new();
+        let e = plus_par(gint_par(1), gstring_par("hello"));
+        let err = synth(&ctx, &e).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_eminus_emult_ediv_emod_are_int() {
+        use models::rhoapi::{EDiv, EMinus, EMod, EMult, Expr};
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+
+        for expr in [
+            ExprInstance::EMinusBody(EMinus {
+                p1: Some(gint_par(1)),
+                p2: Some(gint_par(2)),
+            }),
+            ExprInstance::EMultBody(EMult {
+                p1: Some(gint_par(1)),
+                p2: Some(gint_par(2)),
+            }),
+            ExprInstance::EDivBody(EDiv {
+                p1: Some(gint_par(1)),
+                p2: Some(gint_par(2)),
+            }),
+            ExprInstance::EModBody(EMod {
+                p1: Some(gint_par(1)),
+                p2: Some(gint_par(2)),
+            }),
+        ] {
+            let par = Par::default().with_exprs(vec![Expr {
+                expr_instance: Some(expr),
+            }]);
+            let ty = synth(&ctx, &par).unwrap();
+            assert!(def_eq(&ty, &int_ty));
+        }
     }
 
     #[test]
