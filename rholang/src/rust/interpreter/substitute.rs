@@ -338,6 +338,21 @@ impl Substitute {
                         ConnectiveInstance::ConnSet(element),
                     );
                 }
+                Some(ConnectiveInstance::ConnMap(body)) => {
+                    let key = body
+                        .key
+                        .map(|p| self.substitute_no_sort(p, depth, env))
+                        .transpose()?;
+                    let value = body
+                        .value
+                        .map(|p| self.substitute_no_sort(p, depth, env))
+                        .transpose()?;
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
+                        ConnectiveInstance::ConnMap(models::rhoapi::ConnMapBody { key, value }),
+                    );
+                }
                 None => {}
             }
         }

@@ -2519,6 +2519,71 @@ mod coc_list_patterns {
         let pattern = conn_set_pattern(int_type_pattern());
         assert!(assert_spatial_match(target, pattern, None).is_ok());
     }
+
+    fn string_type_pattern() -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnString(true)),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    fn map_par(kvs: Vec<(Par, Par)>) -> Par {
+        let entries: Vec<KeyValuePair> = kvs
+            .into_iter()
+            .map(|(k, v)| KeyValuePair {
+                key: Some(k),
+                value: Some(v),
+            })
+            .collect();
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: entries,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn conn_map_pattern(key: Par, value: Par) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnMap(
+                models::rhoapi::ConnMapBody {
+                    key: Some(key),
+                    value: Some(value),
+                },
+            )),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn map_target_matches_map_string_int_pattern() {
+        let target = map_par(vec![
+            (
+                new_gstring_par("a".to_string(), Vec::new(), false),
+                new_gint_par(1, Vec::new(), false),
+            ),
+            (
+                new_gstring_par("b".to_string(), Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+            ),
+        ]);
+        let pattern = conn_map_pattern(string_type_pattern(), int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn map_target_rejects_map_pattern_with_wrong_value_type() {
+        let target = map_par(vec![(
+            new_gstring_par("a".to_string(), Vec::new(), false),
+            new_gstring_par("not-an-int".to_string(), Vec::new(), false),
+        )]);
+        let pattern = conn_map_pattern(string_type_pattern(), int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
 }
 
 // CoC Phase 3.1: Pi-shaped patterns typecheck via the typechecker.

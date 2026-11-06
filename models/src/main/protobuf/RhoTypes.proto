@@ -575,7 +575,16 @@ message Connective {
     // CoC Phase 4.2: `Set<T>` type. Semantics mirror `conn_list`
     // against ESet targets.
     Par conn_set = 22;
+    // CoC Phase 4.3: `Map<K, V>` type. Synth from EMap's keys and
+    // values via LUB; matcher succeeds when every target kv pair's
+    // key and value match the corresponding pattern.
+    ConnMapBody conn_map = 23;
   }
+}
+
+message ConnMapBody {
+  Par key = 1 [(scalapb.field).no_box = true];
+  Par value = 2 [(scalapb.field).no_box = true];
 }
 
 message ConnFixedPointBody {

@@ -981,6 +981,7 @@ impl PartialEq for ConnectiveInstance {
             ) => a == b,
             (ConnectiveInstance::ConnList(a), ConnectiveInstance::ConnList(b)) => a == b,
             (ConnectiveInstance::ConnSet(a), ConnectiveInstance::ConnSet(b)) => a == b,
+            (ConnectiveInstance::ConnMap(a), ConnectiveInstance::ConnMap(b)) => a == b,
             _ => false,
         }
     }
@@ -1011,6 +1012,7 @@ impl Hash for ConnectiveInstance {
             ConnectiveInstance::ConnFixedPointBody(a) => a.hash(state),
             ConnectiveInstance::ConnList(a) => a.hash(state),
             ConnectiveInstance::ConnSet(a) => a.hash(state),
+            ConnectiveInstance::ConnMap(a) => a.hash(state),
         }
     }
 }
@@ -1021,6 +1023,19 @@ impl PartialEq for ConnFixedPointBody {
 
 impl Hash for ConnFixedPointBody {
     fn hash<H: Hasher>(&self, state: &mut H) { self.scale.hash(state); }
+}
+
+impl PartialEq for ConnMapBody {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key && self.value == other.value
+    }
+}
+
+impl Hash for ConnMapBody {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.value.hash(state);
+    }
 }
 
 impl PartialEq for VarRef {

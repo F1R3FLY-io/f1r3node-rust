@@ -392,6 +392,30 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
             Ok(type_par(ConnectiveInstance::ConnSet(element)))
         }
 
+        // Map literal `{k_0: v_0, …}`. LUB keys and values separately.
+        ExprInstance::EMapBody(map) => {
+            let mut key_tys = Vec::with_capacity(map.kvs.len());
+            let mut val_tys = Vec::with_capacity(map.kvs.len());
+            for kv in &map.kvs {
+                let k = kv.key.as_ref().ok_or_else(|| {
+                    TypeError::NotWellFormed("EMap KeyValuePair with no key".to_string())
+                })?;
+                let v = kv.value.as_ref().ok_or_else(|| {
+                    TypeError::NotWellFormed("EMap KeyValuePair with no value".to_string())
+                })?;
+                key_tys.push(synth(_ctx, k)?);
+                val_tys.push(synth(_ctx, v)?);
+            }
+            let key = lub_types(key_tys);
+            let value = lub_types(val_tys);
+            Ok(type_par(ConnectiveInstance::ConnMap(
+                models::rhoapi::ConnMapBody {
+                    key: Some(key),
+                    value: Some(value),
+                },
+            )))
+        }
+
         // A bound variable's type is its entry in the context.
         ExprInstance::EVarBody(evar) => {
             let v = evar
@@ -777,6 +801,22 @@ fn synth_connective(ctx: &Context, conn: &Connective) -> Result<Par, TypeError> 
             Ok(type_univ)
         }
 
+        // `Map<K, V>` is a type when both K and V are types (or empty
+        // sentinel for "unknown"). Missing key/value fields are treated
+        // as the empty-Par sentinel.
+        ConnectiveInstance::ConnMap(body) => {
+            let default_par = Par::default();
+            let key = body.key.as_ref().unwrap_or(&default_par);
+            let value = body.value.as_ref().unwrap_or(&default_par);
+            if !is_empty_par(key) {
+                check(ctx, key, &type_univ)?;
+            }
+            if !is_empty_par(value) {
+                check(ctx, value, &type_univ)?;
+            }
+            Ok(type_univ)
+        }
+
         other => Err(TypeError::Unsupported(format!(
             "no typing rule for connective kind yet: {:?}",
             discriminant_name_conn(other)
@@ -871,6 +911,7 @@ fn discriminant_name_conn(inst: &ConnectiveInstance) -> &'static str {
         ConnectiveInstance::ConnFixedPointBody(_) => "ConnFixedPoint",
         ConnectiveInstance::ConnList(_) => "ConnList",
         ConnectiveInstance::ConnSet(_) => "ConnSet",
+        ConnectiveInstance::ConnMap(_) => "ConnMap",
     }
 }
 
@@ -1774,6 +1815,70 @@ mod tests {
         let set_ty = type_par(ConnectiveInstance::ConnSet(int_ty));
         let ty = synth(&ctx, &set_ty).unwrap();
         assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
+    }
+
+    fn emap_par(kvs: Vec<(Par, Par)>) -> Par {
+        use models::rhoapi::{EMap, Expr, KeyValuePair};
+        let entries: Vec<KeyValuePair> = kvs
+            .into_iter()
+            .map(|(k, v)| KeyValuePair {
+                key: Some(k),
+                value: Some(v),
+            })
+            .collect();
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: entries,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn conn_map(key: Par, value: Par) -> Par {
+        type_par(ConnectiveInstance::ConnMap(models::rhoapi::ConnMapBody {
+            key: Some(key),
+            value: Some(value),
+        }))
+    }
+
+    #[test]
+    fn synth_map_of_string_to_int_is_map_string_int() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let string_ty = type_par(ConnectiveInstance::ConnString(true));
+        let par = emap_par(vec![
+            (gstring_par("a"), gint_par(1)),
+            (gstring_par("b"), gint_par(2)),
+        ]);
+        let ty = synth(&ctx, &par).unwrap();
+        match ty.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+            Some(ConnectiveInstance::ConnMap(body)) => {
+                assert!(def_eq(body.key.as_ref().unwrap(), &string_ty));
+                assert!(def_eq(body.value.as_ref().unwrap(), &int_ty));
+            }
+            other => panic!("expected ConnMap, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synth_conn_map_type_is_type_when_sides_are_types() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let string_ty = type_par(ConnectiveInstance::ConnString(true));
+        let map_ty = conn_map(string_ty, int_ty);
+        let ty = synth(&ctx, &map_ty).unwrap();
+        assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
+    }
+
+    #[test]
+    fn synth_conn_map_rejects_non_type_key() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let bad = conn_map(gint_par(7), int_ty);
+        let err = synth(&ctx, &bad).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
     }
 
     #[test]

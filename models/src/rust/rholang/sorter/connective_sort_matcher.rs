@@ -247,6 +247,28 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                 }
             }
 
+            Some(ConnectiveInstance::ConnMap(body)) => {
+                let default_par = Par::default();
+                let key_in = body.key.as_ref().unwrap_or(&default_par);
+                let value_in = body.value.as_ref().unwrap_or(&default_par);
+                let scored_key = ParSortMatcher::sort_match(key_in);
+                let scored_value = ParSortMatcher::sort_match(value_in);
+                ScoredTerm {
+                    term: Connective {
+                        connective_instance: Some(ConnectiveInstance::ConnMap(
+                            crate::rhoapi::ConnMapBody {
+                                key: Some(scored_key.term),
+                                value: Some(scored_value.term),
+                            },
+                        )),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::CONNECTIVE_MAP,
+                        vec![scored_key.score, scored_value.score],
+                    ),
+                }
+            }
+
             None => ScoredTerm {
                 term: Connective::default(),
                 score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),

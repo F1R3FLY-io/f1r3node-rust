@@ -254,6 +254,26 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            // CoC Phase 4.3: `Map<K, V>` pattern matches EMap targets
+            // whose every kv pair has key matching `K` and value
+            // matching `V`.
+            Some(ConnMap(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(EMapBody(map)),
+                }) => {
+                    let key_pat = body.key.clone().unwrap_or_default();
+                    let val_pat = body.value.clone().unwrap_or_default();
+                    for kv in &map.kvs {
+                        let k = kv.key.clone().unwrap_or_default();
+                        let v = kv.value.clone().unwrap_or_default();
+                        self.spatial_match(k, key_pat.clone())?;
+                        self.spatial_match(v, val_pat.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
+
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
             // Type". For now, match the universe constant, Pi types, and

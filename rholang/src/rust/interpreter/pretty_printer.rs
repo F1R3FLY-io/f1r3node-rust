@@ -983,6 +983,16 @@ impl PrettyPrinter {
                         "Set<{}>",
                         self.build_string_from_message(element)
                     )),
+                    ConnectiveInstance::ConnMap(body) => {
+                        let default_par = Par::default();
+                        let key = body.key.as_ref().unwrap_or(&default_par);
+                        let value = body.value.as_ref().unwrap_or(&default_par);
+                        Ok(format!(
+                            "Map<{}, {}>",
+                            self.build_string_from_message(key),
+                            self.build_string_from_message(value)
+                        ))
+                    }
                 },
                 None => Ok(String::new()),
             }

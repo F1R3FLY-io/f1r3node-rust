@@ -255,7 +255,8 @@ impl HasLocallyFree for Connective {
                 | ConnBigRat(_)
                 | ConnFixedPointBody(_)
                 | ConnList(_)
-                | ConnSet(_),
+                | ConnSet(_)
+                | ConnMap(_),
             ) => true,
         }
     }
@@ -273,6 +274,19 @@ impl HasLocallyFree for Connective {
                 .unwrap_or_default(),
             Some(ConnList(element)) => element.locally_free(depth),
             Some(ConnSet(element)) => element.locally_free(depth),
+            Some(ConnMap(body)) => {
+                let key = body
+                    .key
+                    .as_ref()
+                    .map(|p| p.locally_free(depth))
+                    .unwrap_or_default();
+                let value = body
+                    .value
+                    .as_ref()
+                    .map(|p| p.locally_free(depth))
+                    .unwrap_or_default();
+                union(key, value)
+            }
             _ => Vec::new(),
         }
     }
