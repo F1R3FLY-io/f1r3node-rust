@@ -1022,9 +1022,16 @@ pub struct BlockProcessorDependencies<T: TransportLayer + Send + Sync> {
 }
 
 struct DeferredPending {
-    entries: Mutex<HashMap<BlockHash, (Bytes, usize)>>,
+    entries: Mutex<HashMap<BlockHash, DeferredEntry>>,
     wake: Arc<Notify>,
     worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct DeferredEntry {
+    sender: Bytes,
+    bytes: usize,
+    in_flight: bool,
 }
 
 impl Drop for DeferredPending {
@@ -1411,7 +1418,11 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             .entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(block.block_hash.clone(), (block.sender.clone(), bytes));
+            .insert(block.block_hash.clone(), DeferredEntry {
+                sender: block.sender.clone(),
+                bytes,
+                in_flight: false,
+            });
         self.start_deferred_pending_worker();
         self.deferred_pending.wake.notify_one();
     }
@@ -1446,18 +1457,22 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 let mut budget = pending.recovery_budget();
                 let mut ready = Vec::new();
                 let mut discard = Vec::new();
-                for (hash, (sender, bytes)) in candidates {
+                let mut reset = Vec::new();
+                let mut in_flight = Vec::new();
+                let mut retry_existing = Vec::new();
+                let mut waiting = Vec::new();
+                for (hash, entry) in candidates {
                     let hash_serde = BlockHashSerde(hash.clone());
                     if !has_buffered_dependents(&casper_buffer, &hash)
                         && !casper_buffer.contains(&hash_serde)
                         && !casper_buffer.is_pendant(&hash_serde)
                     {
-                        discard.push((hash, sender, bytes));
+                        discard.push((hash, entry));
                         continue;
                     }
                     match block_store.contains_key(&hash) {
                         Ok(true) => {
-                            discard.push((hash, sender, bytes));
+                            discard.push((hash, entry));
                             continue;
                         }
                         Err(err) => {
@@ -1466,6 +1481,31 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                         }
                         Ok(false) => {}
                     }
+                    if entry.in_flight {
+                        match block_retriever.was_requested_as_dependency(&hash) {
+                            Ok(true) => in_flight.push(entry),
+                            Ok(false) => reset.push((hash, entry)),
+                            Err(err) => {
+                                tracing::warn!(%err, "Could not inspect deferred recovery request");
+                                in_flight.push(entry);
+                            }
+                        }
+                    } else {
+                        match block_retriever.was_requested_as_dependency(&hash) {
+                            Ok(true) => retry_existing.push((hash, entry)),
+                            Ok(false) => waiting.push((hash, entry)),
+                            Err(err) => {
+                                tracing::warn!(%err, "Could not inspect deferred recovery request");
+                                in_flight.push(entry);
+                            }
+                        }
+                    }
+                }
+                for entry in &in_flight {
+                    budget.reserve(&entry.sender, entry.bytes);
+                }
+                for (hash, entry) in retry_existing.into_iter().chain(waiting) {
+                    let hash_serde = BlockHashSerde(hash.clone());
                     if casper_buffer
                             .get_parents(&hash_serde)
                             .is_some_and(|parents| {
@@ -1482,28 +1522,34 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                         {
                             continue;
                         }
-                    if budget.reserve(&sender, bytes) {
-                        ready.push((hash, sender, bytes));
+                    if budget.reserve(&entry.sender, entry.bytes) {
+                        ready.push((hash, entry));
                     }
                 }
                 {
                     let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
-                    for (hash, sender, bytes) in discard {
-                        if entries.get(&hash) == Some(&(sender, bytes)) {
+                    for (hash, entry) in discard {
+                        if entries.get(&hash) == Some(&entry) {
                             entries.remove(&hash);
                         }
                     }
-                    ready.retain(|(hash, sender, bytes)| {
-                        if entries.get(hash) == Some(&(sender.clone(), *bytes)) {
-                            entries.remove(hash);
+                    for (hash, entry) in &reset {
+                        if entries.get(hash) == Some(entry) {
+                            entries.get_mut(hash).unwrap().in_flight = false;
+                        }
+                    }
+                    ready.retain(|(hash, entry)| {
+                        if entries.get(hash) == Some(entry) {
+                            entries.get_mut(hash).unwrap().in_flight = true;
                             true
                         } else {
                             false
                         }
                     });
                 }
-                let mut retry_deferred = false;
-                for (hash, sender, bytes) in ready {
+                let mut retry_deferred =
+                    !in_flight.is_empty() || !reset.is_empty() || !ready.is_empty();
+                for (hash, entry) in ready {
                     let requested = match block_retriever.try_recover_dependency(hash.clone()).await
                     {
                         Ok(requested) => requested,
@@ -1513,12 +1559,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                         }
                     };
                     if !requested {
-                        state
-                            .entries
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .entry(hash)
-                            .or_insert((sender, bytes));
+                        let mut entries = state.entries.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(current) = entries.get_mut(&hash) {
+                            if current.sender == entry.sender && current.bytes == entry.bytes {
+                                current.in_flight = false;
+                            }
+                        }
                         retry_deferred = true;
                     }
                 }
