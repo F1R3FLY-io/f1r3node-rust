@@ -1,15 +1,14 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 5.2 (process-level typing, recursive): synthesis (`synth`)
-//! for ground literals, `SimpleType` connectives, Pi well-formedness,
-//! dependent application, fully-annotated lambdas, β-definitional
-//! equality in `check`, the integer binary operators, `ENeg`,
-//! comparison operators, the boolean connectives on values, the
-//! logical type connectives, the four collection kinds, and
-//! process-level Pars whose sub-terms recursively typecheck. If's
-//! condition is required to have type `Bool`; branches must be
-//! `Proc`. Scope-introducing constructs (`new`, receive binders,
-//! match capture vars) extend the ctx with `Proc`-typed placeholders.
+//! Phase 5.3 (where-clause guards): synthesis (`synth`) for ground
+//! literals, `SimpleType` connectives, Pi well-formedness, dependent
+//! application, fully-annotated lambdas, β-definitional equality in
+//! `check`, the integer binary operators, `ENeg`, comparison
+//! operators, the boolean connectives on values, the logical type
+//! connectives, the four collection kinds, and recursive
+//! process-level typing. `If.condition`, `Receive.condition` (where
+//! guard), and `MatchCase.guard` are all required to have type
+//! `Bool` when non-empty. Branches of `If` must be `Proc`.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -720,6 +719,7 @@ fn build_pi(param_types: Vec<Par>, codomain: Par) -> Par {
 /// returns a value — process typing just confirms well-formedness.
 fn check_process_content(ctx: &Context, par: &Par) -> Result<(), TypeError> {
     let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+    let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
 
     for send in &par.sends {
         if let Some(chan) = send.chan.as_ref() {
@@ -738,6 +738,14 @@ fn check_process_content(ctx: &Context, par: &Par) -> Result<(), TypeError> {
         }
         if let Some(body) = receive.body.as_ref() {
             let extended = push_proc_binders(ctx, receive.bind_count);
+            // Phase 5.3: `where`-clause guard runs in the ctx where the
+            // receive's patterns are already bound, so it sees the same
+            // binders the body sees. It must have type Bool.
+            if let Some(cond) = receive.condition.as_ref() {
+                if !is_empty_par(cond) {
+                    check(&extended, cond, &bool_ty)?;
+                }
+            }
             let _ = synth(&extended, body)?;
         }
     }
@@ -755,6 +763,13 @@ fn check_process_content(ctx: &Context, par: &Par) -> Result<(), TypeError> {
         }
         for case in &mat.cases {
             let extended = push_proc_binders(ctx, case.free_count);
+            // Phase 5.3: per-case `where` guard shares the pattern's
+            // scope and must have type Bool.
+            if let Some(guard) = case.guard.as_ref() {
+                if !is_empty_par(guard) {
+                    check(&extended, guard, &bool_ty)?;
+                }
+            }
             if let Some(source) = case.source.as_ref() {
                 let _ = synth(&extended, source)?;
             }
@@ -769,7 +784,6 @@ fn check_process_content(ctx: &Context, par: &Par) -> Result<(), TypeError> {
 
     for cond in &par.conditionals {
         if let Some(c) = cond.condition.as_ref() {
-            let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
             check(ctx, c, &bool_ty)?;
         }
         if let Some(t) = cond.if_true.as_ref() {
@@ -2179,6 +2193,57 @@ mod tests {
         let par = new_par(1, body);
         let ty = synth(&ctx, &par).unwrap();
         let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    fn match_par(target: Par, cases: Vec<(Par, Par, i32, Par)>) -> Par {
+        use models::rhoapi::{Match, MatchCase};
+        let mut par = Par::default();
+        par.matches.push(Match {
+            target: Some(target),
+            cases: cases
+                .into_iter()
+                .map(|(pattern, source, free_count, guard)| MatchCase {
+                    pattern: Some(pattern),
+                    source: Some(source),
+                    free_count,
+                    guard: Some(guard),
+                })
+                .collect(),
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+        par
+    }
+
+    #[test]
+    fn synth_match_guard_must_be_bool() {
+        // `match 0 { 0 where 1 => Nil }` — guard is Int, not Bool.
+        let ctx = Context::new();
+        let case = (gint_par(0), proc_noop(), 0, gint_par(1));
+        let par = match_par(gint_par(0), vec![case]);
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_match_bool_guard_is_accepted() {
+        let ctx = Context::new();
+        let case = (gint_par(0), proc_noop(), 0, gbool_par(true));
+        let par = match_par(gint_par(0), vec![case]);
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_match_empty_guard_is_accepted() {
+        // An empty-Par guard means no guard; must not require Bool.
+        let ctx = Context::new();
+        let case = (gint_par(0), proc_noop(), 0, Par::default());
+        let par = match_par(gint_par(0), vec![case]);
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let ty = synth(&ctx, &par).unwrap();
         assert!(def_eq(&ty, &proc_ty));
     }
 
