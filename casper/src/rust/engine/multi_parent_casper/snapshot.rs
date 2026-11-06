@@ -281,51 +281,87 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let parents = if this.casper_shard_conf.max_parent_depth != i32::MAX
         && parents_after_count_limit.len() > 1
     {
-        // C13 / Perf-2: collapse the build-then-max-then-filter triple
-        // pass into a single forward iteration that maintains
-        // `max_block_num` incrementally, followed by an in-place
-        // `retain` on the vector. Eliminates one intermediate Vec
-        // allocation per snapshot and a redundant `.iter()` walk for
-        // the max computation.
         let mut parents_with_meta: Vec<(BlockMessage, BlockMetadata)> =
             Vec::with_capacity(parents_after_count_limit.len());
-        let mut max_block_num: i64 = 0;
         for b in parents_after_count_limit {
             let meta = dag.lookup_unsafe(&b.block_hash)?;
-            if meta.block_number > max_block_num {
-                max_block_num = meta.block_number;
-            }
             parents_with_meta.push((b, meta));
         }
 
         let depth = this.casper_shard_conf.max_parent_depth as i64;
-        // DEPTH CAP. This one CAN drop the proposer's own latest message, and
-        // unlike the count cap it must: a parent spread further than
-        // `max_parent_depth` from the frontier makes the block InvalidParents,
-        // so a validator that has not proposed in that long genuinely cannot
-        // cite its own last block. Its own work then leaves its own cone —
-        // self-orphaning forced by the protocol rather than by policy — and
-        // the only route back for those deploys is the proposer's pool copy.
-        // Surface it, because it is otherwise silent and it is the moment work
-        // becomes recoverable only through re-proposal.
+        // DEPTH CAP. The kept parents may span at most `max_parent_depth`
+        // heights; wider is InvalidParents. The window is anchored on fork
+        // choice's head, never on the highest parent: a proposer whose own tip
+        // ran far ahead of its view of the others would otherwise drop the
+        // head, extend its own tip alone, and part its main chain from
+        // everyone else's. The parent the window cannot hold is then the
+        // proposer's own, and its deploys return only by re-proposal from the
+        // pool. The head is absent only when compaction or the count cap
+        // removed it, and the ghost-first order then puts the best remaining
+        // candidate first.
+        let anchor_index = ghost_main_parent
+            .as_ref()
+            .and_then(|head| {
+                parents_with_meta
+                    .iter()
+                    .position(|(b, _)| b.block_hash == *head)
+            })
+            .unwrap_or(0);
+        let anchor_number = parents_with_meta[anchor_index].1.block_number;
+        let mut nearest_first: Vec<usize> = (0..parents_with_meta.len())
+            .filter(|&i| i != anchor_index)
+            .collect();
+        nearest_first.sort_by(|&a, &b| {
+            let distance = |i: usize| (parents_with_meta[i].1.block_number - anchor_number).abs();
+            distance(a).cmp(&distance(b)).then_with(|| {
+                parents_with_meta[a]
+                    .0
+                    .block_hash
+                    .cmp(&parents_with_meta[b].0.block_hash)
+            })
+        });
+        let mut keep = vec![false; parents_with_meta.len()];
+        keep[anchor_index] = true;
+        let (mut low, mut high) = (anchor_number, anchor_number);
+        for i in nearest_first {
+            let number = parents_with_meta[i].1.block_number;
+            if high.max(number) - low.min(number) <= depth {
+                keep[i] = true;
+                low = low.min(number);
+                high = high.max(number);
+            }
+        }
+
         if let Some(own) = &own_latest_message {
-            if let Some((_, meta)) = parents_with_meta.iter().find(|(b, _)| b.block_hash == *own) {
-                let own_depth = max_block_num - meta.block_number;
-                if own_depth > depth {
+            if let Some(i) = parents_with_meta
+                .iter()
+                .position(|(b, _)| b.block_hash == *own)
+            {
+                if !keep[i] {
                     tracing::warn!(
                         target: "f1r3fly.casper.recovery",
                         own_latest = %PrettyPrinter::build_string_bytes(own),
-                        own_depth,
+                        own_number = parents_with_meta[i].1.block_number,
+                        head_number = anchor_number,
                         max_parent_depth = depth,
-                        "this validator's own latest message is past the parent-depth \
-                         horizon and cannot be cited: its own work leaves its own cone \
-                         and can only return by re-proposal from the pool"
+                        "this validator's own latest message is outside the parent-depth \
+                         window around fork choice's head and cannot be cited: its own work \
+                         leaves its own cone and can only return by re-proposal from the pool"
                     );
                 }
             }
         }
-        parents_with_meta.retain(|(_, meta)| max_block_num - meta.block_number <= depth);
-        parents_with_meta.into_iter().map(|(b, _)| b).collect()
+        let mut kept: Vec<BlockMessage> = Vec::with_capacity(parents_with_meta.len());
+        let mut rest: Vec<BlockMessage> = Vec::with_capacity(parents_with_meta.len());
+        for (i, (b, _)) in parents_with_meta.into_iter().enumerate() {
+            if i == anchor_index {
+                kept.push(b);
+            } else if keep[i] {
+                rest.push(b);
+            }
+        }
+        kept.extend(rest);
+        kept
     } else {
         parents_after_count_limit
     };
