@@ -614,7 +614,16 @@ async fn replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one() {
     };
     for (number, bytes) in [(2, 8), (3, 2_000)] {
         let b = block(number, vec![call(bytes, number)], &proposer);
-        let record = run_record(&executor, installed.post_root(), &b).await;
+        let record = executor
+            .execute(installed.post_root(), &b)
+            .await
+            .expect("the block executes");
+        let over = bytes > 1_000;
+        assert_eq!(
+            record.executed()[0].outcome != EnvelopeOutcome::Completed,
+            over,
+            "block {number}: only the firing over its bound fails its run"
+        );
         let settlement = record.settlement().unwrap().clone();
         let firing = settlement
             .surface_charges

@@ -85,7 +85,9 @@ impl RholangAndScalaDispatcher {
                             let evaluated =
                                 membrane::firing_scope(firing.clone(), evaluation).await;
                             match firing.finish(reducer.cost.comm_ledger()) {
-                                membrane::Finished::Exhausted => {}
+                                membrane::Finished::Exhausted => {
+                                    return Err(InterpreterError::FiringExhausted)
+                                }
                                 membrane::Finished::Within(ops) => {
                                     for op in ops {
                                         op.await?;

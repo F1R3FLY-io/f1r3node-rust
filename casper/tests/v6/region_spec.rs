@@ -1382,7 +1382,7 @@ async fn a_firing_within_its_bound_keeps_its_effects_and_its_installer_pays_its_
 }
 
 #[tokio::test]
-async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the_bound() {
+async fn a_firing_that_passes_its_bound_fails_the_run_and_its_installer_pays_the_bound() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
@@ -1413,8 +1413,8 @@ async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the
         .await
         .expect("the large call executes");
     assert!(
-        !passed.processed[0].is_failed,
-        "the client's own run is not affected"
+        passed.processed[0].is_failed,
+        "the firing's failure fails the enclosing run (Decision 132)"
     );
     assert_eq!(
         data_on(&rm, &passed.settled_root, "out").await,
@@ -1598,7 +1598,11 @@ async fn the_bound_comes_only_from_the_installers_seal_and_no_received_term_chan
             "{:?}",
             played.gate.entries[0].verdict
         );
-        assert_eq!(played.processed[0].is_failed, ts == 4, "call {ts}");
+        assert_eq!(
+            played.processed[0].is_failed,
+            ts >= 2,
+            "call {ts}: a firing over its bound fails the run"
+        );
         assert_eq!(
             played.metered[0].held.get(&alice.owner.canonical_bytes()),
             Some(&alice_hold),
@@ -1680,7 +1684,11 @@ async fn a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_n
         .execute(&root, vec![call(2_000)], block_data(&proposer))
         .await
         .expect("the large call executes");
-    assert!(!over.processed[0].is_failed);
+    assert!(
+        over.processed[0].is_failed,
+        "a firing over its bound fails the enclosing run"
+    );
+    assert!(!over.merged[0], "the failed run's effects are not merged");
     let after = over.settled_root.clone();
     assert_eq!(
         before - balance(&rm, &after, &alice).await,
@@ -1698,7 +1706,11 @@ async fn a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_n
     assert_eq!(
         data_on(&rm, &after, "svc").await,
         0,
-        "known issue: the client's message is consumed, with no effect"
+        "the client's message is discarded with the run"
+    );
+    assert_eq!(
+        over.runs[0].compute_phlo, 50_000,
+        "the deployment pays its own part, as for any error"
     );
     assert_eq!(replays_to(&executor, &root, &over, &proposer).await, after);
 }
@@ -1715,7 +1727,7 @@ async fn substitution_into_a_fired_continuation_is_charged_to_its_installer() {
     let first = executor
         .execute(
             &pre,
-            vec![envelope(install, 1, &alice, 5_000, 1)],
+            vec![envelope(install, 1, &alice, 20_000, 1)],
             block_data(&proposer),
         )
         .await

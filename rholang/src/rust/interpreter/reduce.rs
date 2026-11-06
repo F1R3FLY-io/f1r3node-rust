@@ -1245,10 +1245,6 @@ impl DebruijnInterpreter {
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
-        let errors: Vec<InterpreterError> = errors
-            .into_iter()
-            .filter(|e| !matches!(e, InterpreterError::FiringExhausted))
-            .collect();
         match errors.as_slice() {
             // No errors
             [] => Ok(DispatchType::Skip),
