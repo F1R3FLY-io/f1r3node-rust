@@ -139,6 +139,28 @@ async fn normalize_then_reduce_add_one() {
     assert_gint(&reduced, 42);
 }
 
+// Disambiguating multi-arg convention test: `((x, y) => x)(1, 2)` returns
+// the FIRST arg. The `multi_arg_lambda_add` test below uses `+` which is
+// commutative, so it can't tell which arg maps to which binder. This one
+// can: it fires if (and only if) surface order `(x_0, …, x_{N-1})` binds
+// `x_i` to BoundVar(i) in the body.
+#[tokio::test]
+async fn multi_arg_lambda_returns_first_arg() {
+    let parser = rholang_parser::RholangParser::new();
+
+    let x_ref = ParBuilderUtil::create_ast_proc_var("x", &parser);
+    let lam = ParBuilderUtil::create_ast_lambda(&["x", "y"], x_ref, &parser);
+    let a1 = ParBuilderUtil::create_ast_int(1, &parser);
+    let a2 = ParBuilderUtil::create_ast_int(2, &parser);
+    let app = ParBuilderUtil::create_ast_app(lam, vec![a1, a2], &parser);
+
+    let normalized = normalize_ann_proc(&app, empty_inputs(), &HashMap::new(), &parser).unwrap();
+
+    let r = reducer().await;
+    let reduced = r.eval_expr(&normalized.par, &Env::new()).unwrap();
+    assert_gint(&reduced, 1);
+}
+
 // Multi-arg lambda `((x, y) => x + y)(3, 4)` reduces to 7.
 // Convention: surface order `(x, y)` makes x = BoundVar(0), y = BoundVar(1).
 #[tokio::test]

@@ -67,8 +67,16 @@ pub fn normalize_p_lambda<'ast>(
         Vec::new()
     };
 
+    // Push in reverse so the first-declared param lands at the lowest
+    // BoundVar index inside the body: `x_i → BoundVar(i)`. Matches the
+    // reducer's β-rule (env.extended(args.rev()) in reduce.rs), which
+    // substitutes BoundVar(k) → args[k], and the typechecker's
+    // check-against-Pi convention. Without the reverse, the first
+    // param would get the HIGHEST index, so `((x, y) => x)(1, 2)`
+    // would return 2 (the last arg).
     let bindings: Vec<IdContextPos<VarSort>> = params
         .iter()
+        .rev()
         .map(|(id, _ty)| {
             (id.name.to_string(), VarSort::ProcSort, SourcePos {
                 line: id.pos.line,
