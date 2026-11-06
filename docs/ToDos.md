@@ -26,24 +26,19 @@ The migration epics, EPIC-003 through EPIC-008, used a local coordination file, 
 
 ## Active Coordination
 
-### TASK-031-1: Complete ASI unsigned 256-bit amount support
+### TASK-031-1: Complete unsigned 256-bit token amount support
 
 ```yaml
 id: TASK-031-1
 epic_id: EPIC-031
-status: complete
-completed_at: 2026-10-27
-validation_result: passed
-review_result: "Opus review complete. Confirmed findings fixed and tested."
-claimed_by: codex-asi-u256
-claimed_at: 2026-10-27
+status: in_progress
 branch: feature/asi-u256-amounts
+pull_request: 881
 user_story: US-015
 acceptance:
   - "Migrate all remaining monetary paths and raise the maximum bond."
   - "Verify boundaries, exact arithmetic, API reporting, persistence, and peer replay."
-  - "Run workspace checks and independent review before delivery."
-  - "Keep focused local commits and do not push."
+  - "Pass the amd64 and arm64 Integration gates with clients that send the new encoding."
 ```
 
 
