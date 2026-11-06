@@ -26,6 +26,7 @@ pub fn normalize_simple_type<'ast>(
         SimpleType::String => ConnectiveInstance::ConnString(true),
         SimpleType::Uri => ConnectiveInstance::ConnUri(true),
         SimpleType::ByteArray => ConnectiveInstance::ConnByteArray(true),
+        SimpleType::Type => ConnectiveInstance::ConnType(true),
     };
 
     let connective = Connective {

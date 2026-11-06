@@ -73,6 +73,9 @@ impl HasLocallyFree for Expr {
             Some(EPathmapBody(e)) => e.connective_used,
             Some(EZipperBody(e)) => e.connective_used,
             Some(EMethodBody(e)) => e.connective_used,
+            Some(ELambdaBody(e)) => e.connective_used,
+            Some(EAppBody(e)) => e.connective_used,
+            Some(EPiBody(e)) => e.connective_used,
 
             Some(EVarBody(EVar { v })) => required(v, "variable").connective_used(),
             Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => {
@@ -122,6 +125,9 @@ impl HasLocallyFree for Expr {
             Some(EPathmapBody(e)) => e.locally_free.clone(),
             Some(EZipperBody(e)) => e.locally_free.clone(),
             Some(EMethodBody(e)) => e.locally_free.clone(),
+            Some(ELambdaBody(e)) => e.locally_free.clone(),
+            Some(EAppBody(e)) => e.locally_free.clone(),
+            Some(EPiBody(e)) => e.locally_free.clone(),
 
             Some(EVarBody(EVar { v })) => required(v, "variable").locally_free(depth),
             Some(ENotBody(ENot { p }) | ENegBody(ENeg { p })) => {
@@ -237,6 +243,7 @@ impl HasLocallyFree for Connective {
                 | ConnString(_)
                 | ConnUri(_)
                 | ConnByteArray(_)
+                | ConnType(_)
                 | ConnInt32(_)
                 | ConnUint64(_)
                 | ConnUint32(_)
