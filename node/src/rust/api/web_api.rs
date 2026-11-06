@@ -2040,6 +2040,19 @@ fn expr_from_expr_proto(expr: Expr) -> Option<RhoExpr> {
                 .unwrap_or(-1);
             RhoExpr::ExprVar { index }
         }
+
+        // CoC Phase 1a: no first-class JSON encoding for lambdas/apps yet.
+        // Surface as opaque. A future phase can add ExprLambda/ExprApp with
+        // body + arg encodings.
+        ExprInstance::ELambdaBody(_) => RhoExpr::ExprUnknown {
+            type_name: "Lambda".to_string(),
+        },
+        ExprInstance::EAppBody(_) => RhoExpr::ExprUnknown {
+            type_name: "App".to_string(),
+        },
+        ExprInstance::EPiBody(_) => RhoExpr::ExprUnknown {
+            type_name: "Pi".to_string(),
+        },
     })
 }
 

@@ -29,6 +29,7 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::validator::Validator;
 use num_bigint::BigInt;
+use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::shared::list_ops::ListOps;
 use shared::rust::store::key_value_store::KvStoreError;
@@ -325,33 +326,36 @@ impl Estimator {
             // Saves one clone per node and one Vec allocation. Preallocate
             // visited/result to a reasonable capacity for typical fork-choice
             // BFS sizes (≤ ~few hundred blocks).
-            let mut result = score_map;
-            let mut queue: VecDeque<BlockHash> = VecDeque::from(vec![latest_block_hash.clone()]);
-            let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
+            in_blocking(|| {
+                let mut result = score_map;
+                let mut queue: VecDeque<BlockHash> =
+                    VecDeque::from(vec![latest_block_hash.clone()]);
+                let mut visited: HashSet<BlockHash> = HashSet::with_capacity(64);
 
-            while let Some(hash) = queue.pop_front() {
-                meter.step(WorkKind::Traversal)?;
-                if !visited.insert(hash.clone()) {
-                    continue;
-                }
-                meter.allocate(1, std::mem::size_of::<BlockHash>())?;
-                let validator_weight = proto_util::weight_from_validator_by_dag_metered(
-                    meter, block_dag, &hash, validator,
-                )?;
-                if !result.contains_key(&hash) {
-                    meter.allocate(1, std::mem::size_of::<(BlockHash, BigInt)>())?;
-                }
-                let entry = result.entry(hash.clone()).or_default();
-                *entry += validator_weight;
-                for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
-                    if !visited.contains(&parent) {
-                        meter.step(WorkKind::Traversal)?;
-                        queue.push_back(parent);
+                while let Some(hash) = queue.pop_front() {
+                    meter.step(WorkKind::Traversal)?;
+                    if !visited.insert(hash.clone()) {
+                        continue;
+                    }
+                    meter.allocate(1, std::mem::size_of::<BlockHash>())?;
+                    let validator_weight = proto_util::weight_from_validator_by_dag_metered(
+                        meter, block_dag, &hash, validator,
+                    )?;
+                    if !result.contains_key(&hash) {
+                        meter.allocate(1, std::mem::size_of::<(BlockHash, BigInt)>())?;
+                    }
+                    let entry = result.entry(hash.clone()).or_default();
+                    *entry += validator_weight;
+                    for parent in hash_parents(meter, &hash, lca_block_num, block_dag)? {
+                        if !visited.contains(&parent) {
+                            meter.step(WorkKind::Traversal)?;
+                            queue.push_back(parent);
+                        }
                     }
                 }
-            }
 
-            Ok(result)
+                Ok(result)
+            })
         }
 
         // TODO: Scala message - Since map scores are additive it should be possible to do this in parallel

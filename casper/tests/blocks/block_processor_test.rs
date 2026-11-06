@@ -363,3 +363,53 @@ async fn block_processor_components_should_work_together() {
     // All operations should complete successfully
     assert!(true, "All components should work together");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn block_with_forged_justifications_is_dropped_and_original_is_accepted() {
+    use casper::rust::block_status::{BlockError, InvalidBlock};
+    use casper::rust::casper::Casper;
+    use casper::rust::util::construct_deploy;
+    use rspace_plus_plus::rspace::history::Either;
+
+    use crate::helper::test_node::TestNode;
+    use crate::util::genesis_builder::GenesisBuilder;
+
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(None)
+        .await
+        .expect("genesis");
+    let shard_id = genesis.genesis_block.shard_id.clone();
+    let mut nodes = TestNode::create_network(genesis, 2, None, None, None, None)
+        .await
+        .expect("network");
+
+    nodes[0]
+        .casper
+        .deploy(construct_deploy::basic_deploy_data(0, None, Some(shard_id)).expect("deploy"))
+        .expect("deploy accepted");
+    let original = nodes[0].create_block_unsafe(&[]).await.expect("block");
+
+    let mut forged = original.clone();
+    forged.justifications.pop();
+
+    let status = nodes[1]
+        .process_block(forged)
+        .await
+        .expect("process forged");
+    assert!(matches!(
+        status,
+        Either::Left(BlockError::Invalid(InvalidBlock::InvalidBlockHash))
+    ));
+    assert!(!nodes[1]
+        .block_store
+        .contains(&original.block_hash)
+        .expect("store read"));
+
+    let status = nodes[1]
+        .process_block(original.clone())
+        .await
+        .expect("process original");
+    assert!(matches!(status, Either::Right(_)), "got {:?}", status);
+    assert!(nodes[1].casper.dag_contains(&original.block_hash));
+}

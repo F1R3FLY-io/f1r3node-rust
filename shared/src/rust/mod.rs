@@ -1,4 +1,5 @@
 pub mod asi_amount;
+pub mod blocking;
 pub mod dag;
 pub mod grpc;
 pub mod hashable_set;

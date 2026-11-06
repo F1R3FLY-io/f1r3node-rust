@@ -218,6 +218,76 @@ fn join_error(err: JoinError) -> InterpreterError {
     }
 }
 
+type DispatchFuture = Pin<
+    Box<dyn futures::Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send>,
+>;
+
+/// Runs a COMM's dispatch and the produces that accompany it (a persistent
+/// retry, peek restorations) as parallel tasks. Only the dispatch can return
+/// `FailedNonDeterministicCall`; it counts as a failure. On its own it is
+/// returned unchanged, so `produce_inner` records the producing event as
+/// failed; with other errors it is aggregated with them.
+async fn join_comm_tasks(futures: Vec<DispatchFuture>) -> Result<DispatchType, InterpreterError> {
+    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+        futures.into_iter().map(spawn_in_dispatch_scope).collect();
+    let mut errors = Vec::new();
+    let mut non_deterministic_failure = false;
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(DispatchType::FailedNonDeterministicCall(error))) => {
+                non_deterministic_failure = true;
+                errors.push(error);
+            }
+            Ok(Err(error)) => errors.push(error),
+            Err(error) => errors.push(join_error(error)),
+            Ok(Ok(_)) => {}
+        }
+    }
+    if non_deterministic_failure && errors.len() == 1 {
+        return Ok(DispatchType::FailedNonDeterministicCall(errors.remove(0)));
+    }
+    aggregate_evaluator_errors(errors)
+}
+
+fn aggregate_evaluator_errors(
+    errors: Vec<InterpreterError>,
+) -> Result<DispatchType, InterpreterError> {
+    match errors.as_slice() {
+        // No errors
+        [] => Ok(DispatchType::Skip),
+
+        // Out Of Phlogiston or User Abort error is always single
+        // - if one execution path hits these, the whole evaluation stops as well
+        // UserAbortError takes precedence over OutOfPhlogistonsError
+        // Use single-pass find() to avoid double iteration
+        err_list
+            if err_list
+                .iter()
+                .find(|e| matches!(e, InterpreterError::UserAbortError))
+                .is_some() =>
+        {
+            Err(InterpreterError::UserAbortError)
+        }
+
+        err_list
+            if err_list
+                .iter()
+                .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
+                .is_some() =>
+        {
+            Err(InterpreterError::OutOfPhlogistonsError)
+        }
+
+        // Rethrow single error
+        [ex] => Err(ex.clone()),
+
+        // Collect errors from parallel execution
+        err_list => Err(InterpreterError::AggregateError {
+            interpreter_errors: err_list.to_vec(),
+        }),
+    }
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -441,7 +511,7 @@ impl DebruijnInterpreter {
             metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
                 .increment(join_start.elapsed().as_nanos() as u64);
 
-            match self.aggregate_evaluator_errors(flattened_results) {
+            match aggregate_evaluator_errors(flattened_results) {
                 Ok(_) => Ok(()),
                 Err(e) => Err(e),
             }
@@ -478,7 +548,7 @@ impl DebruijnInterpreter {
             }
         }
 
-        self.aggregate_evaluator_errors(errors).map(|_| ())
+        aggregate_evaluator_errors(errors).map(|_| ())
     }
 
     /// Spawns the dispatch of a Rholang-body continuation as a task of `scope`
@@ -503,6 +573,33 @@ impl DebruijnInterpreter {
             },
         )));
         scope.push(handle);
+    }
+
+    /// Defers the dispatch when `deferral_scope` allows it; otherwise returns
+    /// it as a future for `join_comm_tasks`.
+    fn dispatch_task(
+        &self,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) -> Option<DispatchFuture> {
+        if let Some(scope) = deferral_scope(&continuation) {
+            self.spawn_deferred_dispatch(
+                scope,
+                continuation,
+                data_list,
+                is_replay,
+                previous_output,
+            );
+            return None;
+        }
+        let reducer = self.clone();
+        Some(Box::pin(async move {
+            reducer
+                .dispatch(continuation, data_list, is_replay, previous_output)
+                .await
+        }))
     }
 
     async fn dispatch_or_defer(
@@ -533,7 +630,7 @@ impl DebruijnInterpreter {
      * @param data  The par objects holding the processes being sent.
      * @param persistent  True if the write should remain in the tuplespace indefinitely.
      */
-    fn produce<'a>(
+    pub(super) fn produce<'a>(
         &'a self,
         chan: Par,
         data: ListParWithRandom,
@@ -695,125 +792,32 @@ impl DebruijnInterpreter {
             Some((continuation, data_list, peek)) => {
                 self.register_bitmask_channels(&data_list).await;
                 if let Some((chan, data)) = retry {
-                    // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
-                    let data_list_clone = data_list.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_as_par,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone1
-                                .dispatch(
-                                    continuation,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-
-                    futures.push(Box::pin(
-                        async move { self_clone2.produce(chan, data, true).await },
-                    )
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
-
                     // When a persistent produce triggers a peek COMM, the non-persistent
                     // peeked data on other channels was removed by RSpace. Re-issue it
                     // to preserve peek semantics (data should remain after peek read).
-                    if peek {
-                        futures.extend(self.produce_peeks(data_list).await);
-                    }
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
-                } else if peek {
-                    // dispatchAndRun
-                    let self_clone = self.clone();
-                    let data_list_clone = data_list.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_as_par,
-                        );
+                    let peeks = if peek {
+                        self.produce_peeks(data_list.clone())
                     } else {
-                        futures.push(Box::pin(async move {
-                            self_clone
-                                .dispatch(
-                                    continuation,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-                    futures.extend(self.produce_peeks(data_list).await);
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                        Vec::new()
+                    };
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    let reducer = self.clone();
+                    futures.push(Box::pin(
+                        async move { reducer.produce(chan, data, true).await },
+                    ));
+                    futures.extend(peeks);
+                    join_comm_tasks(futures).await
+                } else if peek {
+                    let peeks = self.produce_peeks(data_list.clone());
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    futures.extend(peeks);
+                    join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
                         continuation,
@@ -848,117 +852,23 @@ impl DebruijnInterpreter {
         match res {
             Some((continuation, data_list, _peek)) => {
                 if let Some((binds, body, guard)) = retry {
-                    // dispatchAndRun
-                    let self_clone1 = self.clone();
-                    let self_clone2 = self.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list,
-                            is_replay,
-                            previous_output_as_par,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone1
-                                .dispatch(
-                                    continuation,
-                                    data_list,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    let reducer = self.clone();
                     futures.push(Box::pin(async move {
-                        self_clone2.consume(binds, body, true, peek, guard).await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >);
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                        reducer.consume(binds, body, true, peek, guard).await
+                    }));
+                    join_comm_tasks(futures).await
                 } else if _peek {
-                    // dispatchAndRun
-                    let self_clone = self.clone();
-                    let data_list_clone = data_list.clone();
-
-                    let mut futures: Vec<
-                        Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send,
-                            >,
-                        >,
-                    > = vec![];
-                    if let Some(scope) = deferral_scope(&continuation) {
-                        self.spawn_deferred_dispatch(
-                            scope,
-                            continuation,
-                            data_list_clone,
-                            is_replay,
-                            previous_output_as_par,
-                        );
-                    } else {
-                        futures.push(Box::pin(async move {
-                            self_clone
-                                .dispatch(
-                                    continuation,
-                                    data_list_clone,
-                                    is_replay,
-                                    previous_output_as_par,
-                                )
-                                .await
-                        }));
-                    }
-                    futures.extend(self.produce_peeks(data_list).await);
-
-                    // parTraverseSafe — spawn true parallel tasks
-                    let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
-                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
-
-                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
-                    for handle in handles {
-                        match handle.await {
-                            Ok(Err(err)) => flattened_results.push(err),
-                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
-                                format!("task panicked: {}", join_err),
-                            )),
-                            Ok(Ok(_)) => {}
-                        }
-                    }
-
-                    self.aggregate_evaluator_errors(flattened_results)
+                    let peeks = self.produce_peeks(data_list.clone());
+                    let mut futures: Vec<DispatchFuture> = self
+                        .dispatch_task(continuation, data_list, is_replay, previous_output_as_par)
+                        .into_iter()
+                        .collect();
+                    futures.extend(peeks);
+                    join_comm_tasks(futures).await
                 } else {
                     self.dispatch_or_defer(
                         continuation,
@@ -1008,29 +918,17 @@ impl DebruijnInterpreter {
             .await
     }
 
-    async fn produce_peeks(
+    fn produce_peeks(
         &self,
         data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
-    ) -> Vec<
-        Pin<
-            Box<
-                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                    + std::marker::Send,
-            >,
-        >,
-    > {
+    ) -> Vec<DispatchFuture> {
         data_list
             .into_iter()
             .filter(|(_, _, _, persist)| !persist)
             .map(|(chan, _, removed_data, _)| {
-                let self_clone = self.clone();
-                Box::pin(async move { self_clone.produce(chan, removed_data, false).await })
-                    as Pin<
-                        Box<
-                            dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                + std::marker::Send,
-                        >,
-                    >
+                let reducer = self.clone();
+                Box::pin(async move { reducer.produce(chan, removed_data, false).await })
+                    as DispatchFuture
             })
             .collect()
     }
@@ -1111,46 +1009,6 @@ impl DebruijnInterpreter {
         }
 
         result
-    }
-
-    fn aggregate_evaluator_errors(
-        &self,
-        errors: Vec<InterpreterError>,
-    ) -> Result<DispatchType, InterpreterError> {
-        match errors.as_slice() {
-            // No errors
-            [] => Ok(DispatchType::Skip),
-
-            // Out Of Phlogiston or User Abort error is always single
-            // - if one execution path hits these, the whole evaluation stops as well
-            // UserAbortError takes precedence over OutOfPhlogistonsError
-            // Use single-pass find() to avoid double iteration
-            err_list
-                if err_list
-                    .iter()
-                    .find(|e| matches!(e, InterpreterError::UserAbortError))
-                    .is_some() =>
-            {
-                Err(InterpreterError::UserAbortError)
-            }
-
-            err_list
-                if err_list
-                    .iter()
-                    .find(|e| matches!(e, InterpreterError::OutOfPhlogistonsError))
-                    .is_some() =>
-            {
-                Err(InterpreterError::OutOfPhlogistonsError)
-            }
-
-            // Rethrow single error
-            [ex] => Err(ex.clone()),
-
-            // Collect errors from parallel execution
-            err_list => Err(InterpreterError::AggregateError {
-                interpreter_errors: err_list.to_vec(),
-            }),
-        }
     }
 
     async fn generated_message_eval(
@@ -3012,6 +2870,72 @@ impl DebruijnInterpreter {
 
                     let result_expr = self.eval_single_expr(&result_par, env)?;
                     Ok(result_expr)
+                }
+
+                // CoC Phase 1a: lambda is a WHNF value; no reduction under
+                // the binder. Returned unchanged.
+                ExprInstance::ELambdaBody(lambda) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::ELambdaBody(lambda.clone())),
+                }),
+
+                // CoC Phase 2a: Pi is a WHNF value (a type-level process).
+                // Treated opaquely until the typechecker phase lands.
+                ExprInstance::EPiBody(pi) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPiBody(pi.clone())),
+                }),
+
+                // CoC Phase 1a: β-reduction. Evaluate the head to WHNF; if
+                // it is an ELambda of matching arity, call-by-value the
+                // arguments, extend env, substitute into the body, and
+                // recursively evaluate the result.
+                //
+                // Convention: in a lambda of bind_count N, the surface order
+                // `(x_0, x_1, ..., x_{N-1}) => body` binds x_i to BoundVar(i)
+                // inside body. Pushing args in reverse into env yields that
+                // numbering (env.put keeps a LIFO stack; most recent push is
+                // BoundVar(0)).
+                ExprInstance::EAppBody(app) => {
+                    let fun_par = app.fun.as_ref().ok_or_else(|| {
+                        InterpreterError::ReduceError("EApp.fun was None".to_string())
+                    })?;
+                    let fun_evaled = self.eval_expr(fun_par, env)?;
+                    let fun_expr = self.eval_single_expr(&fun_evaled, env)?;
+
+                    match fun_expr.expr_instance {
+                        Some(ExprInstance::ELambdaBody(lambda)) => {
+                            if app.args.len() as i32 != lambda.bind_count {
+                                return Err(InterpreterError::ReduceError(format!(
+                                    "Lambda arity mismatch: expected {} argument(s), got {}",
+                                    lambda.bind_count,
+                                    app.args.len(),
+                                )));
+                            }
+
+                            let evaled_args: Vec<Par> = app
+                                .args
+                                .iter()
+                                .map(|a| self.eval_expr(a, env))
+                                .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+                            let new_env = env.extended(evaled_args.into_iter().rev());
+
+                            let body = lambda.body.ok_or_else(|| {
+                                InterpreterError::ReduceError("ELambda.body was None".to_string())
+                            })?;
+                            let reduced_body = self
+                                .substitute
+                                .substitute_no_sort_and_charge(body, 0, &new_env)?;
+
+                            self.eval_single_expr(&reduced_body, env)
+                        }
+                        Some(other_expr) => Err(InterpreterError::ReduceError(format!(
+                            "Application head is not a lambda: {}",
+                            get_type(other_expr),
+                        ))),
+                        None => Err(InterpreterError::ReduceError(
+                            "EApp fun evaluated to empty Expr".to_string(),
+                        )),
+                    }
                 }
             },
             None => Err(InterpreterError::ReduceError(format!(
@@ -7809,6 +7733,9 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::EPlusPlusBody(_) => String::from("plus plus"),
         ExprInstance::EMinusMinusBody(_) => String::from("minus minus"),
         ExprInstance::EModBody(_) => String::from("mod"),
+        ExprInstance::ELambdaBody(_) => String::from("lambda"),
+        ExprInstance::EAppBody(_) => String::from("app"),
+        ExprInstance::EPiBody(_) => String::from("pi"),
     }
 }
 
@@ -8178,6 +8105,76 @@ fn describe_par_type(par: &Par) -> String {
         }
     } else {
         "non-boolean process".to_string()
+    }
+}
+
+#[cfg(test)]
+mod join_comm_tasks_tests {
+    use super::*;
+
+    fn ready(result: Result<DispatchType, InterpreterError>) -> DispatchFuture {
+        Box::pin(std::future::ready(result))
+    }
+
+    fn dispatch_failure() -> InterpreterError {
+        InterpreterError::ReduceError("dispatch failed".to_string())
+    }
+
+    #[tokio::test]
+    async fn a_failed_non_deterministic_dispatch_alone_is_returned_unchanged() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                dispatch_failure(),
+            ))),
+            ready(Ok(DispatchType::Skip)),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Ok(DispatchType::FailedNonDeterministicCall(error)) if error == dispatch_failure()
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_non_deterministic_dispatch_is_aggregated_with_a_restoration_error() {
+        let restoration = InterpreterError::ReduceError("restoration failed".to_string());
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                dispatch_failure(),
+            ))),
+            ready(Err(restoration.clone())),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Err(InterpreterError::AggregateError { interpreter_errors })
+                if interpreter_errors == vec![dispatch_failure(), restoration]
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_restoration_error_after_a_successful_dispatch_is_returned() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::DeterministicCall)),
+            ready(Err(InterpreterError::OutOfPhlogistonsError)),
+        ])
+        .await;
+        assert!(matches!(
+            result,
+            Err(InterpreterError::OutOfPhlogistonsError)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_user_abort_takes_priority_over_a_failed_non_deterministic_dispatch() {
+        let result = join_comm_tasks(vec![
+            ready(Ok(DispatchType::FailedNonDeterministicCall(
+                InterpreterError::UserAbortError,
+            ))),
+            ready(Err(InterpreterError::OutOfPhlogistonsError)),
+        ])
+        .await;
+        assert!(matches!(result, Err(InterpreterError::UserAbortError)));
     }
 }
 
