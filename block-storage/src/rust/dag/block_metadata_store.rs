@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::validator::Validator;
 // Slashing-critical DagState lock is held inside the
 // `BlockDagKeyValueStorage::get_representation_internal` RMW chain;
 // migrating to `parking_lot::RwLock` aligns it with the parent
@@ -28,6 +29,9 @@ pub(crate) struct DagStateCopy {
     pub(crate) finalized_block_set: imbl::HashSet<BlockHash>,
 }
 
+/// The blocks held for each sender at each sequence number.
+pub type SequenceMap = imbl::HashMap<(Validator, i32), imbl::HashSet<BlockHash>>;
+
 pub struct BlockMetadataStore {
     store: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
     dag_state: Arc<RwLock<DagState>>,
@@ -44,6 +48,7 @@ pub(crate) struct DagState {
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
     pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
+    pub(crate) sequence_map: SequenceMap,
     // In general - at least genesis should be LFB.
     // But dagstate can be empty, as it is initialized before genesis is inserted.
     // Also lots of tests do not have genesis properly initialised, so fixing all this is pain.
@@ -65,6 +70,7 @@ impl DagState {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
+            sequence_map: imbl::HashMap::new(),
             last_finalized_block: Some((BlockHash::new(), 0)),
             finalized_block_set: imbl::HashSet::new(),
         }
@@ -76,6 +82,8 @@ struct BlockInfo {
     parents: Vec<BlockHash>,
     main_parent: Option<BlockHash>,
     self_justification: Option<BlockHash>,
+    sender: Validator,
+    seq_num: i32,
     block_num: i64,
     is_invalid: bool,
     is_directly_finalized: bool,
@@ -185,6 +193,8 @@ impl BlockMetadataStore {
             parents: block_metadata.parents.clone(),
             main_parent,
             self_justification,
+            sender: block_metadata.sender.clone(),
+            seq_num: block_metadata.sequence_number,
             block_num: block_metadata.block_number,
             is_invalid: block_metadata.is_invalid(),
             is_directly_finalized: block_metadata.directly_finalized,
@@ -355,6 +365,8 @@ impl BlockMetadataStore {
         self.dag_state.read().self_justification_map.clone()
     }
 
+    pub fn sequence_map(&self) -> SequenceMap { self.dag_state.read().sequence_map.clone() }
+
     pub fn last_finalized_block(&self) -> BlockHash {
         self.dag_state
             .read()
@@ -424,6 +436,12 @@ impl BlockMetadataStore {
                 .self_justification_map
                 .insert(hash.clone(), self_justification);
         }
+
+        state_guard
+            .sequence_map
+            .entry((block_info.sender, block_info.seq_num))
+            .or_default()
+            .insert(hash.clone());
 
         if block_info.is_directly_finalized
             && state_guard
@@ -713,5 +731,37 @@ mod tests {
             .get(&1)
             .unwrap()
             .contains(&b1.block_hash));
+    }
+
+    #[test]
+    fn blocks_are_indexed_by_sender_and_sequence_number_across_a_restart() {
+        let kv = Arc::new(InMemoryKeyValueStore::new());
+        let first = block(1, vec![]);
+        let mut second = block(2, vec![]);
+        second.sender = first.sender.clone();
+        second.seq_num = first.seq_num;
+        let mut later = block(3, vec![]);
+        later.sender = first.sender.clone();
+        later.seq_num = first.seq_num + 1;
+        {
+            let mut store = store_over(kv.clone());
+            for b in [&first, &second, &later] {
+                store.add(meta(b)).unwrap();
+            }
+        }
+
+        let restored = store_over(kv);
+        let sequences = restored.sequence_map();
+        assert_eq!(
+            sequences.get(&(first.sender.clone(), first.seq_num)),
+            Some(&imbl::HashSet::from_iter([
+                first.block_hash.clone(),
+                second.block_hash.clone()
+            ]))
+        );
+        assert_eq!(
+            sequences.get(&(first.sender.clone(), later.seq_num)),
+            Some(&imbl::HashSet::from_iter([later.block_hash.clone()]))
+        );
     }
 }

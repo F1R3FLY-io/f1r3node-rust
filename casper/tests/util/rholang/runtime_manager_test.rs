@@ -4427,6 +4427,7 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
+        sequence_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: chain_hash(TIP),
         finalized_blocks_set,

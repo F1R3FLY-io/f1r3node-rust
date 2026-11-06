@@ -99,6 +99,7 @@ fn restored_dag_with_stale_lm() -> (KeyValueDagRepresentation, BlockMessage, Blo
         block_number_map,
         main_parent_map,
         self_justification_map: imbl::HashMap::new(),
+        sequence_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: genesis.block_hash.clone(),
         finalized_blocks_set,

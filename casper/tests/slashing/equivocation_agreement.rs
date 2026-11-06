@@ -232,6 +232,76 @@ async fn a_sibling_below_a_longer_chain_is_a_slashed_equivocation() {
     sibling_after_chain(4, Arrival::Admissible).await;
 }
 
+/// v0 signs a1 ← a2 ← a3, a sibling w of a2 that extends a1, and z at a3's
+/// sequence number whose own chain skips a2. v2 holds a1..a3 and receives w;
+/// v1 holds a1..a3 and stores z as an equivocation before w arrives. Both
+/// hold w as an equivocation with a2.
+#[serial_test::serial]
+#[tokio::test]
+async fn a_stored_equivocation_does_not_hide_a_later_sibling() {
+    let (mut nodes, shard_id) = network(3, None).await;
+
+    let a1 = nodes[0]
+        .create_block_unsafe(&[deploy(0, &shard_id)])
+        .await
+        .expect("a1");
+    let x = equivocate_block(&mut nodes[0], &a1, vec![deploy(100, &shard_id)])
+        .await
+        .expect("x");
+    nodes[0]
+        .process_block(a1.clone())
+        .await
+        .expect("v0 adopts a1");
+    let a2 = nodes[0]
+        .create_block_unsafe(&[deploy(1, &shard_id)])
+        .await
+        .expect("a2");
+    let w = equivocate_block(&mut nodes[0], &a2, vec![deploy(101, &shard_id)])
+        .await
+        .expect("w");
+    nodes[0]
+        .process_block(a2.clone())
+        .await
+        .expect("v0 adopts a2");
+    let a3 = nodes[0]
+        .add_block_from_deploys(&[deploy(2, &shard_id)])
+        .await
+        .expect("a3");
+    let mut z = x.clone();
+    z.seq_num = a3.seq_num;
+    let z = nodes[0]
+        .validator_id_opt
+        .as_ref()
+        .expect("v0 identity")
+        .sign_block(&z);
+
+    for node in [1, 2] {
+        for block in [&a1, &a2, &a3] {
+            accept(
+                &mut nodes[node],
+                block,
+                &format!("v{node} accepts v0's chain"),
+            )
+            .await;
+        }
+    }
+    let z_verdict = nodes[1].process_block(z.clone()).await.expect("v1 z");
+    assert!(
+        is_equivocation(&z_verdict),
+        "v1 holds z as an equivocation: {z_verdict:?}"
+    );
+
+    for node in [2, 1] {
+        let verdict = nodes[node].process_block(w.clone()).await.expect("w");
+        assert!(is_equivocation(&verdict), "v{node} judges w: {verdict:?}");
+        assert_eq!(
+            held_pair(&nodes[node], &w.block_hash),
+            Some(Some(a2.block_hash.clone())),
+            "v{node} holds w as an equivocation with a2"
+        );
+    }
+}
+
 /// v1 receives a1 then x and holds x as the equivocation. v2 receives only x,
 /// so holds no pair, and proposes r citing x without a slash. v1 accepts r.
 #[serial_test::serial]

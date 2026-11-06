@@ -97,12 +97,11 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         "equivocation",
         BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
         async {
-            EquivocationDetector::equivocation_verdict(
+            Ok::<_, CasperError>(EquivocationDetector::equivocation_verdict(
                 &snapshot.dag,
                 block,
                 requested_as_dependency,
-            )
-            .map_err(CasperError::from)
+            ))
         },
     )
     .await?;
@@ -539,7 +538,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
 
     match status {
         InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => {
-            let sibling = EquivocationDetector::equivocation_of(dag, block)?.ok_or_else(|| {
+            let sibling = EquivocationDetector::equivocation_of(dag, block).ok_or_else(|| {
                 CasperError::RuntimeError(format!(
                     "equivocation verdict on {} but no sibling is held in the view it was \
                      judged against",

@@ -47,7 +47,7 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
 
-use super::block_metadata_store::BlockMetadataStore;
+use super::block_metadata_store::{BlockMetadataStore, SequenceMap};
 use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
@@ -93,6 +93,7 @@ pub struct KeyValueDagRepresentation {
     pub block_number_map: imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
+    pub sequence_map: SequenceMap,
     pub invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
@@ -509,6 +510,11 @@ impl KeyValueDagRepresentation {
             }
         }
         Ok(invalid_block_hashes)
+    }
+
+    /// The blocks held from `sender` at sequence number `seq_num`.
+    pub fn blocks_at(&self, sender: &Validator, seq_num: i32) -> Option<&imbl::HashSet<BlockHash>> {
+        self.sequence_map.get(&(sender.clone(), seq_num))
     }
 
     pub fn self_justification(
@@ -1182,6 +1188,7 @@ impl BlockDagKeyValueStorage {
         let block_number_map = dag_state_guard.block_number_map.clone();
         let main_parent_map = dag_state_guard.main_parent_map.clone();
         let self_justification_map = dag_state_guard.self_justification_map.clone();
+        let sequence_map = dag_state_guard.sequence_map.clone();
         let last_finalized_block = dag_state_guard
             .last_finalized_block
             .as_ref()
@@ -1201,6 +1208,7 @@ impl BlockDagKeyValueStorage {
             block_number_map,
             main_parent_map,
             self_justification_map,
+            sequence_map,
             invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
