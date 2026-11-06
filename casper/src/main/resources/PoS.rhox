@@ -332,7 +332,7 @@ in {
                        @userPk          <- userCh) {
                     if (state.get("allBonds").contains(userPk)) {
                       resultCh!(state, (false, "Public key is already bonded."))
-                    } else if (not amount.isBigInt()) {
+                    } else if (not (amount matches BigInt)) {
                       resultCh!(state, (false, "Bond amount must be a BigInt."))
                     } else if (amount <= 0n) {
                       // Bug #5 fix: explicit positive-stake assertion. The
