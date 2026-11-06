@@ -1393,25 +1393,6 @@ impl RuntimeManager {
         Ok((key_bytes, value_bytes))
     }
 
-    /// Store a mergeable-channels entry received over the wire. Decodes the
-    /// transported bytes and writes via the typed store. Empty `value_bytes`
-    /// signals "peer had no entry" and is a no-op.
-    pub fn put_mergeable_entry_bytes(
-        &self,
-        key_bytes: Vec<u8>,
-        value_bytes: Vec<u8>,
-    ) -> Result<(), CasperError> {
-        if value_bytes.is_empty() {
-            return Ok(());
-        }
-        let value: Vec<DeployMergeableData> = bincode::deserialize(&value_bytes).map_err(|e| {
-            CasperError::KvStoreError(KvStoreError::SerializationError(e.to_string()))
-        })?;
-        self.mergeable_store
-            .put_one(key_bytes, value)
-            .map_err(CasperError::from)
-    }
-
     /// True iff this node already holds the mergeable-channels entry for `block`.
     /// Its presence is a byproduct of whether this node executed/replayed the
     /// block: a block imported via LFS without replay — or rejected locally and
