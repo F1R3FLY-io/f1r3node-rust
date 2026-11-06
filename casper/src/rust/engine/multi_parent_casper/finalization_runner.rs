@@ -178,7 +178,7 @@ impl DivergenceMonitor {
                 pinned_lfb = %PrettyPrinter::build_string_bytes(current_lfb),
                 latest_refused_floor = derived_number,
                 "FINALITY DIVERGENCE: the shard keeps finalizing floors whose \
-                 state is missing effects settled under this node's LFB. This \
+                 state is missing effects settled under this node's LFB floor. This \
                  node's finalized read surface is frozen and will not recover \
                  without operator action (resync from a peer snapshot); its \
                  block production continues and remains valid"
@@ -402,8 +402,21 @@ async fn settle_after_cycle(
     memo: Arc<parking_lot::Mutex<LineageMemo>>,
     advanced: bool,
 ) {
-    match tokio::task::spawn_blocking(move || settle_blocking(&ctx, &mut memo.lock(), advanced))
-        .await
+    let basis = match resolve_verdict_basis(&ctx).await {
+        Ok(basis) => Some(basis),
+        Err(e) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.lifecycle",
+                error = %e,
+                "the adopted LFB's floor is not derivable yet; verdicts wait for the next cycle"
+            );
+            None
+        }
+    };
+    match tokio::task::spawn_blocking(move || {
+        settle_blocking(&ctx, basis.as_ref(), &mut memo.lock(), advanced)
+    })
+    .await
     {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::error!(
@@ -419,12 +432,22 @@ async fn settle_after_cycle(
     }
 }
 
+async fn resolve_verdict_basis(
+    ctx: &FinalizationContext,
+) -> Result<models::rust::block_hash::BlockHash, CasperError> {
+    let dag = ctx.block_dag_storage.get_representation()?;
+    crate::rust::finality::deploy_lifecycle::verdict_basis(&dag, &ctx.block_store, ctx.ftt()).await
+}
+
 fn settle_blocking(
     ctx: &FinalizationContext,
+    basis: Option<&models::rust::block_hash::BlockHash>,
     memo: &mut LineageMemo,
     advanced: bool,
 ) -> Result<(), CasperError> {
-    use crate::rust::finality::deploy_lifecycle::{record_settle_timing, release_settled, settle};
+    use crate::rust::finality::deploy_lifecycle::{
+        record_settle_timing, release_settled, settle, Settled,
+    };
 
     if let Err(e) = ctx.finalized_bond_cache.refresh(&ctx.block_dag_storage) {
         tracing::error!(
@@ -435,13 +458,20 @@ fn settle_blocking(
     }
     let dag = ctx.block_dag_storage.get_representation()?;
     let settle_started = std::time::Instant::now();
-    let settled = settle(
-        &dag,
-        &ctx.block_store,
-        ctx.shard_conf.deploy_lifespan,
-        ctx.citability_horizon(),
-        memo,
-    );
+    let settled = match basis {
+        Some(basis) => settle(
+            &dag,
+            &ctx.block_store,
+            basis,
+            ctx.shard_conf.deploy_lifespan,
+            ctx.citability_horizon(),
+            memo,
+        ),
+        None => Ok(Settled {
+            terminal: Vec::new(),
+            walked: 0,
+        }),
+    };
     let settle_ms = settle_started.elapsed().as_millis();
     if let Ok(settled) = &settled {
         tracing::debug!(

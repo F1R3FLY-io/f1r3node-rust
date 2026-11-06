@@ -490,13 +490,33 @@ async fn decidable_tips_metered<W: WorkMeter>(
     Ok(decidable)
 }
 
+/// The settled position a new LFB must contain. The current LFB's own state
+/// is not settled: a co-finalized sibling at its height can be the base of
+/// the merge above both and reject the LFB's conflicting deploys. Its floor's
+/// state is settled. A restored node cannot read a floor below its restore
+/// window; there the LFB is the restore point whose state the node was handed
+/// as finalized, and checking against it is the only check this node can make.
+async fn containment_reference<W: WorkMeter>(
+    meter: &W,
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    current: &Floor,
+    ftt: FtThreshold,
+) -> Result<Floor, CasperError> {
+    match floor_of_block_metered(meter, dag, block_store, &current.hash, ftt).await {
+        Ok(floor) if dag.contains(&floor.hash) => Ok(floor),
+        Ok(_) | Err(CasperError::BlockNotHeld(_, _)) => Ok(current.clone()),
+        Err(other) => Err(other),
+    }
+}
+
 /// The LFB decision over the LIVE view — the one finality clock: derive the
 /// floor of the current frontier (the deduped latest-message blocks, over
 /// the live snapshot) and advance only onto a strictly higher floor whose
-/// state CONTAINS the current LFB's settled effects — the same containment
-/// check the per-block derivation runs, so the read surface can never
-/// designate a state missing settled content. Both the finalization runner
-/// and the API path consume exactly this.
+/// state CONTAINS the state of the current LFB's floor — the same
+/// containment check the per-block derivation runs, so the read surface can
+/// never designate a state missing settled content. Both the finalization
+/// runner and the API path consume exactly this.
 pub async fn floor_of_view(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
@@ -598,17 +618,17 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
     if derived.hash == current.hash || derived.block_number <= current.block_number {
         return Ok(FloorOfView::NoAdvance);
     }
+    let settled = containment_reference(meter, dag, block_store, current, ftt).await?;
     let mut memo = IntroducedSigsMemo::new();
-    match state_contains_metered(meter, dag, block_store, &derived, current, &mut memo) {
+    match state_contains_metered(meter, dag, block_store, &derived, &settled, &mut memo) {
         Ok(true) => Ok(FloorOfView::Advance(derived)),
         Ok(false) => {
-            // A refused floor that descends from the current LFB is settled
-            // content a merge deduped, not a divergence.
             tracing::warn!(
                 target: "f1r3fly.finalizer",
                 derived = %PrettyPrinter::build_string_bytes(&derived.hash),
                 derived_number = derived.block_number,
                 current = %PrettyPrinter::build_string_bytes(&current.hash),
+                settled = %PrettyPrinter::build_string_bytes(&settled.hash),
                 derived_descends_from_current = match dag
                     .is_dag_ancestor(&current.hash, &derived.hash)
                 {
@@ -2415,6 +2435,67 @@ mod frontier_determinism_tests {
         assert!(!state_contains(&dag, &store, &at(&t, 3), &at(&c, 1), &mut memo).unwrap());
         assert!(state_contains(&dag, &store, &at(&m, 2), &at(&d, 1), &mut memo).unwrap());
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
+    }
+
+    /// An LFB whose own deploy a later merge dropped (the co-finalized
+    /// sibling that lost the merge) is not the containment reference: its
+    /// floor is, so a floor built on that merge still advances. Below a
+    /// restore window the floor is not held and the LFB stands in.
+    #[tokio::test]
+    async fn containment_is_checked_against_the_lfbs_floor() {
+        let v = val();
+        let (e, c, d, m, t) = (h(0), h(1), h(2), h(3), h(4));
+        let sig = Bytes::from_static(b"sibling_sig_dropped");
+        let dag = build_dag(vec![
+            md(e.clone(), vec![], 0, &v),
+            md(c.clone(), vec![e.clone()], 1, &v),
+            md(d.clone(), vec![e.clone()], 1, &v),
+            based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
+            md(t.clone(), vec![m.clone()], 3, &v),
+        ]);
+        let store = store_with(vec![
+            body_block(&e, vec![], 0, vec![], None, vec![]),
+            body_block(&c, vec![e.clone()], 1, vec![sig.clone()], None, vec![]),
+            body_block(&d, vec![e.clone()], 1, vec![], None, vec![]),
+            body_block(
+                &m,
+                vec![c.clone(), d.clone()],
+                2,
+                vec![],
+                Some(e.clone()),
+                vec![],
+            ),
+            body_block(&t, vec![m.clone()], 3, vec![], None, vec![]),
+        ]);
+        let at = |hash: &Bytes, n: i64| Floor {
+            hash: hash.clone(),
+            block_number: n,
+        };
+        let thr = FtThreshold::from_f32_lossy(0.1);
+        let mut memo = IntroducedSigsMemo::new();
+
+        dag.put_cached_floor(c.clone(), e.clone()).unwrap();
+        let reference = containment_reference(&NoopWork, &dag, &store, &at(&c, 1), thr)
+            .await
+            .unwrap();
+        assert_eq!(reference.hash, e, "the reference is the LFB's floor");
+        assert!(
+            !state_contains(&dag, &store, &at(&t, 3), &at(&c, 1), &mut memo).unwrap(),
+            "against the LFB itself the floor built on the merge would hold"
+        );
+        assert!(
+            state_contains(&dag, &store, &at(&t, 3), &reference, &mut memo).unwrap(),
+            "against the LFB's floor it advances"
+        );
+
+        dag.put_cached_floor(d.clone(), h(9)).unwrap();
+        let restored = containment_reference(&NoopWork, &dag, &store, &at(&d, 1), thr)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.hash, d,
+            "an unheld floor leaves the LFB as the reference"
+        );
     }
 
     /// R-COMM: the certifying committee is `bonds_of(floor(B))`, and the bonds a

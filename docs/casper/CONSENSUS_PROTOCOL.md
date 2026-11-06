@@ -318,7 +318,7 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 ### Trigger
 
-Finalization runs asynchronously after each valid block is added to the DAG. Every cycle runs on the casper instance's one finalizer task, one cycle at a time, so the LFB has one writer; reading the LFB never advances it. After every cycle, the same task writes the deploy verdicts the persisted LFB decides and releases the pool copy of every deploy with a verdict. Snapshot creation does not wait for a cycle.
+Finalization runs asynchronously after each valid block is added to the DAG. Every cycle runs on the casper instance's one finalizer task, one cycle at a time, so the LFB has one writer; reading the LFB never advances it. After every cycle, the same task writes the deploy verdicts the floor of the persisted LFB decides and releases the pool copy of every deploy with a verdict. The floor, not the LFB, is the verdict basis: two blocks at one height can both be finalized, and the merge above them can reject the deploys of the one it does not base on, so only the floor's state is settled. Snapshot creation does not wait for a cycle.
 
 ### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 
@@ -332,7 +332,7 @@ operation uses.
    - Build an agreement graph: edge between validators A and B if they "never eventually see disagreement" about the target block
    - Find the maximum weighted clique (largest fully-connected subgraph by stake)
    - Decide finalization with exact integer arithmetic (`2·q·den ⋛ S·(den+num)` — the integer form of `FT = (2·clique_weight − total_stake) / total_stake ≥ θ`)
-4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the current LFB's settled effects — the read surface can never designate a state missing settled content
+4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the state of the current LFB's floor — the read surface can never designate a state missing settled content. A restored node that does not hold that floor checks against the LFB itself
 5. **LFB advancement**: Update last finalized block, clean up deploy storage, emit `BlockFinalised` event
 
 ### "Never Eventually See Disagreement"
@@ -350,7 +350,7 @@ A finalizer cycle that derives a higher floor but does not adopt it ends in
 one of two holds:
 
 - **ContainmentHold** — the derived floor's state is missing effects settled
-  under the current LFB. One refusal is routine (a rejected-then-recovered
+  under the current LFB's floor. One refusal is routine (a rejected-then-recovered
   deploy legitimately fails containment until its re-homed carrier
   finalizes); a streak of refusals with RISING derived floors means the
   shard is finalizing without this node. The `DivergenceMonitor` detects
