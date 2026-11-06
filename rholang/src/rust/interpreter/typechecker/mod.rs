@@ -1,10 +1,11 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-iv (dependent application): synthesis (`synth`) for ground
-//! literals, `SimpleType` connectives, Pi well-formedness, and
-//! application with dependent-codomain substitution. Remaining phases
-//! add β-definitional equality, process-level typing, and lambda param
-//! annotations.
+//! Phase 2c-v (lambda synthesis): synthesis (`synth`) for ground
+//! literals, `SimpleType` connectives, Pi well-formedness, dependent
+//! application, and fully-annotated lambdas (builds a Pi from the
+//! annotations and the synthesized body type). Remaining phases add
+//! β-definitional equality, process-level typing, and typing of the
+//! arithmetic/logical operators.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -173,13 +174,40 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
             Ok(type_univ)
         }
 
-        // Bare lambda has no inherent type without an expected Pi — use
-        // `check` with an annotation instead.
-        ExprInstance::ELambdaBody(_) => Err(TypeError::Unsupported(
-            "cannot synthesize a lambda's type without an expected Pi; use \
-             `check` with a Pi annotation"
-                .to_string(),
-        )),
+        // Lambda synthesis. With a full set of non-empty param
+        // annotations we can build a Pi for the lambda: well-form each
+        // annotation (must have type `Type`), extend ctx in reverse
+        // (same convention as check-against-Pi), synth the body's type
+        // as the codomain, and return `Pi(annotations, codomain)`.
+        //
+        // A lambda with no annotations or any empty-slot annotation is
+        // still unsynthesizable — use `check` with an expected Pi.
+        ExprInstance::ELambdaBody(lambda) => {
+            if lambda.param_types.is_empty()
+                || lambda.param_types.len() != lambda.bind_count as usize
+                || lambda.param_types.iter().any(is_empty_par)
+            {
+                return Err(TypeError::Unsupported(
+                    "cannot synthesize an unannotated (or partially annotated) \
+                     lambda; use `check` with a Pi annotation"
+                        .to_string(),
+                ));
+            }
+            let type_univ = type_par(ConnectiveInstance::ConnType(true));
+            for pt in lambda.param_types.iter() {
+                check(_ctx, pt, &type_univ)?;
+            }
+            let mut inner = _ctx.clone();
+            for pt in lambda.param_types.iter().rev() {
+                inner = inner.extend(pt.clone());
+            }
+            let body = lambda
+                .body
+                .as_ref()
+                .ok_or_else(|| TypeError::NotWellFormed("ELambda with no body".to_string()))?;
+            let codomain = synth(&inner, body)?;
+            Ok(build_pi(lambda.param_types.clone(), codomain))
+        }
 
         // Function application: synth fun → Pi; check each arg against
         // the corresponding param type; substitute args into the
@@ -327,6 +355,26 @@ fn single_expr(par: &Par) -> Option<&ExprInstance> {
         return None;
     }
     par.exprs.first()?.expr_instance.as_ref()
+}
+
+/// Wrap the given param types and codomain into a Pi Par. Used by
+/// lambda synthesis to produce the inferred type.
+fn build_pi(param_types: Vec<Par>, codomain: Par) -> Par {
+    use models::rhoapi::{EPi, Expr};
+    let bind_count = param_types.len() as i32;
+    let conn_used =
+        codomain.connective_used || param_types.iter().any(|p| p.connective_used);
+    let mut par = Par::default().with_exprs(vec![Expr {
+        expr_instance: Some(ExprInstance::EPiBody(EPi {
+            bind_count,
+            param_types,
+            codomain: Some(codomain),
+            locally_free: Vec::new(),
+            connective_used: conn_used,
+        })),
+    }]);
+    par.connective_used = conn_used;
+    par
 }
 
 /// A lambda's `param_types[i]` is `Par::default()` when the source
@@ -578,7 +626,9 @@ mod tests {
     }
 
     #[test]
-    fn synth_unsupported_lambda_errors() {
+    fn synth_unannotated_lambda_errors() {
+        // Lambda with no annotations (legacy shape) can't be synthed —
+        // caller must use `check` with a Pi.
         use models::rhoapi::ELambda;
         let ctx = Context::new();
         let lam = Par::default().with_exprs(vec![Expr {
@@ -971,6 +1021,53 @@ mod tests {
         let expected = pi_par_multi(vec![bool_ty, int_ty.clone()], int_ty.clone());
         let lam = lambda_par_typed(2, bvar_par(1), vec![Par::default(), int_ty]);
         check(&ctx, &lam, &expected).unwrap();
+    }
+
+    #[test]
+    fn synth_fully_annotated_lambda_produces_pi() {
+        // `(x: Int) => x` synthesizes to `(_: Int) -> Int`.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let lam = lambda_par_typed(1, bvar_par(0), vec![int_ty.clone()]);
+
+        let ty = synth(&ctx, &lam).unwrap();
+        let pi = match single_expr(&ty) {
+            Some(ExprInstance::EPiBody(pi)) => pi,
+            other => panic!("expected EPi, got {other:?}"),
+        };
+        assert_eq!(pi.bind_count, 1);
+        assert_eq!(
+            pi.param_types[0].connectives.first().and_then(|c| c.connective_instance.as_ref()),
+            Some(&ConnectiveInstance::ConnInt(true))
+        );
+        assert_eq!(
+            pi.codomain
+                .as_ref()
+                .and_then(|p| p.connectives.first())
+                .and_then(|c| c.connective_instance.as_ref()),
+            Some(&ConnectiveInstance::ConnInt(true))
+        );
+    }
+
+    #[test]
+    fn synth_partially_annotated_lambda_errors() {
+        // Lambda whose first slot is annotated but second is empty
+        // cannot be synthed.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let lam = lambda_par_typed(2, bvar_par(0), vec![int_ty, Par::default()]);
+        let err = synth(&ctx, &lam).unwrap_err();
+        assert!(matches!(err, TypeError::Unsupported(_)));
+    }
+
+    #[test]
+    fn synth_annotated_lambda_rejects_non_type_annotation() {
+        // `(x: 42) => x` — annotation is a value, not a type. Pi
+        // formation's check(_, pt, Type) catches this.
+        let ctx = Context::new();
+        let lam = lambda_par_typed(1, bvar_par(0), vec![gint_par(42)]);
+        let err = synth(&ctx, &lam).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
     }
 
     #[test]
