@@ -380,6 +380,148 @@ fn split_unavailable_resolved_branches(
     Ok(rejected_all)
 }
 
+fn shares_unseparable_channel(removed: &DeployChainIndex, kept: &DeployChainIndex) -> bool {
+    removed.state_changes.datums_changes.iter().any(|entry| {
+        kept.state_changes.datums_changes.contains_key(entry.key())
+            && !kept
+                .event_log_index
+                .number_channels_data
+                .contains_key(entry.key())
+    }) || removed
+        .state_changes
+        .cont_changes
+        .iter()
+        .any(|entry| kept.state_changes.cont_changes.contains_key(entry.key()))
+}
+
+#[allow(clippy::mutable_key_type)]
+fn reject_siblings_sharing_channels(
+    resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    removed_outside: &[DeployChainIndex],
+    pinned: &HashSet<DeployChainIndex>,
+) -> HashableSet<DeployChainIndex> {
+    let mut frontier: Vec<DeployChainIndex> = resolved
+        .rejected
+        .0
+        .iter()
+        .chain(removed_outside.iter())
+        .cloned()
+        .collect();
+    let mut expanded = HashableSet(HashSet::new());
+    while let Some(removed) = frontier.pop() {
+        let carries_removed = |chain: &DeployChainIndex| {
+            chain.source_block_hash == removed.source_block_hash
+                && !pinned.contains(chain)
+                && shares_unseparable_channel(&removed, chain)
+        };
+        for branch in resolved.to_merge.iter_mut() {
+            if !branch.0.iter().any(carries_removed) {
+                continue;
+            }
+            let (moved, kept): (HashSet<DeployChainIndex>, HashSet<DeployChainIndex>) =
+                std::mem::take(&mut branch.0)
+                    .into_iter()
+                    .partition(|chain| carries_removed(chain));
+            branch.0 = kept;
+            for chain in moved {
+                frontier.push(chain.clone());
+                expanded.0.insert(chain.clone());
+                resolved.rejected.0.insert(chain);
+            }
+        }
+    }
+    resolved.to_merge.retain(|branch| !branch.0.is_empty());
+    if !expanded.0.is_empty() {
+        tracing::info!(
+            target: "f1r3fly.merge.step",
+            step = "merge.reject_siblings_sharing_channels",
+            expanded_chains = expanded.0.len(),
+            remaining_branches = resolved.to_merge.len(),
+            "rejection expanded over sibling chains that carry the removed chain's block diff"
+        );
+    }
+    expanded
+}
+
+/// Rejection expansion over block lineage: a surviving chain whose source
+/// block DAG-descends from a rejected chain's source block was computed
+/// against a pre-state that materializes the rejected work. Applying its
+/// pre-computed diffs on a merge base WITHOUT that work is a stale-diff
+/// application — the descendant's effects appear while its ancestor's are
+/// absent, an internally inconsistent post-state. Reject the descendants'
+/// chains as well; recovery re-proposes them against the actual merged
+/// base. Event-log dependency expansion (inside conflict resolution)
+/// cannot catch this: the descendant may touch disjoint channels and still
+/// be state-lineage-dependent. Ancestry is transitive, so one pass covers
+/// deeper descendants.
+#[allow(clippy::mutable_key_type)]
+fn reject_stale_diff_descendants(
+    resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
+    removed_outside: &[DeployChainIndex],
+    dag: &KeyValueDagRepresentation,
+    pinned: &HashSet<DeployChainIndex>,
+) -> Result<HashableSet<DeployChainIndex>, CasperError> {
+    let mut expanded = HashableSet(HashSet::new());
+    let rejected_blocks: HashSet<BlockHash> = resolved
+        .rejected
+        .0
+        .iter()
+        .chain(removed_outside.iter())
+        .map(|chain| chain.source_block_hash.clone())
+        .collect();
+    if rejected_blocks.is_empty() {
+        return Ok(expanded);
+    }
+    let mut descends_cache: HashMap<BlockHash, bool> = HashMap::new();
+    let mut descends_rejected = |block_hash: &BlockHash| -> Result<bool, CasperError> {
+        if let Some(cached) = descends_cache.get(block_hash) {
+            return Ok(*cached);
+        }
+        let mut result = false;
+        for rejected_block in &rejected_blocks {
+            if rejected_block != block_hash && dag.is_dag_ancestor(rejected_block, block_hash)? {
+                result = true;
+                break;
+            }
+        }
+        descends_cache.insert(block_hash.clone(), result);
+        Ok(result)
+    };
+    let mut new_to_merge = Vec::new();
+    for branch in std::mem::take(&mut resolved.to_merge) {
+        let mut kept: HashSet<DeployChainIndex> = HashSet::new();
+        for chain in branch.0 {
+            // Settled chains (the pinned set) are exempt (#341):
+            // settled content is committed and can never be rejected
+            // through lineage expansion. A settled carrier cannot
+            // DAG-descend from in-scope rejected work anyway — its
+            // content precedes the floor — so the exemption only
+            // forecloses the impossible edge deterministically.
+            if !pinned.contains(&chain) && descends_rejected(&chain.source_block_hash)? {
+                expanded.0.insert(chain.clone());
+                resolved.rejected.0.insert(chain);
+            } else {
+                kept.insert(chain);
+            }
+        }
+        if !kept.is_empty() {
+            new_to_merge.push(HashableSet(kept));
+        }
+    }
+    resolved.to_merge = new_to_merge;
+    if !expanded.0.is_empty() {
+        tracing::info!(
+            target: "f1r3fly.merge.step",
+            step = "merge.reject_stale_diff_descendants",
+            expanded_chains = expanded.0.len(),
+            rejected_source_blocks = rejected_blocks.len(),
+            remaining_branches = resolved.to_merge.len(),
+            "rejection expanded over block lineage to prevent stale-diff application"
+        );
+    }
+    Ok(expanded)
+}
+
 /// §3c keep-one: among the surviving (`to_merge`) branches, reject the minimal
 /// set of writers that would over-fill a single-value (number) cell, keeping
 /// one. This is the finer counterpart to the apply-time guard in the merge
@@ -690,28 +832,22 @@ fn explain_merge_failure(
     );
 }
 
-fn resolve_conflicts_with_unavailable_retry(
+fn resolve_conflicts_with_unavailable_retry<E>(
     actual_seq_all: &[DeployChainIndex],
     late_seq_all: &[DeployChainIndex],
     resolve_once: &impl Fn(
         Vec<DeployChainIndex>,
         Vec<DeployChainIndex>,
-    ) -> Result<
-        conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
-        rspace_plus_plus::rspace::errors::HistoryError,
-    >,
+    ) -> Result<conflict_set_merger::ResolvedConflicts<DeployChainIndex>, E>,
     split_unavailable: &impl Fn(
         &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
-    ) -> Result<
-        HashableSet<DeployChainIndex>,
-        rspace_plus_plus::rspace::errors::HistoryError,
-    >,
+    ) -> Result<HashableSet<DeployChainIndex>, E>,
 ) -> Result<
     (
         conflict_set_merger::ResolvedConflicts<DeployChainIndex>,
         usize,
     ),
-    rspace_plus_plus::rspace::errors::HistoryError,
+    E,
 > {
     let mut forced_rejected = HashableSet(HashSet::new());
 
@@ -957,6 +1093,7 @@ pub fn merge(
     // deploys downstream — added to the rejected-deploy buffer so the
     // recovery path can re-propose them in a subsequent block.
     let mut collateral_lost_pairs: Vec<(Bytes, BlockHash)> = Vec::new();
+    let mut dedup_dropped: Vec<DeployChainIndex> = Vec::new();
 
     // Memoized settled-in-base results, one probe per unique sig per merge.
     let mut settled_checked: HashSet<Bytes> = HashSet::new();
@@ -1135,6 +1272,7 @@ pub fn merge(
                 collateral_lost_pairs.len(),
             );
         }
+        dedup_dropped = dropped;
     }
 
     // Settled-content protection (#341). Under multi-parent finality a
@@ -1748,7 +1886,19 @@ pub fn merge(
             &compute_conflict_map_fn,
             &pinned,
         )
+        .map_err(CasperError::HistoryError)
     };
+
+    let removed_before_resolution: Vec<DeployChainIndex> = base_conflicting
+        .iter()
+        .chain(settled_conflicting.iter())
+        .cloned()
+        .collect();
+    let removed_or_dropped: Vec<DeployChainIndex> = removed_before_resolution
+        .iter()
+        .chain(dedup_dropped.iter())
+        .cloned()
+        .collect();
 
     let split_unavailable =
         |resolved: &mut conflict_set_merger::ResolvedConflicts<DeployChainIndex>| {
@@ -1764,7 +1914,8 @@ pub fn merge(
                         );
                     history_reader.get_continuations_proj_binary(&history_pointer)
                 },
-            )?;
+            )
+            .map_err(CasperError::HistoryError)?;
             // §3c keep-one: drop losing writers to an over-filled single-value
             // cell (recovery re-proposes them) instead of failing the merge.
             let overfilled = split_overfilled_single_value_cells(
@@ -1774,10 +1925,14 @@ pub fn merge(
                 &|channel| history_reader.get_data(channel),
                 &|channel| history_reader.get_data_proj_binary(channel),
                 &pinned,
-            )?;
-            for chain in overfilled.0 {
-                rejected.0.insert(chain);
-            }
+            )
+            .map_err(CasperError::HistoryError)?;
+            let siblings = reject_siblings_sharing_channels(resolved, &removed_or_dropped, &pinned);
+            let descendants =
+                reject_stale_diff_descendants(resolved, &removed_before_resolution, dag, &pinned)?;
+            rejected.0.extend(overfilled.0);
+            rejected.0.extend(siblings.0);
+            rejected.0.extend(descendants.0);
             Ok(rejected)
         };
 
@@ -1786,8 +1941,7 @@ pub fn merge(
         &late_seq_all,
         &resolve_once,
         &split_unavailable,
-    )
-    .map_err(CasperError::HistoryError)?;
+    )?;
 
     // Chains the base's own content precluded, and chains settled
     // carriers' content precluded. Folded in here so they travel the
@@ -1804,80 +1958,6 @@ pub fn merge(
             rejected_chains = unavailable_rejected_count,
             remaining_branches = resolved.to_merge.len()
         );
-    }
-
-    // Rejection expansion over block lineage: a surviving chain whose source
-    // block DAG-descends from a rejected chain's source block was computed
-    // against a pre-state that materializes the rejected work. Applying its
-    // pre-computed diffs on a merge base WITHOUT that work is a stale-diff
-    // application — the descendant's effects appear while its ancestor's are
-    // absent, an internally inconsistent post-state. Reject the descendants'
-    // chains as well; recovery re-proposes them against the actual merged
-    // base. Event-log dependency expansion (inside conflict resolution)
-    // cannot catch this: the descendant may touch disjoint channels and still
-    // be state-lineage-dependent. Ancestry is transitive, so one pass covers
-    // deeper descendants.
-    {
-        let rejected_blocks: HashSet<BlockHash> = resolved
-            .rejected
-            .0
-            .iter()
-            .map(|chain| chain.source_block_hash.clone())
-            .collect();
-        if !rejected_blocks.is_empty() {
-            let mut descends_cache: HashMap<BlockHash, bool> = HashMap::new();
-            let mut descends_rejected = |block_hash: &BlockHash| -> Result<bool, CasperError> {
-                if let Some(cached) = descends_cache.get(block_hash) {
-                    return Ok(*cached);
-                }
-                let mut result = false;
-                for rejected_block in &rejected_blocks {
-                    if rejected_block != block_hash
-                        && dag.is_dag_ancestor(rejected_block, block_hash)?
-                    {
-                        result = true;
-                        break;
-                    }
-                }
-                descends_cache.insert(block_hash.clone(), result);
-                Ok(result)
-            };
-            let mut expanded = 0usize;
-            let mut new_to_merge = Vec::new();
-            for branch in std::mem::take(&mut resolved.to_merge) {
-                // False positive: DeployChainIndex's Hash/Eq use only immutable fields.
-                #[allow(clippy::mutable_key_type)]
-                let mut kept: HashSet<DeployChainIndex> = HashSet::new();
-                for chain in branch.0 {
-                    // Settled chains (the pinned set) are exempt (#341):
-                    // settled content is committed and can never be rejected
-                    // through lineage expansion. A settled carrier cannot
-                    // DAG-descend from in-scope rejected work anyway — its
-                    // content precedes the floor — so the exemption only
-                    // forecloses the impossible edge deterministically.
-                    if !pinned.contains(&chain) && descends_rejected(&chain.source_block_hash)? {
-                        expanded += 1;
-                        resolved.rejected.0.insert(chain);
-                    } else {
-                        kept.insert(chain);
-                    }
-                }
-                if !kept.is_empty() {
-                    new_to_merge.push(HashableSet(kept));
-                }
-            }
-            resolved.to_merge = new_to_merge;
-            if expanded > 0 {
-                tracing::info!(
-                    target: "f1r3fly.merge.step",
-                    step = "merge.reject_stale_diff_descendants",
-                    expanded_chains = expanded,
-                    rejected_source_blocks = rejected_blocks.len(),
-                    remaining_branches = resolved.to_merge.len(),
-                    "rejection expanded over block lineage to prevent stale-diff application"
-                );
-            }
-        }
     }
 
     if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
