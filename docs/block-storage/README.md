@@ -1,4 +1,4 @@
-> Last updated: 2026-04-19
+> Last updated: 2026-11-06
 
 # Crate: block-storage
 
@@ -16,27 +16,43 @@ Block persistence, DAG state management, casper buffer, and deploy indexing.
 
 ## DAG Storage
 
-**`KeyValueDagRepresentation`** -- Immutable DAG snapshot (O(1) clones via `imbl`):
-- `dag_set`, `latest_messages_map`, `child_map`, `height_map`
-- `invalid_blocks_set`, `last_finalized_block`, `finalized_blocks_set`
-- Queries: `lookup`, `children`, `parents_unsafe`, `latest_messages`, `topo_sort`, `main_parent_chain`, `ancestors`, `descendants`, `non_finalized_blocks`
+**Configuration and resident state.** `casper.dag-hot-window-depth` must be positive and defaults to `1024`.
+For finalized height `F`, window depth `W`, and maximum published valid height `H`, the resident band is inclusive: `max(0, F-W)..H`.
+Invalid blocks cannot raise `H`.
+The window bounds retained history by height, not by block count.
+Unfinalized blocks above `F` remain resident through `H`.
+Eviction removes resident indices without deleting cold metadata, membership, height, or child records from durable storage.
 
-**`BlockDagKeyValueStorage`** -- Live mutable DAG with global `Mutex`:
-- `get_representation()` -- Atomic snapshot (acquires lock)
-- `insert(block, invalid, approved)` -- Add block with metadata updates
-- `record_directly_finalized(hash, ft_value, effect)` -- Async finalization with cached FT
-- `propagate_ft_to_finalized_blocks(ft_value)` -- Update all finalized blocks with lower cached FT
+**`KeyValueDagRepresentation`.** `get_representation()` captures resident collections, latest messages, the last finalized block, maximum valid height, and publication sequence under a shared lock.
+Clones share the persistent `imbl` collections.
+Historical queries use durable indices and the captured publication sequence, so later block insertions remain invisible to an older view.
+Queries read mutable finality metadata from storage.
+The representation does not capture a historical snapshot of every metadata field.
 
-**`BlockMetadataStore`** -- Per-block metadata with in-memory DAG state:
-- Uses `imbl` persistent collections (HashSet, OrdMap, HashMap) for structural sharing
-- `add(metadata)`, `record_finalized(directly, indirectly, ft_value)`, `contains(hash)`
-- `update_ft_if_higher(hashes, ft_value)` -- Batch update cached FT for blocks below threshold
-- `finalized_block_hashes()` -- Returns all finalized block hashes from in-memory set
-- **DAG metadata caches**: In-memory indices avoid repeated LMDB deserialization on hot paths:
-  - `block_number_map`: BlockHash → block_num
-  - `main_parent_map`: BlockHash → parent BlockHash
-  - `self_justification_map`: BlockHash → justification BlockHash
-  - `finalized_block_set`: Bounded HashSet (cap 50k, prunes to 25k) of finalized blocks
+**Query contract.** `lookup`, `contains`, `children`, `block_number`, `main_parent`, `is_finalized`, and historical traversals return `Result` values.
+Cold records remain queryable after eviction, and storage failures propagate instead of becoming missing blocks or partial traversal results.
+`scan_membership_page` and `scan_height_range` provide paged historical access within the captured visibility boundary.
+Resident map sizes do not describe total DAG history.
+
+**Publication and finalization.** `BlockDagKeyValueStorage` coordinates readers and writers with a `parking_lot::RwLock`.
+`insert(block, mode)` persists metadata, history indices, applicable latest-message pointers, and publication progress in one atomic transaction before publishing resident state.
+`record_directly_finalized(hash, ft_value, effect)` persists finality metadata and finalized progress before refreshing the resident window.
+`BlockMetadataStore` maintains resident block numbers, main parents, self-justifications, adjacency, and finalized-status caches over durable metadata.
+
+**Restart and index migration.** Startup resumes legacy metadata indexing in pages of at most 1,024 records, with each page and its cursor committed atomically.
+After migration, restart checks committed table counts and finalized metadata, then rebuilds the resident band through paged height scans.
+It does not rebuild the complete historical DAG in memory.
+Migration work can still cover the complete metadata store.
+The page limit bounds each batch, not total migration time.
+
+**Diagnostics and test access.** `resident_counts()` reports resident cache cardinalities.
+Production callers use query methods rather than resident maps, whose visibility is restricted to the crate.
+`DagFixture`, `detached_fixture()`, and `fixture_mut()` require tests or the `test-internals` feature.
+Fixture mutation requires a detached view and cannot modify a view backed by durable publication.
+
+**Database compatibility.** DAG index migration changes storage indices, not block hashes or signatures.
+It does not convert an existing chain to the upstream Merkle block-hash scheme v2.
+Stored blocks must independently satisfy the current block verification rules.
 
 ## Casper Buffer
 
