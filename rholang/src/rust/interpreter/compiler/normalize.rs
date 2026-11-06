@@ -444,6 +444,25 @@ pub fn normalize_ann_proc<'ast>(
             normalize_p_pi(params, codomain, input, _env, parser)
         }
 
+        // f1r3lang-with-monads Stage B: `foreach` comprehension. The
+        // reference translation (§4.7 of the paper) elaborates this
+        // into new/for/match/send primitives via a per-element dispatch
+        // and a parallel completion accumulator. That translation is
+        // substantial on its own and gets its own commit; for now the
+        // AST is recognized and returns Unsupported so the rev-pin
+        // bump is unblocked and Stage C (the typechecker rule) can
+        // proceed independently.
+        Proc::Foreach {
+            binder: _,
+            source: _,
+            yield_name: _,
+            proc: _,
+        } => Err(InterpreterError::ParserError(
+            "foreach normalization not yet implemented (f1r3lang-with-monads \
+             Stage B.2: §4.7 reference translation pending)"
+                .to_string(),
+        )),
+
         // Select - handle select expressions (choice constructs)
         Proc::Select { branches: _ } => {
             // TODO: Implement select normalizer when needed
