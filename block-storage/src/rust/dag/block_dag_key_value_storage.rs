@@ -121,6 +121,7 @@ pub struct KeyValueDagRepresentation {
     pub(crate) block_number_map: imbl::HashMap<BlockHash, i64>,
     pub(crate) main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub(crate) self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
+    #[cfg(any(test, feature = "test-internals"))]
     pub(crate) invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub(crate) finalized_blocks_set: imbl::HashSet<BlockHash>,
@@ -1726,6 +1727,7 @@ impl BlockDagKeyValueStorage {
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
 
+        #[cfg(any(test, feature = "test-internals"))]
         let invalid_blocks: imbl::HashSet<BlockMetadata> = if self.persistence.is_none() {
             self.invalid_blocks_index.to_map()?.into_values().collect()
         } else {
@@ -1777,6 +1779,7 @@ impl BlockDagKeyValueStorage {
             block_number_map,
             main_parent_map,
             self_justification_map,
+            #[cfg(any(test, feature = "test-internals"))]
             invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
