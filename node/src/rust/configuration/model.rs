@@ -179,6 +179,9 @@ pub struct ApiServer {
     #[serde(rename = "enable-reporting")]
     pub enable_reporting: bool,
 
+    #[serde(rename = "report-cache-retention-blocks", default)]
+    pub report_cache_retention_blocks: u64,
+
     #[serde(rename = "exploratory-deploy-max-concurrent")]
     pub exploratory_deploy_max_concurrent: usize,
     #[serde(rename = "exploratory-deploy-phlo-limit")]
