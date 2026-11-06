@@ -353,6 +353,18 @@ impl Substitute {
                         ConnectiveInstance::ConnMap(models::rhoapi::ConnMapBody { key, value }),
                     );
                 }
+                Some(ConnectiveInstance::ConnTuple(body)) => {
+                    let elements = body
+                        .elements
+                        .into_iter()
+                        .map(|p| self.substitute_no_sort(p, depth, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
+                        ConnectiveInstance::ConnTuple(models::rhoapi::ConnTupleBody { elements }),
+                    );
+                }
                 None => {}
             }
         }

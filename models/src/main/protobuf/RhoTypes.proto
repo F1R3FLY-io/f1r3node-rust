@@ -579,12 +579,20 @@ message Connective {
     // values via LUB; matcher succeeds when every target kv pair's
     // key and value match the corresponding pattern.
     ConnMapBody conn_map = 23;
+    // CoC Phase 4.4: `Tuple<T_0, …, T_{n-1}>` type. Heterogeneous:
+    // each slot carries its own type. Matcher requires arity match
+    // and per-slot spatial match.
+    ConnTupleBody conn_tuple = 24;
   }
 }
 
 message ConnMapBody {
   Par key = 1 [(scalapb.field).no_box = true];
   Par value = 2 [(scalapb.field).no_box = true];
+}
+
+message ConnTupleBody {
+  repeated Par elements = 1;
 }
 
 message ConnFixedPointBody {

@@ -222,6 +222,15 @@ impl ParCount {
 
                 (p_count_1.clone(), p_count_1)
             }
+
+            // CoC Phase 4.4: `Tuple<T_0, …>` matches a single tuple
+            // value.
+            Some(ConnTuple(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
         }
     }
 }

@@ -256,7 +256,8 @@ impl HasLocallyFree for Connective {
                 | ConnFixedPointBody(_)
                 | ConnList(_)
                 | ConnSet(_)
-                | ConnMap(_),
+                | ConnMap(_)
+                | ConnTuple(_),
             ) => true,
         }
     }
@@ -287,6 +288,10 @@ impl HasLocallyFree for Connective {
                     .unwrap_or_default();
                 union(key, value)
             }
+            Some(ConnTuple(body)) => body
+                .elements
+                .iter()
+                .fold(Vec::new(), |acc, p| union(acc, p.locally_free(depth))),
             _ => Vec::new(),
         }
     }

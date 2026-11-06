@@ -269,6 +269,30 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                 }
             }
 
+            Some(ConnectiveInstance::ConnTuple(body)) => {
+                let scored_elements: Vec<ScoredTerm<Par>> = body
+                    .elements
+                    .iter()
+                    .map(|p| ParSortMatcher::sort_match(p))
+                    .collect();
+                ScoredTerm {
+                    term: Connective {
+                        connective_instance: Some(ConnectiveInstance::ConnTuple(
+                            crate::rhoapi::ConnTupleBody {
+                                elements: scored_elements
+                                    .iter()
+                                    .map(|s| s.term.clone())
+                                    .collect(),
+                            },
+                        )),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::CONNECTIVE_TUPLE,
+                        scored_elements.into_iter().map(|s| s.score).collect(),
+                    ),
+                }
+            }
+
             None => ScoredTerm {
                 term: Connective::default(),
                 score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),

@@ -1,14 +1,13 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 4.1a (list types): synthesis (`synth`) for ground literals,
-//! `SimpleType` connectives, Pi well-formedness, dependent application,
-//! fully-annotated lambdas, β-definitional equality in `check`, the
-//! integer binary operators, `ENeg`, comparison operators, the boolean
-//! connectives on values, the logical type connectives, and `EList`
-//! (whose type is `List<T>` where `T` is the LUB of element types).
-//! Matcher integration for `ConnList` patterns, and the remaining
-//! collection kinds (Set / Map / Tuple), arrive in later Phase 4
-//! substages.
+//! Phase 4.4 (collection types): synthesis (`synth`) for ground
+//! literals, `SimpleType` connectives, Pi well-formedness, dependent
+//! application, fully-annotated lambdas, β-definitional equality in
+//! `check`, the integer binary operators, `ENeg`, comparison operators,
+//! the boolean connectives on values, the logical type connectives,
+//! and the four collection kinds: `List<T>`, `Set<T>`, `Map<K, V>`,
+//! `Tuple<T_0, …, T_{n-1}>`. Process-level typing remains a future
+//! phase.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -416,6 +415,19 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
             )))
         }
 
+        // Tuple literal `(e_0, …, e_{n-1})`. Heterogeneous: synth each
+        // slot independently and wrap the per-slot types in ConnTuple.
+        ExprInstance::ETupleBody(tuple) => {
+            let elements = tuple
+                .ps
+                .iter()
+                .map(|p| synth(_ctx, p))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(type_par(ConnectiveInstance::ConnTuple(
+                models::rhoapi::ConnTupleBody { elements },
+            )))
+        }
+
         // A bound variable's type is its entry in the context.
         ExprInstance::EVarBody(evar) => {
             let v = evar
@@ -817,6 +829,17 @@ fn synth_connective(ctx: &Context, conn: &Connective) -> Result<Par, TypeError> 
             Ok(type_univ)
         }
 
+        // `Tuple<T_0, …>` is a type when every slot is a type (or
+        // empty sentinel).
+        ConnectiveInstance::ConnTuple(body) => {
+            for element in &body.elements {
+                if !is_empty_par(element) {
+                    check(ctx, element, &type_univ)?;
+                }
+            }
+            Ok(type_univ)
+        }
+
         other => Err(TypeError::Unsupported(format!(
             "no typing rule for connective kind yet: {:?}",
             discriminant_name_conn(other)
@@ -912,6 +935,7 @@ fn discriminant_name_conn(inst: &ConnectiveInstance) -> &'static str {
         ConnectiveInstance::ConnList(_) => "ConnList",
         ConnectiveInstance::ConnSet(_) => "ConnSet",
         ConnectiveInstance::ConnMap(_) => "ConnMap",
+        ConnectiveInstance::ConnTuple(_) => "ConnTuple",
     }
 }
 
@@ -1877,6 +1901,62 @@ mod tests {
         let ctx = Context::new();
         let int_ty = type_par(ConnectiveInstance::ConnInt(true));
         let bad = conn_map(gint_par(7), int_ty);
+        let err = synth(&ctx, &bad).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    fn etuple_par(elements: Vec<Par>) -> Par {
+        use models::rhoapi::{ETuple, Expr};
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    #[test]
+    fn synth_tuple_preserves_per_slot_types() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let string_ty = type_par(ConnectiveInstance::ConnString(true));
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let par = etuple_par(vec![gint_par(1), gstring_par("x"), gbool_par(true)]);
+        let ty = synth(&ctx, &par).unwrap();
+        match ty.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+            Some(ConnectiveInstance::ConnTuple(body)) => {
+                assert_eq!(body.elements.len(), 3);
+                assert!(def_eq(&body.elements[0], &int_ty));
+                assert!(def_eq(&body.elements[1], &string_ty));
+                assert!(def_eq(&body.elements[2], &bool_ty));
+            }
+            other => panic!("expected ConnTuple, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synth_conn_tuple_type_is_type_when_slots_are_types() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let string_ty = type_par(ConnectiveInstance::ConnString(true));
+        let tuple_ty = type_par(ConnectiveInstance::ConnTuple(
+            models::rhoapi::ConnTupleBody {
+                elements: vec![int_ty, string_ty],
+            },
+        ));
+        let ty = synth(&ctx, &tuple_ty).unwrap();
+        assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
+    }
+
+    #[test]
+    fn synth_conn_tuple_rejects_non_type_slot() {
+        let ctx = Context::new();
+        let bad = type_par(ConnectiveInstance::ConnTuple(
+            models::rhoapi::ConnTupleBody {
+                elements: vec![gint_par(42)],
+            },
+        ));
         let err = synth(&ctx, &bad).unwrap_err();
         assert!(matches!(err, TypeError::Mismatch { .. }));
     }

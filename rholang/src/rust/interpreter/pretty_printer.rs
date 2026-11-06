@@ -993,6 +993,14 @@ impl PrettyPrinter {
                             self.build_string_from_message(value)
                         ))
                     }
+                    ConnectiveInstance::ConnTuple(body) => {
+                        let parts: Vec<String> = body
+                            .elements
+                            .iter()
+                            .map(|p| self.build_string_from_message(p))
+                            .collect();
+                        Ok(format!("Tuple<{}>", parts.join(", ")))
+                    }
                 },
                 None => Ok(String::new()),
             }

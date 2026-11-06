@@ -274,6 +274,21 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            // CoC Phase 4.4: `Tuple<T_0, …, T_{n-1}>` pattern matches an
+            // ETuple target of matching arity whose each slot spatial-
+            // matches the corresponding T_i.
+            Some(ConnTuple(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(ETupleBody(tuple)),
+                }) if tuple.ps.len() == body.elements.len() => {
+                    for (t, p) in tuple.ps.iter().zip(body.elements.iter()) {
+                        self.spatial_match(t.clone(), p.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
+
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
             // Type". For now, match the universe constant, Pi types, and

@@ -2584,6 +2584,56 @@ mod coc_list_patterns {
         let pattern = conn_map_pattern(string_type_pattern(), int_type_pattern());
         assert!(assert_spatial_match(target, pattern, None).is_ok());
     }
+
+    fn tuple_par(elements: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    fn conn_tuple_pattern(elements: Vec<Par>) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnTuple(
+                models::rhoapi::ConnTupleBody { elements },
+            )),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn tuple_target_matches_tuple_pattern_of_matching_shape() {
+        let target = tuple_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_tuple_pattern(vec![int_type_pattern(), string_type_pattern()]);
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn tuple_target_rejects_pattern_of_wrong_arity() {
+        let target = tuple_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_tuple_pattern(vec![int_type_pattern()]);
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn tuple_target_rejects_pattern_with_wrong_slot_type() {
+        let target = tuple_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_tuple_pattern(vec![string_type_pattern(), int_type_pattern()]);
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
 }
 
 // CoC Phase 3.1: Pi-shaped patterns typecheck via the typechecker.
