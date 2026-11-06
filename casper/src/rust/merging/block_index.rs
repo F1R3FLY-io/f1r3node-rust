@@ -47,7 +47,7 @@ pub fn create_event_log_index(
     EventLogIndex::new(
         events
             .iter()
-            .filter_map(event_converter::to_rspace_event)
+            .map(event_converter::to_rspace_event)
             .collect(),
         produce_exists_in_pre_state,
         produce_touches_pre_state_join,

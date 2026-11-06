@@ -1091,7 +1091,7 @@ impl RuntimeManager {
                     let rspace_events: Vec<_> = entry
                         .event_log
                         .iter()
-                        .filter_map(crate::rust::util::event_converter::to_rspace_event)
+                        .map(crate::rust::util::event_converter::to_rspace_event)
                         .collect();
                     replay_runtime.rig(rspace_events).await?;
 

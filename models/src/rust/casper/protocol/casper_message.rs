@@ -1668,44 +1668,6 @@ pub enum Event {
     Produce(ProduceEvent),
     Consume(ConsumeEvent),
     Comm(CommEvent),
-    Refusal(RefusalEvent),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RefusalEvent {
-    pub owner: ByteString,
-    pub envelope: ByteString,
-    pub phlo_price: u64,
-    pub step: ByteString,
-    pub kind: u32,
-    pub drawn: u64,
-    pub charge: u64,
-}
-
-impl RefusalEvent {
-    pub fn to_proto(self) -> RefusalEventProto {
-        RefusalEventProto {
-            owner: self.owner,
-            envelope: self.envelope,
-            phlo_price: self.phlo_price,
-            step: self.step,
-            kind: self.kind,
-            drawn: self.drawn,
-            charge: self.charge,
-        }
-    }
-
-    pub fn from_proto(proto: RefusalEventProto) -> Self {
-        RefusalEvent {
-            owner: proto.owner,
-            envelope: proto.envelope,
-            phlo_price: proto.phlo_price,
-            step: proto.step,
-            kind: proto.kind,
-            drawn: proto.drawn,
-            charge: proto.charge,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1754,9 +1716,6 @@ impl Event {
                 produces: produces.into_iter().map(ProduceEvent::from_proto).collect(),
                 peeks: peeks.into_iter().map(Peek::from_proto).collect(),
             })),
-            Some(event_proto::EventInstance::Refusal(re)) => {
-                Ok(Event::Refusal(RefusalEvent::from_proto(re)))
-            }
 
             _ => Err("Received malformed Event: None".to_string()),
         }
@@ -1772,9 +1731,6 @@ impl Event {
             },
             Event::Comm(cme) => EventProto {
                 event_instance: Some(event_proto::EventInstance::Comm(cme.clone().to_proto())),
-            },
-            Event::Refusal(re) => EventProto {
-                event_instance: Some(event_proto::EventInstance::Refusal(re.clone().to_proto())),
             },
         }
     }
@@ -3100,5 +3056,26 @@ mod cosignature_tests {
             Cosignature::verified_cosigners(&signed),
             Some(vec![b_pk, c_pk])
         );
+    }
+}
+
+#[cfg(test)]
+mod event_tests {
+    use prost::Message;
+
+    use super::*;
+
+    #[test]
+    fn an_event_with_the_reserved_refusal_tag_does_not_decode() {
+        let refusal_tag_four = [0x22u8, 0x00];
+        let proto = EventProto::decode(&refusal_tag_four[..]).unwrap();
+        assert!(proto.event_instance.is_none());
+        assert!(Event::from_proto(proto).is_err());
+        let comm = Event::Consume(ConsumeEvent {
+            channels_hashes: Vec::new(),
+            hash: Default::default(),
+            persistent: false,
+        });
+        assert_eq!(Event::from_proto(comm.to_proto()).unwrap(), comm);
     }
 }

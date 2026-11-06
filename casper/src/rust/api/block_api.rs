@@ -1079,7 +1079,7 @@ impl BlockAPI {
 
         let log: Vec<RspaceEvent> = serialized_log
             .iter()
-            .filter_map(|event| event_converter::to_rspace_event(event))
+            .map(|event| event_converter::to_rspace_event(event))
             .collect();
 
         log.iter().any(|event| match event {
