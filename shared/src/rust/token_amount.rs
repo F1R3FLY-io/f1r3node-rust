@@ -33,7 +33,7 @@ impl TokenAmount {
         if value.len() > MAX_DECIMAL.len() {
             return Err(OUT_OF_RANGE.to_string());
         }
-        Self::new(decimal::parse(value)?)
+        Self::new(crate::rust::decimal::parse_unsigned(value)?)
     }
 
     pub fn from_wire(bytes: &[u8]) -> Result<Self, String> {
@@ -95,64 +95,6 @@ impl<'de> Deserialize<'de> for TokenAmount {
     }
 }
 
-/// Unbounded non-negative integers in the same canonical decimal form, for
-/// totals that can exceed a single amount's range.
-pub mod decimal {
-    use num_bigint::BigInt;
-    use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn parse(value: &str) -> Result<BigInt, String> {
-        if value.is_empty()
-            || !value.bytes().all(|byte| byte.is_ascii_digit())
-            || (value.len() > 1 && value.starts_with('0'))
-        {
-            return Err("amount must be a canonical unsigned decimal integer".to_string());
-        }
-        value.parse::<BigInt>().map_err(|error| error.to_string())
-    }
-
-    pub fn serialize<S: Serializer>(value: &BigInt, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(value)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BigInt, D::Error> {
-        parse(&String::deserialize(deserializer)?).map_err(de::Error::custom)
-    }
-
-    pub mod option {
-        use super::*;
-
-        pub fn serialize<S: Serializer>(
-            value: &Option<BigInt>,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            value
-                .as_ref()
-                .map(ToString::to_string)
-                .serialize(serializer)
-        }
-
-        pub fn deserialize<'de, D: Deserializer<'de>>(
-            deserializer: D,
-        ) -> Result<Option<BigInt>, D::Error> {
-            Option::<String>::deserialize(deserializer)?
-                .map(|value| parse(&value).map_err(de::Error::custom))
-                .transpose()
-        }
-    }
-
-    pub fn serialize_vec<S: Serializer>(
-        values: &[BigInt],
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        values
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .serialize(serializer)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
@@ -196,7 +138,7 @@ mod tests {
     #[test]
     fn totals_beyond_one_amount_use_the_same_grammar() {
         #[derive(Serialize, Deserialize)]
-        struct Total(#[serde(with = "decimal")] BigInt);
+        struct Total(#[serde(with = "crate::rust::decimal::unsigned")] BigInt);
         let total = TokenAmount::max().into_bigint() * 2u8;
         let json = serde_json::to_string(&Total(total.clone())).unwrap();
         assert_eq!(serde_json::from_str::<Total>(&json).unwrap().0, total);

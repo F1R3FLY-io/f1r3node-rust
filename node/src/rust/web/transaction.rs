@@ -3,14 +3,12 @@ use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::rust::api::serde_types::int_string;
-
 /// Transaction data structure
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Transaction {
     pub from_addr: String,
     pub to_addr: String,
-    #[serde(with = "int_string")]
+    #[serde(with = "shared::rust::decimal::signed")]
     #[schema(value_type = String)]
     pub amount: BigInt,
     #[serde(skip, default)]

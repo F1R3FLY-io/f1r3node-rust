@@ -62,7 +62,7 @@ pub struct ForkChoiceResult {
     pub common_ancestor: String,
     pub head: String,
     pub tips: Vec<String>,
-    #[serde(serialize_with = "shared::rust::token_amount::decimal::serialize_vec")]
+    #[serde(serialize_with = "shared::rust::decimal::unsigned::serialize_vec")]
     pub tip_scores: Vec<BigInt>,
     pub score_count: usize,
     pub score_digest: String,

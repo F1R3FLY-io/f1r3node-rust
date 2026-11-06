@@ -30,7 +30,6 @@ use utoipa::ToSchema;
 
 use crate::rust::api::serde_types::block_info::BlockInfoSerde;
 use crate::rust::api::serde_types::deploy_info::TransferInfoSerde;
-use crate::rust::api::serde_types::int_string;
 use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
 use crate::rust::web::block_info_enricher::extract_transfers_from_report;
 use crate::rust::web::version_info::get_version_info_str;
@@ -1167,12 +1166,12 @@ pub enum RhoExpr {
         data: bool,
     },
     ExprInt {
-        #[serde(with = "int_string")]
+        #[serde(with = "shared::rust::decimal::signed")]
         #[schema(value_type = String)]
         data: i64,
     },
     ExprUint64 {
-        #[serde(with = "int_string")]
+        #[serde(with = "shared::rust::decimal::signed")]
         #[schema(value_type = String)]
         data: u64,
     },
@@ -1573,7 +1572,6 @@ pub enum ViewMode {
 pub struct BalanceResponse {
     pub address: String,
     /// Balance in base units as a decimal string (vault balances are BigInt).
-    #[serde(deserialize_with = "int_string::deserialize")]
     pub balance: String,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
@@ -1606,7 +1604,7 @@ pub struct ValidatorInfo {
 pub struct ValidatorsResponse {
     pub validators: Vec<ValidatorInfo>,
     #[serde(rename = "totalStake")]
-    #[serde(with = "shared::rust::token_amount::decimal")]
+    #[serde(with = "shared::rust::decimal::unsigned")]
     #[schema(value_type = String)]
     pub total_stake: BigInt,
     #[serde(rename = "blockNumber")]
@@ -2354,20 +2352,12 @@ mod tests {
         assert_eq!(serde_json::to_value(&expr).unwrap(), expected);
         let restored: RhoExpr = serde_json::from_value(expected.clone()).unwrap();
         assert_eq!(serde_json::to_value(restored).unwrap(), expected);
-        let legacy: RhoExpr = serde_json::from_value(serde_json::json!({"ExprList": {"data": [
-            {"ExprInt": {"data": i64::MIN}},
-            {"ExprUint64": {"data": u64::MAX}}
-        ]}}))
-        .unwrap();
-        let restored = serde_json::to_value(legacy).unwrap();
-        assert_eq!(
-            restored["ExprList"]["data"][0],
-            expected["ExprList"]["data"][0]
-        );
-        assert_eq!(
-            restored["ExprList"]["data"][1],
-            expected["ExprList"]["data"][2]
-        );
+        for number in [serde_json::json!(1), serde_json::json!(u64::MAX)] {
+            assert!(serde_json::from_value::<RhoExpr>(
+                serde_json::json!({"ExprInt": {"data": number}})
+            )
+            .is_err());
+        }
     }
 
     #[test]

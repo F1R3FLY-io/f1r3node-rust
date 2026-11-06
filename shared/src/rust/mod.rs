@@ -1,5 +1,6 @@
 pub mod blocking;
 pub mod dag;
+pub mod decimal;
 pub mod grpc;
 pub mod hashable_set;
 pub mod metrics_constants;

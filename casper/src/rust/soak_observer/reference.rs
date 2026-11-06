@@ -43,11 +43,11 @@ impl std::fmt::Display for ReferenceError {
 pub struct ReferenceOracle {
     pub decision: bool,
     pub original_bits: u32,
-    #[serde(with = "shared::rust::token_amount::decimal::option")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub total_stake: Option<BigInt>,
-    #[serde(with = "shared::rust::token_amount::decimal::option")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub agreeing_stake: Option<BigInt>,
-    #[serde(with = "shared::rust::token_amount::decimal::option")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub clique_weight: Option<BigInt>,
 }
 

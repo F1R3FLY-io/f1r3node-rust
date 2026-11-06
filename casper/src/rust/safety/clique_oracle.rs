@@ -20,11 +20,11 @@ pub struct CliqueOracle;
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ExactOracleResult {
     pub decision: bool,
-    #[serde(with = "shared::rust::token_amount::decimal::option")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub total_stake: Option<BigInt>,
-    #[serde(with = "shared::rust::token_amount::decimal::option")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub agreeing_stake: Option<BigInt>,
-    #[serde(with = "shared::rust::token_amount::decimal::option")]
+    #[serde(with = "shared::rust::decimal::unsigned::option")]
     pub clique_weight: Option<BigInt>,
     pub early_return: Option<&'static str>,
 }
