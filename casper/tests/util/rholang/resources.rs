@@ -5,7 +5,9 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+};
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -508,6 +510,23 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         )),
     }
     .build()
+}
+
+pub fn new_synthetic_empty_dag_storage() -> BlockDagKeyValueStorage {
+    BlockDagKeyValueStorage::from_parts(
+        Arc::new(RwLock::new(())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        Arc::new(RwLock::new(BlockMetadataStore::new(
+            KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        ))),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore::new(
+            KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        ),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    )
 }
 
 pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {

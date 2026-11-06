@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
-use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use casper::rust::blocks::block_processor::BlockProcessorDependencies;
 use casper::rust::engine::block_retriever::BlockRetriever;
 use comm::rust::rp::connect::{Connections, ConnectionsCell};
@@ -17,6 +16,7 @@ use crate::engine::setup;
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::block_generator::create_genesis_block;
 use crate::helper::block_util::generate_validator;
+use crate::util::rholang::resources::new_synthetic_empty_dag_storage;
 
 struct TestFixture {
     dependencies: BlockProcessorDependencies<TransportLayerStub>,
@@ -60,13 +60,7 @@ impl TestFixture {
             })
             .await;
 
-        // Get underlying BlockDagKeyValueStorage for CasperDependencyAnalyzer
-        let block_dag_storage = {
-            // We need to extract underlying storage for the dependency analyzer
-            // For now, create a separate one since IndexedBlockDagStorage doesn't expose underlying
-            let mut dag_kvm = InMemoryStoreManager::new();
-            BlockDagKeyValueStorage::new(&mut dag_kvm).await.unwrap()
-        };
+        let block_dag_storage = new_synthetic_empty_dag_storage();
 
         let v1 = generate_validator(Some("Test Validator"));
         let bonds = vec![Bond {
@@ -104,6 +98,10 @@ impl TestFixture {
             None,
             None,
         );
+
+        let dependency_view = block_dag_storage.get_representation().unwrap();
+        assert!(!dependency_view.contains(&genesis.block_hash).unwrap());
+        assert!(!dependency_view.contains(&test_block.block_hash).unwrap());
 
         // Create unified dependencies
         let dependencies = BlockProcessorDependencies::new(
