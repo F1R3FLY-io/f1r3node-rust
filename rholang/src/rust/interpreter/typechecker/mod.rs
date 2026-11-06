@@ -1,16 +1,17 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 5.4 (parallel composition): synthesis (`synth`) for ground
+//! Phase 6.A (prelude context): synthesis (`synth`) for ground
 //! literals, `SimpleType` connectives, Pi well-formedness, dependent
 //! application, fully-annotated lambdas, β-definitional equality in
 //! `check`, the integer binary operators, `ENeg`, comparison
 //! operators, the boolean connectives on values, the logical type
 //! connectives, the four collection kinds, recursive process-level
-//! typing with `Bool`-constrained where-clause guards, and
-//! multi-slot Pars (parallel composition `P | Q`). A Par with
-//! multiple top-level pieces — any process content, or more than one
-//! expr/connective — synthesizes to `Proc` provided every piece is
-//! well-typed.
+//! typing, and parallel composition. `initial_context` seeds the
+//! typechecker with prelude bindings for the five collection type
+//! constructors (`List`, `Set`, `HashBag`, `Map`, `Tuple`) so caller
+//! code can reference them by name. Normalizer integration awaits a
+//! later commit; the DDL on `feature/f1r3lang-mettail-only` will
+//! refine the carrier-only kinds here into full monad signatures.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -30,16 +31,21 @@ use crate::rust::interpreter::substitute::{Substitute, SubstituteTrait};
 
 /// Typing context — a stack of `Par` types indexed by De Bruijn level.
 /// Entry at position 0 is the innermost binder. Mirrors the parser's
-/// `bound_map_chain` layout for ProcSort entries.
+/// `bound_map_chain` layout for ProcSort entries. The optional `names`
+/// map lets a prelude or import mechanism record human-readable names
+/// for stable top-level bindings (see `initial_context`); lookups
+/// still happen by De Bruijn index, with names merely bookkeeping.
 #[derive(Clone, Debug, Default)]
 pub struct Context {
     bindings: Vec<Par>,
+    names: std::collections::HashMap<String, usize>,
 }
 
 impl Context {
     pub fn new() -> Self {
         Context {
             bindings: Vec::new(),
+            names: std::collections::HashMap::new(),
         }
     }
 
@@ -49,7 +55,32 @@ impl Context {
         new_bindings.push(ty);
         Context {
             bindings: new_bindings,
+            names: self.names.clone(),
         }
+    }
+
+    /// Push a named binder's type, recording the name in `names`.
+    /// Used by `initial_context` to install prelude bindings; user
+    /// code's binders go through `extend` (unnamed).
+    pub fn extend_named(&self, name: impl Into<String>, ty: Par) -> Context {
+        let idx = self.bindings.len();
+        let mut new_bindings = self.bindings.clone();
+        new_bindings.push(ty);
+        let mut new_names = self.names.clone();
+        new_names.insert(name.into(), idx);
+        Context {
+            bindings: new_bindings,
+            names: new_names,
+        }
+    }
+
+    /// Resolve a prelude or user name to its current De Bruijn index
+    /// (relative to this scope) and type.
+    pub fn lookup_by_name(&self, name: &str) -> Option<(i32, &Par)> {
+        let idx = *self.names.get(name)?;
+        let level = self.bindings.len();
+        let boundvar = level.checked_sub(idx + 1)? as i32;
+        Some((boundvar, self.bindings.get(idx)?))
     }
 
     /// Look up the type of `BoundVar(index)`.
@@ -63,6 +94,45 @@ impl Context {
     }
 
     pub fn depth(&self) -> usize { self.bindings.len() }
+}
+
+/// Prelude context for the CoC fragment.
+///
+/// Binds the five built-in collection type constructors to their kinds
+/// so user code can reference `List`, `Set`, `HashBag`, `Map`, `Tuple`
+/// by name. Each is a Pi whose codomain is `Type`: applied to element
+/// types, it yields a well-formed collection type.
+///
+/// This is Stage A of the `foreach`-adoption plan
+/// (`~/.claude/plans/hidden-strolling-pillow.md`). The signatures here
+/// are intentionally the carrier-only kinds — `List : Π(T: Type). Type`
+/// rather than the full F_=-style existential package with operations
+/// and laws. Operations arrive on the `feature/f1r3lang-mettail-only`
+/// branch's DDL and will refine these bindings.
+///
+/// Normalizer integration is a later commit: today the typechecker
+/// exposes this context and the API surface for users of `synth` /
+/// `check` to resolve prelude names; the parser does not yet lower
+/// `List<Int>` surface syntax against this context.
+pub fn initial_context() -> Context {
+    let type_ty = type_par(ConnectiveInstance::ConnType(true));
+    let type_to_type = build_pi(vec![type_ty.clone()], type_ty.clone());
+    let type_type_to_type = build_pi(
+        vec![type_ty.clone(), type_ty.clone()],
+        type_ty.clone(),
+    );
+    // Tuple is heterogeneously variadic in surface syntax; the prelude
+    // kind pins only a single-parameter arrow for now. A faithful
+    // variadic signature awaits either a dependent kind (`Π(n: Nat).
+    // Π(ts: Vec<Type, n>). Type`) or a sum-of-arities encoding, both
+    // of which depend on the DDL branch.
+    let tuple_ty = type_to_type.clone();
+    Context::new()
+        .extend_named("List", type_to_type.clone())
+        .extend_named("Set", type_to_type.clone())
+        .extend_named("HashBag", type_to_type.clone())
+        .extend_named("Map", type_type_to_type)
+        .extend_named("Tuple", tuple_ty)
 }
 
 /// Error raised when typechecking fails. Par-carrying variants box the
@@ -1193,6 +1263,91 @@ mod tests {
         assert_eq!(looked, &int_ty);
         assert!(ctx.lookup(1).is_none());
         assert_eq!(ctx.depth(), 1);
+    }
+
+    #[test]
+    fn extend_named_round_trips_via_lookup_by_name() {
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let ctx = Context::new().extend_named("x", int_ty.clone());
+        let (idx, ty) = ctx.lookup_by_name("x").expect("name resolves");
+        assert_eq!(idx, 0, "single-binder scope: innermost = BoundVar(0)");
+        assert_eq!(ty, &int_ty);
+        // De Bruijn and name lookups agree.
+        assert_eq!(ctx.lookup(idx).unwrap(), &int_ty);
+    }
+
+    #[test]
+    fn extend_named_boundvar_index_shifts_with_depth() {
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let ctx = Context::new()
+            .extend_named("outer", int_ty.clone())
+            .extend(bool_ty.clone());
+        // After pushing an unnamed binder, "outer" is now BoundVar(1).
+        let (idx, ty) = ctx.lookup_by_name("outer").expect("name resolves");
+        assert_eq!(idx, 1);
+        assert_eq!(ty, &int_ty);
+        assert_eq!(ctx.lookup(0).unwrap(), &bool_ty);
+    }
+
+    #[test]
+    fn initial_context_binds_five_collection_constructors() {
+        let ctx = initial_context();
+        for name in &["List", "Set", "HashBag", "Map", "Tuple"] {
+            assert!(
+                ctx.lookup_by_name(name).is_some(),
+                "prelude binding for {name} missing"
+            );
+        }
+    }
+
+    #[test]
+    fn initial_context_list_has_type_type_to_type() {
+        let ctx = initial_context();
+        let (_, list_ty) = ctx.lookup_by_name("List").expect("List bound");
+        // Expected: Π(T: Type). Type
+        match single_expr(list_ty) {
+            Some(ExprInstance::EPiBody(pi)) => {
+                assert_eq!(pi.bind_count, 1, "List has arity 1");
+                let type_ty = type_par(ConnectiveInstance::ConnType(true));
+                assert!(
+                    def_eq(&pi.param_types[0], &type_ty),
+                    "List param is Type"
+                );
+                assert!(
+                    def_eq(pi.codomain.as_ref().unwrap(), &type_ty),
+                    "List codomain is Type"
+                );
+            }
+            other => panic!("expected EPi for List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn initial_context_map_has_type_type_to_type_to_type() {
+        let ctx = initial_context();
+        let (_, map_ty) = ctx.lookup_by_name("Map").expect("Map bound");
+        match single_expr(map_ty) {
+            Some(ExprInstance::EPiBody(pi)) => {
+                assert_eq!(pi.bind_count, 2, "Map has arity 2");
+                assert_eq!(pi.param_types.len(), 2);
+            }
+            other => panic!("expected EPi for Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn synth_list_applied_to_int_returns_type_via_initial_context() {
+        // In the initial_context, `List` is BoundVar(k) with type
+        // `Π(T: Type). Type`. Applying it to `Int` (as a type) should
+        // synth to `Type` (the Pi's codomain).
+        let ctx = initial_context();
+        let (list_idx, _) = ctx.lookup_by_name("List").expect("List bound");
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let app = app_par(bvar_par(list_idx), vec![int_ty]);
+        let ty = synth(&ctx, &app).unwrap();
+        let type_ty = type_par(ConnectiveInstance::ConnType(true));
+        assert!(def_eq(&ty, &type_ty));
     }
 
     // Helper: build a Pi `(_: A) -> B` for tests. Propagates
