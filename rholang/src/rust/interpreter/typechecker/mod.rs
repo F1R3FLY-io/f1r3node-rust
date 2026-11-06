@@ -1,10 +1,11 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-v (lambda synthesis): synthesis (`synth`) for ground
-//! literals, `SimpleType` connectives, Pi well-formedness, dependent
-//! application, and fully-annotated lambdas (builds a Pi from the
-//! annotations and the synthesized body type). Remaining phases add
-//! β-definitional equality, process-level typing, and typing of the
+//! Phase 2c-vi (β-definitional equality): synthesis (`synth`) for
+//! ground literals, `SimpleType` connectives, Pi well-formedness,
+//! dependent application, and fully-annotated lambdas. `check`
+//! compares types up to β-equivalence, so an inferred type carrying
+//! unreduced `EApp(ELambda, args)` matches the equivalent expected
+//! shape. Remaining phases add process-level typing and typing of the
 //! arithmetic/logical operators.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
@@ -310,7 +311,7 @@ pub fn check(ctx: &Context, par: &Par, expected: &Par) -> Result<(), TypeError> 
                 if is_empty_par(ann) {
                     continue;
                 }
-                if ann != pi_pt {
+                if !def_eq(ann, pi_pt) {
                     return Err(TypeError::Mismatch {
                         expected: Box::new(pi_pt.clone()),
                         actual: Box::new(ann.clone()),
@@ -338,9 +339,9 @@ pub fn check(ctx: &Context, par: &Par, expected: &Par) -> Result<(), TypeError> 
         return check(&inner, body, codomain);
     }
 
-    // Fall through: synth and compare syntactically.
+    // Fall through: synth and compare up to β-definitional equality.
     let actual = synth(ctx, par)?;
-    if actual == *expected {
+    if def_eq(&actual, expected) {
         Ok(())
     } else {
         Err(TypeError::Mismatch {
@@ -348,6 +349,80 @@ pub fn check(ctx: &Context, par: &Par, expected: &Par) -> Result<(), TypeError> 
             actual: Box::new(actual),
         })
     }
+}
+
+/// Definitional (β) equality on types.
+///
+/// Two types are definitionally equal iff β-reducing both to WHNF
+/// produces equal top-level shapes; equal recursively on the sub-Pars
+/// of a matching Pi.
+pub fn def_eq(a: &Par, b: &Par) -> bool {
+    let na = beta_whnf(a.clone());
+    let nb = beta_whnf(b.clone());
+    def_eq_whnf(&na, &nb)
+}
+
+fn def_eq_whnf(a: &Par, b: &Par) -> bool {
+    if a == b {
+        return true;
+    }
+    // Pi — recurse on param_types + codomain so a Pi whose codomain
+    // was constructed by substitution (and thus carries recomputed
+    // flags) can still match a syntactically-equal Pi.
+    if let (Some(ExprInstance::EPiBody(pa)), Some(ExprInstance::EPiBody(pb))) =
+        (single_expr(a), single_expr(b))
+    {
+        if pa.bind_count != pb.bind_count {
+            return false;
+        }
+        if pa.param_types.len() != pb.param_types.len() {
+            return false;
+        }
+        for (x, y) in pa.param_types.iter().zip(pb.param_types.iter()) {
+            if !def_eq(x, y) {
+                return false;
+            }
+        }
+        return match (&pa.codomain, &pb.codomain) {
+            (Some(x), Some(y)) => def_eq(x, y),
+            (None, None) => true,
+            _ => false,
+        };
+    }
+    false
+}
+
+/// β-reduce `par` to weak head normal form by repeatedly collapsing
+/// `EApp(ELambda, args)` at the head. Other shapes are returned
+/// unchanged.
+pub fn beta_whnf(mut par: Par) -> Par {
+    loop {
+        match beta_step(&par) {
+            Some(next) => par = next,
+            None => return par,
+        }
+    }
+}
+
+fn beta_step(par: &Par) -> Option<Par> {
+    let app = match single_expr(par)? {
+        ExprInstance::EAppBody(app) => app,
+        _ => return None,
+    };
+    let fun = app.fun.as_ref()?;
+    let lambda = match single_expr(fun)? {
+        ExprInstance::ELambdaBody(lambda) => lambda,
+        _ => return None,
+    };
+    if app.args.len() as i32 != lambda.bind_count {
+        return None;
+    }
+    let body = lambda.body.as_ref()?.clone();
+    let subst = Substitute {
+        cost: CostManager::new(Cost::unsafe_max()),
+    };
+    let env = Env::new().extended(app.args.iter().rev().cloned());
+    subst.substitute_no_sort(body, 0, &env).ok()
 }
 
 fn single_expr(par: &Par) -> Option<&ExprInstance> {
@@ -1103,6 +1178,53 @@ mod tests {
         }]);
         par.connective_used = conn_used;
         par
+    }
+
+    #[test]
+    fn def_eq_reduces_app_of_identity_to_arg() {
+        // `((A: Type) => A)(Int)` β-reduces to `Int`.
+        let type_univ = type_par(ConnectiveInstance::ConnType(true));
+        let id_lam = lambda_par_typed(1, bvar_par(0), vec![type_univ]);
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let redex = app_par(id_lam, vec![int_ty.clone()]);
+        assert!(def_eq(&redex, &int_ty));
+    }
+
+    #[test]
+    fn def_eq_distinct_bases_not_equal() {
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        assert!(!def_eq(&int_ty, &bool_ty));
+    }
+
+    #[test]
+    fn def_eq_recurses_into_pi_structure() {
+        // Pi `(_: Int) -> Int` equals itself; and equals a Pi where
+        // param_type was built by reducing `((A: Type) => A)(Int)`.
+        let type_univ = type_par(ConnectiveInstance::ConnType(true));
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let id_lam = lambda_par_typed(1, bvar_par(0), vec![type_univ]);
+        let reducible_param = app_par(id_lam, vec![int_ty.clone()]);
+        let pi_direct = pi_par(int_ty.clone(), int_ty.clone());
+        let pi_reducible = pi_par(reducible_param, int_ty);
+        assert!(def_eq(&pi_direct, &pi_reducible));
+    }
+
+    #[test]
+    fn check_accepts_beta_equivalent_annotation() {
+        // Annotation on the lambda is a reducible expression that
+        // β-reduces to Int; the expected Pi has Int directly.
+        let ctx = Context::new();
+        let type_univ = type_par(ConnectiveInstance::ConnType(true));
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let id_lam = lambda_par_typed(1, bvar_par(0), vec![type_univ]);
+        let reducible_int = app_par(id_lam, vec![int_ty.clone()]);
+        // Expected: `(_: Int) -> Int`. Lambda body = x : BoundVar(0) : Int
+        // (via check-against-Pi's reverse-push ctx).
+        let expected = pi_par(int_ty.clone(), int_ty);
+        // Lambda whose annotation is the reducible int.
+        let lam = lambda_par_typed(1, bvar_par(0), vec![reducible_int]);
+        check(&ctx, &lam, &expected).unwrap();
     }
 
     #[test]
