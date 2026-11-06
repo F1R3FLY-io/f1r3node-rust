@@ -11,6 +11,7 @@ mod fileio_stream_spec;
 mod cli_smoke_spec;
 mod coc_type_match_reduce_spec;
 mod coc_type_match_spec;
+mod foreach_source_spec;
 mod continuation_dedup_spec;
 mod crypto_channels_spec;
 mod demo_verification;
