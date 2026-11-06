@@ -3664,6 +3664,39 @@ After these: my final read, and the tag.
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 45 (action A-8): the Q-35 memo and the parser pin
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b, FX-19, FX-19-format, FX-20, FX-21, FX-22, Q-35-memo or any tag.
+- **Commit read:** `patch/Q-35-memo` at `1c7dc5511` (lane A2 to lane B).
+- **No change:** FX-8b stays at `818e72d6c`, FX-19 at `59cb1f0c5` and FX-21 at `0991d5768`. There is no report yet on the charge of a failed run after FX-22, and there is no tag.
+
+### Lane A2's Q-35 finding: accepted, and merge condition 1 changes
+
+- `dev` at `3b5daabb4` pins `rholang-rs` master at `4e22339`, which adds the lambda, application and pi forms. `rev-stacks/syntax-dev` at `743752b` contains master only up to `dd6f611`. So the `dev` merge does not compile against `743752b`.
+- **Lane A2's trial merge (local only):**
+  - The grammar and the Rust sources of `4e22339` merge into `743752b` with no conflict.
+  - Only three generated files conflict. `parser.c` and `node-types.json` are regenerated with tree-sitter-cli 0.25.10.
+  - `golden__Cell3_bad.snap` is taken from master without a review.
+  - FX-8b with `dev` builds against the trial commit, and `rholang` gives 2,542 passed.
+- **Label:** blocking for the `dev` merge, as lane A2 labels it. It is a build dependency, not an authority or a consensus finding.
+- **Merge condition 1 now reads:** `dev` is merged, with the parser pinned to the `rev-stacks/syntax-dev` commit that merges `rholang-rs` master `4e22339` into `743752b`. Lane B names the commit. Three checks:
+  1. The pinned commit contains both `743752b` and `4e22339`.
+  2. `parser.c` and `node-types.json` are generated from the merged grammar, with the tree-sitter version that the header names.
+  3. Lane B reviews `golden__Cell3_bad.snap`, and the log says which version is kept and why.
+- **Lane A2's interim change is agreed.** Until FX-21 merges, the normalizer refuses a signed term that declares a limit, with an error that names FX-21. It does not ignore the limit.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| The charge of a failed run after FX-22 | **Blocking until reported** | No report yet |
+| The parser pin (Q-35) | **Blocking for the `dev` merge** | Lane B to merge `4e22339` into `rev-stacks/syntax-dev` and name the commit |
+| Decision 133 (lane C), Decision 134 (lane A2's test), the three merge checks of revision 44, and the FX-21 revision 2 condition | Conditions | Open |
+| Merge conditions 2 to 4 | Conditions | Open |
+| The final read and the tag | — | After the merge conditions |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
