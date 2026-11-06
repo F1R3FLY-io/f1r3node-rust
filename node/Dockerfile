@@ -77,7 +77,7 @@ COPY scripts/file-read-service/ ./scripts/file-read-service/
 ARG PROFILING_BUILD=0
 
 RUN xx-cargo --setup-target-triple && \
-    cargo fetch --locked --target "$(xx-cargo --print-target-triple)"
+    cargo fetch --locked
 
 RUN --network=none \
     TARGET_TRIPLE="$(xx-cargo --print-target-triple)" && \
@@ -184,6 +184,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 # Image version label. Populate via `--build-arg VERSION=...` from
 # docker-commands.sh / CI so the label tracks the actual build instead of
 # drifting from node/Cargo.toml.
+ENV RUST_MIN_STACK=67108864
+
 ARG VERSION=unknown
 LABEL maintainer="F1r3fly.io LCA https://f1r3fly.io/"
 LABEL version="0.4.46"
