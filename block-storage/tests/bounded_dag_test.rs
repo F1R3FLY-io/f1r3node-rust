@@ -5,6 +5,9 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
+    Db, LmdbDirStoreManager, LmdbEnvConfig,
+};
 use shared::rust::store::key_value_store::KvStoreError;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
@@ -92,6 +95,211 @@ fn block(height: i64, parents: Vec<BlockHash>) -> BlockMessage {
         None,
         None,
     )
+}
+
+fn lmdb_manager(directory: &std::path::Path) -> Box<dyn KeyValueStoreManager> {
+    let mapping = [
+        "block-metadata",
+        "equivocation-tracker",
+        "latest-messages",
+        "invalid-blocks",
+        "floor-index",
+        "frontier-index",
+        "deploy-lifecycle-events",
+        "deploy-lifecycle-terminal",
+        "carrier-index",
+        "carrier-index-meta",
+        "genesis-hash",
+        "dag-membership-v1",
+        "dag-height-v1",
+        "dag-children-v1",
+        "dag-history-state-v1",
+        "dag-gc-retry-v1",
+        "dag-gc-work-v1",
+        "dag-gc-visited-v1",
+    ]
+    .into_iter()
+    .map(|name| {
+        (Db::new(name.into(), None), LmdbEnvConfig {
+            name: "dagstorage".into(),
+            max_env_size: 64 * 1024 * 1024,
+            max_dbs: 32,
+        })
+    })
+    .collect();
+    Box::new(LmdbDirStoreManager::new(directory.to_path_buf(), mapping))
+}
+
+#[tokio::test]
+async fn invalid_heights_outside_the_valid_frontier_stay_cold_across_finality_and_reopen() {
+    for lmdb in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut manager: Box<dyn KeyValueStoreManager> = if lmdb {
+            lmdb_manager(directory.path())
+        } else {
+            Box::new(InMemoryStoreManager::new())
+        };
+        let storage = BlockDagKeyValueStorage::new_with_hot_window(manager.as_mut(), 1)
+            .await
+            .unwrap();
+        let genesis = block(0, vec![]);
+        storage.insert(&genesis, InsertMode::Approved).unwrap();
+        let old = storage.get_representation().unwrap();
+        let mut invalid_blocks = Vec::new();
+        for (index, height) in [i64::MIN, -1, i64::MAX - 1, i64::MAX]
+            .into_iter()
+            .enumerate()
+        {
+            let mut invalid = block(height, vec![genesis.block_hash.clone()]);
+            invalid.sender = vec![index as u8 + 1; models::rust::validator::LENGTH].into();
+            storage.insert(&invalid, InsertMode::Invalid).unwrap();
+            invalid_blocks.push(invalid);
+        }
+        let before_finality = storage.get_representation().unwrap();
+        assert_eq!(before_finality.resident_counts().blocks, 1);
+        assert_eq!(before_finality.resident_counts().child_keys, 1);
+        assert_eq!(before_finality.latest_block_number(), 1);
+        for invalid in &invalid_blocks {
+            assert!(!old.contains(&invalid.block_hash).unwrap());
+            assert!(old.lookup(&invalid.block_hash).unwrap().is_none());
+            assert!(
+                before_finality
+                    .lookup(&invalid.block_hash)
+                    .unwrap()
+                    .unwrap()
+                    .invalid
+            );
+            assert_eq!(
+                before_finality
+                    .invalid_latest_messages()
+                    .unwrap()
+                    .get(&invalid.sender),
+                Some(&invalid.block_hash)
+            );
+        }
+        assert!(old
+            .children(&genesis.block_hash)
+            .unwrap()
+            .unwrap()
+            .is_empty());
+        let head = block(20, vec![genesis.block_hash.clone()]);
+        let current = storage.insert(&head, InsertMode::Approved).unwrap();
+        assert_eq!(current.resident_counts().blocks, 1);
+        assert_eq!(current.resident_counts().child_keys, 2);
+        assert_eq!(current.latest_block_number(), 21);
+        assert_eq!(old.last_finalized_block(), genesis.block_hash);
+        assert_eq!(before_finality.resident_counts().blocks, 1);
+        let children = current.children(&genesis.block_hash).unwrap().unwrap();
+        assert_eq!(children.len(), invalid_blocks.len() + 1);
+        let invalid_latest = current.invalid_latest_messages().unwrap();
+        for invalid in &invalid_blocks {
+            assert!(current.contains(&invalid.block_hash).unwrap());
+            assert!(children.contains(&invalid.block_hash));
+            assert_eq!(
+                current.lookup(&invalid.block_hash).unwrap(),
+                before_finality.lookup(&invalid.block_hash).unwrap()
+            );
+            assert_eq!(
+                invalid_latest.get(&invalid.sender),
+                Some(&invalid.block_hash)
+            );
+        }
+
+        let raw = manager.store("block-metadata".into()).await.unwrap();
+        let future = invalid_blocks.last().unwrap();
+        let key = bincode::serialize(&BlockHashSerde(future.block_hash.clone())).unwrap();
+        let original = raw.get(&vec![key.clone()]).unwrap()[0].clone().unwrap();
+        raw.put(vec![(key.clone(), vec![255])]).unwrap();
+        drop(raw);
+        drop(old);
+        drop(before_finality);
+        drop(current);
+        drop(storage);
+        if lmdb {
+            drop(manager);
+            manager = lmdb_manager(directory.path());
+        }
+        let reopened = BlockDagKeyValueStorage::new_with_hot_window(manager.as_mut(), 1)
+            .await
+            .unwrap();
+        let view = reopened.get_representation().unwrap();
+        assert_eq!(view.resident_counts().blocks, 1);
+        assert_eq!(view.resident_counts().child_keys, 2);
+        assert!(view.contains(&future.block_hash).unwrap());
+        assert!(view.lookup(&future.block_hash).is_err());
+        let raw = manager.store("block-metadata".into()).await.unwrap();
+        raw.put(vec![(key, original)]).unwrap();
+        assert_eq!(view.last_finalized_block(), head.block_hash);
+        assert_eq!(view.invalid_latest_messages().unwrap(), invalid_latest);
+        assert_eq!(
+            view.children(&genesis.block_hash).unwrap().unwrap(),
+            children
+        );
+        for invalid in &invalid_blocks {
+            let metadata = view.lookup(&invalid.block_hash).unwrap().unwrap();
+            assert!(metadata.invalid);
+            assert_eq!(metadata.block_number, invalid.body.state.block_number);
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_only_history_has_no_resident_band() {
+    let mut manager = InMemoryStoreManager::new();
+    let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 1)
+        .await
+        .unwrap();
+    let invalid = block(i64::MAX, vec![]);
+    let view = storage.insert(&invalid, InsertMode::Invalid).unwrap();
+    assert_eq!(view.resident_counts().blocks, 0);
+    assert!(view.lookup(&invalid.block_hash).unwrap().unwrap().invalid);
+    let reopened = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 1)
+        .await
+        .unwrap();
+    let view = reopened.insert(&invalid, InsertMode::Invalid).unwrap();
+    assert_eq!(view.resident_counts().blocks, 0);
+    assert!(view.lookup(&invalid.block_hash).unwrap().unwrap().invalid);
+    assert!(matches!(
+        reopened.get_representation(),
+        Err(KvStoreError::LastFinalizedBlockUninitialized)
+    ));
+}
+
+#[tokio::test]
+async fn advancing_valid_frontier_keeps_future_invalid_queries_consistent_without_rehydration() {
+    let mut manager = InMemoryStoreManager::new();
+    let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 1)
+        .await
+        .unwrap();
+    let genesis = block(0, vec![]);
+    storage.insert(&genesis, InsertMode::Approved).unwrap();
+    let invalid = block(1, vec![genesis.block_hash.clone()]);
+    let before = storage.insert(&invalid, InsertMode::Invalid).unwrap();
+    assert_eq!(before.resident_counts().blocks, 1);
+    let head = block(2, vec![genesis.block_hash.clone()]);
+    let after = storage.insert(&head, InsertMode::Normal).unwrap();
+    assert_eq!(after.resident_counts().blocks, 2);
+    assert_eq!(
+        after.lookup(&invalid.block_hash).unwrap(),
+        before.lookup(&invalid.block_hash).unwrap()
+    );
+    let reopened = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 1)
+        .await
+        .unwrap();
+    let reopened = reopened.get_representation().unwrap();
+    assert_eq!(reopened.resident_counts().blocks, 3);
+    assert_eq!(
+        reopened.lookup(&invalid.block_hash).unwrap(),
+        after.lookup(&invalid.block_hash).unwrap()
+    );
+    assert_eq!(
+        reopened.children(&genesis.block_hash).unwrap(),
+        after.children(&genesis.block_hash).unwrap()
+    );
+    assert_eq!(
+        reopened.invalid_latest_messages().unwrap(),
+        after.invalid_latest_messages().unwrap()
+    );
 }
 
 #[tokio::test]

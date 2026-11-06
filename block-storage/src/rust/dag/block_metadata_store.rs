@@ -202,11 +202,14 @@ impl BlockMetadataStore {
             persistence: Some(persistence.clone()),
             hot_window,
         };
+        let Some(max_height) = progress.max_height else {
+            return Ok(result);
+        };
         let mut after = None;
         loop {
             let page = persistence.history.scan_height_range(
                 cutoff,
-                i64::MAX,
+                max_height,
                 progress.sequence,
                 false,
                 after.as_deref(),
@@ -255,7 +258,14 @@ impl BlockMetadataStore {
             state.total = progress.total;
             state.last_finalized_block = progress.lfb.clone();
         }
-        if metadata.block_number >= self.dag_state.read().cutoff {
+        let resident = {
+            let state = self.dag_state.read();
+            metadata.block_number >= state.cutoff
+                && state
+                    .max_height
+                    .is_some_and(|height| metadata.block_number <= height)
+        };
+        if resident {
             Self::add_block_to_dag_state(
                 self.dag_state.clone(),
                 Self::block_metadata_to_info(&metadata.block_hash, metadata),
