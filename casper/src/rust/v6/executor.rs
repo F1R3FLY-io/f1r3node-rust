@@ -250,10 +250,9 @@ impl Runs {
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
         let setup = started.elapsed();
-        let (mut processed, number_channels) = ops
-            .process_deploy_with_mergeable_data(limited(&envelope, committed)?)
+        let (processed, number_channels) = ops
+            .process_deploy_limited(envelope, run_limit(committed)?)
             .await?;
-        processed.deploy = envelope;
         let evaluated = started.elapsed();
         let overdrawn = journal_overdrawn(Arc::new(runtime_cells(&ops.runtime)?))
             .map_err(|e| invalid(format!("journal: {e}")))?;
@@ -306,11 +305,10 @@ impl Runs {
         let cells = runtime_cells(runtime)?;
         hold(&cells, &reservations)?;
         open_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
-        let replayed = ProcessedDeploy {
-            deploy: limited(&recorded.deploy, committed)?,
-            ..recorded.clone()
-        };
-        let number_channels = replay.replay_deploy_e(false, &replayed).await?;
+        replay.runtime_ops.run_limit = Some(run_limit(committed)?);
+        let number_channels = replay.replay_deploy_e(false, &recorded).await;
+        replay.runtime_ops.run_limit = None;
+        let number_channels = number_channels?;
         let overdrawn = journal_overdrawn(Arc::new(runtime_cells(&replay.runtime_ops.runtime)?))
             .map_err(|e| invalid(format!("journal: {e}")))?;
         let journal = close_journal(&cells).map_err(|e| invalid(format!("journal: {e}")))?;
@@ -778,11 +776,8 @@ fn reservations(
         .collect()
 }
 
-fn limited(envelope: &Signed<DeployData>, committed: u64) -> Result<Signed<DeployData>, CasperError> {
-    let mut limited = envelope.clone();
-    let committed = i64::try_from(committed).map_err(|_| invalid("the committed bound passes i64"))?;
-    limited.data.phlo_limit = limited.data.phlo_limit.min(committed);
-    Ok(limited)
+fn run_limit(committed: u64) -> Result<i64, CasperError> {
+    i64::try_from(committed).map_err(|_| invalid("the committed bound passes i64"))
 }
 
 fn runtime_cells(runtime: &RhoRuntimeImpl) -> Result<HotStoreCells, CasperError> {

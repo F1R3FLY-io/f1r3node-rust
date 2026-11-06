@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
-use models::rhoapi::{CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, Par};
+use models::rhoapi::{
+    CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, ElaboratedSeal, Par,
+};
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Signature, TokenStack};
 use rholang_parser::RholangParser;
 
 use super::desugar;
+use super::elaborate::{KIND_PROCESS, KIND_SIGNED};
 use super::sig::{signature_to_wire, wire_signature_locally_free};
 use crate::rust::interpreter::compiler::normalize::{
     normalize_ann_proc, ProcVisitInputs, ProcVisitOutputs,
@@ -17,13 +20,14 @@ use crate::rust::interpreter::errors::InterpreterError;
 pub fn recognize_signed_term<'ast>(
     inner: &'ast AnnProc<'ast>,
     sig: &'ast Signature<'ast>,
+    limit: Option<u64>,
     input: ProcVisitInputs,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
     let (core_inner, core_sig): (AnnProc<'ast>, &Signature<'ast>) = match sig {
-        Signature::Transfer(s1, s2) => (desugar::lollipop(*inner, s2, parser)?, &**s1),
-        core => (desugar::uniform_sign(*inner, core, parser), core),
+        Signature::Transfer(s1, s2) => (desugar::lollipop(*inner, s2, limit, parser)?, &**s1),
+        core => (desugar::uniform_sign(*inner, core, limit, parser), core),
     };
     let (signature, free_map) = signature_to_wire(
         core_sig,
@@ -51,10 +55,16 @@ pub fn recognize_signed_term<'ast>(
         ),
     );
     par.connective_used = par.connective_used || normalized.par.connective_used;
-    let (body, signature) = flatten_nested_signature(normalized.par, signature);
+    let seal = super::elaborate::seal_for(core_sig, limit);
+    let (body, signature, seal) = if super::elaborate::is_deployment_signature(core_sig) {
+        (normalized.par, signature, seal)
+    } else {
+        flatten_nested_signature(normalized.par, signature, seal)
+    };
     par.cost_signed_terms.push(CostSignedTerm {
         body: Some(body),
         signature: Some(signature),
+        seal,
     });
     Ok(ProcVisitOutputs {
         par,
@@ -82,20 +92,44 @@ fn solely_signed(par: &Par) -> Option<&CostSignedTerm> {
     }
 }
 
-fn flatten_nested_signature(par: Par, signature: CostSignature) -> (Par, CostSignature) {
+fn flatten_nested_signature(
+    par: Par,
+    signature: CostSignature,
+    seal: Option<ElaboratedSeal>,
+) -> (Par, CostSignature, Option<ElaboratedSeal>) {
     let solely_nested = solely_signed(&par).is_some();
     if !solely_nested {
-        return (par, signature);
+        return (par, signature, seal);
     }
     let nested = par.cost_signed_terms.into_iter().next().unwrap();
     let nested_signature = nested.signature.unwrap();
+    let seal = merge_seals(seal, nested.seal);
     let compound = sort_signature(&CostSignature {
         value: Some(CostSignatureValue::Compound(CostSignatureCompound {
             elements: vec![signature, nested_signature],
         })),
     })
     .term;
-    (nested.body.unwrap(), compound)
+    (nested.body.unwrap(), compound, seal)
+}
+
+fn merge_seals(
+    outer: Option<ElaboratedSeal>,
+    inner: Option<ElaboratedSeal>,
+) -> Option<ElaboratedSeal> {
+    match (outer, inner) {
+        (Some(mut outer), Some(inner)) => {
+            let kind = if outer.kind == KIND_PROCESS && inner.kind == KIND_PROCESS {
+                KIND_PROCESS
+            } else {
+                KIND_SIGNED
+            };
+            outer.kind = kind;
+            outer.phlo_limit = outer.phlo_limit.min(inner.phlo_limit);
+            Some(outer)
+        }
+        (outer, inner) => outer.or(inner),
+    }
 }
 
 pub fn recognize_token_stack<'ast>(

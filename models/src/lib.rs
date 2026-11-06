@@ -121,6 +121,7 @@ impl PartialEq for cost_signature::Value {
             (Self::Compound(a), Self::Compound(b)) => a == b,
             (Self::Name(a), Self::Name(b)) => a == b,
             (Self::Unit(a), Self::Unit(b)) => a == b,
+            (Self::Signer(a), Self::Signer(b)) => a == b,
             _ => false,
         }
     }
@@ -153,6 +154,10 @@ impl Hash for cost_signature::Value {
                 5_u8.hash(state);
                 value.hash(state);
             }
+            Self::Signer(value) => {
+                6_u8.hash(state);
+                value.hash(state);
+            }
         }
     }
 }
@@ -167,7 +172,7 @@ impl Hash for CostSignatureCompound {
 
 impl PartialEq for CostSignedTerm {
     fn eq(&self, other: &Self) -> bool {
-        self.body == other.body && self.signature == other.signature
+        self.body == other.body && self.signature == other.signature && self.seal == other.seal
     }
 }
 
@@ -175,6 +180,21 @@ impl Hash for CostSignedTerm {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.body.hash(state);
         self.signature.hash(state);
+        self.seal.hash(state);
+    }
+}
+
+impl PartialEq for ElaboratedSeal {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.origin == other.origin && self.phlo_limit == other.phlo_limit
+    }
+}
+
+impl Hash for ElaboratedSeal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.origin.hash(state);
+        self.phlo_limit.hash(state);
     }
 }
 

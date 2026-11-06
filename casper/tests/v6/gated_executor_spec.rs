@@ -1473,7 +1473,7 @@ async fn a_run_never_spends_more_than_its_commitment() {
     let (alice, proposer) = (party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
-    let failing = r#"new x in { x!(1 + "a") }"#;
+    let failing = r#"new x in { x!(1 / 0) }"#;
     let bound = static_bound(failing).expect("the term is in the estimated fragment");
     let below = (bound / 2) as i64;
     let envelopes = vec![
@@ -1487,7 +1487,14 @@ async fn a_run_never_spends_more_than_its_commitment() {
     assert_eq!(played.gate.entries[0].delta, bound);
     assert_eq!(played.gate.entries[1].delta, below as u64);
     assert!(played.runs[0].failed);
-    assert!(played.runs[0].compute_phlo <= bound, "the run's own limit is the committed bound");
+    assert_eq!(played.runs[0].compute_phlo, bound, "a failed run records its commitment, not its phloLimit");
+    let failed = played
+        .settlement
+        .charges
+        .iter()
+        .find(|c| c.envelope_sig == played.gate.entries[0].envelope_sig)
+        .unwrap();
+    assert!(failed.compute_rev + failed.comm_rev <= bound);
     for charge in &played.settlement.charges {
         let entry = played
             .gate

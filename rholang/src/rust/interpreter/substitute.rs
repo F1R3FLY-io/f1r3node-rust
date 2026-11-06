@@ -223,6 +223,7 @@ impl Substitute {
                         continue;
                     }
                     Some(CostSignatureValue::Unit(value)) => CostSignatureValue::Unit(value),
+                    Some(CostSignatureValue::Signer(index)) => CostSignatureValue::Signer(index),
                     Some(CostSignatureValue::Ground(bytes)) => CostSignatureValue::Ground(bytes),
                     Some(CostSignatureValue::BoundLevel(index)) if depth == 0 => {
                         match env.get(&index) {
@@ -272,6 +273,7 @@ impl Substitute {
                 depth,
                 env,
             )?),
+            seal: term.seal,
         })
     }
 

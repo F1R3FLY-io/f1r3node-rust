@@ -90,6 +90,7 @@ pub struct RuntimeOps {
     pub runtime: RhoRuntimeImpl,
     pub close_phlo: Option<std::sync::Arc<parking_lot::Mutex<Option<u64>>>>,
     pub trace_close_failure: bool,
+    pub run_limit: Option<i64>,
 }
 
 pub const CLOSE_FAILED_PREFIX: &str = "close failed: ";
@@ -104,6 +105,7 @@ impl RuntimeOps {
             runtime,
             close_phlo: None,
             trace_close_failure: false,
+            run_limit: None,
         }
     }
 }
@@ -687,6 +689,17 @@ impl RuntimeOps {
         }
 
         Ok((deploy_result, eval_result.mergeable))
+    }
+
+    pub async fn process_deploy_limited(
+        &mut self,
+        deploy: Signed<DeployData>,
+        run_limit: i64,
+    ) -> Result<(ProcessedDeploy, NumberChannelsEndVal), CasperError> {
+        let previous = self.run_limit.replace(run_limit);
+        let result = self.process_deploy_with_mergeable_data(deploy).await;
+        self.run_limit = previous;
+        result
     }
 
     pub async fn process_deploy_with_mergeable_data(
@@ -1389,7 +1402,11 @@ impl RuntimeOps {
             .runtime
             .evaluate(
                 &deploy.data.term,
-                Cost::create(deploy.data.phlo_limit, "Evaluate deploy".to_string()),
+                Cost::create(
+                    self.run_limit
+                        .map_or(deploy.data.phlo_limit, |limit| limit.min(deploy.data.phlo_limit)),
+                    "Evaluate deploy".to_string(),
+                ),
                 normalizer_env_from_deploy(deploy)
                     .map_err(|error| CasperError::RuntimeError(error.to_string()))?,
                 Tools::unforgeable_name_rng(&deploy.pk, deploy.data.time_stamp),

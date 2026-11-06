@@ -356,3 +356,30 @@ fn visit_expr(expr: &Expr, scope: &mut Scope, named: &mut Vec<Named>) {
     }
     pars.into_iter().for_each(|p| visit_par(p, scope, named));
 }
+
+pub fn names_a_signer(signature: &CostSignature) -> bool {
+    match &signature.value {
+        Some(Value::Signer(_)) => true,
+        Some(Value::Compound(compound)) => compound.elements.iter().any(names_a_signer),
+        _ => false,
+    }
+}
+
+pub fn signature_owner_among(
+    signature: &CostSignature,
+    signers: &[WalletOwner],
+) -> Result<WalletOwner, RevStackError> {
+    match &signature.value {
+        Some(Value::Signer(index)) => signers.get(*index as usize).cloned().ok_or_else(|| {
+            RevStackError::InvalidOwner(format!("the seal names signer {index}, which the origin does not have"))
+        }),
+        Some(Value::Compound(compound)) if names_a_signer(signature) => WalletOwner::compound(
+            compound
+                .elements
+                .iter()
+                .map(|element| signature_owner_among(element, signers))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        _ => signature_owner(signature),
+    }
+}

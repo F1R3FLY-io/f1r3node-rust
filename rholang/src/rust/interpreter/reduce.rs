@@ -56,7 +56,7 @@ use super::accounting::rev_stack::journal::{
 };
 use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, KindStack, TokenKind};
 use super::accounting::rev_stack::process::{hash_seal_admissible, split_hash_seals};
-use super::accounting::rev_stack::region::{admissible, signature_owner};
+use super::accounting::rev_stack::region::{admissible, names_a_signer, signature_owner, signature_owner_among};
 use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::seal::{self, Origin, SealKind, SealRecord};
 use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
@@ -306,6 +306,7 @@ pub struct DebruijnInterpreter {
     pub genesis_phase: Arc<std::sync::atomic::AtomicBool>,
     pub deploy_data: Arc<RwLock<DeployData>>,
     pub seal_records: Arc<std::sync::atomic::AtomicBool>,
+    pub elaborate_next: Arc<std::sync::atomic::AtomicBool>,
     pub funding: Arc<std::sync::Mutex<Option<Arc<seal::MembraneMeter>>>>,
 }
 
@@ -723,7 +724,7 @@ impl DebruijnInterpreter {
             let continuation = TaggedContinuation {
                 tagged_cont: Some(TaggedCont::ParBody(body.clone())),
                 guard: guard.clone(),
-                seal: self.stored_seal(),
+                seal: self.continuation_seal(&body)?,
             };
             let (patterns, sources): (Vec<BindPattern>, Vec<Par>) = binds.iter().cloned().unzip();
             let (storage, reserve) = consume_issue(&sources, &patterns, &continuation, persistent);
@@ -770,9 +771,9 @@ impl DebruijnInterpreter {
                 sources,
                 patterns,
                 TaggedContinuation {
+                    seal: self.continuation_seal(&body)?,
                     tagged_cont: Some(TaggedCont::ParBody(body)),
                     guard,
-                    seal: self.stored_seal(),
                 },
                 persistent,
                 peeks,
@@ -1794,6 +1795,36 @@ impl DebruijnInterpreter {
         }
     }
 
+    fn continuation_seal(
+        &self,
+        body: &ParWithRandom,
+    ) -> Result<Option<models::rhoapi::SealRecordProto>, InterpreterError> {
+        let Some(mut stored) = self.stored_seal() else {
+            return Ok(None);
+        };
+        let Some(term_seal) = elaborated_continuation(body.body.as_ref()) else {
+            return Ok(Some(stored));
+        };
+        let Some(origin) = stored.origin.as_mut() else {
+            return Ok(Some(stored));
+        };
+        if seal::origin_digest(origin) != term_seal.origin {
+            return Ok(Some(stored));
+        }
+        origin.phlo_limit = term_seal.phlo_limit;
+        Ok(Some(stored))
+    }
+
+    pub fn request_elaboration(&self) { self.elaborate_next.store(true, Ordering::Relaxed) }
+
+    pub fn take_elaboration(&self) -> bool {
+        self.seals_recorded() && self.elaborate_next.swap(false, Ordering::Relaxed)
+    }
+
+    pub async fn elaboration_origin(&self) -> Option<models::rhoapi::SealOrigin> {
+        self.deployment_record().await.and_then(|record| record.to_proto().origin)
+    }
+
     async fn deployment_record(&self) -> Option<SealRecord> {
         if !self.seals_recorded() {
             return None;
@@ -1875,16 +1906,18 @@ impl DebruijnInterpreter {
                 hash_seal_admissible(process, &body).map_err(InterpreterError::ReduceError)?;
             }
         }
-        if !others.is_empty() {
-            let signers = self.region_signers(&refused).await?;
-            for component in &others {
-                let owner = signature_owner(component).map_err(|e| refused(e.to_string()))?;
-                if !held_or_signed(&owner, &signers) {
-                    return Err(refused(format!("{owner:?}")));
-                }
+        let signers = if others.is_empty() {
+            Vec::new()
+        } else {
+            self.region_signers(&refused).await?
+        };
+        for component in &others {
+            let owner = signature_owner_among(component, &signers).map_err(|e| refused(e.to_string()))?;
+            if !held_or_signed(&owner, &signers) {
+                return Err(refused(format!("{owner:?}")));
             }
         }
-        let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+        let owner = signature_owner_among(&signature, &signers).map_err(|e| refused(e.to_string()))?;
         let kind = if others.is_empty() {
             SealKind::Process
         } else {
@@ -2018,6 +2051,7 @@ impl DebruijnInterpreter {
         env: &Env<Par>,
         rand: Blake2b512Random,
     ) -> Result<(), InterpreterError> {
+        let term_seal = term.seal;
         let signature = unwrap_option_safe(term.signature)?;
         let body = unwrap_option_safe(term.body)?;
         if is_stack_body(&body) {
@@ -2037,14 +2071,34 @@ impl DebruijnInterpreter {
                 };
             }
         }
+        let refused = |reason: &str| {
+            InterpreterError::ReduceError(format!("an elaborated seal is refused: {reason}"))
+        };
+        let own_seal = match (seal::current(), term_seal) {
+            (Some(record), Some(term_seal)) if term_seal.origin == record.origin.digest() => {
+                Some(term_seal)
+            }
+            _ => None,
+        };
+        if own_seal.is_none() && names_a_signer(&signature) {
+            return Err(refused(
+                "it names a signer by index outside the origin that wrote it",
+            ));
+        }
         let (owner, kind) = self
             .check_region_signature(signature, Some(&body), env)
             .await?;
-        match seal::current() {
-            Some(record) => {
+        match (seal::current(), own_seal) {
+            (Some(record), Some(term_seal)) => {
+                let kind = SealKind::from_tag(term_seal.kind)
+                    .ok_or_else(|| refused("it names no kind"))?;
+                let entered = record.enter(owner, kind).with_limit(term_seal.phlo_limit);
+                seal::within(Some(entered), self.eval(body, env, rand)).await
+            }
+            (Some(record), None) => {
                 seal::within(Some(record.enter(owner, kind)), self.eval(body, env, rand)).await
             }
-            None => self.eval(body, env, rand).await,
+            (None, _) => self.eval(body, env, rand).await,
         }
     }
 
@@ -8140,6 +8194,7 @@ impl DebruijnInterpreter {
             genesis_phase: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             deploy_data: Arc::new(RwLock::new(DeployData::empty())),
             seal_records: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            elaborate_next: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             funding: Arc::new(std::sync::Mutex::new(None)),
         });
 
@@ -8574,6 +8629,42 @@ fn held_or_signed(owner: &WalletOwner, signers: &[WalletOwner]) -> bool {
         }
         single => admissible(single, signers),
     }
+}
+
+fn solely_term(body: &Par) -> Option<&CostSignedTerm> {
+    let [term] = body.cost_signed_terms.as_slice() else {
+        return None;
+    };
+    let rest_empty = body.sends.is_empty()
+        && body.receives.is_empty()
+        && body.news.is_empty()
+        && body.exprs.is_empty()
+        && body.matches.is_empty()
+        && body.bundles.is_empty()
+        && body.conditionals.is_empty()
+        && body.cost_stacks.is_empty();
+    if !rest_empty {
+        return None;
+    }
+    Some(term)
+}
+
+fn elaborated_continuation(body: Option<&Par>) -> Option<&models::rhoapi::ElaboratedSeal> {
+    let term = solely_term(body?)?;
+    if term.body.as_ref().is_some_and(is_stack_body) {
+        return None;
+    }
+    let seal = term.seal.as_ref()?;
+    if seal.kind == 3 {
+        return None;
+    }
+    Some(seal)
+}
+
+pub fn is_elaborated_deployment(par: &Par, origin: &models::rhoapi::SealOrigin) -> bool {
+    solely_term(par)
+        .and_then(|term| term.seal.as_ref())
+        .is_some_and(|seal| seal.kind == 1 && seal.origin == seal::origin_digest(origin))
 }
 
 #[cfg(test)]

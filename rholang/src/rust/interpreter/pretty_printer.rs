@@ -1201,6 +1201,7 @@ impl PrettyPrinter {
                 "cost signature without a value".to_string(),
             )),
             Some(CostSignatureValue::Unit(_)) => Ok("()".to_string()),
+            Some(CostSignatureValue::Signer(index)) => Ok(format!("signer {index}")),
             Some(CostSignatureValue::Ground(bytes)) => Ok(ground_signature_name(bytes)),
             Some(CostSignatureValue::BoundLevel(level)) => Ok(self._build_string_from_var(&Var {
                 var_instance: Some(VarInstance::BoundVar(*level)),

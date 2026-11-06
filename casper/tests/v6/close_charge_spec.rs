@@ -539,7 +539,7 @@ async fn an_honest_d_record_replays_under_one_two_and_four_workers() {
 async fn replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, genesis) = shard(&[&alice, &bob, &proposer]).await;
-    let executor = charging(&rm, &genesis).await;
+    let executor = charging(&rm, &genesis);
     let service = r#"contract @"svc"(@x) = { @"out"!(x) }"#;
     let installed = run_record(
         &executor,
@@ -595,5 +595,30 @@ async fn replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one() {
             &executor.replay(&record, &b).await.unwrap(),
             record.post_root()
         );
+    }
+}
+
+#[tokio::test]
+async fn a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_void_record_replays() {
+    let (alice, proposer) = (party(), party());
+    let (rm, genesis) = shard(&[&alice, &proposer]).await;
+    let executor = charging(&rm, &genesis);
+    let mut doubling = r#"@"w"!(s18)"#.to_string();
+    for i in (0..18).rev() {
+        doubling = format!("match s{i} ++ s{i} {{ s{} => {{ {doubling} }} }}", i + 1);
+    }
+    let doubling = format!(r#"match "aaaaaaaa" {{ s0 => {{ {doubling} }} }}"#);
+    let b = block(1, vec![envelope_limited(&bond_term(&doubling), 1, &alice, 200_000)], &proposer);
+    let record = void_replays(&executor, &genesis, &b, VoidReason::CloseFailed).await;
+    assert_eq!(record.executed()[0].outcome, EnvelopeOutcome::Completed);
+    assert_eq!(record.close_phlo(), 0);
+    let failure = match record.system_deploys() {
+        [models::rust::casper::protocol::casper_message::ProcessedSystemDeploy::Failed { error_msg, .. }] => error_msg.clone(),
+        other => panic!("one failed close is traced: {other:?}"),
+    };
+    assert!(failure.contains("FiringExhausted"), "{failure}");
+    for workers in [1, 2, 4] {
+        let replayed = BlockExecutor::new(rm.clone(), workers).replay(&record, &b).await;
+        assert_eq!(replayed.unwrap(), genesis, "{workers} workers");
     }
 }

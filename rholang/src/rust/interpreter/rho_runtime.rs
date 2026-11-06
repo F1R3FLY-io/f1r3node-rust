@@ -707,6 +707,7 @@ impl RhoRuntime for RhoRuntimeImpl {
     async fn set_deploy_data(&self, deploy_data: DeployData) -> () {
         let mut lock = self.deploy_data_ref.write().await;
         *lock = deploy_data;
+        self.reducer.request_elaboration();
     }
 
     async fn set_invalid_blocks(&self, invalid_blocks: HashMap<BlockHash, Validator>) -> () {
@@ -1675,6 +1676,7 @@ async fn setup_reducer(
         genesis_phase: urn_phase.genesis.clone(),
         deploy_data: deploy_data_ref,
         seal_records: urn_phase.seal_records.clone(),
+        elaborate_next: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         funding: Arc::new(std::sync::Mutex::new(None)),
     });
 
