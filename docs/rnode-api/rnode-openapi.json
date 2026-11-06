@@ -465,7 +465,7 @@
                           "ExprMap": {
                             "data": {
                               "color": { "ExprString": { "data": "green" } },
-                              "size": { "ExprInt": { "data": 3 } }
+                              "size": { "ExprInt": { "data": "3" } }
                             }
                           }
                         },
@@ -523,7 +523,7 @@
                             "data": [
                               { "ExprBool": { "data": true } },
                               { "ExprBool": { "data": false } },
-                              { "ExprInt": { "data": 1 } }
+                              { "ExprInt": { "data": "1" } }
                             ]
                           }
                         }
@@ -536,7 +536,7 @@
                       "data": "rho:id:3xagffydedp5qq9yb76udp7dsdxpbd9fyryrd8b7wotkkrru65zpps"
                     }
                   },
-                  { "ExprInt": { "data": 123 } },
+                  { "ExprInt": { "data": "123" } },
                   { "ExprString": { "data": "abc" } },
                   { "ExprBool": { "data": true } }
                 ],
@@ -1454,7 +1454,7 @@
             },
             "size": {
               "ExprInt": {
-                "data": 3
+                "data": "3"
               }
             }
           }
@@ -1518,13 +1518,13 @@
           "required": ["data"],
           "properties": {
             "data": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string",
+              "description": "64-bit integer as a canonical decimal string"
             }
           }
         }
       },
-      "example": { "ExprInt": { "data": 123 } },
+      "example": { "ExprInt": { "data": "123" } },
       "description": "ExprInt"
     },
     "DataRequest": {

@@ -1452,7 +1452,7 @@ fn build_deploy_transfers(
                 .map(|t| TransferEvent {
                     from_addr: t.from_addr,
                     to_addr: t.to_addr,
-                    amount: t.amount,
+                    amount: t.amount_raw,
                     success: t.success,
                 })
                 .collect(),
@@ -1474,11 +1474,11 @@ mod tests {
         assert!(!block_report_prewarm_enabled(false, false));
     }
 
-    fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
+    fn transfer(from: &str, to: &str, amount: impl ToString) -> TransferInfo {
         TransferInfo {
             from_addr: from.to_string(),
             to_addr: to.to_string(),
-            amount: amount.to_string(),
+            amount_raw: amount.to_string(),
             success: true,
             fail_reason: String::new(),
         }
@@ -1527,6 +1527,22 @@ mod tests {
         assert_eq!(out[0].transfers.len(), 2);
         assert_eq!(out[0].transfers[0].amount, "1");
         assert_eq!(out[0].transfers[1].amount, "2");
+    }
+
+    #[test]
+    fn websocket_transfers_carry_exact_amounts() {
+        let above_uint256 = (num_bigint::BigInt::from(1u8) << 256usize).to_string();
+        for amount in ["0", "-5", "10000000000000000000", above_uint256.as_str()] {
+            let mut transfer = transfer("sender", "recipient", amount);
+            transfer.success = false;
+            let out = build_deploy_transfers(std::collections::HashMap::from([(
+                "deploy".to_string(),
+                vec![transfer],
+            )]));
+            let json = serde_json::to_value(&out[0].transfers[0]).unwrap();
+            assert_eq!(json["amount"], amount);
+            assert_eq!(json["success"], false);
+        }
     }
 
     // ---------- register_consensus_bundle_roots_core ----------

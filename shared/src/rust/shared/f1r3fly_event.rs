@@ -311,7 +311,7 @@ mod tests {
         deploy.transfers = Some(vec![TransferEvent {
             from_addr: "from".to_string(),
             to_addr: "to".to_string(),
-            amount: 5.to_string(),
+            amount: "5".to_string(),
             success: true,
         }]);
 
@@ -369,7 +369,7 @@ mod tests {
                 transfers: vec![TransferEvent {
                     from_addr: "from".to_string(),
                     to_addr: "to".to_string(),
-                    amount: 11.to_string(),
+                    amount: "11".to_string(),
                     success: false,
                 }],
             }]);

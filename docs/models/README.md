@@ -46,9 +46,11 @@ pub struct BlockMetadata {
 **`TransferInfo`** (proto) -- REV transfer extracted from deploy execution:
 - `fromAddr: string` -- Sender address
 - `toAddr: string` -- Recipient address
-- `amount: int64` -- Amount in dust (smallest unit)
 - `success: bool` -- Whether the transfer succeeded
 - `failReason: string` -- Error message if success is false
+- `amountRaw: string` -- Exact amount in dust (smallest unit) as a canonical decimal string, for `Int` and `BigInt` amounts. Field 3 is reserved.
+
+See [64-bit integers and token amounts](../node/api-reference.md#64-bit-integers-and-token-amounts).
 
 ## Casper Protocol Messages
 

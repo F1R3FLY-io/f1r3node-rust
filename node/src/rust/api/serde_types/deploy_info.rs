@@ -29,7 +29,7 @@ impl From<TransferInfo> for TransferInfoSerde {
         Self {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount: t.amount_raw,
             success: t.success,
             fail_reason: t.fail_reason,
         }
@@ -41,7 +41,7 @@ impl From<TransferInfoSerde> for TransferInfo {
         TransferInfo {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount_raw: t.amount,
             success: t.success,
             fail_reason: t.fail_reason,
         }
@@ -361,6 +361,23 @@ mod tests {
         let json = serde_json::to_vec(&deploy).unwrap();
         let restored: DeployInfoSerde = serde_json::from_slice(&json).unwrap();
         assert_eq!(restored.parameters, parameters);
+    }
+
+    #[test]
+    fn deploy_info_phlo_price_is_a_decimal_string() {
+        for price in [
+            "0".to_string(),
+            "1".to_string(),
+            ((1u64 << 53) + 1).to_string(),
+            u64::MAX.to_string(),
+            shared::rust::token_amount::TokenAmount::max().to_string(),
+        ] {
+            let mut info = deploy_info(Vec::new());
+            info.phlo_price = price.clone();
+            let deploy = DeployInfoSerde::try_from(info).unwrap();
+            let json = serde_json::to_value(&deploy).unwrap();
+            assert_eq!(json["phloPrice"], price);
+        }
     }
 
     #[test]

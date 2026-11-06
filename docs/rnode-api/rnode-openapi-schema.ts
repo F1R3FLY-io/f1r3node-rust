@@ -213,7 +213,7 @@ export interface definitions {
   /**
    * ExprInt
    */
-  ExprInt: { ExprInt: { data: number } };
+  ExprInt: { ExprInt: { data: string } };
   /**
    * DataRequest
    */

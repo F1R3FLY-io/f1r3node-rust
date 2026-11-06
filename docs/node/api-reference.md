@@ -63,6 +63,37 @@ Route these requests to a read-only node (typically port 40453). `GET /api/statu
 
 ---
 
+## 64-bit integers and token amounts
+
+A JavaScript `Number` guarantees exact integer representation only within `-(2^53-1)..2^53-1`.
+The JSON API therefore gives these values as decimal strings:
+
+| Value | Fields |
+|-------|--------|
+| Rholang integer | `ExprInt.data` and `ExprUint64.data` in every `RhoExpr`, also when nested |
+| Vault balance | `balance` in `GET /api/balance/{address}` |
+| Validator stake | `stake` and `totalStake` in `GET /api/validators`, `stake` in `GET /api/validator/{pubkey}`, `bonds[].stake` in block info |
+| Transfer amount | `transfers[].amount` in block and deploy responses, `amount` in the `transfers-available` WebSocket event |
+| Phlo price | `phloPrice` in block, deploy, and `GET /api/pending-deploys` responses, `minPhloPrice` in `GET /api/status`, `data.phloPrice` in `POST /api/deploy` |
+
+- Integer strings use base 10, without an exponent, a decimal point, a plus sign, or leading zeros. A negative value starts with `-`. Negative zero is not valid.
+- Token amounts use base units (dust) in the range `0..2^256−1`. Other Rholang integers keep their original meaning.
+- The type is always a string. The type does not change with the size of the value.
+- Requests accept only the string form. `POST /api/deploy` rejects a JSON number in `data.phloPrice`.
+- Parse these fields with an exact integer type, such as JavaScript `BigInt` or Python `int`.
+- Phlo quantities (`cost`, `phloLimit`) stay JSON numbers.
+- Deploy `parameters` keep the JSON format of the deploy request. An `int` value there stays a JSON number.
+- The trace report (`GET /reporting/trace`) gives raw Rholang terms in protobuf JSON form. Integers in these terms stay JSON numbers.
+
+**Transfer amounts.** The node reads a transfer amount from a Rholang `Int` or `BigInt` without loss. The vault accepts a transfer only when the amount is in `1..2^256−1`. A failed transfer keeps its requested amount and failure details. Its amount can be zero, negative, or above `2^256−1`. The report extractor does not apply a separate bit limit and does not omit a failed attempt because of its amount.
+
+**gRPC.** Protobuf has no 256-bit integer type. The gRPC API gives token amounts as decimal strings in the same canonical form: `TransferInfo.amountRaw` (field 6), `BondInfo.stake`, `DeployInfo.phloPrice`, and `Status.minPhloPrice`. Field 3 of `TransferInfo` is reserved. An unavailable report keeps `transfersAvailable=false`.
+
+A map key that is a tuple, list, or map contains the JSON text of the key value.
+Integers in that text are strings, for example `{"ExprInt":{"data":"1"}}`.
+
+---
+
 ## HTTP REST API (port 40403)
 
 ### `GET /api/status`
@@ -387,7 +418,7 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `phloLimit` | int | Phlo limit (full only) |
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
-| `transfers` | array/null | Transfer list or null on validators (full only) |
+| `transfers` | array/null | Transfer list or null on validators (full only). Each `amount` is a decimal string, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts) |
 | `parameters` | array | Named Rholang values from the signed deploy. The node omits this field in summary responses and when no parameters exist. |
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
@@ -683,7 +714,7 @@ curl http://localhost:40453/api/balance/11112BpS5mG8...
 ```
 
 ```json
-{"address": "11112BpS5mG8...", "balance": 1000000, "blockNumber": 42, "blockHash": "3bfdf56f..."}
+{"address": "11112BpS5mG8...", "balance": "1000000", "blockNumber": 42, "blockHash": "3bfdf56f..."}
 ```
 
 | Status | Condition |
@@ -854,8 +885,8 @@ curl http://localhost:40453/api/epoch/rewards
   "rewards": {
     "ExprMap": {
       "data": {
-        "04837a4cff...": {"ExprInt": {"data": 0}},
-        "04fa70d7be...": {"ExprInt": {"data": 0}}
+        "04837a4cff...": {"ExprInt": {"data": "0"}},
+        "04fa70d7be...": {"ExprInt": {"data": "0"}}
       }
     }
   },
@@ -980,7 +1011,7 @@ Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeSer
 | **Readonly** | Populated array | Emitted after block report cache warming |
 | **Validator** | `null` (omitted) | Not emitted |
 
-`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers.
+`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers. Transfer amounts are exact decimal strings, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts).
 
 ---
 
