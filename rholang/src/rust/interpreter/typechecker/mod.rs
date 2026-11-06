@@ -1,13 +1,13 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 2c-viii (comparison and boolean operators): synthesis
-//! (`synth`) for ground literals, `SimpleType` connectives, Pi
-//! well-formedness, dependent application, fully-annotated lambdas,
-//! β-definitional equality in `check`, the integer binary operators,
-//! `ENeg` (`Int → Int`), the comparison operators (`<`, `≤`, `>`, `≥`
-//! on `Int`; `==` / `!=` on any shared type), and the boolean
-//! connectives (`&&`, `||`, `!`). Remaining phases add process-level
-//! typing.
+//! Phase 2c-ix (logical type connectives): synthesis (`synth`) for
+//! ground literals, `SimpleType` connectives, Pi well-formedness,
+//! dependent application, fully-annotated lambdas, β-definitional
+//! equality in `check`, the integer binary operators, `ENeg`,
+//! comparison operators, the boolean connectives on values, and the
+//! logical type connectives (`ConnAnd` / `ConnOr` / `ConnNot` whose
+//! inner slots are themselves types). Process-level typing and
+//! collection types remain future phases.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -112,8 +112,9 @@ pub fn synth(ctx: &Context, par: &Par) -> Result<Par, TypeError> {
     match (par.exprs.first(), par.connectives.first()) {
         // Expression position: synth from the Expr.
         (Some(expr), None) => synth_expr(ctx, expr.expr_instance.as_ref()),
-        // Connective position: must be a base type (Int, Bool, …) or Type.
-        (None, Some(conn)) => synth_connective(conn),
+        // Connective position: base type, Type universe, or a logical
+        // type connective (ConnAnd/ConnOr/ConnNot of types).
+        (None, Some(conn)) => synth_connective(ctx, conn),
         (None, None) => Err(TypeError::NotWellFormed(
             "empty Par has no type".to_string(),
         )),
@@ -658,15 +659,17 @@ fn substitute_args_into_codomain(args: &[Par], codomain: Par) -> Result<Par, Typ
         .map_err(|e| TypeError::NotWellFormed(format!("codomain substitution failed: {e:?}")))
 }
 
-fn synth_connective(conn: &Connective) -> Result<Par, TypeError> {
+fn synth_connective(ctx: &Context, conn: &Connective) -> Result<Par, TypeError> {
     let inst = conn
         .connective_instance
         .as_ref()
         .ok_or_else(|| TypeError::NotWellFormed("Connective with empty instance".to_string()))?;
 
+    let type_univ = type_par(ConnectiveInstance::ConnType(true));
     // Base types (Int, Bool, String, Uri, ByteArray) and the universe
-    // itself are all inhabitants of Type. Logical connectives
-    // (ConnAnd/ConnOr/ConnNot/VarRef) aren't typed yet.
+    // itself are all inhabitants of Type. Logical connectives build
+    // compound types from inner types: each inner slot must have type
+    // `Type`, and the result has type `Type`.
     match inst {
         ConnectiveInstance::ConnBool(_)
         | ConnectiveInstance::ConnInt(_)
@@ -683,9 +686,19 @@ fn synth_connective(conn: &Connective) -> Result<Par, TypeError> {
         | ConnectiveInstance::ConnFloat32(_)
         | ConnectiveInstance::ConnBigInt(_)
         | ConnectiveInstance::ConnBigRat(_)
-        | ConnectiveInstance::ConnFixedPointBody(_) => {
-            Ok(type_par(ConnectiveInstance::ConnType(true)))
+        | ConnectiveInstance::ConnFixedPointBody(_) => Ok(type_univ),
+
+        ConnectiveInstance::ConnAndBody(body) | ConnectiveInstance::ConnOrBody(body) => {
+            for p in &body.ps {
+                check(ctx, p, &type_univ)?;
+            }
+            Ok(type_univ)
         }
+        ConnectiveInstance::ConnNotBody(p) => {
+            check(ctx, p, &type_univ)?;
+            Ok(type_univ)
+        }
+
         other => Err(TypeError::Unsupported(format!(
             "no typing rule for connective kind yet: {:?}",
             discriminant_name_conn(other)
@@ -1530,6 +1543,49 @@ mod tests {
         }]);
         let err = synth(&ctx, &par).unwrap_err();
         assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_conn_and_of_types_is_type() {
+        use models::rhoapi::ConnectiveBody;
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: vec![int_ty, bool_ty],
+            })),
+        }]);
+        par.connective_used = true;
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
+    }
+
+    #[test]
+    fn synth_conn_and_rejects_non_type_inner() {
+        use models::rhoapi::ConnectiveBody;
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(ConnectiveInstance::ConnAndBody(ConnectiveBody {
+                ps: vec![int_ty, gint_par(7)], // second slot is a value
+            })),
+        }]);
+        par.connective_used = true;
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_conn_not_of_type_is_type() {
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(ConnectiveInstance::ConnNotBody(int_ty)),
+        }]);
+        par.connective_used = true;
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
     }
 
     #[test]
