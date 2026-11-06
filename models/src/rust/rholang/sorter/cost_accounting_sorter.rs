@@ -48,6 +48,14 @@ pub fn sort_signature(signature: &CostSignature) -> ScoredTerm<CostSignature> {
             ]),
         },
         Some(Value::Unit(_)) => unit(),
+        Some(Value::Signer(index)) => ScoredTerm {
+            term: CostSignature {
+                value: Some(Value::Signer(*index)),
+            },
+            score: Tree::<ScoreAtom>::create_node_from_i32(Score::COST_SIG_SIGNER, vec![
+                Tree::<ScoreAtom>::create_leaf_from_i64(*index as i64),
+            ]),
+        },
         Some(Value::BoundLevel(level)) => ScoredTerm {
             term: CostSignature {
                 value: Some(Value::BoundLevel(*level)),

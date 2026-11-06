@@ -57,6 +57,7 @@ message CostSignature {
     CostSignatureCompound compound = 4;
     Par name = 5;
     bool unit = 6;
+    uint32 signer = 7;
   }
 }
 

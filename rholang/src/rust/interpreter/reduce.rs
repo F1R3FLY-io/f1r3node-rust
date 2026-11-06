@@ -56,7 +56,7 @@ use super::accounting::rev_stack::journal::{
 };
 use super::accounting::rev_stack::kind::{is_stack_body, stack_kind, KindStack, TokenKind};
 use super::accounting::rev_stack::process::{hash_seal_admissible, split_hash_seals};
-use super::accounting::rev_stack::region::{admissible, signature_owner};
+use super::accounting::rev_stack::region::{admissible, names_a_signer, signature_owner, signature_owner_among};
 use super::accounting::rev_stack::reserve::reservation;
 use super::accounting::rev_stack::seal::{self, Origin, SealKind, SealRecord};
 use super::accounting::rev_stack::{RevAmount, RevStackError, RevStacks, WalletOwner};
@@ -1813,11 +1813,7 @@ impl DebruijnInterpreter {
             return Ok(Some(stored));
         };
         if seal::origin_digest(origin) != term_seal.origin {
-            return Err(InterpreterError::ReduceError(
-                "an elaborated seal is refused: the continuation's seal and the stored seal \
-                 name different origins"
-                    .to_string(),
-            ));
+            return Ok(Some(stored));
         }
         origin.phlo_limit = term_seal.phlo_limit;
         Ok(Some(stored))
@@ -1914,16 +1910,18 @@ impl DebruijnInterpreter {
                 hash_seal_admissible(process, &body).map_err(InterpreterError::ReduceError)?;
             }
         }
-        if !others.is_empty() {
-            let signers = self.region_signers(&refused).await?;
-            for component in &others {
-                let owner = signature_owner(component).map_err(|e| refused(e.to_string()))?;
-                if !held_or_signed(&owner, &signers) {
-                    return Err(refused(format!("{owner:?}")));
-                }
+        let signers = if others.is_empty() {
+            Vec::new()
+        } else {
+            self.region_signers(&refused).await?
+        };
+        for component in &others {
+            let owner = signature_owner_among(component, &signers).map_err(|e| refused(e.to_string()))?;
+            if !held_or_signed(&owner, &signers) {
+                return Err(refused(format!("{owner:?}")));
             }
         }
-        let owner = signature_owner(&signature).map_err(|e| refused(e.to_string()))?;
+        let owner = signature_owner_among(&signature, &signers).map_err(|e| refused(e.to_string()))?;
         let kind = if others.is_empty() {
             SealKind::Process
         } else {
@@ -2080,18 +2078,21 @@ impl DebruijnInterpreter {
         let refused = |reason: &str| {
             InterpreterError::ReduceError(format!("an elaborated seal is refused: {reason}"))
         };
-        if let (Some(record), Some(term_seal)) = (seal::current(), term_seal.as_ref()) {
-            let foreign = term_seal.kind != 3 && term_seal.origin != record.origin.digest();
-            if foreign {
-                return Err(refused(
-                    "its origin is not the origin of the code that evaluates it",
-                ));
+        let own_seal = match (seal::current(), term_seal) {
+            (Some(record), Some(term_seal)) if term_seal.origin == record.origin.digest() => {
+                Some(term_seal)
             }
+            _ => None,
+        };
+        if own_seal.is_none() && names_a_signer(&signature) {
+            return Err(refused(
+                "it names a signer by index outside the origin that wrote it",
+            ));
         }
         let (owner, kind) = self
             .check_region_signature(signature, Some(&body), env)
             .await?;
-        match (seal::current(), term_seal) {
+        match (seal::current(), own_seal) {
             (Some(record), Some(term_seal)) => {
                 let kind = SealKind::from_tag(term_seal.kind)
                     .ok_or_else(|| refused("it names no kind"))?;
@@ -2100,9 +2101,6 @@ impl DebruijnInterpreter {
             }
             (Some(record), None) => {
                 seal::within(Some(record.enter(owner, kind)), self.eval(body, env, rand)).await
-            }
-            (None, Some(_)) if self.seals_recorded() => {
-                Err(refused("it runs outside every seal"))
             }
             (None, _) => self.eval(body, env, rand).await,
         }

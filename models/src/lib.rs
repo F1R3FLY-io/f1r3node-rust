@@ -121,6 +121,7 @@ impl PartialEq for cost_signature::Value {
             (Self::Compound(a), Self::Compound(b)) => a == b,
             (Self::Name(a), Self::Name(b)) => a == b,
             (Self::Unit(a), Self::Unit(b)) => a == b,
+            (Self::Signer(a), Self::Signer(b)) => a == b,
             _ => false,
         }
     }
@@ -151,6 +152,10 @@ impl Hash for cost_signature::Value {
             }
             Self::Unit(value) => {
                 5_u8.hash(state);
+                value.hash(state);
+            }
+            Self::Signer(value) => {
+                6_u8.hash(state);
                 value.hash(state);
             }
         }

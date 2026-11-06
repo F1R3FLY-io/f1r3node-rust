@@ -26,11 +26,9 @@ pub fn signature_to_wire<'ast>(
     match sig {
         Signature::Ground(_) if super::elaborate::is_deployment_signature(sig) => {
             match super::elaborate::current() {
-                Some(elaboration) => Ok((
+                Some(_) => Ok((
                     CostSignature {
-                        value: Some(CostSignatureValue::Name(
-                            ParSortMatcher::sort_match(&elaboration.deployer).term,
-                        )),
+                        value: Some(CostSignatureValue::Signer(0)),
                     },
                     free_map,
                 )),

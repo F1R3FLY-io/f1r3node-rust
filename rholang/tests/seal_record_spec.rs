@@ -302,10 +302,7 @@ fn payloads() -> Vec<(&'static str, String, Expect)> {
         (
             "owner seal",
             "{% slot :: () %}[a]".to_string(),
-            Expect {
-                refused: true,
-                ..paid(1_000, 1_000, 0, 0)
-            },
+            paid(999, 1_000, 1, 0),
         ),
         (
             "foreign seal",
@@ -370,7 +367,7 @@ async fn route(contract: &str, deliveries: &[&str]) {
                 errors.extend(run(&runtime, &BOB, &[], 2 + i as u8, &source).await);
             }
             let refused = errors.iter().any(
-                |e| matches!(e, InterpreterError::ReduceError(m) if m.contains("signers") || m.contains("origin")),
+                |e| matches!(e, InterpreterError::ReduceError(m) if m.contains("signers")),
             );
             let slot = slot_owner(&runtime, "slot");
             let balances = (

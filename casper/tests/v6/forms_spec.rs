@@ -352,7 +352,7 @@ mod elaboration {
         for term in par.cost_signed_terms.iter_mut() {
             if term.signature.as_ref() == Some(&u1) {
                 term.signature = Some(CostSignature {
-                    value: Some(Value::Name(ParSortMatcher::sort_match(&id(4)).term)),
+                    value: Some(Value::Signer(0)),
                 });
                 term.seal.as_mut().unwrap().kind = KIND_DEPLOYMENT;
             }
@@ -471,4 +471,29 @@ mod elaboration {
         assert!(format!("{error:?}").contains("rebound"), "{error:?}");
     }
 
+}
+
+#[tokio::test]
+async fn the_default_seal_limit_is_the_signed_limit_when_the_run_is_limited_below_it() {
+    use casper::rust::rholang::runtime::RuntimeOps;
+    use rholang::rust::interpreter::accounting::rev_stack::seal::of_continuation;
+    use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+    use rholang::rust::interpreter::rho_type::RhoString;
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+
+    let bob = party();
+    let (rm, pre) = shard(&[&bob]).await;
+    let mut install = envelope(r#"for (_ <- @"x") { Nil }"#, 1, &bob, 1).data;
+    install.phlo_limit = 50_000;
+    let install = Signed::create(install, Box::new(Secp256k1), bob.sk.clone()).unwrap();
+    let mut ops = RuntimeOps::new(rm.spawn_runtime().await.unwrap());
+    ops.runtime.reset(&Blake2b256Hash::from_bytes_prost(&pre)).await.unwrap();
+    ops.runtime.set_seal_records(true);
+    let (processed, _) = ops.process_deploy_limited(install, 3_000).await.unwrap();
+    assert!(!processed.is_failed, "{processed:?}");
+    assert!(processed.cost.cost <= 3_000, "the run is limited to the committed bound");
+    let space = ops.runtime.reducer.space.hot_store().unwrap();
+    let waiting = space.get_continuations(&[RhoString::create_par("x".to_string())]);
+    let record = of_continuation(&waiting[0].continuation).unwrap().unwrap();
+    assert_eq!(record.origin.phlo_limit, 50_000, "the stored seal carries the signed phloLimit");
 }

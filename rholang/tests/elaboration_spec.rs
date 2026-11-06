@@ -134,12 +134,12 @@ async fn an_unelaborated_term_is_not_a_deployment() {
 }
 
 #[tokio::test]
-async fn a_received_quoted_process_sealed_by_another_origin_is_refused() {
+async fn a_seal_in_received_data_is_checked_against_the_running_membrane() {
     sealed(|runtime| async move {
         let publish = r#"new d(`rho:system:deployerId`) in { @"held"!({% @"ran"!(1) %}[d]) }"#;
         assert!(run(&runtime, &ALICE, 1, publish).await.is_empty());
         let errors = run(&runtime, &BOB, 2, r#"for (@p <- @"held") { p }"#).await;
-        assert!(refused(&errors, "not the origin of the code that evaluates it"), "{errors:?}");
+        assert!(refused(&errors, "signers"), "{errors:?}");
         assert!(sent(&runtime, "ran").await.is_empty());
     })
     .await;
@@ -166,16 +166,37 @@ async fn a_stored_body_fires_under_its_own_seal_and_carries_its_declared_limit()
 }
 
 #[tokio::test]
-async fn a_receive_whose_continuation_names_another_origin_is_not_stored() {
+async fn a_received_continuation_is_stored_under_the_running_record() {
     sealed(|runtime| async move {
         let publish = r#"new d(`rho:system:deployerId`) in {
-            @"held"!(for (_ <- @"q") { {% @"ran"!(1) %}[d] })
+            @"held"!(for (_ <- @"q") { {% @"ran"!(1) %}[d ; 700] })
         }"#;
         assert!(run(&runtime, &ALICE, 1, publish).await.is_empty());
-        let errors = run(&runtime, &BOB, 2, r#"for (@p <- @"held") { p }"#).await;
-        assert!(refused(&errors, "name different origins"), "{errors:?}");
+        assert!(run(&runtime, &BOB, 2, r#"for (@p <- @"held") { p }"#).await.is_empty());
         let space = runtime.reducer.space.hot_store().unwrap();
-        assert!(space.get_continuations(&[RhoString::create_par("q".to_string())]).is_empty());
+        let waiting = space.get_continuations(&[RhoString::create_par("q".to_string())]);
+        let record = of_continuation(&waiting[0].continuation).unwrap().unwrap();
+        assert_eq!(record.owner, owner(&BOB));
+        assert_eq!(record.origin.envelope, vec![2; 4]);
+        assert_eq!(record.origin.phlo_limit, 50_000, "a foreign seal's limit is not taken");
+        let errors = run(&runtime, &BOB, 3, r#"@"q"!(0)"#).await;
+        assert!(sent(&runtime, "ran").await.is_empty(), "{errors:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_signer_index_outside_its_own_origin_is_refused() {
+    sealed(|runtime| async move {
+        let par = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin()).unwrap();
+        runtime.set_deploy_data(deploy_data(&BOB, 2, 50_000)).await;
+        let error = runtime
+            .reducer
+            .inj(par, Blake2b512Random::create_from_bytes(&[2; 32]))
+            .await
+            .unwrap_err();
+        assert!(format!("{error:?}").contains("signer by index"), "{error:?}");
+        assert!(sent(&runtime, "ran").await.is_empty());
     })
     .await;
 }
@@ -216,4 +237,20 @@ async fn measure_the_cost_of_elaboration() {
             costs[1]
         );
     }
+}
+
+#[tokio::test]
+async fn a_seal_in_data_naming_the_running_owner_runs_and_the_owner_pays() {
+    sealed(|runtime| async move {
+        let contract = r#"new d(`rho:system:deployerId`) in { @"aid"!(*d) | for (@p <= @"eval") { p } }"#;
+        assert!(run(&runtime, &ALICE, 1, contract).await.is_empty());
+        let stacks = RevStacks::over_hot_store(runtime.reducer.space.hot_store().unwrap());
+        let before = stacks.balance(&owner(&ALICE)).unwrap();
+        let send = r#"for (a <<- @"aid") { new slot in { @"eval"!({% @"ran"!(1) | slot :: () %}[a]) } }"#;
+        let errors = run(&runtime, &BOB, 2, send).await;
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(sent(&runtime, "ran").await.len(), 1);
+        assert_eq!(stacks.balance(&owner(&ALICE)).unwrap(), before - 1, "u1 pays the stack cell");
+    })
+    .await;
 }
