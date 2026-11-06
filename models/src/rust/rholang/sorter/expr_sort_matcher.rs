@@ -828,7 +828,22 @@ impl Sortable<Expr> for ExprSortMatcher {
                     let sorted_body = ParSortMatcher::sort_match(
                         el.body.as_ref().expect("body field on ELambda was None"),
                     );
+                    let sorted_param_types: Vec<ScoredTerm<Par>> = el
+                        .param_types
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
                     let connective_used_score: i64 = if el.connective_used { 1 } else { 0 };
+
+                    let mut children = vec![
+                        Tree::<ScoreAtom>::create_leaf_from_i64(Score::ELAMBDA as i64),
+                        Tree::<ScoreAtom>::create_leaf_from_i64(el.bind_count as i64),
+                        sorted_body.score,
+                        Tree::<ScoreAtom>::create_leaf_from_i64(connective_used_score),
+                    ];
+                    for scored_pt in &sorted_param_types {
+                        children.push(scored_pt.score.clone());
+                    }
 
                     construct_expr(
                         ExprInstance::ELambdaBody(crate::rhoapi::ELambda {
@@ -836,13 +851,12 @@ impl Sortable<Expr> for ExprSortMatcher {
                             body: Some(sorted_body.term),
                             locally_free: el.locally_free.clone(),
                             connective_used: el.connective_used,
+                            param_types: sorted_param_types
+                                .into_iter()
+                                .map(|p| p.term)
+                                .collect(),
                         }),
-                        Tree::Node(vec![
-                            Tree::<ScoreAtom>::create_leaf_from_i64(Score::ELAMBDA as i64),
-                            Tree::<ScoreAtom>::create_leaf_from_i64(el.bind_count as i64),
-                            sorted_body.score,
-                            Tree::<ScoreAtom>::create_leaf_from_i64(connective_used_score),
-                        ]),
+                        Tree::Node(children),
                     )
                 }
 

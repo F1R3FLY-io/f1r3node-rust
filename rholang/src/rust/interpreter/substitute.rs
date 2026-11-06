@@ -943,9 +943,16 @@ impl SubstituteTrait<Expr> for Substitute {
                 body,
                 locally_free,
                 connective_used,
+                param_types,
             }) => {
                 let sub_body =
                     self.substitute(unwrap_option_safe(body)?, depth, &env.shift(bind_count))?;
+                // Annotations are typed in the outer scope, so substitute
+                // them under the outer env (no shift).
+                let sub_param_types: Vec<Par> = param_types
+                    .into_iter()
+                    .map(|p| self.substitute(p, depth, env))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
@@ -953,6 +960,7 @@ impl SubstituteTrait<Expr> for Substitute {
                         body: Some(sub_body),
                         locally_free: set_bits_until(locally_free, env.shift),
                         connective_used,
+                        param_types: sub_param_types,
                     })),
                 })
             }
@@ -1339,12 +1347,17 @@ impl SubstituteTrait<Expr> for Substitute {
                 body,
                 locally_free,
                 connective_used,
+                param_types,
             }) => {
                 let sub_body = self.substitute_no_sort(
                     unwrap_option_safe(body)?,
                     depth,
                     &env.shift(bind_count),
                 )?;
+                let sub_param_types: Vec<Par> = param_types
+                    .into_iter()
+                    .map(|p| self.substitute_no_sort(p, depth, env))
+                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
@@ -1352,6 +1365,7 @@ impl SubstituteTrait<Expr> for Substitute {
                         body: Some(sub_body),
                         locally_free: set_bits_until(locally_free, env.shift),
                         connective_used,
+                        param_types: sub_param_types,
                     })),
                 })
             }

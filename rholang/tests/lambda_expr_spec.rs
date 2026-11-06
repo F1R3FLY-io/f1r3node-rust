@@ -48,6 +48,7 @@ fn lambda_par(bind_count: i32, body: Par) -> Par {
             body: Some(body),
             locally_free: Vec::new(),
             connective_used: false,
+            param_types: Vec::new(),
         })),
     }])
 }

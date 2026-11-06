@@ -255,9 +255,11 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
 /// to `synth` + syntactic type equality.
 pub fn check(ctx: &Context, par: &Par, expected: &Par) -> Result<(), TypeError> {
     // Lambda-against-Pi: use the Pi's param types as the body's
-    // context. The lambda itself has no annotations in the current
-    // proto; Phase 2c-ii collected them in the parser but dropped
-    // them at normalization time.
+    // context. If the lambda carries per-param annotations (populated
+    // when the source was `(x: T) => body`), cross-verify each
+    // non-empty annotation against the Pi's corresponding param type;
+    // an empty-Par slot means that param was left un-annotated and the
+    // Pi's type is accepted directly.
     if let (Some(ExprInstance::ELambdaBody(lambda)), Some(ExprInstance::EPiBody(pi))) =
         (single_expr(par), single_expr(expected))
     {
@@ -266,6 +268,27 @@ pub fn check(ctx: &Context, par: &Par, expected: &Par) -> Result<(), TypeError> 
                 expected: pi.bind_count,
                 actual: lambda.bind_count,
             });
+        }
+
+        if !lambda.param_types.is_empty() {
+            if lambda.param_types.len() != pi.param_types.len() {
+                return Err(TypeError::NotWellFormed(format!(
+                    "ELambda has {} param_types but matches a Pi with {}",
+                    lambda.param_types.len(),
+                    pi.param_types.len(),
+                )));
+            }
+            for (ann, pi_pt) in lambda.param_types.iter().zip(pi.param_types.iter()) {
+                if is_empty_par(ann) {
+                    continue;
+                }
+                if ann != pi_pt {
+                    return Err(TypeError::Mismatch {
+                        expected: Box::new(pi_pt.clone()),
+                        actual: Box::new(ann.clone()),
+                    });
+                }
+            }
         }
 
         // Extend context so BoundVar(0) in body = first param of the Pi.
@@ -304,6 +327,21 @@ fn single_expr(par: &Par) -> Option<&ExprInstance> {
         return None;
     }
     par.exprs.first()?.expr_instance.as_ref()
+}
+
+/// A lambda's `param_types[i]` is `Par::default()` when the source
+/// left slot `i` un-annotated. Treated as "no annotation; accept the
+/// Pi's type here".
+fn is_empty_par(p: &Par) -> bool {
+    p.sends.is_empty()
+        && p.receives.is_empty()
+        && p.news.is_empty()
+        && p.exprs.is_empty()
+        && p.matches.is_empty()
+        && p.bundles.is_empty()
+        && p.conditionals.is_empty()
+        && p.unforgeables.is_empty()
+        && p.connectives.is_empty()
 }
 
 /// Substitute a list of application arguments into a Pi codomain.
@@ -549,6 +587,7 @@ mod tests {
                 body: Some(Par::default()),
                 locally_free: Vec::new(),
                 connective_used: false,
+                param_types: Vec::new(),
             })),
         }]);
         let err = synth(&ctx, &lam).unwrap_err();
@@ -593,8 +632,14 @@ mod tests {
         par
     }
 
-    // Helper: build a lambda `(_) => body` for tests.
+    // Helper: build an untyped lambda `(_) => body` for tests.
     fn lambda_par(bind_count: i32, body: Par) -> Par {
+        lambda_par_typed(bind_count, body, Vec::new())
+    }
+
+    // Helper: build a lambda whose params carry type annotations
+    // (populated `param_types` of length `bind_count`).
+    fn lambda_par_typed(bind_count: i32, body: Par, param_types: Vec<Par>) -> Par {
         use models::rhoapi::{ELambda, Expr};
         Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
@@ -602,6 +647,7 @@ mod tests {
                 body: Some(body),
                 locally_free: Vec::new(),
                 connective_used: false,
+                param_types,
             })),
         }])
     }
@@ -887,6 +933,79 @@ mod tests {
 
         let ty = synth(&ctx, &app).unwrap();
         assert_eq!(ty, int_ty);
+    }
+
+    #[test]
+    fn check_annotated_lambda_matches_pi() {
+        // `(x: Int) => x` against `(_: Int) -> Int` — annotation matches.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let expected = pi_par(int_ty.clone(), int_ty.clone());
+        let lam = lambda_par_typed(1, bvar_par(0), vec![int_ty]);
+        check(&ctx, &lam, &expected).unwrap();
+    }
+
+    #[test]
+    fn check_annotated_lambda_mismatch_errors() {
+        // `(x: String) => x` against `(_: Int) -> Int` — annotation type
+        // conflicts with the Pi's param type.
+        let ctx = Context::new();
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let string_ty = type_par(ConnectiveInstance::ConnString(true));
+        let expected = pi_par(int_ty, bvar_par(0));
+        let lam = lambda_par_typed(1, bvar_par(0), vec![string_ty]);
+        let err = check(&ctx, &lam, &expected).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn check_partially_annotated_lambda_accepts_empty_slot() {
+        // `(x, y: Int) => y` against `(_: Bool, _: Int) -> Int`. The
+        // un-annotated first slot (empty Par) is accepted without
+        // cross-check; the annotated second slot must match. Body
+        // references BoundVar(1), which under reverse-push context has
+        // type Int (= param_types[1]).
+        let ctx = Context::new();
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let expected = pi_par_multi(vec![bool_ty, int_ty.clone()], int_ty.clone());
+        let lam = lambda_par_typed(2, bvar_par(1), vec![Par::default(), int_ty]);
+        check(&ctx, &lam, &expected).unwrap();
+    }
+
+    #[test]
+    fn check_annotated_lambda_mismatch_in_non_first_slot_errors() {
+        // Annotation mismatch in the second slot of a multi-param lambda.
+        let ctx = Context::new();
+        let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+        let int_ty = type_par(ConnectiveInstance::ConnInt(true));
+        let string_ty = type_par(ConnectiveInstance::ConnString(true));
+        let expected =
+            pi_par_multi(vec![bool_ty.clone(), int_ty.clone()], int_ty);
+        // Lambda annotates slot 1 as String, which conflicts with the
+        // Pi's Int in that slot.
+        let lam = lambda_par_typed(2, bvar_par(1), vec![bool_ty, string_ty]);
+        let err = check(&ctx, &lam, &expected).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    // Helper for multi-param Pi tests.
+    fn pi_par_multi(param_types: Vec<Par>, codomain: Par) -> Par {
+        use models::rhoapi::{EPi, Expr};
+        let conn_used =
+            codomain.connective_used || param_types.iter().any(|p| p.connective_used);
+        let bind_count = param_types.len() as i32;
+        let mut par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPiBody(EPi {
+                bind_count,
+                param_types,
+                codomain: Some(codomain),
+                locally_free: Vec::new(),
+                connective_used: conn_used,
+            })),
+        }]);
+        par.connective_used = conn_used;
+        par
     }
 
     #[test]

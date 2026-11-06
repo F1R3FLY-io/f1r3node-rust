@@ -216,6 +216,66 @@ async fn lambda_leaves_outer_free_vars_free() {
     );
 }
 
+// Typed lambda `(x: Int) => x` normalizes with `param_types` populated
+// (length 1, slot 0 = Int connective). Regression test for the
+// annotation-plumbing path through p_lambda_normalizer.
+#[tokio::test]
+async fn typed_lambda_carries_param_type_annotation() {
+    use rholang_parser::ast::SimpleType;
+    let parser = rholang_parser::RholangParser::new();
+
+    let int_ann = ParBuilderUtil::create_ast_simple_type(SimpleType::Int, &parser);
+    let x_ref = ParBuilderUtil::create_ast_proc_var("x", &parser);
+    let lam = ParBuilderUtil::create_ast_lambda_typed(
+        vec![("x", Some(int_ann))],
+        x_ref,
+        &parser,
+    );
+
+    let normalized = normalize_ann_proc(&lam, empty_inputs(), &HashMap::new(), &parser).unwrap();
+
+    match first_expr(&normalized.par) {
+        ExprInstance::ELambdaBody(ELambda {
+            bind_count,
+            param_types,
+            ..
+        }) => {
+            assert_eq!(*bind_count, 1);
+            assert_eq!(param_types.len(), 1, "annotation populates param_types");
+            let ann = &param_types[0];
+            assert_eq!(ann.connectives.len(), 1);
+            use models::rhoapi::connective::ConnectiveInstance;
+            match ann.connectives[0].connective_instance.as_ref() {
+                Some(ConnectiveInstance::ConnInt(_)) => {}
+                other => panic!("expected ConnInt annotation, got {other:?}"),
+            }
+        }
+        other => panic!("expected ELambda, got {other:?}"),
+    }
+}
+
+// Unannotated lambda stays `param_types = []` (legacy shape) so the
+// reducer and existing proto consumers see no change.
+#[tokio::test]
+async fn untyped_lambda_leaves_param_types_empty() {
+    let parser = rholang_parser::RholangParser::new();
+
+    let x_ref = ParBuilderUtil::create_ast_proc_var("x", &parser);
+    let lam = ParBuilderUtil::create_ast_lambda(&["x"], x_ref, &parser);
+
+    let normalized = normalize_ann_proc(&lam, empty_inputs(), &HashMap::new(), &parser).unwrap();
+
+    match first_expr(&normalized.par) {
+        ExprInstance::ELambdaBody(ELambda { param_types, .. }) => {
+            assert!(
+                param_types.is_empty(),
+                "unannotated lambda leaves param_types empty: {param_types:?}"
+            );
+        }
+        other => panic!("expected ELambda, got {other:?}"),
+    }
+}
+
 // Shadowing: inner `(x) => (x) => x` binds the inner x; the inner reference
 // resolves to BoundVar(0), not BoundVar(1). Verified by reducing
 // `(((x) => (x) => x)(1))(2)` to 2 (inner x wins).

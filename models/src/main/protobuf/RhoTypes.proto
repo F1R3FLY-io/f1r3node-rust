@@ -390,8 +390,12 @@ message KeyValuePair {
 }
 
 // Lambda abstraction. `bindCount` DeBruijn levels are bound in `body`.
-// Non-dependent (no per-binder type annotation yet); Phase 2 adds annotations
-// via a parallel ELambdaTyped or by widening this message.
+// `paramTypes` carries optional per-binder type annotations surfaced by
+// the parser as `(x_i: T_i) => body`. Empty `paramTypes` means the
+// lambda is untyped (legacy shape); a populated `paramTypes` has length
+// `bindCount`, with `Par::default()` in any slot the source left
+// un-annotated. The typechecker cross-verifies non-empty slots against
+// an expected Pi's `paramTypes`; the reducer ignores the field.
 message ELambda {
   sint32 bindCount = 1;
   Par body = 2 [(scalapb.field).no_box = true];
@@ -399,6 +403,7 @@ message ELambda {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 4;
+  repeated Par paramTypes = 5;
 }
 
 // Function application. `args.len()` must equal `fun`'s ELambda bindCount at

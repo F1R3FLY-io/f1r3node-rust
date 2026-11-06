@@ -576,10 +576,24 @@ impl PrettyPrinter {
                     }
                 }
                 ExprInstance::ELambdaBody(lambda) => {
-                    let params = (0..lambda.bind_count)
-                        .map(|i| format!("_{}", i))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                    let params = if lambda.param_types.len() as i32 == lambda.bind_count {
+                        (0..lambda.bind_count)
+                            .map(|i| {
+                                let pt = &lambda.param_types[i as usize];
+                                if pt.connectives.is_empty() && pt.exprs.is_empty() {
+                                    format!("_{}", i)
+                                } else {
+                                    format!("_{}: {}", i, self.build_string_from_message(pt))
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    } else {
+                        (0..lambda.bind_count)
+                            .map(|i| format!("_{}", i))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
                     let body = self.build_string_from_message(
                         lambda
                             .body
