@@ -3587,6 +3587,83 @@ After these: my final read of the merged tip, and then the tag (Decision 123).
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 44 (actions A-8 and A-9): FX-21 revision 2, FX-19 under Decision 132, and Decisions 133 and 134
+
+- **Rulings recorded:**
+  - **Decision 133: the innermost seal bounds a firing.** In `{% for(y <- x){% P %}[t ; n] %}[s1 ; m]`, P is bounded by n. It falls back to m only when P has no seal of its own. FX-19 at `59cb1f0c5` bounds by m, and lane C is changing it.
+  - **Decision 134: the close case of revision 43 is accepted.** A firing that the close causes and that passes its bound fails the close. The block is then void for reason (d) with κ = 0, and that record must replay. Lane A2 adds the test at the merge.
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b, FX-19, FX-19-format, FX-20, FX-21, FX-22 or any tag.
+- **Commits read:**
+  - `patch/FX-21` at `0991d5768` (lane B): Decisions 130 and 131, and the default limit from the signed `phloLimit`.
+  - `patch/FX-19` at `59cb1f0c5` (lane C): Decision 132.
+- **Method:** a reading of the two logs and of the `reduce.rs` and `dispatch.rs` diffs. No tests were run.
+
+### FX-21 revision 2 (`0991d5768`): conforms
+
+| Check of revision 43 | Result |
+|---|---|
+| **Decision 130:** a sealed term in received data is checked against the receiving continuation's membrane | **Met.** A seal is own when its origin digest equals the running record's digest. Only an own seal gives its kind and its limit to the record. A seal that is not own runs under the running record, after the owner check (`held_or_signed`). Stack bodies follow the same rule. `region_spec::data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there` runs again and passes. |
+| **Decision 131:** the smaller seal names exactly one deployer | **Met.** `CostSignature.signer = 7` is an index into the origin's verified signers. It resolves only under its own origin, and a seal that is not own and names an index is refused (`a_signer_index_outside_its_own_origin_is_refused`). So one index cannot name a signer of another envelope. The cost per stored continuation falls from +121 to +50 phlo (+11%). |
+| **The default limit** comes from the signed `phloLimit` | **Met on FX-21.** `process_deploy_limited(deploy, run_limit)` limits the evaluation and keeps the signed limit in the deploy data. Test: `the_default_seal_limit_is_the_signed_limit_when_the_run_is_limited_below_it` (`phloLimit` 50,000, Δ = 3,000, seal 50,000). **Open on the merged tree** (below). |
+
+**One condition from the diff:** revision 2 removes the refusal of a sealed term that runs outside every seal in a run that records seals. Such a term now runs with no seal.
+- No other wallet is reached, because the owner check still runs. So this is not an authority gap.
+- **Condition:** lane B states the case in which a run that records seals has no current record, or restores the refusal. A test shows the result.
+- **Label:** known issue if no such case exists, and Low otherwise.
+
+### FX-19 under Decision 132 (`59cb1f0c5`): conforms, with one condition for the merged tree
+
+- A firing over its bound returns `FiringExhausted` like any other error in stored code. `aggregate_evaluator_errors` passes the error to the run.
+- **The run reverts to its soft checkpoint.** None of its effects stay, and the client's message does not stay. The merge does not keep the run. **Met.**
+- **The seal's owner pays exactly the bound.** `region_spec::a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_no_storage` expects (1,500 + 1 cell) × 2. **Met.**
+- **Replay** requires the same failure, the same cost and the same settlement. `replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one` now covers a failed run. **Met.**
+- **The two condition tests** are changed to the new outcome, not removed. **Met.**
+- **The buffer stays, for a reason that I accept.** Without it, a firing over its bound would do some operations before it passes the bound. Those operations depend on the order of evaluation, and they can cause other firings that charge other owners. With the buffer, the owner pays exactly the bound, and nothing else follows.
+- **Lane C agrees with lane B's `shares_membrane` change.** Lane B's known issue 4 is closed.
+
+**Condition: the charge of a failed run after FX-22.** FX-19 charges a failed run the deployment's full `phloLimit` (`handle_error`). After FX-22, the gate commits only Δ = min(`phloLimit`, the estimate) on each paying wallet.
+- A charge above the commitment breaks the linear proof of the gate. Two runs in one block could then draw a wallet beyond the balance that the gate checked.
+- So, on the merged tree, a failed run must be charged at most its commitment (Δ × price).
+- With lane A2's `process_deploy_limited(envelope, committed)`, the deploy data keeps the signed `phloLimit`. So `handle_error` must use the run's limit, not the deploy data's limit.
+- **Label: High if the merged tree charges more than the commitment. Blocking until lane A2 reports.** A test runs a deployment in the estimated fragment (Δ smaller than `phloLimit`) whose run fails. The test checks the charge, and checks that the settlement replays.
+
+**Decision 133** changes the bound of a nested seal. **Check when it lands:**
+- A firing whose body holds `{% P %}[t ; n]` bounds P by n.
+- The sub-total for each nested seal does not depend on the order of evaluation.
+- P exhausts on its own n, and the error fails the run (Decision 132).
+- The owner t pays exactly n at its price.
+- With no nested seal, the stored seal's m applies.
+- Replay agrees.
+
+### Merge checks (on the merged tip)
+
+1. FX-22's `limited()` is replaced by `process_deploy_limited(envelope, committed)` in play and in replay. The record keeps the signed envelope, and the default seal limit stays the signed `phloLimit`.
+2. A failed run is charged at most its commitment (above).
+3. The Decision 134 test: a close-caused firing over its bound gives a (d) record with κ = 0 that replays.
+
+### Merge conditions (unchanged)
+
+1. `dev` is merged, with the parser pinned to `rev-stacks/syntax-dev` at `743752b`.
+2. FX-19 (with Decisions 132 and 133) and FX-21 are merged into FX-8b, and the cross-host fixture is written again.
+3. The full suites run on the merged tip.
+4. The single-threaded run.
+
+After these: my final read, and the tag.
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decisions 130 and 131 (FX-21), Decision 132 (FX-19) | — | **Conform** on their branches |
+| The charge of a failed run after FX-22 | **Blocking until reported** | High if above the commitment |
+| Decision 133 (lane C) and Decision 134 (lane A2's test) | To be audited when the code lands | — |
+| The sealed term outside every seal (FX-21 revision 2) | Condition | Known issue or Low |
+| The three merge checks and the four merge conditions | Conditions | Open |
+| The cost of elaboration | Known issue | +50 phlo for each stored continuation after Decision 131 |
+| The earlier known issues, D10 and F47 for B6 | Known issue | Unchanged |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
