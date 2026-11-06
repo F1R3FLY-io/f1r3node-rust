@@ -114,3 +114,80 @@ async fn match_pi_pattern_with_no_match_reduces_to_noop() {
     })
     .await
 }
+
+// Order-independence: Pi pattern as the SECOND case fires correctly
+// when the first (literal) case doesn't match.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pi_pattern_fires_when_it_is_not_the_first_case() {
+    with_runtime("coc-type-match-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            "match (x: Int) => x { 0 => @\"o\"!(\"zero\") Int -> Int => @\"o\"!(\"pi\") _ => @\"o\"!(\"other\") }",
+        )
+        .await;
+        let data = data_at(&runtime, "o").await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(
+            data[0].exprs.first().and_then(|e| e.expr_instance.clone()),
+            Some(ExprInstance::GString("pi".to_string())),
+        );
+    })
+    .await
+}
+
+// Multi-parameter Pi pattern matching a two-arg typed lambda.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn multi_param_pi_pattern_matches_two_arg_lambda() {
+    with_runtime("coc-type-match-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            "match (x: Int, y: Int) => x { (a: Int, b: Int) -> Int => @\"mp\"!(\"yes\") _ => @\"mp\"!(\"no\") }",
+        )
+        .await;
+        let data = data_at(&runtime, "mp").await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(
+            data[0].exprs.first().and_then(|e| e.expr_instance.clone()),
+            Some(ExprInstance::GString("yes".to_string())),
+        );
+    })
+    .await
+}
+
+// A Bool-returning lambda matches `Int -> Bool` but not `Int -> Int`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pi_pattern_discriminates_codomain() {
+    with_runtime("coc-type-match-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            "match (x: Int) => true { Int -> Bool => @\"d\"!(\"bool\") Int -> Int => @\"d\"!(\"int\") _ => @\"d\"!(\"other\") }",
+        )
+        .await;
+        let data = data_at(&runtime, "d").await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(
+            data[0].exprs.first().and_then(|e| e.expr_instance.clone()),
+            Some(ExprInstance::GString("bool".to_string())),
+        );
+    })
+    .await
+}
+
+// Arity mismatch: one-arg lambda does not match a two-arg Pi pattern.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pi_pattern_rejects_arity_mismatch() {
+    with_runtime("coc-type-match-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            "match (x: Int) => x { (a: Int, b: Int) -> Int => @\"a\"!(\"two\") _ => @\"a\"!(\"other\") }",
+        )
+        .await;
+        let data = data_at(&runtime, "a").await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(
+            data[0].exprs.first().and_then(|e| e.expr_instance.clone()),
+            Some(ExprInstance::GString("other".to_string())),
+        );
+    })
+    .await
+}
