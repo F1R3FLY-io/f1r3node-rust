@@ -48,7 +48,6 @@ fn t_3_slashable_set_is_the_equivocation_class() {
 
     let demoted = vec![
         InvalidBlock::NeglectedEquivocation,
-        InvalidBlock::NeglectedInvalidBlock,
         InvalidBlock::JustificationRegression,
         InvalidBlock::UnauthorizedSlashDeploy,
         InvalidBlock::InvalidParents,

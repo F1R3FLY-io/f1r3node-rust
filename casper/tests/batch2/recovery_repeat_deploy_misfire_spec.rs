@@ -76,7 +76,7 @@ fn mk_casper_snapshot(
         active_validators: vec![],
     };
 
-    let mut snapshot = CasperSnapshot::new(dag);
+    let mut snapshot = CasperSnapshot::new(dag, prost::bytes::Bytes::new());
     snapshot.on_chain_state = on_chain_state;
     snapshot
 }

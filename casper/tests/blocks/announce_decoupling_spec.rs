@@ -146,7 +146,7 @@ async fn a_dead_peer_does_not_stall_valid_block_effects() {
     // The effects path resolves every declared parent against the DAG first.
     let mut block = get_random_block_default();
     block.header.parents_hash_list.clear();
-    let snapshot = CasperSnapshot::new(snapshot_dag);
+    let snapshot = CasperSnapshot::new(snapshot_dag, prost::bytes::Bytes::new());
 
     let start = Instant::now();
     dependencies

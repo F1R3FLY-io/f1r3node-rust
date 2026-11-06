@@ -75,10 +75,9 @@ pub enum InvalidBlock {
     // AdmissibleEquivocation are blocks that would create an equivocation but are
     // pulled in through a justification of another block
     AdmissibleEquivocation,
-    // IgnorableEquivocation: an equivocating block we observe via someone
-    // else's justification but did not pull in as a dependency. Slashable —
-    // the dispatcher mints an EquivocationRecord so the proposer can issue a
-    // SlashDeploy. See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+    // IgnorableEquivocation: an equivocating block that was not requested as a
+    // dependency. Slashable — the dispatcher stores it with its sibling, the
+    // pair a proposer slashes with.
     IgnorableEquivocation,
 
     InvalidFormat,
@@ -94,19 +93,17 @@ pub enum InvalidBlock {
     InvalidFollows,
     InvalidSequenceNumber,
     InvalidShardId,
+    // InvalidChainId: the block names a chain other than this node's genesis.
+    InvalidChainId,
     JustificationRegression,
-    NeglectedInvalidBlock,
     NeglectedEquivocation,
     InvalidTransaction,
     InvalidBondsCache,
     InvalidBlockHash,
-    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy that
-    // fails the authorization predicate (wrong epoch, missing/non-invalid
-    // evidence, unbonded offender, duplicate target, or issuer ≠ sender).
-    // Raised by `Validate::slash_deploy_authorization`; the rules are in
-    // `slashing_authorization.rs::validate_received_slash_deploys` and
-    // proven sufficient by Theorem T-9.13 (see
-    // `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`).
+    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy whose
+    // evidence proves no equivocation on this shard and chain, whose offender
+    // is unbonded or slashed twice, or whose issuer is not the block's sender
+    // (`slashing_authorization::validate_received_slash_deploys`).
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
     // A vote on a claim the proposer may not vote on at the block's pre-state:
@@ -177,12 +174,10 @@ impl BlockStatus {
 
     pub fn invalid_shard_id() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidShardId) }
 
+    pub fn invalid_chain_id() -> BlockError { BlockError::Invalid(InvalidBlock::InvalidChainId) }
+
     pub fn justification_regression() -> BlockError {
         BlockError::Invalid(InvalidBlock::JustificationRegression)
-    }
-
-    pub fn neglected_invalid_block() -> BlockError {
-        BlockError::Invalid(InvalidBlock::NeglectedInvalidBlock)
     }
 
     pub fn neglected_equivocation() -> BlockError {
@@ -252,7 +247,7 @@ impl InvalidBlock {
         // verdict with that property: two signed blocks at the same seq are
         // proof wherever they are examined, in any order. Every other verdict
         // is judged against the receiver's own state — its invalid records,
-        // its equivocation tracker, its parents' replay, its admission order
+        // its parents' replay, its admission order
         // — so two honest nodes can disagree on it, and minting evidence
         // from it lets whoever shapes message delivery burn honest stake
         // (CI run 32588262605: JustificationRegression verdicts issued by
@@ -261,11 +256,8 @@ impl InvalidBlock {
         // weight). A demoted verdict still drops the block — invalidity is
         // untouched; only the economic layer narrows to provable faults.
         match self {
-            // IgnorableEquivocation is slashable per Bug #1 (§9.1). On
-            // dev this variant was a known DOS-vector TODO — equivocations
-            // observed via someone else's justification produced no on-chain
-            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
-            // mints an EquivocationRecord whenever this branch fires.
+            // The dispatcher stores a block with either verdict together
+            // with its sibling: the evidence a slash carries.
             InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => true,
 
             // Non-slashable variants — listed explicitly so the compiler
@@ -275,10 +267,8 @@ impl InvalidBlock {
             //     wire data; the sender is not identifiable (Signature) or
             //     the sender's identity can't be verified (Sender).
             //   • JustificationRegression / UnauthorizedSlashDeploy /
-            //     NeglectedInvalidBlock / NeglectedEquivocation: judged
-            //     against the receiver's own records or tracker — the
-            //     view-relative family observed diverging across honest
-            //     nodes in the run above.
+            //     NeglectedEquivocation: judged against the receiver's own
+            //     view of other blocks, not the signed block alone.
             //   • InvalidTransaction / InvalidBondsCache / InvalidParents /
             //     InvalidFollows / InvalidRepeatDeploy / InvalidBlockNumber /
             //     InvalidSequenceNumber / InvalidShardId / InvalidBlockHash /
@@ -301,6 +291,8 @@ impl InvalidBlock {
             //     declines the block identically — admission does all the
             //     enforcement, and a gate rule in its proving phase must
             //     never be able to burn honest stake through its own bugs.
+            //   • InvalidChainId: a block of another chain; it says nothing
+            //     about conduct on this one.
             //   • NotOfInterest: local node filtering decision.
             //   • LowDeployCost: per-deploy cost threshold; rejected at
             //     admission, not on-chain accountable.
@@ -316,8 +308,8 @@ impl InvalidBlock {
             | InvalidBlock::InvalidFollows
             | InvalidBlock::InvalidSequenceNumber
             | InvalidBlock::InvalidShardId
+            | InvalidBlock::InvalidChainId
             | InvalidBlock::JustificationRegression
-            | InvalidBlock::NeglectedInvalidBlock
             | InvalidBlock::NeglectedEquivocation
             | InvalidBlock::InvalidTransaction
             | InvalidBlock::InvalidBondsCache

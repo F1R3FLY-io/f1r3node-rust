@@ -190,16 +190,15 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // The bonded-set ("most-slashed" intersection) parent filter that
     // previously occupied the else-arm below was removed. Committee/bonds
     // are now validated against the finalized floor
-    // (`Validate::bonds_cache_from_floor`) together with
-    // `neglected_invalid_block` — both validator-side and finalization-
-    // anchored. A proposer-side parent filter cannot be a consensus-safety
+    // (`Validate::bonds_cache_from_floor`), validator-side and
+    // finalization-anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
     let fork_choice_floor = crate::rust::finality::floor::fork_choice_floor(
         &dag,
         &this.block_store,
         valid_latest_msgs.values(),
-        BlockMetadata::from_block(&this.approved_block, false, None, None),
+        BlockMetadata::from_block(&this.approved_block, None, None, None),
         crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
             this.chain_parameters.fault_tolerance_threshold_ppm,
         ),
@@ -514,8 +513,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     let invalid_blocks = dag.invalid_blocks_map()?;
     let last_finalized_block = dag.last_finalized_block();
     record_dag_cardinality_metrics(&dag);
+    let chain_id = this.block_dag_storage.genesis_hash()?.ok_or_else(|| {
+        CasperError::RuntimeError(
+            "the genesis hash is unknown, so the node's chain identity is unknown".to_string(),
+        )
+    })?;
 
     Ok(CasperSnapshot {
+        chain_id,
         dag,
         last_finalized_block,
         parents,

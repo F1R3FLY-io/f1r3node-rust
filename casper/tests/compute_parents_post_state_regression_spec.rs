@@ -45,7 +45,7 @@ fn mk_snapshot(
     shard_name: String,
     last_finalized_block: BlockHash,
 ) -> CasperSnapshot {
-    let mut snapshot = CasperSnapshot::new(dag);
+    let mut snapshot = CasperSnapshot::new(dag, BlockHash::new());
     snapshot.last_finalized_block = last_finalized_block;
 
     let mut max_seq_nums: HashMap<Validator, u64> = HashMap::new();

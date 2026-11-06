@@ -43,6 +43,7 @@ fn fixture_block() -> BlockMessage {
             timestamp: 0,
             version: 0,
             extra_bytes: Bytes::new(),
+            chain_id: Bytes::new(),
         },
         body: Body {
             state: F1r3flyState {
@@ -154,12 +155,10 @@ fn ok_routes_to_valid() {
 }
 
 #[test]
-fn epoch_mismatch_routes_to_unauthorized_slash_deploy() {
-    use casper::rust::epoch::Epoch;
+fn evidence_that_is_not_an_equivocation_routes_to_unauthorized_slash_deploy() {
     let block = fixture_block();
-    let auth_err = CasperError::SlashAuth(SlashAuthError::EpochMismatch {
-        target: Epoch::new(0),
-        current: Epoch::new(2),
+    let auth_err = CasperError::SlashAuth(SlashAuthError::NotAnEquivocation {
+        reason: "the two blocks are one block",
     });
 
     let outcome = Validate::route_slash_validation_outcome(&block, Err(auth_err));
@@ -169,7 +168,7 @@ fn epoch_mismatch_routes_to_unauthorized_slash_deploy() {
             outcome,
             Either::Left(BlockError::Invalid(InvalidBlock::UnauthorizedSlashDeploy))
         ),
-        "EpochMismatch (a SlashAuthError variant) must produce UnauthorizedSlashDeploy; got {:?}",
+        "NotAnEquivocation (a SlashAuthError variant) must produce UnauthorizedSlashDeploy; got {:?}",
         outcome
     );
 }

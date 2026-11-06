@@ -320,7 +320,7 @@ impl NoOpsCasperEffect {
             self.block_dag_storage.dag_set.insert(block_hash.clone());
 
             // Add block metadata to the metadata store
-            let block_metadata = BlockMetadata::from_block(&block, false, None, None);
+            let block_metadata = BlockMetadata::from_block(&block, None, None, None);
             let mut metadata_guard = self.block_dag_storage.block_metadata_index.write();
             match metadata_guard.add(block_metadata) {
                 Ok(_) => {

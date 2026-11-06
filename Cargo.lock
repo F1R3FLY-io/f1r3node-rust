@@ -805,7 +805,6 @@ dependencies = [
  "itertools 0.14.0",
  "k256",
  "lazy_static",
- "loom 0.7.2",
  "lz4_flex",
  "metrics 0.23.1",
  "metrics-util 0.17.0",

@@ -95,7 +95,7 @@ fn create_snapshot_with_parent(
     validator: Validator,
     shard_name: String,
 ) -> CasperSnapshot {
-    let mut snapshot = CasperSnapshot::new(dag);
+    let mut snapshot = CasperSnapshot::new(dag, prost::bytes::Bytes::new());
     snapshot.max_block_num = parent.body.state.block_number;
     snapshot.parents = vec![parent.clone()];
     snapshot.justifications.insert(Justification {

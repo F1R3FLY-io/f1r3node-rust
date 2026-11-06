@@ -22,12 +22,18 @@ use block_storage::rust::dag::buffer_dag_transition::{
     reconcile_buffer_against_dag, BufferTransition,
 };
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
-use models::rust::block_hash::BlockHashSerde;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::block_implicits::get_random_block;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+
+fn equivocation() -> InsertMode {
+    InsertMode::Equivocation {
+        sibling: BlockHash::from(vec![0xEE; 32]),
+    }
+}
 
 fn make_block() -> BlockMessage {
     get_random_block(
@@ -97,7 +103,7 @@ async fn atomic_insert_then_buffer_inserts_into_dag_and_removes_from_buffer() {
     let updated_dag = atomic_insert_then_buffer(
         &dag,
         &block,
-        InsertMode::Invalid,
+        equivocation(),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     )
@@ -122,7 +128,7 @@ async fn atomic_insert_then_buffer_idempotent_on_absent_hash() {
     let updated_dag = atomic_insert_then_buffer(
         &dag,
         &block,
-        InsertMode::Invalid,
+        equivocation(),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     )
@@ -169,7 +175,7 @@ async fn reconcile_buffer_against_dag_purges_drifted_pendants() {
     // Manually construct the (c) drift state from §9.20: block in DAG
     // AND pendant in buffer. This is what would result from a crash
     // after dag.insert but before buffer.remove.
-    dag.insert(&block, InsertMode::Invalid).unwrap();
+    dag.insert(&block, equivocation()).unwrap();
     buffer.put_pendant(hash_serde.clone()).unwrap();
     assert!(dag
         .get_representation()
@@ -214,7 +220,7 @@ async fn reconcile_buffer_against_dag_handles_mixed_state() {
 
     let drift_block = make_block();
     let drift_hash = BlockHashSerde(drift_block.block_hash.clone());
-    dag.insert(&drift_block, InsertMode::Invalid).unwrap();
+    dag.insert(&drift_block, equivocation()).unwrap();
     buffer.put_pendant(drift_hash.clone()).unwrap();
 
     let pending_block = make_block();
@@ -242,7 +248,7 @@ async fn reconcile_buffer_against_dag_is_idempotent() {
     let (dag, buffer) = setup_stores().await;
     let block = make_block();
     let hash_serde = BlockHashSerde(block.block_hash.clone());
-    dag.insert(&block, InsertMode::Invalid).unwrap();
+    dag.insert(&block, equivocation()).unwrap();
     buffer.put_pendant(hash_serde.clone()).unwrap();
 
     let dag_rep = dag.get_representation().unwrap();
@@ -269,7 +275,7 @@ async fn atomic_insert_then_buffer_idempotent_on_repeat() {
     let first = atomic_insert_then_buffer(
         &dag,
         &block,
-        InsertMode::Invalid,
+        equivocation(),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     );
@@ -278,7 +284,7 @@ async fn atomic_insert_then_buffer_idempotent_on_repeat() {
     let second = atomic_insert_then_buffer(
         &dag,
         &block,
-        InsertMode::Invalid,
+        equivocation(),
         &buffer,
         BufferTransition::RemoveFromBuffer(hash_serde.clone()),
     );

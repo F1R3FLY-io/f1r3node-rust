@@ -337,15 +337,12 @@ pub async fn block_dag_storage_from_dyn(
     block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use std::collections::BTreeSet;
     use std::sync::Arc;
 
     use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
     use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-    use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
     use models::rust::block_hash::BlockHashSerde;
     use models::rust::block_metadata::BlockMetadata;
-    use models::rust::equivocation_record::SequenceNumber;
     use models::rust::validator::ValidatorSerde;
     use parking_lot::RwLock;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
@@ -359,21 +356,6 @@ pub async fn block_dag_storage_from_dyn(
     let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
         KeyValueTypedStoreImpl::new(block_metadata_kv_store);
     let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
-
-    let equivocation_tracker_kv_store = kvm
-        .store("equivocation-tracker".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get equivocation-tracker store: {:?}",
-                e
-            ))
-        })?;
-    let equivocation_tracker_db: KeyValueTypedStoreImpl<
-        (ValidatorSerde, SequenceNumber),
-        BTreeSet<BlockHashSerde>,
-    > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
-    let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
 
     let latest_messages_kv_store = kvm
         .store("latest-messages".to_string())
@@ -403,7 +385,6 @@ pub async fn block_dag_storage_from_dyn(
         invalid_blocks_db,
         KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
         KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        equivocation_tracker_store,
         Arc::new(AtomicU64::new(0)),
     ))
 }
@@ -550,6 +531,7 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
         block_number_map: imbl::HashMap::new(),
         main_parent_map: imbl::HashMap::new(),
         self_justification_map: imbl::HashMap::new(),
+        sequence_map: imbl::HashMap::new(),
         invalid_blocks_set: imbl::HashSet::new(),
         last_finalized_block_hash: BlockHash::new(),
         finalized_blocks_set: imbl::HashSet::new(),
@@ -584,5 +566,6 @@ pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },
+        chain_id: Bytes::new(),
     }
 }

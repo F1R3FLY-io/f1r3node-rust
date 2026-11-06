@@ -173,6 +173,7 @@ impl TestContext {
                 bonds_map: HashMap::new(),
                 active_validators: Vec::new(),
             },
+            chain_id: BlockHash::default(),
         }
     }
 

@@ -109,6 +109,10 @@ async fn multi_validator_recovery_dedups_re_proposed_sig() {
             dag_storage
                 .get_representation()
                 .expect("dag representation"),
+            dag_storage
+                .genesis_hash()
+                .expect("genesis hash")
+                .expect("genesis is held"),
         );
         snapshot.last_finalized_block = lfb.clone();
         let mut max_seq_nums: HashMap<prost::bytes::Bytes, u64> = HashMap::new();

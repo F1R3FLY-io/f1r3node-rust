@@ -117,6 +117,7 @@ fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
             bonds_map: HashMap::new(),
             active_validators: Vec::new(),
         },
+        chain_id: Bytes::new(),
     }
 }
 

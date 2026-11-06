@@ -32,6 +32,22 @@ pub mod serde_bytes {
     }
 }
 
+pub mod serde_option_bytes {
+    use prost::bytes::Bytes;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &Option<Bytes>, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        ::serde_bytes::serialize(&bytes.as_ref().map(|bytes| bytes.as_ref()), serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Bytes>, D::Error>
+    where D: Deserializer<'de> {
+        let bytes: Option<Vec<u8>> = ::serde_bytes::deserialize(deserializer)?;
+        Ok(bytes.map(Bytes::from))
+    }
+}
+
 pub mod serde_vec_bytes {
     use prost::bytes::Bytes;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};

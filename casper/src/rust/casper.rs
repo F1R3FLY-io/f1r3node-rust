@@ -135,8 +135,8 @@ pub trait Casper {
 
     /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
     /// steps since both were already computed during `block_creator::create`.
-    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
-    /// equivocation checks, block-index computation) still run.
+    /// All other validation steps (shard and chain identity, equivocation, block_summary,
+    /// neglect, phlo_price, block-index computation) still run.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,
@@ -407,6 +407,9 @@ pub struct CasperSnapshot {
     pub max_block_num: i64,
     pub max_seq_nums: HashMap<Validator, u64>,
     pub on_chain_state: OnChainCasperState,
+    /// The genesis block hash: the chain every block of this node's shard
+    /// names in its header.
+    pub chain_id: BlockHash,
 }
 
 impl CasperSnapshot {
@@ -424,9 +427,11 @@ impl CasperSnapshot {
 
 #[cfg(any(test, feature = "test-utils"))]
 impl CasperSnapshot {
-    /// An empty snapshot under the shipped genesis parameters.
-    pub fn new(dag: KeyValueDagRepresentation) -> Self {
+    /// An empty snapshot of chain `chain_id` under the shipped genesis
+    /// parameters.
+    pub fn new(dag: KeyValueDagRepresentation, chain_id: BlockHash) -> Self {
         Self {
+            chain_id,
             dag,
             last_finalized_block: BlockHash::default(),
             parents: vec![],
@@ -640,6 +645,7 @@ pub mod test_helpers {
                 block_number_map: imbl::HashMap::new(),
                 main_parent_map: imbl::HashMap::new(),
                 self_justification_map: imbl::HashMap::new(),
+                sequence_map: imbl::HashMap::new(),
                 invalid_blocks_set: imbl::HashSet::new(),
                 last_finalized_block_hash: BlockHash::new(),
                 finalized_blocks_set: imbl::HashSet::new(),
@@ -656,7 +662,7 @@ pub mod test_helpers {
                 )),
             };
 
-            CasperSnapshot::new(dag)
+            CasperSnapshot::new(dag, BlockHash::from(vec![0xC1; 32]))
         }
 
         pub fn bond_validator_in_snapshot(

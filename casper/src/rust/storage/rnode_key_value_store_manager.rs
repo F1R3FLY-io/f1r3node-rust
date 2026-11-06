@@ -82,10 +82,6 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
             dag_storage_env_config(),
         ),
         (
-            Db::new("equivocation-tracker".to_string(), None),
-            dag_storage_env_config(),
-        ),
-        (
             Db::new("latest-messages".to_string(), None),
             dag_storage_env_config(),
         ),

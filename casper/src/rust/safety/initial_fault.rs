@@ -1,5 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
+
+use models::rust::block_metadata::BlockMetadata;
+use models::rust::validator::Validator;
 
 pub(crate) fn equivocating_weight<'a, K: Eq + Hash + 'a>(
     weights: &HashMap<K, u64>,
@@ -9,6 +12,17 @@ pub(crate) fn equivocating_weight<'a, K: Eq + Hash + 'a>(
         .into_iter()
         .filter_map(|equivocator| weights.get(equivocator))
         .sum()
+}
+
+/// One entry per equivocation: the distinct (sender, sequence number) of the
+/// blocks held as equivocations.
+pub(crate) fn equivocations<'a>(
+    invalid_blocks: impl IntoIterator<Item = &'a BlockMetadata>,
+) -> BTreeSet<(Validator, i32)> {
+    invalid_blocks
+        .into_iter()
+        .map(|block| (block.sender.clone(), block.sequence_number))
+        .collect()
 }
 
 pub(crate) fn total_weight<K: Eq + Hash>(weights: &HashMap<K, u64>) -> u64 {

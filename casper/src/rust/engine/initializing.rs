@@ -31,7 +31,6 @@ use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_state_manager::RSpaceStateManager;
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
-use shared::rust::ByteString;
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 
@@ -1043,12 +1042,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             );
 
         let st = completed_window(final_state_result)?;
-        self.populate_dag(
-            approved_block.candidate.block.clone(),
-            st.lower_bound,
-            st.height_map,
-        )
-        .await?;
+        self.populate_dag(st.lower_bound, st.height_map).await?;
         // After the blocks are in, never before: the caches are keyed by
         // hash, and a floor entry pointing at a block the DAG does not hold
         // reads back as a missing block rather than as a floor.
@@ -1403,51 +1397,10 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
     async fn populate_dag(
         &self,
-        start_block: BlockMessage,
         min_height: i64,
         height_map: BTreeMap<i64, HashSet<BlockHash>>,
     ) -> Result<(), CasperError> {
-        async fn add_block_to_dag<T: TransportLayer + Send + Sync + Clone>(
-            initializing: &Initializing<T>,
-            block: &BlockMessage,
-            is_invalid: bool,
-        ) -> Result<(), CasperError> {
-            tracing::info!(
-                "Adding {}, invalid = {}.",
-                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true),
-                is_invalid
-            );
-
-            // Scala equivalent: `BlockDagStorage[F].insert(block, invalid = isInvalid)`
-            initializing.block_dag_storage.insert(
-                block,
-                if is_invalid {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid
-                } else {
-                    block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal
-                },
-            )?;
-
-            Ok(())
-        }
-
         tracing::info!("Adding blocks for approved state to DAG.");
-
-        let slashed_validators: Vec<ByteString> = start_block
-            .body
-            .state
-            .bonds
-            .iter()
-            .filter(|bond| bond.stake == 0)
-            .map(|bond| bond.validator.to_vec())
-            .collect();
-
-        let invalid_blocks: HashSet<ByteString> = start_block
-            .justifications
-            .iter()
-            .filter(|justification| slashed_validators.contains(&justification.validator.to_vec()))
-            .map(|justification| justification.latest_block_hash.to_vec())
-            .collect();
 
         let mut inserted = 0usize;
 
@@ -1456,9 +1409,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // NOTE: This is not in original Scala code. Added because we changed block_store
             // to Option<KeyValueBlockStore> to support moving it in create_casper_and_transition_to_running
             let block = self.block_store.get_unsafe(&hash);
-            // If sender has stake 0 in approved block, this means that sender has been slashed and block is invalid
-            let is_invalid = invalid_blocks.contains(&block.block_hash.to_vec());
-            add_block_to_dag(self, &block, is_invalid).await?;
+            tracing::info!(
+                "Adding {}.",
+                PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
+            );
+            self.block_dag_storage.insert(
+                &block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+            )?;
             inserted += 1;
         }
 
@@ -2205,6 +2163,7 @@ mod tests {
                     timestamp: 0,
                     version: 1,
                     extra_bytes: BlockHash::new(),
+                    chain_id: BlockHash::new(),
                 },
                 Vec::new(),
                 "root".to_string(),
@@ -2263,6 +2222,7 @@ mod tests {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
+            sequence_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: prost::bytes::Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),
@@ -2339,6 +2299,7 @@ mod tests {
             block_number_map: imbl::HashMap::new(),
             main_parent_map: imbl::HashMap::new(),
             self_justification_map: imbl::HashMap::new(),
+            sequence_map: imbl::HashMap::new(),
             invalid_blocks_set: imbl::HashSet::new(),
             last_finalized_block_hash: prost::bytes::Bytes::new(),
             finalized_blocks_set: imbl::HashSet::new(),

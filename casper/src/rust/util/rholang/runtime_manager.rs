@@ -53,6 +53,7 @@ use crate::rust::metrics_constants::{
 use crate::rust::rholang::replay_runtime::ReplayRuntimeOps;
 use crate::rust::rholang::runtime::{FloorState, RuntimeOps};
 use crate::rust::util::bounded_cache::BoundedCache;
+use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::MAX_PARENT_MERGE_SCOPE_BLOCKS;
 use crate::rust::util::rholang::replay_cache::{
     InMemoryReplayCache, ReplayCache, ReplayCacheEntry, ReplayCacheKey,
@@ -503,18 +504,19 @@ impl RuntimeManager {
                     bytes.push(0);
                     match system_deploy {
                         SystemDeployData::Slash {
-                            invalid_block_hash,
+                            evidence,
                             issuer_public_key,
-                            target_activation_epoch,
                         } => {
                             bytes.push(0);
-                            push_len_prefixed(&mut bytes, invalid_block_hash);
+                            push_len_prefixed(
+                                &mut bytes,
+                                &proto_util::commitment_hash(&evidence.first),
+                            );
+                            push_len_prefixed(
+                                &mut bytes,
+                                &proto_util::commitment_hash(&evidence.second),
+                            );
                             push_len_prefixed(&mut bytes, &issuer_public_key.bytes);
-                            // Little-endian is consensus-determined for this
-                            // hash-affecting encoding — every node must agree
-                            // on the bytes fed into the post-state hash. Do
-                            // not switch to big-endian or `to_be_bytes`.
-                            bytes.extend_from_slice(&target_activation_epoch.to_le_bytes());
                         }
                         SystemDeployData::CloseBlockSystemDeployData => {
                             bytes.push(1);
@@ -1906,13 +1908,18 @@ mod tests {
         };
 
         let slash_against = |target: &'static [u8]| {
+            let mut block = models::rust::block_implicits::get_random_block_default();
+            block.extra_bytes = prost::bytes::Bytes::from_static(target);
+            let commitment = crate::rust::util::proto_util::block_commitment(&block);
             vec![ProcessedSystemDeploy::Succeeded {
                 event_list: Vec::new(),
-                system_deploy: SystemDeployData::Slash {
-                    invalid_block_hash: prost::bytes::Bytes::from_static(target),
-                    issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(b"issuer"),
-                    target_activation_epoch: 7,
-                },
+                system_deploy: SystemDeployData::create_slash(
+                    models::rust::casper::protocol::casper_message::EquivocationEvidence {
+                        first: commitment.clone(),
+                        second: commitment,
+                    },
+                    crypto::rust::public_key::PublicKey::from_bytes(b"issuer"),
+                ),
             }]
         };
 

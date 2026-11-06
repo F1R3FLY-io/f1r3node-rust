@@ -6,7 +6,6 @@ pub mod casper_conf;
 pub mod chain_parameters;
 pub mod economics;
 pub mod engine;
-pub mod epoch;
 pub mod equivocation_detector;
 pub mod errors;
 pub mod estimator;

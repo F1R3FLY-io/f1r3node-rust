@@ -8,14 +8,9 @@
 //!
 //! ## Slashing-protocol position
 //!
-//! The store is the **canonical home** of the equivocation tracker
-//! (`equivocation_tracker_index`). All RMW on the tracker MUST route
-//! through [`BlockDagKeyValueStorage::access_equivocations_tracker`] to
-//! preserve Bug #2 / T-9.2 atomicity — see
-//! [`crate::rust::dag::equivocations_access::EquivocationsAccess`] for
-//! the trait contract and
-//! `formal/rocq/slashing/theories/BugFixAtomicTracker.v` for the
-//! mechanized proof.
+//! An equivocation is stored as an invalid block whose metadata names its
+//! sibling (`InsertMode::Equivocation`); that pair is the evidence a slash
+//! carries.
 //!
 //! ## Lock discipline (P1-3 + P2-12)
 //!
@@ -34,7 +29,7 @@
 //
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -42,15 +37,7 @@ use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, ClaimId};
-#[cfg(any(test, feature = "test-internals"))]
-use models::rust::equivocation_record::EquivocationRecord;
-use models::rust::equivocation_record::SequenceNumber;
 use models::rust::validator::{self, Validator, ValidatorSerde};
-// Slashing-critical RMW locks are routed through `parking_lot` (P1-3): no
-// poison propagation, faster acquire, and `.lock()` / `.read()` / `.write()`
-// return guards directly without a `Result`. Bug #2 / T-9.2's
-// `access_equivocations_tracker` RMW contract is preserved by holding
-// `global_lock` for the duration of the critical section.
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -60,12 +47,11 @@ use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::SnapshotError;
 
-use super::block_metadata_store::BlockMetadataStore;
+use super::block_metadata_store::{BlockMetadataStore, SequenceMap};
 use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
-use super::equivocation_tracker_store::EquivocationTrackerStore;
 use super::vote_index::{VoteEntry, VoteIndex};
 
 pub type DeployId = shared::rust::ByteString;
@@ -74,16 +60,16 @@ pub type DeployId = shared::rust::ByteString;
 /// [`BlockDagKeyValueStorage::insert`]. The two booleans are not
 /// independent — an approved block is by definition not invalid — and
 /// the enum encodes that invariant at the type level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InsertMode {
     /// Standard insertion: block is valid and not the approved (genesis)
     /// block. Used for all non-genesis valid blocks accepted into the
     /// DAG.
     Normal,
-    /// Block has failed validation and is being recorded for evidence
-    /// but is not eligible for fork-choice. Used by
-    /// `dispatch_handle_invalid_block`.
-    Invalid,
+    /// The block is an equivocation: `sibling` is the sender's other held
+    /// block at the same sequence number. Stored invalid, with its pair, and
+    /// not eligible for fork choice.
+    Equivocation { sibling: BlockHash },
     /// Genesis / approved-block insertion. Marks the block as the
     /// initial finalization root.
     Approved,
@@ -108,6 +94,7 @@ pub struct KeyValueDagRepresentation {
     pub block_number_map: imbl::HashMap<BlockHash, i64>,
     pub main_parent_map: imbl::HashMap<BlockHash, BlockHash>,
     pub self_justification_map: imbl::HashMap<BlockHash, BlockHash>,
+    pub sequence_map: SequenceMap,
     pub invalid_blocks_set: imbl::HashSet<BlockMetadata>,
     pub last_finalized_block_hash: BlockHash,
     pub finalized_blocks_set: imbl::HashSet<BlockHash>,
@@ -504,7 +491,7 @@ impl KeyValueDagRepresentation {
         for (validator, block_hash) in latest_message_hashes {
             if self
                 .lookup(block_hash)?
-                .map(|metadata| metadata.invalid)
+                .map(|metadata| metadata.is_invalid())
                 .unwrap_or(false)
             {
                 result.insert(validator.clone(), block_hash.clone());
@@ -518,12 +505,17 @@ impl KeyValueDagRepresentation {
         let mut invalid_block_hashes = HashMap::new();
         for block in invalid_blocks {
             if let Some(metadata) = self.lookup(&block.block_hash)? {
-                if metadata.invalid {
+                if metadata.is_invalid() {
                     invalid_block_hashes.insert(metadata.block_hash, metadata.sender);
                 }
             }
         }
         Ok(invalid_block_hashes)
+    }
+
+    /// The blocks held from `sender` at sequence number `seq_num`.
+    pub fn blocks_at(&self, sender: &Validator, seq_num: i32) -> Option<&imbl::HashSet<BlockHash>> {
+        self.sequence_map.get(&(sender.clone(), seq_num))
     }
 
     pub fn self_justification(
@@ -847,9 +839,7 @@ impl KeyValueDagRepresentation {
 /// through the `#[cfg(any(test, feature = "test-internals"))]`-gated
 /// constructor (`from_parts`) and the matching `metadata_index_for_tests`
 /// accessor — see further down this file.
-/// **Production code MUST NOT touch these fields directly.** All RMW on
-/// the equivocation tracker must route through
-/// `access_equivocations_tracker` (Bug #2 / T-9.2 contract). All
+/// **Production code MUST NOT touch these fields directly.** All
 /// read/write paths on the metadata / deploy / invalid blocks /
 /// latest-messages indices must take `global_lock`.
 ///
@@ -862,11 +852,8 @@ pub struct BlockDagKeyValueStorage {
     ///
     /// P2-12: an `RwLock<()>` rather than a `Mutex<()>` so pure-read paths
     /// (`get_representation`) can proceed concurrently with one another while
-    /// mutation paths (`insert`, `record_directly_finalized`,
-    /// `access_equivocations_tracker`) still take exclusive access. The Bug
-    /// #2 / T-9.2 RMW atomicity contract is preserved because every mutator
-    /// takes `.write()` — exclusive — and the `access_equivocations_tracker`
-    /// closure receives the equivocation index under an exclusive guard.
+    /// mutation paths (`insert`, `record_directly_finalized`) still take
+    /// exclusive access.
     pub(crate) global_lock: Arc<PlRwLock<()>>,
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
@@ -875,9 +862,6 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Memoized per-block finalized frontier (see `KeyValueDagRepresentation::frontier_index`).
     pub(crate) frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
-    /// Equivocation tracker — RMW MUST route through
-    /// `access_equivocations_tracker` (Bug #2 / T-9.2).
-    pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
     /// Deploy-lifecycle tables (see `KeyValueDagRepresentation::lifecycle`).
     pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
     /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
@@ -1002,13 +986,6 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(block_metadata_kv_store);
         let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
 
-        let equivocation_tracker_kv_store = kvm.store("equivocation-tracker".to_string()).await?;
-        let equivocation_tracker_db: KeyValueTypedStoreImpl<
-            (ValidatorSerde, SequenceNumber),
-            BTreeSet<BlockHashSerde>,
-        > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
-        let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
-
         let latest_messages_kv_store = kvm.store("latest-messages".to_string()).await?;
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store);
@@ -1045,7 +1022,6 @@ impl BlockDagKeyValueStorage {
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
-            equivocation_tracker_index: equivocation_tracker_store,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
             carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
             vote_index: VoteIndex::new(vote_index_kv_store)?,
@@ -1096,29 +1072,6 @@ impl BlockDagKeyValueStorage {
             .and_then(|blocks| blocks.iter().min().cloned()))
     }
 
-    // P2-16: the following two methods bypass `global_lock` — production
-    // code MUST route through `access_equivocations_tracker` to honor the
-    // Bug #2 / T-9.2 atomicity contract (see
-    // `docs/casper/theory/slashing/slashing-verification.md` §9.2 and
-    // `formal/rocq/slashing/theories/BugFixAtomicTracker.v`). They are
-    // gated behind `#[cfg(any(test, feature = "test-internals"))]` so the
-    // compiler hard-fails on any production caller — the prior
-    // `#[deprecated]` annotation was warning-only and could be silenced.
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn equivocation_records(&self) -> Result<HashSet<EquivocationRecord>, KvStoreError> {
-        self.equivocation_tracker_index.data()
-    }
-
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn insert_equivocation_record(
-        &self,
-        record: EquivocationRecord,
-    ) -> Result<(), KvStoreError> {
-        self.equivocation_tracker_index.add(record)
-    }
-
     /// Phase 11 (visibility hardening): test fixtures used to build a
     /// `BlockDagKeyValueStorage` via struct-literal syntax against the
     /// `#[doc(hidden)] pub` indices. Now the indices are `pub(crate)`;
@@ -1135,7 +1088,6 @@ impl BlockDagKeyValueStorage {
         invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
         floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
-        equivocation_tracker_index: EquivocationTrackerStore,
         dag_generation: Arc<AtomicU64>,
     ) -> Self {
         Self {
@@ -1145,7 +1097,6 @@ impl BlockDagKeyValueStorage {
             invalid_blocks_index,
             floor_index,
             frontier_index,
-            equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
             vote_index: VoteIndex::in_memory(),
@@ -1235,6 +1186,19 @@ impl BlockDagKeyValueStorage {
         self.get_representation_internal()
     }
 
+    /// Runs `f` on a representation with the global lock held shared, so no
+    /// block is inserted before `f` returns.
+    pub fn with_representation<R, E>(
+        &self,
+        f: impl FnOnce(&KeyValueDagRepresentation) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        E: From<KvStoreError>,
+    {
+        let _lock_guard = self.global_lock.read();
+        f(&self.get_representation_internal()?)
+    }
+
     /// Internal method to get representation without acquiring lock.
     /// Used when lock is already held by the caller.
     /// Public to allow IndexedBlockDagStorage to use it.
@@ -1257,6 +1221,7 @@ impl BlockDagKeyValueStorage {
         let block_number_map = dag_state_guard.block_number_map.clone();
         let main_parent_map = dag_state_guard.main_parent_map.clone();
         let self_justification_map = dag_state_guard.self_justification_map.clone();
+        let sequence_map = dag_state_guard.sequence_map.clone();
         let last_finalized_block = dag_state_guard
             .last_finalized_block
             .as_ref()
@@ -1276,6 +1241,7 @@ impl BlockDagKeyValueStorage {
             block_number_map,
             main_parent_map,
             self_justification_map,
+            sequence_map,
             invalid_blocks_set: invalid_blocks,
             last_finalized_block_hash: last_finalized_block,
             finalized_blocks_set: finalized_blocks,
@@ -1316,7 +1282,11 @@ impl BlockDagKeyValueStorage {
         // Phase 8 (A-6): derive the per-branch booleans directly from the
         // enum via `matches!`. The previous `mode.flags()` projection
         // shim survived a Phase-4 transition; it is no longer needed.
-        let invalid = matches!(mode, InsertMode::Invalid);
+        let equivocates = match &mode {
+            InsertMode::Equivocation { sibling } => Some(sibling.clone()),
+            _ => None,
+        };
+        let invalid = equivocates.is_some();
         let approved = matches!(mode, InsertMode::Approved);
         let settled_history = matches!(mode, InsertMode::SettledHistory);
         let sender_is_empty = block.sender.is_empty();
@@ -1346,11 +1316,9 @@ impl BlockDagKeyValueStorage {
         //     therefore cannot become parents, cannot enter the ancestor chain of
         //     any parent, and cannot influence the Estimator's fork-choice scoring
         //     or finalization depth.
-        //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
-        //     detector reads `invalid_latest_messages` and feeds it to
-        //     `prepare_slashing_deploys`. Gating the LMM on `invalid` would leave
-        //     the slashing pipeline with nothing to act on — no slashes issued,
-        //     equivocators never punished.
+        //   - Blocks cite a stored equivocation through the LMM, which is how a
+        //     block's justifications come to show both blocks of a pair — the
+        //     condition under which it owes the slash.
         //   - `justification_follows` validation requires every bonded validator
         //     to appear in a new block's justifications. Without the LMM advancing
         //     on invalid blocks, validators whose latest is invalid would be
@@ -1535,7 +1503,7 @@ impl BlockDagKeyValueStorage {
                 }
             }
 
-            let block_metadata = BlockMetadata::from_block(block, invalid, None, None);
+            let block_metadata = BlockMetadata::from_block(block, equivocates, None, None);
             let mut block_metadata_guard = self.block_metadata_index.write();
             block_metadata_guard.add(block_metadata.clone())?;
             drop(block_metadata_guard);
@@ -1597,31 +1565,6 @@ impl BlockDagKeyValueStorage {
         }
 
         self.get_representation_internal()
-    }
-
-    pub fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        // Exclusive access only, not a transaction: no concurrent reader or
-        // writer interleaves with the closure, but writes it makes before
-        // returning `Err` persist.
-        //
-        // SAFETY/CONTRACT (P2-13): non-reentrant. The closure `f` MUST NOT
-        // recursively call `access_equivocations_tracker`, nor any
-        // operation that acquires `global_lock` (e.g. `insert`,
-        // `record_directly_finalized`, `propagate_ft_to_finalized_blocks`,
-        // `get_representation`). Doing so deadlocks the
-        // `parking_lot::RwLock<()>` based implementation.
-        //
-        // The bound is `FnOnce` (more permissive than `Fn`, accepts
-        // strictly more closures); this aligns with the
-        // `EquivocationsAccess` trait at
-        // `crate::rust::dag::equivocations_access`. The trait impl for
-        // this type delegates to this method, so both surfaces
-        // (inherent + trait) share one implementation.
-        let _lock_guard = self.global_lock.write();
-        f(&self.equivocation_tracker_index)
     }
 
     /** Record that some hash is directly finalized (detected by finalizer and becomes LFB). */
@@ -1811,25 +1754,7 @@ impl SoakCaptureAccess<'_> {
         &self.storage.frontier_index
     }
 
-    pub(crate) fn equivocations_index(&self) -> &EquivocationTrackerStore {
-        &self.storage.equivocation_tracker_index
-    }
-
     pub(crate) fn generation(&self) -> u64 { self.storage.current_generation() }
-}
-
-// EquivocationsAccess trait impl — delegates to the inherent method.
-// The inherent method remains the canonical implementation; the trait
-// gives callers a type-level dispatch contract for atomic-RMW access
-// to the equivocation tracker. See `equivocations_access.rs` for the
-// full design rationale (T-9.2 anchor, atomic-RMW contract).
-impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorage {
-    fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        BlockDagKeyValueStorage::access_equivocations_tracker(self, f)
-    }
 }
 
 /// A block the DAG does not hold, named so a caller can request it.

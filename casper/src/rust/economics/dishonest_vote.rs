@@ -51,7 +51,7 @@ fn spills(
             continue;
         }
         pending.extend(block.parents.iter().cloned());
-        if block.invalid
+        if block.is_invalid()
             || block.sender != *claimant
             || testimony
                 .freezes
@@ -178,7 +178,7 @@ fn countable(
     }
     let floor_lowest = reach.map_or(0, |reach| floor_number.saturating_sub(reach));
     let vote_block = dag.lookup_unsafe(&accusation.vote_block)?;
-    Ok(!vote_block.invalid
+    Ok(!vote_block.is_invalid()
         && vote_block.sender == accusation.accused
         && vote_block.block_number >= floor_lowest)
 }

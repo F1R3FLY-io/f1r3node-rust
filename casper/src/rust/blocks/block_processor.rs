@@ -478,7 +478,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
         checked: &CheckedBlock,
     ) -> Result<OfInterestVerdict, CasperError> {
         let block = checked.block();
-        // TODO casper.dag_contains does not take into account equivocation tracker
         let already_processed = casper.dag_contains(&block.block_hash)
             || (casper.buffer_waits_on_dependency(&block.block_hash)
                 && self.dependencies.holds_body(&block.block_hash)?);
@@ -793,11 +792,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
                             .effects_for_invalid_block(casper.clone(), block, i, &snapshot)
                             .await
                     }
-                    // BlockException → InvalidTransaction is safe: validation_dispatcher.rs:548
-                    // routes every is_slashable() variant through the same record-creation path
-                    // as AdmissibleEquivocation, so the slash pipeline fires identically. See
-                    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4 and
-                    // theorem T-9.3 (`t_9_3_dispatch_complete`, BugFixDispatcher.v:41).
+                    // InvalidTransaction is not slashable: the dispatcher drops the block and
+                    // removes it from the buffer, so blocks waiting on it are not held.
                     BlockError::BlockException(ref err) => {
                         tracing::warn!(
                             "Block {} raised BlockException ({}); recording as InvalidTransaction to prevent dependent-block stall.",
@@ -1199,47 +1195,37 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             );
         }
         let (stale_hashes, overflow_hashes) =
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let dag = self.block_dag_storage.get_representation_internal()?;
-                    let invalid: HashSet<BlockHash> =
-                        dag.invalid_blocks_map()?.into_keys().collect();
-                    let equivocations: HashSet<BlockHash> = tracker
-                        .data()?
-                        .iter()
-                        .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                        .cloned()
-                        .collect();
-                    let is_ready = |hash: &BlockHashSerde| match self
-                        .casper_buffer
-                        .cached_block_dependencies(hash)
-                    {
-                        Some(dependencies) => dependencies_are_ready(
-                            &dependencies,
-                            |dependency| dag.contains(dependency),
-                            &equivocations,
-                            &invalid,
-                        ),
-                        None => match self.block_store.contains_key(&hash.0) {
-                            Ok(stored) => stored,
-                            Err(error) => {
-                                tracing::warn!(
-                                    hash = ?hash,
-                                    %error,
-                                    "Preserved CasperBuffer hash after block read failure"
-                                );
-                                true
-                            }
-                        },
-                    };
-                    self.casper_buffer.enforce_limits_with_readiness(
-                        max_blocks,
-                        CASPER_BUFFER_STALE_TTL_MS,
-                        CASPER_BUFFER_MAX_PRUNE_BATCH,
-                        CASPER_BUFFER_PRUNE_INTERVAL_MS,
-                        is_ready,
-                    )
-                })?;
+            self.block_dag_storage.with_representation(|dag| {
+                let invalid: HashSet<BlockHash> = dag.invalid_blocks_map()?.into_keys().collect();
+                let is_ready = |hash: &BlockHashSerde| match self
+                    .casper_buffer
+                    .cached_block_dependencies(hash)
+                {
+                    Some(dependencies) => dependencies_are_ready(
+                        &dependencies,
+                        |dependency| dag.contains(dependency),
+                        &invalid,
+                    ),
+                    None => match self.block_store.contains_key(&hash.0) {
+                        Ok(stored) => stored,
+                        Err(error) => {
+                            tracing::warn!(
+                                hash = ?hash,
+                                %error,
+                                "Preserved CasperBuffer hash after block read failure"
+                            );
+                            true
+                        }
+                    },
+                };
+                self.casper_buffer.enforce_limits_with_readiness(
+                    max_blocks,
+                    CASPER_BUFFER_STALE_TTL_MS,
+                    CASPER_BUFFER_MAX_PRUNE_BATCH,
+                    CASPER_BUFFER_PRUNE_INTERVAL_MS,
+                    is_ready,
+                )
+            })?;
         let (stale_pruned, overflow_pruned) = (stale_hashes.len(), overflow_hashes.len());
         for hash in stale_hashes.iter().chain(overflow_hashes.iter()) {
             self.block_store.discard_pending(&hash.0);
@@ -1283,7 +1269,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         };
         let representation = self.block_dag_storage.get_representation()?;
         Ok(match representation.lookup(main_parent)? {
-            Some(parent) if !parent.invalid => {
+            Some(parent) if !parent.is_invalid() => {
                 if parent.weight_map.get(&block.sender).copied().unwrap_or(0) > 0 {
                     SenderAuthorization::Authorized
                 } else {
@@ -1563,20 +1549,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
     ) -> Result<(bool, HashSet<BlockHash>, HashSet<BlockHash>), CasperError> {
         let all_deps = proto_util::dependencies_hashes_of(block);
 
-        // in addition, equivocation tracker has to be checked, as admissible equivocations are not stored in DAG
-        let equivocation_hashes: HashSet<BlockHash> = {
-            self.block_dag_storage
-                .access_equivocations_tracker(|tracker| {
-                    let equivocation_records = tracker.data()?;
-                    // Use HashSet to ensure uniqueness and O(1) lookup, just like Scala's Set
-                    let hashes: HashSet<BlockHash> = equivocation_records
-                        .iter()
-                        .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                        .cloned()
-                        .collect();
-                    Ok(hashes)
-                })?
-        };
         // Invalid blocks are already known/built into Casper state and should not be re-fetched
         // as unresolved dependencies.
         let invalid_block_hashes: HashSet<BlockHash> = {
@@ -1614,11 +1586,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             })
             .collect();
 
-        let deps_in_eq_tracker: Vec<BlockHash> = all_deps
-            .iter()
-            .filter(|&dep| equivocation_hashes.contains(dep))
-            .cloned()
-            .collect();
         let deps_in_invalid_set: Vec<BlockHash> = all_deps
             .iter()
             .filter(|&dep| invalid_block_hashes.contains(dep))
@@ -1626,7 +1593,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             .collect();
 
         let mut deps_validated: Vec<BlockHash> = deps_in_dag.clone();
-        deps_validated.extend(deps_in_eq_tracker.iter().cloned());
         deps_validated.extend(deps_in_invalid_set.iter().cloned());
 
         // If a dependency is already validated, it should not be treated as a blocking

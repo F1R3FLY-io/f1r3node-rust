@@ -43,7 +43,7 @@ pub async fn rebuild(
         height.sort();
         for hash in height {
             let metadata = dag.lookup_unsafe(&hash)?;
-            if metadata.invalid || metadata.parents.is_empty() {
+            if metadata.is_invalid() || metadata.parents.is_empty() {
                 continue;
             }
             let mut parents = Vec::with_capacity(metadata.parents.len());

@@ -105,13 +105,18 @@ mod tests {
     }
 
     fn slash() -> ProcessedSystemDeploy {
+        let commitment = crate::rust::util::proto_util::block_commitment(
+            &models::rust::block_implicits::get_random_block_default(),
+        );
         ProcessedSystemDeploy::Succeeded {
             event_list: Vec::new(),
-            system_deploy: SystemDeployData::Slash {
-                invalid_block_hash: Bytes::from_static(b"invalid"),
-                issuer_public_key: crypto::rust::public_key::PublicKey::from_bytes(b"issuer"),
-                target_activation_epoch: 7,
-            },
+            system_deploy: SystemDeployData::create_slash(
+                models::rust::casper::protocol::casper_message::EquivocationEvidence {
+                    first: commitment.clone(),
+                    second: commitment,
+                },
+                crypto::rust::public_key::PublicKey::from_bytes(b"issuer"),
+            ),
         }
     }
 

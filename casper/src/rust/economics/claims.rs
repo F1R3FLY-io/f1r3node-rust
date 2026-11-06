@@ -169,18 +169,6 @@ impl<'a> VoteHistory<'a> {
         }
     }
 
-    /// The authors of `invalid_blocks`, which a block's slashes name.
-    pub fn slashed_by(
-        &self,
-        invalid_blocks: &[BlockHash],
-    ) -> Result<HashSet<Validator>, CasperError> {
-        Ok(
-            crate::rust::util::proto_util::slashed_block_senders(self.dag, invalid_blocks)?
-                .into_values()
-                .collect(),
-        )
-    }
-
     /// The vote `voter` cast on each of `claims` in `at` or in a block below
     /// it on `voter`'s own chain. A vote on another branch of an equivocating
     /// voter does not count. The chain is walked once for all the claims the
@@ -264,7 +252,7 @@ impl<'a> VoteHistory<'a> {
             if metadata.block_number <= lowest_opened {
                 break;
             }
-            if !metadata.invalid {
+            if !metadata.is_invalid() {
                 let block = self.blocks.get(&cursor)?.ok_or_else(|| {
                     CasperError::RuntimeError(format!(
                         "the body of block {} on a voter's chain is not held",

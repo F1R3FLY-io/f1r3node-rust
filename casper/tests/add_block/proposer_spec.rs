@@ -454,7 +454,7 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
                 weight_map: std::collections::BTreeMap::new(),
                 block_number: number,
                 sequence_number: number as i32,
-                invalid: false,
+                equivocates: None,
                 directly_finalized: finalized,
                 finalized,
                 fault_tolerance_value: 1.0,

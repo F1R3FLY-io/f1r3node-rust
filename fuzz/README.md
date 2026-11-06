@@ -29,38 +29,33 @@ ASAN_OPTIONS=detect_leaks=0 RUSTFLAGS="-C target-feature=+aes,+sse2" cargo fuzz 
 ASAN_OPTIONS=detect_leaks=0 RUSTFLAGS="-C target-feature=+aes,+sse2" cargo fuzz run slash_lifecycle_trace -- -max_len=4096
 ```
 
-`slashing_arithmetic` probes the sequence-number and epoch boundary
-helpers in `casper/src/rust/slashing_authorization.rs`
-(`checked_base_seq`, `checked_next_seq`, `epoch_for_block_number`)
-against the libFuzzer u64/i32/i64 input space. It asserts that the
-checked variants saturate to `None` on every overflow / underflow /
-divide-by-zero path — the kani proofs cover the same predicates over a
-bounded domain; this fuzzer extends the search over the unbounded
-domain in case kani's bound is too tight.
+`slashing_arithmetic` probes the sequence-number helpers in
+`casper/src/rust/slashing_authorization.rs` (`checked_base_seq`,
+`checked_next_seq`) against the libFuzzer u64/i32 input space. It asserts
+that they return `None` on every overflow and underflow path — the kani
+proofs cover the same predicates over a bounded domain; this fuzzer
+extends the search over the unbounded domain.
 
 `slash_deploy_roundtrip` is a proto idempotency check for the
-`SystemDeployData::Slash` payload only. It picks an arbitrary slash
-deploy, converts to proto, converts back, and asserts equality. The
-narrow surface lets the fuzzer find malformed-public-key, hash-length,
-and epoch-i64 edges that the broader `block_message_roundtrip` test
-would not isolate.
+`SystemDeployData::Slash` payload only: a slash whose evidence is two
+arbitrary block commitments converts to proto and back unchanged.
 
 `block_message_roundtrip` is a full `BlockMessage` proto idempotency
 check: `from_proto ∘ to_proto ∘ from_proto = from_proto`. It is the
 catch-all for proto field-encoding regressions across the entire block
 schema, not just the slashing subset.
 
-`slash_authorization_paths` builds synthetic `CasperSnapshot` DAG
-metadata, invalid-block indices, bond maps, and received SlashDeploy
-blocks. It checks that production candidate selection and received
-SlashDeploy validation agree with the independent scenario oracle for
-current epoch, evidence epoch, issuer, invalid-hash lookup, positive
-bond, and duplicate target-key behavior.
+`slash_authorization_paths` builds snapshots holding equivocations of
+really signed blocks, and blocks carrying fuzzed slashes. It checks that
+production candidate selection and received-slash validation agree with an
+independent oracle: issuer, shard and chain, one sender at one sequence
+number, two distinct blocks ordered by hash, valid signatures, positive
+stake, and one slash per offender.
 
-`equivocation_detector_paths` fuzzes the public detector boundary for
-creator justification, latest-message lookup, requested dependency status,
-and admissible-versus-ignorable classification.
+`equivocation_detector_paths` fuzzes the equivocation verdict: the sibling
+is the lowest-hash other block held at the sender's sequence number, and
+the verdict is admissible or ignorable by requested-dependency status.
 
 `slash_lifecycle_trace` fuzzes the production path from authorized candidate
-selection to received `SlashDeploy` validation and confirms that duplicate
-slash targets are rejected.
+selection to received `SlashDeploy` validation and confirms that a block
+slashing one offender twice is rejected.

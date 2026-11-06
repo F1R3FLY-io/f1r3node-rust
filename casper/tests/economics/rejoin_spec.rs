@@ -1346,28 +1346,28 @@ async fn a_validator_that_cannot_pay_requests_no_ejection() {
     admit_everywhere(&mut nodes, &offering).await;
 }
 
-/// Records `block` on `node` as an equivocation verdict leaves it, so the
-/// next block `node` proposes slashes its author.
-fn record_equivocation(node: &TestNode, block: &BlockMessage) {
+/// Holds `first` and its sibling `second` on `node` as an equivocation
+/// verdict leaves them, so the next block `node` proposes slashes their
+/// sender.
+fn record_equivocation(node: &TestNode, first: &BlockMessage, second: &BlockMessage) {
+    use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+    for block in [first, second] {
+        node.block_store
+            .put_block_message(block)
+            .expect("store evidence block");
+    }
+    if !node.casper.dag_contains(&first.block_hash) {
+        node.casper
+            .block_dag_storage
+            .insert(first, InsertMode::Normal)
+            .expect("hold the first block");
+    }
     node.casper
         .block_dag_storage
-        .insert(
-            block,
-            block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Invalid,
-        )
-        .expect("record invalid evidence");
-    let base_seq = casper::rust::slashing_authorization::checked_base_seq(block.seq_num)
-        .expect("evidence block has a positive sequence number");
-    node.casper
-        .block_dag_storage
-        .access_equivocations_tracker(|tracker| {
-            tracker.add(models::rust::equivocation_record::EquivocationRecord::new(
-                block.sender.clone(),
-                base_seq,
-                std::collections::BTreeSet::new(),
-            ))
+        .insert(second, InsertMode::Equivocation {
+            sibling: first.block_hash.clone(),
         })
-        .expect("record equivocation evidence");
+        .expect("hold the sibling as an equivocation");
 }
 
 /// A block that must slash an ejected validator in the block its grace expires
@@ -1394,33 +1394,32 @@ async fn a_block_slashing_an_ejected_validator_as_its_grace_ends_is_built_and_va
         .iter()
         .position(|node| identity(node) == due.sender)
         .expect("the proposer runs a node");
-    let mut equivocation = propose(&mut nodes[target], &[], &[]).await;
-    equivocation.seq_num += 47;
+    let first = propose(&mut nodes[target], &[], &[]).await;
+    let mut sibling = first.clone();
+    sibling.extra_bytes = prost::bytes::Bytes::from_static(b"sibling");
+    let sibling = nodes[target]
+        .validator_id_opt
+        .as_ref()
+        .expect("the target is a validator")
+        .sign_block(&sibling);
     for node in &nodes {
-        record_equivocation(node, &equivocation);
+        record_equivocation(node, &first, &sibling);
     }
 
     let slashing = propose(&mut nodes[proposer], &[], &[]).await;
-    let slashes: Vec<&prost::bytes::Bytes> = slashing
+    let offenders: Vec<&prost::bytes::Bytes> = slashing
         .body
         .system_deploys
         .iter()
         .filter_map(|deploy| match deploy {
             ProcessedSystemDeploy::Succeeded {
-                system_deploy:
-                    SystemDeployData::Slash {
-                        invalid_block_hash, ..
-                    },
+                system_deploy: SystemDeployData::Slash { evidence, .. },
                 ..
-            } => Some(invalid_block_hash),
+            } => Some(&evidence.first.sender),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        slashes,
-        vec![&equivocation.block_hash],
-        "the block slashes the target"
-    );
+    assert_eq!(offenders, vec![&target_key], "the block slashes the target");
     assert!(
         !matches!(resolutions_of(&slashing), Some(SystemDeployData::ResolveClaims { grace_expiries, .. })
             if grace_expiries.contains(&target_key)),

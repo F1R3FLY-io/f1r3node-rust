@@ -7,17 +7,14 @@
 //! this module while the trait method is a one-line delegate in
 //! `traits.rs`.
 
-use std::collections::BTreeSet;
-
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
 use comm::rust::transport::transport_layer::TransportLayer;
-use models::rust::block_hash::BlockHashSerde;
+use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -33,12 +30,8 @@ use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_BLOCK_SUMMARY_TIME_METRIC, BLOCK_VALIDATION_STEP_BONDS_CACHE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_CHECKPOINT_TIME_METRIC,
     BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
-    BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
     BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
-};
-use crate::rust::slashing_authorization::{
-    checked_base_seq, offenders_with_evidence_in_epoch_of, SlashAuthError,
 };
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
@@ -71,14 +64,24 @@ where
 /// if we suspected the proposer of being Byzantine against itself —
 /// which is precluded by the validator-identity check upstream).
 ///
-/// Returns the outcome of `check_equivocations`. A `Left` from any
-/// intermediate validator short-circuits and is returned directly.
+/// A `Left` from any validator short-circuits and is returned directly.
 async fn run_validation_steps<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     block: &BlockMessage,
     snapshot: &mut CasperSnapshot,
     skip_checkpoint_and_bonds: bool,
 ) -> Result<Either<BlockError, ValidBlock>, CasperError> {
+    // A block of another shard or chain is foreign: nothing else is judged of
+    // it, so it is never taken for an equivocation of a key it shares.
+    for verdict in [
+        Validate::shard_identifier(block, &this.casper_shard_conf.shard_name),
+        Validate::chain_identifier(block, &snapshot.chain_id),
+    ] {
+        if let Either::Left(error) = verdict {
+            return Ok(Either::Left(error));
+        }
+    }
+
     // Authorization comes before every other check: a sender without stake in
     // the block's main parent is rejected before the summary walk and replay.
     match Validate::block_sender_has_weight(block, &this.approved_block, &this.block_store) {
@@ -93,6 +96,28 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 CasperError::from(err),
             )));
         }
+    }
+
+    // A second signed block at a held sequence number is an equivocation
+    // whatever else is wrong with it, so it is judged before every check
+    // that could discard it.
+    let requested_as_dependency = this
+        .casper_buffer_storage
+        .requested_as_dependency(&BlockHashSerde(block.block_hash.clone()));
+    let (equivocation_result, t0) = timed_step(
+        "equivocation",
+        BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
+        async {
+            Ok::<_, CasperError>(EquivocationDetector::equivocation_verdict(
+                &snapshot.dag,
+                block,
+                requested_as_dependency,
+            ))
+        },
+    )
+    .await?;
+    if let Either::Left(block_error) = equivocation_result {
+        return Ok(Either::Left(block_error));
     }
 
     // The per-validate derivation slot: block_summary fills it at the first
@@ -197,11 +222,6 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         if let Either::Left(block_error) = validate_block_checkpoint_result {
             return Ok(Either::Left(block_error));
         }
-        // Right(None) → InvalidTransaction is safe and shares its dispatcher
-        // landing site with the BlockException arm at block_processor.rs:358 —
-        // both flow through dispatch_handle_invalid_block's is_slashable()
-        // catch-all, which mints an EquivocationRecord per T-9.3. See
-        // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.4.
         if let Either::Right(None) = validate_block_checkpoint_result {
             return Ok(Either::Left(BlockError::Invalid(
                 InvalidBlock::InvalidTransaction,
@@ -259,43 +279,17 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         .compute_bonds(&block.body.state.post_state_hash)
         .await?;
 
-    let (neglected_invalid_block_result, t4) = timed_step(
-        "neglected-invalid-block",
-        BLOCK_VALIDATION_STEP_NEGLECTED_INVALID_BLOCK_TIME_METRIC,
-        async {
-            Ok(Validate::neglected_invalid_block(
-                block,
-                snapshot,
-                &post_state_bonds,
-            ))
-        },
-    )
-    .await?;
-    tracing::debug!(target: "f1r3fly.casper", "neglected-invalid-block-validated");
-    if let Either::Left(block_error) = neglected_invalid_block_result {
-        return Ok(Either::Left(block_error));
-    }
-
     let (equivocation_detector_result, t5) = timed_step(
         "neglected-equivocation",
         BLOCK_VALIDATION_STEP_NEGLECTED_EQUIVOCATION_TIME_METRIC,
         async {
-            let slashable = offenders_with_evidence_in_epoch_of(
-                snapshot.dag.invalid_blocks(),
-                block.body.state.block_number,
-                snapshot.on_chain_state.chain.epoch_length,
-            )
-            .map_err(SlashAuthError::from)?;
-            EquivocationDetector::check_neglected_equivocations_with_update(
+            EquivocationDetector::check_neglected_equivocations(
                 block,
                 &snapshot.dag,
                 &this.block_store,
                 &this.approved_block,
-                &this.block_dag_storage,
                 &post_state_bonds,
-                &slashable,
             )
-            .await
             .map_err(CasperError::from)
         },
     )
@@ -328,37 +322,20 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         return Ok(Either::Left(block_error));
     }
 
-    let requested_as_dependency = this
-        .casper_buffer_storage
-        .requested_as_dependency(&BlockHashSerde(block.block_hash.clone()));
-
-    let (equivocation_result, t7) = timed_step(
-        "simple-equivocation",
-        BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC,
-        async {
-            EquivocationDetector::check_equivocations(requested_as_dependency, block, &snapshot.dag)
-                .await
-                .map_err(CasperError::from)
-        },
-    )
-    .await?;
-    tracing::debug!(target: "f1r3fly.casper", "equivocation-validated");
-
     let timing_breakdown = match (t2_opt, t3_opt) {
         (Some(t2), Some(t3)) => format!(
-            "summary={}, checkpoint={}, bonds={}, neglected-invalid={}, \
-             neglected-equiv={}, phlo={}, simple-equiv={}",
-            t1, t2, t3, t4, t5, t6, t7
+            "equiv={}, summary={}, checkpoint={}, bonds={}, neglected-equiv={}, phlo={}",
+            t0, t1, t2, t3, t5, t6
         ),
         _ => format!(
-            "summary={}, neglected-invalid={}, neglected-equiv={}, phlo={}, \
-             simple-equiv={} (checkpoint and bonds-cache skipped — self-created)",
-            t1, t4, t5, t6, t7
+            "equiv={}, summary={}, neglected-equiv={}, phlo={} \
+             (checkpoint and bonds-cache skipped — self-created)",
+            t0, t1, t5, t6
         ),
     };
     tracing::debug!(target: "f1r3fly.casper", "Validation timing breakdown: {}", timing_breakdown);
 
-    if let (Either::Right(ValidBlock::Valid), Some(ctx)) = (&equivocation_result, &floor_ctx) {
+    if let Some(ctx) = &floor_ctx {
         if let Err(error) = ctx.cache_for_block(&snapshot.dag, &block.block_hash) {
             tracing::warn!(
                 target: "f1r3fly.casper",
@@ -369,7 +346,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
         }
     }
 
-    Ok(equivocation_result)
+    Ok(Either::Right(ValidBlock::Valid))
 }
 
 /// Post-validation mergeable-channel-cache update. Shared between
@@ -536,8 +513,8 @@ pub(crate) async fn dispatch_validate_self_created<T: TransportLayer + Send + Sy
     // post-state of its own block. This dispatch is reached only from the
     // local proposer, never from the receiving path, so skipping
     // checkpoint+bonds here closes no security hole. Remaining validators
-    // (sender weight, block_summary, neglected-invalid,
-    // neglected-equivocation, phlo-price, simple-equivocation) all run.
+    // (sender weight, equivocation, block_summary, neglected-equivocation,
+    // phlo-price) all run.
     let start = std::time::Instant::now();
     let val_result = run_validation_steps(
         this, block, snapshot, /* skip_checkpoint_and_bonds */ true,
@@ -570,12 +547,14 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
     let handle_invalid_block_effect = |block_dag_storage: &BlockDagKeyValueStorage,
                                        casper_buffer_storage: &CasperBufferKeyValueStorage,
                                        status: &InvalidBlock,
-                                       block: &BlockMessage|
+                                       block: &BlockMessage,
+                                       sibling: BlockHash|
      -> Result<KeyValueDagRepresentation, CasperError> {
         tracing::warn!(
-            "Recording invalid block {} for {:?}.",
+            "Recording invalid block {} for {:?}, equivocating with {}.",
             PrettyPrinter::build_string_bytes(&block.block_hash),
-            status
+            status,
+            PrettyPrinter::build_string_bytes(&sibling)
         );
 
         // Bug #17 / T-9.20: in-process atomic transition of the
@@ -592,7 +571,7 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
             block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
                 block_dag_storage,
                 block,
-                InsertMode::Invalid,
+                InsertMode::Equivocation { sibling },
                 casper_buffer_storage,
                 block_storage::rust::dag::buffer_dag_transition::BufferTransition::RemoveFromBuffer(
                     block_hash_serde,
@@ -602,74 +581,21 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         Ok(updated_dag)
     };
 
-    // Atomic read-modify-write on the equivocation tracker. See
-    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
-    let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
-                           block: &BlockMessage|
-     -> Result<(), CasperError> {
-        // `checked_base_seq(block.seq_num)` returns `None` when
-        // `seq_num <= 0`. The seq_num == 0 case is the genesis block: the
-        // protocol disallows equivocation evidence against genesis (it has
-        // no predecessor seqNum to base the EquivocationRecord on), and
-        // any seq_num < 0 is a corrupted record that should not exist
-        // post-validation. Skipping is correct in both cases — genesis is
-        // special, and the negative case is already rejected upstream by
-        // `validate_received_slash_deploys::NegativeSequenceNumber`.
-        let Some(base_equivocation_block_seq_num) = checked_base_seq(block.seq_num) else {
-            return Ok(());
-        };
-        block_dag_storage.access_equivocations_tracker(|tracker| {
-            let equivocation_records = tracker.data()?;
-            let record_exists = equivocation_records.iter().any(|record| {
-                record.equivocator == block.sender
-                    && record.equivocation_base_block_seq_num == base_equivocation_block_seq_num
-            });
-            if !record_exists {
-                let new_equivocation_record = EquivocationRecord::new(
-                    block.sender.clone(),
-                    base_equivocation_block_seq_num,
-                    BTreeSet::new(),
-                );
-                tracker.add(new_equivocation_record)?;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    };
-
     match status {
-        InvalidBlock::AdmissibleEquivocation => {
-            record_evidence(&this.block_dag_storage, block)?;
+        InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => {
+            let sibling = EquivocationDetector::equivocation_of(dag, block).ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "equivocation verdict on {} but no sibling is held in the view it was \
+                     judged against",
+                    PrettyPrinter::build_string_bytes(&block.block_hash)
+                ))
+            })?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,
                 &this.casper_buffer_storage,
                 status,
                 block,
-            )
-        }
-
-        InvalidBlock::IgnorableEquivocation => {
-            // Record evidence and apply the standard invalid-block effect,
-            // mirroring AdmissibleEquivocation. See
-            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
-            record_evidence(&this.block_dag_storage, block)?;
-            handle_invalid_block_effect(
-                &this.block_dag_storage,
-                &this.casper_buffer_storage,
-                status,
-                block,
-            )
-        }
-
-        status if status.is_slashable() => {
-            // Every slashable status mints an EquivocationRecord. See
-            // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.3.
-            record_evidence(&this.block_dag_storage, block)?;
-            handle_invalid_block_effect(
-                &this.block_dag_storage,
-                &this.casper_buffer_storage,
-                status,
-                block,
+                sibling,
             )
         }
 

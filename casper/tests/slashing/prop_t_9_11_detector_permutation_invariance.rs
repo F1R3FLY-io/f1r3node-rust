@@ -44,7 +44,7 @@ proptest! {
     ])) {
         run_async(async move {
             let fixture = DetectorFixture::new().await;
-            fixture.add_record(0, 0, &[]);
+            fixture.add_equivocation(0, 0);
 
             let child_a = block(
                 10,

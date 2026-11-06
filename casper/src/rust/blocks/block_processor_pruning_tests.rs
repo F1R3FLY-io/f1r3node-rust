@@ -667,7 +667,6 @@ async fn overflow_prune_preserves_the_retry_quarantine() {
 
 #[tokio::test]
 async fn overflow_prune_keeps_a_child_released_before_the_prune_lock() {
-    use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
     use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 
@@ -686,9 +685,6 @@ async fn overflow_prune_keeps_a_child_released_before_the_prune_lock() {
         KeyValueTypedStoreImpl::new(kvm.store("invalid-blocks".to_string()).await.unwrap()),
         original_dag.floor_index_for_tests().clone(),
         original_dag.frontier_index_for_tests().clone(),
-        EquivocationTrackerStore::new(KeyValueTypedStoreImpl::new(
-            kvm.store("equivocation-tracker".to_string()).await.unwrap(),
-        )),
         Arc::new(AtomicU64::new(original_dag.current_generation())),
     );
     fixture.dependencies.block_dag_storage = dag.clone();

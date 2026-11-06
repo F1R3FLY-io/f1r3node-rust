@@ -1848,6 +1848,7 @@ async fn build_block_with_invalid_justification(
         timestamp: 0,
         version: 0,
         extra_bytes: Bytes::new(),
+        chain_id: signed_invalid_block.header.chain_id.clone(),
     };
 
     let block_hash = {

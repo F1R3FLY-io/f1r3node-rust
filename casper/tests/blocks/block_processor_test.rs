@@ -334,6 +334,7 @@ async fn block_processor_components_should_work_together() {
             timestamp: 0,
             version: 1,
             extra_bytes: prost::bytes::Bytes::new(),
+            chain_id: fixture.test_block.header.chain_id.clone(),
         },
         body: fixture.test_block.body.clone(), // Use same body as test block
         justifications: vec![],
@@ -405,7 +406,7 @@ async fn valid_block_effects_refuse_a_block_whose_parent_the_dag_cannot_resolve(
         fixture.block_store.clone(),
         fixture.dag.clone(),
     ));
-    let snapshot = CasperSnapshot::new(fixture.dag.clone());
+    let snapshot = CasperSnapshot::new(fixture.dag.clone(), prost::bytes::Bytes::new());
 
     let result = fixture
         .dependencies
