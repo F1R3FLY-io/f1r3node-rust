@@ -25,12 +25,11 @@ const RELEASE_FULL_SCAN_EVERY: u64 = 32;
 pub(crate) fn dependencies_are_ready(
     dependencies: &[BlockHash],
     dag_contains: impl Fn(&BlockHash) -> bool,
-    equivocations: &HashSet<BlockHash>,
     invalid_blocks: &HashSet<BlockHash>,
 ) -> bool {
-    dependencies.iter().all(|hash| {
-        dag_contains(hash) || equivocations.contains(hash) || invalid_blocks.contains(hash)
-    })
+    dependencies
+        .iter()
+        .all(|hash| dag_contains(hash) || invalid_blocks.contains(hash))
 }
 
 pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
@@ -46,18 +45,6 @@ pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + 
 fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<Vec<BlockMessage>, CasperError> {
-    let equivocation_hashes: HashSet<BlockHash> = this
-        .block_dag_storage
-        .access_equivocations_tracker(|tracker| {
-            let equivocation_records = tracker.data()?;
-            let hashes: HashSet<BlockHash> = equivocation_records
-                .iter()
-                .flat_map(|record| record.equivocation_detected_block_hashes.iter())
-                .cloned()
-                .collect();
-            Ok(hashes)
-        })?;
-
     let invalid_block_hashes: HashSet<BlockHash> = this
         .block_dag_storage
         .get_representation()?
@@ -109,7 +96,6 @@ fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
         let all_deps_available = dependencies_are_ready(
             &proto_util::dependencies_hashes_of(&block),
             |hash| admit_dag_contains(this, hash),
-            &equivocation_hashes,
             &invalid_block_hashes,
         );
         if all_deps_available {

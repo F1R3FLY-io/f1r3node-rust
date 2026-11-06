@@ -75,10 +75,9 @@ pub enum InvalidBlock {
     // AdmissibleEquivocation are blocks that would create an equivocation but are
     // pulled in through a justification of another block
     AdmissibleEquivocation,
-    // IgnorableEquivocation: an equivocating block we observe via someone
-    // else's justification but did not pull in as a dependency. Slashable —
-    // the dispatcher mints an EquivocationRecord so the proposer can issue a
-    // SlashDeploy. See docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.1.
+    // IgnorableEquivocation: an equivocating block that was not requested as a
+    // dependency. Slashable — the dispatcher stores it with its sibling, the
+    // pair a proposer slashes with.
     IgnorableEquivocation,
 
     InvalidFormat,
@@ -237,7 +236,7 @@ impl InvalidBlock {
         // verdict with that property: two signed blocks at the same seq are
         // proof wherever they are examined, in any order. Every other verdict
         // is judged against the receiver's own state — its invalid records,
-        // its equivocation tracker, its parents' replay, its admission order
+        // its parents' replay, its admission order
         // — so two honest nodes can disagree on it, and minting evidence
         // from it lets whoever shapes message delivery burn honest stake
         // (CI run 32588262605: JustificationRegression verdicts issued by
@@ -246,11 +245,8 @@ impl InvalidBlock {
         // weight). A demoted verdict still drops the block — invalidity is
         // untouched; only the economic layer narrows to provable faults.
         match self {
-            // IgnorableEquivocation is slashable per Bug #1 (§9.1). On
-            // dev this variant was a known DOS-vector TODO — equivocations
-            // observed via someone else's justification produced no on-chain
-            // evidence. The dispatcher (`engine::multi_parent_casper::handle_*`)
-            // mints an EquivocationRecord whenever this branch fires.
+            // The dispatcher stores a block with either verdict together
+            // with its sibling: the evidence a slash carries.
             InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => true,
 
             // Non-slashable variants — listed explicitly so the compiler

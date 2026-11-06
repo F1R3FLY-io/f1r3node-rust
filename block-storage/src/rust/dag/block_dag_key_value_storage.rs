@@ -8,14 +8,9 @@
 //!
 //! ## Slashing-protocol position
 //!
-//! The store is the **canonical home** of the equivocation tracker
-//! (`equivocation_tracker_index`). All RMW on the tracker MUST route
-//! through [`BlockDagKeyValueStorage::access_equivocations_tracker`] to
-//! preserve Bug #2 / T-9.2 atomicity — see
-//! [`crate::rust::dag::equivocations_access::EquivocationsAccess`] for
-//! the trait contract and
-//! `formal/rocq/slashing/theories/BugFixAtomicTracker.v` for the
-//! mechanized proof.
+//! An equivocation is stored as an invalid block whose metadata names its
+//! sibling (`InsertMode::Equivocation`); that pair is the evidence a slash
+//! carries.
 //!
 //! ## Lock discipline (P1-3 + P2-12)
 //!
@@ -34,7 +29,7 @@
 //
 // See block-storage/src/main/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorage.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -42,15 +37,7 @@ use models::rust::block_hash::{self, BlockHash, BlockHashSerde};
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-#[cfg(any(test, feature = "test-internals"))]
-use models::rust::equivocation_record::EquivocationRecord;
-use models::rust::equivocation_record::SequenceNumber;
 use models::rust::validator::{self, Validator, ValidatorSerde};
-// Slashing-critical RMW locks are routed through `parking_lot` (P1-3): no
-// poison propagation, faster acquire, and `.lock()` / `.read()` / `.write()`
-// return guards directly without a `Result`. Bug #2 / T-9.2's
-// `access_equivocations_tracker` RMW contract is preserved by holding
-// `global_lock` for the duration of the critical section.
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -65,7 +52,6 @@ use super::carrier_index::CarrierIndex;
 use super::deploy_lifecycle_types::{
     DeployLifecycleTables, LifecycleEvent, LifecycleEventKind, LifecycleEvents, TerminalRecord,
 };
-use super::equivocation_tracker_store::EquivocationTrackerStore;
 
 pub type DeployId = shared::rust::ByteString;
 
@@ -846,9 +832,7 @@ impl KeyValueDagRepresentation {
 /// through the `#[cfg(any(test, feature = "test-internals"))]`-gated
 /// constructor (`from_parts`) and the matching `metadata_index_for_tests`
 /// accessor — see further down this file.
-/// **Production code MUST NOT touch these fields directly.** All RMW on
-/// the equivocation tracker must route through
-/// `access_equivocations_tracker` (Bug #2 / T-9.2 contract). All
+/// **Production code MUST NOT touch these fields directly.** All
 /// read/write paths on the metadata / deploy / invalid blocks /
 /// latest-messages indices must take `global_lock`.
 ///
@@ -861,11 +845,8 @@ pub struct BlockDagKeyValueStorage {
     ///
     /// P2-12: an `RwLock<()>` rather than a `Mutex<()>` so pure-read paths
     /// (`get_representation`) can proceed concurrently with one another while
-    /// mutation paths (`insert`, `record_directly_finalized`,
-    /// `access_equivocations_tracker`) still take exclusive access. The Bug
-    /// #2 / T-9.2 RMW atomicity contract is preserved because every mutator
-    /// takes `.write()` — exclusive — and the `access_equivocations_tracker`
-    /// closure receives the equivocation index under an exclusive guard.
+    /// mutation paths (`insert`, `record_directly_finalized`) still take
+    /// exclusive access.
     pub(crate) global_lock: Arc<PlRwLock<()>>,
     pub(crate) latest_messages_index: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde>,
     pub(crate) block_metadata_index: Arc<PlRwLock<BlockMetadataStore>>,
@@ -874,9 +855,6 @@ pub struct BlockDagKeyValueStorage {
     pub(crate) floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
     /// Memoized per-block finalized frontier (see `KeyValueDagRepresentation::frontier_index`).
     pub(crate) frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
-    /// Equivocation tracker — RMW MUST route through
-    /// `access_equivocations_tracker` (Bug #2 / T-9.2).
-    pub(crate) equivocation_tracker_index: EquivocationTrackerStore,
     /// Deploy-lifecycle tables (see `KeyValueDagRepresentation::lifecycle`).
     pub(crate) lifecycle: Arc<PlRwLock<DeployLifecycleTables>>,
     /// Repeat-deploy carrier index (see `KeyValueDagRepresentation::carrier_index`).
@@ -986,13 +964,6 @@ impl BlockDagKeyValueStorage {
             KeyValueTypedStoreImpl::new(block_metadata_kv_store);
         let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
 
-        let equivocation_tracker_kv_store = kvm.store("equivocation-tracker".to_string()).await?;
-        let equivocation_tracker_db: KeyValueTypedStoreImpl<
-            (ValidatorSerde, SequenceNumber),
-            BTreeSet<BlockHashSerde>,
-        > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
-        let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
-
         let latest_messages_kv_store = kvm.store("latest-messages".to_string()).await?;
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store);
@@ -1027,7 +998,6 @@ impl BlockDagKeyValueStorage {
             invalid_blocks_index: invalid_blocks_db,
             floor_index: floor_index_db,
             frontier_index: frontier_index_db,
-            equivocation_tracker_index: equivocation_tracker_store,
             lifecycle: Arc::new(PlRwLock::new(lifecycle_tables)),
             carrier_index: Arc::new(PlRwLock::new(carrier_index_tables)),
             latest_messages_index: latest_messages_db,
@@ -1077,29 +1047,6 @@ impl BlockDagKeyValueStorage {
             .and_then(|blocks| blocks.iter().min().cloned()))
     }
 
-    // P2-16: the following two methods bypass `global_lock` — production
-    // code MUST route through `access_equivocations_tracker` to honor the
-    // Bug #2 / T-9.2 atomicity contract (see
-    // `docs/casper/theory/slashing/slashing-verification.md` §9.2 and
-    // `formal/rocq/slashing/theories/BugFixAtomicTracker.v`). They are
-    // gated behind `#[cfg(any(test, feature = "test-internals"))]` so the
-    // compiler hard-fails on any production caller — the prior
-    // `#[deprecated]` annotation was warning-only and could be silenced.
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn equivocation_records(&self) -> Result<HashSet<EquivocationRecord>, KvStoreError> {
-        self.equivocation_tracker_index.data()
-    }
-
-    #[cfg(any(test, feature = "test-internals"))]
-    #[doc(hidden)]
-    pub fn insert_equivocation_record(
-        &self,
-        record: EquivocationRecord,
-    ) -> Result<(), KvStoreError> {
-        self.equivocation_tracker_index.add(record)
-    }
-
     /// Phase 11 (visibility hardening): test fixtures used to build a
     /// `BlockDagKeyValueStorage` via struct-literal syntax against the
     /// `#[doc(hidden)] pub` indices. Now the indices are `pub(crate)`;
@@ -1116,7 +1063,6 @@ impl BlockDagKeyValueStorage {
         invalid_blocks_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata>,
         floor_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
         frontier_index: KeyValueTypedStoreImpl<BlockHashSerde, BlockHashSerde>,
-        equivocation_tracker_index: EquivocationTrackerStore,
         dag_generation: Arc<AtomicU64>,
     ) -> Self {
         Self {
@@ -1126,7 +1072,6 @@ impl BlockDagKeyValueStorage {
             invalid_blocks_index,
             floor_index,
             frontier_index,
-            equivocation_tracker_index,
             lifecycle: Arc::new(PlRwLock::new(DeployLifecycleTables::in_memory())),
             carrier_index: Arc::new(PlRwLock::new(CarrierIndex::in_memory())),
             dag_generation,
@@ -1200,6 +1145,19 @@ impl BlockDagKeyValueStorage {
         // readers do not serialize on each other. Mutators take `.write()`.
         let _lock_guard = self.global_lock.read();
         self.get_representation_internal()
+    }
+
+    /// Runs `f` on a representation with the global lock held shared, so no
+    /// block is inserted before `f` returns.
+    pub fn with_representation<R, E>(
+        &self,
+        f: impl FnOnce(&KeyValueDagRepresentation) -> Result<R, E>,
+    ) -> Result<R, E>
+    where
+        E: From<KvStoreError>,
+    {
+        let _lock_guard = self.global_lock.read();
+        f(&self.get_representation_internal()?)
     }
 
     /// Internal method to get representation without acquiring lock.
@@ -1317,11 +1275,9 @@ impl BlockDagKeyValueStorage {
         //     therefore cannot become parents, cannot enter the ancestor chain of
         //     any parent, and cannot influence the Estimator's fork-choice scoring
         //     or finalization depth.
-        //   - Slashing requires invalid blocks to BE in the LMM. The equivocation
-        //     detector reads `invalid_latest_messages` and feeds it to
-        //     `prepare_slashing_deploys`. Gating the LMM on `invalid` would leave
-        //     the slashing pipeline with nothing to act on — no slashes issued,
-        //     equivocators never punished.
+        //   - Blocks cite a stored equivocation through the LMM, which is how a
+        //     block's justifications come to show both blocks of a pair — the
+        //     condition under which it owes the slash.
         //   - `justification_follows` validation requires every bonded validator
         //     to appear in a new block's justifications. Without the LMM advancing
         //     on invalid blocks, validators whose latest is invalid would be
@@ -1559,31 +1515,6 @@ impl BlockDagKeyValueStorage {
         self.get_representation_internal()
     }
 
-    pub fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        // Exclusive access only, not a transaction: no concurrent reader or
-        // writer interleaves with the closure, but writes it makes before
-        // returning `Err` persist.
-        //
-        // SAFETY/CONTRACT (P2-13): non-reentrant. The closure `f` MUST NOT
-        // recursively call `access_equivocations_tracker`, nor any
-        // operation that acquires `global_lock` (e.g. `insert`,
-        // `record_directly_finalized`, `propagate_ft_to_finalized_blocks`,
-        // `get_representation`). Doing so deadlocks the
-        // `parking_lot::RwLock<()>` based implementation.
-        //
-        // The bound is `FnOnce` (more permissive than `Fn`, accepts
-        // strictly more closures); this aligns with the
-        // `EquivocationsAccess` trait at
-        // `crate::rust::dag::equivocations_access`. The trait impl for
-        // this type delegates to this method, so both surfaces
-        // (inherent + trait) share one implementation.
-        let _lock_guard = self.global_lock.write();
-        f(&self.equivocation_tracker_index)
-    }
-
     /** Record that some hash is directly finalized (detected by finalizer and becomes LFB). */
     pub async fn record_directly_finalized<F, Fut>(
         &self,
@@ -1771,25 +1702,7 @@ impl SoakCaptureAccess<'_> {
         &self.storage.frontier_index
     }
 
-    pub(crate) fn equivocations_index(&self) -> &EquivocationTrackerStore {
-        &self.storage.equivocation_tracker_index
-    }
-
     pub(crate) fn generation(&self) -> u64 { self.storage.current_generation() }
-}
-
-// EquivocationsAccess trait impl — delegates to the inherent method.
-// The inherent method remains the canonical implementation; the trait
-// gives callers a type-level dispatch contract for atomic-RMW access
-// to the equivocation tracker. See `equivocations_access.rs` for the
-// full design rationale (T-9.2 anchor, atomic-RMW contract).
-impl super::equivocations_access::EquivocationsAccess for BlockDagKeyValueStorage {
-    fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        BlockDagKeyValueStorage::access_equivocations_tracker(self, f)
-    }
 }
 
 /// A block the DAG does not hold, named so a caller can request it.

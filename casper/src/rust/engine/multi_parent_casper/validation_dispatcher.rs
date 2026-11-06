@@ -7,8 +7,6 @@
 //! this module while the trait method is a one-line delegate in
 //! `traits.rs`.
 
-use std::collections::BTreeSet;
-
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
@@ -17,7 +15,6 @@ use comm::rust::transport::transport_layer::TransportLayer;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::BlockMessage;
-use models::rust::equivocation_record::EquivocationRecord;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -36,7 +33,6 @@ use crate::rust::metrics_constants::{
     BLOCK_VALIDATION_STEP_PHLO_PRICE_TIME_METRIC,
     BLOCK_VALIDATION_STEP_SIMPLE_EQUIVOCATION_TIME_METRIC, CASPER_METRICS_SOURCE,
 };
-use crate::rust::slashing_authorization::checked_base_seq;
 use crate::rust::util::proto_util;
 use crate::rust::util::rholang::interpreter_util::validate_block_checkpoint;
 use crate::rust::validate::Validate;
@@ -541,41 +537,6 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
         Ok(updated_dag)
     };
 
-    // Atomic read-modify-write on the equivocation tracker. See
-    // docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.2.
-    let record_evidence = |block_dag_storage: &BlockDagKeyValueStorage,
-                           block: &BlockMessage|
-     -> Result<(), CasperError> {
-        // `checked_base_seq(block.seq_num)` returns `None` when
-        // `seq_num <= 0`. The seq_num == 0 case is the genesis block: the
-        // protocol disallows equivocation evidence against genesis (it has
-        // no predecessor seqNum to base the EquivocationRecord on), and
-        // any seq_num < 0 is a corrupted record that should not exist
-        // post-validation. Skipping is correct in both cases — genesis is
-        // special, and the negative case is already rejected upstream by
-        // `validate_received_slash_deploys::NegativeSequenceNumber`.
-        let Some(base_equivocation_block_seq_num) = checked_base_seq(block.seq_num) else {
-            return Ok(());
-        };
-        block_dag_storage.access_equivocations_tracker(|tracker| {
-            let equivocation_records = tracker.data()?;
-            let record_exists = equivocation_records.iter().any(|record| {
-                record.equivocator == block.sender
-                    && record.equivocation_base_block_seq_num == base_equivocation_block_seq_num
-            });
-            if !record_exists {
-                let new_equivocation_record = EquivocationRecord::new(
-                    block.sender.clone(),
-                    base_equivocation_block_seq_num,
-                    BTreeSet::new(),
-                );
-                tracker.add(new_equivocation_record)?;
-            }
-            Ok(())
-        })?;
-        Ok(())
-    };
-
     match status {
         InvalidBlock::AdmissibleEquivocation | InvalidBlock::IgnorableEquivocation => {
             let sibling = EquivocationDetector::equivocation_of(dag, block)?.ok_or_else(|| {
@@ -585,7 +546,6 @@ pub(crate) fn dispatch_handle_invalid_block<T: TransportLayer + Send + Sync>(
                     PrettyPrinter::build_string_bytes(&block.block_hash)
                 ))
             })?;
-            record_evidence(&this.block_dag_storage, block)?;
             handle_invalid_block_effect(
                 &this.block_dag_storage,
                 &this.casper_buffer_storage,

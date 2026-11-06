@@ -1,17 +1,16 @@
 // See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagStorageTest.scala
 // See block-storage/src/test/scala/coop/rchain/blockstorage/dag/BlockDagKeyValueStorageTest.scala
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits::{
-    block_element_gen, block_elements_with_parents_gen, block_hash_gen, block_with_new_hashes_gen,
-    get_random_block, get_random_block_default, validator_gen,
+    block_element_gen, block_elements_with_parents_gen, block_with_new_hashes_gen,
+    get_random_block, get_random_block_default,
 };
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::protocol::casper_message::{BlockMessage, Bond, Justification};
-use models::rust::equivocation_record::EquivocationRecord;
 use models::rust::validator::Validator;
 use once_cell::sync::Lazy;
 use proptest::prelude::ProptestConfig;
@@ -469,51 +468,6 @@ fn dag_storage_should_be_able_to_restore_after_squashing_latest_messages() {
             let result = lookup_elements(&block_elements, &dag_storage, None);
             test_lookup_elements_result(&result, &all_block_elements, &genesis);
         });
-    });
-}
-
-#[test]
-fn dag_storage_should_be_able_to_restore_equivocations_tracker_on_startup() {
-    let genesis = genesis_block();
-    proptest!(proptest_config(), |(block_elements in block_elements_with_parents_gen(genesis.clone(), 0, 10),
-      equivocator in validator_gen(), block_hash in block_hash_gen())| {
-        let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
-
-        for block_element in &block_elements {
-            dag_storage.insert(block_element, block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal).unwrap();
-        }
-
-        let equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash]));
-        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
-
-        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
-        assert_eq!(records, HashSet::from([equivocation_record]));
-
-        let result = lookup_elements(&block_elements, &dag_storage, None);
-        test_lookup_elements_result(&result, &block_elements, &genesis);
-
-    });
-}
-
-#[test]
-fn dag_storage_should_be_able_to_modify_equivocation_records() {
-    let genesis = genesis_block();
-    proptest!(proptest_config(), |(equivocator in validator_gen(), block_hash1 in block_hash_gen(),
-      block_hash2 in block_hash_gen())| {
-        let dag_storage = RUNTIME.block_on(create_dag_storage(&genesis));
-
-        let equivocation_record = EquivocationRecord::new(equivocator.clone(), 0, BTreeSet::from([block_hash1.clone()]));
-        dag_storage.access_equivocations_tracker(|tracker| tracker.add(equivocation_record.clone())).unwrap();
-
-        dag_storage.access_equivocations_tracker(|tracker| {
-            let mut updated = equivocation_record.clone();
-            updated.equivocation_detected_block_hashes.insert(block_hash2.clone());
-            tracker.add(updated)
-        }).unwrap();
-
-        let updated_equivocation_record = EquivocationRecord::new(equivocator, 0, BTreeSet::from([block_hash1, block_hash2]));
-        let records = dag_storage.access_equivocations_tracker(|tracker| tracker.data()).unwrap();
-        assert_eq!(records, HashSet::from([updated_equivocation_record]));
     });
 }
 

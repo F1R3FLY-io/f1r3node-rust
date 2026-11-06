@@ -11,7 +11,6 @@ use shared::rust::store::key_value_store::KvStoreError;
 use crate::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, InsertMode, KeyValueDagRepresentation,
 };
-use crate::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
 
 fn insert_mode(equivocates: Option<BlockHash>) -> InsertMode {
     match equivocates {
@@ -109,14 +108,6 @@ impl IndexedBlockDagStorage {
         Ok(())
     }
 
-    pub fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        // Use underlying's access_equivocations_tracker which has its own lock
-        self.underlying.access_equivocations_tracker(f)
-    }
-
     pub async fn record_directly_finalized<F, Fut>(
         &mut self,
         block_hash: BlockHash,
@@ -143,24 +134,9 @@ impl IndexedBlockDagStorage {
     }
 }
 
-// EquivocationsAccess trait impl — delegates to the inherent method
-// which itself delegates to the underlying BlockDagKeyValueStorage's
-// global_lock. See `crate::rust::dag::equivocations_access` for the
-// trait contract (T-9.2 anchor, atomic-RMW guarantee).
-impl crate::rust::dag::equivocations_access::EquivocationsAccess for IndexedBlockDagStorage {
-    fn access_equivocations_tracker<A>(
-        &self,
-        f: impl FnOnce(&EquivocationTrackerStore) -> Result<A, KvStoreError>,
-    ) -> Result<A, KvStoreError> {
-        IndexedBlockDagStorage::access_equivocations_tracker(self, f)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use models::rust::block_implicits::get_random_block;
-    use models::rust::equivocation_record::EquivocationRecord;
-    use models::rust::validator::Validator;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
@@ -274,24 +250,6 @@ mod tests {
         assert_eq!(storage.lookup_by_id(7).unwrap(), Some(injected.clone()));
         let dag = storage.get_representation().unwrap();
         assert!(dag.contains(&injected.block_hash));
-    }
-
-    #[tokio::test]
-    async fn equivocation_tracker_round_trips_through_the_indexed_wrapper() {
-        let storage = storage().await;
-        let record = EquivocationRecord::new(
-            Validator::from(vec![3u8; 65]),
-            0,
-            std::collections::BTreeSet::from([BlockHash::from(vec![0xAB; 32])]),
-        );
-
-        storage
-            .access_equivocations_tracker(|tracker| tracker.add(record.clone()))
-            .unwrap();
-        let records = storage
-            .access_equivocations_tracker(|tracker| tracker.data())
-            .unwrap();
-        assert_eq!(records, HashSet::from([record]));
     }
 
     #[tokio::test]
