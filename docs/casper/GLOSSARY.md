@@ -664,6 +664,25 @@ permits normal packaging after three blocks. **Status: implemented.**
 legality rule; this packaging policy is node-local discretion on top of it.
 *Avoid*: "retry deferral" without qualification.
 
+### UCC suite
+
+The UCC (User Contract Concurrency) suite is the integration test file
+`integration-tests/test/tests/custom/test_user_contract_concurrency.py` in
+system-integration. It checks that the multi-parent merge gives one
+deterministic result on every node when validators write the same user
+contract state concurrently, without PoS involvement. Its cases go from
+independent channels to same-key conflicts, guarded read-modify-writes,
+mergeable counters, and an overdraft that keeps the higher-cost transfer
+(see [Content ordering](#content-ordering)). Each case checks the value on
+every node at a common finalized block.
+
+**Preferred usage.** Use for the suite and for the CI jobs
+`Integration Tests (<arch>-<provider>, ucc)`, which run it on one pytest worker.
+*Distinguish from* the main integration suite, which deselects this file and
+runs on 16 workers.
+*Avoid*: "concurrency level", because the suite checks merge correctness and
+does not set or measure a concurrency level.
+
 [← Back to the Casper documentation map](./README.md)
 
 ### Protocol 7
