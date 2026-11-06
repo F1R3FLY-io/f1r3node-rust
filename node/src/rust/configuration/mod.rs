@@ -1173,13 +1173,13 @@ mod embedded_defaults_tests {
         let shipped = &cfg.casper.heartbeat_conf;
 
         assert!(shipped.enabled);
-        assert_eq!(shipped.check_interval, Duration::from_secs(5));
-        assert_eq!(shipped.max_lfb_age, Duration::from_secs(5));
+        assert_eq!(shipped.check_interval, Duration::from_secs(3));
+        assert_eq!(shipped.max_lfb_age, Duration::from_secs(3));
         assert_eq!(shipped.self_propose_cooldown, Duration::from_secs(3));
         assert_eq!(shipped.stale_recovery_min_interval, None);
         assert_eq!(
             shipped.resolved_stale_recovery_min_interval(),
-            Duration::from_millis(7_500)
+            Duration::from_millis(4_500)
         );
         assert_eq!(shipped.finality_progress_timeout, Duration::from_secs(30));
         assert_eq!(shipped.deploy_finalization_grace, Duration::from_secs(25));
@@ -1192,8 +1192,8 @@ mod embedded_defaults_tests {
             .load_str(
                 r#"
                 enabled = true
-                check-interval = 5 seconds
-                max-lfb-age = 5 seconds
+                check-interval = 3 seconds
+                max-lfb-age = 3 seconds
                 "#,
             )
             .expect("load sparse heartbeat conf")
