@@ -665,6 +665,27 @@ fn write_terminal(
     Ok(())
 }
 
+/// Settles with the adopted LFB as the basis, for rules stated relative to
+/// whatever basis they are given.
+#[cfg(test)]
+fn settle_at_lfb(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    deploy_lifespan: i64,
+    citability_horizon: Option<i64>,
+    memo: &mut LineageMemo,
+) -> Result<Settled, CasperError> {
+    let lfb = dag.last_finalized_block();
+    settle(
+        dag,
+        block_store,
+        &lfb,
+        deploy_lifespan,
+        citability_horizon,
+        memo,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use models::rust::block_implicits::get_random_block;
@@ -672,26 +693,6 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use super::*;
-
-    /// Settles with the adopted LFB as the basis, for rules stated relative
-    /// to whatever basis they are given.
-    fn settle_at_lfb(
-        dag: &KeyValueDagRepresentation,
-        block_store: &KeyValueBlockStore,
-        deploy_lifespan: i64,
-        citability_horizon: Option<i64>,
-        memo: &mut LineageMemo,
-    ) -> Result<Settled, CasperError> {
-        let lfb = dag.last_finalized_block();
-        settle(
-            dag,
-            block_store,
-            &lfb,
-            deploy_lifespan,
-            citability_horizon,
-            memo,
-        )
-    }
 
     fn block_at(height: i64, parents: Vec<BlockHash>, seq: i32) -> BlockMessage {
         get_random_block(
@@ -852,7 +853,7 @@ mod tests {
         // Another validator's claim: block b's FROZEN floor is b itself —
         // covering the deploy's carrier — while THIS node has adopted
         // nothing past genesis.
-        let ftt = crate::rust::safety::clique_oracle::FtThreshold::from_ppm(100_000);
+        let ftt = FtThreshold::from_ppm(100_000);
         let dag = dag_storage.get_representation().expect("dag");
         dag.put_cached_floor(b.block_hash.clone(), b.block_hash.clone())
             .expect("seed frozen floor");
@@ -1612,26 +1613,6 @@ mod settle_and_release_tests {
 
     use super::*;
 
-    /// Settles with the adopted LFB as the basis, for rules stated relative
-    /// to whatever basis they are given.
-    fn settle_at_lfb(
-        dag: &KeyValueDagRepresentation,
-        block_store: &KeyValueBlockStore,
-        deploy_lifespan: i64,
-        citability_horizon: Option<i64>,
-        memo: &mut LineageMemo,
-    ) -> Result<Settled, CasperError> {
-        let lfb = dag.last_finalized_block();
-        settle(
-            dag,
-            block_store,
-            &lfb,
-            deploy_lifespan,
-            citability_horizon,
-            memo,
-        )
-    }
-
     fn chain_block(number: i64, parent: Option<&BlockMessage>) -> BlockMessage {
         get_random_block(
             Some(number),
@@ -1701,7 +1682,7 @@ mod settle_and_release_tests {
             (&next, &merge),
             (&last, &next),
         ];
-        let ftt = crate::rust::safety::clique_oracle::FtThreshold::from_ppm(100_000);
+        let ftt = FtThreshold::from_ppm(100_000);
 
         let mut verdicts = Vec::new();
         for adopted in [&b, &last] {
@@ -1776,6 +1757,96 @@ mod settle_and_release_tests {
         assert_eq!(
             verdicts[0], verdicts[1],
             "node that adopted the merge-losing sibling vs node that adopted the merge"
+        );
+    }
+
+    /// A restored node's LFB can have a floor below the blocks it holds. The
+    /// basis is then not derivable and names the missing block; once the node
+    /// adopts an LFB whose floor it holds, the verdict lands.
+    #[tokio::test]
+    async fn a_floor_below_the_held_blocks_defers_the_basis_until_one_is_held() {
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy data");
+        let sig = deploy.sig.clone();
+
+        let genesis = chain_block(0, None);
+        let mut carrier = chain_block(1, Some(&genesis));
+        carrier.body.deploys =
+            vec![models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy)];
+        let anchor = chain_block(2, Some(&carrier));
+        let tip = chain_block(3, Some(&anchor));
+        let below_window = Bytes::from(vec![0xEE; 32]);
+        let ftt = FtThreshold::from_ppm(100_000);
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        for block in [&genesis, &carrier, &anchor, &tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&carrier, &anchor, &tip] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+        let dag = dag_storage.get_representation().expect("dag");
+        for (block, floor) in [
+            (&genesis, genesis.block_hash.clone()),
+            (&carrier, genesis.block_hash.clone()),
+            (&anchor, below_window.clone()),
+            (&tip, carrier.block_hash.clone()),
+        ] {
+            dag.put_cached_floor(block.block_hash.clone(), floor)
+                .expect("seed floor");
+        }
+
+        dag_storage
+            .record_directly_finalized(anchor.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt the anchor");
+        let dag = dag_storage.get_representation().expect("dag");
+        let err = verdict_basis(&dag, &block_store, ftt)
+            .await
+            .expect_err("an unheld floor yields no basis");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref missing, _) if *missing == below_window),
+            "the deferral must name the unheld floor; got {err}"
+        );
+
+        dag_storage
+            .record_directly_finalized(tip.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt the tip");
+        let dag = dag_storage.get_representation().expect("dag");
+        let basis = verdict_basis(&dag, &block_store, ftt)
+            .await
+            .expect("a held floor yields the basis");
+        assert_eq!(basis, carrier.block_hash);
+        let terminal = settle(
+            &dag,
+            &block_store,
+            &basis,
+            1,
+            Some(1),
+            &mut LineageMemo::default(),
+        )
+        .expect("settle")
+        .terminal;
+        assert_eq!(
+            terminal,
+            vec![sig],
+            "the verdict lands once the floor is held"
         );
     }
 

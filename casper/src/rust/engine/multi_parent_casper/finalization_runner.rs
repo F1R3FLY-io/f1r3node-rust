@@ -50,8 +50,8 @@
 //!
 //! Deploy-STORAGE release keys on the deploy-lifecycle register's
 //! write-once terminal verdicts, never on the finality marker itself: after
-//! each cycle, `settle_after_cycle` writes every verdict the persisted LFB
-//! decides and removes the pool copy of every terminal sig.
+//! each cycle, `settle_after_cycle` writes every verdict the floor of the
+//! persisted LFB decides and removes the pool copy of every terminal sig.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -402,19 +402,9 @@ async fn settle_after_cycle(
     memo: Arc<parking_lot::Mutex<LineageMemo>>,
     advanced: bool,
 ) {
-    let basis = match resolve_verdict_basis(&ctx).await {
-        Ok(basis) => Some(basis),
-        Err(e) => {
-            tracing::warn!(
-                target: "f1r3fly.casper.lifecycle",
-                error = %e,
-                "the adopted LFB's floor is not derivable yet; verdicts wait for the next cycle"
-            );
-            None
-        }
-    };
+    let basis = resolve_verdict_basis(&ctx).await;
     match tokio::task::spawn_blocking(move || {
-        settle_blocking(&ctx, basis.as_ref(), &mut memo.lock(), advanced)
+        settle_blocking(&ctx, basis, &mut memo.lock(), advanced)
     })
     .await
     {
@@ -432,16 +422,14 @@ async fn settle_after_cycle(
     }
 }
 
-async fn resolve_verdict_basis(
-    ctx: &FinalizationContext,
-) -> Result<models::rust::block_hash::BlockHash, CasperError> {
+async fn resolve_verdict_basis(ctx: &FinalizationContext) -> Result<BlockHash, CasperError> {
     let dag = ctx.block_dag_storage.get_representation()?;
     crate::rust::finality::deploy_lifecycle::verdict_basis(&dag, &ctx.block_store, ctx.ftt()).await
 }
 
 fn settle_blocking(
     ctx: &FinalizationContext,
-    basis: Option<&models::rust::block_hash::BlockHash>,
+    basis: Result<BlockHash, CasperError>,
     memo: &mut LineageMemo,
     advanced: bool,
 ) -> Result<(), CasperError> {
@@ -459,18 +447,27 @@ fn settle_blocking(
     let dag = ctx.block_dag_storage.get_representation()?;
     let settle_started = std::time::Instant::now();
     let settled = match basis {
-        Some(basis) => settle(
+        Ok(basis) => settle(
             &dag,
             &ctx.block_store,
-            basis,
+            &basis,
             ctx.shard_conf.deploy_lifespan,
             ctx.citability_horizon(),
             memo,
         ),
-        None => Ok(Settled {
-            terminal: Vec::new(),
-            walked: 0,
-        }),
+        Err(CasperError::BlockNotHeld(missing, _)) => {
+            tracing::warn!(
+                target: "f1r3fly.casper.lifecycle",
+                missing = %PrettyPrinter::build_string_bytes(&missing),
+                "the adopted LFB's floor is below the blocks this node holds; \
+                 verdicts wait until it is held"
+            );
+            Ok(Settled {
+                terminal: Vec::new(),
+                walked: 0,
+            })
+        }
+        Err(e) => Err(e),
     };
     let settle_ms = settle_started.elapsed().as_millis();
     if let Ok(settled) = &settled {

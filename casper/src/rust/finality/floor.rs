@@ -632,14 +632,14 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
                 derived_number = derived.block_number,
                 current = %PrettyPrinter::build_string_bytes(&current.hash),
                 settled = %PrettyPrinter::build_string_bytes(&settled.hash),
-                derived_descends_from_current = match dag
-                    .is_dag_ancestor(&current.hash, &derived.hash)
+                derived_descends_from_settled = match dag
+                    .is_dag_ancestor(&settled.hash, &derived.hash)
                 {
                     Ok(true) => "yes",
                     Ok(false) => "no",
                     Err(_) => "walk-failed",
                 },
-                "floor-of-view does not capture the current LFB; holding"
+                "floor-of-view does not contain the state of the LFB's floor; holding"
             );
             Ok(FloorOfView::ContainmentHold { derived })
         }
@@ -2446,18 +2446,20 @@ mod frontier_determinism_tests {
     /// An LFB whose own deploy a later merge dropped (the co-finalized
     /// sibling that lost the merge) is not the containment reference: its
     /// floor is, so a floor built on that merge still advances. Below a
-    /// restore window the floor is not held and the LFB stands in.
+    /// restore window the floor is not held, or held only as metadata outside
+    /// the DAG, and the LFB stands in.
     #[tokio::test]
     async fn containment_is_checked_against_the_lfbs_floor() {
         let v = val();
-        let (e, c, d, m, t) = (h(0), h(1), h(2), h(3), h(4));
+        let (e, c, d, m, t, w) = (h(0), h(1), h(2), h(3), h(4), h(5));
         let sig = Bytes::from_static(b"sibling_sig_dropped");
-        let dag = build_dag(vec![
+        let mut dag = build_dag(vec![
             md(e.clone(), vec![], 0, &v),
             md(c.clone(), vec![e.clone()], 1, &v),
             md(d.clone(), vec![e.clone()], 1, &v),
             based(md(m.clone(), vec![c.clone(), d.clone()], 2, &v), &e),
             md(t.clone(), vec![m.clone()], 3, &v),
+            md(w.clone(), vec![e.clone()], 1, &v),
         ]);
         let store = store_with(vec![
             body_block(&e, vec![], 0, vec![], None, vec![]),
@@ -2501,6 +2503,16 @@ mod frontier_determinism_tests {
         assert_eq!(
             restored.hash, d,
             "an unheld floor leaves the LFB as the reference"
+        );
+
+        dag.dag_set.remove(&w);
+        dag.put_cached_floor(m.clone(), w.clone()).unwrap();
+        let metadata_only = containment_reference(&NoopWork, &dag, &store, &at(&m, 2), thr)
+            .await
+            .unwrap();
+        assert_eq!(
+            metadata_only.hash, m,
+            "a floor held only as metadata outside the DAG leaves the LFB as the reference"
         );
     }
 
