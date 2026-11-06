@@ -31,7 +31,7 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 
 | Code | Meaning | Common `error` values |
 |------|---------|----------------------|
-| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`|
+| `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`, `invalid_deploy_window`|
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
 | `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
@@ -273,7 +273,7 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: read-only node, unbonded validator, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `400` | Malformed body or invalid field value, including an expired deploy or a validity height outside the admission window (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_deploy_window`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |

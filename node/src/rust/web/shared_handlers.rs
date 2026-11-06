@@ -255,6 +255,27 @@ fn classify_error(err: &eyre::Error) -> (StatusCode, &'static str, String) {
         if let Some(DeployError::DuplicateDeploy(_)) = cause.downcast_ref::<DeployError>() {
             return (StatusCode::CONFLICT, "duplicate_deploy", cause.to_string());
         }
+        if let Some(DeployError::InvalidFreshness) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::BAD_REQUEST,
+                "invalid_deploy_window",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::PoolBusy { .. }) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_pool_busy",
+                cause.to_string(),
+            );
+        }
+        if let Some(DeployError::AdmissionBusy) = cause.downcast_ref::<DeployError>() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "deploy_admission_busy",
+                cause.to_string(),
+            );
+        }
         if cause.downcast_ref::<DeployNotFoundError>().is_some() {
             return (StatusCode::NOT_FOUND, "deploy_not_found", cause.to_string());
         }
@@ -476,6 +497,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
         (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
+        (status = 503, description = "Deploy queue is full or admission state changed during retries (`deploy_pool_busy`, `deploy_admission_busy`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
         (status = 502, description = "Upstream or peer communication failure (`comm_error`, `external_service_error`)", body = ApiErrorResponse),
@@ -699,6 +721,7 @@ mod tests {
 
     mod classification {
         use axum::http::StatusCode;
+        use axum::response::IntoResponse;
         use casper::rust::api::block_api::{
             BlockNotFoundError, DeployNotFoundError, DeployValidationError,
             ExploratoryDeployReadOnlyError, InvalidHashError, InvalidPublicKeyError,
@@ -708,7 +731,7 @@ mod tests {
         use casper::rust::errors::CasperError;
         use rholang::rust::interpreter::errors::InterpreterError;
 
-        use super::super::classify_error;
+        use super::super::{classify_error, AppError};
 
         fn classify(err: impl std::error::Error + Send + Sync + 'static) -> (StatusCode, String) {
             let (status, kind, _message) = classify_error(&eyre::Report::new(err));
@@ -785,6 +808,47 @@ mod tests {
                 classify(err),
                 (StatusCode::CONFLICT, "duplicate_deploy".to_string())
             );
+        }
+
+        #[test]
+        fn invalid_deploy_window_is_a_client_error() {
+            assert_eq!(
+                classify(DeployError::InvalidFreshness),
+                (StatusCode::BAD_REQUEST, "invalid_deploy_window".to_string())
+            );
+        }
+
+        #[tokio::test]
+        async fn deploy_pool_busy_returns_a_retryable_json_error() {
+            let response = AppError(
+                DeployError::PoolBusy {
+                    pending_ahead: 24,
+                    capacity: 24,
+                }
+                .into(),
+            )
+            .into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_pool_busy");
+            assert!(body["message"].as_str().unwrap().contains("Retry later"));
+        }
+
+        #[tokio::test]
+        async fn deploy_admission_busy_returns_a_retryable_json_error() {
+            let response = AppError(DeployError::AdmissionBusy.into()).into_response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["error"], "deploy_admission_busy");
+            let message = body["message"].as_str().unwrap();
+            assert!(message.contains("Deploy was not accepted"));
+            assert!(message.contains("Retry later"));
         }
 
         #[test]

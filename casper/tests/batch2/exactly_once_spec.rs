@@ -520,7 +520,7 @@ async fn reinstated_effect_must_not_be_executed_again() {
     )
     .await
     .expect("create proposal B on the full frontier");
-    let BlockCreatorResult::Created(b_block, _pre, b_post) = created else {
+    let BlockCreatorResult::Created(b_block, _pre, b_post, _) = created else {
         panic!("create must mint a block on the full frontier; got a non-Created result");
     };
 
@@ -629,7 +629,7 @@ async fn floor_covered_effect_survives_a_late_record() {
         )
         .await
         .expect("create the joining merge J");
-        let BlockCreatorResult::Created(j_block, _pre, _post) = created else {
+        let BlockCreatorResult::Created(j_block, _pre, _post, _) = created else {
             panic!("create must mint the joining merge J on the full frontier");
         };
         j_block
@@ -754,7 +754,7 @@ async fn the_floor_never_designates_a_state_missing_the_settled_effect() {
         )
         .await
         .expect("create the joining merge");
-        let BlockCreatorResult::Created(j_block, _pre, _post) = created else {
+        let BlockCreatorResult::Created(j_block, _pre, _post, _) = created else {
             panic!("create must mint the joining merge on the full frontier");
         };
         j_block

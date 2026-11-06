@@ -1244,6 +1244,7 @@ impl TestNode {
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
+            deploy_admission: Arc::new(casper::rust::deploy_admission::DeployAdmission::default()),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),

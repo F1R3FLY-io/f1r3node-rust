@@ -69,6 +69,7 @@ pub struct MultiParentCasperImpl<T: TransportLayer + Send + Sync> {
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
     pub deploy_storage: Arc<KeyValueDeployStorage>,
+    pub deploy_admission: Arc<crate::rust::deploy_admission::DeployAdmission>,
     /// Persistence buffer for in-scope-but-rejected deploys, surfaced from
     /// dev (EPOCH-004). Held under `std::sync::Mutex` because all accesses
     /// happen synchronously inside the proposer (block_creator) and
