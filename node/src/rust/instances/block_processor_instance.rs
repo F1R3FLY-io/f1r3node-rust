@@ -620,11 +620,13 @@ mod tests {
             Ok(self.snapshot.clone())
         }
 
-        fn contains(&self, _hash: &BlockHash) -> bool { panic!("Unexpected contains call") }
+        fn contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> {
+            panic!("Unexpected contains call")
+        }
 
-        fn dag_contains(&self, hash: &BlockHash) -> bool {
+        fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
             self.processed.lock().unwrap().push(hash.clone());
-            true
+            Ok(true)
         }
 
         fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }

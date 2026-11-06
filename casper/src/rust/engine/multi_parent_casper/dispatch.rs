@@ -48,11 +48,11 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::snapshot::compute_snapshot(self).await
     }
 
-    fn contains(&self, hash: &BlockHash) -> bool {
+    fn contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         super::block_admission::admit_contains(self, hash)
     }
 
-    fn dag_contains(&self, hash: &BlockHash) -> bool {
+    fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         super::block_admission::admit_dag_contains(self, hash)
     }
 
@@ -60,7 +60,7 @@ impl<T: TransportLayer + Send + Sync> Casper for MultiParentCasperImpl<T> {
         super::block_admission::admit_buffer_contains(self, hash)
     }
 
-    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> bool {
+    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> Result<bool, CasperError> {
         super::block_admission::admit_buffer_waits_on_dependency(self, hash)
     }
 

@@ -197,6 +197,23 @@ impl CasperBufferKeyValueStorage {
 
     pub fn count_release_scan(&self) -> u64 { self.release_scans.fetch_add(1, Ordering::Relaxed) }
 
+    pub fn with_released<T, E>(
+        &self,
+        inspect: impl FnOnce(&[BlockHashSerde]) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let released = self.take_released();
+        match inspect(&released) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.released
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(released);
+                Err(error)
+            }
+        }
+    }
+
     pub fn cached_block_dependencies(&self, hash: &BlockHashSerde) -> Option<Arc<Vec<BlockHash>>> {
         self.block_dependencies
             .get(hash)
@@ -371,7 +388,7 @@ impl CasperBufferKeyValueStorage {
             stale_ttl_ms,
             max_prune_batch,
             prune_interval_ms,
-            |_| false,
+            |_| Ok(false),
         )?;
         Ok((stale.len(), overflow.len()))
     }
@@ -466,7 +483,7 @@ impl CasperBufferKeyValueStorage {
         is_ready: F,
     ) -> Result<(Vec<BlockHashSerde>, Vec<BlockHashSerde>), KvStoreError>
     where
-        F: Fn(&BlockHashSerde) -> bool,
+        F: Fn(&BlockHashSerde) -> Result<bool, KvStoreError>,
     {
         let _guard = self.write_guard();
         let now = Self::now_millis();
@@ -474,10 +491,25 @@ impl CasperBufferKeyValueStorage {
         if now.saturating_sub(last_prune) < prune_interval_ms {
             return Ok((Vec::new(), Vec::new()));
         }
-        self.last_prune_ms.store(now, Ordering::Relaxed);
-
         let mut roots = self.dependency_free_nodes_with_age_ms(now);
         roots.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let mut readiness = std::collections::HashMap::new();
+        for (root_age, root) in &roots {
+            if *root_age < stale_ttl_ms && self.block_count_unlocked() <= max_blocks {
+                continue;
+            }
+            let root_ready = is_ready(root)?;
+            readiness.insert(root.clone(), root_ready);
+            if root_ready {
+                continue;
+            }
+            for hash in self.subtree_postorder_unlocked(root.clone()) {
+                if !readiness.contains_key(&hash) {
+                    readiness.insert(hash.clone(), is_ready(&hash)?);
+                }
+            }
+        }
+        self.last_prune_ms.store(now, Ordering::Relaxed);
         let mut stale = Vec::new();
         let mut overflow = Vec::new();
         let mut tried = HashSet::new();
@@ -486,7 +518,7 @@ impl CasperBufferKeyValueStorage {
                 break;
             }
             let stale_root = root_age >= stale_ttl_ms;
-            if (!stale_root && self.block_count_unlocked() <= max_blocks) || is_ready(&root) {
+            if (!stale_root && self.block_count_unlocked() <= max_blocks) || readiness[&root] {
                 continue;
             }
             for hash in self.subtree_postorder_unlocked(root.clone()) {
@@ -495,7 +527,7 @@ impl CasperBufferKeyValueStorage {
                 {
                     break;
                 }
-                if !tried.insert(hash.clone()) || is_ready(&hash) {
+                if !tried.insert(hash.clone()) || readiness[&hash] {
                     continue;
                 }
                 let (parents, children) = {

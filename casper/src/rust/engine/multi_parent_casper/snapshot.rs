@@ -100,14 +100,15 @@ fn deploy_scope_cache_key_matches(
 }
 
 pub(crate) fn record_dag_cardinality_metrics(dag: &KeyValueDagRepresentation) {
+    let resident = dag.resident_counts();
     metrics::gauge!(DAG_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.dag_set.len() as f64);
+        .set(resident.blocks as f64);
     metrics::gauge!(DAG_CHILDREN_INDEX_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.child_map.len() as f64);
+        .set(resident.child_keys as f64);
     metrics::gauge!(DAG_HEIGHTS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.height_map.len() as f64);
+        .set(resident.heights as f64);
     metrics::gauge!(DAG_FINALIZED_BLOCKS_SIZE_METRIC, "source" => CASPER_METRICS_SOURCE)
-        .set(dag.finalized_blocks_set.len() as f64);
+        .set(dag.resident_counts().finalized as f64);
 }
 
 pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
@@ -512,7 +513,14 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     )
     .set(deploys_in_scope_sig_bytes_estimate);
 
-    let invalid_blocks = dag.invalid_blocks_map()?;
+    let mut invalid_blocks = HashMap::new();
+    for justification in &justifications {
+        if let Some(metadata) = dag.lookup(&justification.latest_block_hash)? {
+            if metadata.invalid {
+                invalid_blocks.insert(metadata.block_hash, metadata.sender);
+            }
+        }
+    }
     let last_finalized_block = dag.last_finalized_block();
     record_dag_cardinality_metrics(&dag);
 

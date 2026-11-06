@@ -449,8 +449,12 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
                 fault_tolerance_value: 1.0,
                 merge_base: prost::bytes::Bytes::new(),
             };
-            snapshot.dag.dag_set.insert(hash.clone());
-            snapshot.dag.block_number_map.insert(hash.clone(), number);
+            snapshot.dag.fixture_mut().dag_set.insert(hash.clone());
+            snapshot
+                .dag
+                .fixture_mut()
+                .block_number_map
+                .insert(hash.clone(), number);
             snapshot
                 .dag
                 .block_metadata_index
@@ -466,7 +470,11 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
             117_766,
             true,
         );
-        snapshot.dag.finalized_blocks_set.insert(lfb.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .insert(lfb.clone());
         snapshot.dag.last_finalized_block_hash = lfb.clone();
         snapshot.last_finalized_block = lfb;
 
@@ -478,6 +486,7 @@ async fn lag_past_the_height_threshold_still_mints_recovery() {
         );
         snapshot
             .dag
+            .fixture_mut()
             .latest_messages_map
             .insert(validator_id.clone(), own_latest);
 

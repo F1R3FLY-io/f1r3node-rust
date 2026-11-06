@@ -88,5 +88,5 @@ async fn a_racing_duplicate_must_not_destroy_dependency_recovery() {
         matches!(recovered, Either::Right(_)),
         "B must validate after recovery, got {recovered:?}"
     );
-    assert!(nodes[1].casper.dag_contains(&block_b.block_hash));
+    assert!(nodes[1].casper.dag_contains(&block_b.block_hash).unwrap());
 }

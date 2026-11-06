@@ -225,9 +225,9 @@ mod tests {
         assert_eq!(storage.lookup_by_id_unsafe(1), second.clone());
 
         let dag = storage.get_representation().unwrap();
-        assert!(dag.contains(&genesis.block_hash));
-        assert!(dag.contains(&first.block_hash));
-        assert!(dag.contains(&second.block_hash));
+        assert!(dag.contains(&genesis.block_hash).unwrap());
+        assert!(dag.contains(&first.block_hash).unwrap());
+        assert!(dag.contains(&second.block_hash).unwrap());
     }
 
     #[tokio::test]
@@ -263,6 +263,7 @@ mod tests {
         let dag = storage.get_representation().unwrap();
         assert!(dag
             .invalid_blocks()
+            .unwrap()
             .iter()
             .any(|meta| meta.block_hash == inserted.block_hash));
     }
@@ -278,7 +279,7 @@ mod tests {
 
         assert_eq!(storage.lookup_by_id(7).unwrap(), Some(injected.clone()));
         let dag = storage.get_representation().unwrap();
-        assert!(dag.contains(&injected.block_hash));
+        assert!(dag.contains(&injected.block_hash).unwrap());
     }
 
     #[tokio::test]
@@ -316,7 +317,7 @@ mod tests {
 
         let dag = storage.get_representation().unwrap();
         assert_eq!(dag.last_finalized_block(), b2.block_hash);
-        assert!(dag.is_finalized(&b1.block_hash));
-        assert!(dag.is_finalized(&b2.block_hash));
+        assert!(dag.is_finalized(&b1.block_hash).unwrap());
+        assert!(dag.is_finalized(&b2.block_hash).unwrap());
     }
 }

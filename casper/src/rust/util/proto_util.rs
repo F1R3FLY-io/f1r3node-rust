@@ -14,7 +14,7 @@ use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
@@ -342,7 +342,7 @@ where
             if visited.contains(&parent) {
                 continue;
             }
-            match dag.block_number(&parent) {
+            match dag.block_number(&parent)? {
                 Some(number) if number < block_number => {}
                 Some(_) => match dag.lookup(&parent).map_err(CasperError::from)? {
                     Some(meta) => {
@@ -386,6 +386,28 @@ pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploy
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()
+}
+
+pub fn replay_slashed_block_senders(
+    dag: &KeyValueDagRepresentation,
+    block: &BlockMessage,
+) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
+    let hashes: Vec<BlockHash> = block
+        .body
+        .system_deploys
+        .iter()
+        .filter_map(|deploy| match deploy {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash, ..
+                    },
+                ..
+            } => Some(invalid_block_hash.clone()),
+            _ => None,
+        })
+        .collect();
+    slashed_block_senders(dag, &hashes)
 }
 
 pub fn post_state_hash(block: &BlockMessage) -> prost::bytes::Bytes {
@@ -931,21 +953,17 @@ fn get_creator_blocks_between(
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
     match bottom_block {
         Some(bottom_block) => {
-            // Use the bf_traverse function from dag_ops for breadth-first traversal
-            let neighbor_fn = |block: &BlockMetadata| -> Vec<BlockMetadata> {
-                get_creator_justification_unless_goal(dag, block, bottom_block).unwrap_or_default()
-            };
-
-            // Start traversal from top_block
-            let traversal_result =
-                shared::rust::dag::dag_ops::bf_traverse(vec![top_block.clone()], neighbor_fn);
-
-            // Collect all block hashes into a HashSet
-            let blocks_set: HashSet<BlockHash> = traversal_result
-                .into_iter()
-                .map(|block| block.block_hash.clone())
-                .collect();
-
+            let mut blocks_set = HashSet::new();
+            let mut pending = vec![top_block.clone()];
+            while let Some(block) = pending.pop() {
+                if blocks_set.insert(block.block_hash.clone()) {
+                    pending.extend(get_creator_justification_unless_goal(
+                        dag,
+                        &block,
+                        bottom_block,
+                    )?);
+                }
+            }
             Ok(blocks_set)
         }
 
@@ -962,8 +980,8 @@ fn get_creator_justification_unless_goal(
         Some(Justification {
             validator: _,
             latest_block_hash,
-        }) => match dag.lookup(&latest_block_hash) {
-            Ok(Some(creator_justification)) => {
+        }) => match dag.lookup(&latest_block_hash)? {
+            Some(creator_justification) => {
                 if creator_justification == *goal {
                     Ok(vec![])
                 } else {
@@ -971,7 +989,7 @@ fn get_creator_justification_unless_goal(
                 }
             }
 
-            _ => Err(KvStoreError::KeyNotFound(format!(
+            None => Err(KvStoreError::KeyNotFound(format!(
                 "BlockDAG is missing justification {} for {}",
                 PrettyPrinter::build_string_bytes(&latest_block_hash),
                 PrettyPrinter::build_string_bytes(&block.block_hash)
@@ -1054,7 +1072,10 @@ mod fork_choice_b1_repro_tests {
         for b in blocks {
             assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -1076,6 +1097,44 @@ mod fork_choice_b1_repro_tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
+    }
+
+    #[test]
+    fn creator_history_read_failure_does_not_return_a_partial_interval() {
+        let validator = h(9);
+        let bottom = md(h(1), vec![], 0, &validator);
+        let mut middle = md(h(2), vec![bottom.block_hash.clone()], 1, &validator);
+        middle.justifications.push(Justification {
+            validator: validator.clone(),
+            latest_block_hash: bottom.block_hash.clone(),
+        });
+        let mut top = md(h(3), vec![middle.block_hash.clone()], 2, &validator);
+        top.justifications.push(Justification {
+            validator,
+            latest_block_hash: middle.block_hash.clone(),
+        });
+        let dag = dag_with(vec![bottom.clone(), middle.clone(), top.clone()]);
+        let expected = HashSet::from([top.block_hash.clone(), middle.block_hash.clone()]);
+        assert_eq!(
+            get_creator_blocks_between(&dag, &top, Some(&bottom)).unwrap(),
+            expected
+        );
+        dag.block_metadata_index
+            .read()
+            .delete_kv_row_for_tests(&middle.block_hash)
+            .unwrap();
+        assert!(
+            matches!(get_creator_blocks_between(&dag, &top, Some(&bottom)), Err(KvStoreError::KeyNotFound(message)) if message.contains("published block metadata missing"))
+        );
+        dag.block_metadata_index
+            .read()
+            .restore_kv_row_for_tests(middle)
+            .unwrap();
+        assert_eq!(
+            get_creator_blocks_between(&dag, &top, Some(&bottom)).unwrap(),
+            expected
+        );
     }
 
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
@@ -1232,7 +1291,7 @@ mod fork_choice_b1_repro_tests {
         for b in invalid {
             inv.insert(b);
         }
-        dag.invalid_blocks_set = inv;
+        *dag.fixture_mut().invalid_blocks_set = inv;
         dag
     }
 

@@ -420,17 +420,18 @@ impl Estimator {
             scores: &HashMap<BlockHash, i64>,
         ) -> Result<Vec<BlockHash>, KvStoreError> {
             meter.lookup()?;
-            match block_dag.children(block) {
+            match block_dag.children(block)? {
                 Some(children_set) => {
                     meter.charge(WorkKind::Traversal, children_set.len() as u64, 0)?;
-                    Ok(children_set
-                        .iter()
-                        .filter(|child| {
-                            scores.contains_key(*child)
-                                && block_dag.main_parent(child).as_ref() == Some(block)
-                        })
-                        .cloned()
-                        .collect())
+                    let mut children = Vec::new();
+                    for child in children_set {
+                        if scores.contains_key(&child)
+                            && block_dag.main_parent(&child)?.as_ref() == Some(block)
+                        {
+                            children.push(child);
+                        }
+                    }
+                    Ok(children)
                 }
                 None => Ok(Vec::new()),
             }

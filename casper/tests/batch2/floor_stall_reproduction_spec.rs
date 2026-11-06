@@ -279,7 +279,7 @@ async fn a_stale_based_merge_keeps_its_main_parents_settled_content() {
     // every node.
     for b in [&m, &a, &t] {
         for i in [0usize, 1usize] {
-            if !nodes[i].casper.dag_contains(&b.block_hash) {
+            if !nodes[i].casper.dag_contains(&b.block_hash).unwrap() {
                 nodes[i]
                     .process_block((*b).clone())
                     .await

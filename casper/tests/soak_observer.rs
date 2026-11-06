@@ -45,7 +45,7 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 13] = [
+const STORES: [&str; 20] = [
     "block-metadata",
     "equivocation-tracker",
     "latest-messages",
@@ -59,6 +59,13 @@ const STORES: [&str; 13] = [
     "genesis-hash",
     "blocks",
     "blocks-approved",
+    "dag-membership-v1",
+    "dag-height-v1",
+    "dag-children-v1",
+    "dag-history-state-v1",
+    "dag-gc-retry-v1",
+    "dag-gc-work-v1",
+    "dag-gc-visited-v1",
 ];
 
 struct Fixture {
@@ -67,6 +74,63 @@ struct Fixture {
     chain: Vec<BlockMessage>,
     handles: Vec<Arc<dyn KeyValueStore>>,
     _directory: tempfile::TempDir,
+}
+
+#[tokio::test]
+async fn detached_capture_and_replay_include_evicted_metadata() {
+    let full = Fixture::new().await;
+    let cold = Fixture::from_chain_window(full.chain.clone(), &[], 1).await;
+    for fixture in [&full, &cold] {
+        fixture
+            .dag
+            .record_directly_finalized(
+                fixture.chain.last().unwrap().block_hash.clone(),
+                1.0,
+                |_| async { Ok(()) },
+            )
+            .await
+            .unwrap();
+    }
+    let live = cold.dag.get_representation().unwrap();
+    assert!(live.resident_counts().blocks < cold.chain.len());
+    let (full_snapshot, _) = display_capture(&full);
+    let (cold_snapshot, _) = display_capture(&cold);
+    assert_eq!(cold_snapshot.coverage.held_blocks, cold.chain.len());
+    assert!(cold_snapshot.coverage.complete_held_dag);
+    assert_eq!(cold_snapshot.dag_set, full_snapshot.dag_set);
+    assert_eq!(cold_snapshot.child_map, full_snapshot.child_map);
+    assert_eq!(cold_snapshot.height_map, full_snapshot.height_map);
+    assert_eq!(
+        cold_snapshot.block_number_map,
+        full_snapshot.block_number_map
+    );
+    assert_eq!(cold_snapshot.main_parent_map, full_snapshot.main_parent_map);
+    assert_eq!(
+        cold_snapshot.self_justification_map,
+        full_snapshot.self_justification_map
+    );
+    let scratch = cold_snapshot.scratch_view().unwrap();
+    let mut fixture = live.detached_fixture().unwrap().build();
+    for block in &cold.chain {
+        assert_eq!(
+            scratch.representation.lookup(&block.block_hash).unwrap(),
+            live.lookup(&block.block_hash).unwrap()
+        );
+        assert_eq!(
+            scratch.representation.children(&block.block_hash).unwrap(),
+            live.children(&block.block_hash).unwrap()
+        );
+        assert_eq!(
+            fixture.lookup(&block.block_hash).unwrap(),
+            live.lookup(&block.block_hash).unwrap()
+        );
+    }
+    fixture
+        .fixture_mut()
+        .dag_set
+        .remove(&cold.chain[0].block_hash);
+    assert!(live.contains(&cold.chain[0].block_hash).unwrap());
+    assert!(!fixture.contains(&cold.chain[0].block_hash).unwrap());
 }
 
 impl Fixture {
@@ -113,6 +177,14 @@ impl Fixture {
     }
 
     async fn from_chain_marking(chain: Vec<BlockMessage>, invalid: &[BlockHash]) -> Self {
+        Self::from_chain_window(chain, invalid, 1024).await
+    }
+
+    async fn from_chain_window(
+        chain: Vec<BlockMessage>,
+        invalid: &[BlockHash],
+        window: i64,
+    ) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let mapping = STORES
             .iter()
@@ -130,7 +202,9 @@ impl Fixture {
             })
             .collect();
         let mut manager = LmdbDirStoreManager::new(directory.path().to_path_buf(), mapping);
-        let dag = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
+        let dag = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, window)
+            .await
+            .unwrap();
         let blocks = KeyValueBlockStore::create_from_kvm(&mut manager)
             .await
             .unwrap();
@@ -281,8 +355,12 @@ impl Casper for AttachedCasper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         panic!("observer invoked the production snapshot")
     }
-    fn contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
-    fn dag_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
+    fn contains(&self, _: &BlockHash) -> Result<bool, CasperError> {
+        panic!("observer invoked consensus")
+    }
+    fn dag_contains(&self, _: &BlockHash) -> Result<bool, CasperError> {
+        panic!("observer invoked consensus")
+    }
     fn buffer_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         panic!("observer invoked consensus")
@@ -1935,6 +2013,7 @@ async fn reference_detects_wrong_threshold_traversal_and_clique_controls() {
         .unwrap());
     scratch
         .representation
+        .fixture_mut()
         .main_parent_map
         .insert(latest_b.clone(), target.clone());
     let wrong_traversal = CliqueOracle::ft_witnessed_exact(

@@ -150,10 +150,10 @@ fn apply_floor_cache_entries(
 ) -> Result<usize, CasperError> {
     let mut written = 0usize;
     for entry in entries {
-        if !solicited.contains(&entry.block_hash) || !dag.contains(&entry.block_hash) {
+        if !solicited.contains(&entry.block_hash) || !dag.contains(&entry.block_hash)? {
             continue;
         }
-        if !dag.contains(&entry.floor_hash) || !dag.contains(&entry.frontier_hash) {
+        if !dag.contains(&entry.floor_hash)? || !dag.contains(&entry.frontier_hash)? {
             tracing::debug!(
                 block = %PrettyPrinter::build_string_bytes(&entry.block_hash),
                 floor = %PrettyPrinter::build_string_bytes(&entry.floor_hash),
@@ -1012,6 +1012,19 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Now populate DAG with the final state (equivalent to evalMap in Scala)
         if let Some(st) = final_state_result {
+            let anchor_height = proto_util::block_number(&approved_block.candidate.block);
+            let restored_min = st
+                .height_map
+                .keys()
+                .next()
+                .copied()
+                .unwrap_or(anchor_height);
+            let restored_max = st
+                .height_map
+                .keys()
+                .next_back()
+                .copied()
+                .unwrap_or(anchor_height);
             self.populate_dag(
                 approved_block.candidate.block.clone(),
                 st.lower_bound,
@@ -1022,7 +1035,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
-            self.request_floor_cache(approved_block).await;
+            self.request_floor_cache(approved_block, restored_min, restored_max)
+                .await?;
             establish_chain_identity(&self.block_dag_storage, &self.rp_conf_ask.chain_id)?;
         } else {
             tracing::warn!(
@@ -1189,13 +1203,17 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// makes the recursion terminate inside the window at any chain height,
     /// for O(window) bytes.
     ///
-    /// Failure degrades to that crawl — alive and alarmed, never a wedge — so
-    /// this never fails the restore. The genesis hash that the response also
+    /// The genesis hash that the response also
     /// carries is different: `require_genesis_hash` fails the restore without
     /// it, because it is this node's chain identity. So the request waits for
     /// a slow or briefly unreachable bootstrap for up to five minutes, which is
     /// far cheaper than the full restore that a failure starts again.
-    pub async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
+    pub async fn request_floor_cache(
+        &self,
+        approved_block: &ApprovedBlock,
+        restored_min: i64,
+        restored_max: i64,
+    ) -> Result<(), CasperError> {
         const ATTEMPTS: u32 = 30;
         const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -1203,107 +1221,119 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // derivation terminates locally — the same discriminator guard_deferral
         // and the settled door use. Nothing to ask for.
         if proto_util::block_number(&approved_block.candidate.block) == 0 {
-            return;
+            return Ok(());
         }
 
-        let result: Result<(), CasperError> = async {
+        let result: Result<bool, CasperError> = async {
             let dag = self.block_dag_storage.get_representation()?;
-            let hashes: Vec<BlockHash> = dag.dag_set.iter().cloned().collect();
-            let solicited: HashSet<BlockHash> = hashes.iter().cloned().collect();
-            let mut rx = self.floor_cache_rx.lock().unwrap().take().ok_or_else(|| {
-                CasperError::RuntimeError("floor-cache receiver not available".to_string())
-            })?;
-
-            let request = models::rust::casper::protocol::casper_message::FloorCacheRequest {
-                hashes: hashes.clone(),
+            let Some(mut rx) = self.floor_cache_rx.lock().unwrap().take() else {
+                tracing::warn!("floor-cache receiver not available");
+                return Ok(false);
             };
-            for attempt in 1..=ATTEMPTS {
-                if let Err(e) = self
-                    .transport_layer
-                    .send_to_bootstrap(&self.rp_conf_ask, Arc::new(request.clone().to_proto()))
-                    .await
-                {
-                    tracing::warn!(attempt, error = %e, "floor-cache request failed; retrying");
-                    sleep(RESPONSE_TIMEOUT).await;
-                    continue;
-                }
-                match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
-                    Ok(Some(response)) => {
-                        // This node may already hold an identity, for example one
-                        // adopted from the bootstrap. A different shipped hash cannot
-                        // agree with it, and the record is write-once, so such a
-                        // hash is not recorded.
-                        if let Some(adopted) = self.rp_conf_ask.chain_id.get() {
-                            if !response.genesis_hash.is_empty()
-                                && response.genesis_hash != *adopted
-                            {
-                                tracing::warn!(
-                                    attempt,
-                                    shipped = %PrettyPrinter::build_string_bytes(&response.genesis_hash),
-                                    adopted = %PrettyPrinter::build_string_bytes(adopted),
-                                    "floor-cache response names a genesis hash other than this \
-                                     node's chain identity; ignoring it"
+            let mut after = None;
+            loop {
+                let page = dag.scan_height_range(restored_min, restored_max, false, after.as_deref(), 1024)?;
+                let hashes = page.rows;
+                let solicited: HashSet<BlockHash> = hashes.iter().cloned().collect();
+                if !hashes.is_empty() {
+                    let mut received = false;
+                    let request = models::rust::casper::protocol::casper_message::FloorCacheRequest {
+                        hashes: hashes.clone(),
+                    };
+                    for attempt in 1..=ATTEMPTS {
+                        if let Err(e) = self
+                            .transport_layer
+                            .send_to_bootstrap(&self.rp_conf_ask, Arc::new(request.clone().to_proto()))
+                            .await
+                        {
+                            tracing::warn!(attempt, error = %e, "floor-cache request failed; retrying");
+                            sleep(RESPONSE_TIMEOUT).await;
+                            continue;
+                        }
+                        match tokio::time::timeout(RESPONSE_TIMEOUT, rx.recv()).await {
+                            Ok(Some(response)) => {
+                                if !response.entries.is_empty()
+                                    && !response.entries.iter().any(|entry| solicited.contains(&entry.block_hash))
+                                {
+                                    continue;
+                                }
+                                // This node may already hold an identity, for example one
+                                // adopted from the bootstrap. A different shipped hash cannot
+                                // agree with it, and the record is write-once, so such a
+                                // hash is not recorded.
+                                if let Some(adopted) = self.rp_conf_ask.chain_id.get() {
+                                    if !response.genesis_hash.is_empty()
+                                        && response.genesis_hash != *adopted
+                                    {
+                                        tracing::warn!(
+                                            attempt,
+                                            shipped = %PrettyPrinter::build_string_bytes(&response.genesis_hash),
+                                            adopted = %PrettyPrinter::build_string_bytes(adopted),
+                                            "floor-cache response names a genesis hash other than this \
+                                             node's chain identity; ignoring it"
+                                        );
+                                        continue;
+                                    }
+                                }
+                                // The genesis hash rides the same trusted exchange:
+                                // a truncated node holds no height-0 block, and the
+                                // newly-bonded latest-message placeholder must be
+                                // this network-uniform value on every node. The block
+                                // body lands too (verified against the hash) so this
+                                // node's latest-message structures stay identical to
+                                // a ceremony node's.
+                                if !response.genesis_hash.is_empty() {
+                                    self.block_dag_storage
+                                        .record_genesis_hash(response.genesis_hash.clone())?;
+                                }
+                                let genesis_landed = match response.genesis_block {
+                                    Some(block) if !response.genesis_hash.is_empty() => {
+                                        receive_shipped_genesis(
+                                            &self.block_dag_storage,
+                                            &self.block_store,
+                                            &response.genesis_hash,
+                                            block,
+                                        )?
+                                    }
+                                    _ => false,
+                                };
+                                let written =
+                                    apply_floor_cache_entries(&dag, &solicited, response.entries)?;
+                                tracing::info!(
+                                    written,
+                                    requested = hashes.len(),
+                                    genesis_learned = !response.genesis_hash.is_empty(),
+                                    genesis_landed,
+                                    "Floor cache received: restored blocks carry their finality"
                                 );
-                                continue;
+                                received = true;
+                                break;
+                            }
+                            Ok(None) => {
+                                tracing::warn!("floor-cache channel closed");
+                                return Ok(false);
+                            }
+                            Err(_) => {
+                                tracing::warn!(attempt, "floor-cache request timed out; retrying");
                             }
                         }
-                        // The genesis hash rides the same trusted exchange:
-                        // a truncated node holds no height-0 block, and the
-                        // newly-bonded latest-message placeholder must be
-                        // this network-uniform value on every node. The block
-                        // body lands too (verified against the hash) so this
-                        // node's latest-message structures stay identical to
-                        // a ceremony node's.
-                        if !response.genesis_hash.is_empty() {
-                            self.block_dag_storage
-                                .record_genesis_hash(response.genesis_hash.clone())?;
-                        }
-                        let genesis_landed = match response.genesis_block {
-                            Some(block) if !response.genesis_hash.is_empty() => {
-                                receive_shipped_genesis(
-                                    &self.block_dag_storage,
-                                    &self.block_store,
-                                    &response.genesis_hash,
-                                    block,
-                                )?
-                            }
-                            _ => false,
-                        };
-                        let written =
-                            apply_floor_cache_entries(&dag, &solicited, response.entries)?;
-                        tracing::info!(
-                            written,
-                            requested = hashes.len(),
-                            genesis_learned = !response.genesis_hash.is_empty(),
-                            genesis_landed,
-                            "Floor cache received: restored blocks carry their finality"
-                        );
-                        return Ok(());
                     }
-                    Ok(None) => {
-                        return Err(CasperError::RuntimeError(
-                            "floor-cache channel closed".to_string(),
-                        ));
-                    }
-                    Err(_) => {
-                        tracing::warn!(attempt, "floor-cache request timed out; retrying");
-                    }
+                    if !received { return Ok(false); }
                 }
+                after = page.next;
+                if after.is_none() { break; }
             }
-            Err(CasperError::RuntimeError(format!(
-                "no floor-cache response after {} attempts",
-                ATTEMPTS
-            )))
+            Ok(true)
         }
         .await;
 
-        if let Err(e) = result {
+        if !result? {
             tracing::warn!(
-                error = %e,
                 "Proceeding without the shipped floor cache: sibling-branch validation \
                  will re-derive finality gap-by-gap (slow, not wrong)"
             );
         }
+        Ok(())
     }
 
     /// Record the anchor's floor and frontier as this node's own, so the first
@@ -1335,7 +1365,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             (&seed.floor_hash, "floor"),
             (&seed.frontier_hash, "frontier"),
         ] {
-            if !dag.contains(hash) {
+            if !dag.contains(hash)? {
                 tracing::warn!(
                     seeded = %PrettyPrinter::build_string_bytes(hash),
                     kind = label,
@@ -1637,7 +1667,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Get invalid blocks map for replay
         let dag = self.block_dag_storage.get_representation()?;
-        let invalid_blocks_map = dag.invalid_blocks_map()?;
+        let invalid_blocks_map = proto_util::replay_slashed_block_senders(&dag, block)?;
 
         tracing::debug!(
             "Replaying block #{} ({}) with {} deploys, {} parents",
@@ -2112,7 +2142,6 @@ mod tests {
     /// partially-covering response still lands everything legitimate.
     #[test]
     fn shipped_floor_entries_apply_only_to_solicited_held_blocks() {
-        use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
         use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
         use models::rust::casper::protocol::casper_message::FloorCacheEntry;
         use parking_lot::RwLock as PlRwLock;
@@ -2126,7 +2155,10 @@ mod tests {
         let mut dag_set = imbl::HashSet::new();
         dag_set.insert(held.clone());
         dag_set.insert(floor.clone());
-        let dag = KeyValueDagRepresentation {
+        let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -2149,7 +2181,8 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         let entry = |hash: &BlockHash| FloorCacheEntry {
             block_hash: hash.clone(),
@@ -2186,7 +2219,6 @@ mod tests {
     /// same rule, then solicited like every other restored block.
     #[test]
     fn a_shipped_entry_naming_unheld_history_is_refused_and_never_replaces_a_seed() {
-        use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
         use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
         use models::rust::casper::protocol::casper_message::FloorCacheEntry;
         use parking_lot::RwLock as PlRwLock;
@@ -2202,7 +2234,10 @@ mod tests {
         dag_set.insert(anchor.clone());
         dag_set.insert(band.clone());
         dag_set.insert(seeded_floor.clone());
-        let dag = KeyValueDagRepresentation {
+        let dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -2225,7 +2260,8 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         dag.put_cached_floor(anchor.clone(), seeded_floor.clone())
             .expect("seed the anchor");
@@ -2369,9 +2405,12 @@ mod tests {
             assert!(landed, "a verified genesis copy must land");
 
             let dag = dag_storage.get_representation().unwrap();
-            assert!(dag.contains(&genesis.block_hash), "genesis enters the DAG");
             assert!(
-                dag.is_finalized(&genesis.block_hash),
+                dag.contains(&genesis.block_hash).unwrap(),
+                "genesis enters the DAG"
+            );
+            assert!(
+                dag.is_finalized(&genesis.block_hash).unwrap(),
                 "genesis is finalized by definition"
             );
             assert_eq!(
@@ -2409,7 +2448,7 @@ mod tests {
             assert!(!landed, "a forged copy must be refused");
             let dag2 = dag_storage2.get_representation().unwrap();
             assert!(
-                !dag2.contains(&genesis.block_hash),
+                !dag2.contains(&genesis.block_hash).unwrap(),
                 "a refused copy leaves no trace in the DAG"
             );
             assert!(
@@ -2487,7 +2526,7 @@ mod tests {
 
             let dag = dag_storage.get_representation().unwrap();
             assert!(
-                dag.is_finalized(&genesis.block_hash),
+                dag.is_finalized(&genesis.block_hash).unwrap(),
                 "genesis is finalized by definition"
             );
             assert_eq!(

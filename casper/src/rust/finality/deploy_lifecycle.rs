@@ -530,7 +530,7 @@ impl SettlePass {
         if *hash == self.lfb {
             return Ok(true);
         }
-        let Some(height) = dag.block_number(hash) else {
+        let Some(height) = dag.block_number(hash)? else {
             return Ok(false);
         };
         if height > self.lfb_height {
@@ -597,26 +597,26 @@ pub(crate) fn release_settled(
 /// looking for a deploy that is not in it.
 fn frozen_display(
     row: &LifecycleEvents,
-    is_visible: &dyn Fn(&[u8]) -> bool,
-) -> (u32, i64, Vec<u8>) {
+    is_visible: &dyn Fn(&[u8]) -> Result<bool, shared::rust::store::key_value_store::KvStoreError>,
+) -> Result<(u32, i64, Vec<u8>), shared::rust::store::key_value_store::KvStoreError> {
     let rejection_count = row
         .events
         .iter()
         .filter(|e| matches!(e.kind, LifecycleEventKind::Rejected { .. }))
         .count() as u32;
-    let latest = row
-        .events
-        .iter()
-        .filter(|e| matches!(e.kind, LifecycleEventKind::Included { .. }))
-        .filter(|e| is_visible(&e.block_hash))
-        .max_by(|a, b| {
-            a.height
-                .cmp(&b.height)
-                .then_with(|| a.block_hash.cmp(&b.block_hash))
-        })
-        .map(|e| (e.height, e.block_hash.clone()));
+    let mut latest = None;
+    for event in &row.events {
+        if matches!(event.kind, LifecycleEventKind::Included { .. })
+            && is_visible(&event.block_hash)?
+        {
+            let appearance = (event.height, event.block_hash.clone());
+            if latest.as_ref().is_none_or(|current| &appearance > current) {
+                latest = Some(appearance);
+            }
+        }
+    }
     let (latest_height, latest_block_hash) = latest.unwrap_or((0, Vec::new()));
-    (rejection_count, latest_height, latest_block_hash)
+    Ok((rejection_count, latest_height, latest_block_hash))
 }
 
 fn write_terminal(
@@ -627,7 +627,7 @@ fn write_terminal(
 ) -> Result<(), CasperError> {
     let (rejection_count, latest_height, latest_block_hash) = frozen_display(row, &|h| {
         dag.contains(&prost::bytes::Bytes::copy_from_slice(h))
-    });
+    })?;
     let written = dag
         .put_deploy_terminal_if_absent(sig, TerminalRecord {
             state,
@@ -989,10 +989,17 @@ mod tests {
             ],
         };
 
-        let (rejection_count, latest_height, latest_block_hash) = frozen_display(&row, &|_| true);
+        let (rejection_count, latest_height, latest_block_hash) =
+            frozen_display(&row, &|_| Ok(true)).unwrap();
         assert_eq!(rejection_count, 1);
 
-        let (_, orphan_height, orphan_hash) = frozen_display(&row, &|_| false);
+        let (_, orphan_height, orphan_hash) = frozen_display(&row, &|_| Ok(false)).unwrap();
+        assert!(frozen_display(&row, &|_| Err(
+            shared::rust::store::key_value_store::KvStoreError::InvalidArgument(
+                "injected visibility failure".into()
+            )
+        ))
+        .is_err());
         assert_eq!(
             (orphan_height, orphan_hash),
             (0, Vec::new()),

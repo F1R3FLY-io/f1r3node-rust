@@ -314,7 +314,7 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> CasperLaunchImpl<T> {
                     );
 
                     // Check if block already exists in DAG
-                    let dag_contains = casper.dag_contains(&hash);
+                    let dag_contains = casper.dag_contains(&hash)?;
 
                     // Resume-time reconciliation closing the (c) drift
                     // state from Bug #17 / T-9.20. The same purge logic

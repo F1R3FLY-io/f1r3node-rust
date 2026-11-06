@@ -57,7 +57,7 @@ async fn pruning_dependency_cache_follows_the_buffer_lifecycle() -> Result<(), K
         Some(&vec![hash(0).0])
     );
 
-    buffer.enforce_limits_with_readiness(0, u64::MAX, 1, 0, |_| false)?;
+    buffer.enforce_limits_with_readiness(0, u64::MAX, 1, 0, |_| Ok(false))?;
     assert!(buffer.cached_block_dependencies(&hash(1)).is_none());
     buffer.cache_block_dependencies(hash(1), vec![]);
     assert!(buffer.block_dependencies.is_empty());
@@ -75,5 +75,55 @@ async fn pruning_restored_hashes_require_dependency_hydration() -> Result<(), Kv
         restored.uncached_block_hashes().into_iter().collect();
     assert_eq!(uncached, [hash(0), hash(1)].into_iter().collect());
     assert!(restored.cached_block_dependencies(&hash(1)).is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn readiness_read_failure_preserves_every_buffer_relation() -> Result<(), KvStoreError> {
+    let buffer = buffer().await?;
+    buffer.add_relation(hash(0), hash(1))?;
+    buffer.add_relation(hash(2), hash(3))?;
+    let before = buffer.to_doubly_linked_dag();
+    let reads = std::cell::Cell::new(0);
+    let result = buffer.enforce_limits_with_readiness(0, u64::MAX, 1, 0, |_| {
+        reads.set(reads.get() + 1);
+        if reads.get() == 2 {
+            Err(KvStoreError::InvalidArgument(
+                "injected readiness failure".into(),
+            ))
+        } else {
+            Ok(false)
+        }
+    });
+    assert!(result.is_err());
+    let after = buffer.to_doubly_linked_dag();
+    assert_eq!(
+        before.parent_to_child_adjacency_list,
+        after.parent_to_child_adjacency_list
+    );
+    assert_eq!(
+        before.child_to_parent_adjacency_list,
+        after.child_to_parent_adjacency_list
+    );
+    assert_eq!(before.dependency_free, after.dependency_free);
+    assert!(buffer.take_released().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn released_hints_survive_a_failed_readiness_scan() -> Result<(), KvStoreError> {
+    let buffer = buffer().await?;
+    buffer.add_relation(hash(0), hash(1))?;
+    buffer.remove(hash(0))?;
+    let result: Result<(), &str> = buffer.with_released(|released| {
+        assert_eq!(released, &[hash(1)]);
+        Err("injected history failure")
+    });
+    assert!(result.is_err());
+    buffer.with_released(|released| {
+        assert_eq!(released, &[hash(1)]);
+        Ok::<_, KvStoreError>(())
+    })?;
+    assert!(buffer.take_released().is_empty());
     Ok(())
 }

@@ -24,7 +24,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::store::soak_snapshot::{ReadLimits, SnapshotError};
 use tokio::runtime::Runtime;
 
-const DAG_STORES: [&str; 11] = [
+const DAG_STORES: [&str; 18] = [
     "block-metadata",
     "equivocation-tracker",
     "latest-messages",
@@ -36,6 +36,13 @@ const DAG_STORES: [&str; 11] = [
     "carrier-index",
     "carrier-index-meta",
     "genesis-hash",
+    "dag-membership-v1",
+    "dag-height-v1",
+    "dag-children-v1",
+    "dag-history-state-v1",
+    "dag-gc-retry-v1",
+    "dag-gc-work-v1",
+    "dag-gc-visited-v1",
 ];
 const BLOCK_STORES: [&str; 2] = ["blocks", "blocks-approved"];
 
@@ -626,10 +633,11 @@ fn scratch_views_share_no_mutable_stores_with_each_other_or_production() {
             .dag
             .get_representation()
             .unwrap()
-            .contains(&extra.block_hash));
+            .contains(&extra.block_hash)
+            .unwrap());
     }
 
-    assert_eq!(view_b.representation.dag_set.len(), 4);
+    assert_eq!(view_b.representation.resident_counts().blocks, 4);
     assert_eq!(view_b.representation.last_finalized_block_hash, g);
     assert!(view_b
         .representation
@@ -637,14 +645,14 @@ fn scratch_views_share_no_mutable_stores_with_each_other_or_production() {
         .read()
         .contains(&b2));
     assert_eq!(
-        view_b.representation.latest_messages_map.len(),
+        view_b.representation.latest_message_hashes().len(),
         snapshot.latest_messages.len()
     );
     assert!(view_b
         .representation
         .lifecycle
         .read()
-        .canonical_appearance(&[1u8; 32], &|_| true)
+        .canonical_appearance(&[1u8; 32], &|_| Ok(true))
         .unwrap()
         .is_none());
 }
@@ -713,7 +721,7 @@ fn held_block_without_metadata_row_is_incomplete_evidence() {
     metadata_store(fx.handle("block-metadata"))
         .delete(vec![BlockHashSerde(b1.clone())])
         .unwrap();
-    assert!(fx.dag.get_representation().unwrap().contains(&b1));
+    assert!(fx.dag.get_representation().unwrap().contains(&b1).unwrap());
 
     let result = capture(&fx.dag, &fx.blocks, &request(&[]));
     match result {
@@ -1358,6 +1366,8 @@ impl<'a> CanonicalReader<'a> {
         self.count(snapshot.coverage.requested_bodies);
         self.tag("generation");
         assert_eq!(self.number(), snapshot.insertion_generation);
+        self.tag("view_sequence");
+        assert_eq!(self.number(), snapshot.view_sequence);
         self.tag("transactions");
         self.count(snapshot.transactions.len());
         for t in &snapshot.transactions {
@@ -1551,7 +1561,7 @@ fn tracker_rows_are_captured_in_the_dag_transaction() {
     let generation = fx.dag.current_generation();
     let (snapshot, tracker) =
         capture_with_equivocations(&fx.dag, &fx.blocks, &request(&[]), 16).unwrap();
-    assert_eq!(snapshot.schema_version, 2);
+    assert_eq!(snapshot.schema_version, 3);
     assert_eq!(tracker.rows().len(), 2);
     assert_eq!(tracker.rows()[0].base_sequence_number, -2);
     assert_eq!(tracker.rows()[1].base_sequence_number, 4);

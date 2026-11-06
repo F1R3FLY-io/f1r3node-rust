@@ -1548,7 +1548,7 @@ fn walk_unfinalized_cone(
     while let Some(block_hash) = stack.pop() {
         if !seen.insert(block_hash.clone())
             || block_hash == casper_snapshot.last_finalized_block
-            || casper_snapshot.dag.is_finalized(&block_hash)
+            || casper_snapshot.dag.is_finalized(&block_hash)?
         {
             continue;
         }
@@ -2836,6 +2836,63 @@ pub async fn create_with_progress(
     selection: super::proposer::DeploySelection,
     finality_progress: &mut FinalityProgress,
 ) -> Result<BlockCreatorResult, CasperError> {
+    create_with_progress_and_time(
+        casper_snapshot,
+        validator_identity,
+        dummy_deploy_opt,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        selection,
+        finality_progress,
+        None,
+    )
+    .await
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+pub async fn create_at(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    deploy_storage: Arc<KeyValueDeployStorage>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    selection: super::proposer::DeploySelection,
+    timestamp: i64,
+) -> Result<BlockCreatorResult, CasperError> {
+    create_with_progress_and_time(
+        casper_snapshot,
+        validator_identity,
+        None,
+        deploy_storage,
+        rejected_deploy_buffer,
+        runtime_manager,
+        block_store,
+        selection,
+        &mut FinalityProgress::default(),
+        Some(timestamp),
+    )
+    .await
+}
+
+async fn create_with_progress_and_time(
+    casper_snapshot: &CasperSnapshot,
+    validator_identity: &ValidatorIdentity,
+    dummy_deploy_opt: Option<(PrivateKey, String)>,
+    deploy_storage: Arc<KeyValueDeployStorage>,
+    rejected_deploy_buffer: Arc<
+        Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
+    >,
+    runtime_manager: &RuntimeManager,
+    block_store: &mut KeyValueBlockStore,
+    selection: super::proposer::DeploySelection,
+    finality_progress: &mut FinalityProgress,
+    timestamp: Option<i64>,
+) -> Result<BlockCreatorResult, CasperError> {
     let allow_empty_blocks = selection.allows_empty();
     use crate::rust::metrics_constants::{
         BLOCK_CREATOR_COMPUTE_DEPLOYS_CHECKPOINT_TIME_METRIC,
@@ -2847,16 +2904,20 @@ pub async fn create_with_progress(
     let create_started = std::time::Instant::now();
     // Capture current time once to ensure consistency between deploy filtering and block timestamp.
     // This prevents race condition where a deploy could pass filtering but expire before block creation.
-    let now_u128 = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_err(|e| CasperError::RuntimeError(format!("Failed to get current time: {}", e)))?
-        .as_millis();
-    let mut now_millis = i64::try_from(now_u128).map_err(|_| {
-        CasperError::RuntimeError(format!(
-            "Current timestamp millis {} exceeds i64::MAX",
-            now_u128
-        ))
-    })?;
+    let mut now_millis = if let Some(timestamp) = timestamp {
+        timestamp
+    } else {
+        let now_u128 = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|e| CasperError::RuntimeError(format!("Failed to get current time: {}", e)))?
+            .as_millis();
+        i64::try_from(now_u128).map_err(|_| {
+            CasperError::RuntimeError(format!(
+                "Current timestamp millis {} exceeds i64::MAX",
+                now_u128
+            ))
+        })?
+    };
 
     // Sequence numbers are wire-protocol i32. Use a checked successor here
     // rather than `+ 1` so a hostile snapshot can't roll the local validator
@@ -3849,10 +3910,18 @@ mod tests {
             .expect("treat rejected parent-scope user deploy as unresolved"));
         snapshot.rejected_in_scope.remove(&user_sig);
 
-        snapshot.dag.finalized_blocks_set.insert(user_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .insert(user_hash.clone());
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
             .expect("ignore finalized parent-scope user deploy"));
-        snapshot.dag.finalized_blocks_set.remove(&user_hash);
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .remove(&user_hash);
 
         snapshot.last_finalized_block = user_hash;
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
@@ -5358,7 +5427,7 @@ mod tests {
             while let Some(block_hash) = stack.pop() {
                 if !seen.insert(block_hash.clone())
                     || block_hash == casper_snapshot.last_finalized_block
-                    || casper_snapshot.dag.is_finalized(&block_hash)
+                    || casper_snapshot.dag.is_finalized(&block_hash).unwrap()
                 {
                     continue;
                 }

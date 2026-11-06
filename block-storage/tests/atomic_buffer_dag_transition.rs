@@ -91,7 +91,8 @@ async fn atomic_insert_then_buffer_inserts_into_dag_and_removes_from_buffer() {
     assert!(!dag
         .get_representation()
         .unwrap()
-        .contains(&block.block_hash));
+        .contains(&block.block_hash)
+        .unwrap());
 
     // Atomic transition.
     let updated_dag = atomic_insert_then_buffer(
@@ -104,7 +105,7 @@ async fn atomic_insert_then_buffer_inserts_into_dag_and_removes_from_buffer() {
     .unwrap();
 
     // Post-state: block in DAG (steady state (a) from §9.20).
-    assert!(updated_dag.contains(&block.block_hash));
+    assert!(updated_dag.contains(&block.block_hash).unwrap());
     assert!(!buffer.is_pendant(&hash_serde));
 }
 
@@ -129,7 +130,7 @@ async fn atomic_insert_then_buffer_idempotent_on_absent_hash() {
     .unwrap();
 
     // Post-state: block in DAG, buffer still empty for this hash.
-    assert!(updated_dag.contains(&block.block_hash));
+    assert!(updated_dag.contains(&block.block_hash).unwrap());
     assert!(!buffer.is_pendant(&hash_serde));
 }
 
@@ -156,7 +157,7 @@ async fn atomic_insert_then_buffer_skip_does_not_touch_buffer() {
     // Post-state: block in DAG, pendant still in buffer.
     // (Skip is used by bootstrap paths that don't participate in the
     // buffer's dependency lifecycle.)
-    assert!(updated_dag.contains(&block.block_hash));
+    assert!(updated_dag.contains(&block.block_hash).unwrap());
     assert!(buffer.is_pendant(&hash_serde));
 }
 
@@ -174,7 +175,8 @@ async fn reconcile_buffer_against_dag_purges_drifted_pendants() {
     assert!(dag
         .get_representation()
         .unwrap()
-        .contains(&block.block_hash));
+        .contains(&block.block_hash)
+        .unwrap());
     assert!(buffer.is_pendant(&hash_serde));
 
     // Reconcile.
@@ -187,7 +189,8 @@ async fn reconcile_buffer_against_dag_purges_drifted_pendants() {
     assert!(dag
         .get_representation()
         .unwrap()
-        .contains(&block.block_hash));
+        .contains(&block.block_hash)
+        .unwrap());
 }
 
 #[tokio::test]
@@ -293,7 +296,8 @@ async fn atomic_insert_then_buffer_idempotent_on_repeat() {
     assert!(dag
         .get_representation()
         .unwrap()
-        .contains(&block.block_hash));
+        .contains(&block.block_hash)
+        .unwrap());
     assert!(!buffer.is_pendant(&hash_serde));
 }
 

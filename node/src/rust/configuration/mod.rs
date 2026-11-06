@@ -265,6 +265,9 @@ pub mod builder {
                 max_parent_depth,
             ));
         }
+        if node_conf.casper.dag_hot_window_depth <= 0 {
+            return Err(eyre::eyre!("casper.dag-hot-window-depth must be positive"));
+        }
         if node_conf.casper.deploy_lifespan <= 0 {
             return Err(eyre::eyre!(
                 "casper.deploy-lifespan ({}) must be positive: a non-positive validity \
@@ -932,6 +935,19 @@ mod embedded_defaults_tests {
             builder::validate_config(&cfg).is_err(),
             "deploy-lifespan 0 must fail startup"
         );
+
+        for depth in [0, -1] {
+            let mut cfg = base.clone();
+            cfg.casper.dag_hot_window_depth = depth;
+            let error = builder::validate_config(&cfg)
+                .expect_err("non-positive DAG window must fail startup");
+            assert!(error.to_string().contains("dag-hot-window-depth"));
+        }
+        for depth in [1, 2, 16, 1024] {
+            let mut cfg = base.clone();
+            cfg.casper.dag_hot_window_depth = depth;
+            builder::validate_config(&cfg).expect("positive local DAG windows must validate");
+        }
 
         let mut cfg = base.clone();
         cfg.casper.min_phlo_price = -1;

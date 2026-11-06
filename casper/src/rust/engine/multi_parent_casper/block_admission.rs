@@ -20,6 +20,7 @@ use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::normalizer_env::normalizer_env_from_deploy;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
+use shared::rust::store::key_value_store::KvStoreError;
 
 use super::snapshot::record_dag_cardinality_metrics;
 use super::types::MultiParentCasperImpl;
@@ -30,21 +31,22 @@ use crate::rust::util::rholang::interpreter_util;
 pub(crate) fn admit_contains<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     hash: &BlockHash,
-) -> bool {
-    admit_buffer_contains(this, hash) || admit_dag_contains(this, hash)
+) -> Result<bool, CasperError> {
+    Ok(admit_buffer_contains(this, hash) || admit_dag_contains(this, hash)?)
 }
 
 pub(crate) fn admit_dag_contains<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     hash: &BlockHash,
-) -> bool {
+) -> Result<bool, CasperError> {
     // Bootstrap-window safety (P1-2): if the DAG representation is not yet
     // initialized (no approved/last-finalized block), report `false` rather
     // than panicking. Returning `false` here matches the trait's
     // pre-existing semantics for "block not present".
     match this.block_dag_storage.get_representation() {
-        Ok(dag) => dag.contains(hash),
-        Err(_) => false,
+        Ok(dag) => dag.contains(hash).map_err(Into::into),
+        Err(KvStoreError::LastFinalizedBlockUninitialized) => Ok(false),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -59,14 +61,18 @@ pub(crate) fn admit_buffer_contains<T: TransportLayer + Send + Sync>(
 pub(crate) fn admit_buffer_waits_on_dependency<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
     hash: &BlockHash,
-) -> bool {
-    this.casper_buffer_storage
+) -> Result<bool, CasperError> {
+    if let Some(parents) = this
+        .casper_buffer_storage
         .get_parents(&BlockHashSerde(hash.clone()))
-        .is_some_and(|parents| {
-            parents
-                .iter()
-                .any(|parent| !admit_dag_contains(this, &BlockHash::from(parent.0.clone())))
-        })
+    {
+        for parent in parents {
+            if !admit_dag_contains(this, &BlockHash::from(parent.0.clone()))? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn admit_get_approved_block<T: TransportLayer + Send + Sync>(

@@ -104,6 +104,7 @@ fn model(value: &SnapshotData) -> String {
         ),
     );
     field("generation", value.insertion_generation.to_string());
+    field("view_sequence", value.view_sequence.to_string());
     field(
         "transactions",
         list(&value.transactions, |t| {
@@ -245,6 +246,7 @@ fn fixture() -> SnapshotData {
             requested_bodies: 3,
         },
         insertion_generation: u64::MAX,
+        view_sequence: 42,
         transactions: vec![
             TransactionIdentity {
                 environment: "a\0é".to_owned(),
@@ -321,6 +323,8 @@ fn cases() -> Vec<(String, SnapshotData, usize)> {
         }};
     }
     case!("schema", |v: &mut SnapshotData| v.schema_version = u32::MAX);
+    case!("view_sequence", |v: &mut SnapshotData| v.view_sequence =
+        u64::MAX);
     case!("scope", |v: &mut SnapshotData| v.scope = "");
     macro_rules! limit {
         ($($member:ident).+) => {

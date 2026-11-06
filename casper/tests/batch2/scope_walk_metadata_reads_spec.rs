@@ -167,7 +167,7 @@ async fn walk_with_a_missing_metadata_row(
         .get_representation()
         .expect("dag representation");
     assert!(
-        dag.block_number(&a.block_hash).is_some() && dag.lookup(&a.block_hash).unwrap().is_none(),
+        dag.block_number(&a.block_hash).unwrap().is_some() && dag.lookup(&a.block_hash).is_err(),
         "fixture: the height is indexed, the metadata row is gone"
     );
     let start = dag
@@ -183,23 +183,23 @@ async fn walk_with_a_missing_metadata_row(
 }
 
 #[tokio::test]
-async fn a_skip_settled_walk_never_visits_a_block_without_a_metadata_row() {
-    let (result, visited, top, _a, b) =
+async fn a_skip_settled_walk_reports_corrupt_published_metadata() {
+    let (result, visited, top, _a, _b) =
         walk_with_a_missing_metadata_row(UnheldParent::SkipSettled, false).await;
-    assert_eq!(result.expect("skip-settled walk"), None);
+    assert!(matches!(result, Err(CasperError::KvStoreError(_))));
     assert_eq!(
         visited,
-        vec![top, b],
-        "a parent without a metadata row is skipped, not recorded in scope"
+        vec![top],
+        "published metadata corruption must stop the walk before visiting that parent"
     );
 }
 
 #[tokio::test]
 async fn a_surface_walk_fails_on_a_block_without_a_metadata_row_before_any_match() {
-    let (result, visited, top, a, _b) =
+    let (result, visited, top, _a, _b) =
         walk_with_a_missing_metadata_row(UnheldParent::Surface, true).await;
     assert!(
-        matches!(&result, Err(CasperError::BlockNotHeld(hash, _)) if *hash == a),
+        matches!(&result, Err(CasperError::KvStoreError(_))),
         "the verdict walk must surface the missing row, got {result:?}"
     );
     assert_eq!(

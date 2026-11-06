@@ -109,9 +109,13 @@ mod tests {
             self.inner.get_snapshot().await
         }
 
-        fn contains(&self, hash: &BlockHash) -> bool { self.inner.contains(hash) }
+        fn contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+            self.inner.contains(hash)
+        }
 
-        fn dag_contains(&self, hash: &BlockHash) -> bool { self.inner.dag_contains(hash) }
+        fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
+            self.inner.dag_contains(hash)
+        }
 
         fn buffer_contains(&self, hash: &BlockHash) -> bool { self.inner.buffer_contains(hash) }
 

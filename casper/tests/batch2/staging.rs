@@ -21,7 +21,7 @@ pub async fn mint_on_parents(
 ) -> BlockMessage {
     for p in &parents {
         assert!(
-            node.casper.dag_contains(&p.block_hash),
+            node.casper.dag_contains(&p.block_hash).unwrap(),
             "staging[{label}]: parent {} must be IN THE DAG of the minting \
              node (buffered: {})",
             hex::encode(&p.block_hash[..6]),

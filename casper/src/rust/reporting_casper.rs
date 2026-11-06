@@ -102,30 +102,13 @@ impl ReportingCasper for RhoReporterCasper {
             .get_representation()
             .map_err(|e| format!("Failed to get DAG representation: {}", e))?;
 
-        let invalid_blocks_set = dag.invalid_blocks();
-
         let pre_state_hash_bytes = proto_util::pre_state_hash(block);
         let pre_state_hash = Blake2b256Hash::from_bytes_prost(&pre_state_hash_bytes);
 
         let block_data = BlockData::from_block(block);
 
-        let unseen_blocks_set =
-            proto_util::unseen_block_hashes(&dag, &block.justifications, Some(&block.block_hash))
-                .map_err(|e| format!("Failed to get unseen block hashes: {}", e))?;
-
-        let seen_invalid_blocks: HashMap<
-            models::rust::block_hash::BlockHash,
-            models::rust::validator::Validator,
-        > = invalid_blocks_set
-            .iter()
-            .filter(|block_metadata| !unseen_blocks_set.contains(&block_metadata.block_hash))
-            .map(|block_metadata| {
-                (
-                    block_metadata.block_hash.clone(),
-                    block_metadata.sender.clone(),
-                )
-            })
-            .collect();
+        let seen_invalid_blocks = proto_util::replay_slashed_block_senders(&dag, block)
+            .map_err(|e| format!("Failed to read slash evidence: {}", e))?;
 
         Self::replay_deploys(
             &mut reporting_runtime,
