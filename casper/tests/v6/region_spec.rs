@@ -1382,7 +1382,7 @@ async fn a_firing_within_its_bound_keeps_its_effects_and_its_installer_pays_its_
 }
 
 #[tokio::test]
-async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the_bound() {
+async fn a_firing_that_passes_its_bound_fails_the_run_and_its_installer_pays_the_bound() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
@@ -1413,8 +1413,8 @@ async fn a_firing_that_passes_its_bound_keeps_nothing_and_its_installer_pays_the
         .await
         .expect("the large call executes");
     assert!(
-        !passed.processed[0].is_failed,
-        "the client's own run is not affected"
+        passed.processed[0].is_failed,
+        "the firing's failure fails the enclosing run (Decision 132)"
     );
     assert_eq!(
         data_on(&rm, &passed.settled_root, "out").await,
@@ -1536,6 +1536,187 @@ async fn each_run_holds_at_most_its_share_of_the_installers_free_balance() {
     );
 }
 
+async fn continuations_on(rm: &RuntimeManager, root: &StateHash, channel: &str) -> usize {
+    cells_at(rm, root)
+        .await
+        .unwrap()
+        .0
+        .get_continuations(&[RhoString::create_par(channel.to_string())])
+        .len()
+}
+
+fn heavy(sends: usize) -> String {
+    (0..sends)
+        .map(|i| format!(r#"@"z"!({i})"#))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+#[tokio::test]
+async fn the_bound_comes_only_from_the_installers_seal_and_no_received_term_changes_it() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 1_000_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let run = r#"contract @"run"(x) = { *x }"#;
+    let first = executor
+        .execute(
+            &pre,
+            vec![envelope(run, 1, &alice, 1_500, 1)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the service installs");
+    assert!(!first.processed[0].is_failed);
+    let root = first.settled_root.clone();
+    let light = format!(r#"@"run"!({{ {} }})"#, heavy(2));
+    let unsealed = format!(r#"@"run"!({{ {} }})"#, heavy(60));
+    let sealed = format!(
+        r#"new d(`rho:system:deployerId`) in {{ @"run"!({{ {{% {} %}}[d] }}) }}"#,
+        heavy(2)
+    );
+    let alice_hold = firing_hold(1_500, 1);
+    let mut outcomes = Vec::new();
+    for (ts, (term, limit)) in [
+        (&light, 10_000),
+        (&light, 900_000),
+        (&unsealed, 10_000),
+        (&unsealed, 900_000),
+        (&sealed, 900_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let played = executor
+            .execute(
+                &root,
+                vec![envelope(term, ts as i64 + 2, &bob, limit, 1)],
+                block_data(&proposer),
+            )
+            .await
+            .expect("the call executes");
+        assert_eq!(
+            played.gate.admitted(),
+            vec![true],
+            "{:?}",
+            played.gate.entries[0].verdict
+        );
+        assert_eq!(
+            played.processed[0].is_failed,
+            ts >= 2,
+            "call {ts}: a firing over its bound fails the run"
+        );
+        assert_eq!(
+            played.metered[0].held.get(&alice.owner.canonical_bytes()),
+            Some(&alice_hold),
+            "call {ts}: the hold is the installer's bound whatever the client sends"
+        );
+        assert!(
+            !played.metered[0]
+                .held
+                .contains_key(&bob.owner.canonical_bytes()),
+            "call {ts}: a received seal holds nothing"
+        );
+        outcomes.push((
+            data_on(&rm, &played.settled_root, "z").await,
+            work_of(&played, 0, &alice),
+        ));
+    }
+    assert_eq!(outcomes[0].0, 2, "a light term runs within the bound");
+    assert_eq!(
+        outcomes[0], outcomes[1],
+        "the client's limit does not change the firing"
+    );
+    let exhausted = (0, 1_500);
+    assert_eq!(
+        outcomes[2], exhausted,
+        "a heavy term passes the installer's bound"
+    );
+    assert_eq!(
+        outcomes[3], exhausted,
+        "a larger client limit does not raise the bound"
+    );
+    assert_eq!(
+        outcomes[4].0, 0,
+        "the run-time check refuses a received seal that the installer did not sign (Decision 112)"
+    );
+}
+
+#[tokio::test]
+async fn a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_no_storage() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let service = r#"contract @"svc"(@x) = {
+        @"out"!(x) | for (_ <- @"in") { Nil } | contract @"c2"(_) = { Nil }
+    }"#;
+    let price = 2;
+    let first = executor
+        .execute(
+            &pre,
+            vec![envelope(service, 1, &alice, 1_500, price)],
+            block_data(&proposer),
+        )
+        .await
+        .expect("the service installs");
+    let root = first.settled_root.clone();
+    let before = balance(&rm, &root, &alice).await;
+    let call = |bytes: usize| {
+        envelope(
+            &format!(r#"@"svc"!({})"#, payload(bytes)),
+            2,
+            &bob,
+            50_000,
+            1,
+        )
+    };
+
+    let within = executor
+        .execute(&root, vec![call(8)], block_data(&proposer))
+        .await
+        .expect("the small call executes");
+    assert_eq!(data_on(&rm, &within.settled_root, "out").await, 1);
+    assert_eq!(continuations_on(&rm, &within.settled_root, "in").await, 1);
+    assert_eq!(continuations_on(&rm, &within.settled_root, "c2").await, 1);
+    assert!(
+        before - balance(&rm, &within.settled_root, &alice).await
+            < firing_hold(1_500, 1) * price as u64
+    );
+
+    let over = executor
+        .execute(&root, vec![call(2_000)], block_data(&proposer))
+        .await
+        .expect("the large call executes");
+    assert!(
+        over.processed[0].is_failed,
+        "a firing over its bound fails the enclosing run"
+    );
+    assert!(!over.merged[0], "the failed run's effects are not merged");
+    let after = over.settled_root.clone();
+    assert_eq!(
+        before - balance(&rm, &after, &alice).await,
+        (1_500 + 1) * price as u64,
+        "the wallet pays exactly the bound and the COMM's one cell, at its price"
+    );
+    assert_eq!(data_on(&rm, &after, "out").await, 0);
+    assert_eq!(continuations_on(&rm, &after, "in").await, 0);
+    assert_eq!(continuations_on(&rm, &after, "c2").await, 0);
+    assert_eq!(
+        continuations_on(&rm, &after, "svc").await,
+        1,
+        "the stored contract stays"
+    );
+    assert_eq!(
+        data_on(&rm, &after, "svc").await,
+        0,
+        "the client's message is discarded with the run"
+    );
+    assert_eq!(
+        over.runs[0].compute_phlo, 50_000,
+        "the deployment pays its own part, as for any error"
+    );
+    assert_eq!(replays_to(&executor, &root, &over, &proposer).await, after);
+}
+
 #[tokio::test]
 async fn substitution_into_a_fired_continuation_is_charged_to_its_installer() {
     let (alice, bob, proposer) = (party(), party(), party());
@@ -1548,7 +1729,7 @@ async fn substitution_into_a_fired_continuation_is_charged_to_its_installer() {
     let first = executor
         .execute(
             &pre,
-            vec![envelope(install, 1, &alice, 5_000, 1)],
+            vec![envelope(install, 1, &alice, 20_000, 1)],
             block_data(&proposer),
         )
         .await

@@ -534,3 +534,66 @@ async fn an_honest_d_record_replays_under_one_two_and_four_workers() {
         }
     }
 }
+
+#[tokio::test]
+async fn replay_recomputes_the_cost_of_each_firing_and_rejects_a_changed_one() {
+    let (alice, bob, proposer) = (party(), party(), party());
+    let (rm, genesis) = shard(&[&alice, &bob, &proposer]).await;
+    let executor = charging(&rm, &genesis).await;
+    let service = r#"contract @"svc"(@x) = { @"out"!(x) }"#;
+    let installed = run_record(
+        &executor,
+        &genesis,
+        &block(
+            1,
+            vec![envelope_limited(service, 1, &alice, 1_500)],
+            &proposer,
+        ),
+    )
+    .await;
+    let call = |bytes: usize, ts: i64| {
+        let data = format!("{:?}", vec![7u8; bytes]).replace(' ', "");
+        envelope_limited(&format!(r#"@"svc"!({data})"#), ts, &bob, 50_000)
+    };
+    for (number, bytes) in [(2, 8), (3, 2_000)] {
+        let b = block(number, vec![call(bytes, number)], &proposer);
+        let record = executor
+            .execute(installed.post_root(), &b)
+            .await
+            .expect("the block executes");
+        let over = bytes > 1_000;
+        assert_eq!(
+            record.executed()[0].outcome != EnvelopeOutcome::Completed,
+            over,
+            "block {number}: only the firing over its bound fails its run"
+        );
+        let settlement = record.settlement().unwrap().clone();
+        let firing = settlement
+            .surface_charges
+            .iter()
+            .position(|sc| sc.purse == alice.owner)
+            .expect("the installer pays for the firing");
+        for delta in [-1i64, 1] {
+            let mut changed = settlement.clone();
+            let sc = &mut changed.surface_charges[firing];
+            sc.compute = sc.compute.checked_add_signed(delta).unwrap();
+            sc.owed = sc
+                .owed
+                .checked_add_signed(delta * sc.phlo_price as i64)
+                .unwrap();
+            sc.drawn = sc
+                .drawn
+                .checked_add_signed(delta * sc.phlo_price as i64)
+                .unwrap();
+            let forged = record.clone().with_settlement(changed);
+            assert!(
+                executor.replay(&forged, &b).await.is_err(),
+                "block {number}: a firing cost changed by {delta} is rejected"
+            );
+        }
+        assert_eq!(
+            &executor.replay(&record, &b).await.unwrap(),
+            record.post_root()
+        );
+    }
+}
