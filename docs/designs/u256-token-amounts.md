@@ -28,8 +28,13 @@ stay arbitrary precision. The minimum bond stays at 1; the default maximum bond 
 
 - `BondProto.stake` and `DeployDataProto.phloPrice` hold exactly 32 unsigned big-endian bytes. The deploy signature
   covers that encoding. The bond Merkle leaf hashes the `BondProto` encoding (block hash scheme 3).
-- HTTP, WebSocket and public gRPC amount fields are decimal strings: stakes, total stakes, transfers, `phloPrice`
-  and `minPhloPrice`. JSON numbers are rejected for these fields.
+- HTTP, WebSocket and public gRPC amount fields are decimal strings: stakes, total stakes, transfers (gRPC
+  `TransferInfo.amountRaw`), `phloPrice` and `minPhloPrice`. JSON numbers are rejected for these fields.
+- Rholang integers in HTTP responses (`ExprInt.data`, `ExprUint64.data`) are decimal strings at every nesting depth.
+  All of these share one canonical grammar (`shared::rust::decimal`).
+- Deploy parameters give `int` values as decimal strings. A `bigInt` parameter is a canonical decimal string with an
+  absolute value below 2^512 and becomes a Rholang BigInt, so an amount above the signed 64-bit range does not need a
+  term literal.
 - HOCON bond limits and the minimum fee price are quoted canonical decimal strings. CLI arguments, bonds files and
   genesis allocation files accept canonical decimal digits and `#` comments. Negative values, leading zeros and
   values above 2^256-1 are rejected.

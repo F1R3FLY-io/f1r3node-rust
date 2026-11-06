@@ -137,7 +137,7 @@ export interface definitions {
      */
     phloLimit: number;
     /**
-     * price (in 10^-8 REV) of each unit of computation. typically 1
+     * price in dust of each unit of computation, as a canonical decimal integer
      */
     phloPrice: string;
     /**
@@ -161,11 +161,11 @@ export interface definitions {
     sig?: string;
     errored?: boolean;
     /**
-     * in units of 10^-8 REV
+     * phlo consumed
      */
     cost?: number;
     /**
-     * in units of 10^-8 REV
+     * price in dust per phlo, as a canonical decimal integer
      */
     phloPrice?: string;
     validAfterBlockNumber?: number;

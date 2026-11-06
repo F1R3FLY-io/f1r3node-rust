@@ -1276,7 +1276,7 @@
         },
         "cost": {
           "type": "integer",
-          "description": "in units of 10^-8 REV",
+          "description": "Phlo consumed",
           "format": "int64"
         },
         "phloPrice": {

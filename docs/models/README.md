@@ -22,7 +22,7 @@ pub struct BlockMetadata {
     pub parents: Vec<BlockHash>,
     pub sender: Validator,
     pub justifications: Vec<Justification>,
-    pub weight_map: BTreeMap<Validator, i64>,
+    pub weight_map: BTreeMap<Validator, TokenAmount>,
     pub block_number: i64,
     pub sequence_number: i32,
     pub invalid: bool,

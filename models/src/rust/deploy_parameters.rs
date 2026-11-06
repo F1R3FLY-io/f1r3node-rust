@@ -919,5 +919,16 @@ mod tests {
         ] {
             assert!(schemas.contains_key(name));
         }
+        let variants = serde_json::to_value(&schemas["RholangValue"]).unwrap()["oneOf"]
+            .as_array()
+            .unwrap()
+            .clone();
+        for tag in ["int", "bigInt"] {
+            let variant = variants
+                .iter()
+                .find(|variant| variant["properties"]["type"]["enum"] == serde_json::json!([tag]))
+                .unwrap_or_else(|| panic!("no {tag} variant in {variants:?}"));
+            assert_eq!(variant["properties"]["value"]["type"], "string", "{tag}");
+        }
     }
 }
