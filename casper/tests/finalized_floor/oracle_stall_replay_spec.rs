@@ -502,13 +502,14 @@ async fn fork_choice(
 }
 
 /// What fork choice and the oracle see after `proposer` adds one block on
-/// `main_parent` (plus `co_parents`) citing every latest message. The other
-/// tips are a set: `rebuild` draws fresh block hashes, so equal-score tips
-/// tie-break differently between rebuilds.
+/// `main_parent` (plus `co_parents`) citing every latest message. Tips are
+/// sets and the head is the set of tips tied at the top score: `rebuild` draws
+/// fresh block hashes, so equal-score tips tie-break differently between
+/// rebuilds.
 #[derive(Debug)]
 struct Observation {
-    head: String,
-    other_tips: std::collections::BTreeSet<String>,
+    leaders: std::collections::BTreeSet<String>,
+    tips: std::collections::BTreeSet<String>,
     scores: BTreeMap<String, i64>,
     verdicts: Vec<(String, (i64, i64, i64, bool))>,
 }
@@ -560,10 +561,19 @@ async fn observe_after_block(
             oracle_verdict(&rebuilt, fx.ftt_ppm, target, &after).await,
         ));
     }
-    let mut tips = tips.into_iter();
+    let score_of = |tip: &String| {
+        *scores
+            .get(tip)
+            .unwrap_or_else(|| panic!("fork choice scores every tip it ranks, but not {tip}"))
+    };
+    let top = score_of(tips.first().expect("fork choice yields a head"));
     Observation {
-        head: tips.next().expect("fork choice yields a head"),
-        other_tips: tips.collect(),
+        leaders: tips
+            .iter()
+            .filter(|tip| score_of(tip) == top)
+            .cloned()
+            .collect(),
+        tips: tips.into_iter().collect(),
         scores,
         verdicts,
     }
@@ -627,11 +637,8 @@ async fn testnet04_426_a_main_parent_only_block_is_indistinguishable_to_fork_cho
              to fork choice and the oracle (frontier of {} tips)",
             frontier.len()
         );
-        assert_eq!(main_only.head, full.head, "head: {context}");
-        assert_eq!(
-            main_only.other_tips, full.other_tips,
-            "other tips: {context}"
-        );
+        assert_eq!(main_only.leaders, full.leaders, "head: {context}");
+        assert_eq!(main_only.tips, full.tips, "tips: {context}");
         assert_eq!(
             main_only.verdicts, full.verdicts,
             "oracle verdicts: {context}"
