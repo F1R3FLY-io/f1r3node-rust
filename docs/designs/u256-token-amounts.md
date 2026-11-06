@@ -19,6 +19,10 @@ stay arbitrary precision. The minimum bond stays at 1; the default maximum bond 
 - Reward formulas, withdrawal timing and slashing rules are unchanged.
 - Fee validation is the same at admission, execution and replay.
 - General Rholang BigInt arithmetic keeps its existing behavior.
+- Individual amounts are held as `shared::rust::token_amount::TokenAmount`, which can only be constructed within
+  range. Consensus sums and products stay `BigInt`.
+- Genesis rejects wallets and bonds whose total exceeds 2^256-1. Transfers, fees and rewards only move existing
+  tokens, so no balance can then leave the range.
 
 ## Interfaces
 

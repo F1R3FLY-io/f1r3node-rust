@@ -127,7 +127,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
   "shardId": "root",
   "peers": 4,
   "nodes": 4,
-  "minPhloPrice": 1,
+  "minPhloPrice": "1",
   "nativeTokenName": "F1R3CAP",
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8,
@@ -200,7 +200,7 @@ Looks up a registry URI (e.g. `rho:id:...`). Unwraps the `(true, data)` tuple fr
 Returns the active validator set with stake from the PoS contract at `rho:system:pos` (`getBonds`).
 
 ```json
-{"validators": [{"publicKey": "04abc...", "stake": 100}], "totalStake": 300, "blockNumber": 42, "blockHash": "abc..."}
+{"validators": [{"publicKey": "04abc...", "stake": "100"}], "totalStake": "300", "blockNumber": 42, "blockHash": "abc..."}
 ```
 
 ### `GET /api/epoch`

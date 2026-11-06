@@ -30,7 +30,7 @@ export interface definitions {
   /**
    * BondInfo
    */
-  BondInfo: { validator?: string; stake?: number };
+  BondInfo: { validator?: string; stake?: string };
   /**
    * ExprUri
    */
@@ -139,7 +139,7 @@ export interface definitions {
     /**
      * price (in 10^-8 REV) of each unit of computation. typically 1
      */
-    phloPrice: number;
+    phloPrice: string;
     /**
      * number of a recent block
      */
@@ -167,7 +167,7 @@ export interface definitions {
     /**
      * in units of 10^-8 REV
      */
-    phloPrice?: number;
+    phloPrice?: string;
     validAfterBlockNumber?: number;
   };
   /**

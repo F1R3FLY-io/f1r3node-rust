@@ -83,7 +83,7 @@ curl http://localhost:40403/api/status
   "shardId": "root",
   "peers": 4,
   "nodes": 4,
-  "minPhloPrice": 1,
+  "minPhloPrice": "1",
   "peerList": [
     {"address": "rnode://...", "nodeId": "a5aec03d...", "host": "rnode.validator3", "protocolPort": 40400, "discoveryPort": 40404, "isConnected": true}
   ],
@@ -107,7 +107,7 @@ curl http://localhost:40403/api/status
 | `shardId` | string | Shard identifier |
 | `peers` | int | Connected peer count |
 | `nodes` | int | Discovered node count |
-| `minPhloPrice` | int | Minimum phlogiston price for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
+| `minPhloPrice` | decimal string | Minimum phlogiston price in dust for deploys — the chain-adopted floor once casper is up; until then the local genesis-seed value. `isReady: false` marks every value in this payload provisional |
 | `peerList` | array | Detailed peer info with connection status |
 | `nativeTokenName` | string | Full token name from genesis |
 | `nativeTokenSymbol` | string | Token ticker symbol |
@@ -243,7 +243,7 @@ Submit a signed deploy to the network. Validator nodes only.
 |-------|------|----------|-------------|
 | `data.term` | string | yes | Rholang source code |
 | `data.timestamp` | int | yes | Deploy timestamp (ms since epoch) |
-| `data.phloPrice` | int | yes | Phlogiston price per unit |
+| `data.phloPrice` | decimal string | yes | Phlogiston price per unit in dust, in [0, 2^256-1]. JSON numbers are rejected. |
 | `data.phloLimit` | int | yes | Maximum phlogiston to consume |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
@@ -259,7 +259,7 @@ curl -X POST http://localhost:40413/api/deploy \
     "data": {
       "term": "new stdout(`rho:io:stdout`) in { stdout!(42) }",
       "timestamp": 1700000000000,
-      "phloPrice": 10,
+      "phloPrice": "10",
       "phloLimit": 100000,
       "validAfterBlockNumber": 0,
       "shardId": "root"
@@ -383,7 +383,7 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `deployer` | string | Deployer public key (full only) |
 | `term` | string | Rholang source (full only) |
 | `systemDeployError` | string | System deploy error message (full only) |
-| `phloPrice` | int | Phlo price (full only) |
+| `phloPrice` | decimal string | Phlo price in dust (full only) |
 | `phloLimit` | int | Phlo limit (full only) |
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
@@ -459,7 +459,7 @@ curl http://localhost:40403/api/pending-deploys?deployer=04abc...
     {
       "term": "@1!(1)",
       "timestamp": 1700000000000,
-      "phloPrice": 1,
+      "phloPrice": "1",
       "phloLimit": 90000,
       "validAfterBlockNumber": 0,
       "shardId": "",
@@ -734,11 +734,11 @@ curl http://localhost:40453/api/validators
 ```json
 {
   "validators": [
-    {"publicKey": "04837a4cff...", "stake": 1000},
-    {"publicKey": "04fa70d7be...", "stake": 1000},
-    {"publicKey": "0457febafc...", "stake": 1000}
+    {"publicKey": "04837a4cff...", "stake": "1000"},
+    {"publicKey": "04fa70d7be...", "stake": "1000"},
+    {"publicKey": "0457febafc...", "stake": "1000"}
   ],
-  "totalStake": 3000,
+  "totalStake": "3000",
   "blockNumber": 30,
   "blockHash": "6bb5892d..."
 }
@@ -767,7 +767,7 @@ curl http://localhost:40453/api/validator/04837a4cff...
 
 Bonded validator:
 ```json
-{"publicKey": "04837a4cff...", "isBonded": true, "stake": 1000, "blockNumber": 4, "blockHash": "7701282c..."}
+{"publicKey": "04837a4cff...", "isBonded": true, "stake": "1000", "blockNumber": 4, "blockHash": "7701282c..."}
 ```
 
 Unknown key:

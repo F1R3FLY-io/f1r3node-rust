@@ -66,7 +66,7 @@ The `transfers-available` payload:
           {
             "from-addr": "1111...",
             "to-addr": "2222...",
-            "amount": 1000000,
+            "amount": "1000000",
             "success": true
           }
         ]
