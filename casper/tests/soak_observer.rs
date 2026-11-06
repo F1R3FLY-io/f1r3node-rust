@@ -109,9 +109,20 @@ async fn detached_capture_and_replay_include_evicted_metadata() {
         cold_snapshot.self_justification_map,
         full_snapshot.self_justification_map
     );
+    let cold_hash = &cold.chain[0].block_hash;
+    assert!(!cold_snapshot.finalized_block_set.contains(cold_hash));
+    assert!(cold_snapshot.blocks[cold_hash].metadata.finalized);
     let scratch = cold_snapshot.scratch_view().unwrap();
+    assert!(scratch.representation.is_finalized(cold_hash).unwrap());
     let mut fixture = live.detached_fixture().unwrap().build();
     for block in &cold.chain {
+        assert_eq!(
+            scratch
+                .representation
+                .is_finalized(&block.block_hash)
+                .unwrap(),
+            live.is_finalized(&block.block_hash).unwrap()
+        );
         assert_eq!(
             scratch.representation.lookup(&block.block_hash).unwrap(),
             live.lookup(&block.block_hash).unwrap()

@@ -499,7 +499,6 @@ fn capture_inner(
         state.block_number_map.clear();
         state.main_parent_map.clear();
         state.self_justification_map.clear();
-        state.finalized_block_set.clear();
     }
     let mut captured_blocks: BTreeMap<BlockHash, DetachedBlock> = BTreeMap::new();
     let mut parent_edges = 0usize;
@@ -565,9 +564,6 @@ fn capture_inner(
                 state
                     .self_justification_map
                     .insert(hash.clone(), justification.latest_block_hash.clone());
-            }
-            if metadata.finalized {
-                state.finalized_block_set.insert(hash.clone());
             }
         }
         let floor = match read_value(&mut reader, floor_raw, &key, &mut work)? {
