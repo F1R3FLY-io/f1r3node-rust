@@ -545,7 +545,7 @@ pub fn unsigned_block_proto_with_leaves(
 }
 
 // =========================================================================
-// Block hash — Merkle scheme v2
+// Block hash — Merkle scheme v3
 // =========================================================================
 //
 // Shape:
@@ -576,7 +576,7 @@ pub fn unsigned_block_proto_with_leaves(
 
 /// Scheme-version byte prepended to the header preimage.  Bumping this
 /// constant is a hard fork — see the file-level docstring.
-pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x02;
+pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x03;
 
 /// Interior-node domain byte used by `MERKLE_PARAMS`.
 const INTERIOR_DOMAIN: u8 = 0x01;
@@ -713,6 +713,8 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
+/// Merkle root over the bonds, sorted by validator. Each leaf is
+/// `Blake2b256(LEAF_BOND || BondProto encoding)`, whose stake is 32 bytes.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     let mut sorted: Vec<&Bond> = bonds.iter().collect();
     sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
@@ -2289,7 +2291,7 @@ mod merkle_block_hash_tests {
         // pre/post state hashes, sender = 33 zero bytes, timestamp =
         // 1_700_000_000_000, version = 1, shard_id = "test-shard",
         // sig_algorithm = "secp256k1".
-        const EXPECTED: &str = "3f3b12cd4da91b6c00c49db707da5c3ca210a65c8b9c0cffef6aa79e95d3e992";
+        const EXPECTED: &str = "602ea568b611a2a16415363ffd358f08afa358a231094bce24b755e8a6f631f2";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
 

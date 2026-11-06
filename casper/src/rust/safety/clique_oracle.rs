@@ -73,6 +73,9 @@ impl FtThreshold {
     }
 }
 
+/// Exact finalization test for θ = num/den: `strict=false` decides
+/// (2q−S)/S ≥ θ, `strict=true` decides > θ, both cleared of denominators as
+/// `2·q·den ⋛ S·(den+num)`. Expects den > 0 and num ∈ [-den, den].
 pub fn ft_decides_exact(
     agreeing: impl Into<BigInt>,
     q: impl Into<BigInt>,
