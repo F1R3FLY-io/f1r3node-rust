@@ -19,6 +19,7 @@ pub enum GeneratedMessage {
     Bundle(Bundle),
     Expr(Expr),
     If(If),
+    Foreach(Foreach),
 }
 
 // These two functions need to be under 'rholang' dir because of HasLocallyFree Trait.

@@ -15,8 +15,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     BindPattern, Bundle, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeq, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ETuple, EVar,
-    EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, New, Par,
-    ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    EZipper, Expr, Foreach, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match,
+    New, Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
@@ -329,6 +329,10 @@ impl DebruijnInterpreter {
             par.conditionals
                 .into_iter()
                 .map(GeneratedMessage::If)
+                .collect(),
+            par.foreaches
+                .into_iter()
+                .map(GeneratedMessage::Foreach)
                 .collect(),
             par.bundles
                 .into_iter()
@@ -1197,6 +1201,7 @@ impl DebruijnInterpreter {
                 result
             }
             GeneratedMessage::If(term) => self.eval_if(term, env, rand).await,
+            GeneratedMessage::Foreach(term) => self.eval_foreach(term, env, rand).await,
             GeneratedMessage::Bundle(term) => self.eval_bundle(term, env, rand).await,
             GeneratedMessage::Expr(term) => match &term.expr_instance {
                 Some(expr_instance) => match expr_instance {
@@ -1480,6 +1485,136 @@ impl DebruijnInterpreter {
                 actual_type: describe_par_type(&subst_cond),
             }),
         }
+    }
+
+    // f1r3lang-with-monads Stage B.2: native `foreach` evaluation per
+    // the paper's §4.2 one-step rule. For each element of the source
+    // collection, substitute it into the body (as `BoundVar(0)`,
+    // matching the single-binder convention), evaluate the body, and
+    // emit a send on `yield_name` carrying the body's normal form.
+    //
+    // The default aggregator is `ParMonoid` (parallel composition), so
+    // instead of folding into a single payload we fire one send per
+    // surviving contribution — the receiver's parallel composition on
+    // `yield_name` IS the aggregator. Empty source: one send with Nil
+    // as the ParMonoid unit.
+    //
+    // This explicitly does NOT implement the §4.7 reference
+    // translation (new/for/acc with an outer joiner). Conservativity
+    // (Prop 8.1) lets implementations evaluate foreach natively, and
+    // for synchronous data-level collections that's the simpler path.
+    async fn eval_foreach(
+        &self,
+        foreach: Foreach,
+        env: &Env<Par>,
+        rand: Blake2b512Random,
+    ) -> Result<(), InterpreterError> {
+        self.cost.charge(match_eval_cost())?;
+
+        // Evaluate the source to WHNF — expected shape: a Par whose
+        // single expr is an EList, ESet, or EMap body. Non-collection
+        // sources are treated as single-element sources (the aggregator
+        // receives exactly their normal form).
+        let source_par = foreach
+            .source
+            .as_ref()
+            .expect("Foreach.source: normalizer post-condition");
+        let evaled_source = self.eval_expr(source_par, env)?;
+        let subst_source =
+            self.substitute.substitute_and_charge(evaled_source, 0, env)?;
+
+        // Evaluate yield_name to resolve any BoundVar references.
+        let yield_name_par = foreach
+            .yield_name
+            .as_ref()
+            .expect("Foreach.yield_name: normalizer post-condition");
+        let evaled_yield = self.eval_expr(yield_name_par, env)?;
+        let subst_yield =
+            self.substitute.substitute_and_charge(evaled_yield, 0, env)?;
+
+        let body = foreach
+            .body
+            .as_ref()
+            .expect("Foreach.body: normalizer post-condition")
+            .clone();
+
+        // Project the source into its element sequence via a toBag
+        // morphism. For the Phase-4 built-ins:
+        //   - EList: elements in order.
+        //   - ESet:  elements as they appear.
+        //   - EMap:  key/value pairs projected as 2-tuples.
+        // Anything else is treated as a single-element source.
+        let elements: Vec<Par> = match single_expr(&subst_source) {
+            Some(Expr {
+                expr_instance: Some(ExprInstance::EListBody(l)),
+            }) => l.ps.clone(),
+            Some(Expr {
+                expr_instance: Some(ExprInstance::ESetBody(s)),
+            }) => s.ps.clone(),
+            Some(Expr {
+                expr_instance: Some(ExprInstance::EMapBody(m)),
+            }) => m
+                .kvs
+                .iter()
+                .map(|kv| {
+                    let k = kv.key.clone().unwrap_or_default();
+                    let v = kv.value.clone().unwrap_or_default();
+                    Par::default().with_exprs(vec![Expr {
+                        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                            ps: vec![k, v],
+                            locally_free: Vec::new(),
+                            connective_used: false,
+                        })),
+                    }])
+                })
+                .collect(),
+            _ => vec![subst_source.clone()],
+        };
+
+        // Empty source: publish the aggregator's unit (Nil for
+        // ParMonoid) so downstream consumers see a single publication,
+        // same as the paper's rule `rslt!(⊕_A ∅) = rslt!(ε_A)`.
+        if elements.is_empty() {
+            self.produce(
+                subst_yield,
+                ListParWithRandom {
+                    pars: vec![Par::default()],
+                    random_state: rand.to_bytes(),
+                },
+                false,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        // Per-element contribution: substitute each element into the
+        // body as BoundVar(0), then fold into a single Par via the
+        // aggregator — for the default ParMonoid that's Par's own
+        // `append` (parallel composition). The result is ONE send on
+        // yield_name carrying the combined contributions, matching
+        // the paper's `r!( ⊕_A { contrib(x) : x ∈ toBag(m) } )` rule.
+        let mut aggregate = Par::default();
+        for element in elements {
+            let element_env = env.clone().put(element);
+            let subst_body = self.substitute.substitute_no_sort_and_charge(
+                body.clone(),
+                0,
+                &element_env,
+            )?;
+            aggregate = aggregate.append(subst_body);
+        }
+
+        self.produce(
+            subst_yield,
+            ListParWithRandom {
+                pars: vec![aggregate],
+                random_state: rand.to_bytes(),
+            },
+            false,
+        )
+        .await?;
+
+        Ok(())
     }
 
     /**
