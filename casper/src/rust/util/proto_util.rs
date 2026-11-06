@@ -2195,6 +2195,46 @@ mod merkle_block_hash_tests {
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
 
+    /// A block with every field the hash commits to set.
+    fn populated_block() -> BlockMessage {
+        let mut b = empty_block();
+        b.header.parents_hash_list = vec![Bytes::from(vec![1; 32]), Bytes::from(vec![2; 32])];
+        b.header.extra_bytes = Bytes::from(vec![3; 4]);
+        b.header.chain_id = Bytes::from(vec![4; 32]);
+        b.body.state.pre_state_hash = Bytes::from(vec![5; 32]);
+        b.body.state.post_state_hash = Bytes::from(vec![6; 32]);
+        b.body.state.bonds = vec![Bond {
+            validator: Bytes::from(vec![7; 65]),
+            stake: 100,
+        }];
+        b.body.state.block_number = 42;
+        b.body.rejected_deploys = vec![RejectedDeploy {
+            sig: Bytes::from(vec![8; 64]),
+            duplicate: true,
+            carrier: Bytes::from(vec![9; 32]),
+        }];
+        b.body.applied_from_scope = vec![Bytes::from(vec![10; 64])];
+        b.body.merge_base = Bytes::from(vec![11; 32]);
+        b.body.extra_bytes = Bytes::from(vec![12; 4]);
+        b.body.system_deploys = vec![processed_system_deploy_slash(13)];
+        b.sender = Bytes::from(vec![14; 65]);
+        b.seq_num = 7;
+        b.extra_bytes = Bytes::from(vec![15; 4]);
+        b
+    }
+
+    /// Pins the hash of a block with every committed field set, so a field
+    /// dropped from or reordered in the preimage changes it.
+    #[test]
+    fn hash_block_populated_golden_hex() {
+        const EXPECTED: &str = "840bcc34f3360415d705c77dfb530902f52be4a245de0e893746e1b24b7ebfa2";
+        assert_eq!(
+            hex::encode(hash_block(&populated_block())),
+            EXPECTED,
+            "block-hash recipe changed"
+        );
+    }
+
     // ---------------------------------------------------------------
     // Performance guard: micro-bench of hash_block / hash_block_with_leaves
     // across representative block shapes.  Marked #[ignore] so it only

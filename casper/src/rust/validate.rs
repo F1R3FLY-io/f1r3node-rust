@@ -32,7 +32,7 @@
 //! dispatcher (`dispatch_handle_invalid_block`) records the block invalid
 //! together with its sibling.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -427,71 +427,7 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-slash-deploy-authorization-validation");
-        // The slash-authorization predicate (T-9.8) requires "target is
-        // currently bonded". For a received block whose `body.system_deploys`
-        // contains a SlashDeploy, "currently bonded" semantically means
-        // bonded at the BLOCK'S pre-state — i.e., in the bonds map carried
-        // by the block's actual parents (per `block.header.parents_hash_list`),
-        // not in whatever `s.on_chain_state.bonds_map` the validator's
-        // current snapshot picked from its independent `valid_latest_msgs`.
-        //
-        // These can diverge in multi-parent merge scenarios: the snapshot's
-        // chosen parents may include a sibling that has already applied the
-        // same slash (and so reports the target at stake 0), while the
-        // block-being-validated's actual parents may all be from a chain
-        // where the slash hadn't landed yet (so the target's stake is
-        // still positive). Without this rebind, slash-recovery proposals
-        // are spuriously rejected as `UnauthorizedSlashDeploy`.
-        //
-        // We rebind a transient bonds_map view from the block's actual
-        // parents (looked up via block_store) before delegating to
-        // `slash_deploy_authorization`, then restore the original. Using
-        // the union of validator stakes (max across parents) keeps the
-        // most-lenient view, which matches the proposer-side
-        // `authorized_slash_candidates` snapshot context.
-        let _saved_bonds_map = if block.body.system_deploys.iter().any(|sd| {
-            matches!(sd, ProcessedSystemDeploy::Succeeded {
-                system_deploy: SystemDeployData::Slash { .. },
-                ..
-            })
-        }) {
-            let mut parent_bonds: std::collections::HashMap<Validator, i64> =
-                std::collections::HashMap::new();
-            for parent_hash in &block.header.parents_hash_list {
-                let parent_block = match block_store.get(parent_hash) {
-                    Ok(Some(parent_block)) => parent_block,
-                    Ok(None) => return Either::Left(BlockError::MissingBlocks),
-                    Err(err) => {
-                        return Either::Left(BlockError::from_validation_error(CasperError::from(
-                            err,
-                        )));
-                    }
-                };
-                for bond in &parent_block.body.state.bonds {
-                    parent_bonds
-                        .entry(bond.validator.clone())
-                        .and_modify(|existing| {
-                            if bond.stake > *existing {
-                                *existing = bond.stake;
-                            }
-                        })
-                        .or_insert(bond.stake);
-                }
-            }
-            if parent_bonds.is_empty() {
-                None
-            } else {
-                let saved = std::mem::replace(&mut s.on_chain_state.bonds_map, parent_bonds);
-                Some(saved)
-            }
-        } else {
-            None
-        };
-        let slash_auth_outcome = Self::slash_deploy_authorization(block, s);
-        if let Some(saved) = _saved_bonds_map {
-            s.on_chain_state.bonds_map = saved;
-        }
-        match slash_auth_outcome {
+        match Self::slash_deploy_authorization(block, s, block_store) {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
@@ -1542,26 +1478,47 @@ impl Validate {
         }
     }
 
-    /// Tier-2 validation gate for received `Slash` system deploys. Delegates
-    /// to `slashing_authorization::validate_received_slash_deploys` and
-    /// distinguishes two failure classes:
-    ///
-    /// * `CasperError::SlashAuth(_)` — the receive-side authorization
-    ///   predicate (4-conjunct check) rejected the slash deploy. The block
-    ///   author is Byzantine; collapse to
-    ///   `InvalidBlock::UnauthorizedSlashDeploy`, which is itself slashable
-    ///   per `block_status::is_slashable` and the T-9.3 catch-all dispatcher.
-    /// * any other `CasperError` (storage I/O, runtime, history) — the local
-    ///   node experienced an infrastructure failure unrelated to the block
-    ///   author's behavior. Propagate as `BlockError::from_validation_error(e)`;
-    ///   do NOT slash the block sender for a fault attributable to local
-    ///   infrastructure. Bug-fix rationale: see
-    ///   docs/casper/theory/slashing/design/09-bug-fixes-and-rationale.md §9.14.
+    /// Judges the block's `Slash` system deploys against the bonds of its own
+    /// parents: each validator's highest stake across the parents'
+    /// post-states. Those depend on the block alone, so every node reaches
+    /// the same verdict; a block without parents bonds nobody.
     pub fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,
+        block_store: &KeyValueBlockStore,
     ) -> ValidBlockProcessing {
-        Self::route_slash_validation_outcome(block, validate_received_slash_deploys(block, s))
+        let carries_slash = block.body.system_deploys.iter().any(|deploy| {
+            matches!(deploy, ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { .. },
+                ..
+            })
+        });
+        if !carries_slash {
+            return Either::Right(ValidBlock::Valid);
+        }
+        let mut bonds: HashMap<Validator, i64> = HashMap::new();
+        for parent_hash in &block.header.parents_hash_list {
+            let parent = match block_store.get(parent_hash) {
+                Ok(Some(parent)) => parent,
+                Ok(None) => return Either::Left(BlockError::MissingBlocks),
+                Err(err) => {
+                    return Either::Left(BlockError::from_validation_error(CasperError::from(err)))
+                }
+            };
+            for bond in &parent.body.state.bonds {
+                let stake = bonds.entry(bond.validator.clone()).or_insert(bond.stake);
+                *stake = (*stake).max(bond.stake);
+            }
+        }
+        Self::route_slash_validation_outcome(
+            block,
+            validate_received_slash_deploys(
+                block,
+                &bonds,
+                &s.on_chain_state.shard_conf.shard_name,
+                &s.chain_id,
+            ),
+        )
     }
 
     /// Routes the outcome of `validate_received_slash_deploys` into the

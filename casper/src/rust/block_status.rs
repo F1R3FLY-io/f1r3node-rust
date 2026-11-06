@@ -100,13 +100,10 @@ pub enum InvalidBlock {
     InvalidTransaction,
     InvalidBondsCache,
     InvalidBlockHash,
-    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy that
-    // fails the authorization predicate (wrong epoch, missing/non-invalid
-    // evidence, unbonded offender, duplicate target, or issuer ≠ sender).
-    // Raised by `Validate::slash_deploy_authorization`; the rules are in
-    // `slashing_authorization.rs::validate_received_slash_deploys` and
-    // proven sufficient by Theorem T-9.13 (see
-    // `formal/rocq/slashing/theories/BugFixSlashAuthorization.v`).
+    // UnauthorizedSlashDeploy: a block carries a `Slash` system deploy whose
+    // evidence proves no equivocation on this shard and chain, whose offender
+    // is unbonded or slashed twice, or whose issuer is not the block's sender
+    // (`slashing_authorization::validate_received_slash_deploys`).
     UnauthorizedSlashDeploy,
     InvalidRejectedDeploy,
     // PrematureDeployRetry: a rejected sig re-included before its latest

@@ -190,9 +190,8 @@ pub(crate) async fn compute_snapshot<T: TransportLayer + Send + Sync>(
     // The bonded-set ("most-slashed" intersection) parent filter that
     // previously occupied the else-arm below was removed. Committee/bonds
     // are now validated against the finalized floor
-    // (`Validate::bonds_cache_from_floor`) together with
-    // `neglected_invalid_block` — both validator-side and finalization-
-    // anchored. A proposer-side parent filter cannot be a consensus-safety
+    // (`Validate::bonds_cache_from_floor`), validator-side and
+    // finalization-anchored. A proposer-side parent filter cannot be a consensus-safety
     // mechanism (validators replay declared parents, not fork-choice), so it
     // was redundant. See docs/sealed-floor-merge-v2-status.md.
     let fork_choice_floor = crate::rust::finality::floor::fork_choice_floor(

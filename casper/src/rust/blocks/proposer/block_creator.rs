@@ -1690,12 +1690,8 @@ fn storage_has_unresolved_in_scope_deploys(
         .any(|deploy| casper_snapshot.deploys_in_scope.contains(&deploy.sig))
 }
 
-/// Pure-function filter extracted for unit testing. Keeps an
-/// invalid-latest-message entry only if the equivocator is still
-/// slashable in the parent post-state — i.e., bonded with positive
-/// stake AND in the PoS active-validator set. The active-validator
-/// check matters when bond floor > 0: a validator slashed in a parent
-/// retains stake at the floor, satisfying the bonded check, but PoS
+/// The slashes a bonded proposer's block issues: one for each bonded
+/// offender whose equivocation this node holds.
 async fn prepare_slashing_deploys(
     casper_snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
@@ -3037,9 +3033,9 @@ pub async fn create_with_progress(
     )
     .record(__merge_pre_t.elapsed().as_secs_f64());
 
-    // Targets were picked from the floor's bonds, before the merge; an
-    // offender the pre-state already shows unbonded was slashed by a parent,
-    // and slashing it again is unauthorized once the floor shows it too.
+    // Targets were picked from the snapshot's bonds, before the merge; an
+    // offender the merged pre-state shows unbonded was already slashed by a
+    // parent.
     let slashing_deploys = {
         let pre_state_bonds = runtime_manager.compute_bonds(&merge_pre_info.state).await?;
         let mut still_bonded = Vec::with_capacity(slashing_deploys.len());

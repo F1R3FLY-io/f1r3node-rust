@@ -125,8 +125,8 @@ pub trait Casper {
 
     /// Validate a self-created block, skipping the expensive checkpoint replay and bonds_cache
     /// steps since both were already computed during `block_creator::create`.
-    /// All other validation steps (block_summary, neglected_invalid_block, phlo_price,
-    /// equivocation checks, block-index computation) still run.
+    /// All other validation steps (shard and chain identity, equivocation, block_summary,
+    /// neglect, phlo_price, block-index computation) still run.
     async fn validate_self_created(
         &self,
         block: &BlockMessage,

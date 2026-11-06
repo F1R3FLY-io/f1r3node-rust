@@ -33,8 +33,6 @@ use super::detector_totality_helpers::{block, justification, DetectorFixture};
 const CHAIN: [u8; 32] = [0xC1; 32];
 
 fn snapshot(fixture: &DetectorFixture, bonded: &[Bytes]) -> CasperSnapshot {
-    let mut shard_conf = CasperShardConf::new();
-    shard_conf.shard_name = "root".to_string();
     CasperSnapshot {
         chain_id: Bytes::from_static(&CHAIN),
         dag: fixture
@@ -50,7 +48,7 @@ fn snapshot(fixture: &DetectorFixture, bonded: &[Bytes]) -> CasperSnapshot {
         max_block_num: 10_000,
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
-            shard_conf,
+            shard_conf: CasperShardConf::new(),
             bonds_map: bonded
                 .iter()
                 .map(|validator| (validator.clone(), 100))
@@ -185,45 +183,49 @@ async fn an_unbonded_offender_is_no_candidate() {
     assert!(candidates.is_empty());
 }
 
-#[tokio::test]
-async fn a_received_slash_proving_an_equivocation_of_a_bonded_offender_is_accepted() {
-    let fixture = DetectorFixture::new().await;
+/// Judges `block`'s slashes as a node of shard `root` and chain `CHAIN`
+/// whose parents bond `stakes`.
+fn received(block: &BlockMessage, stakes: &[(Bytes, i64)]) -> Result<(), CasperError> {
+    let bonds: HashMap<Bytes, i64> = stakes.iter().cloned().collect();
+    validate_received_slash_deploys(block, &bonds, "root", &CHAIN)
+}
+
+#[test]
+fn a_received_slash_proving_an_equivocation_of_a_bonded_offender_is_accepted() {
     let (offender, proposer) = (key(0x11), public(&key(0x22)));
     let pair = evidence(&signed(&offender, 3, 1), &signed(&offender, 3, 2));
     let block = carrier(&proposer, vec![slash(pair, &proposer)]);
 
-    validate_received_slash_deploys(&block, &snapshot(&fixture, &[public(&offender), proposer]))
+    received(&block, &[(public(&offender), 100), (proposer, 100)])
         .expect("a slash any node can check is accepted, at any height");
 }
 
-#[tokio::test]
-async fn a_received_slash_issued_by_another_validator_is_rejected() {
-    let fixture = DetectorFixture::new().await;
+#[test]
+fn a_received_slash_issued_by_another_validator_is_rejected() {
     let (offender, proposer) = (key(0x11), public(&key(0x22)));
     let pair = evidence(&signed(&offender, 3, 1), &signed(&offender, 3, 2));
     let block = carrier(&proposer, vec![slash(pair, &public(&key(0x33)))]);
 
     assert!(matches!(
-        auth_error(validate_received_slash_deploys(
-            &block,
-            &snapshot(&fixture, &[public(&offender), proposer])
-        )),
+        auth_error(received(&block, &[
+            (public(&offender), 100),
+            (proposer, 100)
+        ])),
         SlashAuthError::IssuerMismatch { .. }
     ));
 }
 
-#[tokio::test]
-async fn a_received_slash_whose_evidence_is_not_an_equivocation_is_rejected() {
-    let fixture = DetectorFixture::new().await;
+#[test]
+fn a_received_slash_whose_evidence_is_not_an_equivocation_is_rejected() {
     let (offender, proposer) = (key(0x11), public(&key(0x22)));
     let pair = evidence(&signed(&offender, 3, 1), &signed(&offender, 4, 2));
     let block = carrier(&proposer, vec![slash(pair, &proposer)]);
 
     assert_eq!(
-        auth_error(validate_received_slash_deploys(
-            &block,
-            &snapshot(&fixture, &[public(&offender), proposer])
-        )),
+        auth_error(received(&block, &[
+            (public(&offender), 100),
+            (proposer, 100)
+        ])),
         SlashAuthError::NotAnEquivocation {
             reason: "the blocks have different sequence numbers"
         }
@@ -241,9 +243,8 @@ fn signed_elsewhere(key: &PrivateKey, seq_num: i32, shard: &str, chain: &[u8]) -
     b
 }
 
-#[tokio::test]
-async fn a_received_slash_citing_a_block_of_another_shard_or_chain_is_rejected() {
-    let fixture = DetectorFixture::new().await;
+#[test]
+fn a_received_slash_citing_a_block_of_another_shard_or_chain_is_rejected() {
     let (offender, proposer) = (key(0x11), public(&key(0x22)));
     let here = signed(&offender, 3, 1);
     for elsewhere in [
@@ -255,10 +256,10 @@ async fn a_received_slash_citing_a_block_of_another_shard_or_chain_is_rejected()
             &proposer,
         )]);
         assert_eq!(
-            auth_error(validate_received_slash_deploys(
-                &block,
-                &snapshot(&fixture, &[public(&offender), proposer.clone()])
-            )),
+            auth_error(received(&block, &[
+                (public(&offender), 100),
+                (proposer.clone(), 100)
+            ])),
             SlashAuthError::NotAnEquivocation {
                 reason: "a block belongs to another shard or chain"
             },
@@ -269,25 +270,25 @@ async fn a_received_slash_citing_a_block_of_another_shard_or_chain_is_rejected()
     }
 }
 
-#[tokio::test]
-async fn a_received_slash_of_an_unbonded_offender_is_rejected() {
-    let fixture = DetectorFixture::new().await;
+#[test]
+fn a_received_slash_of_an_unbonded_or_already_slashed_offender_is_rejected() {
     let (offender, proposer) = (key(0x11), public(&key(0x22)));
     let pair = evidence(&signed(&offender, 3, 1), &signed(&offender, 3, 2));
     let block = carrier(&proposer, vec![slash(pair, &proposer)]);
 
-    assert!(matches!(
-        auth_error(validate_received_slash_deploys(
-            &block,
-            &snapshot(&fixture, &[proposer])
-        )),
-        SlashAuthError::TargetNotBonded { .. }
-    ));
+    for stakes in [vec![(proposer.clone(), 100)], vec![
+        (public(&offender), 0),
+        (proposer.clone(), 100),
+    ]] {
+        assert!(matches!(
+            auth_error(received(&block, &stakes)),
+            SlashAuthError::TargetNotBonded { .. }
+        ));
+    }
 }
 
-#[tokio::test]
-async fn a_block_slashing_one_offender_twice_is_rejected() {
-    let fixture = DetectorFixture::new().await;
+#[test]
+fn a_block_slashing_one_offender_twice_is_rejected() {
     let (offender, proposer) = (key(0x11), public(&key(0x22)));
     let at_3 = evidence(&signed(&offender, 3, 1), &signed(&offender, 3, 2));
     let at_5 = evidence(&signed(&offender, 5, 3), &signed(&offender, 5, 4));
@@ -297,10 +298,10 @@ async fn a_block_slashing_one_offender_twice_is_rejected() {
     ]);
 
     assert!(matches!(
-        auth_error(validate_received_slash_deploys(
-            &block,
-            &snapshot(&fixture, &[public(&offender), proposer])
-        )),
+        auth_error(received(&block, &[
+            (public(&offender), 100),
+            (proposer, 100)
+        ])),
         SlashAuthError::DuplicateTarget { .. }
     ));
 }

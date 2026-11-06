@@ -7,7 +7,7 @@ use casper::rust::util::construct_deploy;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, DeployData, ProcessedSystemDeploy, SystemDeployData,
+    BlockMessage, DeployData, EquivocationEvidence, ProcessedSystemDeploy, SystemDeployData,
 };
 use rspace_plus_plus::rspace::history::Either;
 
@@ -36,13 +36,21 @@ async fn network(validators: usize, epoch_length: Option<i32>) -> (Vec<TestNode>
     (nodes, shard_id)
 }
 
-fn carries_slash(block: &BlockMessage) -> bool {
-    block.body.system_deploys.iter().any(|deploy| {
-        matches!(deploy, ProcessedSystemDeploy::Succeeded {
-            system_deploy: SystemDeployData::Slash { .. },
-            ..
+fn carries_slash(block: &BlockMessage) -> bool { !slash_evidence(block).is_empty() }
+
+fn slash_evidence(block: &BlockMessage) -> Vec<EquivocationEvidence> {
+    block
+        .body
+        .system_deploys
+        .iter()
+        .filter_map(|deploy| match deploy {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy: SystemDeployData::Slash { evidence, .. },
+                ..
+            } => Some((**evidence).clone()),
+            _ => None,
         })
-    })
+        .collect()
 }
 
 fn cites(block: &BlockMessage, validator: &BlockHash) -> Option<BlockHash> {
@@ -128,6 +136,11 @@ async fn validators_that_saw_an_equivocation_in_opposite_orders_accept_each_othe
     assert!(
         carries_slash(&from_v1) && carries_slash(&from_v2),
         "both slash v0"
+    );
+    assert_eq!(
+        slash_evidence(&from_v1),
+        slash_evidence(&from_v2),
+        "both issue the same evidence, whichever block each flagged"
     );
 
     let v2_judges_v1 = nodes[2]
@@ -216,6 +229,24 @@ async fn sibling_after_chain(chain: usize, arrival: Arrival) {
         carries_slash(&next),
         "chain {chain}: v1's next block slashes v0"
     );
+
+    for block in &blocks {
+        accept(&mut nodes[2], block, "v2 accepts v0's chain").await;
+    }
+    let v2_sibling = nodes[2]
+        .process_block(sibling.clone())
+        .await
+        .expect("v2 sibling");
+    assert!(
+        is_equivocation(&v2_sibling),
+        "chain {chain}: v2 sibling {v2_sibling:?}"
+    );
+    accept(
+        &mut nodes[2],
+        &next,
+        &format!("chain {chain}: v2 judges v1's slash"),
+    )
+    .await;
 }
 
 #[serial_test::serial]

@@ -2,6 +2,7 @@
 //!
 //! This module provides custom JSON serialization for protobuf types that don't have serde derives by default.
 
+use casper::rust::util::proto_util;
 use models::casper::{
     BlockCommitmentProto, BondInfo, CloseBlockSystemDeployDataProto, HeaderProto,
     JustificationInfo, PeekProto, RejectedDeployInfo, ReportCommProto, ReportConsumeProto,
@@ -9,6 +10,7 @@ use models::casper::{
     SystemDeployDataProto, SystemDeployInfoWithEventData,
 };
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
+use models::rust::casper::protocol::casper_message::BlockCommitment;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -76,7 +78,7 @@ impl From<RejectedDeployInfoSerde> for RejectedDeployInfo {
     fn from(data: RejectedDeployInfoSerde) -> Self { Self { sig: data.sig } }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct HeaderSerde {
     #[serde(rename = "parentsHashList", with = "base64_bytes::list")]
     pub parents_hash_list: Vec<Vec<u8>>,
@@ -112,9 +114,11 @@ impl From<HeaderSerde> for HeaderProto {
     }
 }
 
-/// A block as its hash and signature commit to it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+/// A block as its hash and signature commit to it, with the hash.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BlockCommitmentSerde {
+    #[serde(rename = "blockHash", with = "base64_bytes")]
+    pub block_hash: Vec<u8>,
     pub header: HeaderSerde,
     #[serde(rename = "preStateHash", with = "base64_bytes")]
     pub pre_state_hash: Vec<u8>,
@@ -148,31 +152,33 @@ pub struct BlockCommitmentSerde {
     pub sig: Vec<u8>,
 }
 
-// The JSON mirrors the proto, where an absent message field reads as the
-// message's default value.
 impl From<BlockCommitmentProto> for BlockCommitmentSerde {
     fn from(data: BlockCommitmentProto) -> Self {
+        let commitment = BlockCommitment::from_proto(data)
+            .expect("a reported commitment is built from a block, so it has a header");
         Self {
-            header: data.header.map(HeaderSerde::from).unwrap_or_default(),
-            pre_state_hash: data.pre_state_hash.to_vec(),
-            post_state_hash: data.post_state_hash.to_vec(),
-            bonds_root: data.bonds_root.to_vec(),
-            block_number: data.block_number,
-            rejected_root: data.rejected_root.to_vec(),
-            applied_from_scope_root: data.applied_from_scope_root.to_vec(),
-            merge_base: data.merge_base.to_vec(),
-            body_extra_bytes: data.body_extra_bytes.to_vec(),
-            sender: data.sender.to_vec(),
-            sig_algorithm: data.sig_algorithm,
-            seq_num: data.seq_num,
-            shard_id: data.shard_id,
-            extra_bytes: data.extra_bytes.to_vec(),
-            deploys_root: data.deploys_root.to_vec(),
-            sig: data.sig.to_vec(),
+            block_hash: proto_util::commitment_hash(&commitment).to_vec(),
+            header: commitment.header.to_proto().into(),
+            pre_state_hash: commitment.pre_state_hash.to_vec(),
+            post_state_hash: commitment.post_state_hash.to_vec(),
+            bonds_root: commitment.bonds_root.to_vec(),
+            block_number: commitment.block_number,
+            rejected_root: commitment.rejected_root.to_vec(),
+            applied_from_scope_root: commitment.applied_from_scope_root.to_vec(),
+            merge_base: commitment.merge_base.to_vec(),
+            body_extra_bytes: commitment.body_extra_bytes.to_vec(),
+            sender: commitment.sender.to_vec(),
+            sig_algorithm: commitment.sig_algorithm,
+            seq_num: commitment.seq_num,
+            shard_id: commitment.shard_id,
+            extra_bytes: commitment.extra_bytes.to_vec(),
+            deploys_root: commitment.deploys_root.to_vec(),
+            sig: commitment.sig.to_vec(),
         }
     }
 }
 
+// `block_hash` is derived from the other fields, so it is not carried back.
 impl From<BlockCommitmentSerde> for BlockCommitmentProto {
     fn from(data: BlockCommitmentSerde) -> Self {
         Self {
@@ -212,12 +218,12 @@ impl From<SlashSystemDeployDataProto> for SlashSystemDeployDataSerde {
             issuer_public_key: data.issuer_public_key.to_vec(),
             first: data
                 .first
-                .map(BlockCommitmentSerde::from)
-                .unwrap_or_default(),
+                .expect("a reported slash carries both blocks of its evidence")
+                .into(),
             second: data
                 .second
-                .map(BlockCommitmentSerde::from)
-                .unwrap_or_default(),
+                .expect("a reported slash carries both blocks of its evidence")
+                .into(),
         }
     }
 }
@@ -577,6 +583,17 @@ mod tests {
                 .into();
 
         assert_eq!(back, proto);
+    }
+
+    #[test]
+    fn each_evidence_block_reports_its_hash() {
+        let serde = SlashSystemDeployDataSerde::from(slash(9));
+        for (reported, seed) in [(&serde.first, 1), (&serde.second, 20)] {
+            let expected = proto_util::commitment_hash(
+                &BlockCommitment::from_proto(commitment(seed)).unwrap(),
+            );
+            assert_eq!(reported.block_hash, expected.to_vec());
+        }
     }
 
     fn sample_par() -> Par {

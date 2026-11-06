@@ -7,7 +7,7 @@
 //! equivocation in and whichever of its blocks they hold.
 
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use models::rust::block_hash::BlockHash;
@@ -185,13 +185,15 @@ pub fn authorized_slash_candidates(
 }
 
 /// Every succeeded `Slash` system deploy in `block` must be issued by the
-/// block's sender, carry evidence that proves an equivocation, target a
-/// validator bonded in the block's pre-state, and be the block's only slash
-/// of that validator. Any violation rejects the block as
-/// `InvalidBlock::UnauthorizedSlashDeploy`.
+/// block's sender, carry evidence that proves an equivocation on the chain
+/// `chain_id` of shard `shard_id`, target a validator with positive stake in
+/// `bonds`, and be the block's only slash of that validator. Any violation
+/// rejects the block as `InvalidBlock::UnauthorizedSlashDeploy`.
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,
-    snapshot: &CasperSnapshot,
+    bonds: &HashMap<Validator, i64>,
+    shard_id: &str,
+    chain_id: &[u8],
 ) -> Result<(), CasperError> {
     let mut slashed = HashSet::new();
     for system_deploy in &block.body.system_deploys {
@@ -215,12 +217,8 @@ pub fn validate_received_slash_deploys(
             }
             .into());
         }
-        let offender = equivocator_proven_by(
-            evidence,
-            &snapshot.on_chain_state.shard_conf.shard_name,
-            &snapshot.chain_id,
-        )?;
-        if !bonded(snapshot, &offender) {
+        let offender = equivocator_proven_by(evidence, shard_id, chain_id)?;
+        if !bonds.get(&offender).is_some_and(|stake| *stake > 0) {
             return Err(SlashAuthError::TargetNotBonded {
                 validator: hex::encode(&offender),
             }
@@ -326,10 +324,21 @@ mod tests {
         let mut altered_block = b.clone();
         altered_block.post_state_hash = vec![0xAB; 32].into();
         let altered = ordered(a.clone(), altered_block);
+        let short_sender = {
+            let (mut a, mut b) = (a.clone(), b.clone());
+            a.sender = vec![0x04; 33].into();
+            b.sender = a.sender.clone();
+            ordered(a, b)
+        };
         let other_shard = ordered(a.clone(), signed_for(&secret, 4, 2, "other", &CHAIN));
         let other_chain = ordered(a.clone(), signed_for(&secret, 4, 2, SHARD, &[0xC2; 32]));
 
         for (name, evidence, reason) in [
+            (
+                "a sender that is not a validator key",
+                short_sender,
+                "the sender is not a validator key",
+            ),
             (
                 "a block of another shard",
                 other_shard,
