@@ -32,6 +32,7 @@ use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::Bond;
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
+use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{sort_by_metered, NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::MissingBlockContext;
 
@@ -620,7 +621,9 @@ pub async fn floor_of_view_metered<W: WorkMeter>(
     }
     let settled = containment_reference(meter, dag, block_store, current, ftt).await?;
     let mut memo = IntroducedSigsMemo::new();
-    match state_contains_metered(meter, dag, block_store, &derived, &settled, &mut memo) {
+    match in_blocking(|| {
+        state_contains_metered(meter, dag, block_store, &derived, &settled, &mut memo)
+    }) {
         Ok(true) => Ok(FloorOfView::Advance(derived)),
         Ok(false) => {
             tracing::warn!(
@@ -1006,79 +1009,82 @@ async fn derive_floor_metered<W: WorkMeter>(
             .then_with(|| b.hash.cmp(&a.hash))
     })?;
 
-    let mut chosen: Option<Floor> = None;
-    let mut memo = IntroducedSigsMemo::new();
-    'cands: for cand in ordered {
-        meter.step(WorkKind::Traversal)?;
-        meter.allocate(4, 256)?;
-        for other in &inherited_floors {
+    let chosen = in_blocking(|| -> Result<Option<Floor>, CasperError> {
+        let mut chosen: Option<Floor> = None;
+        let mut memo = IntroducedSigsMemo::new();
+        'cands: for cand in ordered {
             meter.step(WorkKind::Traversal)?;
             meter.allocate(4, 256)?;
-            if other.hash == cand.hash {
-                continue;
-            }
-            let sound_with_other =
-                if state_contains_metered(meter, dag, block_store, cand, other, &mut memo)? {
-                    true
-                } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
-                    // `other` is NOT in `cand`'s DAG past, so its chains are
-                    // expected back as this merge's diffs, with the merge-time
-                    // settled-rejection tripwire guarding the re-application.
-                    // (That expectation is weaker than it reads since the base
-                    // became the main parent — see the CAVEAT above.) Sound ONLY when
-                    // `cand` is a pure cut — it introduces no sigs of its own
-                    // relative to its meet with `other`. A competing branch
-                    // with content of its own must never become the settled
-                    // position: its content can be exactly what the canonical
-                    // chain rejected, and every future canonical floor would
-                    // then be refused against it (the floor deadlocks instead
-                    // of advancing — observed when the reproduction's eraser R
-                    // slipped in as a floor through the join block's parents).
-                    let mut re_merged = false;
-                    for parent in parents {
-                        meter.step(WorkKind::Traversal)?;
-                        meter.allocate(4, 256)?;
-                        if dag.is_dag_ancestor_metered(meter, &other.hash, parent)?
-                            && dag.is_dag_ancestor_metered(meter, &cand.hash, parent)?
-                        {
-                            re_merged = true;
-                            break;
+            for other in &inherited_floors {
+                meter.step(WorkKind::Traversal)?;
+                meter.allocate(4, 256)?;
+                if other.hash == cand.hash {
+                    continue;
+                }
+                let sound_with_other =
+                    if state_contains_metered(meter, dag, block_store, cand, other, &mut memo)? {
+                        true
+                    } else if !dag.is_dag_ancestor_metered(meter, &other.hash, &cand.hash)? {
+                        // `other` is NOT in `cand`'s DAG past, so its chains are
+                        // expected back as this merge's diffs, with the merge-time
+                        // settled-rejection tripwire guarding the re-application.
+                        // (That expectation is weaker than it reads since the base
+                        // became the main parent — see the CAVEAT above.) Sound ONLY when
+                        // `cand` is a pure cut — it introduces no sigs of its own
+                        // relative to its meet with `other`. A competing branch
+                        // with content of its own must never become the settled
+                        // position: its content can be exactly what the canonical
+                        // chain rejected, and every future canonical floor would
+                        // then be refused against it (the floor deadlocks instead
+                        // of advancing — observed when the reproduction's eraser R
+                        // slipped in as a floor through the join block's parents).
+                        let mut re_merged = false;
+                        for parent in parents {
+                            meter.step(WorkKind::Traversal)?;
+                            meter.allocate(4, 256)?;
+                            if dag.is_dag_ancestor_metered(meter, &other.hash, parent)?
+                                && dag.is_dag_ancestor_metered(meter, &cand.hash, parent)?
+                            {
+                                re_merged = true;
+                                break;
+                            }
                         }
-                    }
-                    if re_merged {
-                        match state_lineage_meet_metered(meter, dag, &cand.hash, &other.hash)? {
-                            StateLineage::Meet(meet) => segment_introduced_sigs_metered(
-                                meter,
-                                dag,
-                                block_store,
-                                &cand.hash,
-                                &meet,
-                                &mut memo,
-                            )?
-                            .is_empty(),
-                            StateLineage::Disconnected => false,
+                        if re_merged {
+                            match state_lineage_meet_metered(meter, dag, &cand.hash, &other.hash)? {
+                                StateLineage::Meet(meet) => segment_introduced_sigs_metered(
+                                    meter,
+                                    dag,
+                                    block_store,
+                                    &cand.hash,
+                                    &meet,
+                                    &mut memo,
+                                )?
+                                .is_empty(),
+                                StateLineage::Disconnected => false,
+                            }
+                        } else {
+                            false
                         }
                     } else {
                         false
-                    }
-                } else {
-                    false
-                };
-            if !sound_with_other {
-                tracing::debug!(
-                    target: "f1r3.trace.floor",
-                    candidate = %PrettyPrinter::build_string_bytes(&cand.hash),
-                    candidate_number = cand.block_number,
-                    inherited = %PrettyPrinter::build_string_bytes(&other.hash),
-                    inherited_number = other.block_number,
-                    "floor candidate skipped: neither captures nor re-merges an inherited floor"
-                );
-                continue 'cands;
+                    };
+                if !sound_with_other {
+                    tracing::debug!(
+                        target: "f1r3.trace.floor",
+                        candidate = %PrettyPrinter::build_string_bytes(&cand.hash),
+                        candidate_number = cand.block_number,
+                        inherited = %PrettyPrinter::build_string_bytes(&other.hash),
+                        inherited_number = other.block_number,
+                        "floor candidate skipped: neither captures nor re-merges an inherited floor"
+                    );
+                    continue 'cands;
+                }
             }
+            chosen = Some(cand.clone());
+            break;
         }
-        chosen = Some(cand.clone());
-        break;
-    }
+        Ok(chosen)
+    })?;
 
     let floor = chosen.ok_or_else(|| {
         CasperError::IncompatibleFinalizedFork(format!(
