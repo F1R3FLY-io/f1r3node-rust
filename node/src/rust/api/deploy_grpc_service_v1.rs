@@ -338,6 +338,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             show_justification_lines: request.show_justification_lines,
         };
         let start_block_number = request.start_block_number;
+        let max_depth_limit = self.api_max_blocks_limit;
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let engine_cell = self.engine_cell.clone();
         let key_value_block_store = self.key_value_block_store.clone();
@@ -349,6 +350,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             match BlockAPI::visualize_dag(
                 &engine_cell,
                 depth,
+                max_depth_limit,
                 start_block_number,
                 |ts, lfb| {
                     let ser = ser.clone();

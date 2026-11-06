@@ -2,17 +2,23 @@
 //! Expired, Failed — written write-once into the DAG storage's lifecycle
 //! tables. The status API reads them; it never computes.
 //!
-//! A verdict is a pure function of the adopted LFB, block bodies and the
-//! sig's open event row, so it can change only when the LFB advances. The
+//! A verdict is a pure function of the verdict basis, block bodies and the
+//! sig's open event row, so it can change only when the basis advances. The
 //! finalizer runs [`settle`] after every cycle, so an advance is settled even
 //! when the cycle that persisted it did not finish; nothing else writes
 //! verdicts.
 //!
-//! Verdict rules, against the adopted LFB:
+//! The basis is the floor of the adopted LFB ([`verdict_basis`]), never the
+//! LFB itself. Two blocks at one height can both be finalized; the merge
+//! above them bases on one and can reject the other's conflicting deploys,
+//! so the adopted LFB's own state is not settled. The floor's is: every
+//! later block inherits it and must contain its state.
+//!
+//! Verdict rules, against the basis:
 //! - **Finalized** ⟺ a successful execution or a re-application of the sig
-//!   lies on the LFB's state lineage (the recorded `merge_base` chain).
+//!   lies on the basis's state lineage (the recorded `merge_base` chain).
 //! - **Failed** ⟺ beyond the contestability bound, not on that lineage, and
-//!   an `is_failed` execution lies in the LFB's DAG closure.
+//!   an `is_failed` execution lies in the basis's DAG closure.
 //! - **Expired** ⟺ beyond the bound, not on that lineage, and no failed
 //!   execution in the closure.
 //!
@@ -39,7 +45,9 @@ use prost::bytes::Bytes;
 use shared::rust::store::key_value_store::MissingBlockContext;
 
 use super::block_facts::{block_facts, BlockFacts, LineageNext};
+use super::floor::floor_of_block;
 use crate::rust::errors::CasperError;
+use crate::rust::safety::clique_oracle::FtThreshold;
 
 /// The citability horizon: how far below the LFB an admissible block can
 /// still cite. Derives from `max_parent_depth` ALONE (shard config — the
@@ -297,12 +305,22 @@ pub(crate) struct Settled {
     pub(crate) walked: usize,
 }
 
-/// Writes every verdict the adopted LFB in `dag` now decides. Every input
-/// comes from `dag` and the store, so the clock and the view can never
-/// disagree; `memo` only spares re-reading lineage an earlier settle read.
+/// The floor of `dag`'s adopted LFB: the position [`settle`] judges against.
+pub(crate) async fn verdict_basis(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    ftt: FtThreshold,
+) -> Result<BlockHash, CasperError> {
+    let lfb = dag.last_finalized_block();
+    Ok(floor_of_block(dag, block_store, &lfb, ftt).await?.hash)
+}
+
+/// Writes every verdict `basis` now decides. `memo` only spares re-reading
+/// lineage an earlier settle read.
 pub(crate) fn settle(
     dag: &KeyValueDagRepresentation,
     block_store: &KeyValueBlockStore,
+    basis: &BlockHash,
     deploy_lifespan: i64,
     citability_horizon: Option<i64>,
     memo: &mut LineageMemo,
@@ -311,6 +329,7 @@ pub(crate) fn settle(
     let (pass, walked) = SettlePass::walk(
         dag,
         block_store,
+        basis,
         &rows,
         deploy_lifespan,
         citability_horizon,
@@ -342,11 +361,11 @@ pub(crate) fn settle(
     Ok(Settled { terminal, walked })
 }
 
-/// One settle's view of the adopted LFB: its lineage, walked once for every
-/// open row, and the bounds the verdicts are judged against.
+/// One settle's view of the basis: its lineage, walked once for every open
+/// row, and the bounds the verdicts are judged against.
 struct SettlePass {
-    lfb: BlockHash,
-    lfb_height: i64,
+    basis: BlockHash,
+    basis_height: i64,
     /// The highest lineage height that applied each open sig.
     applied_at: HashMap<Bytes, i64>,
     /// Set when the lineage crosses this node's restore horizon.
@@ -356,19 +375,19 @@ struct SettlePass {
 }
 
 impl SettlePass {
-    /// Walks the LFB's lineage down to the lowest open `valid_after`, or only
-    /// down to the last walk's start when that walk still answers every open
-    /// sig. Returns the pass and the number of blocks walked.
+    /// Walks the basis's lineage down to the lowest open `valid_after`, or
+    /// only down to the last walk's start when that walk still answers every
+    /// open sig. Returns the pass and the number of blocks walked.
     fn walk(
         dag: &KeyValueDagRepresentation,
         block_store: &KeyValueBlockStore,
+        basis: &BlockHash,
         rows: &[(Vec<u8>, LifecycleEvents)],
         deploy_lifespan: i64,
         citability_horizon: Option<i64>,
         memo: &mut LineageMemo,
     ) -> Result<(Self, usize), CasperError> {
-        let lfb = dag.last_finalized_block();
-        let lfb_height = dag.block_number_unsafe(&lfb).map_err(CasperError::from)?;
+        let basis_height = dag.block_number_unsafe(basis).map_err(CasperError::from)?;
         let open: HashMap<Bytes, i64> = rows
             .iter()
             .filter_map(|(sig, row)| row.valid_after.map(|va| (Bytes::from(sig.clone()), va)))
@@ -385,7 +404,7 @@ impl SettlePass {
             // Highest first, so a sig's first recorded height is its highest.
             let (count, end) = walk_lineage(
                 block_store,
-                &lfb,
+                basis,
                 min_valid_after,
                 "settle lineage body read",
                 last.map(|last| &last.start),
@@ -421,8 +440,8 @@ impl SettlePass {
                 }
             }
             memo.last = Some(WalkedLineage {
-                start: lfb.clone(),
-                start_height: lfb_height,
+                start: basis.clone(),
+                start_height: basis_height,
                 answered: open.keys().cloned().collect(),
                 applied_at: applied_at.clone(),
                 gap_lowest_read,
@@ -430,8 +449,8 @@ impl SettlePass {
         }
         Ok((
             Self {
-                lfb,
-                lfb_height,
+                basis: basis.clone(),
+                basis_height,
                 applied_at,
                 gap_lowest_read,
                 deploy_lifespan,
@@ -475,7 +494,7 @@ impl SettlePass {
         Ok(state)
     }
 
-    /// Expired or Failed once the LFB is past the contestability bound,
+    /// Expired or Failed once the basis is past the contestability bound,
     /// `None` before it.
     fn beyond_contest_state(
         &self,
@@ -493,12 +512,12 @@ impl SettlePass {
             .map(|e| e.height)
             .fold(valid_after + self.deploy_lifespan, i64::max)
             + bound;
-        if self.lfb_height <= decide_at {
+        if self.basis_height <= decide_at {
             return Ok(None);
         }
         for event in &row.events {
             if matches!(event.kind, LifecycleEventKind::Included { is_failed: true })
-                && self.in_lfb_closure(dag, &Bytes::from(event.block_hash.clone()))?
+                && self.in_basis_closure(dag, &Bytes::from(event.block_hash.clone()))?
             {
                 return Ok(Some(TerminalState::Failed));
             }
@@ -518,25 +537,25 @@ impl SettlePass {
             .iter()
             .map(|e| e.height)
             .max()
-            .is_some_and(|height| self.lfb_height > height + self.deploy_lifespan + bound)
+            .is_some_and(|height| self.basis_height > height + self.deploy_lifespan + bound)
     }
 
-    /// True iff `hash` is the LFB or one of its DAG ancestors.
-    fn in_lfb_closure(
+    /// True iff `hash` is the basis or one of its DAG ancestors.
+    fn in_basis_closure(
         &self,
         dag: &KeyValueDagRepresentation,
         hash: &BlockHash,
     ) -> Result<bool, CasperError> {
-        if *hash == self.lfb {
+        if *hash == self.basis {
             return Ok(true);
         }
         let Some(height) = dag.block_number(hash) else {
             return Ok(false);
         };
-        if height > self.lfb_height {
+        if height > self.basis_height {
             return Ok(false);
         }
-        dag.is_dag_ancestor(hash, &self.lfb)
+        dag.is_dag_ancestor(hash, &self.basis)
             .map_err(CasperError::from)
     }
 }
@@ -646,6 +665,27 @@ fn write_terminal(
     Ok(())
 }
 
+/// Settles with the adopted LFB as the basis, for rules stated relative to
+/// whatever basis they are given.
+#[cfg(test)]
+fn settle_at_lfb(
+    dag: &KeyValueDagRepresentation,
+    block_store: &KeyValueBlockStore,
+    deploy_lifespan: i64,
+    citability_horizon: Option<i64>,
+    memo: &mut LineageMemo,
+) -> Result<Settled, CasperError> {
+    let lfb = dag.last_finalized_block();
+    settle(
+        dag,
+        block_store,
+        &lfb,
+        deploy_lifespan,
+        citability_horizon,
+        memo,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use models::rust::block_implicits::get_random_block;
@@ -715,7 +755,9 @@ mod tests {
         storage.insert(&genesis, InsertMode::Approved).unwrap();
         let mut memo = LineageMemo::default();
         let dag = storage.get_representation().unwrap();
-        settle(&dag, &block_store, 2, horizon, &mut memo).unwrap();
+        let ftt = FtThreshold::from_ppm(100_000);
+        let basis = verdict_basis(&dag, &block_store, ftt).await.unwrap();
+        settle(&dag, &block_store, &basis, 2, horizon, &mut memo).unwrap();
         dag.open_dropped_deploy_lifecycle_row(&sig, processed.deploy.data.valid_after_block_number)
             .unwrap();
 
@@ -746,32 +788,57 @@ mod tests {
             storage.insert(&block, InsertMode::Normal).unwrap();
             chain.push(block);
         }
+        for (height, block) in chain.iter().enumerate() {
+            dag.put_cached_floor(
+                block.block_hash.clone(),
+                chain[height.saturating_sub(1)].block_hash.clone(),
+            )
+            .unwrap();
+        }
         storage
-            .record_directly_finalized(chain[3].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .record_directly_finalized(chain[2].block_hash.clone(), 0.5, |_| async { Ok(()) })
             .await
             .unwrap();
         let dag = storage.get_representation().unwrap();
-        let before_bound = settle(&dag, &block_store, 2, horizon, &mut memo)
+        let basis = verdict_basis(&dag, &block_store, ftt).await.unwrap();
+        assert_eq!(basis, chain[1].block_hash);
+        assert!(settle(&dag, &block_store, &basis, 2, horizon, &mut memo)
+            .unwrap()
+            .terminal
+            .is_empty());
+        assert!(dag.deploy_terminal(&sig).unwrap().is_none());
+        storage
+            .record_directly_finalized(chain[4].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        let basis = verdict_basis(&dag, &block_store, ftt).await.unwrap();
+        assert_eq!(basis, chain[3].block_hash);
+        let before_bound = settle(&dag, &block_store, &basis, 2, horizon, &mut memo)
             .unwrap()
             .terminal;
         if restart {
             memo = LineageMemo::default();
         }
         storage
-            .record_directly_finalized(chain[4].block_hash.clone(), 0.5, |_| async { Ok(()) })
-            .await
-            .unwrap();
-        let dag = storage.get_representation().unwrap();
-        assert!(settle(&dag, &block_store, 2, horizon, &mut memo)
-            .unwrap()
-            .terminal
-            .is_empty());
-        storage
             .record_directly_finalized(chain[5].block_hash.clone(), 0.5, |_| async { Ok(()) })
             .await
             .unwrap();
         let dag = storage.get_representation().unwrap();
-        let past_bound = settle(&dag, &block_store, 2, horizon, &mut memo)
+        let basis = verdict_basis(&dag, &block_store, ftt).await.unwrap();
+        assert_eq!(basis, chain[4].block_hash);
+        assert!(settle(&dag, &block_store, &basis, 2, horizon, &mut memo)
+            .unwrap()
+            .terminal
+            .is_empty());
+        storage
+            .record_directly_finalized(chain[6].block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .unwrap();
+        let dag = storage.get_representation().unwrap();
+        let basis = verdict_basis(&dag, &block_store, ftt).await.unwrap();
+        assert_eq!(basis, chain[5].block_hash);
+        let past_bound = settle(&dag, &block_store, &basis, 2, horizon, &mut memo)
             .unwrap()
             .terminal;
         let verdict = dag
@@ -854,12 +921,12 @@ mod tests {
         }
     }
 
-    /// The register's clock is the node's ADOPTED LFB, never an admitted
-    /// block's frozen floor: a frozen floor on a branch this node has not
-    /// adopted must not write a verdict. The verdict lands exactly when the
-    /// node itself adopts a covering LFB.
+    /// The register's clock is the floor of the node's ADOPTED LFB, never
+    /// another admitted block's frozen floor: a frozen floor on a branch this
+    /// node has not adopted must not write a verdict. The verdict lands when
+    /// the node adopts an LFB whose floor covers the carrier.
     #[tokio::test]
-    async fn verdicts_key_on_the_adopted_lfb_never_a_frozen_floor() {
+    async fn verdicts_key_on_the_adopted_lfbs_floor_never_another_blocks() {
         use block_storage::rust::dag::block_dag_key_value_storage::{
             BlockDagKeyValueStorage, InsertMode,
         };
@@ -929,13 +996,18 @@ mod tests {
         // Another validator's claim: block b's FROZEN floor is b itself —
         // covering the deploy's carrier — while THIS node has adopted
         // nothing past genesis.
+        let ftt = FtThreshold::from_ppm(100_000);
         let dag = dag_storage.get_representation().expect("dag");
         dag.put_cached_floor(b.block_hash.clone(), b.block_hash.clone())
             .expect("seed frozen floor");
 
+        let basis = verdict_basis(&dag, &block_store, ftt)
+            .await
+            .expect("basis at genesis");
         let terminalized = settle(
             &dag,
             &block_store,
+            &basis,
             10,
             Some(10),
             &mut LineageMemo::default(),
@@ -949,26 +1021,33 @@ mod tests {
             terminalized
         );
 
-        // The node itself adopts b; the next settle writes the verdict
-        // against the adopted chain.
+        // The node itself adopts c, whose floor b covers the carrier; the
+        // next settle writes the verdict against the adopted LFB's floor.
+        dag.put_cached_floor(c.block_hash.clone(), b.block_hash.clone())
+            .expect("seed c's floor");
         dag_storage
-            .record_directly_finalized(b.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .record_directly_finalized(c.block_hash.clone(), 0.5, |_| async { Ok(()) })
             .await
-            .expect("adopt b");
+            .expect("adopt c");
         let dag = dag_storage.get_representation().expect("dag");
+        let basis = verdict_basis(&dag, &block_store, ftt)
+            .await
+            .expect("basis at c");
+        assert_eq!(basis, b.block_hash, "the basis is the adopted LFB's floor");
         let terminalized = settle(
             &dag,
             &block_store,
+            &basis,
             10,
             Some(10),
             &mut LineageMemo::default(),
         )
-        .expect("settle at b")
+        .expect("settle at c's floor")
         .terminal;
         assert_eq!(
             terminalized,
             vec![sig],
-            "adoption of a covering LFB must land the Finalized verdict"
+            "an adopted LFB whose floor covers the carrier must land the Finalized verdict"
         );
     }
 
@@ -1047,7 +1126,7 @@ mod tests {
         }
 
         let dag = dag_storage.get_representation().expect("dag");
-        let early = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+        let early = settle_at_lfb(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
             .expect("settle at genesis")
             .terminal;
         assert!(early.is_empty(), "no verdict before a covering adoption");
@@ -1060,9 +1139,10 @@ mod tests {
             .await
             .expect("adopt d");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminalized = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
-            .expect("settle after adoption")
-            .terminal;
+        let terminalized =
+            settle_at_lfb(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+                .expect("settle after adoption")
+                .terminal;
 
         assert_eq!(terminalized, vec![sig.clone()]);
         let record = dag
@@ -1309,7 +1389,7 @@ mod tests {
 
         let dag = dag_storage.get_representation().expect("dag");
         let mut memo = LineageMemo::default();
-        let terminalized = settle(&dag, &block_store, 1, Some(1), &mut memo)
+        let terminalized = settle_at_lfb(&dag, &block_store, 1, Some(1), &mut memo)
             .expect("a horizon crossing must not error")
             .terminal;
         assert_eq!(
@@ -1337,7 +1417,7 @@ mod tests {
             .await
             .expect("adopt w3");
         let dag = dag_storage.get_representation().expect("dag");
-        let settled = settle(&dag, &block_store, 1, Some(1), &mut memo)
+        let settled = settle_at_lfb(&dag, &block_store, 1, Some(1), &mut memo)
             .expect("later settles must not error");
         assert_eq!(
             settled.walked, 1,
@@ -1365,7 +1445,7 @@ mod tests {
             .await
             .expect("adopt w4");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminalized = settle(&dag, &block_store, 1, Some(1), &mut memo)
+        let terminalized = settle_at_lfb(&dag, &block_store, 1, Some(1), &mut memo)
             .expect("settle at w4")
             .terminal;
         assert_eq!(terminalized, vec![sig_blocked.clone()]);
@@ -1699,6 +1779,220 @@ mod settle_and_release_tests {
         )
     }
 
+    /// Two co-finalized siblings at one height carry conflicting deploys; the
+    /// merge above them bases on `a` and rejects `b`'s deploy. A node that
+    /// adopts `b` first and a node that adopts only blocks above the merge
+    /// must write the same write-once verdicts.
+    #[tokio::test]
+    async fn co_finalized_siblings_yield_one_verdict_for_the_merge_rejected_deploy() {
+        let signed = |n: i32| {
+            let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+                n,
+                None,
+                Some("test".to_string()),
+            )
+            .expect("deploy data");
+            let sig = deploy.sig.clone();
+            (
+                sig,
+                models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy),
+            )
+        };
+        let (sig_a, pd_a) = signed(1);
+        let (sig_b, pd_b) = signed(2);
+
+        let genesis = chain_block(0, None);
+        let mut a = chain_block(1, Some(&genesis));
+        a.body.deploys = vec![pd_a];
+        let mut b = chain_block(1, Some(&genesis));
+        b.body.deploys = vec![pd_b];
+        let mut merge = chain_block(2, Some(&a));
+        merge.header.parents_hash_list = vec![a.block_hash.clone(), b.block_hash.clone()];
+        merge.body.merge_base = a.block_hash.clone();
+        merge.body.rejected_deploys = vec![RejectedDeploy {
+            sig: sig_b.clone(),
+            carrier: b.block_hash.clone(),
+            duplicate: false,
+        }];
+        let next = chain_block(3, Some(&merge));
+        let last = chain_block(4, Some(&next));
+        let blocks = [&genesis, &a, &b, &merge, &next, &last];
+        let floors = [
+            (&genesis, &genesis),
+            (&a, &genesis),
+            (&b, &genesis),
+            (&merge, &a),
+            (&next, &merge),
+            (&last, &next),
+        ];
+        let ftt = FtThreshold::from_ppm(100_000);
+
+        let mut verdicts = Vec::new();
+        for adopted in [&b, &last] {
+            let mut kvm = InMemoryStoreManager::new();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+                .await
+                .expect("block store");
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+                .await
+                .expect("dag storage");
+            for block in blocks {
+                block_store.put_block_message(block).expect("store block");
+            }
+            dag_storage
+                .insert(&genesis, InsertMode::Approved)
+                .expect("insert genesis");
+            for block in &blocks[1..] {
+                dag_storage
+                    .insert(block, InsertMode::Normal)
+                    .expect("insert block");
+            }
+            let dag = dag_storage.get_representation().expect("dag");
+            for (block, floor) in floors {
+                dag.put_cached_floor(block.block_hash.clone(), floor.block_hash.clone())
+                    .expect("seed floor");
+            }
+            let mut adoptions = vec![adopted];
+            if adopted.block_hash != last.block_hash {
+                adoptions.push(&last);
+            }
+            for lfb in adoptions {
+                dag_storage
+                    .record_directly_finalized(lfb.block_hash.clone(), 0.5, |_| async { Ok(()) })
+                    .await
+                    .expect("adopt");
+                let dag = dag_storage.get_representation().expect("dag");
+                let basis = verdict_basis(&dag, &block_store, ftt)
+                    .await
+                    .expect("verdict basis");
+                settle(
+                    &dag,
+                    &block_store,
+                    &basis,
+                    1,
+                    Some(1),
+                    &mut LineageMemo::default(),
+                )
+                .expect("settle");
+                assert_ne!(
+                    dag.deploy_terminal(&sig_b)
+                        .expect("lookup")
+                        .map(|record| record.state),
+                    Some(TerminalState::Finalized),
+                    "the merge-rejected deploy must never be Finalized"
+                );
+            }
+            let dag = dag_storage.get_representation().expect("dag");
+            assert_eq!(
+                dag.deploy_terminal(&sig_a)
+                    .expect("lookup")
+                    .map(|record| record.state),
+                Some(TerminalState::Finalized),
+                "the deploy of the merge base must be Finalized"
+            );
+            verdicts.push(
+                dag.deploy_terminal(&sig_b)
+                    .expect("lookup")
+                    .map(|record| (record.state, record.latest_block_hash)),
+            );
+        }
+
+        assert_eq!(
+            verdicts[0], verdicts[1],
+            "node that adopted the merge-losing sibling vs node that adopted the merge"
+        );
+    }
+
+    /// A restored node's LFB can have a floor below the blocks it holds. The
+    /// basis is then not derivable and names the missing block; once the node
+    /// adopts an LFB whose floor it holds, the verdict lands.
+    #[tokio::test]
+    async fn a_floor_below_the_held_blocks_defers_the_basis_until_one_is_held() {
+        let deploy = crate::rust::util::construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some("test".to_string()),
+        )
+        .expect("deploy data");
+        let sig = deploy.sig.clone();
+
+        let genesis = chain_block(0, None);
+        let mut carrier = chain_block(1, Some(&genesis));
+        carrier.body.deploys =
+            vec![models::rust::casper::protocol::casper_message::ProcessedDeploy::empty(deploy)];
+        let anchor = chain_block(2, Some(&carrier));
+        let tip = chain_block(3, Some(&anchor));
+        let below_window = Bytes::from(vec![0xEE; 32]);
+        let ftt = FtThreshold::from_ppm(100_000);
+
+        let mut kvm = InMemoryStoreManager::new();
+        let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
+            .await
+            .expect("block store");
+        let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)
+            .await
+            .expect("dag storage");
+        for block in [&genesis, &carrier, &anchor, &tip] {
+            block_store.put_block_message(block).expect("store block");
+        }
+        dag_storage
+            .insert(&genesis, InsertMode::Approved)
+            .expect("insert genesis");
+        for block in [&carrier, &anchor, &tip] {
+            dag_storage
+                .insert(block, InsertMode::Normal)
+                .expect("insert block");
+        }
+        let dag = dag_storage.get_representation().expect("dag");
+        for (block, floor) in [
+            (&genesis, genesis.block_hash.clone()),
+            (&carrier, genesis.block_hash.clone()),
+            (&anchor, below_window.clone()),
+            (&tip, carrier.block_hash.clone()),
+        ] {
+            dag.put_cached_floor(block.block_hash.clone(), floor)
+                .expect("seed floor");
+        }
+
+        dag_storage
+            .record_directly_finalized(anchor.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt the anchor");
+        let dag = dag_storage.get_representation().expect("dag");
+        let err = verdict_basis(&dag, &block_store, ftt)
+            .await
+            .expect_err("an unheld floor yields no basis");
+        assert!(
+            matches!(err, CasperError::BlockNotHeld(ref missing, _) if *missing == below_window),
+            "the deferral must name the unheld floor; got {err}"
+        );
+
+        dag_storage
+            .record_directly_finalized(tip.block_hash.clone(), 0.5, |_| async { Ok(()) })
+            .await
+            .expect("adopt the tip");
+        let dag = dag_storage.get_representation().expect("dag");
+        let basis = verdict_basis(&dag, &block_store, ftt)
+            .await
+            .expect("a held floor yields the basis");
+        assert_eq!(basis, carrier.block_hash);
+        let terminal = settle(
+            &dag,
+            &block_store,
+            &basis,
+            1,
+            Some(1),
+            &mut LineageMemo::default(),
+        )
+        .expect("settle")
+        .terminal;
+        assert_eq!(
+            terminal,
+            vec![sig],
+            "the verdict lands once the floor is held"
+        );
+    }
+
     /// A row holding only a rejection record has no inclusion this node
     /// ingested, so it can never become terminal. Once the LFB is past the
     /// bound beyond the record, no block can include the sig, and the row is
@@ -1750,7 +2044,8 @@ mod settle_and_release_tests {
             .await
             .expect("adopt #3");
         let dag = dag_storage.get_representation().expect("dag");
-        settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default()).expect("settle at #3");
+        settle_at_lfb(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+            .expect("settle at #3");
         assert!(row_open(&dag), "at the bound the row must still stand");
 
         dag_storage
@@ -1758,7 +2053,7 @@ mod settle_and_release_tests {
             .await
             .expect("adopt #4");
         let dag = dag_storage.get_representation().expect("dag");
-        let terminal = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+        let terminal = settle_at_lfb(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
             .expect("settle at #4")
             .terminal;
         assert!(terminal.is_empty(), "a record-only row is never terminal");
@@ -1825,7 +2120,7 @@ mod settle_and_release_tests {
             .expect("adopt the tip");
         let dag = dag_storage.get_representation().expect("dag");
 
-        let terminal = settle(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
+        let terminal = settle_at_lfb(&dag, &block_store, 1, Some(1), &mut LineageMemo::default())
             .expect("a row error must not fail the settle")
             .terminal;
         assert_eq!(terminal, vec![clean.sig.clone()]);
@@ -1960,14 +2255,14 @@ mod settle_and_release_tests {
                 .await
                 .expect("adopt");
             let dag = dag_storage.get_representation().expect("dag");
-            let settled = settle(&dag, &block_store, 50, None, &mut memo).expect("settle");
+            let settled = settle_at_lfb(&dag, &block_store, 50, None, &mut memo).expect("settle");
             let expected_walk = if height == 2 { 2 } else { 1 };
             assert_eq!(
                 settled.walked, expected_walk,
                 "at #{height} only the blocks above the last walk's start are read"
             );
             assert_eq!(
-                settle(&dag, &block_store, 50, None, &mut memo)
+                settle_at_lfb(&dag, &block_store, 50, None, &mut memo)
                     .expect("repeat settle")
                     .walked,
                 0,
@@ -1985,7 +2280,7 @@ mod settle_and_release_tests {
 
         let dag = dag_storage.get_representation().expect("dag");
         assert_eq!(
-            settle(&dag, &block_store, 50, None, &mut LineageMemo::default())
+            settle_at_lfb(&dag, &block_store, 50, None, &mut LineageMemo::default())
                 .expect("settle without a memo")
                 .walked,
             40,
@@ -2049,7 +2344,8 @@ mod settle_and_release_tests {
             .await
             .expect("adopt a3");
         let dag = dag_storage.get_representation().expect("dag");
-        let settled = settle(&dag, &block_store, 50, Some(50), &mut memo).expect("settle at a3");
+        let settled =
+            settle_at_lfb(&dag, &block_store, 50, Some(50), &mut memo).expect("settle at a3");
         assert!(
             settled.terminal.is_empty(),
             "fixture precondition: a3's lineage does not apply the deploy"
@@ -2060,8 +2356,8 @@ mod settle_and_release_tests {
             .await
             .expect("adopt the merge");
         let dag = dag_storage.get_representation().expect("dag");
-        let settled =
-            settle(&dag, &block_store, 50, Some(50), &mut memo).expect("settle at the merge");
+        let settled = settle_at_lfb(&dag, &block_store, 50, Some(50), &mut memo)
+            .expect("settle at the merge");
         assert_eq!(settled.walked, 3, "merge, b1 and genesis");
         assert_eq!(settled.terminal, vec![deploy.sig.clone()]);
         assert_eq!(

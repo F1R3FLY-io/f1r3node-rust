@@ -823,6 +823,101 @@ impl Sortable<Expr> for ExprSortMatcher {
                         *x as i64,
                     ]),
                 },
+
+                ExprInstance::ELambdaBody(el) => {
+                    let sorted_body = ParSortMatcher::sort_match(
+                        el.body.as_ref().expect("body field on ELambda was None"),
+                    );
+                    let connective_used_score: i64 = if el.connective_used { 1 } else { 0 };
+
+                    construct_expr(
+                        ExprInstance::ELambdaBody(crate::rhoapi::ELambda {
+                            bind_count: el.bind_count,
+                            body: Some(sorted_body.term),
+                            locally_free: el.locally_free.clone(),
+                            connective_used: el.connective_used,
+                        }),
+                        Tree::Node(vec![
+                            Tree::<ScoreAtom>::create_leaf_from_i64(Score::ELAMBDA as i64),
+                            Tree::<ScoreAtom>::create_leaf_from_i64(el.bind_count as i64),
+                            sorted_body.score,
+                            Tree::<ScoreAtom>::create_leaf_from_i64(connective_used_score),
+                        ]),
+                    )
+                }
+
+                ExprInstance::EAppBody(ea) => {
+                    let sorted_fun = ParSortMatcher::sort_match(
+                        ea.fun.as_ref().expect("fun field on EApp was None"),
+                    );
+                    let sorted_args: Vec<ScoredTerm<Par>> = ea
+                        .args
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
+                    let connective_used_score: i64 = if ea.connective_used { 1 } else { 0 };
+
+                    construct_expr(
+                        ExprInstance::EAppBody(crate::rhoapi::EApp {
+                            fun: Some(sorted_fun.term),
+                            args: sorted_args.iter().map(|a| a.term.clone()).collect(),
+                            locally_free: ea.locally_free.clone(),
+                            connective_used: ea.connective_used,
+                        }),
+                        Tree::Node(
+                            vec![
+                                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EAPP as i64),
+                                sorted_fun.score,
+                            ]
+                            .into_iter()
+                            .chain(sorted_args.into_iter().map(|a| a.score))
+                            .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
+                                connective_used_score,
+                            )])
+                            .collect(),
+                        ),
+                    )
+                }
+
+                ExprInstance::EPiBody(ep) => {
+                    let sorted_param_types: Vec<ScoredTerm<Par>> = ep
+                        .param_types
+                        .iter()
+                        .map(|p| ParSortMatcher::sort_match(p))
+                        .collect();
+                    let sorted_codomain = ParSortMatcher::sort_match(
+                        ep.codomain
+                            .as_ref()
+                            .expect("codomain field on EPi was None"),
+                    );
+                    let connective_used_score: i64 = if ep.connective_used { 1 } else { 0 };
+
+                    construct_expr(
+                        ExprInstance::EPiBody(crate::rhoapi::EPi {
+                            bind_count: ep.bind_count,
+                            param_types: sorted_param_types
+                                .iter()
+                                .map(|a| a.term.clone())
+                                .collect(),
+                            codomain: Some(sorted_codomain.term),
+                            locally_free: ep.locally_free.clone(),
+                            connective_used: ep.connective_used,
+                        }),
+                        Tree::Node(
+                            vec![
+                                Tree::<ScoreAtom>::create_leaf_from_i64(Score::EPI as i64),
+                                Tree::<ScoreAtom>::create_leaf_from_i64(ep.bind_count as i64),
+                            ]
+                            .into_iter()
+                            .chain(sorted_param_types.into_iter().map(|a| a.score))
+                            .chain(vec![sorted_codomain.score])
+                            .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
+                                connective_used_score,
+                            )])
+                            .collect(),
+                        ),
+                    )
+                }
             },
 
             // TODO get rid of Empty nodes in Protobuf unless they represent sth indeed optional - OLD

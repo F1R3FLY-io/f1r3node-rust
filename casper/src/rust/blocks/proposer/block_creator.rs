@@ -28,6 +28,7 @@ use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::errors::HistoryError;
+use shared::rust::blocking::in_blocking;
 use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -1577,31 +1578,33 @@ fn walk_unfinalized_cone(
     bounds: &UnfinalizedConeBounds,
     mut visit: impl FnMut(&BlockHash, &BlockFacts) -> bool,
 ) -> Result<(), CasperError> {
-    let mut stack: Vec<BlockHash> = roots.to_vec();
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone())
-            || block_hash == casper_snapshot.last_finalized_block
-            || casper_snapshot.dag.is_finalized(&block_hash)
-        {
-            continue;
+    in_blocking(|| {
+        let mut stack: Vec<BlockHash> = roots.to_vec();
+        let mut seen: HashSet<BlockHash> = HashSet::new();
+        while let Some(block_hash) = stack.pop() {
+            if !seen.insert(block_hash.clone())
+                || block_hash == casper_snapshot.last_finalized_block
+                || casper_snapshot.dag.is_finalized(&block_hash)
+            {
+                continue;
+            }
+            let Some(facts) = held_block_facts(block_store, &block_hash)? else {
+                continue;
+            };
+            if bounds
+                .last_finalized_block_number
+                .is_some_and(|lfb_number| facts.block_number <= lfb_number)
+                || facts.block_number <= bounds.earliest_block_number
+            {
+                continue;
+            }
+            if !visit(&block_hash, &facts) {
+                return Ok(());
+            }
+            stack.extend(facts.parents.iter().cloned());
         }
-        let Some(facts) = held_block_facts(block_store, &block_hash)? else {
-            continue;
-        };
-        if bounds
-            .last_finalized_block_number
-            .is_some_and(|lfb_number| facts.block_number <= lfb_number)
-            || facts.block_number <= bounds.earliest_block_number
-        {
-            continue;
-        }
-        if !visit(&block_hash, &facts) {
-            return Ok(());
-        }
-        stack.extend(facts.parents.iter().cloned());
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn parent_hashes(casper_snapshot: &CasperSnapshot) -> Vec<BlockHash> {
