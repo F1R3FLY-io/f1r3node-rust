@@ -1,14 +1,16 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 5.3 (where-clause guards): synthesis (`synth`) for ground
+//! Phase 5.4 (parallel composition): synthesis (`synth`) for ground
 //! literals, `SimpleType` connectives, Pi well-formedness, dependent
 //! application, fully-annotated lambdas, β-definitional equality in
 //! `check`, the integer binary operators, `ENeg`, comparison
 //! operators, the boolean connectives on values, the logical type
-//! connectives, the four collection kinds, and recursive
-//! process-level typing. `If.condition`, `Receive.condition` (where
-//! guard), and `MatchCase.guard` are all required to have type
-//! `Bool` when non-empty. Branches of `If` must be `Proc`.
+//! connectives, the four collection kinds, recursive process-level
+//! typing with `Bool`-constrained where-clause guards, and
+//! multi-slot Pars (parallel composition `P | Q`). A Par with
+//! multiple top-level pieces — any process content, or more than one
+//! expr/connective — synthesizes to `Proc` provided every piece is
+//! well-typed.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -92,15 +94,24 @@ impl From<TypeError> for InterpreterError {
 }
 
 /// Synthesize the type of `par` in `ctx`. Returns a `Par` whose shape
-/// is a well-formed type (currently: a single-connective Par for base
-/// types, `Type` itself, a Pi, or `Proc` for a process-level Par).
+/// is a well-formed type: a single-connective Par for base types,
+/// `Type` itself, a Pi, or `Proc` for a process-level Par (including
+/// a parallel composition of multiple slots).
 pub fn synth(ctx: &Context, par: &Par) -> Result<Par, TypeError> {
-    // Phase 5.2: a Par whose only content is process-level typechecks
-    // its sub-terms recursively (chan + data for Send; body for New /
-    // Bundle / Receive; condition is Bool for If; etc.) and returns
-    // `Proc`.
-    if has_process_content(par) && par.exprs.is_empty() && par.connectives.is_empty() {
+    let proc_present = has_process_content(par);
+    let total_slots = par.exprs.len() + par.connectives.len() + process_slot_count(par);
+
+    // Phase 5.4: a Par with any process content, or with multiple
+    // top-level pieces (parallel composition `P | Q`), is itself a
+    // process. Typecheck every piece and return `Proc`.
+    if proc_present || par.exprs.len() > 1 || par.connectives.len() > 1 || total_slots > 1 {
         check_process_content(ctx, par)?;
+        for e in &par.exprs {
+            let _ = synth_expr(ctx, e.expr_instance.as_ref())?;
+        }
+        for c in &par.connectives {
+            let _ = synth_connective(ctx, c)?;
+        }
         return Ok(type_par(ConnectiveInstance::ConnProc(true)));
     }
 
@@ -113,10 +124,21 @@ pub fn synth(ctx: &Context, par: &Par) -> Result<Par, TypeError> {
         (None, None) => Err(TypeError::NotWellFormed(
             "empty Par has no type".to_string(),
         )),
-        (Some(_), Some(_)) => Err(TypeError::Unsupported(
-            "Par with both expr and connective slots is not yet typechecked".to_string(),
-        )),
+        // Unreachable: multi-slot case handled by the parallel-
+        // composition branch above.
+        (Some(_), Some(_)) => unreachable!("multi-slot Par handled above"),
     }
+}
+
+/// Number of occupied process-level slots across the Par.
+fn process_slot_count(par: &Par) -> usize {
+    par.sends.len()
+        + par.receives.len()
+        + par.news.len()
+        + par.matches.len()
+        + par.bundles.len()
+        + par.conditionals.len()
+        + par.unforgeables.len()
 }
 
 fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeError> {
@@ -2245,6 +2267,60 @@ mod tests {
         let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
         let ty = synth(&ctx, &par).unwrap();
         assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_multi_send_parallel_is_proc() {
+        // `ch1!(1) | ch2!(2)` — two sends in the same Par.
+        let ctx = Context::new();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let mut par = send_par(gstring_par("ch1"), vec![gint_par(1)]);
+        let send2 = send_par(gstring_par("ch2"), vec![gint_par(2)]);
+        par.sends.extend(send2.sends);
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_send_parallel_with_expr_is_proc() {
+        // Send alongside a value expression (parallel composition of
+        // a process and an expression). Result is Proc, assuming each
+        // piece is well-typed.
+        let ctx = Context::new();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let mut par = send_par(gstring_par("ch"), vec![]);
+        par.exprs.extend(gint_par(42).exprs); // add a GInt expr
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_multiple_exprs_in_par_is_proc() {
+        // Two exprs side by side — treated as parallel composition.
+        let ctx = Context::new();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let mut par = gint_par(1);
+        par.exprs.extend(gint_par(2).exprs);
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_parallel_composition_rejects_ill_typed_piece() {
+        // `(1 + "x") | ch!(0)` — the `+` is ill-typed, so the parallel
+        // composition is too.
+        use models::rhoapi::{EPlus, Expr};
+        let ctx = Context::new();
+        let bad_plus = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPlusBody(EPlus {
+                p1: Some(gint_par(1)),
+                p2: Some(gstring_par("x")),
+            })),
+        }]);
+        let mut par = send_par(gstring_par("ch"), vec![]);
+        par.exprs.extend(bad_plus.exprs);
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
     }
 
     #[test]
