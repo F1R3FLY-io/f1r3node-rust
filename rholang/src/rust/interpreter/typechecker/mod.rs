@@ -1,14 +1,15 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 5.1 (process-level typing, shallow): synthesis (`synth`) for
-//! ground literals, `SimpleType` connectives, Pi well-formedness,
+//! Phase 5.2 (process-level typing, recursive): synthesis (`synth`)
+//! for ground literals, `SimpleType` connectives, Pi well-formedness,
 //! dependent application, fully-annotated lambdas, β-definitional
 //! equality in `check`, the integer binary operators, `ENeg`,
 //! comparison operators, the boolean connectives on values, the
-//! logical type connectives, the four collection kinds, and any Par
-//! carrying process-level content (sends/receives/news/matches/
-//! bundles/conditionals/unforgeables) — these synthesize to `Proc`.
-//! Recursive typechecking of process sub-terms lands in Phase 5.2.
+//! logical type connectives, the four collection kinds, and
+//! process-level Pars whose sub-terms recursively typecheck. If's
+//! condition is required to have type `Bool`; branches must be
+//! `Proc`. Scope-introducing constructs (`new`, receive binders,
+//! match capture vars) extend the ctx with `Proc`-typed placeholders.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -95,10 +96,12 @@ impl From<TypeError> for InterpreterError {
 /// is a well-formed type (currently: a single-connective Par for base
 /// types, `Type` itself, a Pi, or `Proc` for a process-level Par).
 pub fn synth(ctx: &Context, par: &Par) -> Result<Par, TypeError> {
-    // Phase 5.1: a Par whose only content is process-level (sends,
-    // receives, news, matches, bundles, conditionals, unforgeables)
-    // synthesizes to `Proc`. Sub-term typechecking lands in Phase 5.2.
+    // Phase 5.2: a Par whose only content is process-level typechecks
+    // its sub-terms recursively (chan + data for Send; body for New /
+    // Bundle / Receive; condition is Bool for If; etc.) and returns
+    // `Proc`.
     if has_process_content(par) && par.exprs.is_empty() && par.connectives.is_empty() {
+        check_process_content(ctx, par)?;
         return Ok(type_par(ConnectiveInstance::ConnProc(true)));
     }
 
@@ -705,6 +708,95 @@ fn build_pi(param_types: Vec<Par>, codomain: Par) -> Par {
     }]);
     par.connective_used = conn_used;
     par
+}
+
+/// Recursively typecheck the process-level sub-terms of `par`. Each
+/// value-position sub-term is synth-ed; patterns and free-variable
+/// positions are skipped. Scope-introducing constructs (New, Receive,
+/// Match) extend the ctx with `Proc`-typed placeholders for their
+/// binders.
+///
+/// Any failing sub-term propagates an error. The function never
+/// returns a value — process typing just confirms well-formedness.
+fn check_process_content(ctx: &Context, par: &Par) -> Result<(), TypeError> {
+    let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+
+    for send in &par.sends {
+        if let Some(chan) = send.chan.as_ref() {
+            let _ = synth(ctx, chan)?;
+        }
+        for d in &send.data {
+            let _ = synth(ctx, d)?;
+        }
+    }
+
+    for receive in &par.receives {
+        for bind in &receive.binds {
+            if let Some(source) = bind.source.as_ref() {
+                let _ = synth(ctx, source)?;
+            }
+        }
+        if let Some(body) = receive.body.as_ref() {
+            let extended = push_proc_binders(ctx, receive.bind_count);
+            let _ = synth(&extended, body)?;
+        }
+    }
+
+    for new_node in &par.news {
+        if let Some(body) = new_node.p.as_ref() {
+            let extended = push_proc_binders(ctx, new_node.bind_count);
+            let _ = synth(&extended, body)?;
+        }
+    }
+
+    for mat in &par.matches {
+        if let Some(target) = mat.target.as_ref() {
+            let _ = synth(ctx, target)?;
+        }
+        for case in &mat.cases {
+            let extended = push_proc_binders(ctx, case.free_count);
+            if let Some(source) = case.source.as_ref() {
+                let _ = synth(&extended, source)?;
+            }
+        }
+    }
+
+    for bundle in &par.bundles {
+        if let Some(body) = bundle.body.as_ref() {
+            let _ = synth(ctx, body)?;
+        }
+    }
+
+    for cond in &par.conditionals {
+        if let Some(c) = cond.condition.as_ref() {
+            let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
+            check(ctx, c, &bool_ty)?;
+        }
+        if let Some(t) = cond.if_true.as_ref() {
+            check(ctx, t, &proc_ty)?;
+        }
+        if let Some(f) = cond.if_false.as_ref() {
+            check(ctx, f, &proc_ty)?;
+        }
+    }
+
+    // Unforgeables are name-level values (GPrivate, GDeployerId, etc.);
+    // they carry no sub-structure for this pass to typecheck.
+
+    Ok(())
+}
+
+/// Extend `ctx` with `count` `Proc`-typed binders — a placeholder for
+/// scope-introducing constructs that lack richer per-binder type
+/// information (New's fresh names, Receive's patterns, Match's
+/// capture variables).
+fn push_proc_binders(ctx: &Context, count: i32) -> Context {
+    let mut inner = ctx.clone();
+    let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+    for _ in 0..count {
+        inner = inner.extend(proc_ty.clone());
+    }
+    inner
 }
 
 /// True iff `par` carries any process-level content (send, receive,
@@ -2007,7 +2099,9 @@ mod tests {
     fn synth_new_is_proc() {
         let ctx = Context::new();
         let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
-        let par = new_par(1, Par::default());
+        // `new _ in <send to BoundVar(0)>`.
+        let body = send_par(bvar_par(0), vec![]);
+        let par = new_par(1, body);
         let ty = synth(&ctx, &par).unwrap();
         assert!(def_eq(&ty, &proc_ty));
     }
@@ -2019,6 +2113,73 @@ mod tests {
         let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
         let ty = synth(&ctx, &proc_ty).unwrap();
         assert!(def_eq(&ty, &type_par(ConnectiveInstance::ConnType(true))));
+    }
+
+    fn if_par(cond: Par, t: Par, f: Par) -> Par {
+        use models::rhoapi::If;
+        let mut par = Par::default();
+        par.conditionals.push(If {
+            condition: Some(cond),
+            if_true: Some(t),
+            if_false: Some(f),
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+        par
+    }
+
+    fn proc_noop() -> Par {
+        // A Par with a single send to an ignored channel — just to
+        // give branches process-level content.
+        send_par(gstring_par("ignored"), vec![])
+    }
+
+    #[test]
+    fn synth_if_with_bool_condition_is_proc() {
+        let ctx = Context::new();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let par = if_par(gbool_par(true), proc_noop(), proc_noop());
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_if_rejects_non_bool_condition() {
+        let ctx = Context::new();
+        let par = if_par(gint_par(1), proc_noop(), proc_noop());
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_send_recurses_into_bad_data_arg() {
+        // Send with an ill-typed data arg (EApp of Int) should fail.
+        use models::rhoapi::{EApp, Expr};
+        let ctx = Context::new();
+        let bad_arg = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EAppBody(EApp {
+                fun: Some(gint_par(42)), // applying Int as a function
+                args: vec![gint_par(1)],
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }]);
+        let par = send_par(gstring_par("ch"), vec![bad_arg]);
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::AppOfNonFunction(_)));
+    }
+
+    #[test]
+    fn synth_new_body_uses_proc_binders() {
+        // In `new x in body`, `x` is bound as a fresh name — the body
+        // sees a Proc-typed binder at BoundVar(0). We check this by
+        // ensuring synth doesn't complain about an unbound reference.
+        let ctx = Context::new();
+        let body = send_par(bvar_par(0), vec![gint_par(42)]);
+        let par = new_par(1, body);
+        let ty = synth(&ctx, &par).unwrap();
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        assert!(def_eq(&ty, &proc_ty));
     }
 
     #[test]
