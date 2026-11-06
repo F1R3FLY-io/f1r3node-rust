@@ -141,6 +141,134 @@ const VAULT_TRANSFER_TERM: &str = r#"
 const PHLO_LIMIT: i64 = 5_000_000;
 const PHLO_PRICE: i64 = 1;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bigint_transfer_report_matches_recipient_balance_delta() {
+    use casper::rust::util::proto_util;
+    use models::rust::block::state_hash::StateHash;
+    use models::rust::par_ext::ParExt;
+    use num_bigint::BigInt;
+    use rholang::rust::interpreter::rho_type::RhoBigInt;
+
+    async fn balance(node: &TestNode, state: &StateHash, address: &str) -> BigInt {
+        let query = format!(
+            r#"
+new return, rl(`rho:registry:lookup`), systemVaultCh, vaultCh in {{
+  rl!(`rho:vault:system`, *systemVaultCh) |
+  for (@(_, SystemVault) <- systemVaultCh) {{
+    @SystemVault!("findOrCreate", "{address}", *vaultCh) |
+    for (@(true, vault) <- vaultCh) {{ @vault!("balance", *return) }}
+  }}
+}}
+"#
+        );
+        let deploy = construct_deploy::source_deploy(
+            query,
+            2,
+            Some(PHLO_LIMIT),
+            Some(0),
+            Some(construct_deploy::DEFAULT_SEC.clone()),
+            None,
+            Some(node.genesis.shard_id.clone()),
+        )
+        .unwrap();
+        let result = node
+            .runtime_manager
+            .capture_results(state, &deploy)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        RhoBigInt::unapply(&result[0]).unwrap()
+    }
+
+    let amount = 10_000_000_000_000_000_000u128;
+    let sender = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB).unwrap();
+    let recipient = VaultAddress::from_public_key(&construct_deploy::DEFAULT_PUB2).unwrap();
+    let mut parameters = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+    parameters.2.native_token_decimals = 18;
+    parameters
+        .2
+        .vaults
+        .iter_mut()
+        .find(|vault| vault.vault_address == sender)
+        .unwrap()
+        .initial_balance = amount * 2;
+    let genesis = GenesisBuilder::new()
+        .build_genesis_with_parameters(Some(parameters))
+        .await
+        .unwrap();
+    let mut node = TestNode::standalone(genesis.clone()).await.unwrap();
+    let pre_state = proto_util::post_state_hash(&node.genesis);
+    let recipient_before = balance(&node, &pre_state, &recipient.to_base58()).await;
+    let sender_before = balance(&node, &pre_state, &sender.to_base58()).await;
+
+    let term = VAULT_TRANSFER_TERM
+        .replace("100, *key, *ret", &format!("{amount}n, *key, *ret"))
+        .replace(
+            "1111111111111111111111111111111111111111111111111111",
+            &recipient.to_base58(),
+        );
+    let deploy = construct_deploy::source_deploy(
+        term,
+        1,
+        Some(PHLO_LIMIT),
+        Some(PHLO_PRICE),
+        Some(construct_deploy::DEFAULT_SEC.clone()),
+        None,
+        Some(node.genesis.shard_id.clone()),
+    )
+    .unwrap();
+    let block = node.add_block_from_deploys(&[deploy]).await.unwrap();
+    assert_eq!(block.body.deploys.len(), 1);
+    assert!(!block.body.deploys[0].is_failed);
+    let post_state = proto_util::post_state_hash(&block);
+    let recipient_after = balance(&node, &post_state, &recipient.to_base58()).await;
+    let sender_after = balance(&node, &post_state, &sender.to_base58()).await;
+    assert_eq!(recipient_after - recipient_before, BigInt::from(amount));
+    let fee = BigInt::from(block.body.deploys[0].cost.cost) * BigInt::from(PHLO_PRICE);
+    assert_eq!(sender_before - sender_after, BigInt::from(amount) + fee);
+
+    let mut store_manager = mk_test_rnode_store_manager_shared(genesis.rspace_scope_id.clone());
+    let store = store_manager.r_space_stores().await.unwrap();
+    let reporter = reporting_casper::rho_reporter(
+        &store,
+        &node.block_dag_storage,
+        node.runtime_manager.replay_lock(),
+        ExternalServices::noop(),
+    );
+    let replay = reporter.trace(&block).await.unwrap();
+    assert_eq!(replay.deploy_report_result.len(), 1);
+    assert!(!replay.deploy_report_result[0].processed_deploy.is_failed);
+    let channel = transfer_unforgeable_channel();
+    let batches = report_batches(&replay.deploy_report_result[0].events);
+    let mut transfers = Vec::new();
+    for batch in batches
+        .iter()
+        .filter(|b| b.phase == ReportPhase::User as i32)
+    {
+        for event in &batch.events {
+            if let Some(models::casper::report_proto::Report::Comm(comm)) = &event.report {
+                if comm.consume.as_ref().and_then(|c| c.channels.first()) != Some(&channel) {
+                    continue;
+                }
+                for produce in &comm.produces {
+                    let pars = &produce.data.as_ref().unwrap().pars;
+                    assert!(pars.len() >= 6);
+                    transfers.push((
+                        pars[0].get_g_string().unwrap(),
+                        pars[2].get_g_string().unwrap(),
+                        RhoBigInt::unapply(&pars[3]).unwrap(),
+                    ));
+                }
+            }
+        }
+    }
+    assert_eq!(transfers, vec![(
+        sender.to_base58(),
+        recipient.to_base58(),
+        BigInt::from(amount)
+    )]);
+}
+
 /// Cost-accounted user deploy: the reporting replay yields >= 2 batches, and
 /// `report[0]` is the precharge — exactly one transfer on the transfer
 /// channel, from the deployer's vault address, for `total_phlo_charge()`.

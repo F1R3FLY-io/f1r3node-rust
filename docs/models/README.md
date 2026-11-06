@@ -46,9 +46,15 @@ pub struct BlockMetadata {
 **`TransferInfo`** (proto) -- REV transfer extracted from deploy execution:
 - `fromAddr: string` -- Sender address
 - `toAddr: string` -- Recipient address
-- `amount: int64` -- Amount in dust (smallest unit)
+- `amount: int64` -- Legacy amount in dust. The negotiated exact response uses `-1` when `amountRaw` does not fit int64.
 - `success: bool` -- Whether the transfer succeeded
 - `failReason: string` -- Error message if success is false
+- `amountRaw: string` -- Exact amount in dust (smallest unit) as a decimal string, for `Int` and `BigInt` amounts
+
+`BlockQuery.exactTransferAmounts` (field 2) and `LastFinalizedBlockQuery.exactTransferAmounts` (field 1) enable exact transfer responses.
+Both fields default to false.
+Without this flag, an amount outside int64 produces a `ServiceError` with `TRANSFER_AMOUNT_OUT_OF_RANGE` instead of a block result.
+See the [transfer API contract](../node/api-reference.md#64-bit-integers-and-token-amounts).
 
 ## Casper Protocol Messages
 

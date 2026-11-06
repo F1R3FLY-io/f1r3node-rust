@@ -49,7 +49,11 @@ impl DeployRuntime {
     }
 
     pub async fn get_block<S: DeployService>(svc: &mut S, hash: String) {
-        Self::graceful_exit(svc.get_block(BlockQuery { hash })).await
+        Self::graceful_exit(svc.get_block(BlockQuery {
+            hash,
+            exact_transfer_amounts: true,
+        }))
+        .await
     }
 
     pub async fn get_blocks<S: DeployService>(svc: &mut S, depth: i32) {

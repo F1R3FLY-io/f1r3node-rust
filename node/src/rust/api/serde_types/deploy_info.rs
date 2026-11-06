@@ -10,7 +10,9 @@ use models::rust::deploy_parameters::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use crate::rust::api::serde_types::int_string;
 use crate::rust::api::serde_types::system_deploy_info::SingleReportSerde;
+use crate::rust::web::transaction::LEGACY_AMOUNT_OUT_OF_RANGE;
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TransferInfoSerde {
@@ -18,7 +20,8 @@ pub struct TransferInfoSerde {
     pub from_addr: String,
     #[serde(rename = "toAddr")]
     pub to_addr: String,
-    pub amount: i64,
+    #[serde(deserialize_with = "int_string::deserialize")]
+    pub amount: String,
     pub success: bool,
     #[serde(rename = "failReason")]
     pub fail_reason: String,
@@ -29,7 +32,11 @@ impl From<TransferInfo> for TransferInfoSerde {
         Self {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount: if t.amount_raw.is_empty() {
+                t.amount.to_string()
+            } else {
+                t.amount_raw
+            },
             success: t.success,
             fail_reason: t.fail_reason,
         }
@@ -41,7 +48,8 @@ impl From<TransferInfoSerde> for TransferInfo {
         TransferInfo {
             from_addr: t.from_addr,
             to_addr: t.to_addr,
-            amount: t.amount,
+            amount: t.amount.parse().unwrap_or(LEGACY_AMOUNT_OUT_OF_RANGE),
+            amount_raw: t.amount,
             success: t.success,
             fail_reason: t.fail_reason,
         }
@@ -201,6 +209,52 @@ mod tests {
     use crate::rust::api::serde_types::block_event_info::BlockEventInfoSerde;
     use crate::rust::api::serde_types::block_info::BlockInfoSerde;
     use crate::rust::web::web_api_docs::{AdminApi, PublicApi};
+
+    #[derive(Clone, PartialEq, Message)]
+    struct LegacyTransferInfo {
+        #[prost(int64, tag = "3")]
+        amount: i64,
+    }
+
+    #[test]
+    fn old_protobuf_transfer_amounts_survive_http_conversion() {
+        for amount in [i64::MIN, -1, 0, 1, (1 << 53) + 1, i64::MAX] {
+            let encoded = LegacyTransferInfo { amount }.encode_to_vec();
+            let proto = TransferInfo::decode(encoded.as_slice()).unwrap();
+            assert!(proto.amount_raw.is_empty());
+            let json = serde_json::to_value(TransferInfoSerde::from(proto)).unwrap();
+            assert_eq!(json["amount"], amount.to_string());
+            let decoded: TransferInfoSerde = serde_json::from_value(json).unwrap();
+            let restored = TransferInfo::from(decoded);
+            assert_eq!(restored.amount, amount);
+            assert_eq!(restored.amount_raw, amount.to_string());
+        }
+    }
+
+    #[test]
+    fn exact_transfer_amount_takes_precedence_and_accepts_only_canonical_strings() {
+        for amount in ["0", "10000000000000000000"] {
+            let proto = TransferInfo {
+                amount: -1,
+                amount_raw: amount.to_string(),
+                ..Default::default()
+            };
+            assert_eq!(TransferInfoSerde::from(proto).amount, amount);
+        }
+        for amount in [
+            json!("00"),
+            json!("-0"),
+            json!("+7"),
+            json!("1e3"),
+            json!(1.5),
+        ] {
+            let json = json!({
+                "fromAddr": "sender", "toAddr": "recipient", "amount": amount,
+                "success": false, "failReason": "rejected"
+            });
+            assert!(serde_json::from_value::<TransferInfoSerde>(json).is_err());
+        }
+    }
 
     fn deploy_info(parameters: Vec<DeployParameter>) -> DeployInfo {
         let deploy = DeployData {

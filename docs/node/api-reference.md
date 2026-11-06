@@ -63,6 +63,76 @@ Route these requests to a read-only node (typically port 40453). `GET /api/statu
 
 ---
 
+## 64-bit integers and token amounts
+
+A JavaScript `Number` guarantees exact integer representation only within `-(2^53-1)..2^53-1`.
+The JSON API therefore gives these values as decimal strings:
+
+| Value | Fields |
+|-------|--------|
+| Rholang integer | `ExprInt.data` and `ExprUint64.data` in every `RhoExpr`, also when nested |
+| Vault balance | `balance` in `GET /api/balance/{address}` |
+| Validator stake | `stake` and `totalStake` in `GET /api/validators`, `stake` in `GET /api/validator/{pubkey}`, `bonds[].stake` in block info |
+| Transfer amount | `transfers[].amount` in block and deploy responses, `amount` in the `transfers-available` WebSocket event |
+
+- Integer strings use base 10, without an exponent, a decimal point, or leading zeros. A negative value starts with `-`.
+- Monetary values use base units (dust). Other Rholang integers retain their original meaning.
+- The type is always a string. The type does not change with the size of the value.
+- Phlo quantities (`cost`, `phloLimit`) and the phlo price (`phloPrice`, `minPhloPrice`) stay JSON numbers.
+- Phlo price string serialization remains pending under [issue 808](https://github.com/F1R3FLY-io/f1r3node-rust/issues/808).
+- Deploy `parameters` keep the JSON format of the deploy request. An `int` value there stays a JSON number.
+- The trace report (`GET /reporting/trace`) gives raw Rholang terms in protobuf JSON form. Integers in these terms stay JSON numbers.
+- The Rust HTTP response types in the `node` crate also read the earlier JSON number form.
+- Integer strings must use the canonical form. Leading zeros, negative zero, fractions, and exponents are rejected.
+
+**Transfer amounts.** The node reads a transfer amount from a Rholang `Int` or `BigInt` without loss. The vault accepts a transfer only when the amount is in `1..2^256−1`. A failed transfer retains its requested amount and failure details. Its amount can be zero, negative, or above `2^256−1`. The report extractor does not impose a separate bit limit or omit a failed attempt because of its amount.
+
+**gRPC `TransferInfo`.** Protobuf has no 256-bit integer type, so the message has two amount fields:
+
+| Field | Type | Content |
+|-------|------|---------|
+| `amountRaw` (6) | `string` | The exact amount as a decimal string. Read this field. |
+| `amount` (3) | `int64` | Legacy field. It holds the exact amount when representable. In an explicitly requested exact response, an unrepresentable amount uses `-1`. |
+
+`getBlock` and `lastFinalizedBlock` negotiate the amount contract through the request field `exactTransferAmounts`:
+
+| Request | Response behavior |
+|---------|-------------------|
+| Field omitted or false | Every transfer amount must fit int64. Otherwise the response contains `error.messages` with a `TRANSFER_AMOUNT_OUT_OF_RANGE:` prefix. No block result is returned. |
+| `exactTransferAmounts=true` | Read `amountRaw` for every transfer. All extracted amounts remain exact, including requested amounts of failed transfers. |
+
+The range error uses the existing protobuf `ServiceError` response variant, with gRPC transport status OK.
+The check applies to successful and failed transfers and rejects the whole block result, rather than returning a partial list.
+Representable legacy amounts keep their original values.
+An unavailable report retains `transfersAvailable=false`, without a range error.
+Exact responses preserve report availability and never omit a transfer because its amount is large.
+
+When a new client reads an old protobuf response, `amountRaw` is empty.
+In that case, convert the legacy int64 field directly to a decimal string without a floating-point conversion.
+The node's HTTP and WebSocket adapters apply this fallback.
+When `amountRaw` is present, it takes precedence over the legacy field.
+An old node can still omit BigInt transfers, so this fallback cannot replace the node upgrade.
+
+**Migration.** The string form is a breaking change for JSON clients that read these fields as numbers.
+Parse these fields with an exact integer type, such as JavaScript `BigInt` or Python `int`.
+Accept legacy JSON numbers only when exact parsing or a safe-integer check proves that no precision was lost.
+
+1. Regenerate client bindings from the updated protobuf schema.
+2. Update consumers to request `exactTransferAmounts=true` and read `amountRaw`, with the legacy protobuf fallback described above.
+3. Update HTTP and WebSocket consumers to read decimal strings.
+4. Upgrade nodes after deploying the compatible consumers.
+5. Verify wide transfers through gRPC, HTTP, and recipient balance changes before completing the rollout.
+
+The built-in CLI requests exact gRPC responses.
+Individual validator stakes remain int64.
+The HTTP `totalStake` field uses an int128 Rust type to preserve sums above the int64 range.
+The API serializes this aggregate as a decimal string.
+
+A map key that is a tuple, list, or map contains the JSON text of the key value.
+Integers in that text are now strings, for example `{"ExprInt":{"data":"1"}}`.
+
+---
+
 ## HTTP REST API (port 40403)
 
 ### `GET /api/status`
@@ -387,7 +457,7 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `phloLimit` | int | Phlo limit (full only) |
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
-| `transfers` | array/null | Transfer list or null on validators (full only) |
+| `transfers` | array/null | Transfer list or null on validators (full only). Each `amount` is a decimal string, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts) |
 | `parameters` | array | Named Rholang values from the signed deploy. The node omits this field in summary responses and when no parameters exist. |
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
@@ -683,7 +753,7 @@ curl http://localhost:40453/api/balance/11112BpS5mG8...
 ```
 
 ```json
-{"address": "11112BpS5mG8...", "balance": 1000000, "blockNumber": 42, "blockHash": "3bfdf56f..."}
+{"address": "11112BpS5mG8...", "balance": "1000000", "blockNumber": 42, "blockHash": "3bfdf56f..."}
 ```
 
 | Status | Condition |
@@ -734,11 +804,11 @@ curl http://localhost:40453/api/validators
 ```json
 {
   "validators": [
-    {"publicKey": "04837a4cff...", "stake": 1000},
-    {"publicKey": "04fa70d7be...", "stake": 1000},
-    {"publicKey": "0457febafc...", "stake": 1000}
+    {"publicKey": "04837a4cff...", "stake": "1000"},
+    {"publicKey": "04fa70d7be...", "stake": "1000"},
+    {"publicKey": "0457febafc...", "stake": "1000"}
   ],
-  "totalStake": 3000,
+  "totalStake": "3000",
   "blockNumber": 30,
   "blockHash": "6bb5892d..."
 }
@@ -767,7 +837,7 @@ curl http://localhost:40453/api/validator/04837a4cff...
 
 Bonded validator:
 ```json
-{"publicKey": "04837a4cff...", "isBonded": true, "stake": 1000, "blockNumber": 4, "blockHash": "7701282c..."}
+{"publicKey": "04837a4cff...", "isBonded": true, "stake": "1000", "blockNumber": 4, "blockHash": "7701282c..."}
 ```
 
 Unknown key:
@@ -854,8 +924,8 @@ curl http://localhost:40453/api/epoch/rewards
   "rewards": {
     "ExprMap": {
       "data": {
-        "04837a4cff...": {"ExprInt": {"data": 0}},
-        "04fa70d7be...": {"ExprInt": {"data": 0}}
+        "04837a4cff...": {"ExprInt": {"data": "0"}},
+        "04fa70d7be...": {"ExprInt": {"data": "0"}}
       }
     }
   },
@@ -980,7 +1050,7 @@ Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeSer
 | **Readonly** | Populated array | Emitted after block report cache warming |
 | **Validator** | `null` (omitted) | Not emitted |
 
-`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers.
+`null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers. Transfer amounts are exact decimal strings, see [64-bit integers and token amounts](#64-bit-integers-and-token-amounts).
 
 ---
 

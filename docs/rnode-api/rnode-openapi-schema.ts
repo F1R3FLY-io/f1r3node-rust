@@ -30,7 +30,7 @@ export interface definitions {
   /**
    * BondInfo
    */
-  BondInfo: { validator?: string; stake?: number };
+  BondInfo: { validator?: string; stake?: string };
   /**
    * ExprUri
    */
@@ -213,7 +213,7 @@ export interface definitions {
   /**
    * ExprInt
    */
-  ExprInt: { ExprInt: { data: number } };
+  ExprInt: { ExprInt: { data: string } };
   /**
    * DataRequest
    */
