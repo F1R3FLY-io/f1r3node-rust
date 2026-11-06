@@ -281,6 +281,7 @@ impl Score {
     pub const COST_STACK: i32 = 315;
     pub const COST_SIG_NAME: i32 = 316;
     pub const COST_SIG_UNIT: i32 = 317;
+    pub const COST_SIG_SIGNER: i32 = 318;
 
     pub const PAR: i32 = 999;
 }

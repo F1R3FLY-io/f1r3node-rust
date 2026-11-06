@@ -697,6 +697,7 @@ mod tests {
             cost_signed_terms: vec![CostSignedTerm {
                 body: Some(Par::default()),
                 signature: Some(ground(1)),
+                seal: None,
             }],
             cost_stacks: vec![CostStack {
                 cells: vec![ground(2), ground(3)],

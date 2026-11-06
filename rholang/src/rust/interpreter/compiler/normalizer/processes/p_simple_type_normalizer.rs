@@ -16,6 +16,11 @@ pub fn normalize_simple_type<'ast>(
         SimpleType::String => ConnectiveInstance::ConnString(true),
         SimpleType::Uri => ConnectiveInstance::ConnUri(true),
         SimpleType::ByteArray => ConnectiveInstance::ConnByteArray(true),
+        other => {
+            return Err(InterpreterError::NormalizerError(format!(
+                "the type pattern {other:?} has no connective on this branch"
+            )))
+        }
     };
 
     let connective = Connective {

@@ -44,13 +44,14 @@ fn rebuild_for<'ast>(
 pub fn uniform_sign<'ast>(
     inner: AnnProc<'ast>,
     sig: &Signature<'ast>,
+    limit: Option<u64>,
     parser: &'ast RholangParser<'ast>,
 ) -> AnnProc<'ast> {
     if let Proc::ForComprehension { receipts, proc } = inner.proc {
         if !matches!(proc.proc, Proc::SignedTerm { .. }) {
             let signed_body = parser
                 .ast_builder()
-                .alloc_signed_term(*proc, sig.clone())
+                .alloc_signed_term_with_limit(*proc, sig.clone(), limit)
                 .ann(proc.span);
             return rebuild_for(receipts, signed_body, inner.span, parser);
         }
@@ -66,13 +67,14 @@ pub fn uniform_sign<'ast>(
 pub fn lollipop<'ast>(
     inner: AnnProc<'ast>,
     continuation_sig: &Signature<'ast>,
+    limit: Option<u64>,
     parser: &'ast RholangParser<'ast>,
 ) -> Result<AnnProc<'ast>, InterpreterError> {
     match inner.proc {
         Proc::ForComprehension { receipts, proc } => {
             let signed_body = parser
                 .ast_builder()
-                .alloc_signed_term(*proc, continuation_sig.clone())
+                .alloc_signed_term_with_limit(*proc, continuation_sig.clone(), limit)
                 .ann(proc.span);
             Ok(rebuild_for(receipts, signed_body, inner.span, parser))
         }

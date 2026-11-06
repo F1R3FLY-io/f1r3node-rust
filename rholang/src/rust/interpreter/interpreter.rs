@@ -57,6 +57,11 @@ impl Interpreter for InterpreterImpl {
         rand: Blake2b512Random,
     ) -> Result<EvaluateResult, InterpreterError> {
         let parsing_cost = parsing_cost(term);
+        let elaboration = if reducer.take_elaboration() {
+            reducer.elaboration_origin().await
+        } else {
+            None
+        };
 
         let evaluation_result: Result<EvaluateResult, InterpreterError> = {
             // Phase: set-initial-cost
@@ -124,8 +129,11 @@ impl Interpreter for InterpreterImpl {
                     mark = "started-build-normalized-term",
                     "inj_attempt"
                 );
-                let result = match Compiler::source_to_adt_with_normalizer_env(term, normalizer_env)
-                {
+                let compiled = match elaboration.clone() {
+                    Some(origin) => Compiler::source_to_adt_elaborated(term, normalizer_env, origin),
+                    None => Compiler::source_to_adt_with_normalizer_env(term, normalizer_env),
+                };
+                let result = match compiled {
                     Ok(p) => {
                         event!(
                             Level::DEBUG,
@@ -165,7 +173,14 @@ impl Interpreter for InterpreterImpl {
             // Phase: reduce-term — execute the parsed AST through RSpace.
             let phase_start = Instant::now();
             event!(Level::DEBUG, mark = "started-reduce-term", "inj_attempt");
-            let reduce_result = reducer.inj(parsed, rand).await;
+            let reduce_result = match &elaboration {
+                Some(origin) if !crate::rust::interpreter::reduce::is_elaborated_deployment(&parsed, origin) => {
+                    Err(InterpreterError::ReduceError(
+                        "a user deployment reaches the reducer only in its elaborated form".to_string(),
+                    ))
+                }
+                _ => reducer.inj(parsed, rand).await,
+            };
             metrics::histogram!(
                 INJ_ATTEMPT_REDUCE_TERM_TIME_METRIC,
                 "source" => INTERPRETER_METRICS_SOURCE

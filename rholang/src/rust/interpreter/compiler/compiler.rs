@@ -56,6 +56,38 @@ impl Compiler {
         Self::source_to_adt_with_normalizer_env(source, HashMap::new())
     }
 
+    pub fn source_to_adt_explicit(
+        source: &str,
+        normalizer_env: HashMap<String, Par>,
+        origin: models::rhoapi::SealOrigin,
+    ) -> Result<Par, InterpreterError> {
+        let deployer = normalizer_env.get("rho:system:deployerId").cloned().unwrap_or_default();
+        super::normalizer::cost_accounting::elaborate::within(
+            Some(elaboration_of(origin, deployer, false)),
+            || Self::source_to_adt_with_normalizer_env(source, normalizer_env),
+        )
+    }
+
+    pub fn source_to_adt_elaborated(
+        source: &str,
+        normalizer_env: HashMap<String, Par>,
+        origin: models::rhoapi::SealOrigin,
+    ) -> Result<Par, InterpreterError> {
+        let deployer = normalizer_env
+            .get("rho:system:deployerId")
+            .cloned()
+            .ok_or_else(|| {
+                InterpreterError::NormalizerError(
+                    "elaboration needs the deployer's identity in the normalizer environment"
+                        .to_string(),
+                )
+            })?;
+        let elaboration = elaboration_of(origin, deployer, true);
+        super::normalizer::cost_accounting::elaborate::within(Some(elaboration), || {
+            Self::source_to_adt_with_normalizer_env(source, normalizer_env)
+        })
+    }
+
     pub fn source_to_adt_with_normalizer_env(
         source: &str,
         normalizer_env: HashMap<String, Par>,
@@ -68,6 +100,11 @@ impl Compiler {
             validated::Validated::Good(procs) => {
                 if procs.len() == 1 {
                     let proc = procs.into_iter().next().unwrap();
+                    let proc = if super::normalizer::cost_accounting::elaborate::current().is_some_and(|e| e.pass) {
+                        super::normalizer::cost_accounting::elaborate::elaborate(proc, &parser)?
+                    } else {
+                        proc
+                    };
                     Self::normalize_term(proc, normalizer_env, &parser)
                 } else {
                     Err(InterpreterError::ParserError(format!(
@@ -160,4 +197,12 @@ impl Compiler {
         let sorted_par = ParSortMatcher::sort_match(&normalized_result.par);
         Ok(sorted_par.term)
     }
+}
+
+pub fn elaboration_of(
+    origin: models::rhoapi::SealOrigin,
+    deployer: Par,
+    pass: bool,
+) -> super::normalizer::cost_accounting::elaborate::Elaboration {
+    super::normalizer::cost_accounting::elaborate::Elaboration { origin, deployer, pass }
 }

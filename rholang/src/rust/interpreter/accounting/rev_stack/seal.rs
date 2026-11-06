@@ -14,6 +14,46 @@ pub struct Origin {
     pub phlo_limit: u64,
 }
 
+pub fn origin_digest(origin: &SealOrigin) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend((origin.envelope.len() as u64).to_le_bytes());
+    bytes.extend(&origin.envelope);
+    bytes.extend(origin.phlo_price.to_le_bytes());
+    for signer in &origin.signers {
+        bytes.extend((signer.len() as u64).to_le_bytes());
+        bytes.extend(signer);
+    }
+    crypto::rust::hash::blake2b256::Blake2b256::hash(bytes)
+}
+
+impl Origin {
+    pub fn digest(&self) -> Vec<u8> {
+        origin_digest(&SealOrigin {
+            envelope: self.envelope.clone(),
+            signers: self.signers.iter().map(WalletOwner::canonical_bytes).collect(),
+            phlo_price: self.phlo_price,
+            phlo_limit: self.phlo_limit,
+        })
+    }
+
+    pub fn same_envelope(&self, other: &Origin) -> bool {
+        self.envelope == other.envelope
+            && self.signers == other.signers
+            && self.phlo_price == other.phlo_price
+    }
+
+    pub fn matches_proto(&self, proto: &SealOrigin) -> bool {
+        self.envelope == proto.envelope
+            && self.phlo_price == proto.phlo_price
+            && self.signers.len() == proto.signers.len()
+            && self
+                .signers
+                .iter()
+                .zip(proto.signers.iter())
+                .all(|(signer, bytes)| signer.canonical_bytes() == *bytes)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SealKind {
     Deployment,
@@ -159,7 +199,7 @@ impl SealKind {
         }
     }
 
-    fn from_tag(tag: i32) -> Option<Self> {
+    pub(crate) fn from_tag(tag: i32) -> Option<Self> {
         match tag {
             KIND_DEPLOYMENT => Some(SealKind::Deployment),
             KIND_SIGNED => Some(SealKind::Signed),
@@ -191,7 +231,12 @@ impl SealRecord {
     pub fn price(&self) -> u64 { self.origin.phlo_price }
 
     pub fn shares_membrane(&self, other: &SealRecord) -> bool {
-        self.owner == other.owner && self.origin == other.origin
+        self.owner == other.owner && self.origin.same_envelope(&other.origin)
+    }
+
+    pub(crate) fn with_limit(mut self, phlo_limit: u64) -> Self {
+        self.origin.phlo_limit = phlo_limit;
+        self
     }
 
     pub fn to_proto(&self) -> SealRecordProto {

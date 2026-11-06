@@ -57,6 +57,7 @@ message CostSignature {
     CostSignatureCompound compound = 4;
     Par name = 5;
     bool unit = 6;
+    uint32 signer = 7;
   }
 }
 
@@ -68,6 +69,13 @@ message CostSignedTerm {
   Par body = 1;
   CostSignature signature = 2;
   reserved 3;
+  ElaboratedSeal seal = 4;
+}
+
+message ElaboratedSeal {
+  int32 kind = 1;
+  bytes origin = 2;
+  uint64 phlo_limit = 3;
 }
 
 message CostStack {
