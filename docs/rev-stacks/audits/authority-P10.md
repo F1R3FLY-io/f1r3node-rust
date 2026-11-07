@@ -3967,6 +3967,17 @@ Four files had conflicts:
 - **The tag waits for F54.** When the test of condition 1 passes, or the fix of condition 2 lands with its test, the tip can be tagged. Then `feature/rev-stacks-ote` can be fast-forwarded to the tag (Decision 123).
 
 
+## Revision 50 (action A-8): a correction to F54
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-8b (`4c9853b00`), `feature/rev-stacks-ote`, `dev` or any tag.
+- **No change:** FX-8b stays at `4c9853b00`. No fix for F54 is on FX-8b or on `dev` (`2cce114a5`). There is no ruling on F54, and there is no tag.
+
+**Correction to revision 49.** Revision 49 says that no `stacker` guard is present. That is wrong. My search matched other names and hid the guard.
+- `reduce.rs` on FX-8b and on `dev` wraps the reducer's futures in `StackGrowingFuture`. On each poll, `stacker::maybe_grow` grows the stack when less than 1 MB (`STACK_RED_ZONE`) is left.
+- **The finding stands, with a narrower reason.** The guard runs only when a future is polled. The β-reduction in `EAppBody` is synchronous, so all its steps run inside one poll. The guard gives that recursion at most the 1 MB that it keeps free at the start of the poll. A recursion deeper than that can still overflow the stack before the guard runs again.
+- The label (High, blocking until checked) and the two conditions of revision 49 do not change. A fix can also add a `stacker::maybe_grow` call in the synchronous recursion itself, as a third option beside an iterative reduction and a depth bound. Every option must keep play and replay equal, and must fail the run with an error instead of stopping the process.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
