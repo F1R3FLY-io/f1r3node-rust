@@ -19,14 +19,10 @@ use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_expr};
 /// BoundVar(i) inside the body (same convention as Phase 1a Expr-level
 /// tests, lambda_expr_spec).
 ///
-/// Param type annotations are optional per-slot: if any param carries
-/// an annotation, `ELambda.paramTypes` is populated with length
-/// `bind_count` and `Par::default()` in any slot the source left
-/// un-annotated. If no params are annotated, `paramTypes` stays empty
-/// (legacy shape). Annotations are normalized in the OUTER scope (no
-/// binder is in scope while normalizing them), matching Pi behavior.
-/// The reducer ignores the field; the typechecker cross-verifies
-/// non-empty slots against the expected Pi's param types.
+/// Phase 2b: type annotations on params are accepted syntactically but
+/// discarded here — the Phase 2c typechecker will pick them up by widening
+/// `ELambda` with a `paramTypes` field. For now, typed and untyped
+/// lambdas produce identical proto representations.
 pub fn normalize_p_lambda<'ast>(
     params: &SmallVec<[(Id<'ast>, Option<AnnProc<'ast>>); 1]>,
     body: &'ast AnnProc<'ast>,
@@ -34,49 +30,8 @@ pub fn normalize_p_lambda<'ast>(
     env: &HashMap<String, Par>,
     parser: &'ast rholang_parser::RholangParser<'ast>,
 ) -> Result<ProcVisitOutputs, InterpreterError> {
-    let input_bound_chain = input.bound_map_chain.clone();
-    let input_depth = input.bound_map_chain.depth() as i32;
-
-    // Normalize annotations (if any) in the outer scope, threading
-    // `free_map` so each annotation's free variables accumulate.
-    let any_annotated = params.iter().any(|(_, ty)| ty.is_some());
-    let mut free_map = input.free_map.clone();
-    let param_type_pars: Vec<Par> = if any_annotated {
-        let mut out = Vec::with_capacity(params.len());
-        for (_id, maybe_ty) in params.iter() {
-            match maybe_ty {
-                Some(ty) => {
-                    let ty_result = normalize_ann_proc(
-                        ty,
-                        ProcVisitInputs {
-                            par: Par::default(),
-                            bound_map_chain: input_bound_chain.clone(),
-                            free_map: free_map.clone(),
-                        },
-                        env,
-                        parser,
-                    )?;
-                    free_map = ty_result.free_map;
-                    out.push(ty_result.par);
-                }
-                None => out.push(Par::default()),
-            }
-        }
-        out
-    } else {
-        Vec::new()
-    };
-
-    // Push in reverse so the first-declared param lands at the lowest
-    // BoundVar index inside the body: `x_i → BoundVar(i)`. Matches the
-    // reducer's β-rule (env.extended(args.rev()) in reduce.rs), which
-    // substitutes BoundVar(k) → args[k], and the typechecker's
-    // check-against-Pi convention. Without the reverse, the first
-    // param would get the HIGHEST index, so `((x, y) => x)(1, 2)`
-    // would return 2 (the last arg).
     let bindings: Vec<IdContextPos<VarSort>> = params
         .iter()
-        .rev()
         .map(|(id, _ty)| {
             (id.name.to_string(), VarSort::ProcSort, SourcePos {
                 line: id.pos.line,
@@ -85,30 +40,24 @@ pub fn normalize_p_lambda<'ast>(
         })
         .collect();
 
-    let scope = input_bound_chain.put_all_pos(bindings);
-    let bind_count = scope.get_count() - input_bound_chain.get_count();
+    let scope = input.bound_map_chain.put_all_pos(bindings);
+    let bind_count = scope.get_count() - input.bound_map_chain.get_count();
 
     let body_result = normalize_ann_proc(
         body,
         ProcVisitInputs {
             par: Par::default(),
             bound_map_chain: scope,
-            free_map,
+            free_map: input.free_map.clone(),
         },
         env,
         parser,
     )?;
 
+    let input_depth = input.bound_map_chain.depth() as i32;
     let body_par = body_result.par.clone();
-    let body_locally_free =
-        filter_and_adjust_bitset(body_par.locally_free(input_depth), bind_count);
-    // Annotations contribute their own locally_free (outer scope).
-    let mut locally_free = body_locally_free;
-    for pt in &param_type_pars {
-        locally_free = models::rust::utils::union(locally_free, pt.locally_free(input_depth));
-    }
-    let connective_used =
-        body_par.connective_used() || param_type_pars.iter().any(|p| p.connective_used());
+    let locally_free = filter_and_adjust_bitset(body_par.locally_free(input_depth), bind_count);
+    let connective_used = body_par.connective_used();
 
     let lambda = Expr {
         expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
@@ -116,7 +65,6 @@ pub fn normalize_p_lambda<'ast>(
             body: Some(body_par),
             locally_free,
             connective_used,
-            param_types: param_type_pars,
         })),
     };
 

@@ -51,14 +51,9 @@ pub fn normalize_p_pi<'ast>(
         param_type_pars.push(ty_result.par);
     }
 
-    // Build the extended scope: push each param name as a ProcSort binding,
-    // in REVERSE source order so `x_i → BoundVar(i)` inside the codomain.
-    // Same convention as p_lambda_normalizer; see that file for the full
-    // rationale. Keeps the typechecker's `param_types.iter().rev()` push
-    // in sync with the normalizer-produced binder layout.
+    // Build the extended scope: push each param name as a ProcSort binding.
     let bindings: Vec<IdContextPos<VarSort>> = params
         .iter()
-        .rev()
         .map(|(id, _ty)| {
             (id.name.to_string(), VarSort::ProcSort, SourcePos {
                 line: id.pos.line,

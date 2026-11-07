@@ -19,7 +19,6 @@ pub fn vector_par(_locally_free: Vec<u8>, _connective_used: bool) -> Par {
         bundles: Vec::new(),
         connectives: Vec::new(),
         conditionals: Vec::new(),
-        foreaches: Vec::new(),
         locally_free: _locally_free,
         connective_used: _connective_used,
     }

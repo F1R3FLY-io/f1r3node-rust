@@ -6,8 +6,8 @@ use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, EAnd, EApp, EDiv, EEq, EGt, EGte, ELambda, EList, ELt,
     ELte, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr,
-    EPercentPercent, EPi, EPlus, EPlusPlus, ETuple, EVar, Expr, Foreach, If, Match, MatchCase, New,
-    Par, Receive, ReceiveBind, Send, Var, VarRef,
+    EPercentPercent, EPi, EPlus, EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par,
+    Receive, ReceiveBind, Send, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
@@ -15,7 +15,6 @@ use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set::ParSet;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{concatenate_pars, single_bundle};
-use models::rust::rholang::sorter::foreach_sort_matcher::ForeachSortMatcher;
 use models::rust::rholang::sorter::if_sort_matcher::IfSortMatcher;
 use models::rust::rholang::sorter::match_sort_matcher::MatchSortMatcher;
 use models::rust::rholang::sorter::new_sort_matcher::NewSortMatcher;
@@ -298,7 +297,6 @@ impl Substitute {
                     | ConnectiveInstance::ConnUri(_)
                     | ConnectiveInstance::ConnByteArray(_)
                     | ConnectiveInstance::ConnType(_)
-                    | ConnectiveInstance::ConnProc(_)
                     | ConnectiveInstance::ConnInt32(_)
                     | ConnectiveInstance::ConnUint64(_)
                     | ConnectiveInstance::ConnUint32(_)
@@ -322,49 +320,6 @@ impl Substitute {
                         ConnectiveInstance::ConnFixedPointBody(
                             models::rhoapi::ConnFixedPointBody { scale },
                         ),
-                    );
-                }
-                Some(ConnectiveInstance::ConnList(element)) => {
-                    let element = self.substitute_no_sort(element, depth, env)?;
-                    prepend(
-                        &mut par,
-                        &mut acc_conns,
-                        ConnectiveInstance::ConnList(element),
-                    );
-                }
-                Some(ConnectiveInstance::ConnSet(element)) => {
-                    let element = self.substitute_no_sort(element, depth, env)?;
-                    prepend(
-                        &mut par,
-                        &mut acc_conns,
-                        ConnectiveInstance::ConnSet(element),
-                    );
-                }
-                Some(ConnectiveInstance::ConnMap(body)) => {
-                    let key = body
-                        .key
-                        .map(|p| self.substitute_no_sort(p, depth, env))
-                        .transpose()?;
-                    let value = body
-                        .value
-                        .map(|p| self.substitute_no_sort(p, depth, env))
-                        .transpose()?;
-                    prepend(
-                        &mut par,
-                        &mut acc_conns,
-                        ConnectiveInstance::ConnMap(models::rhoapi::ConnMapBody { key, value }),
-                    );
-                }
-                Some(ConnectiveInstance::ConnTuple(body)) => {
-                    let elements = body
-                        .elements
-                        .into_iter()
-                        .map(|p| self.substitute_no_sort(p, depth, env))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    prepend(
-                        &mut par,
-                        &mut acc_conns,
-                        ConnectiveInstance::ConnTuple(models::rhoapi::ConnTupleBody { elements }),
                     );
                 }
                 None => {}
@@ -420,7 +375,6 @@ impl SubstituteTrait<Par> for Substitute {
         let news = self.substitute_all_no_sort(term.news, depth, env)?;
         let matches = self.substitute_all_no_sort(term.matches, depth, env)?;
         let conditionals = self.substitute_all_no_sort(term.conditionals, depth, env)?;
-        let foreaches = self.substitute_all_no_sort(term.foreaches, depth, env)?;
 
         Ok(concatenate_pars(
             exprs,
@@ -434,7 +388,6 @@ impl SubstituteTrait<Par> for Substitute {
                 bundles,
                 connectives: Vec::new(),
                 conditionals,
-                foreaches,
                 locally_free: set_bits_until(term.locally_free, env.shift),
                 connective_used: term.connective_used,
             }),
@@ -658,54 +611,6 @@ impl SubstituteTrait<If> for Substitute {
     fn substitute(&self, term: If, depth: i32, env: &Env<Par>) -> Result<If, InterpreterError> {
         self.substitute_no_sort(term, depth, env)
             .map(|i| IfSortMatcher::sort_match(&i))
-            .map(|st| st.term)
-    }
-}
-
-impl SubstituteTrait<Foreach> for Substitute {
-    fn substitute_no_sort(
-        &self,
-        term: Foreach,
-        depth: i32,
-        env: &Env<Par>,
-    ) -> Result<Foreach, InterpreterError> {
-        // Sources and yield_name live in the OUTER scope. Body and
-        // where_cond live under `bind_count` fresh binders, so
-        // substitute them under a shifted env — same shape as
-        // ELambda's body treatment above.
-        let sources_sub: Vec<Par> = term
-            .sources
-            .into_iter()
-            .map(|s| self.substitute_no_sort(s, depth, env))
-            .collect::<Result<_, _>>()?;
-        let yield_sub =
-            self.substitute_no_sort(unwrap_option_safe(term.yield_name)?, depth, env)?;
-        let shifted_env = env.shift(term.bind_count);
-        let body_sub =
-            self.substitute_no_sort(unwrap_option_safe(term.body)?, depth, &shifted_env)?;
-        let where_sub = term
-            .where_cond
-            .map(|c| self.substitute_no_sort(c, depth, &shifted_env))
-            .transpose()?;
-        Ok(Foreach {
-            bind_count: term.bind_count,
-            sources: sources_sub,
-            body: Some(body_sub),
-            yield_name: Some(yield_sub),
-            where_cond: where_sub,
-            locally_free: set_bits_until(term.locally_free, env.shift),
-            connective_used: term.connective_used,
-        })
-    }
-
-    fn substitute(
-        &self,
-        term: Foreach,
-        depth: i32,
-        env: &Env<Par>,
-    ) -> Result<Foreach, InterpreterError> {
-        self.substitute_no_sort(term, depth, env)
-            .map(|f| ForeachSortMatcher::sort_match(&f))
             .map(|st| st.term)
     }
 }
@@ -1038,16 +943,9 @@ impl SubstituteTrait<Expr> for Substitute {
                 body,
                 locally_free,
                 connective_used,
-                param_types,
             }) => {
                 let sub_body =
                     self.substitute(unwrap_option_safe(body)?, depth, &env.shift(bind_count))?;
-                // Annotations are typed in the outer scope, so substitute
-                // them under the outer env (no shift).
-                let sub_param_types: Vec<Par> = param_types
-                    .into_iter()
-                    .map(|p| self.substitute(p, depth, env))
-                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
@@ -1055,7 +953,6 @@ impl SubstituteTrait<Expr> for Substitute {
                         body: Some(sub_body),
                         locally_free: set_bits_until(locally_free, env.shift),
                         connective_used,
-                        param_types: sub_param_types,
                     })),
                 })
             }
@@ -1442,17 +1339,12 @@ impl SubstituteTrait<Expr> for Substitute {
                 body,
                 locally_free,
                 connective_used,
-                param_types,
             }) => {
                 let sub_body = self.substitute_no_sort(
                     unwrap_option_safe(body)?,
                     depth,
                     &env.shift(bind_count),
                 )?;
-                let sub_param_types: Vec<Par> = param_types
-                    .into_iter()
-                    .map(|p| self.substitute_no_sort(p, depth, env))
-                    .collect::<Result<Vec<_>, _>>()?;
 
                 Ok(Expr {
                     expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
@@ -1460,7 +1352,6 @@ impl SubstituteTrait<Expr> for Substitute {
                         body: Some(sub_body),
                         locally_free: set_bits_until(locally_free, env.shift),
                         connective_used,
-                        param_types: sub_param_types,
                     })),
                 })
             }
