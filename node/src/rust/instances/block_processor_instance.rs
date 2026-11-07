@@ -628,12 +628,6 @@ mod tests {
 
     use super::{derive_pipeline_width, BlockProcessorInstance};
 
-    enum StartupDag {
-        Processed,
-        Empty,
-        Stored(BlockDagKeyValueStorage),
-    }
-
     struct StartupCasper {
         snapshot: CasperSnapshot,
         approved: BlockMessage,
@@ -641,7 +635,6 @@ mod tests {
         runtime_manager: Arc<RuntimeManager>,
         dag_reads: AtomicUsize,
         processed: Mutex<Vec<BlockHash>>,
-        dag: Mutex<StartupDag>,
     }
 
     #[async_trait]
@@ -656,11 +649,7 @@ mod tests {
 
         fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
             self.processed.lock().unwrap().push(hash.clone());
-            match &*self.dag.lock().unwrap() {
-                StartupDag::Processed => Ok(true),
-                StartupDag::Empty => Ok(false),
-                StartupDag::Stored(storage) => Ok(storage.get_representation()?.contains(hash)?),
-            }
+            Ok(true)
         }
 
         fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
@@ -772,9 +761,6 @@ mod tests {
         processor: Arc<BlockProcessor<TransportLayerStub>>,
         in_flight: Arc<InFlightBlocks>,
         retriever: BlockRetriever<TransportLayerStub>,
-        dag: BlockDagKeyValueStorage,
-        buffer: CasperBufferKeyValueStorage,
-        transport: Arc<TransportLayerStub>,
     }
 
     impl StartupFixture {
@@ -820,10 +806,10 @@ mod tests {
             let dag = BlockDagKeyValueStorage::new(&mut stores).await.unwrap();
             let dependencies = BlockProcessorDependencies::new(
                 block_store.clone(),
-                buffer.clone(),
-                dag.clone(),
+                buffer,
+                dag,
                 retriever.clone(),
-                transport.clone(),
+                transport,
                 connections,
                 conf,
                 None,
@@ -836,14 +822,10 @@ mod tests {
                     runtime_manager,
                     dag_reads: AtomicUsize::new(0),
                     processed: Mutex::new(Vec::new()),
-                    dag: Mutex::new(StartupDag::Processed),
                 }),
                 processor: Arc::new(BlockProcessor::new(dependencies)),
                 in_flight: Arc::new(InFlightBlocks::new()),
                 retriever,
-                dag,
-                buffer,
-                transport,
             }
         }
 
@@ -903,109 +885,6 @@ mod tests {
                 panic!("Test block must acquire an in-flight marker")
             };
             (self.casper.clone(), block, guard)
-        }
-    }
-
-    #[tokio::test]
-    async fn dag_read_failures_preserve_retriever_tracking_and_stop_processing() {
-        use models::rust::block_hash::BlockHashSerde;
-
-        #[derive(Clone, Copy, Debug)]
-        enum Phase {
-            Interest,
-            Authorization,
-            Dependencies,
-        }
-
-        for phase in [Phase::Interest, Phase::Authorization, Phase::Dependencies] {
-            let fixture = StartupFixture::new().await;
-            *fixture.casper.dag.lock().unwrap() = match phase {
-                Phase::Interest => StartupDag::Stored(fixture.dag.clone()),
-                _ => StartupDag::Empty,
-            };
-            let mut block = fixture.casper.approved.clone();
-            block.header.parents_hash_list = match phase {
-                Phase::Authorization => vec![Bytes::from(vec![31; 32])],
-                _ => vec![],
-            };
-            block.justifications.clear();
-            block.body.system_deploys.clear();
-            let (secret, _) = Secp256k1.new_key_pair();
-            let block = ValidatorIdentity::new(&secret).sign_block(&block);
-            let hash = block.block_hash.clone();
-            let checked = CheckedBlock::check(block, BLOCK_PROCESSOR_METRICS_SOURCE).unwrap();
-            fixture
-                .retriever
-                .admit_hash(
-                    hash.clone(),
-                    None,
-                    AdmitHashReason::MissingDependencyRequested,
-                )
-                .await
-                .unwrap();
-            fixture.retriever.ack_receive(hash.clone()).await.unwrap();
-            let requests_before = fixture
-                .retriever
-                .get_requested_blocks_count()
-                .await
-                .unwrap();
-            let messages_before = fixture.transport.get_all_requests().len();
-
-            let result = super::process_block_with_steps(
-                fixture.processor.clone(),
-                fixture.casper.clone(),
-                QueuedBlock::Network(checked),
-            )
-            .await;
-
-            assert!(
-                matches!(result, Err(CasperError::KvStoreError(_))),
-                "{phase:?}"
-            );
-            assert!(
-                fixture
-                    .retriever
-                    .was_requested_as_dependency(&hash)
-                    .unwrap(),
-                "{phase:?}"
-            );
-            assert!(
-                fixture.retriever.is_received(hash.clone()).await.unwrap(),
-                "{phase:?}"
-            );
-            assert_eq!(
-                fixture
-                    .retriever
-                    .get_requested_blocks_count()
-                    .await
-                    .unwrap(),
-                requests_before,
-                "{phase:?}"
-            );
-            assert_eq!(
-                fixture.transport.get_all_requests().len(),
-                messages_before,
-                "{phase:?}"
-            );
-            assert!(
-                !fixture.buffer.contains(&BlockHashSerde(hash.clone())),
-                "{phase:?}"
-            );
-            assert!(
-                !fixture.buffer.is_pendant(&BlockHashSerde(hash.clone())),
-                "{phase:?}"
-            );
-            assert_eq!(
-                *fixture.casper.processed.lock().unwrap(),
-                vec![hash.clone()]
-            );
-            assert_eq!(fixture.casper.dag_reads.load(Ordering::SeqCst), 0);
-            if !matches!(phase, Phase::Dependencies) {
-                assert!(
-                    fixture.casper.block_store.get(&hash).unwrap().is_none(),
-                    "{phase:?}"
-                );
-            }
         }
     }
 

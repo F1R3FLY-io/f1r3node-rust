@@ -1,4 +1,4 @@
-> Last updated: 2026-11-06
+> Last updated: 2026-11-07
 
 # Crate: block-storage
 
@@ -53,6 +53,8 @@ Fixture mutation requires a detached view and cannot modify a view backed by dur
 **Database compatibility.** DAG index migration changes storage indices, not block hashes or signatures.
 It does not convert an existing chain to the upstream Merkle block-hash scheme v2.
 Stored blocks must independently satisfy the current block verification rules.
+
+**Validation record.** The [bounded DAG implementation and validation report](bounded-dag-validation.md) explains the retained regressions, historical results, archived experiments, and outstanding acceptance work.
 
 ## Casper Buffer
 

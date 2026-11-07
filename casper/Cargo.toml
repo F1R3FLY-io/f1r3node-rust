@@ -92,7 +92,3 @@ schnorr_secp256k1_experimental = [
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [build-dependencies]
-
-[[example]]
-name = "dag_gc_memory"
-required-features = ["test-utils"]

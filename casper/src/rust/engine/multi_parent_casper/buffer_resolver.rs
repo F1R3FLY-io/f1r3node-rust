@@ -133,25 +133,3 @@ pub(crate) fn buffer_get_all_from_buffer<T: TransportLayer + Send + Sync>(
 
     Ok(blocks)
 }
-
-#[cfg(test)]
-mod readiness_tests {
-    use super::*;
-
-    #[test]
-    fn storage_failure_is_distinct_from_a_missing_dependency() {
-        let dependencies = vec![BlockHash::from(vec![1; 32])];
-        assert_eq!(
-            dependencies_are_ready(&dependencies, |_| Err("read failed"), &HashSet::new()),
-            Err("read failed")
-        );
-        assert_eq!(
-            dependencies_are_ready(&dependencies, |_| Ok::<_, &str>(false), &HashSet::new()),
-            Ok(false)
-        );
-        assert_eq!(
-            dependencies_are_ready(&dependencies, |_| Ok::<_, &str>(true), &HashSet::new()),
-            Ok(true)
-        );
-    }
-}

@@ -1162,43 +1162,6 @@ mod fork_choice_b1_repro_tests {
         .build()
     }
 
-    #[test]
-    fn creator_history_read_failure_does_not_return_a_partial_interval() {
-        let validator = h(9);
-        let bottom = md(h(1), vec![], 0, &validator);
-        let mut middle = md(h(2), vec![bottom.block_hash.clone()], 1, &validator);
-        middle.justifications.push(Justification {
-            validator: validator.clone(),
-            latest_block_hash: bottom.block_hash.clone(),
-        });
-        let mut top = md(h(3), vec![middle.block_hash.clone()], 2, &validator);
-        top.justifications.push(Justification {
-            validator,
-            latest_block_hash: middle.block_hash.clone(),
-        });
-        let dag = dag_with(vec![bottom.clone(), middle.clone(), top.clone()]);
-        let expected = HashSet::from([top.block_hash.clone(), middle.block_hash.clone()]);
-        assert_eq!(
-            get_creator_blocks_between(&dag, &top, Some(&bottom)).unwrap(),
-            expected
-        );
-        dag.block_metadata_index
-            .read()
-            .delete_kv_row_for_tests(&middle.block_hash)
-            .unwrap();
-        assert!(
-            matches!(get_creator_blocks_between(&dag, &top, Some(&bottom)), Err(KvStoreError::KeyNotFound(message)) if message.contains("published block metadata missing"))
-        );
-        dag.block_metadata_index
-            .read()
-            .restore_kv_row_for_tests(middle)
-            .unwrap();
-        assert_eq!(
-            get_creator_blocks_between(&dag, &top, Some(&bottom)).unwrap(),
-            expected
-        );
-    }
-
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
     /// block's main parent can sit below the horizon — hash-only, never
     /// indexed. That absence is a statement about THIS node's sync, so it

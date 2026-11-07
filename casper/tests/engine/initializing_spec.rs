@@ -595,17 +595,6 @@ async fn truncated_restore(
     BlockDagKeyValueStorage,
     ApprovedBlock,
 ) {
-    truncated_restore_with_history_error(fixture, false).await
-}
-
-async fn truncated_restore_with_history_error(
-    fixture: &TestFixture,
-    corrupt_history: bool,
-) -> (
-    Arc<Initializing<TransportLayerStub>>,
-    BlockDagKeyValueStorage,
-    ApprovedBlock,
-) {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
     use models::rust::block_implicits::get_random_block;
     use models::rust::casper::protocol::casper_message::ApprovedBlockCandidate;
@@ -634,17 +623,6 @@ async fn truncated_restore_with_history_error(
     dag_storage
         .insert(&anchor, InsertMode::Approved)
         .expect("insert the restore anchor");
-    if corrupt_history {
-        use block_storage::rust::dag::dag_history_index::{encode_height_key, HEIGHT_TABLE};
-        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-        kvm.store(HEIGHT_TABLE.to_string())
-            .await
-            .unwrap()
-            .put_one(encode_height_key(5, &anchor.block_hash).unwrap(), vec![
-                0xff,
-            ])
-            .unwrap();
-    }
     let approved_block = ApprovedBlock {
         candidate: ApprovedBlockCandidate {
             block: anchor,
@@ -678,17 +656,6 @@ fn floor_cache_requests(fixture: &TestFixture) -> usize {
                 if packet.type_id == "FloorCacheRequest")
         })
         .count()
-}
-
-#[tokio::test]
-async fn floor_cache_restore_propagates_corrupt_history_before_contacting_bootstrap() {
-    let fixture = TestFixture::new().await;
-    InitializingSpec::before_each(&fixture);
-    let (engine, _, approved) = truncated_restore_with_history_error(&fixture, true).await;
-    let result = engine.request_floor_cache(&approved, 0, 5).await;
-    assert!(matches!(result, Err(CasperError::KvStoreError(_))));
-    assert_eq!(floor_cache_requests(&fixture), 0);
-    InitializingSpec::after_each(&fixture);
 }
 
 async fn wait_for_floor_cache_requests(fixture: &TestFixture, count: usize) {

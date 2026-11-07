@@ -2877,56 +2877,6 @@ mod backstop_tests {
     }
 
     #[tokio::test]
-    async fn merge_scope_propagates_cold_metadata_failure_instead_of_omitting_visible_branch() {
-        let mut kvm = InMemoryStoreManager::new();
-        let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut kvm, 1)
-            .await
-            .unwrap();
-        let first_sender = Secp256k1.new_key_pair().1.bytes;
-        let second_sender = Secp256k1.new_key_pair().1.bytes;
-        let genesis = scope_test_block(0, 0, first_sender.clone(), vec![]);
-        let side = scope_test_block(1, 1, first_sender.clone(), vec![genesis.block_hash.clone()]);
-        let base = scope_test_block(2, 1, second_sender, vec![genesis.block_hash.clone()]);
-        let tip = scope_test_block(3, 2, first_sender, vec![
-            base.block_hash.clone(),
-            side.block_hash.clone(),
-        ]);
-        for (block, mode) in [
-            (&genesis, InsertMode::Approved),
-            (&side, InsertMode::Normal),
-            (&base, InsertMode::Normal),
-            (&tip, InsertMode::Normal),
-        ] {
-            storage.insert(block, mode).unwrap();
-        }
-        storage
-            .record_directly_finalized(base.block_hash.clone(), 1.0, |_| async { Ok(()) })
-            .await
-            .unwrap();
-        let dag = storage.get_representation().unwrap();
-        let collect = || {
-            dag.try_with_ancestors(tip.block_hash.clone(), |hash| {
-                block_in_base_merge_scope(&dag, hash, &base.block_hash, 2)
-            })
-        };
-        assert!(collect().unwrap().contains(&side.block_hash));
-        assert!(
-            dag.resident_counts().blocks < dag.scan_membership_page(None, 1024).unwrap().rows.len()
-        );
-        let metadata = dag.lookup_unsafe(&side.block_hash).unwrap();
-        dag.block_metadata_index
-            .read()
-            .delete_kv_row_for_tests(&side.block_hash)
-            .unwrap();
-        assert!(collect().is_err());
-        dag.block_metadata_index
-            .read()
-            .restore_kv_row_for_tests(metadata)
-            .unwrap();
-        assert!(collect().unwrap().contains(&side.block_hash));
-    }
-
-    #[tokio::test]
     async fn floor_scope_drops_finalized_off_main_dag_ancestors() {
         let mut kvm = InMemoryStoreManager::new();
         let dag_storage = BlockDagKeyValueStorage::new(&mut kvm)

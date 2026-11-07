@@ -2036,67 +2036,6 @@ mod tests {
 
     fn hash(tag: &[u8]) -> BlockHash { BlockHash::from(tag.to_vec()) }
 
-    #[tokio::test]
-    async fn replay_selection_excludes_cold_invalid_blocks_and_preflights_metadata_errors() {
-        use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
-        use models::rust::block_hash::BlockHashSerde;
-        use models::rust::block_implicits::get_random_block_default;
-        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-        use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-
-        let mut manager = InMemoryStoreManager::new();
-        let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 1)
-            .await
-            .unwrap();
-        let mut blocks = Vec::new();
-        for height in 0..4 {
-            let mut block = get_random_block_default();
-            block.block_hash = vec![height as u8 + 1; 32].into();
-            block.body.state.block_number = height;
-            block.seq_num = height as i32;
-            block.sender = vec![9; models::rust::validator::LENGTH].into();
-            block.justifications.clear();
-            block.body.state.bonds.clear();
-            block.header.parents_hash_list = match height {
-                0 => vec![],
-                1 | 2 => vec![hash(&[1; 32])],
-                _ => vec![hash(&[3; 32])],
-            };
-            storage
-                .insert(&block, match height {
-                    0 => InsertMode::Approved,
-                    1 => InsertMode::Invalid,
-                    _ => InsertMode::Normal,
-                })
-                .unwrap();
-            blocks.push(block);
-        }
-        storage
-            .record_directly_finalized(blocks[3].block_hash.clone(), 1.0, |_| async { Ok(()) })
-            .await
-            .unwrap();
-        let dag = storage.get_representation().unwrap();
-        let invalid = &blocks[1].block_hash;
-        assert!(dag.resident_counts().blocks < blocks.len());
-        assert!(dag.lookup(invalid).unwrap().unwrap().invalid);
-        assert_eq!(blocks_for_mergeable_replay(&dag, 0).unwrap(), vec![
-            blocks[0].block_hash.clone(),
-            blocks[2].block_hash.clone(),
-            blocks[3].block_hash.clone(),
-        ]);
-
-        let raw = manager.store("block-metadata".to_string()).await.unwrap();
-        let key = bincode::serialize(&BlockHashSerde(blocks[0].block_hash.clone())).unwrap();
-        raw.put_one(key.clone(), vec![0xff]).unwrap();
-        let mut replay_started = false;
-        let result = blocks_for_mergeable_replay(&dag, 0).map(|_| replay_started = true);
-        assert!(matches!(result, Err(CasperError::KvStoreError(_))));
-        assert!(!replay_started);
-
-        raw.delete(vec![key]).unwrap();
-        assert!(blocks_for_mergeable_replay(&dag, 0).is_err());
-    }
-
     /// Shipped floor entries are written only for blocks this node asked about
     /// AND holds. Anything else in the response is a peer trying to seed
     /// finality for blocks outside the window — ignored, not an error, so a

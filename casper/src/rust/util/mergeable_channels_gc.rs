@@ -13,7 +13,7 @@ use crate::rust::finality::floor::Floor;
 mod job;
 #[cfg(any(test, feature = "test-utils"))]
 pub use job::collect_garbage_with;
-pub use job::{collect_garbage, GcProgress, GcSweep, GcWorkStats};
+pub use job::{collect_garbage, GcProgress, GcSweep};
 
 #[cfg(test)]
 #[derive(Default)]
@@ -732,7 +732,7 @@ mod tests {
     /// finalized set, and the latest-message map.
     const TOP: u8 = 20;
 
-    pub(super) fn linear_chain_dag() -> KeyValueDagRepresentation {
+    fn linear_chain_dag() -> KeyValueDagRepresentation {
         let store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
         let mut bms = BlockMetadataStore::new(store);
         let validator = Bytes::from(vec![0xEEu8; 65]);

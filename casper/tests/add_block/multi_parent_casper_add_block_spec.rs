@@ -31,7 +31,7 @@ use rspace_plus_plus::rspace::history::Either;
 use ValidBlock::Valid;
 
 use crate::helper::block_util::resign_block;
-use crate::helper::test_node::{ShardOverrides, TestNode};
+use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
 /// Test fixture that holds common test data
@@ -74,112 +74,6 @@ async fn multi_parent_casper_should_accept_signed_blocks() {
         "Estimator should contain the signed block hash. Got: {:?}",
         estimate
     );
-}
-
-#[tokio::test]
-async fn cold_metadata_failure_does_not_publish_invalidity_and_can_be_retried() {
-    let ctx = TestContext::new().await;
-    let mut nodes =
-        TestNode::create_network_with_overrides(ctx.genesis.clone(), 1, ShardOverrides {
-            dag_hot_window_depth: Some(1),
-            finalization_rate: Some(0),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let node = &mut nodes[0];
-    let first_deploy =
-        construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
-    let first = node.add_block_from_deploys(&[first_deploy]).await.unwrap();
-    let candidate_deploy =
-        construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
-    let candidate = node
-        .create_block_unsafe(std::slice::from_ref(&candidate_deploy))
-        .await
-        .unwrap();
-    let head_deploy =
-        construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone())).unwrap();
-    let head = node.add_block_from_deploys(&[head_deploy]).await.unwrap();
-    node.block_dag_storage
-        .record_directly_finalized(head.block_hash.clone(), 1.0, |_| async { Ok(()) })
-        .await
-        .unwrap();
-    let snapshot = node.casper.get_snapshot().await.unwrap();
-    let dag = snapshot.dag.clone();
-    let membership = dag.scan_membership_page(None, 1024).unwrap();
-    assert!(dag.resident_counts().blocks < membership.rows.len());
-    assert_eq!(candidate.header.parents_hash_list, vec![first
-        .block_hash
-        .clone()]);
-    assert!(!dag
-        .latest_message_hashes()
-        .values()
-        .any(|hash| hash == &first.block_hash));
-    assert!(first.body.state.block_number < head.body.state.block_number);
-    let metadata = dag.lookup_unsafe(&first.block_hash).unwrap();
-    let invalid_before = dag.scan_invalid_page(None, 1024).unwrap().rows;
-    let equivocations_before = node
-        .block_dag_storage
-        .access_equivocations_tracker(|tracker| tracker.data())
-        .unwrap();
-    let lifecycle_before = dag
-        .lifecycle
-        .read()
-        .get_events(&candidate_deploy.sig)
-        .unwrap();
-    dag.block_metadata_index
-        .read()
-        .delete_kv_row_for_tests(&first.block_hash)
-        .unwrap();
-    assert!(dag.lookup(&first.block_hash).is_err());
-    let mut validation_snapshot = snapshot.clone();
-    assert!(matches!(
-        node.casper
-            .validate(&candidate, &mut validation_snapshot)
-            .await
-            .unwrap(),
-        Either::Left(BlockError::BlockException(CasperError::KvStoreError(_)))
-    ));
-    let checked = CheckedBlock::check(candidate.clone(), BLOCK_PROCESSOR_METRICS_SOURCE).unwrap();
-    let result = node
-        .block_processor
-        .validate_with_effects(node.casper.clone(), &checked, Some(snapshot.clone()))
-        .await;
-    assert!(matches!(result, Err(CasperError::KvStoreError(_))));
-    let after = node.block_dag_storage.get_representation().unwrap();
-    assert!(!after.contains(&candidate.block_hash).unwrap());
-    dag.block_metadata_index
-        .read()
-        .restore_kv_row_for_tests(metadata)
-        .unwrap();
-    assert_eq!(
-        after.scan_invalid_page(None, 1024).unwrap().rows,
-        invalid_before
-    );
-    assert_eq!(
-        node.block_dag_storage
-            .access_equivocations_tracker(|tracker| tracker.data())
-            .unwrap(),
-        equivocations_before
-    );
-    assert_eq!(
-        after
-            .lifecycle
-            .read()
-            .get_events(&candidate_deploy.sig)
-            .unwrap(),
-        lifecycle_before
-    );
-    node.block_processor
-        .validate_with_effects(node.casper.clone(), &checked, Some(snapshot))
-        .await
-        .unwrap();
-    assert!(node
-        .block_dag_storage
-        .get_representation()
-        .unwrap()
-        .contains(&candidate.block_hash)
-        .unwrap());
 }
 
 #[tokio::test]

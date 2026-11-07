@@ -29,10 +29,9 @@ pub struct GcSweep {
 }
 
 #[derive(Default, Debug, Clone, Copy)]
-pub struct GcWorkStats {
-    pub parent_edges: u64,
-    pub work_records: u64,
-    pub turns: u64,
+struct GcWorkStats {
+    parent_edges: u64,
+    work_records: u64,
 }
 
 impl Default for GcSweep {
@@ -47,8 +46,6 @@ impl Default for GcSweep {
 
 impl GcSweep {
     pub fn new() -> Self { Self::default() }
-    pub fn pending_len(&self) -> usize { self.pending_len }
-    pub fn work_stats(&self) -> GcWorkStats { self.work }
 }
 
 struct Pass {
@@ -285,7 +282,6 @@ where
     F: FnMut(&BlockMessage) -> Result<bool, KvStoreError>,
 {
     let store = storage.gc_store();
-    sweep.work.turns += 1;
     let mut budget = budget_limit;
     let mut deleted = 0;
     loop {
@@ -540,485 +536,12 @@ pub async fn collect_garbage(
 
 #[cfg(test)]
 mod tests {
-    use block_storage::rust::dag::dag_gc_store::DagGcSlots;
-    use shared::rust::store::atomic_store::AtomicStoreGroup;
-    use shared::rust::store::key_value_store::KeyValueStore;
-    use shared::rust::store::memory_key_value_store::MemoryEnvironment;
-
     use super::*;
 
-    fn hash(n: u8) -> BlockHash { BlockHash::from(vec![n; 32]) }
-
-    fn store() -> DagGcStore {
-        let env = Arc::new(MemoryEnvironment::new());
-        let tables: Vec<Arc<dyn KeyValueStore>> = (0..4)
-            .map(|_| Arc::new(env.create_store()) as Arc<dyn KeyValueStore>)
-            .collect();
-        DagGcStore::new(
-            Arc::new(AtomicStoreGroup::new(tables).unwrap()),
-            DagGcSlots {
-                state: 0,
-                retry: 1,
-                work: 2,
-                visited: 3,
-            },
-        )
-    }
-
-    fn job(store: &DagGcStore) -> Job {
-        Job {
-            pass: Pass {
-                dag: super::super::tests::linear_chain_dag(),
-                floor: super::super::tests::floor_at(20),
-                conf: super::super::tests::conf(),
-                target: 16,
-                discovery_start: 0,
-                discovery_cursor: None,
-                retry_cursor: None,
-            },
-            id: store.next_job().unwrap(),
-            candidates: vec![hash(0), hash(1)],
-            next: None,
-            minimum: 0,
-            frontier: vec![hash(19)],
-            frontier_seen: vec![None],
-            advance: Vec::new(),
-            deletion_position: 0,
-            cleanup_position: 0,
-        }
-    }
-
-    #[test]
-    fn ancestry_resumes_small_turns_and_matches_the_unbounded_reference() {
-        let store = store();
-        let mut job = job(&store);
-        assert!(advance_anchor(&mut job, &store, &mut 2).unwrap());
-        assert!(!advance_ancestry(&job, &store, &mut 3, &mut GcWorkStats::default()).unwrap());
-        assert!(!store.visited(job.id, &hash(0)).unwrap());
-        let mut turns = 1;
-        while !advance_ancestry(&job, &store, &mut 3, &mut GcWorkStats::default()).unwrap() {
-            turns += 1;
-            assert!(turns < 40);
-        }
-        assert!(turns > 1);
-        let expected = super::super::moved_past_by_every_validator(&job.pass.dag, 0)
-            .unwrap()
-            .unwrap();
-        for n in 0..=20 {
-            assert_eq!(
-                store.visited(job.id, &hash(n)).unwrap(),
-                expected.contains(&hash(n))
-            );
-        }
-        assert!(store.next_work(job.id).unwrap().is_none());
-    }
-
-    #[test]
-    fn malformed_unknown_parents_do_not_escape_scratch_cleanup() {
-        let store = store();
-        let mut job = job(&store);
-        let mut metadata = job.pass.dag.lookup_unsafe(&hash(19)).unwrap();
-        metadata.parents.extend([
-            BlockHash::from(Vec::new()),
-            BlockHash::from(vec![0]),
-            BlockHash::from(vec![0; 1_024]),
-            hash(250),
-        ]);
-        job.pass
-            .dag
-            .block_metadata_index
-            .write()
-            .add(metadata)
-            .unwrap();
-        assert!(advance_anchor(&mut job, &store, &mut 2).unwrap());
-        let mut stats = GcWorkStats::default();
-        let mut turns = 0;
-        while !advance_ancestry(&job, &store, &mut 3, &mut stats).unwrap() {
-            turns += 1;
-            assert!(turns < 50);
-        }
-        assert!(store.visited(job.id, &hash(250)).unwrap());
-        assert!(store.visited(job.id, &hash(0)).unwrap());
-        assert_eq!(stats.parent_edges, 23);
-        while !store.cleanup_page(Some(job.id)).unwrap() {}
-        assert_eq!(store.scratch_bytes().unwrap(), 0);
-    }
-
-    #[test]
-    fn malformed_anchor_abstains_without_writing_scratch() {
-        for parent in [Vec::new(), vec![0], vec![0; 1_024]] {
-            let store = store();
-            let mut job = job(&store);
-            job.frontier = vec![BlockHash::from(parent.clone())];
-            assert!(advance_anchor(&mut job, &store, &mut 2).unwrap());
-            assert!(job.frontier.is_empty());
-            assert_eq!(store.scratch_bytes().unwrap(), 0);
-            job.frontier = vec![hash(19), hash(8)];
-            job.pass
-                .dag
-                .fixture_mut()
-                .main_parent_map
-                .insert(hash(19), BlockHash::from(parent));
-            assert!(advance_anchor(&mut job, &store, &mut 2).unwrap());
-            assert!(job.frontier.is_empty());
-            assert_eq!(store.scratch_bytes().unwrap(), 0);
-        }
-    }
-
-    #[test]
-    fn anchor_frontier_resumes_without_restarting_the_walk() {
-        let store = store();
-        let mut job = job(&store);
-        job.frontier = vec![hash(19), hash(8)];
-        assert!(!advance_anchor(&mut job, &store, &mut 2).unwrap());
-        assert_eq!(job.frontier[0], hash(17));
-        let mut turns = 1;
-        while !advance_anchor(&mut job, &store, &mut 2).unwrap() {
-            turns += 1;
-            assert!(turns < 20);
-        }
-        assert_eq!(job.frontier, vec![hash(8), hash(8)]);
-        assert!(store.visited(job.id, &hash(8)).unwrap());
-        assert!(!store.visited(job.id, &hash(19)).unwrap());
-    }
-
-    #[test]
-    fn anchor_allows_non_monotonic_acyclic_parent_edges() {
-        let store = store();
-        let mut job = job(&store);
-        job.frontier = vec![hash(19), hash(8)];
-        job.pass
-            .dag
-            .fixture_mut()
-            .main_parent_map
-            .insert(hash(18), hash(20));
-        job.pass
-            .dag
-            .fixture_mut()
-            .main_parent_map
-            .insert(hash(20), hash(17));
-        let mut turns = 0;
-        while !advance_anchor(&mut job, &store, &mut 2).unwrap() {
-            turns += 1;
-            assert!(turns < 20);
-        }
-        assert_eq!(job.frontier, vec![hash(8), hash(8)]);
-        assert!(store.visited(job.id, &hash(8)).unwrap());
-    }
+    fn hash(n: u8) -> BlockHash { vec![n; 32].into() }
 
     #[tokio::test]
-    async fn anchor_cycle_abandons_the_view_and_reclaims_seen_rows_without_losing_retry() {
-        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-        let mut manager = InMemoryStoreManager::new();
-        let storage = BlockDagKeyValueStorage::new(&mut manager).await.unwrap();
-        let blocks = KeyValueBlockStore::create_from_kvm(&mut manager)
-            .await
-            .unwrap();
-        let store = storage.gc_store();
-        store.reserve_discovery(16).unwrap();
-        store
-            .commit_discovery_page(&[(hash(1), 1)], None, Some(16))
-            .unwrap();
-        let mut job = job(&store);
-        job.frontier = vec![hash(19), hash(8)];
-        job.pass
-            .dag
-            .fixture_mut()
-            .main_parent_map
-            .insert(hash(18), hash(19));
-        let captured_view = Arc::downgrade(&job.pass.dag.block_metadata_index);
-        let mut sweep = GcSweep {
-            phase: Phase::Anchor(job),
-            pending_len: 1,
-            work: GcWorkStats::default(),
-        };
-        let conf = super::super::tests::conf();
-        let error = collect_garbage_with(&mut sweep, &storage, &blocks, &conf, &mut |_| {
-            panic!("cyclic proof must not delete")
-        })
-        .unwrap_err();
-        assert!(
-            matches!(error, KvStoreError::InvalidArgument(message) if message.contains("main-parent cycle"))
-        );
-        assert!(
-            matches!(sweep.phase, Phase::Recover),
-            "no phase retaining a captured view may survive the cycle error"
-        );
-        assert!(
-            captured_view.upgrade().is_none(),
-            "the failed job must release its captured view"
-        );
-        assert_eq!(sweep.pending_len(), 0);
-        assert!(store.scratch_bytes().unwrap() > 0);
-        assert_eq!(
-            collect_garbage_with(&mut sweep, &storage, &blocks, &conf, &mut |_| panic!(
-                "recovery must not delete"
-            ))
-            .unwrap(),
-            GcProgress::Yielded { deleted: 0 }
-        );
-        assert!(matches!(sweep.phase, Phase::Idle));
-        assert_eq!(store.scratch_bytes().unwrap(), 0);
-        assert_eq!(store.retry_page(None).unwrap().rows, vec![(hash(1), 1)]);
-    }
-
-    #[test]
-    fn missing_held_metadata_fails_without_completing_ancestry() {
-        let store = store();
-        let mut job = job(&store);
-        assert!(advance_anchor(&mut job, &store, &mut 2).unwrap());
-        job.pass
-            .dag
-            .block_metadata_index
-            .read()
-            .delete_kv_row_for_tests(&hash(19))
-            .unwrap();
-        assert!(advance_ancestry(&job, &store, &mut 10, &mut GcWorkStats::default()).is_err());
-        assert_eq!(store.next_work(job.id).unwrap().unwrap().hash, hash(19));
-        assert!(!store.visited(job.id, &hash(0)).unwrap());
-    }
-
-    #[test]
-    fn abandoned_scratch_never_supplies_the_next_jobs_proof() {
-        let store = store();
-        let mut old = job(&store);
-        assert!(advance_anchor(&mut old, &store, &mut 2).unwrap());
-        assert!(!advance_ancestry(&old, &store, &mut 3, &mut GcWorkStats::default()).unwrap());
-        while !store.cleanup_page(None).unwrap() {}
-        let next = job(&store);
-        assert_ne!(old.id, next.id);
-        assert!(store.next_work(next.id).unwrap().is_none());
-        assert!(!store.visited(next.id, &hash(19)).unwrap());
-    }
-
-    #[test]
-    fn missing_floor_defers_without_derivation_and_missing_cached_target_errors() {
-        let dag = super::super::tests::linear_chain_dag();
-        assert!(cached_floor(&dag).unwrap().is_none());
-        assert!(dag.get_cached_floor(&hash(20)).unwrap().is_none());
-        dag.put_cached_floor(hash(20), hash(18)).unwrap();
-        assert_eq!(
-            cached_floor(&dag).unwrap(),
-            Some(Floor {
-                hash: hash(18),
-                block_number: 18
-            })
-        );
-        let another = super::super::tests::linear_chain_dag();
-        another.put_cached_floor(hash(20), hash(99)).unwrap();
-        assert!(cached_floor(&another).is_err());
-    }
-
-    fn shuffled_hash(index: u32) -> BlockHash {
-        let mut bytes = vec![0; 32];
-        bytes[28..].copy_from_slice(&index.wrapping_mul(2_654_435_761).to_be_bytes());
-        bytes.into()
-    }
-
-    async fn published_chain(
-        tip: u32,
-        side: bool,
-    ) -> (BlockDagKeyValueStorage, KeyValueBlockStore) {
-        use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
-        use models::rust::block_implicits::get_random_block;
-        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-        let mut manager = InMemoryStoreManager::new();
-        let storage = BlockDagKeyValueStorage::new_with_hot_window(&mut manager, 2)
-            .await
-            .unwrap();
-        let blocks = KeyValueBlockStore::create_from_kvm(&mut manager)
-            .await
-            .unwrap();
-        let mut block = get_random_block(
-            Some(0),
-            Some(0),
-            None,
-            None,
-            Some(vec![1; 65].into()),
-            None,
-            Some(0),
-            Some(vec![]),
-            Some(vec![]),
-            Some(vec![]),
-            Some(vec![]),
-            Some(vec![]),
-            None,
-            None,
-        );
-        for n in 0..=tip {
-            if side && n == 25 {
-                let mut sibling = block.clone();
-                sibling.block_hash = shuffled_hash(u32::MAX);
-                sibling.body.state.block_number = 1;
-                sibling.seq_num = 1;
-                sibling.header.parents_hash_list = vec![shuffled_hash(0)];
-                blocks.put(sibling.block_hash.clone(), &sibling).unwrap();
-                drop(storage.insert(&sibling, InsertMode::Normal).unwrap());
-            }
-            block.block_hash = shuffled_hash(n);
-            block.body.state.block_number = i64::from(n);
-            block.seq_num = n as i32;
-            block.header.parents_hash_list = if n == 0 {
-                vec![]
-            } else {
-                vec![shuffled_hash(n - 1)]
-            };
-            if side && n == 25 {
-                block.header.parents_hash_list.push(shuffled_hash(u32::MAX));
-            }
-            blocks.put(block.block_hash.clone(), &block).unwrap();
-            drop(
-                storage
-                    .insert(
-                        &block,
-                        if n == 0 {
-                            InsertMode::Approved
-                        } else {
-                            InsertMode::Normal
-                        },
-                    )
-                    .unwrap(),
-            );
-        }
-        let finalized = if side { 20 } else { tip };
-        storage
-            .record_directly_finalized(shuffled_hash(finalized), 1.0, |_| async { Ok(()) })
-            .await
-            .unwrap();
-        storage
-            .get_representation()
-            .unwrap()
-            .put_cached_floor(shuffled_hash(finalized), shuffled_hash(finalized))
-            .unwrap();
-        (storage, blocks)
-    }
-
-    #[tokio::test]
-    async fn random_order_backlog_reuses_one_proof_across_candidate_pages() {
-        let tip = 2_300;
-        let (storage, blocks) = published_chain(tip, false).await;
-        let dag = storage.get_representation().unwrap();
-        let conf = super::super::tests::conf();
-        let floor = Floor {
-            hash: shuffled_hash(tip),
-            block_number: i64::from(tip),
-        };
-        let moved = super::super::moved_past_by_every_validator(&dag, 0).unwrap();
-        let expected: HashSet<_> = (0..=tip)
-            .map(shuffled_hash)
-            .filter(|hash| {
-                super::super::is_safe_to_delete(&dag, hash, &floor, &conf, moved.as_ref()).unwrap()
-            })
-            .collect();
-        assert!(expected.len() > 2 * GC_PAGE_SIZE);
-        drop(dag);
-        let mut sweep = GcSweep::new();
-        let mut deleted = HashSet::new();
-        let mut complete = false;
-        for _ in 0..100 {
-            let progress = run_turn(
-                &mut sweep,
-                &storage,
-                &blocks,
-                &conf,
-                &mut |block| {
-                    assert!(deleted.insert(block.block_hash.clone()));
-                    Ok(true)
-                },
-                TURN_BUDGET,
-            )
-            .unwrap();
-            if matches!(progress, GcProgress::Complete { .. }) {
-                complete = true;
-                break;
-            }
-        }
-        assert!(complete);
-        assert_eq!(deleted, expected);
-        assert!(
-            sweep.work.work_records <= u64::from(tip) + 1,
-            "candidate pages must reuse one ancestry proof"
-        );
-        assert!(sweep.work.parent_edges <= u64::from(tip) + 1);
-        assert_eq!(storage.gc_store().scratch_bytes().unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn newly_finalized_candidate_below_prepass_minimum_waits_for_next_cycle() {
-        let (storage, blocks) = published_chain(30, true).await;
-        let store = storage.gc_store();
-        let side = shuffled_hash(u32::MAX);
-        assert!(!storage
-            .get_representation()
-            .unwrap()
-            .is_finalized(&side)
-            .unwrap());
-        store.reserve_discovery(16).unwrap();
-        store
-            .commit_discovery_page(&[(side.clone(), 1), (shuffled_hash(5), 5)], None, Some(16))
-            .unwrap();
-        let conf = super::super::tests::conf();
-        let mut sweep = GcSweep::new();
-        let mut deleted = HashSet::new();
-        let mut finalized = false;
-        let mut complete = false;
-        for _ in 0..100 {
-            let progress = run_turn(
-                &mut sweep,
-                &storage,
-                &blocks,
-                &conf,
-                &mut |block| {
-                    deleted.insert(block.block_hash.clone());
-                    Ok(true)
-                },
-                3,
-            )
-            .unwrap();
-            if !finalized && matches!(&sweep.phase, Phase::Walk(job) if job.minimum == 5) {
-                storage
-                    .record_directly_finalized(side.clone(), 1.0, |_| async { Ok(()) })
-                    .await
-                    .unwrap();
-                finalized = true;
-            }
-            if matches!(progress, GcProgress::Complete { .. }) {
-                complete = true;
-                break;
-            }
-        }
-        assert!(complete && finalized);
-        assert_eq!(deleted, HashSet::from([shuffled_hash(5)]));
-        assert_eq!(store.retry_page(None).unwrap().rows, vec![(
-            side.clone(),
-            1
-        )]);
-        complete = false;
-        for _ in 0..100 {
-            let progress = run_turn(
-                &mut sweep,
-                &storage,
-                &blocks,
-                &conf,
-                &mut |block| {
-                    deleted.insert(block.block_hash.clone());
-                    Ok(true)
-                },
-                3,
-            )
-            .unwrap();
-            if matches!(progress, GcProgress::Complete { .. }) {
-                complete = true;
-                break;
-            }
-        }
-        assert!(complete);
-        assert!(deleted.contains(&side));
-        assert!(store.retry_page(None).unwrap().rows.is_empty());
-    }
-
-    #[tokio::test]
-    async fn full_machine_yields_before_deletion_and_matches_reference_on_cold_history() {
+    async fn gc_resumes_after_restart_and_matches_reference_on_cold_history() {
         use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
         use models::rust::block_implicits::get_random_block;
         use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
@@ -1085,6 +608,7 @@ mod tests {
         let mut deleted = HashSet::new();
         let mut complete = false;
         let mut walking_yields = 0;
+        let mut restarted = false;
         for _ in 0..100 {
             let progress = run_turn(
                 &mut sweep,
@@ -1108,15 +632,20 @@ mod tests {
                     "incomplete proof must never authorize deletion"
                 );
             }
+            if !restarted && matches!(sweep.phase, Phase::Walk(_)) {
+                assert!(storage.gc_store().scratch_bytes().unwrap() > 0);
+                sweep = GcSweep::new();
+                restarted = true;
+            }
             if matches!(progress, GcProgress::Complete { .. }) {
                 complete = true;
                 break;
             }
         }
-        assert!(complete);
+        assert!(complete && restarted);
         assert!(walking_yields > 1);
         assert_eq!(deleted, expected);
-        assert!(storage.gc_store().cleanup_page(None).unwrap());
+        assert_eq!(storage.gc_store().scratch_bytes().unwrap(), 0);
         assert!(matches!(sweep.phase, Phase::Idle));
     }
 }

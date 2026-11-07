@@ -72,7 +72,6 @@ pub struct ShardOverrides {
     pub synchrony_constraint_threshold: Option<f64>,
     pub max_number_of_parents: Option<i32>,
     pub max_parent_depth: Option<i32>,
-    pub dag_hot_window_depth: Option<i64>,
     pub with_read_only_size: Option<usize>,
     pub deploy_lifespan: Option<i64>,
     pub finalization_rate: Option<i32>,
@@ -1072,12 +1071,9 @@ impl TestNode {
             .put(genesis.block_hash.clone(), &genesis)
             .expect("Failed to store genesis block in TestNode");
 
-        let block_dag_storage = resources::block_dag_storage_from_dyn_with_window(
-            &mut *kvm,
-            overrides.dag_hot_window_depth.unwrap_or(1024),
-        )
-        .await
-        .unwrap();
+        let block_dag_storage = resources::block_dag_storage_from_dyn(&mut *kvm)
+            .await
+            .unwrap();
 
         // Initialize DAG storage with genesis block metadata
         block_dag_storage

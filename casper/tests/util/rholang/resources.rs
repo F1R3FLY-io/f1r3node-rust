@@ -338,17 +338,7 @@ pub async fn block_dag_storage_from_dyn(
     block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    block_dag_storage_from_dyn_with_window(kvm, 1024).await
-}
-
-pub async fn block_dag_storage_from_dyn_with_window(
-    kvm: &mut dyn KeyValueStoreManager,
-    hot_window: i64,
-) -> Result<
-    block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
-    shared::rust::store::key_value_store::KvStoreError,
-> {
-    block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage::new_with_hot_window(kvm, hot_window).await
+    BlockDagKeyValueStorage::new(kvm).await
 }
 
 pub async fn key_value_deploy_storage_from_dyn(

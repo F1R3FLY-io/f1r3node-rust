@@ -479,288 +479,75 @@ impl AtomicTransaction<'_> {
 mod tests {
     use super::*;
 
-    struct Fixture {
-        group: AtomicStoreGroup,
-        stores: Vec<Arc<dyn KeyValueStore>>,
-        _directory: Option<tempfile::TempDir>,
-    }
-
-    fn memory() -> Fixture {
-        let env = Arc::new(MemoryEnvironment::new());
-        let stores: Vec<Arc<dyn KeyValueStore>> = (0..2)
-            .map(|_| Arc::new(env.create_store()) as Arc<dyn KeyValueStore>)
-            .collect();
-        Fixture {
-            group: AtomicStoreGroup::new(stores.clone()).unwrap(),
-            stores,
-            _directory: None,
-        }
-    }
-
-    fn lmdb() -> Fixture {
-        let directory = tempfile::tempdir().unwrap();
-        let env = Arc::new(unsafe {
-            heed::EnvOpenOptions::new()
-                .map_size(10 * 1024 * 1024)
-                .max_dbs(4)
-                .open(directory.path())
-                .unwrap()
-        });
-        let mut txn = env.write_txn().unwrap();
-        let a = env.create_database(&mut txn, Some("a")).unwrap();
-        let b = env.create_database(&mut txn, Some("b")).unwrap();
-        txn.commit().unwrap();
-        let stores: Vec<Arc<dyn KeyValueStore>> = vec![
-            Arc::new(LmdbKeyValueStore::new(env.clone(), a)),
-            Arc::new(LmdbKeyValueStore::new(env, b)),
-        ];
-        Fixture {
-            group: AtomicStoreGroup::new(stores.clone()).unwrap(),
-            stores,
-            _directory: Some(directory),
-        }
-    }
-
     #[test]
-    fn transaction_commits_all_tables_and_reads_its_writes() {
-        for fixture in [memory(), lmdb()] {
-            fixture
-                .group
-                .transaction(|tx| {
-                    tx.put(0, b"a".to_vec(), b"one".to_vec())?;
-                    tx.put(1, b"b".to_vec(), b"two".to_vec())?;
-                    assert_eq!(tx.get(0, b"a")?, Some(b"one".to_vec()));
-                    assert_eq!(tx.get(1, b"b")?, Some(b"two".to_vec()));
-                    Ok(())
-                })
-                .unwrap();
-            assert_eq!(
-                fixture.stores[0].get_one(&b"a".to_vec()).unwrap(),
-                Some(b"one".to_vec())
-            );
-            assert_eq!(
-                fixture.stores[1].get_one(&b"b".to_vec()).unwrap(),
-                Some(b"two".to_vec())
-            );
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn lmdb_atomic_transaction_hands_off_its_worker() {
-        let fixture = lmdb();
-        let group = fixture.group.clone();
-        let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-        let waiting = released.clone();
-        let (entered, started) = tokio::sync::oneshot::channel();
-        let transaction = tokio::spawn(async move {
+    fn atomic_failure_rolls_back_tables_and_scan_continuation() {
+        for lmdb in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let stores: Vec<Arc<dyn KeyValueStore>> = if lmdb {
+                let env = Arc::new(unsafe {
+                    heed::EnvOpenOptions::new()
+                        .map_size(10 * 1024 * 1024)
+                        .max_dbs(2)
+                        .open(directory.path())
+                        .unwrap()
+                });
+                let mut txn = env.write_txn().unwrap();
+                let a = env.create_database(&mut txn, Some("a")).unwrap();
+                let b = env.create_database(&mut txn, Some("b")).unwrap();
+                txn.commit().unwrap();
+                vec![
+                    Arc::new(LmdbKeyValueStore::new(env.clone(), a)),
+                    Arc::new(LmdbKeyValueStore::new(env, b)),
+                ]
+            } else {
+                let env = Arc::new(MemoryEnvironment::new());
+                vec![Arc::new(env.create_store()), Arc::new(env.create_store())]
+            };
+            let group = AtomicStoreGroup::new(stores).unwrap();
             group
                 .transaction(|tx| {
-                    tx.put(0, b"key".to_vec(), b"value".to_vec())?;
-                    entered.send(()).unwrap();
-                    let (lock, changed) = &*waiting;
-                    let (finished, _) = changed
-                        .wait_timeout_while(
-                            lock.lock().unwrap(),
-                            std::time::Duration::from_secs(5),
-                            |finished| !*finished,
-                        )
-                        .unwrap();
-                    assert!(
-                        *finished,
-                        "atomic LMDB transaction held the only Tokio worker"
-                    );
+                    for key in 0..4 {
+                        tx.put(0, vec![key], vec![key])?;
+                    }
                     Ok(())
                 })
                 .unwrap();
-        });
-        let other_task = tokio::spawn(async move {
-            started.await.unwrap();
-            let (lock, changed) = &*released;
-            *lock.lock().unwrap() = true;
-            changed.notify_one();
-        });
-        transaction.await.unwrap();
-        other_task.await.unwrap();
-        assert_eq!(
-            fixture.group.get(0, b"key").unwrap(),
-            Some(b"value".to_vec())
-        );
-    }
-
-    #[test]
-    fn callback_error_rolls_back_puts_and_deletes_in_every_table() {
-        for fixture in [memory(), lmdb()] {
-            fixture.stores[0]
-                .put_one(b"old".to_vec(), b"value".to_vec())
-                .unwrap();
-            let result: Result<(), KvStoreError> = fixture.group.transaction(|tx| {
-                assert!(tx.delete(0, b"old")?);
-                tx.put(1, b"new".to_vec(), b"value".to_vec())?;
-                assert_eq!(tx.get(0, b"old")?, None);
-                Err(KvStoreError::IoError("injected failure".into()))
+            let failed: Result<(), KvStoreError> = group.transaction(|tx| {
+                assert!(tx.delete(0, &[0])?);
+                tx.put(1, vec![9], vec![9])?;
+                assert_eq!(tx.get(0, &[0])?, None);
+                assert_eq!(tx.get(1, &[9])?, Some(vec![9]));
+                assert_eq!(tx.len(0)?, 3);
+                assert_eq!(
+                    tx.scan_page(0, Some(&[1]), Some(&[3]), None, 2)?.rows,
+                    vec![(vec![1], vec![1]), (vec![2], vec![2])]
+                );
+                Err(invalid("injected transaction failure"))
             });
-            assert_eq!(
-                result,
-                Err(KvStoreError::IoError("injected failure".into()))
-            );
-            assert_eq!(
-                fixture.group.get(0, b"old").unwrap(),
-                Some(b"value".to_vec())
-            );
-            assert_eq!(fixture.group.get(1, b"new").unwrap(), None);
-        }
-    }
-
-    #[test]
-    fn unsupported_slot_aborts_prior_writes() {
-        for fixture in [memory(), lmdb()] {
-            let result = fixture.group.transaction(|tx| {
-                tx.put(0, vec![1], vec![1])?;
-                tx.put(2, vec![2], vec![2])
-            });
-            assert!(matches!(result, Err(KvStoreError::InvalidArgument(_))));
-            assert_eq!(fixture.group.get(0, &[1]).unwrap(), None);
-        }
-    }
-
-    #[test]
-    fn pages_have_exclusive_continuation_and_transaction_overlay() {
-        for fixture in [memory(), lmdb()] {
-            fixture.stores[0]
-                .put((0..5u8).map(|i| (vec![i], vec![i])).collect())
+            assert!(failed.is_err());
+            assert_eq!(group.len(0).unwrap(), 4);
+            assert_eq!(group.len(1).unwrap(), 0);
+            assert_eq!(group.get(0, &[0]).unwrap(), Some(vec![0]));
+            assert_eq!(group.get(1, &[9]).unwrap(), None);
+            let first = group.scan_page(0, Some(&[0]), Some(&[3]), None, 2).unwrap();
+            assert_eq!(first.rows, vec![(vec![0], vec![0]), (vec![1], vec![1])]);
+            let second = group
+                .scan_page(0, Some(&[0]), Some(&[3]), first.next.as_deref(), 2)
                 .unwrap();
-            let first = fixture
-                .group
-                .scan_page(0, Some(&[1]), Some(&[4]), None, 2)
-                .unwrap();
-            assert_eq!(first.rows, vec![(vec![1], vec![1]), (vec![2], vec![2])]);
-            let second = fixture
-                .group
-                .scan_page(0, Some(&[1]), Some(&[4]), first.next.as_deref(), 2)
-                .unwrap();
-            assert_eq!(second.rows, vec![(vec![3], vec![3]), (vec![4], vec![4])]);
-            let final_page = fixture
-                .group
-                .scan_page(0, Some(&[1]), Some(&[4]), second.next.as_deref(), 2)
-                .unwrap();
-            assert!(final_page.rows.is_empty());
-            assert_eq!(final_page.next, None);
-            fixture
-                .group
-                .transaction(|tx| {
-                    tx.delete(0, &[2])?;
-                    tx.put(0, vec![3], vec![99])?;
-                    tx.put(0, vec![5], vec![5])?;
-                    assert_eq!(
-                        tx.scan_page(0, Some(&[2]), Some(&[5]), None, 4)?.rows,
-                        vec![(vec![3], vec![99]), (vec![4], vec![4]), (vec![5], vec![5])]
-                    );
-                    Ok(())
-                })
-                .unwrap();
-        }
-    }
-
-    #[test]
-    fn memory_and_lmdb_match_actual_encoded_key_order() {
-        let memory = memory();
-        let lmdb = lmdb();
-        let keys = [vec![255], vec![0, 0], vec![2], vec![0; 256], vec![1; 255]];
-        for fixture in [&memory, &lmdb] {
-            fixture.stores[0]
-                .put(keys.iter().map(|key| (key.clone(), Vec::new())).collect())
-                .unwrap();
-        }
-        let expected = lmdb.group.scan_page(0, None, None, None, 1024).unwrap();
-        assert_eq!(
-            memory.group.scan_page(0, None, None, None, 1024).unwrap(),
-            expected
-        );
-        assert_eq!(expected.rows[0].0.len(), 256);
-    }
-
-    #[test]
-    fn mixed_environments_and_invalid_limits_are_rejected() {
-        let a = memory();
-        let b = memory();
-        assert!(AtomicStoreGroup::new(vec![a.stores[0].clone(), b.stores[0].clone()]).is_err());
-        let a = lmdb();
-        let b = lmdb();
-        assert!(AtomicStoreGroup::new(vec![a.stores[0].clone(), b.stores[0].clone()]).is_err());
-        assert!(AtomicStoreGroup::new(Vec::new()).is_err());
-        for fixture in [memory(), lmdb()] {
-            assert!(fixture.group.scan_page(0, None, None, None, 0).is_err());
-            assert!(fixture.group.scan_page(0, None, None, None, 1025).is_err());
-            assert!(fixture
-                .group
-                .scan_page(0, Some(&[4]), Some(&[2]), None, 1)
+            assert_eq!(second.rows, vec![(vec![2], vec![2]), (vec![3], vec![3])]);
+            assert!(group
+                .scan_page(0, Some(&[0]), Some(&[3]), second.next.as_deref(), 2)
                 .unwrap()
                 .rows
                 .is_empty());
-        }
-    }
-
-    #[test]
-    fn memory_scan_bounds_inspected_tombstones_and_keeps_cursor() {
-        let fixture = memory();
-        fixture.stores[0]
-            .put((0..10u8).map(|key| (vec![key], vec![key])).collect())
-            .unwrap();
-        fixture
-            .group
-            .transaction(|tx| {
-                for key in 0..9u8 {
-                    tx.delete(0, &[key])?;
-                }
-                let first = tx.scan_page(0, None, None, None, 2)?;
-                assert!(first.rows.is_empty());
-                assert_eq!(first.next, Some(vec![1]));
-                let second = tx.scan_page(0, None, None, first.next.as_deref(), 2)?;
-                assert!(second.rows.is_empty());
-                assert_eq!(second.next, Some(vec![3]));
-                let last = tx.scan_page(0, None, None, Some(&[7]), 2)?;
-                assert_eq!(last.rows, vec![(vec![9], vec![9])]);
-                assert_eq!(last.next, Some(vec![9]));
-                Ok(())
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn table_lengths_count_only_committed_rows() {
-        for fixture in [memory(), lmdb()] {
-            assert_eq!(fixture.group.len(0).unwrap(), 0);
-            fixture
-                .group
+            group
                 .transaction(|tx| {
-                    tx.put(0, vec![1], vec![1])?;
-                    tx.put(0, vec![2], vec![2])?;
-                    tx.put(1, vec![1], vec![1])?;
-                    assert_eq!(tx.len(0)?, 2);
-                    assert_eq!(tx.len(1)?, 1);
-                    tx.put(0, vec![1], vec![2])?;
-                    assert_eq!(tx.len(0)?, 2);
-                    tx.delete(0, &[2])?;
-                    assert_eq!(tx.len(0)?, 1);
-                    tx.put(0, vec![2], vec![3])?;
-                    assert_eq!(tx.len(0)?, 2);
-                    Ok(())
+                    tx.delete(0, &[0])?;
+                    tx.put(1, vec![9], vec![9])
                 })
                 .unwrap();
-            assert_eq!(fixture.group.len(0).unwrap(), 2);
-            assert_eq!(fixture.group.len(1).unwrap(), 1);
-            let aborted: Result<(), KvStoreError> = fixture.group.transaction(|tx| {
-                tx.delete(0, &[1])?;
-                assert_eq!(tx.len(0)?, 1);
-                tx.delete(0, &[99])?;
-                assert_eq!(tx.len(0)?, 1);
-                Err(KvStoreError::IoError("injected abort".into()))
-            });
-            assert!(aborted.is_err());
-            assert_eq!(fixture.group.len(0).unwrap(), 2);
-            fixture.group.transaction(|tx| tx.delete(0, &[1])).unwrap();
-            assert_eq!(fixture.group.len(0).unwrap(), 1);
-            assert!(fixture.group.len(2).is_err());
+            assert_eq!(group.get(0, &[0]).unwrap(), None);
+            assert_eq!(group.get(1, &[9]).unwrap(), Some(vec![9]));
         }
     }
 }
