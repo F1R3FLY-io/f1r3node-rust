@@ -277,3 +277,9 @@ Full suites at 0b01b1663 (release, `/tmp` cleared before each crate): rholang 2,
   - The record's `compute_phlo` and the debit are now the same number. This withdraws the known issue recorded at e3edaf623.
 - **Test.** `gated_executor_spec::a_failed_run_pays_its_commitment_and_a_run_never_spends_more`: `1 / 0` with `phloLimit` 1,000,000 and Δ = 5,014 records 5,014 and is debited 5,014. The replay gives the same settlement, and a record whose cost is changed to Δ − 1, Δ + 1 or 1,000,000 does not replay.
 - Results: casper lib `v6::` 127 passed; `--test mod v6::` 143 passed, 9 ignored; `multi_node::v6` 11 passed; `forms_spec` 15 passed.
+
+## `dev` merged (2026-11-06)
+
+- `dev` at 3b5daabb4 is merged. The parser pin is lane B's `rev-stacks/syntax-dev` at ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd, which merges rholang-rs master 4e22339 into 743752b (Q-35, Q-37). CLAUDE.md's parser note names the pin and the branch.
+- Conflicts: `Cargo.toml` (the pin), `Cargo.lock`, the import lists of `matcher/exports.rs` and `substitute.rs` (both sides' types), and `p_simple_type_normalizer.rs`, where `dev`'s `SimpleType::Type` connective replaces the branch's refusal. The branch's refusal of `Proc::FixedPointPattern` in `normalize.rs` is removed, because `dev` normalizes it.
+- Results: rholang 2,549 passed, 71 ignored; casper `--test mod v6::` 143 passed, 9 ignored.

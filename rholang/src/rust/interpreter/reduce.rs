@@ -3482,6 +3482,72 @@ impl DebruijnInterpreter {
                     let result_expr = self.eval_single_expr(&result_par, env)?;
                     Ok(result_expr)
                 }
+
+                // CoC Phase 1a: lambda is a WHNF value; no reduction under
+                // the binder. Returned unchanged.
+                ExprInstance::ELambdaBody(lambda) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::ELambdaBody(lambda.clone())),
+                }),
+
+                // CoC Phase 2a: Pi is a WHNF value (a type-level process).
+                // Treated opaquely until the typechecker phase lands.
+                ExprInstance::EPiBody(pi) => Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPiBody(pi.clone())),
+                }),
+
+                // CoC Phase 1a: β-reduction. Evaluate the head to WHNF; if
+                // it is an ELambda of matching arity, call-by-value the
+                // arguments, extend env, substitute into the body, and
+                // recursively evaluate the result.
+                //
+                // Convention: in a lambda of bind_count N, the surface order
+                // `(x_0, x_1, ..., x_{N-1}) => body` binds x_i to BoundVar(i)
+                // inside body. Pushing args in reverse into env yields that
+                // numbering (env.put keeps a LIFO stack; most recent push is
+                // BoundVar(0)).
+                ExprInstance::EAppBody(app) => {
+                    let fun_par = app.fun.as_ref().ok_or_else(|| {
+                        InterpreterError::ReduceError("EApp.fun was None".to_string())
+                    })?;
+                    let fun_evaled = self.eval_expr(fun_par, env)?;
+                    let fun_expr = self.eval_single_expr(&fun_evaled, env)?;
+
+                    match fun_expr.expr_instance {
+                        Some(ExprInstance::ELambdaBody(lambda)) => {
+                            if app.args.len() as i32 != lambda.bind_count {
+                                return Err(InterpreterError::ReduceError(format!(
+                                    "Lambda arity mismatch: expected {} argument(s), got {}",
+                                    lambda.bind_count,
+                                    app.args.len(),
+                                )));
+                            }
+
+                            let evaled_args: Vec<Par> = app
+                                .args
+                                .iter()
+                                .map(|a| self.eval_expr(a, env))
+                                .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+                            let new_env = env.extended(evaled_args.into_iter().rev());
+
+                            let body = lambda.body.ok_or_else(|| {
+                                InterpreterError::ReduceError("ELambda.body was None".to_string())
+                            })?;
+                            let reduced_body = self
+                                .substitute
+                                .substitute_no_sort_and_charge(body, 0, &new_env)?;
+
+                            self.eval_single_expr(&reduced_body, env)
+                        }
+                        Some(other_expr) => Err(InterpreterError::ReduceError(format!(
+                            "Application head is not a lambda: {}",
+                            get_type(other_expr),
+                        ))),
+                        None => Err(InterpreterError::ReduceError(
+                            "EApp fun evaluated to empty Expr".to_string(),
+                        )),
+                    }
+                }
             },
             None => Err(InterpreterError::ReduceError(format!(
                 "Unimplemented expression: {:?}",
@@ -8247,6 +8313,9 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::EPlusPlusBody(_) => String::from("plus plus"),
         ExprInstance::EMinusMinusBody(_) => String::from("minus minus"),
         ExprInstance::EModBody(_) => String::from("mod"),
+        ExprInstance::ELambdaBody(_) => String::from("lambda"),
+        ExprInstance::EAppBody(_) => String::from("app"),
+        ExprInstance::EPiBody(_) => String::from("pi"),
     }
 }
 

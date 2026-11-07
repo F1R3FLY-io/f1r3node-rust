@@ -62,9 +62,11 @@ artifacts in this repository yet:
 ### External Dependency: rholang-parser
 The Rholang parser is an external crate:
 ```toml
-rholang-parser = { git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "d25f953a" }
+rholang-parser = { version = "0.1.0", git = "https://github.com/F1R3FLY-io/rholang-rs", rev = "ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd" }
 ```
-Used by `rholang` and `rspace++` crates.
+The pin is commit ad15ad2 on the `rholang-rs` branch `rev-stacks/syntax-dev`. Lane B owns this branch (Q-35). The branch holds the rev-stacks syntax (signed terms, token stacks and the per-seal firing limit of Decision 127) merged with `rholang-rs` master at 4e22339, which has the type keywords and the Lambda, App and Pi forms. Change the pin only to a commit on that branch until the branch is merged into `rholang-rs` master.
+
+The `rholang`, `rspace++` and `node` crates use the parser.
 
 ## Development Commands
 

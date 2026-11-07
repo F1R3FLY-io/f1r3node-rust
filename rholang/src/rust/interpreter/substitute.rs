@@ -6,9 +6,10 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
-    CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
-    EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+    CostStack, EAnd, EApp, EDiv, EEq, EGt, EGte, ELambda, EList, ELt, ELte, EMatches, EMethod,
+    EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPi, EPlus,
+    EPlusPlus, ETuple, EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var,
+    VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
@@ -398,9 +399,32 @@ impl Substitute {
                     | ConnectiveInstance::ConnInt(_)
                     | ConnectiveInstance::ConnString(_)
                     | ConnectiveInstance::ConnUri(_)
-                    | ConnectiveInstance::ConnByteArray(_)),
+                    | ConnectiveInstance::ConnByteArray(_)
+                    | ConnectiveInstance::ConnType(_)
+                    | ConnectiveInstance::ConnInt32(_)
+                    | ConnectiveInstance::ConnUint64(_)
+                    | ConnectiveInstance::ConnUint32(_)
+                    | ConnectiveInstance::ConnUint16(_)
+                    | ConnectiveInstance::ConnUint8(_)
+                    | ConnectiveInstance::ConnFloat64(_)
+                    | ConnectiveInstance::ConnFloat32(_)
+                    | ConnectiveInstance::ConnBigInt(_)
+                    | ConnectiveInstance::ConnBigRat(_)),
                 ) => {
                     prepend(&mut par, &mut acc_conns, instance);
+                }
+                Some(ConnectiveInstance::ConnFixedPointBody(body)) => {
+                    let scale = body
+                        .scale
+                        .map(|p| self.substitute_no_sort(p, depth, env))
+                        .transpose()?;
+                    prepend(
+                        &mut par,
+                        &mut acc_conns,
+                        ConnectiveInstance::ConnFixedPointBody(
+                            models::rhoapi::ConnFixedPointBody { scale },
+                        ),
+                    );
                 }
                 None => {}
             }
@@ -1036,6 +1060,68 @@ impl SubstituteTrait<Expr> for Substitute {
                 })
             }
 
+            ExprInstance::ELambdaBody(ELambda {
+                bind_count,
+                body,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_body =
+                    self.substitute(unwrap_option_safe(body)?, depth, &env.shift(bind_count))?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
+                        bind_count,
+                        body: Some(sub_body),
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EAppBody(EApp {
+                fun,
+                args,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_fun = self.substitute(unwrap_option_safe(fun)?, depth, env)?;
+                let sub_args = self.substitute_all(args, depth, env)?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EAppBody(EApp {
+                        fun: Some(sub_fun),
+                        args: sub_args,
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EPiBody(EPi {
+                bind_count,
+                param_types,
+                codomain,
+                locally_free,
+                connective_used,
+            }) => {
+                // Param types sit in the outer scope (same env); the
+                // codomain sits under `bind_count` new binders.
+                let sub_param_types = self.substitute_all(param_types, depth, env)?;
+                let sub_codomain =
+                    self.substitute(unwrap_option_safe(codomain)?, depth, &env.shift(bind_count))?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPiBody(EPi {
+                        bind_count,
+                        param_types: sub_param_types,
+                        codomain: Some(sub_codomain),
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
             instance => Ok(Expr {
                 expr_instance: Some(instance),
             }),
@@ -1364,6 +1450,72 @@ impl SubstituteTrait<Expr> for Substitute {
                         method_name,
                         target: Some(sub_target),
                         arguments: sub_arguments,
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::ELambdaBody(ELambda {
+                bind_count,
+                body,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_body = self.substitute_no_sort(
+                    unwrap_option_safe(body)?,
+                    depth,
+                    &env.shift(bind_count),
+                )?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
+                        bind_count,
+                        body: Some(sub_body),
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EAppBody(EApp {
+                fun,
+                args,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_fun = self.substitute_no_sort(unwrap_option_safe(fun)?, depth, env)?;
+                let sub_args = self.substitute_all_no_sort(args, depth, env)?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EAppBody(EApp {
+                        fun: Some(sub_fun),
+                        args: sub_args,
+                        locally_free: set_bits_until(locally_free, env.shift),
+                        connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EPiBody(EPi {
+                bind_count,
+                param_types,
+                codomain,
+                locally_free,
+                connective_used,
+            }) => {
+                let sub_param_types = self.substitute_all_no_sort(param_types, depth, env)?;
+                let sub_codomain = self.substitute_no_sort(
+                    unwrap_option_safe(codomain)?,
+                    depth,
+                    &env.shift(bind_count),
+                )?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EPiBody(EPi {
+                        bind_count,
+                        param_types: sub_param_types,
+                        codomain: Some(sub_codomain),
                         locally_free: set_bits_until(locally_free, env.shift),
                         connective_used,
                     })),
