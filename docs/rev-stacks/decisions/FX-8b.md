@@ -247,3 +247,23 @@ Full suites at 0b01b1663 (release, `/tmp` cleared before each crate): rholang 2,
   - *Known issue (Decision 88):* for a failed run the record's `compute_phlo` and the settled debit disagree. Reason it is not blocking: the debit never passes the commitment, and replay checks both numbers. Which number a failed run should pay is a charging decision for Meredith.
 - **Cross-host fixture.** Both FX-19 and FX-21 wrote it again. It is written again on the merged tree.
 - Results on the merged tree: casper `--test mod v6::` 143 passed, 9 ignored; `multi_node::v6` 11 passed; `forms_spec` 15 passed; rholang `delta_sigma_spec` 8, `elaboration_spec` 20, `seal_record_spec` 7 passed (1 ignored).
+
+## Full suites at e3edaf623 (2026-11-06, `/tmp` cleared before each crate)
+
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| rholang | 2,475 | 0 | 70 |
+| rspace++ | 423 | 0 | 7 |
+| block-storage | 320 | 0 | 0 |
+| models | 339 | 0 | 0 |
+| shared | 149 | 1 | 0 |
+| crypto | 118 | 0 | 0 |
+| comm | 437 | 0 | 0 |
+| graphz | 48 | 0 | 0 |
+| casper lib | 890 | 0 | 1 |
+| casper `--test mod` (nextest, one process per test) | 1,336 | 0 | — |
+| node | 469 | 0 | 1 |
+
+- *Known issue, environmental:* `shared::bounded_file::a_failed_rotation_keeps_the_active_file_writable` fails because the tests run as root, as at 6c43a2c8f.
+- **The SIGSEGV hunt.** casper `--test mod` ran under `cargo-nextest`, which runs each test in its own process and names any test that a signal ends. 1,120 tests passed before an environment restart, and the other 216 passed in a second run. No test ended on a signal. An earlier nextest run on 818e72d6c passed 345 tests with no signal, before the disk filled. A `--test-threads=1` run takes about 16 hours here, and each environment restart ends it, so it was replaced by the nextest runs. *Known issue:* the one SIGSEGV seen in lane C's environment is not reproduced.
+- **`cargo fmt --check`.** The pinned nightly (`nightly-2026-02-09`) cannot be downloaded here, and stable rustfmt ignores the unstable options in `rustfmt.toml`, so its result is not authoritative. With stable rustfmt, `dev` at 3b5daabb4 gives diffs in 524 files and FX-8b in 609 files. 89 files have diffs on FX-8b that `dev` does not have. CI's formatting job decides.
