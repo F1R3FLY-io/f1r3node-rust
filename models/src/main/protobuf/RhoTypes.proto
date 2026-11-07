@@ -41,11 +41,6 @@ message Par {
   repeated Bundle bundles = 11;
   repeated Connective connectives = 8;
   repeated If conditionals = 12;
-  // f1r3lang-with-monads Stage B.2: native `foreach` comprehension
-  // (paper §4.2's one-step rule). Source is a term of a monadic sort
-  // (not a channel); binder scopes the body; result is published once
-  // on `yield_name`.
-  repeated Foreach foreaches = 13;
   bytes locallyFree = 9
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
@@ -226,30 +221,6 @@ message If {
   bool connective_used = 5;
 }
 
-// f1r3lang-with-monads Stage B.2: native `foreach` comprehension
-// (§4.4 `&` independent multi-bind + §4.5 `where`).
-//
-// Surface:
-//   foreach ( b_0 <- m_0 & … & b_{n-1} <- m_{n-1} where c? )
-//   yield ( yield_name ) body
-//
-// Reducer iterates the cartesian product of the sources, evaluates
-// whereCond under all binders (Par::default sentinel means no guard),
-// folds surviving contributions via the aggregator, and publishes
-// once on yield_name. Default aggregator is ParMonoid (parallel
-// composition). `sources.len() == bindCount`.
-message Foreach {
-  sint32 bindCount = 1;
-  repeated Par sources = 2;
-  Par body = 3 [(scalapb.field).no_box = true];
-  Par yieldName = 4 [(scalapb.field).no_box = true];
-  Par whereCond = 7;
-  bytes locallyFree = 5
-      [(scalapb.field).type =
-           "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
-  bool connective_used = 6;
-}
-
 // Any process may be an operand to an expression.
 // Only processes equivalent to a ground process of compatible type will reduce.
 message Expr {
@@ -419,12 +390,8 @@ message KeyValuePair {
 }
 
 // Lambda abstraction. `bindCount` DeBruijn levels are bound in `body`.
-// `paramTypes` carries optional per-binder type annotations surfaced by
-// the parser as `(x_i: T_i) => body`. Empty `paramTypes` means the
-// lambda is untyped (legacy shape); a populated `paramTypes` has length
-// `bindCount`, with `Par::default()` in any slot the source left
-// un-annotated. The typechecker cross-verifies non-empty slots against
-// an expected Pi's `paramTypes`; the reducer ignores the field.
+// Non-dependent (no per-binder type annotation yet); Phase 2 adds annotations
+// via a parallel ELambdaTyped or by widening this message.
 message ELambda {
   sint32 bindCount = 1;
   Par body = 2 [(scalapb.field).no_box = true];
@@ -432,7 +399,6 @@ message ELambda {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 4;
-  repeated Par paramTypes = 5;
 }
 
 // Function application. `args.len()` must equal `fun`'s ELambda bindCount at
@@ -595,38 +561,7 @@ message Connective {
     // Pattern-matching semantics arrive with the typechecker (Phase 2d
     // onward); for now `Type` flows through as an opaque value.
     bool conn_type = 20;
-    // CoC Phase 4.1: `List<T>` type. The inner Par is the element
-    // type. Empty-Par element means `List<_>` (unknown element). The
-    // typechecker builds this from an EList by LUB-ing element types;
-    // the matcher succeeds when every target element has the element
-    // type.
-    Par conn_list = 21;
-    // CoC Phase 4.2: `Set<T>` type. Semantics mirror `conn_list`
-    // against ESet targets.
-    Par conn_set = 22;
-    // CoC Phase 4.3: `Map<K, V>` type. Synth from EMap's keys and
-    // values via LUB; matcher succeeds when every target kv pair's
-    // key and value match the corresponding pattern.
-    ConnMapBody conn_map = 23;
-    // CoC Phase 4.4: `Tuple<T_0, …, T_{n-1}>` type. Heterogeneous:
-    // each slot carries its own type. Matcher requires arity match
-    // and per-slot spatial match.
-    ConnTupleBody conn_tuple = 24;
-    // CoC Phase 5.1: `Proc` type — the universe of well-formed
-    // processes. Process-level constructs (sends, receives, news,
-    // matches, bundles, conditionals, unforgeables) synthesize to
-    // this type. `Proc` itself has type `Type`.
-    bool conn_proc = 25;
   }
-}
-
-message ConnMapBody {
-  Par key = 1 [(scalapb.field).no_box = true];
-  Par value = 2 [(scalapb.field).no_box = true];
-}
-
-message ConnTupleBody {
-  repeated Par elements = 1;
 }
 
 message ConnFixedPointBody {

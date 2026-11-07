@@ -1,4 +1,4 @@
-use models::rhoapi::{Bundle, Connective, Expr, Foreach, If, Match, New, Par, Receive, Send};
+use models::rhoapi::{Bundle, Connective, Expr, If, Match, New, Par, Receive, Send};
 use models::rust::utils::union;
 
 use super::matcher::has_locally_free::HasLocallyFree;
@@ -19,7 +19,6 @@ pub enum GeneratedMessage {
     Bundle(Bundle),
     Expr(Expr),
     If(If),
-    Foreach(Foreach),
 }
 
 // These two functions need to be under 'rholang' dir because of HasLocallyFree Trait.
@@ -44,13 +43,6 @@ pub fn prepend_new(mut p: Par, n: New) -> Par {
     p.locally_free = union(std::mem::take(&mut p.locally_free), n.locally_free.clone());
     p.connective_used |= n.connective_used();
     p.news.insert(0, n);
-    p
-}
-
-pub fn prepend_foreach(mut p: Par, f: Foreach) -> Par {
-    p.locally_free = union(std::mem::take(&mut p.locally_free), f.locally_free.clone());
-    p.connective_used |= f.connective_used;
-    p.foreaches.insert(0, f);
     p
 }
 

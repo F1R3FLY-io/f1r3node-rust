@@ -79,17 +79,14 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     assert!(r.unwrap().errors.is_empty());
 
     let checkpoint = runtime.create_checkpoint().await;
-    // Updated 2026-11-06 for f1r3lang-with-monads Stage B.2: adding
-    // `repeated Foreach foreaches = 13` to Par shifts every stored Par's
-    // bincode length prefix, re-encoding the state radix tree. The
-    // Rholang term here uses only `for`, not `foreach`, so no Foreach
-    // messages are built — the drift is purely from the extra empty
-    // Vec<Foreach> length byte on every Par. The "without_hard_fork"
-    // name refers to the post-fork baseline; further unintended drift
-    // would still be caught.
-    // (Prior update: 2026-04-29 for Phase 9 where-clauses-and-match-guards.)
+    // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
+    // (plan §7.12). The guard moved from BindPattern.condition to
+    // TaggedContinuation.guard, re-encoding the bootstrap registry's
+    // installed continuations and patterns. The "without_hard_fork"
+    // name now refers to the post-fork baseline; further unintended
+    // drift would still be caught.
     let expected_hash = Blake2b256Hash::from_hex(
-        "9d539ad32961a90f9388753e1c1a4972c5942789345c302879775c7271d3d1ff",
+        "b3eeba72ea8b293a95635b8caf03973d55f721a4ad915da9ff8aa6b6cdcc0ba4",
     );
 
     assert_eq!(expected_hash, checkpoint.root);

@@ -1,12 +1,9 @@
 // See models/src/main/scala/coop/rchain/models/rholang/sorter/ParSortMatcher.scala
 
-use super::foreach_sort_matcher::ForeachSortMatcher;
 use super::score_tree::ScoredTerm;
 use super::send_sort_matcher::SendSortMatcher;
 use super::sortable::Sortable;
-use crate::rhoapi::{
-    Bundle, Connective, Expr, Foreach, GUnforgeable, If, Match, New, Par, Receive, Send,
-};
+use crate::rhoapi::{Bundle, Connective, Expr, GUnforgeable, If, Match, New, Par, Receive, Send};
 use crate::rust::rholang::sorter::bundle_sort_matcher::BundleSortMatcher;
 use crate::rust::rholang::sorter::connective_sort_matcher::ConnectiveSortMatcher;
 use crate::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
@@ -120,17 +117,6 @@ impl Sortable<Par> for ParSortMatcher {
             _conditionals
         };
 
-        let foreaches: Vec<ScoredTerm<Foreach>> = {
-            let mut _foreaches: Vec<ScoredTerm<Foreach>> = par
-                .foreaches
-                .iter()
-                .map(ForeachSortMatcher::sort_match)
-                .collect();
-
-            ScoredTerm::sort_vec(&mut _foreaches);
-            _foreaches
-        };
-
         let (send_terms, send_scores) = split_scored_terms(sends);
         let (receive_terms, receive_scores) = split_scored_terms(receives);
         let (news_terms, news_scores) = split_scored_terms(news);
@@ -140,7 +126,6 @@ impl Sortable<Par> for ParSortMatcher {
         let (connective_terms, connective_scores) = split_scored_terms(connectives);
         let (unforgeable_terms, unforgeable_scores) = split_scored_terms(unforgeables);
         let (conditional_terms, conditional_scores) = split_scored_terms(conditionals);
-        let (foreach_terms, foreach_scores) = split_scored_terms(foreaches);
 
         let sorted_par = Par {
             sends: send_terms,
@@ -152,7 +137,6 @@ impl Sortable<Par> for ParSortMatcher {
             bundles: bundle_terms,
             connectives: connective_terms,
             conditionals: conditional_terms,
-            foreaches: foreach_terms,
             locally_free: par.locally_free.clone(),
             connective_used: par.connective_used,
         };
@@ -173,7 +157,6 @@ impl Sortable<Par> for ParSortMatcher {
                         .chain(connective_scores)
                         .chain(unforgeable_scores)
                         .chain(conditional_scores)
-                        .chain(foreach_scores)
                         .chain(vec![Tree::<ScoreAtom>::create_leaf_from_i64(
                             connective_used_score,
                         )]),
