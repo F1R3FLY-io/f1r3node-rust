@@ -3827,6 +3827,72 @@ After these: my final read of the final tip, and the tag (Decision 123).
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 48 (actions A-8 and A-9): Decisions 133, 135 and 136, and the parser pin
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b (`1673c39e1`), FX-19, FX-19-format, FX-20, FX-21, FX-22, Q-35-memo or any tag.
+- **Commits read:**
+  - `patch/FX-8b` at `1673c39e1` (lane A2): the merge of FX-19 `821c4bee0` (`7e8743b53`), and Decision 136 (`1673c39e1`).
+  - `patch/FX-19` at `095b6b1f9` (lane C): the two-signer fix and test (`a6ede628d`), and the log.
+  - `patch/FX-21` at `0237bb7ab` (lane B): the parser pin `ad15ad2` (Q-37), Decision 135, and the nested-limit tests.
+  - `rholang-rs` `rev-stacks/syntax-dev` at `ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd`, fetched from GitHub to check its ancestry.
+- **Method:** a reading of the diffs and the logs. No tests were run.
+
+### Decision 136 (`1673c39e1`): conforms
+
+- In `settle::charges`, a failed run pays its recorded cost `compute_phlo`, capped at Δ, from the client's wallets. The membrane's metered cells and work for that run are not charged. So the record and the debit are the same number. For the errors that dev charges in full, the number is Δ.
+- The existing check that a charge does not pass the envelope's commitment still applies, so the debit cannot pass Δ × price.
+- **Test:** `a_failed_run_pays_its_commitment_and_a_run_never_spends_more`. `1 / 0` with `phloLimit` 1,000,000 and Δ = 5,014 records 5,014 and is debited 5,014. Replay gives the same settlement, and a record with the cost changed to Δ − 1, Δ + 1 or 1,000,000 does not replay.
+- **The two charges of a run failed by a firing over its bound.** `settle::charges` covers only the envelope's own surfaces. The seal owner's bound is charged on the seal's surface, outside this loop, so Decision 136 does not remove it. The deployment in `region_spec::a_firing_over_its_bound_costs_its_wallet_exactly_the_bound_and_leaves_no_storage` has no estimate, so its Δ is its `phloLimit`. That test therefore shows both charges together: the deployment pays Δ, and the owner pays exactly the bound. **Accepted.**
+- **Lane A2's note on other error kinds is accepted.** Parser errors, the two operator errors, user aborts and `if` type errors keep dev's smaller charges from `handle_error`. Each is at most Δ.
+- **The known issue of revision 46 is closed.**
+
+### Decision 133 with two signers (`a6ede628d`): finding fixed, conforms
+
+- **Lane C's finding:** the stored record kept the outer seal's owner (s1) and took only the limit from the continuation's own seal t. So a firing over its bound charged n to s1's owner, not to t's owner. The earlier tests used one deployer, so they could not show this. Lane C labelled the finding blocking for the condition, and fixed it.
+- **The fix:**
+  - `own_seal_owner` resolves the owner of the continuation's own seal. It does so only when the body is one sealed term, the seal is own (same origin digest), and the body is not a stack body. The owner is resolved among the running origin's signers, so a signer-index seal resolves too, and no wallet outside the signers can be named.
+  - `Firing::bounded_by` charges an exhausted firing's bound to that owner. t's owner is added to the firing's wallets and to the match-time hold.
+  - Play and replay compute the owner from the stored continuation alone, so they agree.
+- **Test:** `with_two_signers_the_inner_seals_owner_pays_the_bound_and_the_outer_pays_its_cell`. u1 is t with n = 1,500, and u2 is s1 with m = 20,000. Within the bound, u1 pays the work and u2 pays one cell. Over the bound, the run fails, u1 pays exactly 1,500, and u2 pays exactly one cell. Both blocks replay. **Met.**
+- **Lane C's known issue 9 is accepted.** s1's purse still holds the bound, although it pays only its cell. This is on the safe side.
+
+### Decision 135 (`0237bb7ab`): conforms
+
+- A term that carries an elaborated seal and reaches the reducer with no enclosing seal, in a run that records seals, fails the run. The check comes first, before the owner and index checks.
+- **The exception is narrow.** Only a term with no elaborated seal runs as before. User and exploratory deployments are elaborated, and `interpreter.rs` refuses an unelaborated user deployment at entry. So only system and genesis code, which sets no deploy data, can take the exception.
+- **Test:** `a_term_from_a_deployment_outside_every_seal_fails_the_run_and_bootstrap_code_does_not`.
+- **The FX-21 revision 2 condition of revision 44 is closed.**
+
+The nested-limit tests for Decision 133 (`a_continuation_seal_inside_another_keeps_its_own_limit` and `…stores_its_own_limit`) agree with lane C's.
+
+### The parser pin (Q-37): conforms
+
+- `rev-stacks/syntax-dev` at `ad15ad2` has both `743752b` and master `4e22339` as ancestors. I checked this against GitHub.
+- The generated files are regenerated with tree-sitter v0.25.10, which the `parser.c` header names.
+- `golden__Cell3_bad.snap` keeps the merged parser's own output (4 errors), and the log gives the reason. Neither side's file matched the merged parser.
+- **The three pin checks of revision 45 are met.** The `dev` merge into FX-8b with this pin is still to come.
+
+### Open items
+
+1. `0237bb7ab` (FX-21 revision 3) and `a6ede628d` and `095b6b1f9` (FX-19) are not yet in FX-8b.
+2. **Merge condition 1:** the `dev` merge into FX-8b with the pin `ad15ad2`, and the CLAUDE.md parser note.
+3. **Merge condition 3:** the full suites on the final tip. Lane B's casper `--test mod` run on FX-21 revision 3 filled the disk. After space was freed, the 31 failed tests passed, but a clean full run on the final tip is needed.
+
+After these: my final read of the final tip, and the tag (Decision 123).
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decisions 133 (two signers), 135 and 136, and the parser pin | — | **Conform** on their branches. FX-8b has Decision 136. |
+| FX-8b takes FX-21 `0237bb7ab` and FX-19 `095b6b1f9` | Condition | Open |
+| Merge conditions 1 and 3 | Conditions | Open |
+| The final read and the tag | — | After the conditions |
+| Lane C's known issue 9 (s1 holds the bound) | Known issue | Accepted |
+| The SIGSEGV, `cargo fmt`, the earlier known issues, D10 and F47 for B6 | Known issue | Unchanged |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
