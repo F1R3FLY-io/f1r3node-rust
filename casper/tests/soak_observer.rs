@@ -45,7 +45,7 @@ use shared::rust::dag::observation_work::{
 };
 use shared::rust::store::key_value_store::KeyValueStore;
 
-const STORES: [&str; 13] = [
+const STORES: [&str; 20] = [
     "block-metadata",
     "equivocation-tracker",
     "latest-messages",
@@ -59,6 +59,13 @@ const STORES: [&str; 13] = [
     "genesis-hash",
     "blocks",
     "blocks-approved",
+    "dag-membership-v1",
+    "dag-height-v1",
+    "dag-children-v1",
+    "dag-history-state-v1",
+    "dag-gc-retry-v1",
+    "dag-gc-work-v1",
+    "dag-gc-visited-v1",
 ];
 
 struct Fixture {
@@ -281,8 +288,12 @@ impl Casper for AttachedCasper {
     async fn get_snapshot(&self) -> Result<CasperSnapshot, CasperError> {
         panic!("observer invoked the production snapshot")
     }
-    fn contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
-    fn dag_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
+    fn contains(&self, _: &BlockHash) -> Result<bool, CasperError> {
+        panic!("observer invoked consensus")
+    }
+    fn dag_contains(&self, _: &BlockHash) -> Result<bool, CasperError> {
+        panic!("observer invoked consensus")
+    }
     fn buffer_contains(&self, _: &BlockHash) -> bool { panic!("observer invoked consensus") }
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError> {
         panic!("observer invoked consensus")
@@ -1935,6 +1946,7 @@ async fn reference_detects_wrong_threshold_traversal_and_clique_controls() {
         .unwrap());
     scratch
         .representation
+        .fixture_mut()
         .main_parent_map
         .insert(latest_b.clone(), target.clone());
     let wrong_traversal = CliqueOracle::ft_witnessed_exact(

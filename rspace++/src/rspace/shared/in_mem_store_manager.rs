@@ -3,6 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use shared::rust::store::key_value_store::KeyValueStore;
+use shared::rust::store::memory_key_value_store::MemoryEnvironment;
 
 use super::in_mem_key_value_store::InMemoryKeyValueStore;
 use super::key_value_store_manager::KeyValueStoreManager;
@@ -11,6 +12,7 @@ use super::key_value_store_manager::KeyValueStoreManager;
 // Simple in-memory key value store manager
 pub struct InMemoryStoreManager {
     state: DashMap<String, InMemoryKeyValueStore>,
+    environment: Arc<MemoryEnvironment>,
 }
 
 #[async_trait]
@@ -21,13 +23,14 @@ impl KeyValueStoreManager for InMemoryStoreManager {
         let kv_store = self
             .state
             .entry(name)
-            .or_insert_with(|| InMemoryKeyValueStore::new());
+            .or_insert_with(|| self.environment.create_store());
 
         Ok(Arc::new(kv_store.value().clone()))
     }
 
     async fn shutdown(&mut self) -> Result<(), heed::Error> {
         self.state.clear();
+        self.environment = Arc::new(MemoryEnvironment::new());
         Ok(())
     }
 }
@@ -36,6 +39,7 @@ impl InMemoryStoreManager {
     pub fn new() -> Self {
         InMemoryStoreManager {
             state: DashMap::new(),
+            environment: Arc::new(MemoryEnvironment::new()),
         }
     }
 }

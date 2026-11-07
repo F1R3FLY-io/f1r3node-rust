@@ -388,6 +388,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     // Equivalent to: blockProcessor.checkIfOfInterest(c, b)
     let verdict = match block_processor.check_if_of_interest(casper.clone(), &checked) {
         Ok(verdict) => verdict,
+        Err(err @ CasperError::KvStoreError(_)) => return Err(err),
         Err(err) => {
             block_processor
                 .ack_processed(block)
@@ -417,6 +418,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
 
     let authorization = match block_processor.check_sender_authorization(&checked) {
         Ok(authorization) => authorization,
+        Err(err @ CasperError::KvStoreError(_)) => return Err(err),
         Err(err) => {
             block_processor
                 .ack_processed(block)
@@ -448,6 +450,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
     // Equivalent to the store half of: blockProcessor.checkIfWellFormedAndStore(b)
     let store_verdict = match block_processor.store(&checked, store_mode).await {
         Ok(store_verdict) => store_verdict,
+        Err(err @ CasperError::KvStoreError(_)) => return Err(err),
         Err(err) => {
             block_processor
                 .ack_processed(block)
@@ -498,6 +501,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
             ));
         }
         Ok(false) => {}
+        Err(err @ CasperError::KvStoreError(_)) => return Err(err),
         Err(err) => {
             block_processor
                 .ack_processed(block)
@@ -519,6 +523,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         .await
     {
         Ok(has_dependencies) => has_dependencies,
+        Err(err @ CasperError::KvStoreError(_)) => return Err(err),
         Err(err) => {
             block_processor
                 .ack_processed(block)
@@ -546,6 +551,7 @@ async fn process_block_with_steps<T: TransportLayer + Send + Sync + 'static>(
         .await
     {
         Ok(validation_result) => validation_result,
+        Err(err @ CasperError::KvStoreError(_)) => return Err(err),
         Err(err) => {
             // ensure this block is no longer tracked in the retriever even when validation
             // fails
@@ -637,11 +643,13 @@ mod tests {
             Ok(self.snapshot.clone())
         }
 
-        fn contains(&self, _hash: &BlockHash) -> bool { panic!("Unexpected contains call") }
+        fn contains(&self, _hash: &BlockHash) -> Result<bool, CasperError> {
+            panic!("Unexpected contains call")
+        }
 
-        fn dag_contains(&self, hash: &BlockHash) -> bool {
+        fn dag_contains(&self, hash: &BlockHash) -> Result<bool, CasperError> {
             self.processed.lock().unwrap().push(hash.clone());
-            true
+            Ok(true)
         }
 
         fn buffer_contains(&self, _hash: &BlockHash) -> bool { false }
@@ -1175,6 +1183,9 @@ mod tests {
                 unsigned.justifications.clear();
                 unsigned.body.system_deploys.clear();
                 unsigned.body.state.bonds.clear();
+                unsigned.body.state.block_number = 0;
+                let anchor = identity.sign_block(&unsigned);
+                dag.insert(&anchor, InsertMode::Approved).unwrap();
                 unsigned.body.state.block_number = 1;
                 let parent = identity.sign_block(&unsigned);
                 unsigned.header.parents_hash_list = vec![parent.block_hash.clone()];
@@ -1236,7 +1247,8 @@ mod tests {
                 assert!(!dag
                     .get_representation()
                     .unwrap()
-                    .contains(&parent.block_hash));
+                    .contains(&parent.block_hash)
+                    .unwrap());
 
                 let restored_buffer = CasperBufferKeyValueStorage::new_from_kvm(&mut stores)
                     .await
@@ -1258,7 +1270,8 @@ mod tests {
                 assert!(dag
                     .get_representation()
                     .unwrap()
-                    .contains(&parent.block_hash));
+                    .contains(&parent.block_hash)
+                    .unwrap());
                 assert!(super::verify_buffer_pendant(&processor, &child)
                     .await
                     .unwrap()

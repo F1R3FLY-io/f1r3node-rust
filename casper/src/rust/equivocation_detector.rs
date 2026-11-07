@@ -646,7 +646,10 @@ mod tests {
         let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
         let block_metadata_index = Arc::new(RwLock::new(BlockMetadataStore::new(metadata_store)));
 
-        let mut dag = KeyValueDagRepresentation {
+        let mut dag = block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set: imbl::HashSet::new(),
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -667,19 +670,23 @@ mod tests {
             carrier_index: Arc::new(parking_lot::RwLock::new(
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
-        };
+        }
+        .build();
 
         for (index, block) in blocks.iter().enumerate() {
             let block_number = index as i64;
-            dag.dag_set.insert(block.block_hash.clone());
-            dag.block_number_map
+            dag.fixture_mut().dag_set.insert(block.block_hash.clone());
+            dag.fixture_mut()
+                .block_number_map
                 .insert(block.block_hash.clone(), block_number);
-            dag.height_map
+            dag.fixture_mut()
+                .height_map
                 .entry(block_number)
                 .or_default()
                 .insert(block.block_hash.clone());
             if let Some(self_parent) = EquivocationDetector::creator_justification_hash(block) {
-                dag.self_justification_map
+                dag.fixture_mut()
+                    .self_justification_map
                     .insert(block.block_hash.clone(), self_parent);
             }
             dag.block_metadata_index

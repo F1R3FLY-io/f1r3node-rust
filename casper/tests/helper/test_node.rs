@@ -694,7 +694,11 @@ impl TestNode {
     }
 
     /// Checks if this node contains a block (equivalent to Scala contains, line 346).
-    pub fn contains(&self, block_hash: &BlockHash) -> bool { self.casper.contains(block_hash) }
+    pub fn contains(&self, block_hash: &BlockHash) -> bool {
+        self.casper
+            .contains(block_hash)
+            .expect("test node DAG membership read failed")
+    }
 
     /// Checks if this node knows about a block (in storage or requested) (equivalent to Scala knowsAbout, line 347-348).
     pub fn knows_about(&self, block_hash: &BlockHash) -> bool {

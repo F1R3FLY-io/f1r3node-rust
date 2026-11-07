@@ -27,7 +27,7 @@ use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use crate::engine::setup;
 use crate::helper::block_dag_storage_fixture::with_storage;
 use crate::helper::no_ops_casper_effect::NoOpsCasperEffect;
-use crate::util::rholang::resources::mk_runtime_manager;
+use crate::util::rholang::resources::{mk_runtime_manager, new_key_value_dag_representation};
 
 const PARK: Duration = Duration::from_secs(5);
 
@@ -106,13 +106,13 @@ async fn a_dead_peer_does_not_stall_valid_block_effects() {
         rp_conf.clone(),
     );
 
-    let (block_store, dag_representation, casper_buffer) = with_storage(|bs, ids| async move {
+    let (block_store, dag_representation, casper_buffer) = with_storage(|bs, _ids| async move {
         let mut kvm = InMemoryStoreManager::new();
         let store = kvm.store("parents-map".to_string()).await.unwrap();
         let cb = CasperBufferKeyValueStorage::new_from_kv_store(KeyValueTypedStoreImpl::new(store))
             .await
             .unwrap();
-        let representation = ids.get_representation().expect("dag representation");
+        let representation = new_key_value_dag_representation();
         (bs, representation, cb)
     })
     .await;
@@ -236,14 +236,13 @@ async fn saturated_peers_bound_the_detached_announces() {
         rp_conf.clone(),
     );
 
-    let (block_store, _dag_representation, casper_buffer) = with_storage(|bs, ids| async move {
+    let (block_store, casper_buffer) = with_storage(|bs, _ids| async move {
         let mut kvm = InMemoryStoreManager::new();
         let store = kvm.store("parents-map-bound".to_string()).await.unwrap();
         let cb = CasperBufferKeyValueStorage::new_from_kv_store(KeyValueTypedStoreImpl::new(store))
             .await
             .unwrap();
-        let representation = ids.get_representation().expect("dag representation");
-        (bs, representation, cb)
+        (bs, cb)
     })
     .await;
 

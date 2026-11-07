@@ -22,15 +22,17 @@ use crate::rust::util::proto_util;
 
 const RELEASE_FULL_SCAN_EVERY: u64 = 32;
 
-pub(crate) fn dependencies_are_ready(
+pub(crate) fn dependencies_are_ready<E>(
     dependencies: &[BlockHash],
-    dag_contains: impl Fn(&BlockHash) -> bool,
+    dag_contains: impl Fn(&BlockHash) -> Result<bool, E>,
     equivocations: &HashSet<BlockHash>,
-    invalid_blocks: &HashSet<BlockHash>,
-) -> bool {
-    dependencies.iter().all(|hash| {
-        dag_contains(hash) || equivocations.contains(hash) || invalid_blocks.contains(hash)
-    })
+) -> Result<bool, E> {
+    for hash in dependencies {
+        if !dag_contains(hash)? && !equivocations.contains(hash) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(crate) fn buffer_get_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
@@ -58,15 +60,8 @@ fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
             Ok(hashes)
         })?;
 
-    let invalid_block_hashes: HashSet<BlockHash> = this
-        .block_dag_storage
-        .get_representation()?
-        .invalid_blocks_map()?
-        .into_keys()
-        .collect();
-
     let buffer = &this.casper_buffer_storage;
-    let released = buffer.take_released();
+    buffer.with_released(|released| {
     let full_scan = buffer
         .count_release_scan()
         .is_multiple_of(RELEASE_FULL_SCAN_EVERY);
@@ -82,7 +77,7 @@ fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
         }
     } else {
         for hash in released {
-            if buffer.is_pendant(&hash) || buffer.contains(&hash) {
+            if buffer.is_pendant(hash) || buffer.contains(hash) {
                 candidate_hashes.insert(BlockHash::from(hash.0.clone()));
             }
         }
@@ -110,14 +105,14 @@ fn scan_dependency_free_from_buffer<T: TransportLayer + Send + Sync>(
             &proto_util::dependencies_hashes_of(&block),
             |hash| admit_dag_contains(this, hash),
             &equivocation_hashes,
-            &invalid_block_hashes,
-        );
+        )?;
         if all_deps_available {
             result.push(block);
         }
     }
 
     Ok(result)
+    })
 }
 
 pub(crate) fn buffer_get_all_from_buffer<T: TransportLayer + Send + Sync>(

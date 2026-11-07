@@ -342,7 +342,7 @@ where
             if visited.contains(&parent) {
                 continue;
             }
-            match dag.block_number(&parent) {
+            match dag.block_number(&parent)? {
                 Some(number) if number < block_number => {}
                 Some(_) => match dag.lookup(&parent).map_err(CasperError::from)? {
                     Some(meta) => {
@@ -386,6 +386,13 @@ pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploy
 
 pub fn system_deploys(block: &BlockMessage) -> Vec<ProcessedSystemDeploy> {
     block.body.system_deploys.clone()
+}
+
+pub fn replay_slashed_block_senders(
+    dag: &KeyValueDagRepresentation,
+    block: &BlockMessage,
+) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
+    block_slash_invalid_blocks(dag, block)
 }
 
 pub fn post_state_hash(block: &BlockMessage) -> prost::bytes::Bytes {
@@ -1008,21 +1015,17 @@ fn get_creator_blocks_between(
 ) -> Result<HashSet<BlockHash>, KvStoreError> {
     match bottom_block {
         Some(bottom_block) => {
-            // Use the bf_traverse function from dag_ops for breadth-first traversal
-            let neighbor_fn = |block: &BlockMetadata| -> Vec<BlockMetadata> {
-                get_creator_justification_unless_goal(dag, block, bottom_block).unwrap_or_default()
-            };
-
-            // Start traversal from top_block
-            let traversal_result =
-                shared::rust::dag::dag_ops::bf_traverse(vec![top_block.clone()], neighbor_fn);
-
-            // Collect all block hashes into a HashSet
-            let blocks_set: HashSet<BlockHash> = traversal_result
-                .into_iter()
-                .map(|block| block.block_hash.clone())
-                .collect();
-
+            let mut blocks_set = HashSet::new();
+            let mut pending = vec![top_block.clone()];
+            while let Some(block) = pending.pop() {
+                if blocks_set.insert(block.block_hash.clone()) {
+                    pending.extend(get_creator_justification_unless_goal(
+                        dag,
+                        &block,
+                        bottom_block,
+                    )?);
+                }
+            }
             Ok(blocks_set)
         }
 
@@ -1039,8 +1042,8 @@ fn get_creator_justification_unless_goal(
         Some(Justification {
             validator: _,
             latest_block_hash,
-        }) => match dag.lookup(&latest_block_hash) {
-            Ok(Some(creator_justification)) => {
+        }) => match dag.lookup(&latest_block_hash)? {
+            Some(creator_justification) => {
                 if creator_justification == *goal {
                     Ok(vec![])
                 } else {
@@ -1048,7 +1051,7 @@ fn get_creator_justification_unless_goal(
                 }
             }
 
-            _ => Err(KvStoreError::KeyNotFound(format!(
+            None => Err(KvStoreError::KeyNotFound(format!(
                 "BlockDAG is missing justification {} for {}",
                 PrettyPrinter::build_string_bytes(&latest_block_hash),
                 PrettyPrinter::build_string_bytes(&block.block_hash)
@@ -1131,7 +1134,10 @@ mod fork_choice_b1_repro_tests {
         for b in blocks {
             assert!(bms.add(b).is_ok(), "test DAG metadata insert failed");
         }
-        KeyValueDagRepresentation {
+        block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+            history: None,
+            view_sequence: u64::MAX,
+            view_max_height: None,
             dag_set,
             latest_messages_map: imbl::HashMap::new(),
             child_map: imbl::HashMap::new(),
@@ -1153,6 +1159,7 @@ mod fork_choice_b1_repro_tests {
                 block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
             )),
         }
+        .build()
     }
 
     /// The sixth restore-horizon walk (#306). On an LFS-restored node a held
@@ -1309,7 +1316,7 @@ mod fork_choice_b1_repro_tests {
         for b in invalid {
             inv.insert(b);
         }
-        dag.invalid_blocks_set = inv;
+        *dag.fixture_mut().invalid_blocks_set = inv;
         dag
     }
 

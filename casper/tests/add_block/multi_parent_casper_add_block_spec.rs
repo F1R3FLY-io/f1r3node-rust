@@ -444,7 +444,7 @@ async fn multi_parent_casper_should_reject_a_parentless_non_genesis_block_that_b
         status,
         Either::Left(BlockError::Invalid(InvalidBlock::InvalidSender))
     );
-    assert!(!node.casper.dag_contains(&forged.block_hash));
+    assert!(!node.casper.dag_contains(&forged.block_hash).unwrap());
 }
 
 /// A main parent that this node does not hold leaves the sender's weight
@@ -507,7 +507,7 @@ async fn multi_parent_casper_should_hold_a_block_with_an_unknown_main_parent_off
 
     assert_eq!(status, Either::Left(BlockError::MissingBlocks));
     assert!(node.block_store.is_pending(&forged.block_hash));
-    assert!(!node.casper.dag_contains(&forged.block_hash));
+    assert!(!node.casper.dag_contains(&forged.block_hash).unwrap());
 }
 
 #[tokio::test]
@@ -680,7 +680,8 @@ async fn multi_parent_casper_should_request_an_evicted_parent_that_a_child_waits
     assert!(nodes[1].casper.buffer_contains(&evicted.block_hash));
     assert!(nodes[1]
         .casper
-        .buffer_waits_on_dependency(&chain[2].block_hash));
+        .buffer_waits_on_dependency(&chain[2].block_hash)
+        .unwrap());
     assert!(nodes[1]
         .requested_blocks
         .lock()
@@ -717,7 +718,7 @@ async fn multi_parent_casper_should_request_an_evicted_parent_that_a_child_waits
         }
     }
     for block in &chain {
-        assert!(nodes[1].casper.dag_contains(&block.block_hash));
+        assert!(nodes[1].casper.dag_contains(&block.block_hash).unwrap());
     }
 }
 
@@ -745,7 +746,7 @@ async fn multi_parent_casper_should_persist_a_block_evicted_during_processing() 
 
     nodes[1].casper.handle_valid_block(&block).await.unwrap();
 
-    assert!(nodes[1].casper.dag_contains(&block.block_hash));
+    assert!(nodes[1].casper.dag_contains(&block.block_hash).unwrap());
     assert_eq!(
         nodes[1].block_store.get(&block.block_hash).unwrap(),
         Some(block)
@@ -950,7 +951,7 @@ async fn multi_parent_casper_should_recover_when_a_requested_child_fills_the_sen
         nodes[1].process_block(chain[2].clone()).await.unwrap(),
         Either::Right(Valid)
     );
-    assert!(nodes[1].casper.dag_contains(&chain[2].block_hash));
+    assert!(nodes[1].casper.dag_contains(&chain[2].block_hash).unwrap());
 }
 
 #[tokio::test]
@@ -1260,6 +1261,7 @@ async fn multi_parent_casper_should_ignore_adding_equivocation_blocks() {
     let dag1 = nodes[1].casper.block_dag().await.unwrap();
     let invalid_hashes: Vec<_> = dag1
         .invalid_blocks()
+        .unwrap()
         .iter()
         .map(|m| m.block_hash.clone())
         .collect();
@@ -1439,8 +1441,8 @@ async fn multi_parent_casper_should_not_ignore_equivocation_blocks_that_are_requ
         nodes[1].contains(&signed_block4.block_hash),
         normalized_fault,
         expected_fault,
-        nodes[0].casper.contains(&signed_block1.block_hash),
-        nodes[0].casper.contains(&signed_block1_prime.block_hash),
+        nodes[0].casper.contains(&signed_block1.block_hash).unwrap(),
+        nodes[0].casper.contains(&signed_block1_prime.block_hash).unwrap(),
         nodes[1].block_store.get(&signed_block2.block_hash).unwrap().is_some(),
         nodes[1].block_store.get(&signed_block4.block_hash).unwrap().is_some(),
         nodes[2].block_store.get(&signed_block3.block_hash).unwrap().is_some(),
@@ -1523,7 +1525,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
     // the is_slashable narrowing): the block is dropped without entering
     // the DAG or minting slash evidence.
     let dag = nodes[1].casper.block_dag().await.unwrap();
-    let invalid_blocks = dag.invalid_blocks();
+    let invalid_blocks = dag.invalid_blocks().unwrap();
 
     let is_recorded = invalid_blocks
         .iter()
@@ -1534,7 +1536,7 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
         "a demoted verdict's block must be dropped, not recorded as evidence"
     );
     assert!(
-        !dag.contains(&signed_invalid_block.block_hash),
+        !dag.contains(&signed_invalid_block.block_hash).unwrap(),
         "a demoted verdict's block must not enter the DAG"
     );
 }

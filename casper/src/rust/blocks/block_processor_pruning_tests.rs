@@ -682,7 +682,12 @@ async fn overflow_prune_keeps_a_child_released_before_the_prune_lock() {
     let dag = BlockDagKeyValueStorage::from_parts(
         global_lock.clone(),
         KeyValueTypedStoreImpl::new(kvm.store("latest-messages".to_string()).await.unwrap()),
-        original_dag.metadata_index_for_tests(),
+        original_dag
+            .get_representation()
+            .unwrap()
+            .detached_fixture()
+            .unwrap()
+            .block_metadata_index,
         KeyValueTypedStoreImpl::new(kvm.store("invalid-blocks".to_string()).await.unwrap()),
         original_dag.floor_index_for_tests().clone(),
         original_dag.frontier_index_for_tests().clone(),

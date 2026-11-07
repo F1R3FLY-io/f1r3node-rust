@@ -766,7 +766,7 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
     fn ignore_casper_message(&self, hash: BlockHash) -> Result<bool, CasperError> {
         let blocks_in_processing = self.blocks_in_processing.contains(&hash);
         let buffer_contains = self.casper.buffer_contains(&hash);
-        let dag_contains = self.casper.dag_contains(&hash);
+        let dag_contains = self.casper.dag_contains(&hash)?;
         Ok(blocks_in_processing || buffer_contains || dag_contains)
     }
 
@@ -857,9 +857,9 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         &self,
         peer: PeerNode,
         hbr: HasBlockRequest,
-        block_lookup: impl Fn(BlockHash) -> bool,
+        block_lookup: impl Fn(BlockHash) -> Result<bool, CasperError>,
     ) -> Result<(), CasperError> {
-        if block_lookup(hbr.hash.clone()) {
+        if block_lookup(hbr.hash.clone())? {
             let has_block = HasBlock { hash: hbr.hash };
             self.transport
                 .send_message_to_peer(&self.conf, &peer, Arc::new(has_block.to_proto()))

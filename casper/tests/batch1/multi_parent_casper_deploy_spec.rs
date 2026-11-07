@@ -189,8 +189,11 @@ async fn validator_bond_check_uses_selected_parent_metadata() {
     unbonded_parent.block_hash = Bytes::from(vec![42; 32]);
     unbonded_parent.body.state.bonds.clear();
 
+    snapshot.dag = snapshot.dag.detached_fixture().unwrap().build();
+
     snapshot
         .dag
+        .fixture_mut()
         .dag_set
         .insert(unbonded_parent.block_hash.clone());
     snapshot

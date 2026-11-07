@@ -63,7 +63,7 @@ async fn handle_valid_block_satisfies_atomic_dag_buffer_invariant() {
         .block_dag()
         .await
         .expect("block_dag on producer");
-    let dag_contains_n0 = dag_repr_n0.contains(&block_hash);
+    let dag_contains_n0 = dag_repr_n0.contains(&block_hash).unwrap();
     let buffer_contains_n0 = nodes[0]
         .casper
         .casper_buffer_storage
@@ -98,7 +98,7 @@ async fn handle_valid_block_satisfies_atomic_dag_buffer_invariant() {
         .block_dag()
         .await
         .expect("block_dag on receiver");
-    let dag_contains_n1 = dag_repr_n1.contains(&block_hash);
+    let dag_contains_n1 = dag_repr_n1.contains(&block_hash).unwrap();
     let buffer_contains_n1 = nodes[1]
         .casper
         .casper_buffer_storage

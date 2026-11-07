@@ -135,7 +135,7 @@ pub fn reconcile_buffer_against_dag(
     let pendants = buffer.get_pendants();
     let mut purged = 0;
     for pendant in pendants {
-        if dag.contains(&pendant.0) {
+        if dag.contains(&pendant.0)? {
             // remove() takes the buffer's write lock internally; safe
             // because reconcile_buffer_against_dag is called outside
             // any atomic_insert_then_buffer critical section (only at
@@ -178,10 +178,12 @@ pub fn atomic_commit_dependencies(
     let _buf_guard = buffer.write_guard();
 
     let representation = dag.get_representation_internal()?;
-    let unmet: Vec<&BlockHashSerde> = dependencies
-        .iter()
-        .filter(|dependency| !representation.contains(&dependency.0))
-        .collect();
+    let mut unmet = Vec::new();
+    for dependency in dependencies {
+        if !representation.contains(&dependency.0)? {
+            unmet.push(dependency);
+        }
+    }
 
     if unmet.is_empty() {
         return buffer.put_pendant_unlocked(child);

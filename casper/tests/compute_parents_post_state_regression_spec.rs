@@ -358,8 +358,10 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         genesis_block.block_hash.clone(),
     );
     snapshot_with_skew.dag.last_finalized_block_hash = genesis_block.block_hash.clone();
+    snapshot_with_skew.dag = snapshot_with_skew.dag.detached_fixture().unwrap().build();
     snapshot_with_skew
         .dag
+        .fixture_mut()
         .finalized_blocks_set
         .insert(b1.block_hash.clone());
 

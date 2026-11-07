@@ -265,6 +265,9 @@ pub mod builder {
                 max_parent_depth,
             ));
         }
+        if node_conf.casper.dag_hot_window_depth <= 0 {
+            return Err(eyre::eyre!("casper.dag-hot-window-depth must be positive"));
+        }
         if node_conf.casper.deploy_lifespan <= 0 {
             return Err(eyre::eyre!(
                 "casper.deploy-lifespan ({}) must be positive: a non-positive validity \

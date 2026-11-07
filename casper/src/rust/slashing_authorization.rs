@@ -304,59 +304,76 @@ pub fn authorized_slash_candidates(
     // BTreeMap (not HashMap) gives deterministic iteration order across nodes;
     // the resulting Vec is what feeds the block body.
     let mut by_offender: BTreeMap<Validator, AuthorizedSlashCandidate> = BTreeMap::new();
-    for metadata in snapshot.dag.invalid_blocks() {
-        if !metadata.invalid {
-            continue;
-        }
-        // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
-        // domain-invalid block number — protocol invariant says this
-        // can't happen for already-stored blocks, but the typed Result
-        // makes the explicit-skip choice visible. We `warn!` because a
-        // hit here means either the configured `epoch_length` is invalid
-        // (operator misconfiguration) or the metadata store contains a
-        // domain-invalid record (corruption). Silently producing an empty
-        // slash list would mask both modes.
-        let target_activation_epoch = match evidence_epoch(&metadata, epoch_length) {
-            Ok(epoch) => epoch,
-            Err(e) => {
-                tracing::warn!(
-                    "authorized_slash_candidates: skipping invalid-block metadata for {} \
-                     (sender {}): {}; check `epoch_length` configuration",
-                    hex::encode(&metadata.block_hash),
-                    hex::encode(&metadata.sender),
-                    e
-                );
+    let start_height = proposed_block_num - proposed_block_num % i64::from(epoch_length);
+    let end_height = start_height.saturating_add(i64::from(epoch_length) - 1);
+    let mut after = None;
+    loop {
+        let page = snapshot.dag.scan_height_range(
+            start_height,
+            end_height,
+            false,
+            after.as_deref(),
+            1024,
+        )?;
+        for hash in page.rows {
+            let metadata = snapshot.dag.lookup_unsafe(&hash)?;
+            if !metadata.invalid {
                 continue;
             }
-        };
-        if target_activation_epoch != current_epoch {
-            continue;
-        }
-        let bond = snapshot
-            .on_chain_state
-            .bonds_map
-            .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
-            continue;
-        }
-        let candidate = AuthorizedSlashCandidate {
-            offender: metadata.sender.clone(),
-            invalid_block_hash: metadata.block_hash.clone(),
-            target_activation_epoch,
-        };
-        match by_offender.entry(metadata.sender.clone()) {
-            Entry::Vacant(entry) => {
-                entry.insert(candidate);
+            // Phase 9 (C-6): skip blocks whose own (sender's) metadata has a
+            // domain-invalid block number — protocol invariant says this
+            // can't happen for already-stored blocks, but the typed Result
+            // makes the explicit-skip choice visible. We `warn!` because a
+            // hit here means either the configured `epoch_length` is invalid
+            // (operator misconfiguration) or the metadata store contains a
+            // domain-invalid record (corruption). Silently producing an empty
+            // slash list would mask both modes.
+            let target_activation_epoch = match evidence_epoch(&metadata, epoch_length) {
+                Ok(epoch) => epoch,
+                Err(e) => {
+                    tracing::warn!(
+                        "authorized_slash_candidates: skipping invalid-block metadata for {} \
+                     (sender {}): {}; check `epoch_length` configuration",
+                        hex::encode(&metadata.block_hash),
+                        hex::encode(&metadata.sender),
+                        e
+                    );
+                    continue;
+                }
+            };
+            if target_activation_epoch != current_epoch {
+                continue;
             }
-            Entry::Occupied(mut entry) => {
-                // Deterministic tie-break: keep the lex-smallest hash so every
-                // node selects the same evidence block for this offender.
-                if candidate.invalid_block_hash < entry.get().invalid_block_hash {
+            let bond = snapshot
+                .on_chain_state
+                .bonds_map
+                .get(&metadata.sender)
+                .copied()
+                .unwrap_or(0);
+            if bond <= 0 {
+                continue;
+            }
+            let candidate = AuthorizedSlashCandidate {
+                offender: metadata.sender.clone(),
+                invalid_block_hash: metadata.block_hash.clone(),
+                target_activation_epoch,
+            };
+            match by_offender.entry(metadata.sender.clone()) {
+                Entry::Vacant(entry) => {
                     entry.insert(candidate);
                 }
+                Entry::Occupied(mut entry) => {
+                    // Deterministic tie-break: keep the lex-smallest hash so every
+                    // node selects the same evidence block for this offender.
+                    if candidate.invalid_block_hash < entry.get().invalid_block_hash {
+                        entry.insert(candidate);
+                    }
+                }
             }
+        }
+        after = page.next;
+        if after.is_none() {
+            break;
         }
     }
 

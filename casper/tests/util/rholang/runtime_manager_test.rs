@@ -4235,21 +4235,18 @@ async fn recompute_materializes_mergeable_entry_for_own_block() {
 /// evidence against the proposer of the block being validated.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
-    use std::collections::BTreeMap as StdBTreeMap;
     use std::sync::Arc;
 
-    use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
-    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
     use block_storage::rust::key_value_block_store::KeyValueBlockStore;
     use casper::rust::casper::CasperShardConf;
     use casper::rust::util::mergeable_channels_gc;
-    use models::rust::block_metadata::BlockMetadata;
     use models::rust::casper::protocol::casper_message::{
         BlockMessage, Body, F1r3flyState, Header,
     };
-    use parking_lot::RwLock as PlRwLock;
-    use rspace_plus_plus::rspace::shared::in_mem_key_value_store::InMemoryKeyValueStore;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 
     use crate::util::rholang::resources::{
         mk_runtime_manager_with_history_at, mk_test_rnode_store_manager_from_genesis,
@@ -4357,87 +4354,83 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     // A linear finalized chain 0..=TIP by one validator. The block at
     // LAGGING_HEIGHT is the real one above; the rest are synthetic and absent
     // from the block store, so GC skips them.
-    let metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
-    let mut bms = BlockMetadataStore::new(metadata_store);
-    let chain_validator = prost::bytes::Bytes::from(vec![0xEEu8; 65]);
-
-    let mut dag_set = imbl::HashSet::new();
-    let mut block_number_map = imbl::HashMap::new();
-    let mut main_parent_map = imbl::HashMap::new();
-    let mut child_map: imbl::HashMap<prost::bytes::Bytes, imbl::HashSet<prost::bytes::Bytes>> =
-        imbl::HashMap::new();
-    let mut height_map: imbl::OrdMap<i64, imbl::HashSet<prost::bytes::Bytes>> = imbl::OrdMap::new();
-    let mut finalized_blocks_set = imbl::HashSet::new();
-
+    let mut dag_manager = InMemoryStoreManager::new();
+    let dag_storage = BlockDagKeyValueStorage::new_with_hot_window(&mut dag_manager, 2)
+        .await
+        .expect("DAG storage");
     for n in 0..=TIP {
-        let h = chain_hash(n);
-        dag_set.insert(h.clone());
-        block_number_map.insert(h.clone(), n as i64);
-        finalized_blocks_set.insert(h.clone());
-        let mut at_height = imbl::HashSet::new();
-        at_height.insert(h.clone());
-        height_map.insert(n as i64, at_height);
-
-        let parents = if n == 0 {
-            Vec::new()
+        let mut block = lagging_block.clone();
+        block.block_hash = chain_hash(n);
+        block.body.state.block_number = n as i64;
+        block.seq_num = n as i32 + seq_num - LAGGING_HEIGHT as i32;
+        block.header.parents_hash_list = if n == 0 {
+            vec![]
         } else {
-            let parent = chain_hash(n - 1);
-            main_parent_map.insert(h.clone(), parent.clone());
-            let mut kids = child_map.get(&parent).cloned().unwrap_or_default();
-            kids.insert(h.clone());
-            child_map.insert(parent.clone(), kids);
-            vec![parent]
+            vec![chain_hash(n - 1)]
         };
-
-        // The block at LAGGING_HEIGHT carries the REAL sender and seq, so the
-        // key GC derives for deletion is the key the propose path wrote.
-        let (meta_sender, meta_seq) = if n == LAGGING_HEIGHT {
-            (sender.bytes.clone(), seq_num)
-        } else {
-            (chain_validator.clone(), n as i32)
-        };
-
-        bms.add(BlockMetadata {
-            block_hash: h.clone(),
-            parents,
-            sender: meta_sender,
-            justifications: vec![],
-            weight_map: StdBTreeMap::new(),
-            block_number: n as i64,
-            sequence_number: meta_seq,
-            invalid: false,
-            directly_finalized: true,
-            finalized: true,
-            fault_tolerance_value: 1.0,
-            merge_base: prost::bytes::Bytes::new(),
-        })
-        .expect("add metadata");
+        if n != LAGGING_HEIGHT {
+            block.body.deploys.clear();
+            block.body.system_deploys.clear();
+        }
+        drop(
+            dag_storage
+                .insert(
+                    &block,
+                    if n == 0 {
+                        InsertMode::Approved
+                    } else {
+                        InsertMode::Normal
+                    },
+                )
+                .expect("publish chain block"),
+        );
     }
+    dag_storage
+        .record_directly_finalized(chain_hash(TIP), 1.0, |_| async { Ok(()) })
+        .await
+        .expect("finalize synthetic chain");
+    let dag = dag_storage.get_representation().expect("DAG view");
+    assert!(dag.resident_counts().blocks < usize::from(TIP));
+    assert!(dag
+        .contains(&chain_hash(LAGGING_HEIGHT))
+        .expect("cold membership"));
 
-    let mut latest_messages_map = imbl::HashMap::new();
-    latest_messages_map.insert(chain_validator, chain_hash(TIP));
-
-    let dag = KeyValueDagRepresentation {
-        dag_set,
-        latest_messages_map,
-        child_map,
-        height_map,
-        block_number_map,
-        main_parent_map,
-        self_justification_map: imbl::HashMap::new(),
-        invalid_blocks_set: imbl::HashSet::new(),
-        last_finalized_block_hash: chain_hash(TIP),
-        finalized_blocks_set,
-        block_metadata_index: Arc::new(PlRwLock::new(bms)),
-        floor_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        frontier_index: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        lifecycle: Arc::new(PlRwLock::new(
-            block_storage::rust::dag::deploy_lifecycle_types::DeployLifecycleTables::in_memory(),
-        )),
-        carrier_index: Arc::new(PlRwLock::new(
-            block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
-        )),
-    };
+    let mut conf = CasperShardConf::new();
+    conf.max_parent_depth = 3;
+    conf.mergeable_channels_gc_depth_buffer = 1;
+    let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
+    assert_eq!(
+        mergeable_channels_gc::collect_garbage(
+            &mut gc_sweep,
+            &dag_storage,
+            &block_store,
+            &rm,
+            &conf
+        )
+        .await
+        .unwrap(),
+        mergeable_channels_gc::GcProgress::Yielded { deleted: 0 }
+    );
+    assert_eq!(
+        mergeable_channels_gc::collect_garbage(
+            &mut gc_sweep,
+            &dag_storage,
+            &block_store,
+            &rm,
+            &conf
+        )
+        .await
+        .unwrap(),
+        mergeable_channels_gc::GcProgress::Complete { deleted: 0 }
+    );
+    assert!(rm.has_mergeable_entry(&lagging_block).unwrap());
+    assert!(dag.get_cached_floor(&chain_hash(TIP)).unwrap().is_none());
+    assert!(dag_storage
+        .gc_store()
+        .discovery_state()
+        .unwrap()
+        .claimed_ceiling
+        .is_none());
 
     // The node's live floor is the chain tip. Seeding the persisted floor cache
     // is how a node that already derived this floor answers — GC reads it
@@ -4445,17 +4438,31 @@ async fn gc_collects_mergeable_data_that_the_recompute_cannot_rebuild() {
     dag.put_cached_floor(chain_hash(TIP), chain_hash(TIP))
         .expect("seed the live floor");
 
-    let mut conf = CasperShardConf::new();
-    conf.max_parent_depth = 3;
-    conf.mergeable_channels_gc_depth_buffer = 1;
-
     // Production GC: the block sits 15 below the live floor, past the 4-block
     // allowance, so its data is released.
-    let mut gc_sweep = mergeable_channels_gc::GcSweep::new();
-    let deleted =
-        mergeable_channels_gc::collect_garbage(&mut gc_sweep, &dag, &block_store, &rm, &conf)
-            .await
-            .expect("collect_garbage");
+    drop(dag);
+    let mut deleted = 0;
+    let mut completed = false;
+    for _ in 0..100 {
+        match mergeable_channels_gc::collect_garbage(
+            &mut gc_sweep,
+            &dag_storage,
+            &block_store,
+            &rm,
+            &conf,
+        )
+        .await
+        .expect("collect_garbage")
+        {
+            mergeable_channels_gc::GcProgress::Yielded { deleted: count } => deleted += count,
+            mergeable_channels_gc::GcProgress::Complete { deleted: count } => {
+                deleted += count;
+                completed = true;
+                break;
+            }
+        }
+    }
+    assert!(completed, "resumable GC must complete this bounded chain");
     assert_eq!(
         deleted,
         1,

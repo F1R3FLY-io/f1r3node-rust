@@ -1553,7 +1553,7 @@ impl BlockAPI {
             })?;
 
             let dag = casper.block_dag().await?;
-            if dag.contains(&block.block_hash) {
+            if dag.contains(&block.block_hash)? {
                 let block_info = BlockAPI::get_full_block_info(casper, &block).await?;
                 Ok(block_info)
             } else {
@@ -1579,10 +1579,10 @@ impl BlockAPI {
         block: &BlockMessage,
         constructor: fn(&BlockMessage, f32, bool) -> A,
     ) -> ApiErr<A> {
-        let is_finalized = dag.is_finalized(&block.block_hash);
+        let is_finalized = dag.is_finalized(&block.block_hash)?;
 
         let normalized_fault_tolerance = if is_finalized {
-            if let Ok(Some(meta)) = dag.lookup(&block.block_hash) {
+            if let Some(meta) = dag.lookup(&block.block_hash)? {
                 meta.fault_tolerance_value
             } else {
                 Self::fault_tolerance_or_unknown(dag, &block.block_hash).await?
@@ -1787,7 +1787,7 @@ impl BlockAPI {
                     hash
                 )))
             })?;
-            let result = dag.is_finalized(&given_block_hash.into());
+            let result = dag.is_finalized(&given_block_hash.into())?;
             Ok(result)
         } else {
             tracing::warn!("{}", error_message);

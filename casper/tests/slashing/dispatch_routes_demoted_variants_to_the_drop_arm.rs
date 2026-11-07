@@ -85,7 +85,7 @@ async fn dispatch_routes_demoted_variants_to_the_drop_arm() {
             .await
             .expect("post-dispatch dag representation");
         assert!(
-            !dag_after.contains(&synth.block_hash),
+            !dag_after.contains(&synth.block_hash).unwrap(),
             "[{:?}] a demoted verdict's block must not enter the DAG",
             variant
         );

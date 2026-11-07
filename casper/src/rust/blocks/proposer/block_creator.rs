@@ -1550,7 +1550,7 @@ fn walk_unfinalized_cone(
         while let Some(block_hash) = stack.pop() {
             if !seen.insert(block_hash.clone())
                 || block_hash == casper_snapshot.last_finalized_block
-                || casper_snapshot.dag.is_finalized(&block_hash)
+                || casper_snapshot.dag.is_finalized(&block_hash)?
             {
                 continue;
             }
@@ -3852,10 +3852,18 @@ mod tests {
             .expect("treat rejected parent-scope user deploy as unresolved"));
         snapshot.rejected_in_scope.remove(&user_sig);
 
-        snapshot.dag.finalized_blocks_set.insert(user_hash.clone());
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .insert(user_hash.clone());
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
             .expect("ignore finalized parent-scope user deploy"));
-        snapshot.dag.finalized_blocks_set.remove(&user_hash);
+        snapshot
+            .dag
+            .fixture_mut()
+            .finalized_blocks_set
+            .remove(&user_hash);
 
         snapshot.last_finalized_block = user_hash;
         assert!(!scope_has_unfinalized_user_deploys(&snapshot, &block_store)
@@ -5361,7 +5369,7 @@ mod tests {
             while let Some(block_hash) = stack.pop() {
                 if !seen.insert(block_hash.clone())
                     || block_hash == casper_snapshot.last_finalized_block
-                    || casper_snapshot.dag.is_finalized(&block_hash)
+                    || casper_snapshot.dag.is_finalized(&block_hash).unwrap()
                 {
                     continue;
                 }

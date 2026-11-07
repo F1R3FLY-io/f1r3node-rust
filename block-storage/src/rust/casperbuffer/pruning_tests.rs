@@ -57,7 +57,7 @@ async fn pruning_dependency_cache_follows_the_buffer_lifecycle() -> Result<(), K
         Some(&vec![hash(0).0])
     );
 
-    buffer.enforce_limits_with_readiness(0, u64::MAX, 1, 0, |_| false)?;
+    buffer.enforce_limits_with_readiness(0, u64::MAX, 1, 0, |_| Ok(false))?;
     assert!(buffer.cached_block_dependencies(&hash(1)).is_none());
     buffer.cache_block_dependencies(hash(1), vec![]);
     assert!(buffer.block_dependencies.is_empty());

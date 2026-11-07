@@ -821,8 +821,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessor<T> {
     ) -> Result<OfInterestVerdict, CasperError> {
         let block = checked.block();
         // TODO casper.dag_contains does not take into account equivocation tracker
-        let already_processed = casper.dag_contains(&block.block_hash)
-            || (casper.buffer_waits_on_dependency(&block.block_hash)
+        let already_processed = casper.dag_contains(&block.block_hash)?
+            || (casper.buffer_waits_on_dependency(&block.block_hash)?
                 && self.dependencies.holds_body(&block.block_hash)?);
 
         let shard_of_interest = casper.get_approved_block().map(|approved_block| {
@@ -1572,8 +1572,6 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
             self.block_dag_storage
                 .access_equivocations_tracker(|tracker| {
                     let dag = self.block_dag_storage.get_representation_internal()?;
-                    let invalid: HashSet<BlockHash> =
-                        dag.invalid_blocks_map()?.into_keys().collect();
                     let equivocations: HashSet<BlockHash> = tracker
                         .data()?
                         .iter()
@@ -1588,19 +1586,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                             &dependencies,
                             |dependency| dag.contains(dependency),
                             &equivocations,
-                            &invalid,
                         ),
-                        None => match self.block_store.contains_key(&hash.0) {
-                            Ok(stored) => stored,
-                            Err(error) => {
-                                tracing::warn!(
-                                    hash = ?hash,
-                                    %error,
-                                    "Preserved CasperBuffer hash after block read failure"
-                                );
-                                true
-                            }
-                        },
+                        None => self.block_store.contains_key(&hash.0),
                     };
                     self.casper_buffer.enforce_limits_with_readiness(
                         max_blocks,
@@ -1949,13 +1936,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         };
         // Invalid blocks are already known/built into Casper state and should not be re-fetched
         // as unresolved dependencies.
-        let invalid_block_hashes: HashSet<BlockHash> = {
-            self.block_dag_storage
-                .get_representation()?
-                .invalid_blocks_map()?
-                .into_keys()
-                .collect()
-        };
+        let dag = self.block_dag_storage.get_representation()?;
 
         let deps_in_buffer_all: Vec<BlockHash> = {
             all_deps
@@ -1973,27 +1954,27 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
                 .collect()
         };
 
-        let deps_in_dag: Vec<BlockHash> = all_deps
-            .iter()
-            .filter_map(|dep| {
-                if casper.dag_contains(dep) {
-                    Some(dep.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut deps_in_dag = Vec::new();
+        for dep in &all_deps {
+            if casper.dag_contains(dep)? {
+                deps_in_dag.push(dep.clone());
+            }
+        }
 
         let deps_in_eq_tracker: Vec<BlockHash> = all_deps
             .iter()
             .filter(|&dep| equivocation_hashes.contains(dep))
             .cloned()
             .collect();
-        let deps_in_invalid_set: Vec<BlockHash> = all_deps
-            .iter()
-            .filter(|&dep| invalid_block_hashes.contains(dep))
-            .cloned()
-            .collect();
+        let mut deps_in_invalid_set = Vec::new();
+        for dependency in &all_deps {
+            if dag
+                .lookup(dependency)?
+                .is_some_and(|metadata| metadata.invalid)
+            {
+                deps_in_invalid_set.push(dependency.clone());
+            }
+        }
 
         let mut deps_validated: Vec<BlockHash> = deps_in_dag.clone();
         deps_validated.extend(deps_in_eq_tracker.iter().cloned());
@@ -2572,7 +2553,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockProcessorDependencies<T> {
         snapshot: &mut CasperSnapshot,
         block: &BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
-        casper.validate(block, snapshot).await
+        match casper.validate(block, snapshot).await? {
+            Either::Left(BlockError::BlockException(CasperError::KvStoreError(error))) => {
+                Err(CasperError::KvStoreError(error))
+            }
+            outcome => Ok(outcome),
+        }
     }
 
     /// Equivalent to Scala's: ackProcessed = (b: BlockMessage) => BlockRetriever[F].ackInCasper(b.blockHash)

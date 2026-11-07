@@ -3,10 +3,11 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+use block_storage::rust::dag::block_dag_key_value_storage::{
+    BlockDagKeyValueStorage, KeyValueDagRepresentation,
+};
 use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -337,75 +338,7 @@ pub async fn block_dag_storage_from_dyn(
     block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use std::collections::BTreeSet;
-    use std::sync::Arc;
-
-    use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-    use block_storage::rust::dag::block_metadata_store::BlockMetadataStore;
-    use block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore;
-    use models::rust::block_hash::BlockHashSerde;
-    use models::rust::block_metadata::BlockMetadata;
-    use models::rust::equivocation_record::SequenceNumber;
-    use models::rust::validator::ValidatorSerde;
-    use parking_lot::RwLock;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-
-    let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get block-metadata store: {:?}",
-            e
-        ))
-    })?;
-    let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
-        KeyValueTypedStoreImpl::new(block_metadata_kv_store);
-    let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
-
-    let equivocation_tracker_kv_store = kvm
-        .store("equivocation-tracker".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get equivocation-tracker store: {:?}",
-                e
-            ))
-        })?;
-    let equivocation_tracker_db: KeyValueTypedStoreImpl<
-        (ValidatorSerde, SequenceNumber),
-        BTreeSet<BlockHashSerde>,
-    > = KeyValueTypedStoreImpl::new(equivocation_tracker_kv_store);
-    let equivocation_tracker_store = EquivocationTrackerStore::new(equivocation_tracker_db);
-
-    let latest_messages_kv_store = kvm
-        .store("latest-messages".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get latest-messages store: {:?}",
-                e
-            ))
-        })?;
-    let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
-        KeyValueTypedStoreImpl::new(latest_messages_kv_store);
-
-    let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get invalid-blocks store: {:?}",
-            e
-        ))
-    })?;
-    let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
-        KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
-
-    Ok(BlockDagKeyValueStorage::from_parts(
-        Arc::new(RwLock::new(())),
-        latest_messages_db,
-        Arc::new(RwLock::new(block_metadata_store)),
-        invalid_blocks_db,
-        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-        equivocation_tracker_store,
-        Arc::new(AtomicU64::new(0)),
-    ))
+    BlockDagKeyValueStorage::new(kvm).await
 }
 
 pub async fn key_value_deploy_storage_from_dyn(
@@ -542,7 +475,10 @@ pub async fn mk_runtime_manager_with_history_at(
 pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
     let block_metadata_store = KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new()));
 
-    KeyValueDagRepresentation {
+    block_storage::rust::dag::block_dag_key_value_storage::DagFixture {
+        history: None,
+        view_sequence: u64::MAX,
+        view_max_height: None,
         dag_set: imbl::HashSet::new(),
         latest_messages_map: imbl::HashMap::new(),
         child_map: imbl::HashMap::new(),
@@ -563,6 +499,24 @@ pub fn new_key_value_dag_representation() -> KeyValueDagRepresentation {
             block_storage::rust::dag::carrier_index::CarrierIndex::in_memory(),
         )),
     }
+    .build()
+}
+
+pub fn new_synthetic_empty_dag_storage() -> BlockDagKeyValueStorage {
+    BlockDagKeyValueStorage::from_parts(
+        Arc::new(RwLock::new(())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        Arc::new(RwLock::new(BlockMetadataStore::new(
+            KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        ))),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        block_storage::rust::dag::equivocation_tracker_store::EquivocationTrackerStore::new(
+            KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
+        ),
+        Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    )
 }
 
 pub fn mk_dummy_casper_snapshot() -> CasperSnapshot {
