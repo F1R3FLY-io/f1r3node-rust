@@ -2,7 +2,8 @@
 //!
 //! Invariant: `from_proto(slash.to_proto()) == slash` for every slash whose
 //! evidence is two arbitrary block commitments. No input is filtered: every
-//! commitment field takes any bytes, and the slash carries them unchecked.
+//! commitment field takes any value of its type, and the slash carries it
+//! unchecked.
 
 #![no_main]
 
@@ -22,10 +23,11 @@ struct CommitmentInput {
     chain_id: Vec<u8>,
     pre_state_hash: Vec<u8>,
     post_state_hash: Vec<u8>,
-    bonds_root: Vec<u8>,
+    bonds_root: [u8; 32],
+    justifications_root: [u8; 32],
     block_number: i64,
-    rejected_root: Vec<u8>,
-    applied_from_scope_root: Vec<u8>,
+    rejected_root: [u8; 32],
+    applied_from_scope_root: [u8; 32],
     merge_base: Vec<u8>,
     body_extra_bytes: Vec<u8>,
     sender: Vec<u8>,
@@ -33,7 +35,7 @@ struct CommitmentInput {
     seq_num: i32,
     shard_id: String,
     extra_bytes: Vec<u8>,
-    deploys_root: Vec<u8>,
+    deploys_root: [u8; 32],
     sig: Vec<u8>,
 }
 
@@ -49,10 +51,11 @@ impl CommitmentInput {
             },
             pre_state_hash: self.pre_state_hash.into(),
             post_state_hash: self.post_state_hash.into(),
-            bonds_root: self.bonds_root.into(),
+            bonds_root: self.bonds_root,
+            justifications_root: self.justifications_root,
             block_number: self.block_number,
-            rejected_root: self.rejected_root.into(),
-            applied_from_scope_root: self.applied_from_scope_root.into(),
+            rejected_root: self.rejected_root,
+            applied_from_scope_root: self.applied_from_scope_root,
             merge_base: self.merge_base.into(),
             body_extra_bytes: self.body_extra_bytes.into(),
             sender: self.sender.into(),
@@ -60,7 +63,7 @@ impl CommitmentInput {
             seq_num: self.seq_num,
             shard_id: self.shard_id,
             extra_bytes: self.extra_bytes.into(),
-            deploys_root: self.deploys_root.into(),
+            deploys_root: self.deploys_root,
             sig: self.sig.into(),
         }
     }
