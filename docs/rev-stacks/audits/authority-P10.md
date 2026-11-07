@@ -3893,6 +3893,80 @@ After these: my final read of the final tip, and the tag (Decision 123).
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 49 (actions A-8 and A-9): the final read of `patch/FX-8b` at `4c9853b00`
+
+- **The ruling of revision 37 holds.** `dacacc41a` is not an ancestor of FX-17, FX-8b (`4c9853b00`), FX-19, FX-19-format, FX-20, FX-21, FX-22, Q-35-memo, `feature/rev-stacks-ote` or any tag.
+- **Commits read on FX-8b:**
+  - `3b0c42b1a`: the merge of `dev` `3b5daabb4`, with `rholang-rs` pinned to `ad15ad2`.
+  - `734b4fded`: the merge of FX-21 revision 3 (`0237bb7ab`).
+  - `2171d2d7b`: the merge of FX-19 (`095b6b1f9`, which carries `a6ede628d`).
+  - `9b54135f3`: the cross-host fixture, written again.
+  - `4c9853b00`: the full suites and the handoff notes. This commit changes only `FX-8b.md`.
+- **Method:**
+  - A reading of the `dev` merge resolution with `git show --remerge-diff`.
+  - A search of the tip for the names of the removed parts, the reserved tags and the gate's tests.
+  - A reading of the new expression forms that `dev` brings.
+  - No tests were run, because the pinned toolchain cannot be downloaded here.
+
+### The merge conditions
+
+| Condition | Result |
+|---|---|
+| 1. `dev` merged, with the parser pinned to the `rev-stacks/syntax-dev` commit that holds `743752b` and `4e22339` | **Met.** `Cargo.toml` and CLAUDE.md name `ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd`. Revision 48 checked its ancestry against GitHub. CLAUDE.md says to change the pin only to a commit on that branch until the branch merges into `rholang-rs` master. |
+| 2. FX-19 and FX-21 merged, with the fixture written again | **Met.** `0237bb7ab`, `095b6b1f9` and `a6ede628d` are in FX-8b, and the fixture is written again at `9b54135f3`. `5eefe5611` changes only the FX-19 log. |
+| 3. The full suites on the final tip | **Met** at `9b54135f3`: rholang 2,550, rspace++ 424, block-storage 320, models 339, shared 149 (1 failed, the root-only test), crypto 118, comm 437, graphz 48, casper lib 890, casper `--test mod` 1,338 under nextest with no signal, node 469. |
+| 4. The crash check | **Met** by nextest (revision 47), and again on this tip. |
+
+### The `dev` merge resolution (`3b0c42b1a`)
+
+Four files had conflicts:
+- `Cargo.toml` takes the new pin `ad15ad2`.
+- `p_simple_type_normalizer.rs` takes `dev`'s `SimpleType::Type` connective in place of the branch's refusal.
+- `matcher/exports.rs` and `substitute.rs` take the union of the two import lists.
+
+`normalize.rs` drops the branch's refusal of the fixed-point pattern, because `dev` normalizes it. **Each resolution keeps the rule of both sides. The resolution is correct.**
+
+### The handoff gate on the tip
+
+| Check | Result |
+|---|---|
+| No remnant of the removed parts | **Met.** No `RefusalEvent`, `Event::Refusal`, `CloseCharge`, `close_precharge`, `hold_close`, `CloseUncovered`, `BlockLedger`, `accept_metered`, `replay_with_refusals` or `limited()` in `casper`, `rholang`, `models` or `node`. |
+| Void reason (a) reserved | **Met.** `RESERVED_CLOSE_UNCOVERED = 1`. Tag 1 does not decode. |
+| The refusal event's tag reserved | **Met.** `CasperMessage.proto` reserves tag 4. |
+| Decisions 119 to 122 and 130 to 136 on the tip | **Met.** The test for each is present and not ignored, among them `a_record_with_another_close_cost_does_not_replay`, `the_bound_demand_commits_the_smaller_of_the_limit_and_the_static_bound`, `data_sent_to_an_owners_contract_runs_under_the_owners_membrane_and_is_paid_there`, `a_signer_index_outside_its_own_origin_is_refused`, `a_term_from_a_deployment_outside_every_seal_fails_the_run_and_bootstrap_code_does_not`, `a_firing_set_off_by_the_close_over_its_bound_fails_the_close_and_the_void_record_replays`, `with_two_signers_the_inner_seals_owner_pays_the_bound_and_the_outer_pays_its_cell` and `a_failed_run_pays_its_commitment_and_a_run_never_spends_more`. F52's test is present too. |
+| `feature/rev-stacks-ote` can be fast-forwarded to the tip (Decision 123) | **Met.** `fe6ad0400` is an ancestor of `4c9853b00`. |
+
+### F54 — High, blocking until checked: the β-reduction from `dev` has no depth bound
+
+- `dev`'s Calculus of Constructions work (`28484a8db`, PR #942) adds `ELambda`, `EApp` and `EPi`. In `reduce.rs`, `EAppBody` evaluates its head, substitutes into the lambda's body, and calls `eval_single_expr` on the result. That call can reach `EAppBody` again.
+- This recursion is synchronous, so each step uses native stack, and nothing bounds its depth. No `stacker` guard and no depth counter is present. Each step charges its substitution, so phlo bounds the number of steps. But a deployment with a large `phloLimit` can allow more steps than the stack can hold, because the per-step charge is small.
+- If the stack overflows, the process stops. It does not return an error. A deployment whose reduction does not end would then stop each node that plays it or replays it. Every node would stop in the same way, so the network would stall.
+- Such a term is outside FX-22's estimated fragment, so it commits its `phloLimit`, and the gate admits it when the wallet covers that.
+- **Reason for the label:** a safety finding of High severity (Decision 88), and it is on the handoff tip. I could not run a test. It is labelled blocking until a test shows the result.
+- **Origin:** this is `dev`'s code, not code from a lane. It affects `dev` as well. A fix in `dev` and a merge, or a fix on FX-8b that `dev` takes later, are both possible.
+- **Conditions to close F54:**
+  1. A test evaluates an application that does not end, under a `phloLimit` larger than any stack can hold. The run must fail with an error (out of phlo, or a depth error), and the node must keep running. Replay must give the same failure.
+  2. If the test overflows the stack, the β-reduction is made iterative, or it gets a depth bound that fails the run with an error. The depth bound must be a code or shard constant, the same on every node, so that play and replay agree.
+
+### Known issues for the handoff notes
+
+1. The SIGSEGV seen once in lane C's environment is not reproduced (nextest on 1,338 and on 1,336 tests).
+2. The `shared` test fails only as root.
+3. `cargo fmt --check` is not verified here. CI's formatting job decides.
+4. FX-22's estimate is loose (Decision 128), and terms outside its fragment commit their `phloLimit` (Decision 122).
+5. The cost of elaboration is +50 phlo for each stored continuation (Decision 131).
+6. Lane C's FX-19 known issues 1, 2, 4, 7 and 9, and lane B's FX-21 known issues 1 and 3.
+7. `rholang-rs` is pinned to `rev-stacks/syntax-dev`, which is not yet merged into `rholang-rs` master.
+8. `dev` has moved past `3b5daabb4` (it is at `2cce114a5`). The handoff tip has `dev` as of `3b5daabb4`.
+9. D10 and F47 wait for B6. The P12 track (FX-18, F53, lane C's digest chain, items 9 and 10) is parked, and `dacacc41a` stays off the shipped branches.
+10. The earlier known issues of revisions 1 to 48 that are still open.
+
+### The verdict of the final read
+
+- Every condition and every check of the handoff gate is met on `4c9853b00`, except F54.
+- **The tag waits for F54.** When the test of condition 1 passes, or the fix of condition 2 lands with its test, the tip can be tagged. Then `feature/rev-stacks-ote` can be fast-forwarded to the tag (Decision 123).
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
