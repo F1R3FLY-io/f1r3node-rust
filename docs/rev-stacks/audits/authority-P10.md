@@ -4025,6 +4025,25 @@ Four files had conflicts:
 - **Next check:** confirm that the tag points to `4c9853b00`, that `feature/rev-stacks-ote` is at the tag, and that `dacacc41a` is in neither.
 
 
+## Revision 52: the tag and the fast-forward are confirmed, and the audit is closed for the handoff
+
+- **The tag:** `rev-stacks/m2-handoff` is an annotated tag (`795b6d549`) that points to `4c9853b00` exactly. This is the commit that revision 51 signed off.
+- **The fast-forward:** `feature/rev-stacks-ote` is at `4c9853b00`. It moved from `fe6ad0400`, which is an ancestor of `4c9853b00`. The branch tip is the signed-off commit itself, so no merge commit was made.
+- **The ruling of revision 37:** `dacacc41a` (`patch/FX-18-handoff`) is not an ancestor of the tag, of `feature/rev-stacks-ote` or of `patch/FX-8b`, and no tag contains it. **The ruling holds.**
+- **No new read is needed.** The tag and the branch are both on `4c9853b00`, and `patch/FX-8b` has not moved since revision 49.
+
+### The audit is closed for the handoff
+
+- Actions A-8, A-9 and A-10 are complete for the handoff tag `rev-stacks/m2-handoff`.
+- The handoff notes are the known-issues list of revision 49, with items 11 (F54) and 12 (lane C's known issue 9) of revision 51.
+- **What stays open after the handoff:**
+  - F54, with its test plan (Decision 137, owned by the `dev` team).
+  - D10 and F47, which wait for B6.
+  - The P12 track: FX-18, F53, lane C's digest chain, and items 9 and 10.
+  - The known issues of revisions 1 to 51 that are still open.
+- **The ruling of revision 37 continues after the handoff.** `dacacc41a` must not reach `feature/rev-stacks-ote` or a later handoff branch until Meredith reviews the lookahead (Decision 118).
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
