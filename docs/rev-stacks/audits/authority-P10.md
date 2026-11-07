@@ -3978,6 +3978,53 @@ Four files had conflicts:
 - The label (High, blocking until checked) and the two conditions of revision 49 do not change. A fix can also add a `stacker::maybe_grow` call in the synchronous recursion itself, as a third option beside an iterative reduction and a depth bound. Every option must keep play and replay equal, and must fail the run with an error instead of stopping the process.
 
 
+## Revision 51 (action A-8): Decision 137, the handoff notes, and the sign-off for the tag
+
+- **Ruling recorded: Decision 137.**
+  - F54 is a known issue, and the tag goes ahead now.
+  - This is an explicit exception to Decision 88. The code is `dev`'s (the lambda application of the Calculus of Constructions work), and `dev` has the same exposure.
+  - Meredith reports F54 to the `dev` team. The test and the fix follow the handoff.
+- **State checked before the sign-off:**
+  - `patch/FX-8b` is at `4c9853b00`, unchanged since revision 49.
+  - `feature/rev-stacks-ote` is at `fe6ad0400`, which is an ancestor of `4c9853b00`.
+  - `dacacc41a` is not an ancestor of either branch, and no tag contains it.
+
+### Additions to the handoff notes (the known-issues list of revision 49)
+
+**11. F54: the lambda application from `dev` has no depth bound (Decision 137).**
+- **Where:** `rholang/src/rust/interpreter/reduce.rs`, `ExprInstance::EAppBody` in `eval_expr`. The β-reduction calls `eval_single_expr` on its result, and that call can reach `EAppBody` again. The recursion is synchronous.
+- **Why the guard does not cover it:** `StackGrowingFuture` calls `stacker::maybe_grow` only when the reducer's future is polled. All the steps of one β-reduction run inside one poll, so the recursion has at most the 1 MB that the guard keeps free (`STACK_RED_ZONE`).
+- **The risk:** each step charges its substitution, so phlo bounds the number of steps. But a deployment with a large `phloLimit` can allow more steps than the stack holds. An overflow stops the node instead of failing the run. Every node that plays or replays the deployment would stop in the same way. The term is outside FX-22's estimated fragment, so it commits its `phloLimit`.
+- **The test plan, after the handoff:**
+  1. A run that evaluates an application that does not end, under a `phloLimit` larger than the stack can hold. The run must fail with an error, the process must keep running, and a second deployment in the same block must run normally.
+  2. The replay of that block gives the same failure, the same charge (Δ × price, Decision 136) and the same root.
+  3. The same test under 1, 2 and 4 workers, and in a release build, because the size of a stack frame differs between builds.
+  4. A test that a deep application that ends, within the chosen limit, still gives its value.
+- **The fix, as ruled:** one of these two.
+  - A depth limit, the same on every node, that fails the run with an error. It must be a code constant or a shard constant, never a node setting, so that play and replay agree.
+  - Evaluation as a loop, so that the depth uses no native stack. The steps must stay charged one by one, as now.
+- **Owner:** the `dev` team. FX-8b takes the fix from `dev` in a later merge.
+
+**12. Lane C's FX-19 known issue 9, accepted: an outer seal's wallet holds the full bound.**
+- When a continuation's own seal t names another owner than the outer seal s1, the firing's bound n is charged to t's owner on exhaustion (Decision 133, `a6ede628d`).
+- s1's wallet still holds the full bound n at match time, although s1's owner pays only its cell. In the two-signer test, u2 holds n and pays one cell.
+- **Reason it is on the safe side:** work under s1 can occur in the body before the evaluation enters t, so the hold must cover it. A larger hold can only make a firing a non-candidate, and cannot overdraw a wallet.
+- **Effect for users:** a contract whose outer seal names a small wallet can be skipped as a match candidate, although that wallet would pay only a cell. A narrower hold needs a proof that no charge under s1 occurs before t is entered. It is a later change.
+
+### The sign-off
+
+- **`patch/FX-8b` at `4c9853b00` is signed off for the handoff tag and for the fast-forward of `feature/rev-stacks-ote` (Decision 123).**
+- **The basis:**
+  - The final read of revision 49 found every merge condition and every check of the handoff gate met, except F54.
+  - Revision 50 corrected the reason for F54.
+  - Decision 137 makes F54 a known issue.
+- **For lane A2:** this revision is the sign-off.
+  - Tag `4c9853b00` exactly, not a later commit. A commit after it needs a new read.
+  - Fast-forward `feature/rev-stacks-ote` from `fe6ad0400` to the tag. The move is a fast-forward, so no merge commit is made.
+- **The ruling of revision 37 stays in force after the fast-forward.** `dacacc41a` (`patch/FX-18-handoff`) must not become an ancestor of `feature/rev-stacks-ote`, of the tag, or of any later handoff branch. The P12 track merges only after Meredith reviews the lookahead (Decision 118).
+- **Next check:** confirm that the tag points to `4c9853b00`, that `feature/rev-stacks-ote` is at the tag, and that `dacacc41a` is in neither.
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
