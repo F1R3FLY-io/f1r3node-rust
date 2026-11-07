@@ -361,16 +361,9 @@ Transport limits also apply.
 Deploys without parameters retain their protobuf bytes and signatures.
 JSON output omits an empty parameter array.
 
-The deploy storage and rejected buffer can read existing records without parameters.
-Both stores write every new record as protobuf with the `F1R3DEP` prefix and version byte `0x01`.
-This storage format also applies to deploys without parameters.
-Nodes that support only the old storage format cannot read these new records.
-Reading a legacy record does not rewrite that record.
-
-The `deploy.storage.legacy_decode` counter records each attempt to decode legacy bincode data in either store.
-The counter includes repeated reads and failed attempts.
-Retain legacy support until active nodes show no legacy decode attempts over an agreed observation period.
-A zero increase without store reads does not prove that legacy records are absent.
+The deploy storage and rejected buffer store every record as protobuf with the `F1R3DEP` prefix, version byte `0x02` and a payload fingerprint.
+A record in any other format, including records from node versions that stored the phlo price as a 64-bit integer, moves to quarantine on its first read.
+See [Invalid records in the local deploy stores](../block-storage/README.md#invalid-records-in-the-local-deploy-stores).
 
 The earlier Scala implementation used protobuf field 13 for parameters.
 This Rust schema uses field 13 for `expirationTimestamp` and field 14 for parameters.
