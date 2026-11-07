@@ -139,6 +139,28 @@ async fn normalize_then_reduce_add_one() {
     assert_gint(&reduced, 42);
 }
 
+// Disambiguating multi-arg convention test: `((x, y) => x)(1, 2)` returns
+// the FIRST arg. The `multi_arg_lambda_add` test below uses `+` which is
+// commutative, so it can't tell which arg maps to which binder. This one
+// can: it fires if (and only if) surface order `(x_0, …, x_{N-1})` binds
+// `x_i` to BoundVar(i) in the body.
+#[tokio::test]
+async fn multi_arg_lambda_returns_first_arg() {
+    let parser = rholang_parser::RholangParser::new();
+
+    let x_ref = ParBuilderUtil::create_ast_proc_var("x", &parser);
+    let lam = ParBuilderUtil::create_ast_lambda(&["x", "y"], x_ref, &parser);
+    let a1 = ParBuilderUtil::create_ast_int(1, &parser);
+    let a2 = ParBuilderUtil::create_ast_int(2, &parser);
+    let app = ParBuilderUtil::create_ast_app(lam, vec![a1, a2], &parser);
+
+    let normalized = normalize_ann_proc(&app, empty_inputs(), &HashMap::new(), &parser).unwrap();
+
+    let r = reducer().await;
+    let reduced = r.eval_expr(&normalized.par, &Env::new()).unwrap();
+    assert_gint(&reduced, 1);
+}
+
 // Multi-arg lambda `((x, y) => x + y)(3, 4)` reduces to 7.
 // Convention: surface order `(x, y)` makes x = BoundVar(0), y = BoundVar(1).
 #[tokio::test]
@@ -214,6 +236,62 @@ async fn lambda_leaves_outer_free_vars_free() {
         result.free_map.get("x").is_none(),
         "x was bound by lambda; must not leak as free"
     );
+}
+
+// Typed lambda `(x: Int) => x` normalizes with `param_types` populated
+// (length 1, slot 0 = Int connective). Regression test for the
+// annotation-plumbing path through p_lambda_normalizer.
+#[tokio::test]
+async fn typed_lambda_carries_param_type_annotation() {
+    use rholang_parser::ast::SimpleType;
+    let parser = rholang_parser::RholangParser::new();
+
+    let int_ann = ParBuilderUtil::create_ast_simple_type(SimpleType::Int, &parser);
+    let x_ref = ParBuilderUtil::create_ast_proc_var("x", &parser);
+    let lam = ParBuilderUtil::create_ast_lambda_typed(vec![("x", Some(int_ann))], x_ref, &parser);
+
+    let normalized = normalize_ann_proc(&lam, empty_inputs(), &HashMap::new(), &parser).unwrap();
+
+    match first_expr(&normalized.par) {
+        ExprInstance::ELambdaBody(ELambda {
+            bind_count,
+            param_types,
+            ..
+        }) => {
+            assert_eq!(*bind_count, 1);
+            assert_eq!(param_types.len(), 1, "annotation populates param_types");
+            let ann = &param_types[0];
+            assert_eq!(ann.connectives.len(), 1);
+            use models::rhoapi::connective::ConnectiveInstance;
+            match ann.connectives[0].connective_instance.as_ref() {
+                Some(ConnectiveInstance::ConnInt(_)) => {}
+                other => panic!("expected ConnInt annotation, got {other:?}"),
+            }
+        }
+        other => panic!("expected ELambda, got {other:?}"),
+    }
+}
+
+// Unannotated lambda stays `param_types = []` (legacy shape) so the
+// reducer and existing proto consumers see no change.
+#[tokio::test]
+async fn untyped_lambda_leaves_param_types_empty() {
+    let parser = rholang_parser::RholangParser::new();
+
+    let x_ref = ParBuilderUtil::create_ast_proc_var("x", &parser);
+    let lam = ParBuilderUtil::create_ast_lambda(&["x"], x_ref, &parser);
+
+    let normalized = normalize_ann_proc(&lam, empty_inputs(), &HashMap::new(), &parser).unwrap();
+
+    match first_expr(&normalized.par) {
+        ExprInstance::ELambdaBody(ELambda { param_types, .. }) => {
+            assert!(
+                param_types.is_empty(),
+                "unannotated lambda leaves param_types empty: {param_types:?}"
+            );
+        }
+        other => panic!("expected ELambda, got {other:?}"),
+    }
 }
 
 // Shadowing: inner `(x) => (x) => x` binds the inner x; the inner reference

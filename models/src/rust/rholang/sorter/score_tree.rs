@@ -265,6 +265,7 @@ impl Score {
     pub const BUNDLE_WRITE: i32 = 307;
     pub const BUNDLE_READ_WRITE: i32 = 308;
     pub const IF: i32 = 309;
+    pub const FOREACH: i32 = 310;
 
     pub const CONNECTIVE_NOT: i32 = 400;
     pub const CONNECTIVE_AND: i32 = 401;
@@ -286,6 +287,11 @@ impl Score {
     pub const CONNECTIVE_BIG_RAT: i32 = 417;
     pub const CONNECTIVE_FIXED_POINT: i32 = 418;
     pub const CONNECTIVE_TYPE: i32 = 419;
+    pub const CONNECTIVE_LIST: i32 = 420;
+    pub const CONNECTIVE_SET: i32 = 421;
+    pub const CONNECTIVE_MAP: i32 = 422;
+    pub const CONNECTIVE_TUPLE: i32 = 423;
+    pub const CONNECTIVE_PROC: i32 = 424;
 
     pub const PAR: i32 = 999;
 }

@@ -576,10 +576,24 @@ impl PrettyPrinter {
                     }
                 }
                 ExprInstance::ELambdaBody(lambda) => {
-                    let params = (0..lambda.bind_count)
-                        .map(|i| format!("_{}", i))
-                        .collect::<Vec<_>>()
-                        .join(", ");
+                    let params = if lambda.param_types.len() as i32 == lambda.bind_count {
+                        (0..lambda.bind_count)
+                            .map(|i| {
+                                let pt = &lambda.param_types[i as usize];
+                                if pt.connectives.is_empty() && pt.exprs.is_empty() {
+                                    format!("_{}", i)
+                                } else {
+                                    format!("_{}: {}", i, self.build_string_from_message(pt))
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    } else {
+                        (0..lambda.bind_count)
+                            .map(|i| format!("_{}", i))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
                     let body = self.build_string_from_message(
                         lambda
                             .body
@@ -961,6 +975,31 @@ impl PrettyPrinter {
                             self.build_string_from_message(scale)
                         ))
                     }
+                    ConnectiveInstance::ConnList(element) => {
+                        Ok(format!("List<{}>", self.build_string_from_message(element)))
+                    }
+                    ConnectiveInstance::ConnSet(element) => {
+                        Ok(format!("Set<{}>", self.build_string_from_message(element)))
+                    }
+                    ConnectiveInstance::ConnMap(body) => {
+                        let default_par = Par::default();
+                        let key = body.key.as_ref().unwrap_or(&default_par);
+                        let value = body.value.as_ref().unwrap_or(&default_par);
+                        Ok(format!(
+                            "Map<{}, {}>",
+                            self.build_string_from_message(key),
+                            self.build_string_from_message(value)
+                        ))
+                    }
+                    ConnectiveInstance::ConnTuple(body) => {
+                        let parts: Vec<String> = body
+                            .elements
+                            .iter()
+                            .map(|p| self.build_string_from_message(p))
+                            .collect();
+                        Ok(format!("Tuple<{}>", parts.join(", ")))
+                    }
+                    ConnectiveInstance::ConnProc(_) => Ok(String::from("Proc")),
                 },
                 None => Ok(String::new()),
             }

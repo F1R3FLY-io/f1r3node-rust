@@ -197,6 +197,49 @@ impl ParCount {
 
                 (p_count_1.clone(), p_count_1)
             }
+
+            // CoC Phase 4.1: `List<T>` matches a single list value
+            // (stored on the target's exprs as an EListBody).
+            Some(ConnList(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
+
+            // CoC Phase 4.2: `Set<T>` matches a single set value.
+            Some(ConnSet(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
+
+            // CoC Phase 4.3: `Map<K, V>` matches a single map value.
+            Some(ConnMap(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
+
+            // CoC Phase 4.4: `Tuple<T_0, …>` matches a single tuple
+            // value.
+            Some(ConnTuple(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
+
+            // CoC Phase 5.1: `Proc` matches a single process. The
+            // par-count is deliberately 1 (any single sub-process).
+            Some(ConnProc(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
         }
     }
 }

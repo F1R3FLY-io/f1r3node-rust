@@ -7,6 +7,7 @@ pub mod p_contr_normalizer;
 pub mod p_disjunction_normalizer;
 pub mod p_eval_normalizer;
 pub mod p_fixed_point_pattern_normalizer;
+pub mod p_foreach_normalizer;
 pub mod p_ground_normalizer;
 pub mod p_if_normalizer;
 pub mod p_input_normalizer;

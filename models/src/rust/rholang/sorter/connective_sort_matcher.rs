@@ -217,6 +217,79 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                 scored_simple(Score::CONNECTIVE_TYPE, *b, ConnectiveInstance::ConnType)
             }
 
+            Some(ConnectiveInstance::ConnList(element)) => {
+                let scored_element = ParSortMatcher::sort_match(element);
+                ScoredTerm {
+                    term: Connective {
+                        connective_instance: Some(ConnectiveInstance::ConnList(
+                            scored_element.term,
+                        )),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_LIST, vec![
+                        scored_element.score,
+                    ]),
+                }
+            }
+
+            Some(ConnectiveInstance::ConnSet(element)) => {
+                let scored_element = ParSortMatcher::sort_match(element);
+                ScoredTerm {
+                    term: Connective {
+                        connective_instance: Some(ConnectiveInstance::ConnSet(scored_element.term)),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_SET, vec![
+                        scored_element.score,
+                    ]),
+                }
+            }
+
+            Some(ConnectiveInstance::ConnMap(body)) => {
+                let default_par = Par::default();
+                let key_in = body.key.as_ref().unwrap_or(&default_par);
+                let value_in = body.value.as_ref().unwrap_or(&default_par);
+                let scored_key = ParSortMatcher::sort_match(key_in);
+                let scored_value = ParSortMatcher::sort_match(value_in);
+                ScoredTerm {
+                    term: Connective {
+                        connective_instance: Some(ConnectiveInstance::ConnMap(
+                            crate::rhoapi::ConnMapBody {
+                                key: Some(scored_key.term),
+                                value: Some(scored_value.term),
+                            },
+                        )),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_MAP, vec![
+                        scored_key.score,
+                        scored_value.score,
+                    ]),
+                }
+            }
+
+            Some(ConnectiveInstance::ConnTuple(body)) => {
+                let scored_elements: Vec<ScoredTerm<Par>> = body
+                    .elements
+                    .iter()
+                    .map(|p| ParSortMatcher::sort_match(p))
+                    .collect();
+                ScoredTerm {
+                    term: Connective {
+                        connective_instance: Some(ConnectiveInstance::ConnTuple(
+                            crate::rhoapi::ConnTupleBody {
+                                elements: scored_elements.iter().map(|s| s.term.clone()).collect(),
+                            },
+                        )),
+                    },
+                    score: Tree::<ScoreAtom>::create_node_from_i32(
+                        Score::CONNECTIVE_TUPLE,
+                        scored_elements.into_iter().map(|s| s.score).collect(),
+                    ),
+                }
+            }
+
+            Some(ConnectiveInstance::ConnProc(b)) => {
+                scored_simple(Score::CONNECTIVE_PROC, *b, ConnectiveInstance::ConnProc)
+            }
+
             None => ScoredTerm {
                 term: Connective::default(),
                 score: Tree::<ScoreAtom>::create_leaf_from_i64(Score::ABSENT as i64),

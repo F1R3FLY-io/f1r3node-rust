@@ -2414,3 +2414,301 @@ fn fixed_point_rejects_non_fixed_point_target() {
     let non_fp = new_gint_par(42, Vec::new(), false);
     assert!(assert_spatial_match(non_fp, pattern, None).is_ok());
 }
+
+// CoC Phase 4.1b: ConnList pattern matching.
+mod coc_list_patterns {
+    use models::rhoapi::expr::ExprInstance;
+
+    use super::*;
+
+    fn list_par(elements: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EListBody(EList {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn conn_list_pattern(element_pattern: Par) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnList(element_pattern)),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    fn int_type_pattern() -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnInt(true)),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn homogeneous_int_list_matches_list_of_int_pattern() {
+        let target = list_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gint_par(2, Vec::new(), false),
+            new_gint_par(3, Vec::new(), false),
+        ]);
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn empty_list_matches_list_of_any_pattern() {
+        let target = list_par(Vec::new());
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn mixed_list_rejects_list_of_int_pattern() {
+        let target = list_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn non_list_target_rejects_list_pattern() {
+        let target = new_gint_par(42, Vec::new(), false);
+        let pattern = conn_list_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    fn set_par(elements: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn conn_set_pattern(element_pattern: Par) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnSet(element_pattern)),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn homogeneous_set_matches_set_of_int_pattern() {
+        let target = set_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gint_par(2, Vec::new(), false),
+        ]);
+        let pattern = conn_set_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn list_target_rejects_set_pattern() {
+        let target = list_par(vec![new_gint_par(1, Vec::new(), false)]);
+        let pattern = conn_set_pattern(int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    fn string_type_pattern() -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnString(true)),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    fn map_par(kvs: Vec<(Par, Par)>) -> Par {
+        let entries: Vec<KeyValuePair> = kvs
+            .into_iter()
+            .map(|(k, v)| KeyValuePair {
+                key: Some(k),
+                value: Some(v),
+            })
+            .collect();
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: entries,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    }
+
+    fn conn_map_pattern(key: Par, value: Par) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnMap(
+                models::rhoapi::ConnMapBody {
+                    key: Some(key),
+                    value: Some(value),
+                },
+            )),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn map_target_matches_map_string_int_pattern() {
+        let target = map_par(vec![
+            (
+                new_gstring_par("a".to_string(), Vec::new(), false),
+                new_gint_par(1, Vec::new(), false),
+            ),
+            (
+                new_gstring_par("b".to_string(), Vec::new(), false),
+                new_gint_par(2, Vec::new(), false),
+            ),
+        ]);
+        let pattern = conn_map_pattern(string_type_pattern(), int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn map_target_rejects_map_pattern_with_wrong_value_type() {
+        let target = map_par(vec![(
+            new_gstring_par("a".to_string(), Vec::new(), false),
+            new_gstring_par("not-an-int".to_string(), Vec::new(), false),
+        )]);
+        let pattern = conn_map_pattern(string_type_pattern(), int_type_pattern());
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    fn tuple_par(elements: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                ps: elements,
+                locally_free: Vec::new(),
+                connective_used: false,
+            })),
+        }])
+    }
+
+    fn conn_tuple_pattern(elements: Vec<Par>) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(connective::ConnectiveInstance::ConnTuple(
+                models::rhoapi::ConnTupleBody { elements },
+            )),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    #[test]
+    fn tuple_target_matches_tuple_pattern_of_matching_shape() {
+        let target = tuple_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_tuple_pattern(vec![int_type_pattern(), string_type_pattern()]);
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn tuple_target_rejects_pattern_of_wrong_arity() {
+        let target = tuple_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_tuple_pattern(vec![int_type_pattern()]);
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn tuple_target_rejects_pattern_with_wrong_slot_type() {
+        let target = tuple_par(vec![
+            new_gint_par(1, Vec::new(), false),
+            new_gstring_par("x".to_string(), Vec::new(), false),
+        ]);
+        let pattern = conn_tuple_pattern(vec![string_type_pattern(), int_type_pattern()]);
+        assert!(assert_spatial_match(target, pattern, None).is_ok());
+    }
+}
+
+// CoC Phase 3.1: Pi-shaped patterns typecheck via the typechecker.
+mod coc_type_patterns {
+    use models::rhoapi::expr::ExprInstance;
+
+    use super::*;
+
+    fn type_par_with(instance: connective::ConnectiveInstance) -> Par {
+        let mut par = Par::default().with_connectives(vec![Connective {
+            connective_instance: Some(instance),
+        }]);
+        par.connective_used = true;
+        par
+    }
+
+    fn pi_pattern(param_ty: Par, codomain: Par) -> Par {
+        let conn_used = param_ty.connective_used || codomain.connective_used;
+        let mut par = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EPiBody(EPi {
+                bind_count: 1,
+                param_types: vec![param_ty],
+                codomain: Some(codomain),
+                locally_free: Vec::new(),
+                connective_used: conn_used,
+            })),
+        }]);
+        par.connective_used = conn_used;
+        par
+    }
+
+    fn bvar_par(k: i32) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(var::VarInstance::BoundVar(k)),
+                }),
+            })),
+        }])
+    }
+
+    fn lambda_typed_par(bind_count: i32, body: Par, param_types: Vec<Par>) -> Par {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ELambdaBody(ELambda {
+                bind_count,
+                body: Some(body),
+                locally_free: Vec::new(),
+                connective_used: false,
+                param_types,
+            })),
+        }])
+    }
+
+    #[test]
+    fn annotated_lambda_matches_corresponding_pi_pattern() {
+        let int_ty = type_par_with(connective::ConnectiveInstance::ConnInt(true));
+        let pattern = pi_pattern(int_ty.clone(), int_ty.clone());
+        let lambda = lambda_typed_par(1, bvar_par(0), vec![int_ty]);
+        assert!(assert_spatial_match(lambda, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn annotated_lambda_rejects_mismatched_pi_pattern() {
+        let int_ty = type_par_with(connective::ConnectiveInstance::ConnInt(true));
+        let bool_ty = type_par_with(connective::ConnectiveInstance::ConnBool(true));
+        // Pattern says Int -> Bool but lambda is (Int) -> Int.
+        let pattern = pi_pattern(int_ty.clone(), bool_ty);
+        let lambda = lambda_typed_par(1, bvar_par(0), vec![int_ty]);
+        assert!(assert_spatial_match(lambda, pattern, None).is_ok());
+    }
+
+    #[test]
+    fn ground_int_rejects_pi_pattern() {
+        let int_ty = type_par_with(connective::ConnectiveInstance::ConnInt(true));
+        let pattern = pi_pattern(int_ty.clone(), int_ty);
+        let not_a_function = new_gint_par(42, Vec::new(), false);
+        assert!(assert_spatial_match(not_a_function, pattern, None).is_ok());
+    }
+}
