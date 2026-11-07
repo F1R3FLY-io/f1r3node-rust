@@ -7,10 +7,9 @@ use crate::casper::{
     BlockMessageProto, BlockRequestProto, FloorCacheRequestProto, FloorCacheResponseProto,
     ForkChoiceTipRequestProto, GetSnapshotChunkRequestProto, GetWalPayloadRequestProto,
     HasBlockProto, HasBlockRequestProto, HasSnapshotProto, HasSnapshotRequestProto,
-    HasWalPayloadProto, HasWalPayloadRequestProto, MergeableEntryRequestProto,
-    MergeableEntryResponseProto, NoApprovedBlockAvailableProto, SnapshotChunkResponseProto,
-    StoreItemsMessageProto, StoreItemsMessageRequestProto, UnapprovedBlockProto,
-    WalPayloadResponseProto,
+    HasWalPayloadProto, HasWalPayloadRequestProto, NoApprovedBlockAvailableProto,
+    SnapshotChunkResponseProto, StoreItemsMessageProto, StoreItemsMessageRequestProto,
+    UnapprovedBlockProto, WalPayloadResponseProto,
 };
 use crate::routing::Packet;
 
@@ -74,8 +73,6 @@ impl_packet!(
         Pull
     ),
     (StoreItemsMessageProto, "StoreItemsMessage", Push),
-    (MergeableEntryRequestProto, "MergeableEntryRequest", Pull),
-    (MergeableEntryResponseProto, "MergeableEntryResponse", Push),
     (FloorCacheRequestProto, "FloorCacheRequest", Pull),
     (FloorCacheResponseProto, "FloorCacheResponse", Push),
     (

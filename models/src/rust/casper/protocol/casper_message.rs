@@ -33,8 +33,6 @@ pub enum CasperMessage {
     // Last finalized state messages
     StoreItemsMessageRequest(StoreItemsMessageRequest),
     StoreItemsMessage(StoreItemsMessage),
-    MergeableEntryRequest(MergeableEntryRequest),
-    MergeableEntryResponse(MergeableEntryResponse),
     FloorCacheRequest(FloorCacheRequest),
     FloorCacheResponse(FloorCacheResponse),
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
@@ -124,14 +122,6 @@ impl CasperMessage {
         Ok(CasperMessage::StoreItemsMessage(
             StoreItemsMessage::from_proto(proto)?,
         ))
-    }
-
-    pub fn from_mergeable_entry_request(proto: MergeableEntryRequestProto) -> Self {
-        CasperMessage::MergeableEntryRequest(MergeableEntryRequest::from_proto(proto))
-    }
-
-    pub fn from_mergeable_entry_response(proto: MergeableEntryResponseProto) -> Self {
-        CasperMessage::MergeableEntryResponse(MergeableEntryResponse::from_proto(proto))
     }
 
     pub fn from_floor_cache_request(proto: FloorCacheRequestProto) -> Self {
@@ -1367,17 +1357,33 @@ impl DeployData {
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
-        let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
-            .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
+        let unverified = DeployData::from_proto_unverified(proto)?;
+        Signed::from_signed_data(
+            unverified.data,
+            unverified.pk,
+            unverified.sig,
+            unverified.sig_algorithm,
+        )?
+        .ok_or_else(|| "Invalid signature".to_string())
+    }
 
+    /// Decodes a deploy without verifying its signature.
+    /// Before use, verify the signature unless the stored record already
+    /// passed a signature check.
+    /// The deploy store and rejected deploy buffer check signatures in `encode`.
+    /// [`DeployData::from_proto`] calls this decoder and then verifies the signature.
+    /// Use [`DeployData::from_proto`] for network data and other untrusted input.
+    pub fn from_proto_unverified(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+        let sig_algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
+            .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
         let sig = proto.sig.clone();
         let pk = PublicKey::from_bytes(&proto.deployer);
-        let signed = Signed::from_signed_data(DeployData::_from_proto(proto)?, pk, sig, algorithm)?;
-
-        match signed {
-            Some(signed) => Ok(signed),
-            None => Err("Invalid signature".to_string()),
-        }
+        Ok(Signed {
+            data: DeployData::_from_proto(proto)?,
+            pk,
+            sig,
+            sig_algorithm,
+        })
     }
 
     fn _to_proto(dd: DeployData) -> DeployDataProto {
@@ -1765,49 +1771,6 @@ impl StoreItemsMessage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct MergeableEntryRequest {
-    pub block_hash: ByteString,
-}
-
-impl MergeableEntryRequest {
-    pub fn from_proto(proto: MergeableEntryRequestProto) -> Self {
-        Self {
-            block_hash: proto.block_hash,
-        }
-    }
-
-    pub fn to_proto(self) -> MergeableEntryRequestProto {
-        MergeableEntryRequestProto {
-            block_hash: self.block_hash,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct MergeableEntryResponse {
-    pub block_hash: ByteString,
-    /// Bincode of `Vec<DeployMergeableData>`. Empty bytes = peer has the block
-    /// but no entry for it.
-    pub serialized_entry: ByteString,
-}
-
-impl MergeableEntryResponse {
-    pub fn from_proto(proto: MergeableEntryResponseProto) -> Self {
-        Self {
-            block_hash: proto.block_hash,
-            serialized_entry: proto.serialized_entry,
-        }
-    }
-
-    pub fn to_proto(self) -> MergeableEntryResponseProto {
-        MergeableEntryResponseProto {
-            block_hash: self.block_hash,
-            serialized_entry: self.serialized_entry,
-        }
-    }
-}
-
 #[cfg(test)]
 mod approved_block_tests {
     use prost::bytes::Bytes;
@@ -2012,23 +1975,6 @@ mod tests {
         assert_eq!(
             BlockRequest::from_proto(block_request.clone().to_proto()),
             block_request
-        );
-
-        let mergeable_request = MergeableEntryRequest {
-            block_hash: Bytes::from_static(b"h4"),
-        };
-        assert_eq!(
-            MergeableEntryRequest::from_proto(mergeable_request.clone().to_proto()),
-            mergeable_request
-        );
-
-        let mergeable_response = MergeableEntryResponse {
-            block_hash: Bytes::from_static(b"h5"),
-            serialized_entry: Bytes::from_static(b"entry"),
-        };
-        assert_eq!(
-            MergeableEntryResponse::from_proto(mergeable_response.clone().to_proto()),
-            mergeable_response
         );
     }
 
