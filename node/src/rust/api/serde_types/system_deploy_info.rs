@@ -126,6 +126,8 @@ pub struct BlockCommitmentSerde {
     pub post_state_hash: Vec<u8>,
     #[serde(rename = "bondsRoot", with = "base64_bytes")]
     pub bonds_root: Vec<u8>,
+    #[serde(rename = "justificationsRoot", with = "base64_bytes")]
+    pub justifications_root: Vec<u8>,
     #[serde(rename = "blockNumber")]
     pub block_number: i64,
     #[serde(rename = "rejectedRoot", with = "base64_bytes")]
@@ -162,6 +164,7 @@ impl From<BlockCommitmentProto> for BlockCommitmentSerde {
             pre_state_hash: commitment.pre_state_hash.to_vec(),
             post_state_hash: commitment.post_state_hash.to_vec(),
             bonds_root: commitment.bonds_root.to_vec(),
+            justifications_root: commitment.justifications_root.to_vec(),
             block_number: commitment.block_number,
             rejected_root: commitment.rejected_root.to_vec(),
             applied_from_scope_root: commitment.applied_from_scope_root.to_vec(),
@@ -186,6 +189,7 @@ impl From<BlockCommitmentSerde> for BlockCommitmentProto {
             pre_state_hash: data.pre_state_hash.into(),
             post_state_hash: data.post_state_hash.into(),
             bonds_root: data.bonds_root.into(),
+            justifications_root: data.justifications_root.into(),
             block_number: data.block_number,
             rejected_root: data.rejected_root.into(),
             applied_from_scope_root: data.applied_from_scope_root.into(),
@@ -549,6 +553,7 @@ mod tests {
             pre_state_hash: vec![seed; 32].into(),
             post_state_hash: vec![seed + 2; 32].into(),
             bonds_root: vec![seed + 3; 32].into(),
+            justifications_root: vec![seed + 11; 32].into(),
             block_number: i64::from(seed) + 10,
             rejected_root: vec![seed + 4; 32].into(),
             applied_from_scope_root: vec![seed + 5; 32].into(),

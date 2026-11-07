@@ -33,8 +33,6 @@ pub enum CasperMessage {
     // Last finalized state messages
     StoreItemsMessageRequest(StoreItemsMessageRequest),
     StoreItemsMessage(StoreItemsMessage),
-    MergeableEntryRequest(MergeableEntryRequest),
-    MergeableEntryResponse(MergeableEntryResponse),
     FloorCacheRequest(FloorCacheRequest),
     FloorCacheResponse(FloorCacheResponse),
     // Snapshot chunk-fetch (Wave 3, Phase 7b-1).
@@ -124,14 +122,6 @@ impl CasperMessage {
         Ok(CasperMessage::StoreItemsMessage(
             StoreItemsMessage::from_proto(proto)?,
         ))
-    }
-
-    pub fn from_mergeable_entry_request(proto: MergeableEntryRequestProto) -> Self {
-        CasperMessage::MergeableEntryRequest(MergeableEntryRequest::from_proto(proto))
-    }
-
-    pub fn from_mergeable_entry_response(proto: MergeableEntryResponseProto) -> Self {
-        CasperMessage::MergeableEntryResponse(MergeableEntryResponse::from_proto(proto))
     }
 
     pub fn from_floor_cache_request(proto: FloorCacheRequestProto) -> Self {
@@ -889,10 +879,11 @@ pub struct BlockCommitment {
     pub header: Header,
     pub pre_state_hash: ByteString,
     pub post_state_hash: ByteString,
-    pub bonds_root: ByteString,
+    pub bonds_root: [u8; 32],
+    pub justifications_root: [u8; 32],
     pub block_number: i64,
-    pub rejected_root: ByteString,
-    pub applied_from_scope_root: ByteString,
+    pub rejected_root: [u8; 32],
+    pub applied_from_scope_root: [u8; 32],
     pub merge_base: ByteString,
     pub body_extra_bytes: ByteString,
     pub sender: ByteString,
@@ -900,8 +891,15 @@ pub struct BlockCommitment {
     pub seq_num: i32,
     pub shard_id: String,
     pub extra_bytes: ByteString,
-    pub deploys_root: ByteString,
+    pub deploys_root: [u8; 32],
     pub sig: ByteString,
+}
+
+fn commitment_root(name: &str, bytes: &ByteString) -> Result<[u8; 32], String> {
+    bytes
+        .as_ref()
+        .try_into()
+        .map_err(|_| format!("{name} is {} bytes, not 32", bytes.len()))
 }
 
 impl BlockCommitment {
@@ -914,10 +912,17 @@ impl BlockCommitment {
             ),
             pre_state_hash: proto.pre_state_hash,
             post_state_hash: proto.post_state_hash,
-            bonds_root: proto.bonds_root,
+            bonds_root: commitment_root("bonds root", &proto.bonds_root)?,
+            justifications_root: commitment_root(
+                "justifications root",
+                &proto.justifications_root,
+            )?,
             block_number: proto.block_number,
-            rejected_root: proto.rejected_root,
-            applied_from_scope_root: proto.applied_from_scope_root,
+            rejected_root: commitment_root("rejected root", &proto.rejected_root)?,
+            applied_from_scope_root: commitment_root(
+                "applied-from-scope root",
+                &proto.applied_from_scope_root,
+            )?,
             merge_base: proto.merge_base,
             body_extra_bytes: proto.body_extra_bytes,
             sender: proto.sender,
@@ -925,20 +930,22 @@ impl BlockCommitment {
             seq_num: proto.seq_num,
             shard_id: proto.shard_id,
             extra_bytes: proto.extra_bytes,
-            deploys_root: proto.deploys_root,
+            deploys_root: commitment_root("deploys root", &proto.deploys_root)?,
             sig: proto.sig,
         })
     }
 
     pub fn to_proto(&self) -> BlockCommitmentProto {
+        let root = |bytes: &[u8; 32]| ByteString::copy_from_slice(bytes);
         BlockCommitmentProto {
             header: Some(self.header.to_proto()),
             pre_state_hash: self.pre_state_hash.clone(),
             post_state_hash: self.post_state_hash.clone(),
-            bonds_root: self.bonds_root.clone(),
+            bonds_root: root(&self.bonds_root),
+            justifications_root: root(&self.justifications_root),
             block_number: self.block_number,
-            rejected_root: self.rejected_root.clone(),
-            applied_from_scope_root: self.applied_from_scope_root.clone(),
+            rejected_root: root(&self.rejected_root),
+            applied_from_scope_root: root(&self.applied_from_scope_root),
             merge_base: self.merge_base.clone(),
             body_extra_bytes: self.body_extra_bytes.clone(),
             sender: self.sender.clone(),
@@ -946,7 +953,7 @@ impl BlockCommitment {
             seq_num: self.seq_num,
             shard_id: self.shard_id.clone(),
             extra_bytes: self.extra_bytes.clone(),
-            deploys_root: self.deploys_root.clone(),
+            deploys_root: root(&self.deploys_root),
             sig: self.sig.clone(),
         }
     }
@@ -1448,17 +1455,33 @@ impl DeployData {
     }
 
     pub fn from_proto(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
-        let algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
-            .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
+        let unverified = DeployData::from_proto_unverified(proto)?;
+        Signed::from_signed_data(
+            unverified.data,
+            unverified.pk,
+            unverified.sig,
+            unverified.sig_algorithm,
+        )?
+        .ok_or_else(|| "Invalid signature".to_string())
+    }
 
+    /// Decodes a deploy without verifying its signature.
+    /// Before use, verify the signature unless the stored record already
+    /// passed a signature check.
+    /// The deploy store and rejected deploy buffer check signatures in `encode`.
+    /// [`DeployData::from_proto`] calls this decoder and then verifies the signature.
+    /// Use [`DeployData::from_proto`] for network data and other untrusted input.
+    pub fn from_proto_unverified(proto: DeployDataProto) -> Result<Signed<DeployData>, String> {
+        let sig_algorithm = SignaturesAlgFactory::apply(&proto.sig_algorithm)
+            .ok_or_else(|| format!("Unknown signature algorithm: {}", proto.sig_algorithm))?;
         let sig = proto.sig.clone();
         let pk = PublicKey::from_bytes(&proto.deployer);
-        let signed = Signed::from_signed_data(DeployData::_from_proto(proto)?, pk, sig, algorithm)?;
-
-        match signed {
-            Some(signed) => Ok(signed),
-            None => Err("Invalid signature".to_string()),
-        }
+        Ok(Signed {
+            data: DeployData::_from_proto(proto)?,
+            pk,
+            sig,
+            sig_algorithm,
+        })
     }
 
     fn _to_proto(dd: DeployData) -> DeployDataProto {
@@ -1846,49 +1869,6 @@ impl StoreItemsMessage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct MergeableEntryRequest {
-    pub block_hash: ByteString,
-}
-
-impl MergeableEntryRequest {
-    pub fn from_proto(proto: MergeableEntryRequestProto) -> Self {
-        Self {
-            block_hash: proto.block_hash,
-        }
-    }
-
-    pub fn to_proto(self) -> MergeableEntryRequestProto {
-        MergeableEntryRequestProto {
-            block_hash: self.block_hash,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct MergeableEntryResponse {
-    pub block_hash: ByteString,
-    /// Bincode of `Vec<DeployMergeableData>`. Empty bytes = peer has the block
-    /// but no entry for it.
-    pub serialized_entry: ByteString,
-}
-
-impl MergeableEntryResponse {
-    pub fn from_proto(proto: MergeableEntryResponseProto) -> Self {
-        Self {
-            block_hash: proto.block_hash,
-            serialized_entry: proto.serialized_entry,
-        }
-    }
-
-    pub fn to_proto(self) -> MergeableEntryResponseProto {
-        MergeableEntryResponseProto {
-            block_hash: self.block_hash,
-            serialized_entry: self.serialized_entry,
-        }
-    }
-}
-
 #[cfg(test)]
 mod approved_block_tests {
     use prost::bytes::Bytes;
@@ -2095,23 +2075,6 @@ mod tests {
             BlockRequest::from_proto(block_request.clone().to_proto()),
             block_request
         );
-
-        let mergeable_request = MergeableEntryRequest {
-            block_hash: Bytes::from_static(b"h4"),
-        };
-        assert_eq!(
-            MergeableEntryRequest::from_proto(mergeable_request.clone().to_proto()),
-            mergeable_request
-        );
-
-        let mergeable_response = MergeableEntryResponse {
-            block_hash: Bytes::from_static(b"h5"),
-            serialized_entry: Bytes::from_static(b"entry"),
-        };
-        assert_eq!(
-            MergeableEntryResponse::from_proto(mergeable_response.clone().to_proto()),
-            mergeable_response
-        );
     }
 
     #[test]
@@ -2302,10 +2265,11 @@ mod tests {
             },
             pre_state_hash: Bytes::from(vec![seed; 32]),
             post_state_hash: Bytes::from(vec![seed + 1; 32]),
-            bonds_root: Bytes::from(vec![seed + 2; 32]),
+            bonds_root: [seed + 2; 32],
+            justifications_root: [seed + 7; 32],
             block_number: i64::from(seed),
-            rejected_root: Bytes::from(vec![seed + 3; 32]),
-            applied_from_scope_root: Bytes::from(vec![seed + 4; 32]),
+            rejected_root: [seed + 3; 32],
+            applied_from_scope_root: [seed + 4; 32],
             merge_base: Bytes::new(),
             body_extra_bytes: Bytes::new(),
             sender: Bytes::from(vec![0x04; 65]),
@@ -2313,9 +2277,20 @@ mod tests {
             seq_num: 3,
             shard_id: "root".to_string(),
             extra_bytes: Bytes::new(),
-            deploys_root: Bytes::from(vec![seed + 5; 32]),
+            deploys_root: [seed + 5; 32],
             sig: Bytes::from(vec![seed + 6; 70]),
         }
+    }
+
+    #[test]
+    fn a_commitment_root_must_be_32_bytes() {
+        let mut proto = commitment(1).to_proto();
+        assert_eq!(
+            BlockCommitment::from_proto(proto.clone()),
+            Ok(commitment(1))
+        );
+        proto.justifications_root = Bytes::from(vec![8; 31]);
+        assert!(BlockCommitment::from_proto(proto).is_err());
     }
 
     #[test]

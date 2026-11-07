@@ -513,8 +513,6 @@ impl TestFixture {
             rejected_deploy_buffer,
             casper_buffer_storage,
         }
-        // Note: space_kv_manager will be dropped here, triggering its Drop implementation
-        // which automatically closes LMDB file handles (matching Scala's finalizer behavior)
     }
 
     /// Check if a block with the given hash is in the processing queue (for testing)
