@@ -491,6 +491,16 @@ jobs:
           unshallow=()
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
           git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
+          source_validator="$RUNNER_TEMP/commit-policy-source.sh"
+          git show "${BASE_SHA}:.github/scripts/commit-policy-source.sh" > "$source_validator" 2>/dev/null ||
+            cp .github/scripts/commit-policy-source.sh "$source_validator"
+          source_bases="$(bash "$source_validator")"
+          ratification=(--ratified-from "$BASE_SHA")
+          while IFS= read -r source_sha; do
+            if [ -n "$source_sha" ]; then
+              ratification+=(--ratified-from "$source_sha")
+            fi
+          done <<< "$source_bases"
           count="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")"
           if [ "$count" -gt 250 ]; then
             echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"
@@ -518,7 +528,7 @@ jobs:
           git show "${BASE_SHA}:.github/scripts/check-commit-trailers.sh" > "$checker" 2>/dev/null ||
             cp .github/scripts/check-commit-trailers.sh "$checker"
           bash "$checker" range "${BASE_SHA}..${HEAD_SHA}" \
-            --ratified-from "$BASE_SHA" --exempt-authors "$exempt" --denied "$denied"
+            "${ratification[@]}" --exempt-authors "$exempt" --denied "$denied"
 
   # Static analysis and repository policy checks. No behavioral test runs here.
   static_checks:
@@ -708,6 +718,10 @@ jobs:
       - name: Verify Commit Policy exemptions
         shell: bash -euo pipefail {0}
         run: bash .github/scripts/test-commit-policy-exemptions.sh
+
+      - name: Verify Commit Policy source history
+        shell: bash -euo pipefail {0}
+        run: bash .github/scripts/test-commit-policy-source.sh
 
       - name: Verify release promotion
         shell: bash -euo pipefail {0}
