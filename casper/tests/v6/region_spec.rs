@@ -1812,6 +1812,86 @@ async fn an_undecorated_continuation_is_bounded_by_the_enclosing_seal() {
 }
 
 #[tokio::test]
+async fn with_two_signers_the_inner_seals_owner_pays_the_bound_and_the_outer_pays_its_cell() {
+    let (u1, u2, client, proposer) = (party(), party(), party(), party());
+    let (rm, pre) = shard(&[(&u1, 100_000), (&u2, 100_000), (&client, 100_000)]).await;
+    let executor = EnvelopeExecutor::new(rm.clone(), 2);
+    let term = r#"new d(`rho:system:deployerId`), c(`rho:system:cosignerId:0`) in {
+        {% contract @"svc"(@x) = { {% @"out"!(x) %}[d ; 1500] } %}[c ; 20000]
+    }"#;
+    let mut data = envelope(term, 1, &u1, 30_000, 1).data;
+    data.required_cosigners = vec![u2.pk.bytes.to_vec()];
+    let mut install = Signed::create(data, Box::new(Secp256k1), u1.sk.clone()).unwrap();
+    let cosignature = Cosignature::sign(&install, &u2.sk, &Secp256k1.name()).unwrap();
+    install.data.cosignatures.push(cosignature);
+    let first = executor
+        .execute(&pre, vec![install], block_data(&proposer))
+        .await
+        .expect("the service installs");
+    assert_eq!(
+        first.gate.admitted(),
+        vec![true],
+        "{:?}",
+        first.gate.entries[0].verdict
+    );
+    assert!(!first.processed[0].is_failed, "{:?}", first.processed[0]);
+    let root = first.settled_root.clone();
+    let before = (
+        balance(&rm, &root, &u1).await,
+        balance(&rm, &root, &u2).await,
+    );
+    let call = |bytes: usize| {
+        envelope(
+            &format!(r#"@"svc"!({})"#, payload(bytes)),
+            2,
+            &client,
+            50_000,
+            1,
+        )
+    };
+    let paid = |after: (u64, u64)| (before.0 - after.0, before.1 - after.1);
+
+    let within = executor
+        .execute(&root, vec![call(8)], block_data(&proposer))
+        .await
+        .expect("the small call executes");
+    assert!(!within.processed[0].is_failed);
+    assert_eq!(data_on(&rm, &within.settled_root, "out").await, 1);
+    let (p1, p2) = paid((
+        balance(&rm, &within.settled_root, &u1).await,
+        balance(&rm, &within.settled_root, &u2).await,
+    ));
+    assert!(p1 > 0 && p1 < 1_500, "u1 pays the work under t: {p1}");
+    assert_eq!(p2, 1, "u2 pays only s1's cell");
+    assert_eq!(
+        replays_to(&executor, &root, &within, &proposer).await,
+        within.settled_root
+    );
+
+    let over = executor
+        .execute(&root, vec![call(2_000)], block_data(&proposer))
+        .await
+        .expect("the large call executes");
+    assert!(
+        over.processed[0].is_failed,
+        "P passes n = 1,500, so the run fails"
+    );
+    assert_eq!(data_on(&rm, &over.settled_root, "out").await, 0);
+    assert_eq!(
+        paid((
+            balance(&rm, &over.settled_root, &u1).await,
+            balance(&rm, &over.settled_root, &u2).await,
+        )),
+        (1_500, 1),
+        "u1 pays the bound n, and u2 pays only s1's cell"
+    );
+    assert_eq!(
+        replays_to(&executor, &root, &over, &proposer).await,
+        over.settled_root
+    );
+}
+
+#[tokio::test]
 async fn substitution_into_a_fired_continuation_is_charged_to_its_installer() {
     let (alice, bob, proposer) = (party(), party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000), (&bob, 100_000)]).await;
