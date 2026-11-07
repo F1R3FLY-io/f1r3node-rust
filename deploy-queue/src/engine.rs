@@ -16,10 +16,13 @@ use crate::ready::ReadyQueue;
 use crate::record::{DeployView, QueueRecord, QueueState, Sig};
 use crate::store::{QueueStore, StoreError};
 
-/// How many of this validator's blocks' worth of deploys the queue keeps in
-/// the node's pool at once. The node selects from its pool only; more than
-/// it can include soon only ages in the pool.
-const RELEASE_BLOCKS_IN_FLIGHT: usize = 2;
+/// Heights of measured inclusion the queue keeps in the node's pool: enough
+/// that the node's next block never waits on the queue, little enough that
+/// a backlog waits here rather than in the pool, where every proposal reads
+/// and sorts it.
+const IN_FLIGHT_HEIGHTS: f64 = 3.0;
+/// The in-flight bound never exceeds this many of the shard's full blocks.
+const IN_FLIGHT_CEILING_BLOCKS: usize = 2;
 const RETRY_FLOOR: Duration = Duration::from_secs(1);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
 /// Retry-After for a refusal made before the queue has timed a height.
@@ -62,6 +65,7 @@ pub struct QueueSnapshot {
     pub waiting: usize,
     pub closed: usize,
     pub submitted: usize,
+    pub in_flight_limit: usize,
     pub in_block: usize,
     pub held: usize,
     pub deploys_per_height: Option<f64>,
@@ -343,20 +347,25 @@ impl Engine {
             ))));
         }
 
+        // A deploy is accepted only when the deploys ahead of it reach blocks
+        // within the citable depth at the measured pace, and it then still
+        // lands inside its own window. Beyond that it would wait minutes; the
+        // client is told to come back instead.
         let pace = self
             .pace
             .as_ref()
             .expect("a connected engine has a pace");
+        let depth = i64::from(shard.max_parent_depth);
         let ahead = self.ready.len() + self.waiting.len() + self.count(QueueState::Submitted);
         let releasable_from = valid_after.max(chain.tip);
         let last = last_includable(valid_after, shard.deploy_lifespan);
-        let fits = pace
-            .heights_to_include(ahead + 1)
-            .map(|heights| releasable_from + heights + i64::from(shard.max_parent_depth) <= last)
-            .unwrap_or(false);
+        let wait = pace.heights_to_include(ahead + 1);
+        let fits = wait.is_some_and(|heights| {
+            heights <= depth && releasable_from + heights + depth <= last
+        });
         if !fits {
-            let retry_after_secs = pace
-                .heights_to_include(ahead)
+            let excess = wait.map(|heights| (heights - depth).max(1));
+            let retry_after_secs = excess
                 .and_then(|heights| pace.seconds_for(heights))
                 .unwrap_or(UNTIMED_RETRY_SECS);
             return Ok(Err(IntakeError::QueueFull { retry_after_secs }));
@@ -407,6 +416,12 @@ impl Engine {
                 hash,
                 deploys,
             } => {
+                // Before this block moves any deploy out of the pool.
+                if self.count(QueueState::Submitted) > 0 {
+                    if let Some(pace) = self.pace.as_mut() {
+                        pace.record_outstanding();
+                    }
+                }
                 let block_hash = decode_hex("block hash", &hash);
                 let mut included = 0;
                 for id in deploys {
@@ -439,27 +454,27 @@ impl Engine {
                 self.observe_tip(number)?;
             }
             NodeEvent::Finalised { number } => self.observe_lfb(number),
-            NodeEvent::Verdict {
-                deploy_id,
-                state,
-                rejection_count,
-                block_hash,
-            } => {
-                let Some(sig) = decode_hex("deploy id", &deploy_id) else {
-                    return self.release();
-                };
-                let held_open = self
-                    .records
-                    .get(&sig)
-                    .is_some_and(|record| !record.state.is_terminal());
-                if held_open {
-                    let state = match state {
+            NodeEvent::Verdicts(verdicts) => {
+                for verdict in verdicts {
+                    let Some(sig) = decode_hex("deploy id", &verdict.deploy_id) else {
+                        continue;
+                    };
+                    let held_open = self
+                        .records
+                        .get(&sig)
+                        .is_some_and(|record| !record.state.is_terminal());
+                    if !held_open {
+                        continue;
+                    }
+                    let state = match verdict.state {
                         VerdictState::Finalized => QueueState::Finalized,
                         VerdictState::Expired => QueueState::Expired,
                         VerdictState::Failed => QueueState::Failed,
                     };
-                    let block_hash = block_hash.and_then(|hash| decode_hex("block hash", &hash));
-                    self.decide(&sig, state, Some((rejection_count, block_hash)), None)?;
+                    let block_hash = verdict
+                        .block_hash
+                        .and_then(|hash| decode_hex("block hash", &hash));
+                    self.decide(&sig, state, Some((verdict.rejection_count, block_hash)), None)?;
                 }
             }
             NodeEvent::Lagged { skipped } => {
@@ -645,7 +660,7 @@ impl Engine {
             return Ok(());
         }
         let shard = &chain.shard;
-        let limit = RELEASE_BLOCKS_IN_FLIGHT * shard.max_user_deploys_per_block as usize;
+        let limit = self.in_flight_limit();
         while self.count(QueueState::Submitted) < limit {
             let Some(sig) = self.ready.pop() else {
                 break;
@@ -657,7 +672,25 @@ impl Engine {
             }
             self.submit(&sig, chain.tip)?;
         }
+        if !self.ready.is_empty() {
+            if let Some(pace) = self.pace.as_mut() {
+                pace.record_held_back();
+            }
+        }
         Ok(())
+    }
+
+    /// Deploys the node's pool may hold from this queue: the measured
+    /// inclusion of a few heights, at least one so a stalled pace is still
+    /// probed, at most a couple of the shard's full blocks.
+    fn in_flight_limit(&self) -> usize {
+        let (Some(chain), Some(pace)) = (&self.chain, &self.pace) else {
+            return 0;
+        };
+        let full_blocks =
+            IN_FLIGHT_CEILING_BLOCKS * chain.shard.max_user_deploys_per_block as usize;
+        let measured = (IN_FLIGHT_HEIGHTS * pace.deploys_per_height()).ceil() as usize;
+        measured.clamp(full_blocks.min(1), full_blocks)
     }
 
     fn release_open(&self) -> bool {
@@ -709,10 +742,10 @@ impl Engine {
             return Ok(());
         }
         chain.tip = number;
-        let backlogged = !self.ready.is_empty() || self.count(QueueState::Submitted) > 0;
+        let outstanding = self.count(QueueState::Submitted) > 0;
         if let Some(pace) = self.pace.as_mut() {
-            if backlogged {
-                pace.record_backlog();
+            if outstanding {
+                pace.record_outstanding();
             }
             pace.on_tip(number, Instant::now());
         }
@@ -1005,6 +1038,7 @@ impl Engine {
             waiting: self.waiting.len(),
             closed: self.closed.len(),
             submitted: self.count(QueueState::Submitted),
+            in_flight_limit: self.in_flight_limit(),
             in_block: self.count(QueueState::InBlock),
             held: self.records.len(),
             deploys_per_height: self.pace.as_ref().map(Pace::deploys_per_height),

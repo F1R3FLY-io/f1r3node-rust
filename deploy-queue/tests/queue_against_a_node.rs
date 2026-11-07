@@ -226,10 +226,10 @@ async fn a_deploy_is_released_and_follows_the_node_to_its_verdict() {
     .await;
 
     node.emit(json!({
-        "event": "deploy-verdict",
+        "event": "deploy-verdicts",
         "schema-version": 1,
-        "payload": {"deploy-id": hex::encode(&sig), "state": "finalized",
-                    "rejection-count": 0, "block-hash": format!("{:064x}", 11)}
+        "payload": {"verdicts": [{"deploy-id": hex::encode(&sig), "state": "finalized",
+                    "rejection-count": 0, "block-hash": format!("{:064x}", 11)}]}
     }));
     eventually("the verdict lands", || async {
         queue.state(&sig).await == Some(QueueState::Finalized)
@@ -316,6 +316,61 @@ async fn a_refusal_from_the_node_is_terminal() {
     let view = queue.handle.status(sig).await.unwrap().unwrap();
     assert_eq!(view.state.status_label(), "Failed");
     assert!(view.detail.unwrap().starts_with("illegal_argument"));
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn release_follows_measured_inclusion() {
+    let node = FakeNode::new(10, 9);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+
+    let mut sigs = Vec::new();
+    for seed in 20..25 {
+        sigs.push(accept(&queue.handle, deploy(5, "root", seed)).await.unwrap());
+    }
+    eventually("the first pace's worth is released", || async {
+        node.received().len() == 3
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let snapshot = queue.handle.snapshot().await.unwrap();
+    assert_eq!(snapshot.in_flight_limit, 3, "three heights at one deploy per height");
+    assert_eq!((snapshot.submitted, snapshot.ready), (3, 2));
+
+    let released: Vec<Vec<u8>> = node
+        .received()
+        .iter()
+        .map(|request| request.to_signed().unwrap().sig.to_vec())
+        .collect();
+    let ids: Vec<&[u8]> = released.iter().map(|sig| sig.as_slice()).collect();
+    node.emit(block_added(11, &ids));
+    eventually("inclusion frees room for the rest", || async {
+        node.received().len() == 5
+    })
+    .await;
+    queue.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_queue_longer_than_the_citable_depth_refuses() {
+    let node = FakeNode::new(10, 9);
+    // A long window, so the wait bound, not the window, is what refuses.
+    node.status.lock().unwrap()["deployLifespan"] = json!(300);
+    let url = node.clone().serve().await;
+    let dir = tempfile::tempdir().unwrap();
+    let queue = Queue::start(&url, dir.path()).await;
+
+    // At one deploy per height and a depth of 25, the 26th deploy in line
+    // would wait past the depth.
+    for seed in 30..55 {
+        accept(&queue.handle, deploy(5, "root", seed)).await.unwrap();
+    }
+    assert!(matches!(
+        accept(&queue.handle, deploy(5, "root", 55)).await,
+        Err(IntakeError::QueueFull { .. })
+    ));
     queue.stop();
 }
 

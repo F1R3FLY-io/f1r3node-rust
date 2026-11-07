@@ -6,34 +6,44 @@ const SAMPLE_WEIGHT: f64 = 0.2;
 /// How fast the shard moves, as this queue observes it: deploys of its own
 /// that reach a block per height, and wall time per height.
 ///
-/// The inclusion rate starts at `max_user_deploys_per_block` (one block of
-/// this validator's per height) and is only resampled over heights during
-/// which the queue had deploys outstanding — an idle queue says nothing
-/// about how fast the shard would include.
+/// The inclusion rate estimates the node's capacity for this queue's
+/// deploys. It starts at one deploy per height, or zero on a shard whose
+/// blocks carry no user deploys, so a fresh queue probes the shard rather
+/// than assuming it is idle. A height in which the queue held deploys back
+/// for want of room measures capacity, and moves the estimate either way. A
+/// height in which the queue gave the node everything it had measures only
+/// demand: inclusion then can raise the estimate, never lower it. A height
+/// with nothing outstanding says nothing.
 #[derive(Debug, Clone)]
 pub struct Pace {
     deploys_per_height: f64,
     secs_per_height: Option<f64>,
     last_tip: Option<(i64, Instant)>,
     included_since_tip: u64,
-    backlogged_since_tip: bool,
+    outstanding_since_tip: bool,
+    held_back_since_tip: bool,
 }
 
 impl Pace {
     pub fn new(max_user_deploys_per_block: u32) -> Self {
         Self {
-            deploys_per_height: f64::from(max_user_deploys_per_block),
+            deploys_per_height: f64::from(max_user_deploys_per_block.min(1)),
             secs_per_height: None,
             last_tip: None,
             included_since_tip: 0,
-            backlogged_since_tip: false,
+            outstanding_since_tip: false,
+            held_back_since_tip: false,
         }
     }
 
     pub fn record_inclusions(&mut self, count: u64) { self.included_since_tip += count; }
 
-    /// Marks that deploys were outstanding during the current height.
-    pub fn record_backlog(&mut self) { self.backlogged_since_tip = true; }
+    /// Marks that deploys were in the node's pool during the current height.
+    pub fn record_outstanding(&mut self) { self.outstanding_since_tip = true; }
+
+    /// Marks that the queue withheld deploys during the current height
+    /// because the node's pool held all it may.
+    pub fn record_held_back(&mut self) { self.held_back_since_tip = true; }
 
     pub fn on_tip(&mut self, tip: i64, now: Instant) {
         let Some((previous, at)) = self.last_tip else {
@@ -49,12 +59,15 @@ impl Pace {
             Some(average) => blend(average, secs),
             None => secs,
         });
-        if self.backlogged_since_tip {
-            let rate = self.included_since_tip as f64 / heights;
+        let rate = self.included_since_tip as f64 / heights;
+        if self.held_back_since_tip
+            || (self.outstanding_since_tip && rate > self.deploys_per_height)
+        {
             self.deploys_per_height = blend(self.deploys_per_height, rate);
         }
         self.included_since_tip = 0;
-        self.backlogged_since_tip = false;
+        self.outstanding_since_tip = false;
+        self.held_back_since_tip = false;
         self.last_tip = Some((tip, now));
     }
 
@@ -95,41 +108,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_ceiling_paces_until_a_backlogged_height_is_observed() {
-        let pace = Pace::new(4);
+    fn a_fresh_queue_starts_at_one_deploy_per_height() {
+        let pace = Pace::new(128);
+        assert_eq!(pace.deploys_per_height(), 1.0);
         assert_eq!(pace.heights_to_include(0), Some(0));
-        assert_eq!(pace.heights_to_include(9), Some(3));
+        assert_eq!(pace.heights_to_include(9), Some(9));
         assert_eq!(pace.seconds_for(3), None);
     }
 
     #[test]
-    fn only_backlogged_heights_move_the_inclusion_rate() {
+    fn held_back_heights_move_the_estimate_either_way() {
         let start = Instant::now();
-        let mut pace = Pace::new(4);
+        let mut pace = Pace::new(128);
         pace.on_tip(10, start);
 
         pace.on_tip(11, start + Duration::from_secs(6));
-        assert_eq!(pace.deploys_per_height(), 4.0, "an idle height is no sample");
+        assert_eq!(pace.deploys_per_height(), 1.0, "an idle height is no sample");
         assert_eq!(pace.secs_per_height(), Some(6.0));
 
-        pace.record_backlog();
+        pace.record_outstanding();
+        pace.record_held_back();
+        pace.record_inclusions(3);
         pace.on_tip(12, start + Duration::from_secs(12));
-        assert!((pace.deploys_per_height() - 3.2).abs() < 1e-9);
+        assert!((pace.deploys_per_height() - 1.4).abs() < 1e-9);
 
-        pace.record_backlog();
-        pace.record_inclusions(8);
+        pace.record_outstanding();
+        pace.record_held_back();
         pace.on_tip(14, start + Duration::from_secs(24));
-        assert!((pace.deploys_per_height() - 3.36).abs() < 1e-9);
+        assert!((pace.deploys_per_height() - 1.12).abs() < 1e-9);
         assert_eq!(pace.seconds_for(2), Some(12));
+    }
+
+    #[test]
+    fn light_demand_never_lowers_the_estimate() {
+        let start = Instant::now();
+        let mut pace = Pace::new(128);
+        pace.on_tip(1, start);
+        pace.record_outstanding();
+        pace.record_held_back();
+        pace.record_inclusions(5);
+        pace.on_tip(2, start + Duration::from_secs(3));
+        assert!((pace.deploys_per_height() - 1.8).abs() < 1e-9);
+
+        // The queue gave the node all it had: one deploy a height.
+        for tip in 3..50 {
+            pace.record_outstanding();
+            pace.record_inclusions(1);
+            pace.on_tip(tip, start + Duration::from_secs(3 * tip as u64));
+        }
+        assert!((pace.deploys_per_height() - 1.8).abs() < 1e-9);
+
+        pace.record_outstanding();
+        pace.record_inclusions(6);
+        pace.on_tip(50, start + Duration::from_secs(150));
+        assert!(
+            pace.deploys_per_height() > 1.8,
+            "inclusion above the estimate is capacity even without a backlog"
+        );
     }
 
     #[test]
     fn a_node_that_includes_nothing_pushes_the_drain_estimate_out() {
         let start = Instant::now();
-        let mut pace = Pace::new(4);
+        let mut pace = Pace::new(128);
         pace.on_tip(1, start);
         for tip in 2..200 {
-            pace.record_backlog();
+            pace.record_outstanding();
+            pace.record_held_back();
             pace.on_tip(tip, start + Duration::from_secs(tip as u64));
         }
         assert!(pace.heights_to_include(1).unwrap() > 1_000_000);

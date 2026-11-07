@@ -65,7 +65,15 @@ pub enum F1r3flyEvent {
     ApprovedBlockReceived(ApprovedBlockReceived),
     EnteredRunningState(EnteredRunningState),
     NodeStarted(NodeStarted),
-    DeployVerdict(DeployVerdict),
+    DeployVerdicts(DeployVerdicts),
+}
+
+/// Every verdict one settle wrote, in one event: a settle after a long
+/// finality jump can decide hundreds of deploys at once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeployVerdicts {
+    pub verdicts: Vec<DeployVerdict>,
 }
 
 /// The terminal state the node settled for a deploy. Written once; a deploy
@@ -281,18 +289,8 @@ impl F1r3flyEvent {
 
     pub fn node_started(address: String) -> Self { Self::NodeStarted(NodeStarted { address }) }
 
-    pub fn deploy_verdict(
-        deploy_id: String,
-        state: DeployVerdictState,
-        rejection_count: u32,
-        block_hash: Option<String>,
-    ) -> Self {
-        Self::DeployVerdict(DeployVerdict {
-            deploy_id,
-            state,
-            rejection_count,
-            block_hash,
-        })
+    pub fn deploy_verdicts(verdicts: Vec<DeployVerdict>) -> Self {
+        Self::DeployVerdicts(DeployVerdicts { verdicts })
     }
 }
 

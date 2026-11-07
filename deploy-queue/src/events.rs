@@ -23,12 +23,8 @@ pub enum NodeEvent {
     Finalised {
         number: i64,
     },
-    Verdict {
-        deploy_id: String,
-        state: VerdictState,
-        rejection_count: u32,
-        block_hash: Option<String>,
-    },
+    /// The verdicts one settle wrote.
+    Verdicts(Vec<Verdict>),
     /// The node dropped events this subscriber did not read in time.
     Lagged {
         skipped: u64,
@@ -65,13 +61,18 @@ struct DeployPayload {
     id: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-struct VerdictPayload {
-    deploy_id: String,
-    state: VerdictState,
-    rejection_count: u32,
-    block_hash: Option<String>,
+pub struct Verdict {
+    pub deploy_id: String,
+    pub state: VerdictState,
+    pub rejection_count: u32,
+    pub block_hash: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct VerdictsPayload {
+    verdicts: Vec<Verdict>,
 }
 
 #[derive(Deserialize)]
@@ -96,14 +97,9 @@ pub fn parse_event(text: &str) -> Result<NodeEvent, serde_json::Error> {
                 number: block.block_number,
             }
         }
-        "deploy-verdict" => {
-            let verdict: VerdictPayload = serde_json::from_value(envelope.payload)?;
-            NodeEvent::Verdict {
-                deploy_id: verdict.deploy_id,
-                state: verdict.state,
-                rejection_count: verdict.rejection_count,
-                block_hash: verdict.block_hash,
-            }
+        "deploy-verdicts" => {
+            let batch: VerdictsPayload = serde_json::from_value(envelope.payload)?;
+            NodeEvent::Verdicts(batch.verdicts)
         }
         "stream-lagged" => {
             let lag: LagPayload = serde_json::from_value(envelope.payload)?;
@@ -218,16 +214,25 @@ mod tests {
     fn verdicts_lags_and_unknown_events_parse() {
         assert_eq!(
             parse_event(
-                r#"{"event":"deploy-verdict","schema-version":1,"payload":{"deploy-id":"01",
-                    "state":"finalized","rejection-count":0,"block-hash":"ab"}}"#
+                r#"{"event":"deploy-verdicts","schema-version":1,"payload":{"verdicts":[
+                    {"deploy-id":"01","state":"finalized","rejection-count":0,"block-hash":"ab"},
+                    {"deploy-id":"02","state":"expired","rejection-count":1,"block-hash":null}]}}"#
             )
             .unwrap(),
-            NodeEvent::Verdict {
-                deploy_id: "01".to_string(),
-                state: VerdictState::Finalized,
-                rejection_count: 0,
-                block_hash: Some("ab".to_string()),
-            }
+            NodeEvent::Verdicts(vec![
+                Verdict {
+                    deploy_id: "01".to_string(),
+                    state: VerdictState::Finalized,
+                    rejection_count: 0,
+                    block_hash: Some("ab".to_string()),
+                },
+                Verdict {
+                    deploy_id: "02".to_string(),
+                    state: VerdictState::Expired,
+                    rejection_count: 1,
+                    block_hash: None,
+                },
+            ])
         );
         assert_eq!(
             parse_event(r#"{"event":"stream-lagged","schema-version":1,"payload":{"skipped":4}}"#)

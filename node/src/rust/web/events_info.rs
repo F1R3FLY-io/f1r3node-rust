@@ -277,23 +277,33 @@ mod tests {
     }
 
     #[test]
-    fn test_transform_deploy_verdict_event() {
-        use shared::rust::shared::f1r3fly_event::DeployVerdictState;
+    fn test_transform_deploy_verdicts_event() {
+        use shared::rust::shared::f1r3fly_event::{DeployVerdict, DeployVerdictState};
 
-        let event = F1r3flyEvent::deploy_verdict(
-            "sig".to_string(),
-            DeployVerdictState::Expired,
-            2,
-            None,
-        );
+        let event = F1r3flyEvent::deploy_verdicts(vec![
+            DeployVerdict {
+                deploy_id: "sig".to_string(),
+                state: DeployVerdictState::Expired,
+                rejection_count: 2,
+                block_hash: None,
+            },
+            DeployVerdict {
+                deploy_id: "other".to_string(),
+                state: DeployVerdictState::Finalized,
+                rejection_count: 0,
+                block_hash: Some("ab".to_string()),
+            },
+        ]);
         let result = EventsInfo::transform_f1r3fly_event(&event).unwrap();
 
-        assert_eq!(result["event"], "deploy-verdict");
-        let payload = &result["payload"];
-        assert_eq!(payload["deploy-id"], "sig");
-        assert_eq!(payload["state"], "expired");
-        assert_eq!(payload["rejection-count"], 2);
-        assert!(payload["block-hash"].is_null());
+        assert_eq!(result["event"], "deploy-verdicts");
+        let verdicts = &result["payload"]["verdicts"];
+        assert_eq!(verdicts[0]["deploy-id"], "sig");
+        assert_eq!(verdicts[0]["state"], "expired");
+        assert_eq!(verdicts[0]["rejection-count"], 2);
+        assert!(verdicts[0]["block-hash"].is_null());
+        assert_eq!(verdicts[1]["state"], "finalized");
+        assert_eq!(verdicts[1]["block-hash"], "ab");
     }
 
     #[test]

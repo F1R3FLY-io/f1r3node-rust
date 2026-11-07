@@ -499,29 +499,32 @@ fn publish_verdicts(
     terminal: &[(prost::bytes::Bytes, block_storage::rust::dag::deploy_lifecycle_types::TerminalRecord)],
 ) {
     use block_storage::rust::dag::deploy_lifecycle_types::TerminalState;
-    use shared::rust::shared::f1r3fly_event::{DeployVerdictState, F1r3flyEvent};
+    use shared::rust::shared::f1r3fly_event::{DeployVerdict, DeployVerdictState, F1r3flyEvent};
 
-    for (sig, record) in terminal {
-        let state = match record.state {
-            TerminalState::Finalized => DeployVerdictState::Finalized,
-            TerminalState::Expired => DeployVerdictState::Expired,
-            TerminalState::Failed => DeployVerdictState::Failed,
-        };
-        let block_hash =
-            (!record.latest_block_hash.is_empty()).then(|| hex::encode(&record.latest_block_hash));
-        if let Err(error) = event_publisher.publish(F1r3flyEvent::deploy_verdict(
-            hex::encode(sig),
-            state,
-            record.rejection_count,
-            block_hash,
-        )) {
-            tracing::error!(
-                target: "f1r3fly.casper.lifecycle",
-                sig = %hex::encode(&sig[..8.min(sig.len())]),
-                error = %error,
-                "deploy verdict event was not published"
-            );
-        }
+    if terminal.is_empty() {
+        return;
+    }
+    let verdicts = terminal
+        .iter()
+        .map(|(sig, record)| DeployVerdict {
+            deploy_id: hex::encode(sig),
+            state: match record.state {
+                TerminalState::Finalized => DeployVerdictState::Finalized,
+                TerminalState::Expired => DeployVerdictState::Expired,
+                TerminalState::Failed => DeployVerdictState::Failed,
+            },
+            rejection_count: record.rejection_count,
+            block_hash: (!record.latest_block_hash.is_empty())
+                .then(|| hex::encode(&record.latest_block_hash)),
+        })
+        .collect();
+    if let Err(error) = event_publisher.publish(F1r3flyEvent::deploy_verdicts(verdicts)) {
+        tracing::error!(
+            target: "f1r3fly.casper.lifecycle",
+            verdicts = terminal.len(),
+            error = %error,
+            "deploy verdicts event was not published"
+        );
     }
 }
 
