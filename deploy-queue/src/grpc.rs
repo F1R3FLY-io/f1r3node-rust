@@ -63,6 +63,20 @@ fn deploy_error(message: String) -> Result<Response<DeployResponse>, Status> {
     }))
 }
 
+/// Carries the refusal's wait as `retry-after` metadata, in seconds, the way
+/// the HTTP API carries it in the `Retry-After` header.
+fn with_retry_after(mut status: Status, error: &IntakeError) -> Status {
+    if let Some(secs) = error.retry_after_secs() {
+        status.metadata_mut().insert(
+            "retry-after",
+            secs.to_string()
+                .parse()
+                .expect("a decimal number is valid ASCII metadata"),
+        );
+    }
+    status
+}
+
 fn state_proto(state: QueueState) -> DeployFinalizationStateProto {
     match state {
         QueueState::Queued | QueueState::Submitted | QueueState::InBlock => {
@@ -106,12 +120,13 @@ impl DeployService for QueueGrpc {
                 | IntakeError::DeployExpired(_)
                 | IntakeError::Duplicate(_)),
             ) => deploy_error(error.to_string()),
-            Err(error @ IntakeError::QueueFull { .. }) => {
-                Err(Status::resource_exhausted(error.to_string()))
-            }
-            Err(error @ (IntakeError::NodeUnavailable { .. } | IntakeError::Stopped)) => {
-                Err(Status::unavailable(error.to_string()))
-            }
+            Err(error @ IntakeError::QueueFull { .. }) => Err(with_retry_after(
+                Status::resource_exhausted(error.to_string()),
+                &error,
+            )),
+            Err(error @ (IntakeError::NodeUnavailable { .. } | IntakeError::Stopped)) => Err(
+                with_retry_after(Status::unavailable(error.to_string()), &error),
+            ),
             Err(error @ IntakeError::Store(_)) => Err(Status::internal(error.to_string())),
         }
     }
@@ -337,5 +352,23 @@ impl DeployQueue for QueueGrpc {
             }
         });
         Ok(Response::new(ReceiverStream::new(receiver)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capacity_refusals_carry_their_wait() {
+        let status = with_retry_after(
+            Status::resource_exhausted("full"),
+            &IntakeError::QueueFull {
+                retry_after_secs: 12,
+            },
+        );
+        assert_eq!(status.metadata().get("retry-after").unwrap(), "12");
+        let status = with_retry_after(Status::unavailable("stopped"), &IntakeError::Stopped);
+        assert!(status.metadata().get("retry-after").is_none());
     }
 }
