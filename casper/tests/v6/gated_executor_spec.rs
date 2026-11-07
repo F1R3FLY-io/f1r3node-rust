@@ -1469,7 +1469,7 @@ async fn a_recursive_deployment_commits_its_phlo_limit() {
 }
 
 #[tokio::test]
-async fn a_run_never_spends_more_than_its_commitment() {
+async fn a_failed_run_pays_its_commitment_and_a_run_never_spends_more() {
     let (alice, proposer) = (party(), party());
     let (rm, pre) = shard(&[(&alice, 100_000_000)]).await;
     let executor = EnvelopeExecutor::new(rm.clone(), 2);
@@ -1494,7 +1494,12 @@ async fn a_run_never_spends_more_than_its_commitment() {
         .iter()
         .find(|c| c.envelope_sig == played.gate.entries[0].envelope_sig)
         .unwrap();
-    assert!(failed.compute_rev + failed.comm_rev <= bound);
+    assert_eq!(failed.compute_rev + failed.comm_rev, bound, "a failed run pays its commitment (Decision 136)");
+    assert_eq!(failed.compute_phlo, played.runs[0].compute_phlo, "the record equals the debit");
+    assert_eq!(
+        balance(&rm, &played.settled_root, &alice).await,
+        100_000_000 - played.settlement.debits[&wallet(&alice)]
+    );
     for charge in &played.settlement.charges {
         let entry = played
             .gate
@@ -1506,4 +1511,16 @@ async fn a_run_never_spends_more_than_its_commitment() {
     }
     let again = replay(&executor, &pre, &played, block_data(&proposer)).await;
     assert_eq!(again.settled_root, played.settled_root);
+    assert_eq!(again.settlement, played.settlement);
+    for changed in [bound - 1, bound + 1, 1_000_000] {
+        let mut forged = played.processed.clone();
+        forged[0].cost.cost = changed;
+        assert!(
+            executor
+                .replay(&pre, forged, &played.gate.entries, block_data(&proposer))
+                .await
+                .is_err(),
+            "a failed run recorded at {changed} does not replay"
+        );
+    }
 }

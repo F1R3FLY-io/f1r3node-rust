@@ -267,3 +267,13 @@ Full suites at 0b01b1663 (release, `/tmp` cleared before each crate): rholang 2,
 - *Known issue, environmental:* `shared::bounded_file::a_failed_rotation_keeps_the_active_file_writable` fails because the tests run as root, as at 6c43a2c8f.
 - **The SIGSEGV hunt.** casper `--test mod` ran under `cargo-nextest`, which runs each test in its own process and names any test that a signal ends. 1,120 tests passed before an environment restart, and the other 216 passed in a second run. No test ended on a signal. An earlier nextest run on 818e72d6c passed 345 tests with no signal, before the disk filled. A `--test-threads=1` run takes about 16 hours here, and each environment restart ends it, so it was replaced by the nextest runs. *Known issue:* the one SIGSEGV seen in lane C's environment is not reproduced.
 - **`cargo fmt --check`.** The pinned nightly (`nightly-2026-02-09`) cannot be downloaded here, and stable rustfmt ignores the unstable options in `rustfmt.toml`, so its result is not authoritative. With stable rustfmt, `dev` at 3b5daabb4 gives diffs in 524 files and FX-8b in 609 files. 89 files have diffs on FX-8b that `dev` does not have. CI's formatting job decides.
+
+## Decision 136: a failed run pays its commitment (2026-11-06)
+
+- `patch/FX-19` at 821c4bee0 is merged (7e8743b53). It adds Decision 133 to the log and updates `region_spec`.
+- **Settlement.** In `settle::charges`, a failed run no longer pays the cells and work that its membrane metered. It pays its recorded cost, `run.compute_phlo`, capped at Δ, from the client's wallets (the payers that pay a deployment's own unsealed work).
+  - For the errors that `dev` charges in full, `compute_phlo` is the run's evaluation limit, min(Δ, `phloLimit`) = Δ. So the debit is Δ × price.
+  - Parser errors and `OperatorNotDefined`/`OperatorExpectedError` keep the parsing cost. User aborts and `if` type errors keep the phlo used. These come from `dev`'s `InterpreterImpl::handle_error`, unchanged.
+  - The record's `compute_phlo` and the debit are now the same number. This withdraws the known issue recorded at e3edaf623.
+- **Test.** `gated_executor_spec::a_failed_run_pays_its_commitment_and_a_run_never_spends_more`: `1 / 0` with `phloLimit` 1,000,000 and Δ = 5,014 records 5,014 and is debited 5,014. The replay gives the same settlement, and a record whose cost is changed to Δ − 1, Δ + 1 or 1,000,000 does not replay.
+- Results: casper lib `v6::` 127 passed; `--test mod v6::` 143 passed, 9 ignored; `multi_node::v6` 11 passed; `forms_spec` 15 passed.

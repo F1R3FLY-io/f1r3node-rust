@@ -122,7 +122,9 @@ pub fn charges(
     let mut debits: BTreeMap<WalletId, RevAmount> = BTreeMap::new();
     let mut credit: RevAmount = 0;
     let mut compute_credit: RevAmount = 0;
-    for (((input, entry), surfaces), work) in inputs.iter().zip(entries).zip(surfaces).zip(work) {
+    for ((((input, entry), run), surfaces), work) in
+        inputs.iter().zip(entries).zip(runs).zip(surfaces).zip(work)
+    {
         if !entry.admitted() {
             continue;
         }
@@ -130,7 +132,12 @@ pub fn charges(
         let payers = input.paying_wallets();
         let mut budget = entry.delta;
         let mut owed: BTreeMap<Vec<u8>, (WalletOwner, u64, u64)> = BTreeMap::new();
-        for (key, (cells, compute)) in own_meter(surfaces, work, &entry.envelope_sig) {
+        let metered = if run.failed {
+            BTreeMap::from([(None, (0, run.compute_phlo))])
+        } else {
+            own_meter(surfaces, work, &entry.envelope_sig)
+        };
+        for (key, (cells, compute)) in metered {
             let Some(own) = own_payers(&key, input, &payers) else {
                 continue;
             };
