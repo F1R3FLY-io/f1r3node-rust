@@ -23,7 +23,6 @@ pub fn eval(par: &Par, env: &Env<Par>) -> Result<Par, EvalError> {
         bundles: par.bundles.clone(),
         connectives: par.connectives.clone(),
         conditionals: par.conditionals.clone(),
-        foreaches: par.foreaches.clone(),
         exprs: Vec::new(),
         locally_free: par.locally_free.clone(),
         connective_used: par.connective_used,
@@ -48,7 +47,6 @@ fn concatenate(a: Par, b: Par) -> Par {
         bundles: [a.bundles, b.bundles].concat(),
         connectives: [a.connectives, b.connectives].concat(),
         conditionals: [a.conditionals, b.conditionals].concat(),
-        foreaches: [a.foreaches, b.foreaches].concat(),
         locally_free: union_bytes(a.locally_free, b.locally_free),
         connective_used: a.connective_used || b.connective_used,
     }
