@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use shared::rust::store::atomic_store::{AtomicStoreGroup, AtomicTransaction};
 use shared::rust::store::key_value_store::KvStoreError;
 
+use super::{decode, encode};
+
 pub const GC_RETRY_TABLE: &str = "dag-gc-retry-v1";
 pub const GC_WORK_TABLE: &str = "dag-gc-work-v1";
 pub const GC_VISITED_TABLE: &str = "dag-gc-visited-v1";
@@ -47,14 +49,6 @@ pub struct WorkEntry {
     pub next_parent: usize,
 }
 
-fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, KvStoreError> {
-    Ok(bincode::serialize(value)?)
-}
-
-fn decode<T: for<'de> Deserialize<'de>>(value: &[u8]) -> Result<T, KvStoreError> {
-    Ok(bincode::deserialize(value)?)
-}
-
 fn scratch_key(job: u64, hash: &BlockHash) -> Result<Vec<u8>, KvStoreError> {
     if hash.len() != 32 {
         return Err(KvStoreError::InvalidArgument(
@@ -77,6 +71,17 @@ fn scratch_bounds(job: u64) -> (Vec<u8>, Vec<u8>) {
 
 impl DagGcStore {
     pub fn new(group: Arc<AtomicStoreGroup>, slots: DagGcSlots) -> Self { Self { group, slots } }
+
+    fn discovery_in(
+        tx: &mut AtomicTransaction<'_>,
+        slot: usize,
+    ) -> Result<DiscoveryState, KvStoreError> {
+        Ok(tx
+            .get(slot, DISCOVERY_KEY)?
+            .map(|bytes| decode(&bytes))
+            .transpose()?
+            .unwrap_or_default())
+    }
 
     #[cfg(any(test, feature = "test-internals"))]
     pub fn scratch_bytes(&self) -> Result<u64, KvStoreError> {
@@ -105,11 +110,7 @@ impl DagGcStore {
         hash: &BlockHash,
         height: i64,
     ) -> Result<(), KvStoreError> {
-        let state: DiscoveryState = tx
-            .get(slots.state, DISCOVERY_KEY)?
-            .map(|bytes| decode(&bytes))
-            .transpose()?
-            .unwrap_or_default();
+        let state = Self::discovery_in(tx, slots.state)?;
         if state
             .claimed_ceiling
             .is_some_and(|ceiling| height <= ceiling)
@@ -129,11 +130,7 @@ impl DagGcStore {
 
     pub fn reserve_discovery(&self, target: i64) -> Result<DiscoveryState, KvStoreError> {
         self.group.transaction(|tx| {
-            let mut state: DiscoveryState = tx
-                .get(self.slots.state, DISCOVERY_KEY)?
-                .map(|bytes| decode(&bytes))
-                .transpose()?
-                .unwrap_or_default();
+            let mut state = Self::discovery_in(tx, self.slots.state)?;
             state.claimed_ceiling = Some(state.claimed_ceiling.map_or(target, |h| h.max(target)));
             tx.put(self.slots.state, DISCOVERY_KEY.to_vec(), encode(&state)?)?;
             Ok(state)
@@ -152,11 +149,7 @@ impl DagGcStore {
             ));
         }
         self.group.transaction(|tx| {
-            let mut state: DiscoveryState = tx
-                .get(self.slots.state, DISCOVERY_KEY)?
-                .map(|bytes| decode(&bytes))
-                .transpose()?
-                .unwrap_or_default();
+            let mut state = Self::discovery_in(tx, self.slots.state)?;
             if completed_ceiling
                 .is_some_and(|h| state.claimed_ceiling.is_none_or(|claim| h > claim))
             {

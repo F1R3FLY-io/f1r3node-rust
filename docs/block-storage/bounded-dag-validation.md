@@ -60,14 +60,27 @@ They are no longer independent regression checks on every future change.
 The retained tests cover the principal storage and GC boundaries, but do not reproduce every removed failure injection or network-consensus scenario.
 Existing tests from the base branch remain, including the fixture and API updates needed to run them against the new storage interface.
 
-### Validation of the reduced source
+### Production simplification
+
+The follow-up cleanup removes 73 net production lines without removing tests or changing the stored format.
+History indexing, publication, and GC use the same private serialization helpers.
+Publication, finalization, and restart validation share the check that a metadata record's hash, height, and invalid flag match its membership record; each caller retains its additional checks and error messages.
+GC reads its discovery state through one transaction-local helper, and unused history-index accessors and its unused state-table slot are removed.
+
+The in-memory backend centralizes table lookup and lock acquisition in private read/write helpers.
+Conditional writes still hold one write lock for the complete operation, and iteration releases its read lock before invoking the caller's callback.
+The persistent and detached DAG paths remain separate because snapshot reconstruction uses the detached path.
+Atomic publication, view sequencing, migration, and the GC state machine retain their existing behavior.
+
+### Validation after production simplification
 
 Workspace formatting and the locked, offline all-target workspace compile passed after removing the programs and test hooks.
 The production-node compile with default features disabled also passed.
 The complete shared and block-storage release suites passed 454 tests, with no failures and one existing ignored test.
 This includes atomic rollback on both backends and all three focused LMDB regressions.
 The GC module passed 28 tests and the finality-floor module passed 39 tests, including the retained coordinator-resumption and cold-history containment regressions.
-Together these release runs passed 521 tests, with no failures and one existing ignored test.
+The existing in-memory backend tests passed three additional cases for conditional deletion, conditional replacement, and concurrent deletion of the same record.
+Together these release runs passed 524 tests, with no failures and one existing ignored test.
 The existing soak-summary script regression also passed after removing the added benchmark runners.
 CI coverage must be recalculated for this selection; earlier coverage percentages do not apply.
 
@@ -77,11 +90,12 @@ Reproduce the release regression runs with:
 rtk cargo test --locked --offline --release -p shared -p block-storage
 rtk cargo test --locked --offline --release -p casper --lib rust::util::mergeable_channels_gc
 rtk cargo test --locked --offline --release -p casper --lib rust::finality::floor
+rtk cargo test --locked --offline --release -p rspace_plus_plus --lib rspace::shared::in_mem_key_value_store
 ```
 
 The offline commands require the pinned toolchain and dependencies to be available locally.
 
-The strict CbC discharge check reports two unresolved artifact claims under [CLAIM-CASPER-BUFFER-001](../claims/casper-buffer-release.md): `buffer_resolver.rs` and `block_processor_instance.rs`.
+The earlier reduction's strict CbC discharge check reported two unresolved artifact claims under [CLAIM-CASPER-BUFFER-001](../claims/casper-buffer-release.md): `buffer_resolver.rs` and `block_processor_instance.rs`.
 This reduction only removes added tests and their fixture support in those two files.
 The claim remains pending in the repository; this report neither discharges it nor substitutes for acceptance.
 

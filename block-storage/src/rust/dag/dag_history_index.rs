@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use shared::rust::store::atomic_store::{AtomicStoreGroup, AtomicTransaction, StorePage};
 use shared::rust::store::key_value_store::KvStoreError;
 
+use super::{decode, encode};
+
 pub const MEMBERSHIP_TABLE: &str = "dag-membership-v1";
 pub const HEIGHT_TABLE: &str = "dag-height-v1";
 pub const CHILDREN_TABLE: &str = "dag-children-v1";
@@ -18,7 +20,6 @@ pub struct HistoryTableSlots {
     pub membership: usize,
     pub heights: usize,
     pub children: usize,
-    pub state: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +27,14 @@ pub struct MembershipRecord {
     pub sequence: u64,
     pub height: i64,
     pub invalid: bool,
+}
+
+impl MembershipRecord {
+    pub(crate) fn matches(&self, hash: &BlockHash, metadata: &BlockMetadata) -> bool {
+        metadata.block_hash == *hash
+            && metadata.block_number == self.height
+            && metadata.invalid == self.invalid
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,10 +138,6 @@ impl DagHistoryIndex {
         Self { group, slots }
     }
 
-    pub fn group(&self) -> &Arc<AtomicStoreGroup> { &self.group }
-
-    pub fn slots(&self) -> HistoryTableSlots { self.slots }
-
     pub fn membership(
         &self,
         hash: &BlockHash,
@@ -144,11 +149,9 @@ impl DagHistoryIndex {
         let query = HistoryQuery::new("membership");
         let row = self.group.get(self.slots.membership, hash)?;
         query.visited(usize::from(row.is_some()));
-        row.map(|bytes| {
-            bincode::deserialize::<MembershipRecord>(&bytes).map_err(KvStoreError::from)
-        })
-        .transpose()
-        .map(|record| record.filter(|record| record.sequence <= view_sequence))
+        row.map(|bytes| decode::<MembershipRecord>(&bytes))
+            .transpose()
+            .map(|record| record.filter(|record| record.sequence <= view_sequence))
     }
 
     pub fn membership_in(
@@ -162,8 +165,7 @@ impl DagHistoryIndex {
         let query = HistoryQuery::new("membership_in");
         let row = tx.get(self.slots.membership, hash)?;
         query.visited(usize::from(row.is_some()));
-        row.map(|bytes| bincode::deserialize(&bytes).map_err(KvStoreError::from))
-            .transpose()
+        row.map(|bytes| decode(&bytes)).transpose()
     }
 
     pub fn index_block(
@@ -189,22 +191,21 @@ impl DagHistoryIndex {
         tx.put(
             self.slots.membership,
             metadata.block_hash.to_vec(),
-            bincode::serialize(&record)?,
+            encode(&record)?,
         )?;
         tx.put(
             self.slots.heights,
             encode_height_key(record.height, &metadata.block_hash)?,
-            bincode::serialize(&sequence)?,
+            encode(&sequence)?,
         )?;
         for parent in &metadata.parents {
             let key = child_key(parent, &metadata.block_hash)?;
             let value = if parent.len() == LENGTH {
-                bincode::serialize(&sequence)?
+                encode(&sequence)?
             } else {
                 let mut originals = match tx.get(self.slots.children, &key)? {
                     Some(bytes) => {
-                        let (existing_sequence, originals): (u64, Vec<Vec<u8>>) =
-                            bincode::deserialize(&bytes)?;
+                        let (existing_sequence, originals): (u64, Vec<Vec<u8>>) = decode(&bytes)?;
                         if existing_sequence != sequence {
                             return Err(KvStoreError::SerializationError(
                                 "DAG exceptional child index sequence disagrees".into(),
@@ -220,7 +221,7 @@ impl DagHistoryIndex {
                 {
                     originals.push(parent.to_vec());
                 }
-                bincode::serialize(&(sequence, originals))?
+                encode(&(sequence, originals))?
             };
             tx.put(self.slots.children, key, value)?;
         }
@@ -245,7 +246,7 @@ impl DagHistoryIndex {
         query.visited(page.rows.len());
         let mut rows = Vec::new();
         for (key, value) in page.rows {
-            let sequence: u64 = bincode::deserialize(&value)?;
+            let sequence: u64 = decode(&value)?;
             if sequence > view_sequence {
                 continue;
             }
@@ -289,9 +290,9 @@ impl DagHistoryIndex {
         let mut rows = Vec::new();
         for (key, value) in page.rows {
             let sequence: u64 = if parent.len() == LENGTH {
-                bincode::deserialize(&value)?
+                decode(&value)?
             } else {
-                let (sequence, originals): (u64, Vec<Vec<u8>>) = bincode::deserialize(&value)?;
+                let (sequence, originals): (u64, Vec<Vec<u8>>) = decode(&value)?;
                 if !originals
                     .iter()
                     .any(|original| original.as_slice() == parent.as_ref())
@@ -342,7 +343,7 @@ impl DagHistoryIndex {
                     "Invalid DAG membership key length".into(),
                 ));
             }
-            let membership: MembershipRecord = bincode::deserialize(&value)?;
+            let membership: MembershipRecord = decode(&value)?;
             if membership.sequence <= view_sequence {
                 rows.push(BlockHash::from(key));
             }

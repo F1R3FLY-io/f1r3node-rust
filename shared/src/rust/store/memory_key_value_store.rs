@@ -48,98 +48,68 @@ impl Default for MemoryKeyValueStore {
 impl MemoryKeyValueStore {
     pub fn new() -> Self { Arc::new(MemoryEnvironment::new()).create_store() }
 
-    pub fn clear(&self) {
+    fn with_rows_mut<T>(&self, f: impl FnOnce(&mut Records) -> T) -> T {
         let mut state = self
             .environment
             .state
             .write()
             .unwrap_or_else(|e| e.into_inner());
-        state
+        f(state
             .tables
             .get_mut(&self.table)
-            .expect("memory table missing")
-            .clear();
+            .expect("memory table missing"))
     }
 
-    pub fn num_records(&self) -> usize {
+    fn with_rows<T>(&self, f: impl FnOnce(&Records) -> T) -> T {
         let state = self
             .environment
             .state
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        state
-            .tables
-            .get(&self.table)
-            .expect("memory table missing")
-            .len()
+        f(state.tables.get(&self.table).expect("memory table missing"))
     }
+
+    pub fn clear(&self) { self.with_rows_mut(Records::clear); }
+
+    pub fn num_records(&self) -> usize { self.with_rows(Records::len) }
 }
 
 impl KeyValueStore for MemoryKeyValueStore {
     fn as_any(&self) -> &dyn std::any::Any { self }
 
     fn get(&self, keys: &Vec<ByteBuffer>) -> Result<Vec<Option<ByteBuffer>>, KvStoreError> {
-        let state = self
-            .environment
-            .state
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        let rows = state.tables.get(&self.table).expect("memory table missing");
-        Ok(keys
-            .iter()
-            .map(|key| rows.get(&encode_length_prefixed(key)).cloned())
-            .collect())
+        Ok(self.with_rows(|rows| {
+            keys.iter()
+                .map(|key| rows.get(&encode_length_prefixed(key)).cloned())
+                .collect()
+        }))
     }
 
     fn put(&self, pairs: Vec<(ByteBuffer, ByteBuffer)>) -> Result<(), KvStoreError> {
-        let mut state = self
-            .environment
-            .state
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        let rows = state
-            .tables
-            .get_mut(&self.table)
-            .expect("memory table missing");
-        for (key, value) in pairs {
-            rows.insert(encode_length_prefixed(&key), value);
-        }
+        self.with_rows_mut(|rows| {
+            for (key, value) in pairs {
+                rows.insert(encode_length_prefixed(&key), value);
+            }
+        });
         Ok(())
     }
 
     fn put_one_if_absent(&self, key: ByteBuffer, value: ByteBuffer) -> Result<bool, KvStoreError> {
-        let mut state = self
-            .environment
-            .state
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        let rows = state
-            .tables
-            .get_mut(&self.table)
-            .expect("memory table missing");
-        match rows.entry(encode_length_prefixed(&key)) {
+        self.with_rows_mut(|rows| match rows.entry(encode_length_prefixed(&key)) {
             std::collections::btree_map::Entry::Vacant(entry) => {
                 entry.insert(value);
                 Ok(true)
             }
             std::collections::btree_map::Entry::Occupied(_) => Ok(false),
-        }
+        })
     }
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
-        let mut state = self
-            .environment
-            .state
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        let rows = state
-            .tables
-            .get_mut(&self.table)
-            .expect("memory table missing");
-        Ok(keys
-            .into_iter()
-            .filter(|key| rows.remove(&encode_length_prefixed(key)).is_some())
-            .count())
+        Ok(self.with_rows_mut(|rows| {
+            keys.into_iter()
+                .filter(|key| rows.remove(&encode_length_prefixed(key)).is_some())
+                .count()
+        }))
     }
 
     fn delete_if_value(
@@ -147,45 +117,31 @@ impl KeyValueStore for MemoryKeyValueStore {
         key: &ByteBuffer,
         expected: &ByteBuffer,
     ) -> Result<bool, KvStoreError> {
-        let mut state = self
-            .environment
-            .state
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        let rows = state
-            .tables
-            .get_mut(&self.table)
-            .expect("memory table missing");
-        let key = encode_length_prefixed(key);
-        if rows.get(&key) != Some(expected) {
-            return Ok(false);
-        }
-        rows.remove(&key);
-        Ok(true)
+        self.with_rows_mut(|rows| {
+            let key = encode_length_prefixed(key);
+            if rows.get(&key) != Some(expected) {
+                return Ok(false);
+            }
+            rows.remove(&key);
+            Ok(true)
+        })
     }
 
     fn replace_if_values(
         &self,
         replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
     ) -> Result<usize, KvStoreError> {
-        let mut state = self
-            .environment
-            .state
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        let rows = state
-            .tables
-            .get_mut(&self.table)
-            .expect("memory table missing");
-        let mut count = 0;
-        for (key, expected, replacement) in replacements {
-            let key = encode_length_prefixed(&key);
-            if rows.get(&key) == Some(&expected) {
-                rows.insert(key, replacement);
-                count += 1;
+        self.with_rows_mut(|rows| {
+            let mut count = 0;
+            for (key, expected, replacement) in replacements {
+                let key = encode_length_prefixed(&key);
+                if rows.get(&key) == Some(&expected) {
+                    rows.insert(key, replacement);
+                    count += 1;
+                }
             }
-        }
-        Ok(count)
+            Ok(count)
+        })
     }
 
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
@@ -201,20 +157,11 @@ impl KeyValueStore for MemoryKeyValueStore {
     ) -> Result<(), KvStoreError> {
         let mut after = std::ops::Bound::Unbounded;
         loop {
-            let next = {
-                let state = self
-                    .environment
-                    .state
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner());
-                state
-                    .tables
-                    .get(&self.table)
-                    .expect("memory table missing")
-                    .range((after.clone(), std::ops::Bound::Unbounded))
+            let next = self.with_rows(|rows| {
+                rows.range((after.clone(), std::ops::Bound::Unbounded))
                     .next()
                     .map(|(key, value)| (key.clone(), value.clone()))
-            };
+            });
             let Some((key, value)) = next else {
                 break;
             };
@@ -251,17 +198,6 @@ impl KeyValueStore for MemoryKeyValueStore {
     fn non_empty(&self) -> Result<bool, KvStoreError> { Ok(self.num_records() != 0) }
 
     fn size_bytes(&self) -> usize {
-        let state = self
-            .environment
-            .state
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        state
-            .tables
-            .get(&self.table)
-            .expect("memory table missing")
-            .iter()
-            .map(|(k, v)| k.len() - 8 + v.len())
-            .sum()
+        self.with_rows(|rows| rows.iter().map(|(k, v)| k.len() - 8 + v.len()).sum())
     }
 }

@@ -10,3 +10,15 @@ pub mod equivocation_tracker_store;
 pub mod equivocations_access;
 pub mod soak_snapshot;
 pub mod soak_equivocations;
+
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+use shared::rust::store::key_value_store::KvStoreError;
+
+fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, KvStoreError> {
+    Ok(bincode::serialize(value)?)
+}
+
+fn decode<T: DeserializeOwned>(value: &[u8]) -> Result<T, KvStoreError> {
+    Ok(bincode::deserialize(value)?)
+}

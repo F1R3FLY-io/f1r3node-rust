@@ -10,6 +10,7 @@ use shared::rust::store::key_value_store::KvStoreError;
 
 use super::dag_gc_store::{DagGcSlots, DagGcStore};
 use super::dag_history_index::{DagHistoryIndex, HistoryTableSlots};
+use super::{decode, encode};
 
 pub(crate) const METADATA: usize = 0;
 const LATEST: usize = 1;
@@ -91,13 +92,6 @@ pub(crate) struct DagPersistence {
     pub gc: Arc<DagGcStore>,
 }
 
-pub(crate) fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, KvStoreError> {
-    Ok(bincode::serialize(value)?)
-}
-pub(crate) fn decode<T: for<'de> Deserialize<'de>>(value: &[u8]) -> Result<T, KvStoreError> {
-    Ok(bincode::deserialize(value)?)
-}
-
 impl DagPersistence {
     pub fn new(
         group: Arc<AtomicStoreGroup>,
@@ -109,7 +103,6 @@ impl DagPersistence {
                 membership: 4,
                 heights: 5,
                 children: 6,
-                state: STATE,
             })),
             gc: Arc::new(DagGcStore::new(group.clone(), GC_SLOTS)),
             group,
@@ -232,10 +225,8 @@ impl DagPersistence {
                             KvStoreError::KeyNotFound("persisted DAG LFB metadata missing".into())
                         })?;
                     if member.height != *height
-                        || metadata.block_hash != *hash
+                        || !member.matches(hash, &metadata)
                         || metadata.invalid
-                        || member.invalid != metadata.invalid
-                        || metadata.block_number != *height
                         || !metadata.directly_finalized
                     {
                         return Err(KvStoreError::InvalidArgument(
@@ -273,10 +264,7 @@ impl DagPersistence {
                 metadata.clone()
             };
             if let Some(member) = &existing {
-                if metadata.block_hash != expected_hash
-                    || metadata.block_number != member.height
-                    || metadata.invalid != member.invalid
-                {
+                if !member.matches(&expected_hash, &metadata) {
                     return Err(KvStoreError::InvalidArgument(
                         "published metadata disagrees with membership during duplicate insertion"
                             .into(),
@@ -359,10 +347,7 @@ impl DagPersistence {
                     .map(|bytes| decode(&bytes))
                     .transpose()?
                     .ok_or_else(|| KvStoreError::KeyNotFound("finality metadata missing".into()))?;
-                if metadata.block_hash != *hash
-                    || metadata.block_number != member.height
-                    || metadata.invalid != member.invalid
-                {
+                if !member.matches(hash, &metadata) {
                     return Err(KvStoreError::InvalidArgument(
                         "finality metadata disagrees with membership".into(),
                     ));
