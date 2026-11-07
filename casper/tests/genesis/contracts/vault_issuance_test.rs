@@ -99,22 +99,9 @@ async fn rev_vault_balance(node: &mut TestNode, shard_id: &str, rev_address: &st
 async fn vault_issuance_test() {
     // Two known, valid rev addresses issued at genesis with distinct non-zero balances. Distinct
     // values make each per-address assertion load-bearing (a result cannot pass by symmetry).
-    // BALANCE_2 exceeds i64::MAX (10^30 base units): vault balances are BigInt.
     const REV_ADDRESS_1: &str = "1111LAd2PWaHsw84gxarNx99YVK2aZhCThhrPsWTV7cs1BPcvHftP";
-    const BALANCE_1: u128 = 777_000_000;
+    const BALANCE_1: u64 = 777_000_000;
     const REV_ADDRESS_2: &str = "1111La6tHaCtGjRiv4wkffbTAAjGyMsVhzSUNzQxH1jjZH9jtEi3M";
-    const BALANCE_2: u128 = 1_000_000_000_000_000_000_000_000_000_000;
-
-    let issued_vaults = vec![
-        Vault {
-            vault_address: VaultAddress::parse(REV_ADDRESS_1).expect("REV_ADDRESS_1 must be valid"),
-            initial_balance: BALANCE_1,
-        },
-        Vault {
-            vault_address: VaultAddress::parse(REV_ADDRESS_2).expect("REV_ADDRESS_2 must be valid"),
-            initial_balance: BALANCE_2,
-        },
-    ];
 
     // Build genesis whose vault set includes the two issued vaults alongside the default
     // validator/deployer vaults. Passing explicit parameters (rather than `with_vaults`) makes the
@@ -122,6 +109,36 @@ async fn vault_issuance_test() {
     // with tests that build against the default vault set.
     let (validator_key_pairs, genesis_vaults, mut genesis_params) =
         GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+
+    // The second balance takes the whole allocation to exactly 2^256 - 1.
+    let allocated = genesis_params
+        .vaults
+        .iter()
+        .map(|vault| vault.initial_balance.as_bigint())
+        .chain(
+            genesis_params
+                .proof_of_stake
+                .validators
+                .iter()
+                .map(|validator| validator.stake.as_bigint()),
+        )
+        .sum::<num_bigint::BigInt>()
+        + BALANCE_1;
+    let balance_2 = shared::rust::token_amount::TokenAmount::new(
+        shared::rust::token_amount::TokenAmount::max().into_bigint() - allocated,
+    )
+    .unwrap();
+
+    let issued_vaults = vec![
+        Vault {
+            vault_address: VaultAddress::parse(REV_ADDRESS_1).expect("REV_ADDRESS_1 must be valid"),
+            initial_balance: BALANCE_1.into(),
+        },
+        Vault {
+            vault_address: VaultAddress::parse(REV_ADDRESS_2).expect("REV_ADDRESS_2 must be valid"),
+            initial_balance: balance_2,
+        },
+    ];
     genesis_params.vaults.extend(issued_vaults.clone());
 
     let genesis_context = GenesisBuilder::new()

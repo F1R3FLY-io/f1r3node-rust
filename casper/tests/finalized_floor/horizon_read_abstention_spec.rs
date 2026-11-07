@@ -38,7 +38,7 @@ fn bonded_block(
         .iter()
         .map(|(validator, stake)| Bond {
             validator: validator.clone(),
-            stake: *stake,
+            stake: u64::try_from(*stake).expect("fixture stake").into(),
         })
         .collect();
     block

@@ -54,22 +54,6 @@ impl KeyValueStore for InMemoryKeyValueStore {
             .is_some())
     }
 
-    fn replace_if_values(
-        &self,
-        replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
-    ) -> Result<usize, KvStoreError> {
-        let mut replaced = 0;
-        for (key, expected, value) in replacements {
-            if let Entry::Occupied(mut entry) = self.state.entry(key) {
-                if entry.get() == &expected {
-                    entry.insert(value);
-                    replaced += 1;
-                }
-            }
-        }
-        Ok(replaced)
-    }
-
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError> {
         Ok(keys
             .into_iter()
@@ -144,27 +128,6 @@ mod tests {
         assert_eq!(store.get_one(&key).unwrap(), Some(value.clone()));
         assert!(store.delete_if_value(&key, &value).unwrap());
         assert!(!store.delete_if_value(&key, &value).unwrap());
-    }
-
-    #[test]
-    fn conditional_replacement_preserves_changed_and_missing_memory_records() {
-        let store = InMemoryKeyValueStore::new();
-        store
-            .put(vec![(b"a".to_vec(), b"old".to_vec()), (b"b".to_vec(), b"changed".to_vec())])
-            .unwrap();
-        assert_eq!(
-            store
-                .replace_if_values(vec![
-                    (b"a".to_vec(), b"old".to_vec(), b"new".to_vec()),
-                    (b"b".to_vec(), b"old".to_vec(), b"overwrite".to_vec()),
-                    (b"missing".to_vec(), b"old".to_vec(), b"resurrect".to_vec()),
-                ])
-                .unwrap(),
-            1
-        );
-        assert_eq!(store.get_one(&b"a".to_vec()).unwrap(), Some(b"new".to_vec()));
-        assert_eq!(store.get_one(&b"b".to_vec()).unwrap(), Some(b"changed".to_vec()));
-        assert_eq!(store.get_one(&b"missing".to_vec()).unwrap(), None);
     }
 
     #[test]
