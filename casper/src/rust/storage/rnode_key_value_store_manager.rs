@@ -238,3 +238,65 @@ pub fn rnode_db_mapping(legacy_rspace_paths: Option<bool>) -> Vec<(Db, LmdbEnvCo
 
     mappings
 }
+
+#[cfg(test)]
+mod tests {
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+    };
+    use shared::rust::store::lmdb_key_value_store::LmdbKeyValueStore;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn deploy_records_reopen_without_a_verification_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let deploy = crate::rust::util::construct_deploy::source_deploy(
+            "Nil".to_string(),
+            1,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        for pass in 0..2 {
+            let mut manager = new_key_value_store_manager(directory.path().to_path_buf(), None);
+            let pool = KeyValueDeployStorage::new(&mut manager).await.unwrap();
+            let rejected = KeyValueRejectedDeployBuffer::new(&mut manager)
+                .await
+                .unwrap();
+            if pass == 0 {
+                pool.add(vec![deploy.clone()]).unwrap();
+                rejected.add(vec![deploy.clone()]).unwrap();
+            }
+            assert_eq!(
+                pool.read_all().unwrap(),
+                std::collections::HashSet::from([deploy.clone()])
+            );
+            assert!(rejected
+                .any(|candidate| Ok(candidate.sig == deploy.sig))
+                .unwrap());
+            let live = pool
+                .store
+                .raw_store()
+                .as_any()
+                .downcast_ref::<LmdbKeyValueStore>()
+                .unwrap();
+            assert!(live.env.path().ends_with("deploystorage"));
+            assert!(pool
+                .store
+                .raw_store()
+                .to_map()
+                .unwrap()
+                .values()
+                .all(|bytes| bytes.starts_with(b"F1R3DEP\x02")));
+            assert!(manager
+                .store("deploy_storage_verified".to_string())
+                .await
+                .is_err());
+            assert!(!directory.path().join("deployverification").exists());
+        }
+    }
+}

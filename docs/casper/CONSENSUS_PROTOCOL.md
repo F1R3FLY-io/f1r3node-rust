@@ -159,16 +159,31 @@ Finally: `create_checkpoint()` produces the post-state hash.
 - Header: version, timestamp, sender, block number (max parent + 1), sequence number
 - Body: pre-state hash, post-state hash, processed deploys, rejected deploys, system deploys, leaky-bucket votes
 - Votes: one per claim open in the pre-state that the proposer is in the electorate of and has not voted on in its own chain, oldest claims first, up to the genesis `voteListBound`. The proposer decides them from its leaky-bucket view as the block's own finalized floor leaves it: the freezes and payments that floor's state records, applied to every block the view has observed. A nay on an overflow claim records the claim's amount and what that floor records of the claimant — its freezes and its total paid
-- Justifications: One per bonded validator
+- Justifications: One per bonded validator, in strictly ascending validator order
 - Bonds cache: Current validator set with stakes
-- Hash the block via Blake2b256
-- Sign with validator's Secp256k1 key
+- Hash the block with the Merkle block hash, scheme version 2 (`proto_util::hash_block`). The top hash combines a header leaf and a Merkle root of the processed and system deploys. The header leaf includes Merkle roots of the bonds, the justifications, the rejected deploys, the applied-from-scope signatures, and the leaky-bucket votes. Each variable-length field of the header leaf is preceded by its length, so bytes cannot move between adjacent fields. The hash covers every field except `blockHash` and `sig`.
+- Sign the block hash with validator's Secp256k1 key
 
 **Timestamp hardening**: If current time < max parent timestamp (clock skew), the timestamp is clamped to the parent's timestamp. This prevents `InvalidTimestamp` validation errors.
 
 ### Step 6: Self-Validate
 
 The proposer validates its own block before broadcasting. If pre/post-state hashes don't match expectations, the block is rejected as `BlockException` (not panicked).
+
+### Block Hash Compatibility
+
+The fix for issue #679 changed the block hash rule. The old rule and the new rule give different hashes for the same block, so builds before and after the fix are not compatible:
+
+- A node of the new build refuses blocks, approved blocks, and genesis blocks that an older build hashed.
+- A node of an older build refuses blocks of the new build as `InvalidBlockHash`.
+- A node of the new build does not start on a data directory that an older build created. It stops with an error that names the stored approved block.
+
+There is no compatibility setting. To upgrade a network to the new build:
+
+1. Stop all nodes.
+2. Remove the data directory of each node.
+3. Install the new build on all nodes.
+4. Start a new network from a new genesis ceremony.
 
 ---
 
@@ -188,16 +203,20 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 
 ## 4. Block Validation
 
-`BlockProcessor` runs an 8-step pipeline on received blocks:
+`BlockProcessor` runs an 8-step pipeline on received blocks.
+
+Before a block enters the pipeline, the node recomputes the block hash and verifies the signature. This check runs when the block message arrives, before the node marks the block hash as in flight. If the hash or the signature does not match, the node drops the copy. The node does not change the in-flight markers, the buffer, or the request state for that block hash, so the original block can still arrive.
+
+The node limits these checks. It runs at most 2 checks at a time, and one at a time for each peer. It keeps at most 512 blocks in this stage, and at most 16 blocks from one peer. If a limit is full, the node drops the block. The block hash is not verified yet, so the drop does not change the retry budget of that hash.
 
 ### Step 1: Interest Check
 - Already in DAG or casper buffer? Skip.
 - Shard ID and version match the approved block? Required.
 - Block number >= approved block number? Required (no ancient blocks).
 
-### Step 2: Format & Signature
-- Verify cryptographic signature (Secp256k1, Schnorr, or FROST)
+### Step 2: Format
 - Check field validity: hash length, timestamp within ±15s of local time, required fields present
+- Require justifications in strictly ascending validator order. This also refuses a duplicate validator.
 
 ### Step 3: Dependency Resolution
 - All parent blocks must be in the DAG
@@ -209,6 +228,7 @@ The block retriever (`block_retriever.rs`) handles missing dependencies:
 - This ensures validation uses the same state the proposer had
 
 ### Step 5: Block Summary
+- Recompute the block hash again
 - Structural consistency: block number progression, sender weight, justification format
 
 ### Step 6: Checkpoint Validation (Deploy Replay)
@@ -326,7 +346,7 @@ Finalization determines when a block is **mathematically irreversible**. Once fi
 
 ### Trigger
 
-Finalization runs asynchronously after each valid block is added to the DAG. Every cycle runs on the casper instance's one finalizer task, one cycle at a time, so the LFB has one writer; reading the LFB never advances it. After every cycle, the same task writes the deploy verdicts the persisted LFB decides and releases the pool copy of every deploy with a verdict. Snapshot creation does not wait for a cycle.
+Finalization runs asynchronously after each valid block is added to the DAG. Every cycle runs on the casper instance's one finalizer task, one cycle at a time, so the LFB has one writer; reading the LFB never advances it. After every cycle, the same task writes the deploy verdicts the floor of the persisted LFB decides and releases the pool copy of every deploy with a verdict. The floor, not the LFB, is the verdict basis: two blocks at one height can both be finalized, and the merge above them can reject the deploys of the one it does not base on, so only the floor's state is settled. Snapshot creation does not wait for a cycle.
 
 ### Algorithm (`floor.rs::floor_of_view` + `finalization_runner.rs`)
 
@@ -340,7 +360,7 @@ operation uses.
    - Build an agreement graph: edge between validators A and B if they "never eventually see disagreement" about the target block
    - Find the maximum weighted clique (largest fully-connected subgraph by stake)
    - Decide finalization with exact integer arithmetic (`2·q·den ⋛ S·(den+num)` — the integer form of `FT = (2·clique_weight − total_stake) / total_stake ≥ θ`)
-4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the current LFB's settled effects — the read surface can never designate a state missing settled content
+4. **Containment gate**: the derived floor advances the LFB only when its state CONTAINS the state of the current LFB's floor — the read surface can never designate a state missing settled content. A restored node that does not hold that floor checks against the LFB itself
 5. **LFB advancement**: Update last finalized block, clean up deploy storage, emit `BlockFinalised` event
 
 ### "Never Eventually See Disagreement"
@@ -358,7 +378,7 @@ A finalizer cycle that derives a higher floor but does not adopt it ends in
 one of two holds:
 
 - **ContainmentHold** — the derived floor's state is missing effects settled
-  under the current LFB. One refusal is routine (a rejected-then-recovered
+  under the current LFB's floor. One refusal is routine (a rejected-then-recovered
   deploy legitimately fails containment until its re-homed carrier
   finalizes); a streak of refusals with RISING derived floors means the
   shard is finalizing without this node. The `DivergenceMonitor` detects

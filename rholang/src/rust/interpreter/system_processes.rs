@@ -32,7 +32,6 @@ use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
 use super::registry::registry::Registry;
 use super::registry::{semver, versioned_urn};
-use super::rho_runtime::RhoISpace;
 use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
@@ -661,7 +660,6 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
 
 #[derive(Clone)]
 pub struct ProcessContext {
-    pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub invalid_blocks: InvalidBlocks,
@@ -676,7 +674,6 @@ pub struct ProcessContext {
 
 impl ProcessContext {
     pub fn create(
-        space: RhoISpace,
         dispatcher: RhoDispatch,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         invalid_blocks: InvalidBlocks,
@@ -688,7 +685,6 @@ impl ProcessContext {
         chromadb_service: SharedChromaDBService,
     ) -> Self {
         ProcessContext {
-            space: space.clone(),
             dispatcher: dispatcher.clone(),
             block_data: block_data.clone(),
             invalid_blocks,
@@ -696,7 +692,6 @@ impl ProcessContext {
             urn_map: urn_map.clone(),
             system_processes: SystemProcesses::create(
                 dispatcher,
-                space,
                 block_data,
                 deploy_data,
                 urn_map,
@@ -882,7 +877,6 @@ impl DeployData {
 #[derive(Clone)]
 pub struct SystemProcesses {
     pub dispatcher: RhoDispatch,
-    pub space: RhoISpace,
     pub block_data: Arc<tokio::sync::RwLock<BlockData>>,
     pub deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
     /// Shared with `ProcessContext` and `DebruijnInterpreter`. The
@@ -900,7 +894,6 @@ pub struct SystemProcesses {
 impl SystemProcesses {
     fn create(
         dispatcher: RhoDispatch,
-        space: RhoISpace,
         block_data: Arc<tokio::sync::RwLock<BlockData>>,
         deploy_data: Arc<tokio::sync::RwLock<DeployData>>,
         urn_map: Arc<HashMap<String, Par>>,
@@ -911,7 +904,6 @@ impl SystemProcesses {
     ) -> Self {
         SystemProcesses {
             dispatcher,
-            space,
             block_data,
             deploy_data,
             urn_map,
@@ -925,7 +917,6 @@ impl SystemProcesses {
 
     fn is_contract_call(&self) -> ContractCall {
         ContractCall {
-            space: self.space.clone(),
             dispatcher: self.dispatcher.clone(),
         }
     }

@@ -3,13 +3,15 @@
 // its merged parents already carry, and a proposer whose view trails its own
 // finalized frontier still slashes.
 
+use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
 use casper::rust::block_status::ValidBlock;
 use casper::rust::casper::Casper;
-use casper::rust::util::construct_deploy;
+use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 
 use crate::helper::test_node::TestNode;
@@ -547,4 +549,79 @@ async fn a_view_lagging_its_finalized_frontier_slashes_and_peers_accept() {
         "node 2 judges block #{}: {verdict:?}",
         block.body.state.block_number
     );
+}
+
+#[tokio::test]
+async fn slash_block_replays_with_its_own_slash_targets() {
+    let ctx = TestContext::new().await;
+
+    let mut nodes = TestNode::create_network(ctx.genesis.clone(), 3, None, None, None)
+        .await
+        .expect("create_network(3)");
+
+    let equivocator = equivocation(&mut nodes, &ctx.shard_id, &[1, 2]).await;
+    let slash_block = nodes[1]
+        .create_block_unsafe(&[construct_deploy::basic_deploy_data(
+            1,
+            None,
+            Some(ctx.shard_id.clone()),
+        )
+        .expect("build deploy")])
+        .await
+        .expect("validator 1 creates slash_block");
+
+    let unrelated_invalid = {
+        let mut b = slash_block.clone();
+        b.block_hash = vec![7; 32].into();
+        b.sender = ctx.genesis.validator_pks()[3].bytes.clone();
+        b
+    };
+    nodes[2]
+        .block_dag_storage
+        .insert(&unrelated_invalid, InsertMode::Equivocation {
+            sibling: vec![8; 32].into(),
+        })
+        .expect("record unrelated invalid block");
+
+    let dag = nodes[2]
+        .block_dag_storage
+        .get_representation()
+        .expect("dag");
+    let own_targets = proto_util::slash_evidence_senders(proto_util::slash_evidence(&slash_block));
+    let dag_invalid_set = dag.invalid_blocks_map().expect("dag invalid set");
+    assert_eq!(own_targets.values().collect::<Vec<_>>(), vec![&equivocator]);
+    assert!(dag_invalid_set.contains_key(&unrelated_invalid.block_hash));
+
+    let pre_state = &slash_block.body.state.pre_state_hash;
+    let post_state = &slash_block.body.state.post_state_hash;
+    let block_data = BlockData::from_block(&slash_block);
+    let with_dag_set = nodes[2]
+        .runtime_manager
+        .replay_compute_state(
+            pre_state,
+            proto_util::deploys(&slash_block),
+            proto_util::system_deploys(&slash_block),
+            &block_data,
+            Some(dag_invalid_set),
+            false,
+        )
+        .await;
+    assert!(
+        with_dag_set.map_or(true, |hash| hash != *post_state),
+        "the extra invalid block must change the slash replay"
+    );
+
+    let with_own_targets = nodes[2]
+        .runtime_manager
+        .replay_compute_state(
+            pre_state,
+            proto_util::deploys(&slash_block),
+            proto_util::system_deploys(&slash_block),
+            &block_data,
+            Some(own_targets),
+            false,
+        )
+        .await
+        .expect("replay with the block's own slash targets");
+    assert_eq!(with_own_targets, *post_state);
 }

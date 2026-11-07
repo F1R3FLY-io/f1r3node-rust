@@ -542,7 +542,7 @@ pub fn unsigned_block_proto_with_leaves(
 }
 
 // =========================================================================
-// Block hash — Merkle scheme v1
+// Block hash — Merkle scheme v2
 // =========================================================================
 //
 // Shape:
@@ -551,10 +551,11 @@ pub fn unsigned_block_proto_with_leaves(
 //
 // where `deploys_root` is a Merkle root over per-deploy leaves (user
 // deploys first, then system deploys, in commit order) and
-// `header_preimage` concatenates header + body-state + metadata fields
-// together with Merkle roots of the rejected-deploy and
-// applied-from-scope lists.  See `docs/designs/merkle-block-hash.md` for
-// the full recipe.  Hard-fork surface: the domain-byte constants below
+// `header_preimage` concatenates header + body-state + metadata fields,
+// each variable-length field preceded by its u32 little-endian length,
+// together with Merkle roots of the bonds, justifications, rejected-deploy
+// and applied-from-scope lists; `header_preimage` gives the field order.
+// Hard-fork surface: the domain-byte constants below
 // pin the shape — any change flips every block hash on-network.
 //
 // This is a per-release hard fork for each shard.  Shards running an
@@ -572,7 +573,7 @@ pub fn unsigned_block_proto_with_leaves(
 
 /// Scheme-version byte prepended to the header preimage.  Bumping this
 /// constant is a hard fork — see the file-level docstring.
-pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x01;
+pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x02;
 
 /// Interior-node domain byte used by `MERKLE_PARAMS`.
 const INTERIOR_DOMAIN: u8 = 0x01;
@@ -589,7 +590,8 @@ const LEAF_HEADER: u8 = 0x12;
 const LEAF_REJECTED_DEPLOY: u8 = 0x13;
 const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
 const LEAF_BOND: u8 = 0x15;
-const LEAF_LEAKY_BUCKET_VOTE: u8 = 0x16;
+const LEAF_JUSTIFICATION: u8 = 0x16;
+const LEAF_LEAKY_BUCKET_VOTE: u8 = 0x17;
 
 const MERKLE_PARAMS: crypto::rust::hash::merkle::MerkleParams =
     crypto::rust::hash::merkle::MerkleParams::new(INTERIOR_DOMAIN);
@@ -745,22 +747,37 @@ fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Build the header-side preimage.  See file-level docstring and
-/// `docs/designs/merkle-block-hash.md` for the field order.  Any change
-/// here is a hard fork — pinned by the `hash_block` golden-hex tests.
+fn justifications_root(justifications: &[Justification]) -> [u8; 32] {
+    let leaves: Vec<[u8; 32]> = justifications
+        .iter()
+        .map(|j| {
+            let mut buf = Vec::with_capacity(4 + j.validator.len() + j.latest_block_hash.len());
+            buf.extend_from_slice(&(j.validator.len() as u32).to_le_bytes());
+            buf.extend_from_slice(j.validator.as_ref());
+            buf.extend_from_slice(j.latest_block_hash.as_ref());
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_JUSTIFICATION, &buf)
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
+/// Build the header-side preimage.  Any change here is a hard fork —
+/// pinned by the `hash_block` golden-hex tests.
 fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
     use prost::Message;
     let header_bytes = commitment.header.to_proto().encode_to_vec();
 
     let mut buf = Vec::with_capacity(
-        1 + header_bytes.len()
+        1 + 9 * 4 // length prefixes
+            + header_bytes.len()
             + commitment.pre_state_hash.len()
             + commitment.post_state_hash.len()
-            + commitment.bonds_root.len()
+            + 32  // bonds_root
+            + 32  // justifications_root
             + 8   // block_number
-            + commitment.rejected_root.len()
-            + commitment.applied_from_scope_root.len()
-            + commitment.leaky_bucket_votes_root.len()
+            + 32  // rejected_root
+            + 32  // applied_from_scope_root
+            + 32  // leaky_bucket_votes_root
             + commitment.merge_base.len()
             + commitment.body_extra_bytes.len()
             + commitment.sender.len()
@@ -769,33 +786,40 @@ fn header_preimage(commitment: &BlockCommitment) -> Vec<u8> {
             + commitment.shard_id.len()
             + commitment.extra_bytes.len(),
     );
+    // Every variable-length field carries its length, so no byte can move
+    // from one field to its neighbour without changing the preimage.
+    let push_field = |buf: &mut Vec<u8>, field: &[u8]| {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field);
+    };
     buf.push(BLOCK_HASH_SCHEME_VERSION);
-    buf.extend_from_slice(&header_bytes);
-    buf.extend_from_slice(commitment.pre_state_hash.as_ref());
-    buf.extend_from_slice(commitment.post_state_hash.as_ref());
-    buf.extend_from_slice(commitment.bonds_root.as_ref());
+    push_field(&mut buf, &header_bytes);
+    push_field(&mut buf, commitment.pre_state_hash.as_ref());
+    push_field(&mut buf, commitment.post_state_hash.as_ref());
+    buf.extend_from_slice(&commitment.bonds_root);
+    buf.extend_from_slice(&commitment.justifications_root);
     buf.extend_from_slice(&commitment.block_number.to_le_bytes());
-    buf.extend_from_slice(commitment.rejected_root.as_ref());
-    buf.extend_from_slice(commitment.applied_from_scope_root.as_ref());
-    buf.extend_from_slice(commitment.leaky_bucket_votes_root.as_ref());
-    buf.extend_from_slice(commitment.merge_base.as_ref());
-    buf.extend_from_slice(commitment.body_extra_bytes.as_ref());
-    buf.extend_from_slice(commitment.sender.as_ref());
-    buf.extend_from_slice(commitment.sig_algorithm.as_bytes());
+    buf.extend_from_slice(&commitment.rejected_root);
+    buf.extend_from_slice(&commitment.applied_from_scope_root);
+    buf.extend_from_slice(&commitment.leaky_bucket_votes_root);
+    push_field(&mut buf, commitment.merge_base.as_ref());
+    push_field(&mut buf, commitment.body_extra_bytes.as_ref());
+    push_field(&mut buf, commitment.sender.as_ref());
+    push_field(&mut buf, commitment.sig_algorithm.as_bytes());
     buf.extend_from_slice(&commitment.seq_num.to_le_bytes());
-    buf.extend_from_slice(commitment.shard_id.as_bytes());
-    buf.extend_from_slice(commitment.extra_bytes.as_ref());
+    push_field(&mut buf, commitment.shard_id.as_bytes());
+    push_field(&mut buf, commitment.extra_bytes.as_ref());
     buf
 }
 
 /// Combine the header-leaf hash and the deploys root under the TOP
 /// domain byte to produce the final 32-byte block hash.
-fn hash_top(h_header: &[u8; 32], deploys_root: &[u8]) -> [u8; 32] {
-    let mut input = Vec::with_capacity(1 + 32 + deploys_root.len());
-    input.push(TOP_DOMAIN);
-    input.extend_from_slice(h_header);
-    input.extend_from_slice(deploys_root);
-    let h = Blake2b256::hash(input);
+fn hash_top(h_header: &[u8; 32], deploys_root: &[u8; 32]) -> [u8; 32] {
+    let mut input = [0u8; 1 + 32 + 32];
+    input[0] = TOP_DOMAIN;
+    input[1..33].copy_from_slice(h_header);
+    input[33..].copy_from_slice(deploys_root);
+    let h = Blake2b256::hash(input.to_vec());
     let mut out = [0u8; 32];
     out.copy_from_slice(&h);
     out
@@ -808,16 +832,16 @@ pub fn block_commitment_with_leaves(
     deploys_leaves: &[[u8; 32]],
 ) -> BlockCommitment {
     let state = &block.body.state;
-    let root = |bytes: [u8; 32]| prost::bytes::Bytes::copy_from_slice(&bytes);
     BlockCommitment {
         header: block.header.clone(),
         pre_state_hash: state.pre_state_hash.clone(),
         post_state_hash: state.post_state_hash.clone(),
-        bonds_root: root(bonds_root(&state.bonds)),
+        bonds_root: bonds_root(&state.bonds),
+        justifications_root: justifications_root(&block.justifications),
         block_number: state.block_number,
-        rejected_root: root(rejected_root(block)),
-        applied_from_scope_root: root(applied_from_scope_root(block)),
-        leaky_bucket_votes_root: root(leaky_bucket_votes_root(block)),
+        rejected_root: rejected_root(block),
+        applied_from_scope_root: applied_from_scope_root(block),
+        leaky_bucket_votes_root: leaky_bucket_votes_root(block),
         merge_base: block.body.merge_base.clone(),
         body_extra_bytes: block.body.extra_bytes.clone(),
         sender: block.sender.clone(),
@@ -825,10 +849,7 @@ pub fn block_commitment_with_leaves(
         seq_num: block.seq_num,
         shard_id: block.shard_id.clone(),
         extra_bytes: block.extra_bytes.clone(),
-        deploys_root: root(crypto::rust::hash::merkle::merkle_root(
-            &MERKLE_PARAMS,
-            deploys_leaves,
-        )),
+        deploys_root: crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, deploys_leaves),
         sig: block.sig.clone(),
     }
 }
@@ -841,7 +862,7 @@ pub fn block_commitment(block: &BlockMessage) -> BlockCommitment {
 pub fn commitment_hash(commitment: &BlockCommitment) -> BlockHash {
     let h_header =
         crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_HEADER, &header_preimage(commitment));
-    hash_top(&h_header, commitment.deploys_root.as_ref())
+    hash_top(&h_header, &commitment.deploys_root)
         .to_vec()
         .into()
 }
@@ -2288,7 +2309,7 @@ mod merkle_block_hash_tests {
         // pre/post state hashes, sender = 33 zero bytes, timestamp =
         // 1_700_000_000_000, version = 1, shard_id = "test-shard",
         // sig_algorithm = "secp256k1".
-        const EXPECTED: &str = "249c70aa27fa8353d0373e13d6e9fc8ed4f50fc77d40bf901531fdbd4bc3884f";
+        const EXPECTED: &str = "060b927fa86011c3db9b132a456299102d6628be7dec55edccc07fdac8bd777f";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
     }
 
@@ -2317,6 +2338,10 @@ mod merkle_block_hash_tests {
         b.sender = Bytes::from(vec![14; 65]);
         b.seq_num = 7;
         b.extra_bytes = Bytes::from(vec![15; 4]);
+        b.justifications = vec![Justification {
+            validator: Bytes::from(vec![16; 65]),
+            latest_block_hash: Bytes::from(vec![17; 32]),
+        }];
         b
     }
 
@@ -2324,7 +2349,7 @@ mod merkle_block_hash_tests {
     /// dropped from or reordered in the preimage changes it.
     #[test]
     fn hash_block_populated_golden_hex() {
-        const EXPECTED: &str = "7610c526a8db9ea7b96aaf553a0032950f411156929d1589057d7b5689463301";
+        const EXPECTED: &str = "0d19b6143daa4af1f205267424e30165b7745b92827122deb12019e8bc9130e0";
         assert_eq!(
             hex::encode(hash_block(&populated_block())),
             EXPECTED,
@@ -2434,5 +2459,86 @@ mod merkle_block_hash_tests {
             "hash_block_with_leaves on 32-user+1-system block took {fast_32_us} us, \
              exceeds regression ceiling {CEILING_US} us (paper target ~7 us)"
         );
+    }
+}
+
+#[cfg(test)]
+mod hash_block_tests {
+    use models::rust::block_implicits::get_random_block_default;
+
+    use super::*;
+
+    fn justification(validator: u8, block: u8) -> Justification {
+        Justification {
+            validator: vec![validator; 65].into(),
+            latest_block_hash: vec![block; 32].into(),
+        }
+    }
+
+    #[test]
+    fn hash_block_commits_to_justifications() {
+        let mut block = get_random_block_default();
+        block.justifications = vec![justification(1, 1), justification(2, 2)];
+        let original = hash_block(&block);
+
+        let mut changed = block.clone();
+        changed.justifications[1].latest_block_hash = vec![3; 32].into();
+        let mut removed = block.clone();
+        removed.justifications.pop();
+        let mut added = block.clone();
+        added.justifications.push(justification(3, 3));
+        let mut moved_to_extra_bytes = removed.clone();
+        moved_to_extra_bytes.extra_bytes = [vec![2; 65], vec![2; 32]].concat().into();
+
+        for mutated in [changed, removed, added, moved_to_extra_bytes] {
+            assert_ne!(hash_block(&mutated), original);
+        }
+    }
+
+    #[test]
+    fn moving_bytes_between_adjacent_fields_changes_the_hash() {
+        use prost::bytes::Bytes;
+
+        let mut block = get_random_block_default();
+        block.body.merge_base = vec![7; 32].into();
+        block.body.extra_bytes = vec![8; 4].into();
+        block.extra_bytes = vec![9; 4].into();
+        block.sig_algorithm = "secp256k1".to_string();
+        block.shard_id = "root".to_string();
+        let original = hash_block(&block);
+        let join = |a: &[u8], b: &[u8]| -> Bytes { [a, b].concat().into() };
+
+        let mut pre_into_post = block.clone();
+        let pre = block.body.state.pre_state_hash.clone();
+        pre_into_post.body.state.pre_state_hash = pre.slice(..pre.len() - 1);
+        pre_into_post.body.state.post_state_hash =
+            join(&pre[pre.len() - 1..], &block.body.state.post_state_hash);
+
+        let mut merge_base_into_body_extra = block.clone();
+        merge_base_into_body_extra.body.merge_base = Bytes::new();
+        merge_base_into_body_extra.body.extra_bytes =
+            join(&block.body.merge_base, &block.body.extra_bytes);
+
+        let mut body_extra_into_sender = block.clone();
+        body_extra_into_sender.body.extra_bytes = Bytes::new();
+        body_extra_into_sender.sender = join(&block.body.extra_bytes, &block.sender);
+
+        let mut sig_algorithm_into_sender = block.clone();
+        sig_algorithm_into_sender.sender = join(&block.sender, b"s");
+        sig_algorithm_into_sender.sig_algorithm = "ecp256k1".to_string();
+
+        let mut shard_id_into_extra = block.clone();
+        shard_id_into_extra.shard_id = String::new();
+        shard_id_into_extra.extra_bytes = join(b"root", &block.extra_bytes);
+
+        for mutated in [
+            pre_into_post,
+            merge_base_into_body_extra,
+            body_extra_into_sender,
+            sig_algorithm_into_sender,
+            shard_id_into_extra,
+        ] {
+            assert_ne!(hash_block(&mutated), original);
+        }
     }
 }
