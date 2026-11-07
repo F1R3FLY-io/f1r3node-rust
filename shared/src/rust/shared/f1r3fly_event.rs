@@ -65,6 +65,28 @@ pub enum F1r3flyEvent {
     ApprovedBlockReceived(ApprovedBlockReceived),
     EnteredRunningState(EnteredRunningState),
     NodeStarted(NodeStarted),
+    DeployVerdict(DeployVerdict),
+}
+
+/// The terminal state the node settled for a deploy. Written once; a deploy
+/// never receives a second verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeployVerdictState {
+    Finalized,
+    Expired,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeployVerdict {
+    pub deploy_id: String,
+    pub state: DeployVerdictState,
+    pub rejection_count: u32,
+    /// The deploy's latest DAG-visible inclusion; `None` for a deploy no
+    /// block ever included.
+    pub block_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -258,6 +280,20 @@ impl F1r3flyEvent {
     }
 
     pub fn node_started(address: String) -> Self { Self::NodeStarted(NodeStarted { address }) }
+
+    pub fn deploy_verdict(
+        deploy_id: String,
+        state: DeployVerdictState,
+        rejection_count: u32,
+        block_hash: Option<String>,
+    ) -> Self {
+        Self::DeployVerdict(DeployVerdict {
+            deploy_id,
+            state,
+            rejection_count,
+            block_hash,
+        })
+    }
 }
 
 #[cfg(test)]

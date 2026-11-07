@@ -8,6 +8,7 @@ use std::task::{Context, Poll};
 
 use futures::stream::Stream;
 use tokio::sync::broadcast;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 
 pub use super::f1r3fly_event::F1r3flyEvent;
@@ -87,8 +88,15 @@ impl F1r3flyEvents {
     }
 }
 
-/// Stream implementation for consuming events.
-/// Uses BroadcastStream internally which properly handles async wakeups.
+/// A subscriber fell behind the bus; the field counts the events dropped for
+/// it. The stream continues with the oldest event still buffered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("event stream lagged; {0} events were skipped")]
+pub struct EventsLagged(pub u64);
+
+/// Stream implementation for consuming events. A subscriber that falls
+/// behind the bus receives one `Err(EventsLagged)` in place of the events it
+/// lost, then the stream resumes.
 pub struct EventStream {
     sender: broadcast::Sender<F1r3flyEvent>, // required in order to create a new EventStream from current instance
     inner: BroadcastStream<F1r3flyEvent>,
@@ -104,19 +112,13 @@ impl EventStream {
 }
 
 impl Stream for EventStream {
-    type Item = F1r3flyEvent;
+    type Item = Result<F1r3flyEvent, EventsLagged>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Delegate to BroadcastStream which properly handles waker registration
-        // BroadcastStream returns Option<Result<T, BroadcastStreamRecvError>>
-        // We map errors to None (stream end) and unwrap Ok values
         match Pin::new(&mut self.inner).poll_next(cx) {
-            Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(item)),
-            Poll::Ready(Some(Err(_))) => {
-                // RecvError::Lagged means we missed some messages, but stream continues
-                // We could log this, but for now just skip and poll again
-                cx.waker().wake_by_ref();
-                Poll::Pending
+            Poll::Ready(Some(Ok(item))) => Poll::Ready(Some(Ok(item))),
+            Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(skipped)))) => {
+                Poll::Ready(Some(Err(EventsLagged(skipped))))
             }
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
@@ -203,7 +205,7 @@ mod tests {
 
             // This should wake up when event arrives (~50ms)
             // If waker is broken, this hangs until timeout (2s)
-            let received = stream.next().await.expect("No event available");
+            let received = stream.next().await.expect("No event available").expect("stream did not lag");
 
             match received {
                 F1r3flyEvent::BlockFinalised(BlockFinalised { block_hash, .. }) => {
@@ -250,7 +252,7 @@ mod tests {
             .expect("Failed to publish event");
 
         // Consume events from the stream
-        let first_received = stream.next().await.expect("No event available");
+        let first_received = stream.next().await.expect("No event available").expect("stream did not lag");
         match first_received {
             F1r3flyEvent::BlockFinalised(BlockFinalised { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash123");
@@ -258,7 +260,7 @@ mod tests {
             _ => panic!("Wrong event type received"),
         }
 
-        let second_received = stream.next().await.expect("No event available");
+        let second_received = stream.next().await.expect("No event available").expect("stream did not lag");
         match second_received {
             F1r3flyEvent::BlockCreated(BlockCreated { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash456");
@@ -266,7 +268,7 @@ mod tests {
             _ => panic!("Wrong event type received"),
         }
 
-        let third_received = stream.next().await.expect("No event available");
+        let third_received = stream.next().await.expect("No event available").expect("stream did not lag");
         match third_received {
             F1r3flyEvent::BlockAdded(BlockAdded { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash789");
@@ -293,7 +295,7 @@ mod tests {
             .expect("Failed to publish event");
 
         // Consume events from the stream
-        let first_received = stream.next().await.expect("No event available");
+        let first_received = stream.next().await.expect("No event available").expect("stream did not lag");
         match first_received {
             F1r3flyEvent::BlockFinalised(BlockFinalised { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash123");
@@ -301,7 +303,7 @@ mod tests {
             _ => panic!("Wrong event type received"),
         }
 
-        let second_received = stream.next().await.expect("No event available");
+        let second_received = stream.next().await.expect("No event available").expect("stream did not lag");
         match second_received {
             F1r3flyEvent::BlockCreated(BlockCreated { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash456");
@@ -355,6 +357,32 @@ mod tests {
 
         // Each consumer should get all 5 events
         assert_eq!(total_events, 15);
+    }
+
+    #[tokio::test]
+    async fn a_lagging_subscriber_is_told_how_many_events_it_lost() {
+        const PUBLISHED: u64 = 1_000;
+        let events = F1r3flyEvents::new();
+        let mut stream = events.consume();
+        for _ in 0..PUBLISHED {
+            events.publish(create_block_created_event()).unwrap();
+        }
+
+        let EventsLagged(skipped) = stream.next().await.expect("stream is open").unwrap_err();
+        assert!(skipped > 0);
+        let mut delivered = 0;
+        while let Ok(Some(item)) =
+            tokio::time::timeout(Duration::from_millis(50), stream.next()).await
+        {
+            item.expect("no second lag");
+            delivered += 1;
+        }
+        assert!(delivered > 0, "the stream resumes with what the bus kept");
+        assert_eq!(
+            skipped + delivered,
+            PUBLISHED,
+            "every event is either delivered or counted as skipped"
+        );
     }
 
     #[tokio::test]
@@ -429,7 +457,11 @@ mod tests {
 
         // Phase 3: More events arrive — both buffered AND broadcast (pre-seal)
         events.publish(create_block_created_event()).unwrap();
-        let live_event = stream.next().await.expect("Should receive live event");
+        let live_event = stream
+            .next()
+            .await
+            .expect("Should receive live event")
+            .expect("stream did not lag");
         match live_event {
             F1r3flyEvent::BlockCreated(BlockCreated { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash456");
@@ -454,7 +486,11 @@ mod tests {
 
         // Phase 5: Post-seal events only go to broadcast, not buffer
         events.publish(create_block_added_event()).unwrap();
-        let post_seal = stream.next().await.expect("Should receive post-seal event");
+        let post_seal = stream
+            .next()
+            .await
+            .expect("Should receive post-seal event")
+            .expect("stream did not lag");
         match post_seal {
             F1r3flyEvent::BlockAdded(BlockAdded { block_hash, .. }) => {
                 assert_eq!(block_hash, "hash789");
