@@ -2374,8 +2374,8 @@ async fn display_zero_weights_and_float_boundaries_keep_shared_production_bits()
                 (f32::from_bits(bits) - f32::from_bits(fault_bits)).to_bits()
             );
             assert_eq!(inputs.initial_fault_bits, fault_bits);
-            assert_eq!(inputs.equivocating_weight, (2 * a as u64).to_string());
-            assert_eq!(inputs.total_weight, (a as u64 + b as u64).to_string());
+            assert_eq!(inputs.equivocating_weight, (2 * a).to_string());
+            assert_eq!(inputs.total_weight, (a + b).to_string());
             assert_eq!(inputs.matched_records, 2);
             assert_eq!(inputs.distinct_equivocators, 1);
         }
