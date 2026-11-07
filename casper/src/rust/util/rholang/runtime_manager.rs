@@ -1639,12 +1639,15 @@ impl RuntimeManager {
      * the time. For some situations, we can just use the value directly for better performance.
      */
     pub fn empty_state_hash_fixed() -> StateHash {
-        // Updated 2026-07-04 for the versioned registry FIP: Step 2 wires
-        // VersionedRegistry.rho into genesis, adding one more contract to
-        // the initial installed set and re-encoding the bootstrap
-        // registry's continuations. Coordinated upgrade required.
-        // (Prior update: 2026-04-29 by Phase 9 of where-clauses-and-match-guards.)
-        hex::decode("facf59ccc55ee2c04802c7399bcff0d15154f70e0d2bc40cf041aac0a89499c1")
+        // Updated 2026-11-06 for f1r3lang-with-monads Stage B.2: adding
+        // `repeated Foreach foreaches = 13` to Par (and the `Foreach`
+        // message itself) changes the bincode serialization of every
+        // stored Par by one `u64` length prefix (zero for empty foreaches
+        // vectors), re-encoding the bootstrap registry. Coordinated
+        // upgrade required.
+        // (Prior update: 2026-07-04 for the versioned registry FIP Step 2.
+        //  Prior to that: 2026-04-29 for Phase 9 where-clauses-and-match-guards.)
+        hex::decode("04aa055ca10f1ad354d083193e25021e5263293a56813b2f005a1d1531990451")
             .unwrap()
             .into()
     }
