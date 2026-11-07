@@ -135,7 +135,7 @@ struct FiringState {
 }
 
 pub struct Firing {
-    payer: SealRecord,
+    bound: SealRecord,
     wallets: BTreeSet<Vec<u8>>,
     limit: i64,
     state: Mutex<FiringState>,
@@ -148,10 +148,24 @@ pub enum Finished {
 
 impl Firing {
     pub fn new(payer: SealRecord, named: &[WalletOwner]) -> Arc<Self> {
+        Self::bounded_by(payer, named, None)
+    }
+
+    pub fn bounded_by(
+        payer: SealRecord,
+        named: &[WalletOwner],
+        own: Option<WalletOwner>,
+    ) -> Arc<Self> {
+        let bound = match own {
+            Some(owner) => payer.enter(owner, payer.kind),
+            None => payer.clone(),
+        };
+        let mut named = named.to_vec();
+        named.push(bound.owner.clone());
         Arc::new(Firing {
-            wallets: firing_wallets(&payer, named),
+            wallets: firing_wallets(&payer, &named),
             limit: limit_of(&payer),
-            payer,
+            bound,
             state: Mutex::new(FiringState::default()),
         })
     }
@@ -199,7 +213,7 @@ impl Firing {
     pub fn finish(&self, ledger: &CommLedger) -> Finished {
         let state = std::mem::take(&mut *self.state.lock().expect("firing lock"));
         if state.exhausted {
-            ledger.on_work(Some(Surface::of(&self.payer)), self.limit);
+            ledger.on_work(Some(Surface::of(&self.bound)), self.limit);
             return Finished::Exhausted;
         }
         for (surface, phlo) in state.work {
@@ -373,6 +387,26 @@ mod tests {
         let work = ledger.take_work();
         assert_eq!(work.get(&Some(Surface::of(&record(1, 2, 100)))), Some(&100));
         assert_eq!(work.len(), 1);
+    }
+
+    #[test]
+    fn a_firing_over_its_bound_charges_the_owner_of_the_continuations_own_seal() {
+        let firing = Firing::bounded_by(record(2, 3, 100), &[], Some(owner(1)));
+        let inner = record(2, 3, 100).enter(owner(1), SealKind::Signed);
+        firing.charge(&inner, 80, 0).unwrap();
+        assert_eq!(
+            firing.charge(&inner, 30, 0),
+            Err(InterpreterError::FiringExhausted)
+        );
+        let ledger = CommLedger::default();
+        assert!(matches!(firing.finish(&ledger), Finished::Exhausted));
+        let work = ledger.take_work();
+        assert_eq!(work.len(), 1);
+        let (surface, phlo) = work.into_iter().next().unwrap();
+        assert_eq!(
+            (surface.unwrap().owner, phlo),
+            (owner(1).canonical_bytes(), 100)
+        );
     }
 
     #[test]

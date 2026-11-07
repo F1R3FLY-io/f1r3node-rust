@@ -52,6 +52,9 @@ impl RholangAndScalaDispatcher {
         let record = seal::of_continuation(&continuation)
             .map_err(|e| InterpreterError::ReduceError(e.to_string()))?;
         let named = seal::body_owners(&continuation);
+        let own = record
+            .as_ref()
+            .and_then(|r| seal::own_owner(&continuation, r));
         match continuation.tagged_cont {
             Some(cont) => match cont {
                 TaggedCont::ParBody(par_with_rand) => {
@@ -75,7 +78,7 @@ impl RholangAndScalaDispatcher {
                     let merged_rand = Blake2b512Random::merge(randoms);
                     let firing = match (seal::meter(), record.as_ref()) {
                         (Some(meter), Some(r)) if meter.gates(r) => {
-                            Some(membrane::Firing::new(r.clone(), &named))
+                            Some(membrane::Firing::bounded_by(r.clone(), &named, own.clone()))
                         }
                         _ => None,
                     };

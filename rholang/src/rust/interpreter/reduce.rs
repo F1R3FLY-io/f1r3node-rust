@@ -8722,6 +8722,18 @@ fn solely_term(body: &Par) -> Option<&CostSignedTerm> {
     Some(term)
 }
 
+pub(crate) fn own_seal_owner(body: Option<&Par>, record: &SealRecord) -> Option<WalletOwner> {
+    let term = solely_term(body?)?;
+    let seal = term.seal.as_ref()?;
+    if seal.kind == 3 || seal.origin != record.origin.digest() {
+        return None;
+    }
+    if term.body.as_ref().is_some_and(is_stack_body) {
+        return None;
+    }
+    signature_owner_among(term.signature.as_ref()?, &record.origin.signers).ok()
+}
+
 fn elaborated_continuation(body: Option<&Par>) -> Option<&models::rhoapi::ElaboratedSeal> {
     let term = solely_term(body?)?;
     if term.body.as_ref().is_some_and(is_stack_body) {

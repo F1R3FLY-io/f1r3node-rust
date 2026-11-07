@@ -98,7 +98,10 @@ pub fn holds_comm(
 ) -> bool {
     match comm_records(continuation, data) {
         Some((receive, sends)) => {
-            let named = body_owners(continuation);
+            let named = receive
+                .as_ref()
+                .map(|r| firing_owners(continuation, r))
+                .unwrap_or_default();
             meter.hold(&meter.comm_needs(
                 receive.as_ref().map(|r| (r, named.as_slice())),
                 &sends,
@@ -107,6 +110,22 @@ pub fn holds_comm(
         }
         None => false,
     }
+}
+
+pub fn own_owner(continuation: &TaggedContinuation, record: &SealRecord) -> Option<WalletOwner> {
+    use models::rhoapi::tagged_continuation::TaggedCont;
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(body)) => {
+            crate::rust::interpreter::reduce::own_seal_owner(body.body.as_ref(), record)
+        }
+        _ => None,
+    }
+}
+
+pub fn firing_owners(continuation: &TaggedContinuation, record: &SealRecord) -> Vec<WalletOwner> {
+    let mut named = body_owners(continuation);
+    named.extend(own_owner(continuation, record));
+    named
 }
 
 pub fn body_owners(continuation: &TaggedContinuation) -> Vec<WalletOwner> {
