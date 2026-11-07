@@ -975,14 +975,12 @@ impl PrettyPrinter {
                             self.build_string_from_message(scale)
                         ))
                     }
-                    ConnectiveInstance::ConnList(element) => Ok(format!(
-                        "List<{}>",
-                        self.build_string_from_message(element)
-                    )),
-                    ConnectiveInstance::ConnSet(element) => Ok(format!(
-                        "Set<{}>",
-                        self.build_string_from_message(element)
-                    )),
+                    ConnectiveInstance::ConnList(element) => {
+                        Ok(format!("List<{}>", self.build_string_from_message(element)))
+                    }
+                    ConnectiveInstance::ConnSet(element) => {
+                        Ok(format!("Set<{}>", self.build_string_from_message(element)))
+                    }
                     ConnectiveInstance::ConnMap(body) => {
                         let default_par = Par::default();
                         let key = body.key.as_ref().unwrap_or(&default_par);

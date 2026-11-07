@@ -358,9 +358,7 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
         {
             if is_pure_type_pattern(&pattern) {
                 let ctx = crate::rust::interpreter::typechecker::Context::new();
-                return match crate::rust::interpreter::typechecker::check(
-                    &ctx, &target, &pattern,
-                ) {
+                return match crate::rust::interpreter::typechecker::check(&ctx, &target, &pattern) {
                     Ok(()) => Some(()),
                     Err(_) => None,
                 };

@@ -851,10 +851,7 @@ impl Sortable<Expr> for ExprSortMatcher {
                             body: Some(sorted_body.term),
                             locally_free: el.locally_free.clone(),
                             connective_used: el.connective_used,
-                            param_types: sorted_param_types
-                                .into_iter()
-                                .map(|p| p.term)
-                                .collect(),
+                            param_types: sorted_param_types.into_iter().map(|p| p.term).collect(),
                         }),
                         Tree::Node(children),
                     )

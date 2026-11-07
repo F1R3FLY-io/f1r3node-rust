@@ -248,11 +248,7 @@ async fn typed_lambda_carries_param_type_annotation() {
 
     let int_ann = ParBuilderUtil::create_ast_simple_type(SimpleType::Int, &parser);
     let x_ref = ParBuilderUtil::create_ast_proc_var("x", &parser);
-    let lam = ParBuilderUtil::create_ast_lambda_typed(
-        vec![("x", Some(int_ann))],
-        x_ref,
-        &parser,
-    );
+    let lam = ParBuilderUtil::create_ast_lambda_typed(vec![("x", Some(int_ann))], x_ref, &parser);
 
     let normalized = normalize_ann_proc(&lam, empty_inputs(), &HashMap::new(), &parser).unwrap();
 

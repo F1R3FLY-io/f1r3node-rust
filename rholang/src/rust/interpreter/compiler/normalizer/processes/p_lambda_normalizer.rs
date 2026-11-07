@@ -100,7 +100,8 @@ pub fn normalize_p_lambda<'ast>(
     )?;
 
     let body_par = body_result.par.clone();
-    let body_locally_free = filter_and_adjust_bitset(body_par.locally_free(input_depth), bind_count);
+    let body_locally_free =
+        filter_and_adjust_bitset(body_par.locally_free(input_depth), bind_count);
     // Annotations contribute their own locally_free (outer scope).
     let mut locally_free = body_locally_free;
     for pt in &param_type_pars {

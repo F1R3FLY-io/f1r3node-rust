@@ -225,10 +225,9 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                             scored_element.term,
                         )),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::CONNECTIVE_LIST,
-                        vec![scored_element.score],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_LIST, vec![
+                        scored_element.score,
+                    ]),
                 }
             }
 
@@ -236,14 +235,11 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                 let scored_element = ParSortMatcher::sort_match(element);
                 ScoredTerm {
                     term: Connective {
-                        connective_instance: Some(ConnectiveInstance::ConnSet(
-                            scored_element.term,
-                        )),
+                        connective_instance: Some(ConnectiveInstance::ConnSet(scored_element.term)),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::CONNECTIVE_SET,
-                        vec![scored_element.score],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_SET, vec![
+                        scored_element.score,
+                    ]),
                 }
             }
 
@@ -262,10 +258,10 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                             },
                         )),
                     },
-                    score: Tree::<ScoreAtom>::create_node_from_i32(
-                        Score::CONNECTIVE_MAP,
-                        vec![scored_key.score, scored_value.score],
-                    ),
+                    score: Tree::<ScoreAtom>::create_node_from_i32(Score::CONNECTIVE_MAP, vec![
+                        scored_key.score,
+                        scored_value.score,
+                    ]),
                 }
             }
 
@@ -279,10 +275,7 @@ impl Sortable<Connective> for ConnectiveSortMatcher {
                     term: Connective {
                         connective_instance: Some(ConnectiveInstance::ConnTuple(
                             crate::rhoapi::ConnTupleBody {
-                                elements: scored_elements
-                                    .iter()
-                                    .map(|s| s.term.clone())
-                                    .collect(),
+                                elements: scored_elements.iter().map(|s| s.term.clone()).collect(),
                             },
                         )),
                     },

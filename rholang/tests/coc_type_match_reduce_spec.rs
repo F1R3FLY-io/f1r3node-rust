@@ -102,11 +102,7 @@ async fn match_pi_pattern_rejects_ground_value() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn match_pi_pattern_with_no_match_reduces_to_noop() {
     with_runtime("coc-type-match-", |mut runtime| async move {
-        eval_ok(
-            &mut runtime,
-            "match 42 { Int -> Int => @\"n\"!(\"hit\") }",
-        )
-        .await;
+        eval_ok(&mut runtime, "match 42 { Int -> Int => @\"n\"!(\"hit\") }").await;
         assert!(
             data_at(&runtime, "n").await.is_empty(),
             "a match with no matching case is a no-op"

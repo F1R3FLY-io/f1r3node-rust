@@ -46,8 +46,7 @@ fn match_with_pi_pattern_normalizes_to_epi_par() {
 fn lambda_value_matches_matching_pi_source_pattern() {
     let lambda_par = compile("(x: Int) => x");
     let match_par = compile("match 0 { Int -> Int => Nil }");
-    let pattern = match_par.matches[0]
-        .cases[0]
+    let pattern = match_par.matches[0].cases[0]
         .pattern
         .clone()
         .expect("pattern");
@@ -64,8 +63,7 @@ fn lambda_value_matches_matching_pi_source_pattern() {
 fn lambda_value_rejects_non_matching_pi_source_pattern() {
     let lambda_par = compile("(x: Int) => x");
     let match_par = compile("match 0 { Int -> Bool => Nil }");
-    let pattern = match_par.matches[0]
-        .cases[0]
+    let pattern = match_par.matches[0].cases[0]
         .pattern
         .clone()
         .expect("pattern");
@@ -81,8 +79,7 @@ fn lambda_value_rejects_non_matching_pi_source_pattern() {
 fn ground_value_rejects_pi_source_pattern() {
     let int_par = compile("42");
     let match_par = compile("match 0 { Int -> Int => Nil }");
-    let pattern = match_par.matches[0]
-        .cases[0]
+    let pattern = match_par.matches[0].cases[0]
         .pattern
         .clone()
         .expect("pattern");
@@ -99,11 +96,13 @@ fn ground_value_rejects_pi_source_pattern() {
 fn lambda_matches_dependent_pi_source_pattern() {
     let lambda_par = compile("(x: Int) => x");
     let match_par = compile("match 0 { (x: Int) -> Int => Nil }");
-    let pattern = match_par.matches[0]
-        .cases[0]
+    let pattern = match_par.matches[0].cases[0]
         .pattern
         .clone()
         .expect("pattern");
     let result = SpatialMatcherContext::new().match_result(&lambda_par, pattern);
-    assert!(result.is_some(), "dependent Pi pattern should accept the lambda");
+    assert!(
+        result.is_some(),
+        "dependent Pi pattern should accept the lambda"
+    );
 }
