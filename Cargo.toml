@@ -8,6 +8,7 @@ members = [
 	"rho-pure-eval",
 	"shared",
 	"node",
+	"deploy-queue",
 	"models",
 	"crypto",
 	"block-storage",
