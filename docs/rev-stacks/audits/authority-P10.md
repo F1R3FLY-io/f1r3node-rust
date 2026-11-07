@@ -3771,6 +3771,62 @@ After these: my final read, and the tag.
 | The P12 track | Parked | `dacacc41a` stays off the shipped branches |
 
 
+## Revision 47: rulings of 2026-11-06 (evening), and the full suites
+
+### Rulings recorded
+
+- **Decision 135: every expression has a rooted seal tree.** The outermost seal of the tree is the deployer's wallet. Undecorated code means `[deployerWallet]` on every continuation, and annotations only refine it. So a term from a deployment can never run outside every seal.
+  - Lane B restores the refusal as a guard, with a test. Bootstrap Rholang is the exception, as a sunk cost.
+  - **This answers the FX-21 revision 2 condition of revision 44.** Check it when it lands.
+- **Decision 136: a failed run pays its commitment Δ.** The debit and the record's `compute_phlo` both become Δ × price.
+  - **The known issue of revision 46** (the two numbers differ) is closed by the ruling.
+  - Check lane A2's settlement change and its test when they land.
+- **SIGSEGV: a known issue, not reproduced.** Nextest ran each of the 1,336 casper `--test mod` tests in its own process on the merged tree, and no test ended on a signal. **Merge condition 4 (the crash check) is met.**
+- **`cargo fmt`: CI decides.** It goes in the handoff notes. **Accepted.**
+
+### Lane A2's full suites at `e3edaf623` (`b89616898`)
+
+rholang 2,475, rspace++ 423, block-storage 320, models 339, shared 149 (1 failed), crypto 118, comm 437, graphz 48, casper lib 890, casper `--test mod` 1,336 under nextest, node 469.
+- The one `shared` failure is the root-only test, as before. **Accepted.**
+- These are the suites before the changes for Decisions 135 and 136, the Decision 133 test with two signers, FX-19 `821c4bee0` and the `dev` merge. **Merge condition 3 is for the final tip**, so it stays open.
+
+### Checks when the code lands
+
+1. **Decision 135 (lane B):**
+   - A sealed term that runs outside every seal, in a run that records seals, is refused, and a test shows the refusal.
+   - The exception for bootstrap Rholang is narrow. It covers only system and genesis deployments, which set no deploy data and are not elaborated. It does not cover any user or exploratory deployment.
+2. **Decision 136 (lane A2):**
+   - A failed run is debited exactly Δ × price on each paying wallet, and its `compute_phlo` is Δ.
+   - Δ is the gate's commitment, so the debit never passes it.
+   - Replay checks both numbers.
+   - A test fails a deployment whose Δ is smaller than its `phloLimit`, and checks the debit, `compute_phlo` and the replay.
+   - **One case for the test:** a failed run whose error comes from a firing over its bound (Decision 132). The deployment pays Δ, and the seal's owner pays exactly its bound, as two separate charges.
+3. **Decision 133 with two signers (lane C):** t is u1's seal with limit n, and s1 is u2's seal with limit m. On exhaustion, u1 pays n, and u2 pays s1's cell. Replay agrees.
+4. **FX-8b carries FX-19 at `821c4bee0`.** At `b89616898` it does not. `821c4bee0` changes only the FX-19 log, so this is a record condition, not a code condition.
+
+### Merge conditions
+
+| Condition | State |
+|---|---|
+| 1. `dev` merged, with the parser pinned to the `rev-stacks/syntax-dev` commit that holds `743752b` and `4e22339` | **Open.** Lane B is doing it. |
+| 2. FX-19 and FX-21 merged | **Met** at `e3edaf623`, plus checks 1 to 4 above |
+| 3. Full suites on the final tip | **Open** |
+| 4. The crash check | **Met** by nextest |
+
+After these: my final read of the final tip, and the tag (Decision 123).
+
+### Gate status for the handoff
+
+| Item | Label | State |
+|---|---|---|
+| Decisions 135 and 136, the Decision 133 test with two signers, FX-8b takes `821c4bee0` | **To be audited when the code lands** | Checks above |
+| Merge conditions 1 and 3 | Conditions | Open |
+| The failed-run mismatch, the sealed term outside every seal | — | **Closed by Decisions 135 and 136**, subject to the checks |
+| The SIGSEGV, `cargo fmt` | Known issue | For the handoff notes |
+| The earlier known issues, D10 and F47 for B6 | Known issue | Unchanged |
+| The P12 track | Parked | `dacacc41a` stays off the shipped branches |
+
+
 ## Open questions for review
 
 1. **F6:** answered on 2026-10-31 with the seal reading (b). Every draw on a wallet must sit inside a region that the wallet's owner sealed. F14 to F17 use this ruling.
