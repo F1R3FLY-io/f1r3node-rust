@@ -8,7 +8,7 @@ use axum::Router;
 use futures::StreamExt;
 use serde_json::{json, Value};
 use shared::rust::shared::f1r3fly_event::F1r3flyEvent;
-use shared::rust::shared::f1r3fly_events::{EventStream, StartupBuffer};
+use shared::rust::shared::f1r3fly_events::{EventStream, EventsLagged, StartupBuffer};
 
 use crate::rust::web::shared_handlers::AppState;
 
@@ -75,7 +75,19 @@ impl EventsInfo {
 
         // Live stream — skip events that were already replayed.
         // Once the replayed set is drained, all events pass through.
-        while let Some(event) = event_stream.next().await {
+        while let Some(item) = event_stream.next().await {
+            let event = match item {
+                Ok(event) => event,
+                Err(EventsLagged(skipped)) => {
+                    tracing::warn!(skipped, "WebSocket event subscriber lagged");
+                    let marker = Self::lag_marker(skipped).to_string();
+                    if socket.send(Message::Text(marker.into())).await.is_err() {
+                        tracing::debug!("WebSocket client disconnected");
+                        break;
+                    }
+                    continue;
+                }
+            };
             let json = match Self::transform_f1r3fly_event(&event) {
                 Ok(j) => j,
                 Err(e) => {
@@ -103,6 +115,16 @@ impl EventsInfo {
                 break;
             }
         }
+    }
+
+    /// Sent in place of the events a lagging subscriber lost, so the client
+    /// knows its view has a gap and must re-read what it tracks.
+    pub fn lag_marker(skipped: u64) -> Value {
+        json!({
+            "event": "stream-lagged",
+            "schema-version": 1,
+            "payload": { "skipped": skipped }
+        })
     }
 
     // Transforms an F1r3flyEvent into a JSON structure matching the Scala implementation
@@ -244,6 +266,34 @@ mod tests {
         assert_eq!(payload["parent-hashes"], json!(["parent1"]));
         assert_eq!(payload["creator"], "creator1");
         assert_eq!(payload["seq-num"], 1);
+    }
+
+    #[test]
+    fn lag_marker_names_the_skipped_count() {
+        let marker = EventsInfo::lag_marker(7);
+        assert_eq!(marker["event"], "stream-lagged");
+        assert_eq!(marker["schema-version"], 1);
+        assert_eq!(marker["payload"]["skipped"], 7);
+    }
+
+    #[test]
+    fn test_transform_deploy_verdict_event() {
+        use shared::rust::shared::f1r3fly_event::DeployVerdictState;
+
+        let event = F1r3flyEvent::deploy_verdict(
+            "sig".to_string(),
+            DeployVerdictState::Expired,
+            2,
+            None,
+        );
+        let result = EventsInfo::transform_f1r3fly_event(&event).unwrap();
+
+        assert_eq!(result["event"], "deploy-verdict");
+        let payload = &result["payload"];
+        assert_eq!(payload["deploy-id"], "sig");
+        assert_eq!(payload["state"], "expired");
+        assert_eq!(payload["rejection-count"], 2);
+        assert!(payload["block-hash"].is_null());
     }
 
     #[test]

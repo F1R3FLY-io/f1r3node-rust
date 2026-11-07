@@ -477,6 +477,7 @@ fn settle_blocking(
             settle_ms,
             "deploy-lifecycle settle"
         );
+        publish_verdicts(&ctx.event_publisher, &settled.terminal);
     }
     let prune_ms = if advanced {
         let prune_started = std::time::Instant::now();
@@ -491,6 +492,37 @@ fn settle_blocking(
     record_settle_timing(settle_ms, prune_ms);
     release_settled(&dag, &ctx.deploy_storage)?;
     settled.map(|_| ())
+}
+
+fn publish_verdicts(
+    event_publisher: &F1r3flyEvents,
+    terminal: &[(prost::bytes::Bytes, block_storage::rust::dag::deploy_lifecycle_types::TerminalRecord)],
+) {
+    use block_storage::rust::dag::deploy_lifecycle_types::TerminalState;
+    use shared::rust::shared::f1r3fly_event::{DeployVerdictState, F1r3flyEvent};
+
+    for (sig, record) in terminal {
+        let state = match record.state {
+            TerminalState::Finalized => DeployVerdictState::Finalized,
+            TerminalState::Expired => DeployVerdictState::Expired,
+            TerminalState::Failed => DeployVerdictState::Failed,
+        };
+        let block_hash =
+            (!record.latest_block_hash.is_empty()).then(|| hex::encode(&record.latest_block_hash));
+        if let Err(error) = event_publisher.publish(F1r3flyEvent::deploy_verdict(
+            hex::encode(sig),
+            state,
+            record.rejection_count,
+            block_hash,
+        )) {
+            tracing::error!(
+                target: "f1r3fly.casper.lifecycle",
+                sig = %hex::encode(&sig[..8.min(sig.len())]),
+                error = %error,
+                "deploy verdict event was not published"
+            );
+        }
+    }
 }
 
 /// One LFB decision and, on an advance, its finalization effects. Returns

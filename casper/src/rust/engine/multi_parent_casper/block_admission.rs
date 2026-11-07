@@ -136,6 +136,11 @@ fn reserve_deploy(
         if !rejected_guard.matches_snapshot(&rejected)? {
             continue;
         }
+        // Before the pool insert: a crash between the two leaves a row with
+        // no pool copy, which settles Expired, never a pooled deploy no
+        // verdict can reach.
+        this.block_dag_storage
+            .record_deploy_admitted(&deploy_id, deploy.data.valid_after_block_number)?;
         match this
             .deploy_storage
             .add_prepared_if_unchanged(prepared, &pool)?
@@ -284,7 +289,7 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot(
     snapshot: &CasperSnapshot,
 ) -> Result<bool, CasperError> {
     let latest_block_number = snapshot.dag.latest_block_number();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         latest_block_number,
         snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -346,7 +351,7 @@ pub(crate) async fn admit_list_pending_deploys(
 ) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
     let snapshot = this.get_snapshot().await?;
     let latest_block_number = snapshot.dag.latest_block_number();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         latest_block_number,
         snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;

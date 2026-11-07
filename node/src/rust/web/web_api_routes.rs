@@ -618,10 +618,11 @@ mod tests {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
+    use models::rust::deploy_request::DeployRequest;
+
     use super::*;
     use crate::rust::api::web_api::{
-        ApiStatus, DataAtNameByBlockHashRequest, DeployRequest, DeployResponse, RhoDataResponse,
-        ViewMode, WebApi,
+        ApiStatus, DataAtNameByBlockHashRequest, DeployResponse, RhoDataResponse, ViewMode, WebApi,
     };
 
     /// Stub WebApi that returns sample DeployResponse for testing.
@@ -1038,12 +1039,14 @@ mod router_tests {
     use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
     use tower::ServiceExt;
 
+    use models::rust::deploy_request::DeployRequest;
+
     use super::*;
     use crate::rust::api::admin_web_api::AdminWebApi;
     use crate::rust::api::serde_types::light_block_info::LightBlockInfoSerde;
     use crate::rust::api::web_api::{
         ApiStatus, BalanceResponse, BondStatusResponse, DeployFinalizationStatusJson,
-        DeployRequest, DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
+        DeployerIdentity, EpochResponse, EpochRewardsResponse, EstimateCostResponse,
         PendingDeploysJson, PrepareResponse, RegistryResponse, RhoExpr, ValidatorInfo,
         ValidatorStatusResponse, ValidatorsResponse, VersionInfo, ViewMode, WebApi,
     };
@@ -1126,6 +1129,10 @@ mod router_tests {
                 is_ready: self.is_ready,
                 current_epoch: 0,
                 epoch_length: 100,
+                latest_block_number: Some(7),
+                deploy_lifespan: Some(50),
+                max_user_deploys_per_block: Some(4),
+                max_parent_depth: Some(25),
             })
         }
 

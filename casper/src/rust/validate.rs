@@ -712,14 +712,16 @@ impl Validate {
             .min();
         let earliest_block_number = match (floor_ctx, oldest_valid_after) {
             (Some(ctx), Some(oldest_valid_after)) => {
-                match crate::rust::util::deploy_window::repeat_scan_start(
+                match models::rust::deploy_window::repeat_scan_start(
                     tip_scan_start,
                     ctx.floor.block_number,
                     expiration_threshold as i64,
                     oldest_valid_after,
                 ) {
                     Ok(start) => start,
-                    Err(e) => return Either::Left(BlockError::from_validation_error(e)),
+                    Err(e) => {
+                        return Either::Left(BlockError::from_validation_error(e.into()))
+                    }
                 }
             }
             _ => tip_scan_start,

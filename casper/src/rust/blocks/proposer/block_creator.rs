@@ -254,12 +254,12 @@ fn retry_walk_start(
     valid_afters: impl Iterator<Item = i64>,
 ) -> Result<i64, CasperError> {
     match valid_afters.min() {
-        Some(oldest) => crate::rust::util::deploy_window::repeat_scan_start(
+        Some(oldest) => Ok(models::rust::deploy_window::repeat_scan_start(
             tip_start,
             ctx.floor.block_number,
             deploy_lifespan,
             oldest,
-        ),
+        )?),
         None => Ok(tip_start),
     }
 }
@@ -705,7 +705,7 @@ async fn prepare_user_deploys_with_policy(
         } else {
             HashSet::new()
         };
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -717,7 +717,7 @@ async fn prepare_user_deploys_with_policy(
     // irreversible removal of retry work — delay, never loss.
     let floor_expiry_bound = floor_ctx
         .map(|ctx| {
-            crate::rust::util::deploy_window::earliest_valid_after(
+            models::rust::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
                 casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
             )
@@ -2257,7 +2257,7 @@ fn fresh_local_deploy_stats(
         .into_iter()
         .map(|deploy| deploy.sig)
         .collect();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2325,7 +2325,7 @@ fn in_scope_local_deploy_stats(
         .into_iter()
         .map(|deploy| deploy.sig)
         .collect();
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2406,7 +2406,7 @@ fn rejected_buffer_has_recoverable_deploys(
     if buffered_deploys.is_empty() {
         return Ok(false);
     }
-    let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
+    let earliest_block_number = models::rust::deploy_window::earliest_valid_after(
         block_number,
         casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
     )?;
@@ -2415,7 +2415,7 @@ fn rejected_buffer_has_recoverable_deploys(
     // cannot hold admission in recovery mode.
     let window_bound = floor_ctx
         .map(|ctx| {
-            crate::rust::util::deploy_window::earliest_valid_after(
+            models::rust::deploy_window::earliest_valid_after(
                 ctx.floor.block_number,
                 casper_snapshot.on_chain_state.shard_conf.deploy_lifespan,
             )
