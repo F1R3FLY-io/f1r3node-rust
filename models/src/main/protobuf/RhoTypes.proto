@@ -226,18 +226,24 @@ message If {
   bool connective_used = 5;
 }
 
-// f1r3lang-with-monads Stage B.2: native `foreach` comprehension.
-// Surface: `foreach ( binder <- source ) yield ( yield_name ) body`.
-// Reducer evaluates source to a collection, iterates elements via
-// toBag, substitutes each into body, folds via the aggregator, and
-// publishes once on yield_name. Default aggregator is ParMonoid
-// (parallel composition). bindCount is 1 for the minimal surface;
-// multi-binder groups await a richer grammar.
+// f1r3lang-with-monads Stage B.2: native `foreach` comprehension
+// (§4.4 `&` independent multi-bind + §4.5 `where`).
+//
+// Surface:
+//   foreach ( b_0 <- m_0 & … & b_{n-1} <- m_{n-1} where c? )
+//   yield ( yield_name ) body
+//
+// Reducer iterates the cartesian product of the sources, evaluates
+// whereCond under all binders (Par::default sentinel means no guard),
+// folds surviving contributions via the aggregator, and publishes
+// once on yield_name. Default aggregator is ParMonoid (parallel
+// composition). `sources.len() == bindCount`.
 message Foreach {
   sint32 bindCount = 1;
-  Par source = 2 [(scalapb.field).no_box = true];
+  repeated Par sources = 2;
   Par body = 3 [(scalapb.field).no_box = true];
   Par yieldName = 4 [(scalapb.field).no_box = true];
+  Par whereCond = 7;
   bytes locallyFree = 5
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];

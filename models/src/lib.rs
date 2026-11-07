@@ -419,9 +419,10 @@ impl Hash for If {
 impl PartialEq for Foreach {
     fn eq(&self, other: &Self) -> bool {
         self.bind_count == other.bind_count
-            && self.source == other.source
+            && self.sources == other.sources
             && self.body == other.body
             && self.yield_name == other.yield_name
+            && self.where_cond == other.where_cond
             && self.connective_used == other.connective_used
     }
 }
@@ -429,9 +430,10 @@ impl PartialEq for Foreach {
 impl Hash for Foreach {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.bind_count.hash(state);
-        self.source.hash(state);
+        self.sources.hash(state);
         self.body.hash(state);
         self.yield_name.hash(state);
+        self.where_cond.hash(state);
         self.connective_used.hash(state);
     }
 }
@@ -1050,9 +1052,7 @@ impl Hash for ConnFixedPointBody {
 }
 
 impl PartialEq for ConnMapBody {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key && self.value == other.value
-    }
+    fn eq(&self, other: &Self) -> bool { self.key == other.key && self.value == other.value }
 }
 
 impl Hash for ConnMapBody {

@@ -4,6 +4,7 @@ use models::rhoapi::{Foreach, Par};
 use models::rust::utils::union;
 use rholang_parser::ast::{AnnProc, Id};
 use rholang_parser::SourcePos;
+use smallvec::SmallVec;
 
 use crate::rust::interpreter::compiler::exports::{
     IdContextPos, ProcVisitInputs, ProcVisitOutputs,
@@ -13,22 +14,23 @@ use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::matcher::has_locally_free::HasLocallyFree;
 use crate::rust::interpreter::util::{filter_and_adjust_bitset, prepend_foreach};
 
-/// f1r3lang-with-monads Stage B.2 native-eval path.
+/// f1r3lang-with-monads Stage B.2 native-eval path (§4.4 `&` + §4.5
+/// `where`).
 ///
-/// Normalize `foreach ( binder <- source ) yield ( yield_name ) proc`
-/// into a `Foreach` process-level node on `par.foreaches`. The source
-/// and yield_name are normalized in the OUTER scope (binder not yet
-/// visible); the body is normalized in a scope extended with the
-/// binder, so inside the body `binder` resolves to `BoundVar(0)` (the
-/// same convention as `p_lambda_normalizer` / `p_pi_normalizer`
-/// post-`e09be002c`: single param pushes in reverse into one binder).
+/// Normalize
+///   `foreach ( b_0 <- m_0 & … & b_{n-1} <- m_{n-1} where c? )
+///    yield ( yield_name ) proc`
+/// into a `Foreach` process-level node on `par.foreaches`.
 ///
-/// Reducer-side native evaluation lands separately; this file only
-/// shapes the Par. The §4.7 reference translation (concurrent
-/// decomposition via new/for/match/send) is explicitly not emitted.
+/// Sources are normalized in the OUTER scope (binds within a group
+/// are *independent* per §4.4 — no source may mention the other's
+/// binder). The optional `where` guard and the body are normalized
+/// in a scope extended with all binders in reverse source order, so
+/// `b_i` resolves to `BoundVar(i)` inside the body (same convention
+/// as `p_lambda_normalizer` / `p_pi_normalizer` after e09be002c).
 pub fn normalize_p_foreach<'ast>(
-    binder: &Id<'ast>,
-    source: &'ast AnnProc<'ast>,
+    binds: &SmallVec<[(Id<'ast>, AnnProc<'ast>); 1]>,
+    where_cond: Option<&'ast AnnProc<'ast>>,
     yield_name: &Id<'ast>,
     body: &'ast AnnProc<'ast>,
     input: ProcVisitInputs,
@@ -39,30 +41,32 @@ pub fn normalize_p_foreach<'ast>(
     let input_bound_chain = input.bound_map_chain.clone();
     let input_depth = input.bound_map_chain.depth() as i32;
 
-    // 1. Normalize source in the outer scope.
-    let source_result = normalize_ann_proc(
-        source,
-        ProcVisitInputs {
-            par: Par::default(),
-            bound_map_chain: input_bound_chain.clone(),
-            free_map: input.free_map.clone(),
-        },
-        env,
-        parser,
-    )?;
+    // 1. Normalize each source in the outer scope. Thread free_map
+    //    across sources so a free var captured by source_0 is reused
+    //    by source_1, etc.
+    let mut free_map = input.free_map.clone();
+    let mut source_pars: Vec<Par> = Vec::with_capacity(binds.len());
+    for (_id, source_ast) in binds.iter() {
+        let result = normalize_ann_proc(
+            source_ast,
+            ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: input_bound_chain.clone(),
+                free_map: free_map.clone(),
+            },
+            env,
+            parser,
+        )?;
+        free_map = result.free_map;
+        source_pars.push(result.par);
+    }
 
-    // 2. Normalize yield_name in the outer scope. The yield_name is a
-    //    channel identifier; we lower it to a quoted-name Par via the
-    //    same ProcVar path the lambda normalizer uses for its binders'
-    //    references.
+    // 2. Normalize yield_name in the outer scope. Must already be
+    //    bound (via `new r` or similar).
     let yield_name_par = {
         use models::rhoapi::expr::ExprInstance;
         use models::rhoapi::var::VarInstance;
         use models::rhoapi::{EVar, Expr, Var};
-        // Look up the yield_name as a name in the surrounding scope.
-        // If it's a fresh identifier not yet bound, we leave it as a
-        // free-var reference; downstream the reducer will either match
-        // it against an outer `new` or fail at emit time.
         match input_bound_chain.get(yield_name.name) {
             Some(bound) => Par::default().with_exprs(vec![Expr {
                 expr_instance: Some(ExprInstance::EVarBody(EVar {
@@ -81,48 +85,79 @@ pub fn normalize_p_foreach<'ast>(
         }
     };
 
-    // 3. Extend the scope with the binder for body normalization.
-    let binder_binding: Vec<IdContextPos<VarSort>> = vec![(
-        binder.name.to_string(),
-        VarSort::ProcSort,
-        SourcePos {
-            line: binder.pos.line,
-            col: binder.pos.col,
-        },
-    )];
-    let scope = input_bound_chain.put_all_pos(binder_binding);
+    // 3. Extend the scope with all binders. Push in REVERSE source
+    //    order so `b_0` lands at the lowest BoundVar index inside
+    //    the body (matching the lambda / Pi convention from
+    //    e09be002c for `x_i -> BoundVar(i)`).
+    let binder_bindings: Vec<IdContextPos<VarSort>> = binds
+        .iter()
+        .rev()
+        .map(|(id, _src)| {
+            (id.name.to_string(), VarSort::ProcSort, SourcePos {
+                line: id.pos.line,
+                col: id.pos.col,
+            })
+        })
+        .collect();
+    let scope = input_bound_chain.put_all_pos(binder_bindings);
     let bind_count = scope.get_count() - input_bound_chain.get_count();
 
-    // 4. Normalize body under the extended scope.
+    // 4. Normalize optional `where` guard under the extended scope.
+    let where_par = if let Some(cond_ast) = where_cond {
+        let r = normalize_ann_proc(
+            cond_ast,
+            ProcVisitInputs {
+                par: Par::default(),
+                bound_map_chain: scope.clone(),
+                free_map: free_map.clone(),
+            },
+            env,
+            parser,
+        )?;
+        free_map = r.free_map;
+        Some(r.par)
+    } else {
+        None
+    };
+
+    // 5. Normalize body under the extended scope.
     let body_result = normalize_ann_proc(
         body,
         ProcVisitInputs {
             par: Par::default(),
             bound_map_chain: scope,
-            free_map: source_result.free_map.clone(),
+            free_map,
         },
         env,
         parser,
     )?;
-
-    // 5. Compose locally_free: source + yield_name (outer scope) plus
-    //    body's free vars with the binder filtered out.
     let body_par = body_result.par.clone();
-    let body_free_shifted =
-        filter_and_adjust_bitset(body_par.locally_free(input_depth), bind_count);
-    let mut locally_free = body_free_shifted;
-    locally_free = union(locally_free, source_result.par.locally_free(input_depth));
+
+    // 6. Compose locally_free. Body + where contribute free vars with
+    //    the binders filtered out; sources + yield_name contribute
+    //    their outer-scope free vars directly.
+    let body_free = filter_and_adjust_bitset(body_par.locally_free(input_depth), bind_count);
+    let where_free = where_par
+        .as_ref()
+        .map(|p| filter_and_adjust_bitset(p.locally_free(input_depth), bind_count))
+        .unwrap_or_default();
+    let mut locally_free = union(body_free, where_free);
+    for s in &source_pars {
+        locally_free = union(locally_free, s.locally_free(input_depth));
+    }
     locally_free = union(locally_free, yield_name_par.locally_free(input_depth));
 
-    let connective_used = source_result.par.connective_used()
+    let connective_used = source_pars.iter().any(|p| p.connective_used())
         || yield_name_par.connective_used()
+        || where_par.as_ref().is_some_and(|p| p.connective_used())
         || body_par.connective_used();
 
     let foreach = Foreach {
         bind_count: bind_count as i32,
-        source: Some(source_result.par),
+        sources: source_pars,
         body: Some(body_par),
         yield_name: Some(yield_name_par),
+        where_cond: where_par,
         locally_free,
         connective_used,
     };

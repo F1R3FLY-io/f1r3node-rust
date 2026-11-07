@@ -669,23 +669,30 @@ impl SubstituteTrait<Foreach> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<Foreach, InterpreterError> {
-        // Source and yield_name live in the outer scope. Body lives
-        // under `bind_count` fresh binders, so substitute under a
-        // shifted env — same shape as ELambda's body treatment above.
-        let source_sub =
-            self.substitute_no_sort(unwrap_option_safe(term.source)?, depth, env)?;
+        // Sources and yield_name live in the OUTER scope. Body and
+        // where_cond live under `bind_count` fresh binders, so
+        // substitute them under a shifted env — same shape as
+        // ELambda's body treatment above.
+        let sources_sub: Vec<Par> = term
+            .sources
+            .into_iter()
+            .map(|s| self.substitute_no_sort(s, depth, env))
+            .collect::<Result<_, _>>()?;
         let yield_sub =
             self.substitute_no_sort(unwrap_option_safe(term.yield_name)?, depth, env)?;
-        let body_sub = self.substitute_no_sort(
-            unwrap_option_safe(term.body)?,
-            depth,
-            &env.shift(term.bind_count),
-        )?;
+        let shifted_env = env.shift(term.bind_count);
+        let body_sub =
+            self.substitute_no_sort(unwrap_option_safe(term.body)?, depth, &shifted_env)?;
+        let where_sub = term
+            .where_cond
+            .map(|c| self.substitute_no_sort(c, depth, &shifted_env))
+            .transpose()?;
         Ok(Foreach {
             bind_count: term.bind_count,
-            source: Some(source_sub),
+            sources: sources_sub,
             body: Some(body_sub),
             yield_name: Some(yield_sub),
+            where_cond: where_sub,
             locally_free: set_bits_until(term.locally_free, env.shift),
             connective_used: term.connective_used,
         })

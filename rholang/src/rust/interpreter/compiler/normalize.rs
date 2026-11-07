@@ -444,19 +444,27 @@ pub fn normalize_ann_proc<'ast>(
             normalize_p_pi(params, codomain, input, _env, parser)
         }
 
-        // f1r3lang-with-monads Stage B.2 native-eval path. Normalizes
-        // `foreach ( binder <- source ) yield ( yield_name ) body` into
-        // a `Foreach` process-level node on `par.foreaches`. Reducer
-        // evaluates this natively per §4.2 (the one-step rule); no
-        // §4.7 concurrent elaboration.
+        // f1r3lang-with-monads Stage B.2 native-eval path (§4.4 `&`
+        // + §4.5 `where`). Normalizes `foreach ( b_0 <- m_0 & … &
+        // b_{n-1} <- m_{n-1} where c? ) yield ( yield_name ) body`
+        // into a `Foreach` process-level node on `par.foreaches`.
+        // Reducer iterates the cartesian product per §4.2.
         Proc::Foreach {
-            binder,
-            source,
+            binds,
+            where_cond,
             yield_name,
             proc: body,
         } => {
             use crate::rust::interpreter::compiler::normalizer::processes::p_foreach_normalizer::normalize_p_foreach;
-            normalize_p_foreach(binder, source, yield_name, body, input, _env, parser)
+            normalize_p_foreach(
+                binds,
+                where_cond.as_ref(),
+                yield_name,
+                body,
+                input,
+                _env,
+                parser,
+            )
         }
 
         // Select - handle select expressions (choice constructs)

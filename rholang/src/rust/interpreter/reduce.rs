@@ -1511,70 +1511,42 @@ impl DebruijnInterpreter {
     ) -> Result<(), InterpreterError> {
         self.cost.charge(match_eval_cost())?;
 
-        // Evaluate the source to WHNF — expected shape: a Par whose
-        // single expr is an EList, ESet, or EMap body. Non-collection
-        // sources are treated as single-element sources (the aggregator
-        // receives exactly their normal form).
-        let source_par = foreach
-            .source
-            .as_ref()
-            .expect("Foreach.source: normalizer post-condition");
-        let evaled_source = self.eval_expr(source_par, env)?;
-        let subst_source =
-            self.substitute.substitute_and_charge(evaled_source, 0, env)?;
-
         // Evaluate yield_name to resolve any BoundVar references.
         let yield_name_par = foreach
             .yield_name
             .as_ref()
             .expect("Foreach.yield_name: normalizer post-condition");
         let evaled_yield = self.eval_expr(yield_name_par, env)?;
-        let subst_yield =
-            self.substitute.substitute_and_charge(evaled_yield, 0, env)?;
+        let subst_yield = self
+            .substitute
+            .substitute_and_charge(evaled_yield, 0, env)?;
 
         let body = foreach
             .body
             .as_ref()
             .expect("Foreach.body: normalizer post-condition")
             .clone();
+        let where_cond = foreach.where_cond.clone();
 
-        // Project the source into its element sequence via a toBag
-        // morphism. For the Phase-4 built-ins:
-        //   - EList: elements in order.
-        //   - ESet:  elements as they appear.
-        //   - EMap:  key/value pairs projected as 2-tuples.
-        // Anything else is treated as a single-element source.
-        let elements: Vec<Par> = match single_expr(&subst_source) {
-            Some(Expr {
-                expr_instance: Some(ExprInstance::EListBody(l)),
-            }) => l.ps.clone(),
-            Some(Expr {
-                expr_instance: Some(ExprInstance::ESetBody(s)),
-            }) => s.ps.clone(),
-            Some(Expr {
-                expr_instance: Some(ExprInstance::EMapBody(m)),
-            }) => m
-                .kvs
-                .iter()
-                .map(|kv| {
-                    let k = kv.key.clone().unwrap_or_default();
-                    let v = kv.value.clone().unwrap_or_default();
-                    Par::default().with_exprs(vec![Expr {
-                        expr_instance: Some(ExprInstance::ETupleBody(ETuple {
-                            ps: vec![k, v],
-                            locally_free: Vec::new(),
-                            connective_used: false,
-                        })),
-                    }])
-                })
-                .collect(),
-            _ => vec![subst_source.clone()],
-        };
+        // Evaluate each source to WHNF and project into a per-source
+        // element list via toBag.
+        let mut per_source_elements: Vec<Vec<Par>> = Vec::with_capacity(foreach.sources.len());
+        for source_par in &foreach.sources {
+            let evaled_source = self.eval_expr(source_par, env)?;
+            let subst_source = self
+                .substitute
+                .substitute_and_charge(evaled_source, 0, env)?;
+            per_source_elements.push(project_elements(&subst_source));
+        }
 
-        // Empty source: publish the aggregator's unit (Nil for
-        // ParMonoid) so downstream consumers see a single publication,
-        // same as the paper's rule `rslt!(⊕_A ∅) = rslt!(ε_A)`.
-        if elements.is_empty() {
+        // Cartesian product: a candidate is one choice from each
+        // per-source element list. For zero sources (shouldn't happen
+        // after normalization) or when any source is empty, we still
+        // publish the aggregator's unit per the paper's `r!( ⊕_A ∅ )`
+        // rule.
+        let candidates = cartesian_product(&per_source_elements);
+
+        if candidates.is_empty() {
             self.produce(
                 subst_yield,
                 ListParWithRandom {
@@ -1587,20 +1559,41 @@ impl DebruijnInterpreter {
             return Ok(());
         }
 
-        // Per-element contribution: substitute each element into the
-        // body as BoundVar(0), then fold into a single Par via the
-        // aggregator — for the default ParMonoid that's Par's own
-        // `append` (parallel composition). The result is ONE send on
-        // yield_name carrying the combined contributions, matching
-        // the paper's `r!( ⊕_A { contrib(x) : x ∈ toBag(m) } )` rule.
+        // Per-candidate contribution:
+        //   1. Extend env with the candidate's components. By the
+        //      normalizer's convention (push in reverse source order),
+        //      `b_i` inside body is `BoundVar(i)`, and `env.put` is a
+        //      stack where most-recent is BoundVar(0). So we push
+        //      elements in REVERSE candidate order.
+        //   2. If where_cond is present, substitute + evaluate; skip
+        //      the candidate on non-true (contributes the aggregator's
+        //      unit, which is Par::default() — a no-op in ParMonoid).
+        //   3. Otherwise substitute into body and append to aggregate.
         let mut aggregate = Par::default();
-        for element in elements {
-            let element_env = env.clone().put(element);
-            let subst_body = self.substitute.substitute_no_sort_and_charge(
-                body.clone(),
-                0,
-                &element_env,
-            )?;
+        for candidate in candidates {
+            let candidate_env = {
+                let mut e = env.clone();
+                for element in candidate.iter().rev() {
+                    e = e.put(element.clone());
+                }
+                e
+            };
+
+            if let Some(cond) = where_cond.as_ref() {
+                let subst_cond =
+                    self.substitute
+                        .substitute_and_charge(cond.clone(), 0, &candidate_env)?;
+                let evaled_cond = self.eval_expr(&subst_cond, env)?;
+                match extract_bool(&evaled_cond) {
+                    Some(true) => {}
+                    Some(false) => continue,
+                    None => continue, // non-Bool guards contribute the unit
+                }
+            }
+
+            let subst_body =
+                self.substitute
+                    .substitute_no_sort_and_charge(body.clone(), 0, &candidate_env)?;
             aggregate = aggregate.append(subst_body);
         }
 
@@ -8288,6 +8281,66 @@ fn divide_fixed_points(
         unscaled: bigint_to_bytes(&result),
         scale: a.scale,
     }
+}
+
+/// f1r3lang-with-monads Stage B.2 `toBag` projection. For a Par whose
+/// single expression is a Phase-4 collection constructor, returns the
+/// element sequence that `foreach` iterates. Non-collection sources
+/// degenerate to a single-element sequence containing the whole Par,
+/// matching §4.3's statement that the source's sort must declare a
+/// monad; for built-ins the declared monad's `toBag` is this
+/// projection.
+fn project_elements(par: &Par) -> Vec<Par> {
+    use models::rust::rholang::implicits::single_expr;
+    match single_expr(par) {
+        Some(Expr {
+            expr_instance: Some(ExprInstance::EListBody(l)),
+        }) => l.ps.clone(),
+        Some(Expr {
+            expr_instance: Some(ExprInstance::ESetBody(s)),
+        }) => s.ps.clone(),
+        Some(Expr {
+            expr_instance: Some(ExprInstance::EMapBody(m)),
+        }) => m
+            .kvs
+            .iter()
+            .map(|kv| {
+                let k = kv.key.clone().unwrap_or_default();
+                let v = kv.value.clone().unwrap_or_default();
+                Par::default().with_exprs(vec![Expr {
+                    expr_instance: Some(ExprInstance::ETupleBody(ETuple {
+                        ps: vec![k, v],
+                        locally_free: Vec::new(),
+                        connective_used: false,
+                    })),
+                }])
+            })
+            .collect(),
+        _ => vec![par.clone()],
+    }
+}
+
+/// Independent-bind (`&`, §4.4) cartesian product over per-source
+/// element lists. Returns candidates ordered so candidate[i] is the
+/// element chosen for source i. An empty input OR any empty source
+/// produces the empty candidate set.
+fn cartesian_product(per_source: &[Vec<Par>]) -> Vec<Vec<Par>> {
+    if per_source.is_empty() || per_source.iter().any(|s| s.is_empty()) {
+        return Vec::new();
+    }
+    let mut out: Vec<Vec<Par>> = vec![Vec::with_capacity(per_source.len())];
+    for source_elems in per_source {
+        let mut next = Vec::with_capacity(out.len() * source_elems.len());
+        for prefix in &out {
+            for elem in source_elems {
+                let mut extended = prefix.clone();
+                extended.push(elem.clone());
+                next.push(extended);
+            }
+        }
+        out = next;
+    }
+    out
 }
 
 /// Returns `Some(b)` iff `par` represents the bool value `b` —

@@ -64,10 +64,12 @@ async fn foreach_sends_aggregated_contributions() {
         assert_eq!(data.len(), 3, "three parallel sends in the aggregate");
         let mut values: Vec<i64> = data
             .iter()
-            .filter_map(|p| match p.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
-                Some(ExprInstance::GInt(i)) => Some(*i),
-                _ => None,
-            })
+            .filter_map(
+                |p| match p.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                    Some(ExprInstance::GInt(i)) => Some(*i),
+                    _ => None,
+                },
+            )
             .collect();
         values.sort();
         assert_eq!(values, vec![1, 2, 3]);
@@ -125,6 +127,106 @@ async fn foreach_singleton_source_publishes_single_contribution() {
             data[0].exprs.first().and_then(|e| e.expr_instance.clone()),
             Some(ExprInstance::GInt(42)),
         );
+    })
+    .await
+}
+
+// §4.4 `&` — independent multi-bind: cartesian product.
+// `x <- [1, 2] & y <- [10, 20]` produces 4 candidates; body is
+// `@"out"!(x + y)`. Expected values: 11, 12, 21, 22.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn foreach_amp_independent_binds_cartesian_product() {
+    with_runtime("foreach-reduce-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            r#"
+            new out in {
+              foreach ( x <- [1, 2] & y <- [10, 20] )
+              yield ( out ) { @"out"!(x + y) }
+              | for (@body <= out) { body }
+            }
+            "#,
+        )
+        .await;
+        let data = data_at(&runtime, "out").await;
+        assert_eq!(data.len(), 4, "cartesian product has 2*2 = 4 candidates");
+        let mut vals: Vec<i64> = data
+            .iter()
+            .filter_map(
+                |p| match p.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                    Some(ExprInstance::GInt(i)) => Some(*i),
+                    _ => None,
+                },
+            )
+            .collect();
+        vals.sort();
+        assert_eq!(vals, vec![11, 12, 21, 22]);
+    })
+    .await
+}
+
+// §4.5 `where` — filters out non-passing candidates by contributing
+// the aggregator's unit. `foreach ( x <- [1, 2, 3] where x > 1 )`
+// should emit contributions only for 2 and 3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn foreach_where_filters_candidates() {
+    with_runtime("foreach-reduce-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            r#"
+            new out in {
+              foreach ( x <- [1, 2, 3] where x > 1 )
+              yield ( out ) { @"kept"!(x) }
+              | for (@body <= out) { body }
+            }
+            "#,
+        )
+        .await;
+        let data = data_at(&runtime, "kept").await;
+        let mut vals: Vec<i64> = data
+            .iter()
+            .filter_map(
+                |p| match p.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                    Some(ExprInstance::GInt(i)) => Some(*i),
+                    _ => None,
+                },
+            )
+            .collect();
+        vals.sort();
+        assert_eq!(vals, vec![2, 3]);
+    })
+    .await
+}
+
+// §4.4 + §4.5 combined: cartesian product with a guard that filters
+// pairs. `x <- [1, 2] & y <- [10, 20] where x + y > 15` keeps only
+// (1, 20), (2, 20) — expected sums 21, 22.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn foreach_amp_with_where_filters_cartesian_candidates() {
+    with_runtime("foreach-reduce-", |mut runtime| async move {
+        eval_ok(
+            &mut runtime,
+            r#"
+            new out in {
+              foreach ( x <- [1, 2] & y <- [10, 20] where x + y > 15 )
+              yield ( out ) { @"kept"!(x + y) }
+              | for (@body <= out) { body }
+            }
+            "#,
+        )
+        .await;
+        let data = data_at(&runtime, "kept").await;
+        let mut vals: Vec<i64> = data
+            .iter()
+            .filter_map(
+                |p| match p.exprs.first().and_then(|e| e.expr_instance.as_ref()) {
+                    Some(ExprInstance::GInt(i)) => Some(*i),
+                    _ => None,
+                },
+            )
+            .collect();
+        vals.sort();
+        assert_eq!(vals, vec![21, 22]);
     })
     .await
 }

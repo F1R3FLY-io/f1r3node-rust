@@ -2433,11 +2433,10 @@ mod coc_list_patterns {
     }
 
     fn conn_list_pattern(element_pattern: Par) -> Par {
-        let conn_used = element_pattern.connective_used || true;
         let mut par = Par::default().with_connectives(vec![Connective {
             connective_instance: Some(connective::ConnectiveInstance::ConnList(element_pattern)),
         }]);
-        par.connective_used = conn_used;
+        par.connective_used = true;
         par
     }
 

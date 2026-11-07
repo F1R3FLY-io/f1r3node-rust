@@ -114,10 +114,7 @@ impl Context {
 pub fn initial_context() -> Context {
     let type_ty = type_par(ConnectiveInstance::ConnType(true));
     let type_to_type = build_pi(vec![type_ty.clone()], type_ty.clone());
-    let type_type_to_type = build_pi(
-        vec![type_ty.clone(), type_ty.clone()],
-        type_ty.clone(),
-    );
+    let type_type_to_type = build_pi(vec![type_ty.clone(), type_ty.clone()], type_ty.clone());
     // Tuple is heterogeneously variadic in surface syntax; the prelude
     // kind pins only a single-parameter arrow for now. A faithful
     // variadic signature awaits either a dependent kind (`Π(n: Nat).
@@ -344,70 +341,60 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
         // for other numeric types or string concat (EPlusPlus) aren't
         // handled yet.
         ExprInstance::EPlusBody(e) => {
-            let p1 = e
-                .p1
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EPlus with no p1".to_string()))?;
-            let p2 = e
-                .p2
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EPlus with no p2".to_string()))?;
+            let p1 =
+                e.p1.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EPlus with no p1".to_string()))?;
+            let p2 =
+                e.p2.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EPlus with no p2".to_string()))?;
             let int_ty = type_par(ConnectiveInstance::ConnInt(true));
             check(_ctx, p1, &int_ty)?;
             check(_ctx, p2, &int_ty)?;
             Ok(int_ty)
         }
         ExprInstance::EMinusBody(e) => {
-            let p1 = e
-                .p1
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EMinus with no p1".to_string()))?;
-            let p2 = e
-                .p2
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EMinus with no p2".to_string()))?;
+            let p1 =
+                e.p1.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EMinus with no p1".to_string()))?;
+            let p2 =
+                e.p2.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EMinus with no p2".to_string()))?;
             let int_ty = type_par(ConnectiveInstance::ConnInt(true));
             check(_ctx, p1, &int_ty)?;
             check(_ctx, p2, &int_ty)?;
             Ok(int_ty)
         }
         ExprInstance::EMultBody(e) => {
-            let p1 = e
-                .p1
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EMult with no p1".to_string()))?;
-            let p2 = e
-                .p2
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EMult with no p2".to_string()))?;
+            let p1 =
+                e.p1.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EMult with no p1".to_string()))?;
+            let p2 =
+                e.p2.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EMult with no p2".to_string()))?;
             let int_ty = type_par(ConnectiveInstance::ConnInt(true));
             check(_ctx, p1, &int_ty)?;
             check(_ctx, p2, &int_ty)?;
             Ok(int_ty)
         }
         ExprInstance::EDivBody(e) => {
-            let p1 = e
-                .p1
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EDiv with no p1".to_string()))?;
-            let p2 = e
-                .p2
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EDiv with no p2".to_string()))?;
+            let p1 =
+                e.p1.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EDiv with no p1".to_string()))?;
+            let p2 =
+                e.p2.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EDiv with no p2".to_string()))?;
             let int_ty = type_par(ConnectiveInstance::ConnInt(true));
             check(_ctx, p1, &int_ty)?;
             check(_ctx, p2, &int_ty)?;
             Ok(int_ty)
         }
         ExprInstance::EModBody(e) => {
-            let p1 = e
-                .p1
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EMod with no p1".to_string()))?;
-            let p2 = e
-                .p2
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("EMod with no p2".to_string()))?;
+            let p1 =
+                e.p1.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EMod with no p1".to_string()))?;
+            let p2 =
+                e.p2.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("EMod with no p2".to_string()))?;
             let int_ty = type_par(ConnectiveInstance::ConnInt(true));
             check(_ctx, p1, &int_ty)?;
             check(_ctx, p2, &int_ty)?;
@@ -429,10 +416,9 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
         ExprInstance::EAndBody(e) => synth_bool_binop(_ctx, e.p1.as_ref(), e.p2.as_ref(), "EAnd"),
         ExprInstance::EOrBody(e) => synth_bool_binop(_ctx, e.p1.as_ref(), e.p2.as_ref(), "EOr"),
         ExprInstance::ENotBody(e) => {
-            let p = e
-                .p
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("ENot with no p".to_string()))?;
+            let p =
+                e.p.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("ENot with no p".to_string()))?;
             let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
             check(_ctx, p, &bool_ty)?;
             Ok(bool_ty)
@@ -440,10 +426,9 @@ fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeEr
 
         // Integer negation. `Int → Int`.
         ExprInstance::ENegBody(e) => {
-            let p = e
-                .p
-                .as_ref()
-                .ok_or_else(|| TypeError::NotWellFormed("ENeg with no p".to_string()))?;
+            let p =
+                e.p.as_ref()
+                    .ok_or_else(|| TypeError::NotWellFormed("ENeg with no p".to_string()))?;
             let int_ty = type_par(ConnectiveInstance::ConnInt(true));
             check(_ctx, p, &int_ty)?;
             Ok(int_ty)
@@ -772,7 +757,9 @@ fn lub_types(mut types: Vec<Par>) -> Par {
     use models::rhoapi::ConnectiveBody;
     let conn_used = unique.iter().any(|p| p.connective_used);
     let mut par = Par::default().with_connectives(vec![Connective {
-        connective_instance: Some(ConnectiveInstance::ConnOrBody(ConnectiveBody { ps: unique })),
+        connective_instance: Some(ConnectiveInstance::ConnOrBody(ConnectiveBody {
+            ps: unique,
+        })),
     }]);
     par.connective_used = true;
     let _ = conn_used;
@@ -784,8 +771,7 @@ fn lub_types(mut types: Vec<Par>) -> Par {
 fn build_pi(param_types: Vec<Par>, codomain: Par) -> Par {
     use models::rhoapi::{EPi, Expr};
     let bind_count = param_types.len() as i32;
-    let conn_used =
-        codomain.connective_used || param_types.iter().any(|p| p.connective_used);
+    let conn_used = codomain.connective_used || param_types.iter().any(|p| p.connective_used);
     let mut par = Par::default().with_exprs(vec![Expr {
         expr_instance: Some(ExprInstance::EPiBody(EPi {
             bind_count,
@@ -884,21 +870,40 @@ fn check_process_content(ctx: &Context, par: &Par) -> Result<(), TypeError> {
         }
     }
 
-    // f1r3lang-with-monads Stage C: `foreach` typing per §4.3.
-    // Source must have a known monadic type (one of Phase-4's
-    // ConnList / ConnSet / ConnMap) — that pins the element type `B`.
-    // Body is typechecked under a ctx extended with the binder typed
-    // at `B`. Body must synth / check to the aggregator's carrier;
-    // default is ParMonoid whose carrier is `Proc`. Yield_name must
-    // itself be well-formed in the outer scope.
+    // f1r3lang-with-monads Stage C: `foreach` typing per §4.3,
+    // extended for §4.4's independent multi-bind + §4.5's `where`.
+    //
+    // Each source must have a Phase-4 monadic carrier type (ConnList
+    // / ConnSet / ConnMap) — that pins per-source element type `B_i`.
+    // Body and where_cond are typechecked under a ctx extended with
+    // all binders; the normalizer's convention is `b_i -> BoundVar(i)`,
+    // which means we push `B_i` in reverse source order so the
+    // innermost (BoundVar(0)) binding is `B_0`.
+    // where_cond must have type `Bool`.
+    // Body must synth / check to the aggregator's carrier; default
+    // ParMonoid carrier is `Proc`.
     for foreach in &par.foreaches {
-        let source = foreach
-            .source
-            .as_ref()
-            .ok_or_else(|| TypeError::NotWellFormed("Foreach with no source".to_string()))?;
-        let source_ty = synth(ctx, source)?;
-        let element_ty = extract_element_type(&source_ty)?;
-        let extended = ctx.extend(element_ty);
+        if foreach.sources.is_empty() {
+            return Err(TypeError::NotWellFormed(
+                "Foreach with zero sources".to_string(),
+            ));
+        }
+        let mut element_tys: Vec<Par> = Vec::with_capacity(foreach.sources.len());
+        for source in &foreach.sources {
+            let source_ty = synth(ctx, source)?;
+            element_tys.push(extract_element_type(&source_ty)?);
+        }
+        // Push in reverse so b_0 ends up at BoundVar(0), matching the
+        // normalizer's `put_all_pos(binders.rev())` layout.
+        let mut extended = ctx.clone();
+        for ty in element_tys.into_iter().rev() {
+            extended = extended.extend(ty);
+        }
+        if let Some(cond) = foreach.where_cond.as_ref() {
+            if !is_empty_par(cond) {
+                check(&extended, cond, &bool_ty)?;
+            }
+        }
         if let Some(body) = foreach.body.as_ref() {
             check(&extended, body, &proc_ty)?;
         }
@@ -924,8 +929,9 @@ fn extract_element_type(source_ty: &Par) -> Result<Par, TypeError> {
         .first()
         .and_then(|c| c.connective_instance.as_ref());
     match inst {
-        Some(ConnectiveInstance::ConnList(elem))
-        | Some(ConnectiveInstance::ConnSet(elem)) => Ok(elem.clone()),
+        Some(ConnectiveInstance::ConnList(elem)) | Some(ConnectiveInstance::ConnSet(elem)) => {
+            Ok(elem.clone())
+        }
         Some(ConnectiveInstance::ConnMap(body)) => {
             let key = body.key.clone().unwrap_or_default();
             let value = body.value.clone().unwrap_or_default();
@@ -1358,10 +1364,7 @@ mod tests {
             Some(ExprInstance::EPiBody(pi)) => {
                 assert_eq!(pi.bind_count, 1, "List has arity 1");
                 let type_ty = type_par(ConnectiveInstance::ConnType(true));
-                assert!(
-                    def_eq(&pi.param_types[0], &type_ty),
-                    "List param is Type"
-                );
+                assert!(def_eq(&pi.param_types[0], &type_ty), "List param is Type");
                 assert!(
                     def_eq(pi.codomain.as_ref().unwrap(), &type_ty),
                     "List codomain is Type"
@@ -1696,7 +1699,10 @@ mod tests {
         assert_eq!(pi.bind_count, 1);
         assert_eq!(pi.param_types.len(), 1);
         assert_eq!(
-            pi.param_types[0].connectives.first().and_then(|c| c.connective_instance.as_ref()),
+            pi.param_types[0]
+                .connectives
+                .first()
+                .and_then(|c| c.connective_instance.as_ref()),
             Some(&ConnectiveInstance::ConnInt(true))
         );
         assert_eq!(
@@ -1772,7 +1778,10 @@ mod tests {
         };
         assert_eq!(pi.bind_count, 1);
         assert_eq!(
-            pi.param_types[0].connectives.first().and_then(|c| c.connective_instance.as_ref()),
+            pi.param_types[0]
+                .connectives
+                .first()
+                .and_then(|c| c.connective_instance.as_ref()),
             Some(&ConnectiveInstance::ConnInt(true))
         );
         assert_eq!(
@@ -1812,8 +1821,7 @@ mod tests {
         let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
         let int_ty = type_par(ConnectiveInstance::ConnInt(true));
         let string_ty = type_par(ConnectiveInstance::ConnString(true));
-        let expected =
-            pi_par_multi(vec![bool_ty.clone(), int_ty.clone()], int_ty);
+        let expected = pi_par_multi(vec![bool_ty.clone(), int_ty.clone()], int_ty);
         // Lambda annotates slot 1 as String, which conflicts with the
         // Pi's Int in that slot.
         let lam = lambda_par_typed(2, bvar_par(1), vec![bool_ty, string_ty]);
@@ -1824,8 +1832,7 @@ mod tests {
     // Helper for multi-param Pi tests.
     fn pi_par_multi(param_types: Vec<Par>, codomain: Par) -> Par {
         use models::rhoapi::{EPi, Expr};
-        let conn_used =
-            codomain.connective_used || param_types.iter().any(|p| p.connective_used);
+        let conn_used = codomain.connective_used || param_types.iter().any(|p| p.connective_used);
         let bind_count = param_types.len() as i32;
         let mut par = Par::default().with_exprs(vec![Expr {
             expr_instance: Some(ExprInstance::EPiBody(EPi {
@@ -2084,7 +2091,11 @@ mod tests {
     }
 
     fn expect_conn_list(par: &Par) -> &Par {
-        match par.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+        match par
+            .connectives
+            .first()
+            .and_then(|c| c.connective_instance.as_ref())
+        {
             Some(ConnectiveInstance::ConnList(elem)) => elem,
             other => panic!("expected ConnList, got {other:?}"),
         }
@@ -2106,7 +2117,10 @@ mod tests {
         let par = elist_par(Vec::new());
         let ty = synth(&ctx, &par).unwrap();
         let elem = expect_conn_list(&ty);
-        assert!(is_empty_par(elem), "empty list's element type is Par::default()");
+        assert!(
+            is_empty_par(elem),
+            "empty list's element type is Par::default()"
+        );
     }
 
     #[test]
@@ -2118,7 +2132,11 @@ mod tests {
         let ty = synth(&ctx, &par).unwrap();
         let elem = expect_conn_list(&ty);
         // Should be ConnOr of Int and String.
-        match elem.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+        match elem
+            .connectives
+            .first()
+            .and_then(|c| c.connective_instance.as_ref())
+        {
             Some(ConnectiveInstance::ConnOrBody(body)) => {
                 assert_eq!(body.ps.len(), 2, "deduped to two entries");
                 assert!(body.ps.iter().any(|p| def_eq(p, &int_ty)));
@@ -2164,7 +2182,11 @@ mod tests {
         let int_ty = type_par(ConnectiveInstance::ConnInt(true));
         let par = eset_par(vec![gint_par(1), gint_par(2)]);
         let ty = synth(&ctx, &par).unwrap();
-        match ty.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+        match ty
+            .connectives
+            .first()
+            .and_then(|c| c.connective_instance.as_ref())
+        {
             Some(ConnectiveInstance::ConnSet(elem)) => assert!(def_eq(elem, &int_ty)),
             other => panic!("expected ConnSet, got {other:?}"),
         }
@@ -2215,7 +2237,11 @@ mod tests {
             (gstring_par("b"), gint_par(2)),
         ]);
         let ty = synth(&ctx, &par).unwrap();
-        match ty.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+        match ty
+            .connectives
+            .first()
+            .and_then(|c| c.connective_instance.as_ref())
+        {
             Some(ConnectiveInstance::ConnMap(body)) => {
                 assert!(def_eq(body.key.as_ref().unwrap(), &string_ty));
                 assert!(def_eq(body.value.as_ref().unwrap(), &int_ty));
@@ -2262,7 +2288,11 @@ mod tests {
         let bool_ty = type_par(ConnectiveInstance::ConnBool(true));
         let par = etuple_par(vec![gint_par(1), gstring_par("x"), gbool_par(true)]);
         let ty = synth(&ctx, &par).unwrap();
-        match ty.connectives.first().and_then(|c| c.connective_instance.as_ref()) {
+        match ty
+            .connectives
+            .first()
+            .and_then(|c| c.connective_instance.as_ref())
+        {
             Some(ConnectiveInstance::ConnTuple(body)) => {
                 assert_eq!(body.elements.len(), 3);
                 assert!(def_eq(&body.elements[0], &int_ty));
@@ -2422,13 +2452,24 @@ mod tests {
     }
 
     fn foreach_par(source: Par, body: Par, yield_name: Par) -> Par {
+        foreach_par_many(vec![source], None, body, yield_name)
+    }
+
+    fn foreach_par_many(
+        sources: Vec<Par>,
+        where_cond: Option<Par>,
+        body: Par,
+        yield_name: Par,
+    ) -> Par {
         use models::rhoapi::Foreach;
+        let bind_count = sources.len() as i32;
         let mut par = Par::default();
         par.foreaches.push(Foreach {
-            bind_count: 1,
-            source: Some(source),
+            bind_count,
+            sources,
             body: Some(body),
             yield_name: Some(yield_name),
+            where_cond,
             locally_free: Vec::new(),
             connective_used: false,
         });
@@ -2501,6 +2542,75 @@ mod tests {
         let par = foreach_par(source, body, bvar_par(0));
         let err = synth(&ctx, &par).unwrap_err();
         assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_foreach_multi_bind_types_each_binder_at_its_source_element() {
+        // `foreach ( x <- [Int] & y <- {Bool} ) yield(out) { out!(x + 0, !y) }`
+        // b_0=x : Int (BoundVar(0) inside body), b_1=y : Bool
+        // (BoundVar(1) inside body), `out` is BoundVar(2) (outer).
+        use models::rhoapi::ENot;
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let int_src = elist_par(vec![gint_par(1), gint_par(2)]);
+        let bool_src = eset_par(vec![gbool_par(true), gbool_par(false)]);
+        let x_plus_zero = plus_par(bvar_par(0), gint_par(0));
+        let not_y = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(bvar_par(1)),
+            })),
+        }]);
+        let body = send_par(bvar_par(2), vec![x_plus_zero, not_y]);
+        let par = foreach_par_many(vec![int_src, bool_src], None, body, bvar_par(0));
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_foreach_multi_bind_rejects_crossed_binder_types() {
+        // `foreach ( x <- [Int] & y <- {Bool} ) yield(out) { out!(x + y) }`
+        // — body tries `Int + Bool`. Must fail.
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let int_src = elist_par(vec![gint_par(1)]);
+        let bool_src = eset_par(vec![gbool_par(true)]);
+        let bad = plus_par(bvar_par(0), bvar_par(1));
+        let body = send_par(bvar_par(2), vec![bad]);
+        let par = foreach_par_many(vec![int_src, bool_src], None, body, bvar_par(0));
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_foreach_where_must_be_bool() {
+        // where clause is an int — must fail.
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let src = elist_par(vec![gint_par(1)]);
+        let body = send_par(bvar_par(1), vec![bvar_par(0)]);
+        let bad_guard = gint_par(1);
+        let par = foreach_par_many(vec![src], Some(bad_guard), body, bvar_par(0));
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
+    }
+
+    #[test]
+    fn synth_foreach_where_sees_binders() {
+        // `foreach ( x <- [Int] where x > 0 ) yield(out) { out!(x) }`
+        // guard references BoundVar(0) which the rule types as Int in
+        // the extended ctx. Typechecks to Proc.
+        use models::rhoapi::EGt;
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let src = elist_par(vec![gint_par(1), gint_par(2)]);
+        let guard = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EGtBody(EGt {
+                p1: Some(bvar_par(0)),
+                p2: Some(gint_par(0)),
+            })),
+        }]);
+        let body = send_par(bvar_par(1), vec![bvar_par(0)]);
+        let par = foreach_par_many(vec![src], Some(guard), body, bvar_par(0));
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
     }
 
     fn match_par(target: Par, cases: Vec<(Par, Par, i32, Par)>) -> Par {

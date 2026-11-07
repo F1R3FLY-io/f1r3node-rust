@@ -18,27 +18,22 @@ fn source_foreach_lowers_to_par_foreaches() {
 
     // A new wraps the whole thing; drill into its body.
     assert_eq!(par.news.len(), 1, "outer new");
-    let body = par.news[0]
-        .p
-        .as_ref()
-        .expect("new body");
+    let body = par.news[0].p.as_ref().expect("new body");
 
     assert_eq!(body.foreaches.len(), 1, "one foreach in body");
     let foreach = &body.foreaches[0];
     assert_eq!(foreach.bind_count, 1);
 
-    let source = foreach.source.as_ref().expect("source");
+    assert_eq!(foreach.sources.len(), 1, "one source Par");
+    let source = &foreach.sources[0];
     assert!(
         !source.exprs.is_empty(),
         "source has at least one expression (the list literal)"
     );
+    assert!(foreach.where_cond.is_none(), "no where guard in this test");
 
     let body_par = foreach.body.as_ref().expect("body");
-    assert_eq!(
-        body_par.sends.len(),
-        1,
-        "body has one send (r!(x))"
-    );
+    assert_eq!(body_par.sends.len(), 1, "body has one send (r!(x))");
 
     // yield_name was `r` from the outer `new`, so it resolves to a
     // BoundVar reference, not a GString.
