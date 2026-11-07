@@ -2074,6 +2074,10 @@ impl DebruijnInterpreter {
         let refused = |reason: &str| {
             InterpreterError::ReduceError(format!("an elaborated seal is refused: {reason}"))
         };
+        let from_deployment = term_seal.is_some();
+        if from_deployment && self.seals_recorded() && seal::current().is_none() {
+            return Err(refused("a term from a deployment runs outside every seal"));
+        }
         let own_seal = match (seal::current(), term_seal) {
             (Some(record), Some(term_seal)) if term_seal.origin == record.origin.digest() => {
                 Some(term_seal)

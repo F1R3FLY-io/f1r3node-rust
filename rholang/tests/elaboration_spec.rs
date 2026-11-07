@@ -254,3 +254,44 @@ async fn a_seal_in_data_naming_the_running_owner_runs_and_the_owner_pays() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_term_from_a_deployment_outside_every_seal_fails_the_run_and_bootstrap_code_does_not() {
+    sealed(|runtime| async move {
+        let par = Compiler::source_to_adt_elaborated(r#"@"ran"!(1)"#, env(&ALICE), alice_origin()).unwrap();
+        runtime.set_deploy_data(DeployData::empty()).await;
+        let error = runtime
+            .reducer
+            .inj(par, Blake2b512Random::create_from_bytes(&[1; 32]))
+            .await
+            .unwrap_err();
+        assert!(format!("{error:?}").contains("outside every seal"), "{error:?}");
+        assert!(sent(&runtime, "ran").await.is_empty());
+        let bootstrap = Compiler::source_to_adt(r#"@"boot"!(1)"#).unwrap();
+        runtime.reducer.cost.set(Cost::create(i64::MAX, "bootstrap".to_string()));
+        runtime
+            .reducer
+            .inj(bootstrap, Blake2b512Random::create_from_bytes(&[2; 32]))
+            .await
+            .unwrap();
+        assert_eq!(sent(&runtime, "boot").await.len(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_continuation_seal_inside_another_stores_its_own_limit() {
+    sealed(|runtime| async move {
+        let install = r#"new d(`rho:system:deployerId`) in {
+            {% for (_ <- @"x") { {% @"fired"!(1) %}[d ; 700] } %}[d ; 900]
+        }"#;
+        assert!(run(&runtime, &ALICE, 1, install).await.is_empty());
+        let space = runtime.reducer.space.hot_store().unwrap();
+        let waiting = space.get_continuations(&[RhoString::create_par("x".to_string())]);
+        let record = of_continuation(&waiting[0].continuation).unwrap().unwrap();
+        assert_eq!(record.origin.phlo_limit, 700, "t's own limit, not s1's");
+        assert!(run(&runtime, &BOB, 2, r#"@"x"!(0)"#).await.is_empty());
+        assert_eq!(sent(&runtime, "fired").await.len(), 1);
+    })
+    .await;
+}
