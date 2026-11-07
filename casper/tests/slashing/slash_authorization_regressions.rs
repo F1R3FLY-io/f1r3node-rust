@@ -62,7 +62,7 @@ fn snapshot(fixture: &DetectorFixture, bonded: &[Bytes]) -> CasperSnapshot {
 
 fn key(byte: u8) -> PrivateKey { PrivateKey::from_bytes(&[byte; 32]) }
 
-fn public(key: &PrivateKey) -> Bytes { Secp256k1.to_public(key).bytes.into() }
+fn public(key: &PrivateKey) -> Bytes { Secp256k1.to_public(key).bytes }
 
 /// A block at `seq_num` signed by `key`, told apart from its siblings by `nonce`.
 fn signed(key: &PrivateKey, seq_num: i32, nonce: u8) -> BlockMessage {
