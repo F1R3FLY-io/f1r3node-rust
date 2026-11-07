@@ -283,3 +283,35 @@ Full suites at 0b01b1663 (release, `/tmp` cleared before each crate): rholang 2,
 - `dev` at 3b5daabb4 is merged. The parser pin is lane B's `rev-stacks/syntax-dev` at ad15ad2b10c2e9aeb2857f5e27f7de8f7c22ebdd, which merges rholang-rs master 4e22339 into 743752b (Q-35, Q-37). CLAUDE.md's parser note names the pin and the branch.
 - Conflicts: `Cargo.toml` (the pin), `Cargo.lock`, the import lists of `matcher/exports.rs` and `substitute.rs` (both sides' types), and `p_simple_type_normalizer.rs`, where `dev`'s `SimpleType::Type` connective replaces the branch's refusal. The branch's refusal of `Proc::FixedPointPattern` in `normalize.rs` is removed, because `dev` normalizes it.
 - Results: rholang 2,549 passed, 71 ignored; casper `--test mod v6::` 143 passed, 9 ignored.
+
+## Full suites on the final tip 9b54135f3 (2026-11-07, `/tmp` cleared before each crate)
+
+The tip holds FX-17 to FX-22, FX-19-format, Decisions 119 to 136, and `dev` 3b5daabb4 with rholang-rs at ad15ad2.
+
+| Crate | Passed | Failed | Ignored |
+|---|---|---|---|
+| rholang | 2,550 | 0 | 69 |
+| rspace++ | 424 | 0 | 7 |
+| block-storage | 320 | 0 | 0 |
+| models | 339 | 0 | 0 |
+| shared | 149 | 1 | 0 |
+| crypto | 118 | 0 | 0 |
+| comm | 437 | 0 | 0 |
+| graphz | 48 | 0 | 0 |
+| casper lib | 890 | 0 | 1 |
+| casper `--test mod` (nextest, one process per test) | 1,338 | 0 | 21 skipped |
+| node | 469 | 0 | 1 |
+
+- *Known issue, environmental:* `shared::bounded_file::a_failed_rotation_keeps_the_active_file_writable` fails because the tests run as root.
+- No casper test ended on a signal.
+
+## Handoff notes for lane A1's final read
+
+- **Formatting.** `cargo fmt --check` is not verified here: the pinned nightly cannot be downloaded, and stable rustfmt ignores the unstable options in `rustfmt.toml`. CI's formatting job decides.
+- **Known issues (Decision 88):**
+  - The one SIGSEGV seen in lane C's environment is not reproduced (nextest, no signal in 1,338 tests on this tip and in 1,336 on e3edaf623).
+  - The `shared` test above fails only as root.
+  - FX-22's static estimate is loose (Decision 128).
+  - Terms outside the estimated fragment commit their `phloLimit` (Decision 122).
+- **Parser.** rholang-rs is pinned to `rev-stacks/syntax-dev` at ad15ad2 (lane B, Q-35). The branch is not yet merged into rholang-rs master.
+- **Open for P12.** FX-18 stays parked (F53).
