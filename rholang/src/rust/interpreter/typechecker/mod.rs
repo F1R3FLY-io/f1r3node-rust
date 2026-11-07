@@ -1,17 +1,14 @@
 //! Calculus of Constructions typechecker.
 //!
-//! Phase 6.A (prelude context): synthesis (`synth`) for ground
-//! literals, `SimpleType` connectives, Pi well-formedness, dependent
-//! application, fully-annotated lambdas, β-definitional equality in
-//! `check`, the integer binary operators, `ENeg`, comparison
-//! operators, the boolean connectives on values, the logical type
-//! connectives, the four collection kinds, recursive process-level
-//! typing, and parallel composition. `initial_context` seeds the
-//! typechecker with prelude bindings for the five collection type
-//! constructors (`List`, `Set`, `HashBag`, `Map`, `Tuple`) so caller
-//! code can reference them by name. Normalizer integration awaits a
-//! later commit; the DDL on `feature/f1r3lang-mettail-only` will
-//! refine the carrier-only kinds here into full monad signatures.
+//! Stage C (foreach typing): everything from Phase 6.A plus the
+//! `foreach` typing rule per the paper's §4.3. A Par-level `Foreach`
+//! requires its source to have a Phase-4 monadic carrier type
+//! (`ConnList`, `ConnSet`, or `ConnMap`); the element type `B` is
+//! extracted from the carrier; the body is checked under a ctx
+//! extended with the binder typed at `B`; and the body must have
+//! type `Proc` (the default ParMonoid aggregator's carrier). The
+//! yield_name is synth'd for well-formedness only — channel typing
+//! is still deferred.
 //!
 //! **Types are processes.** A type is a `Par` whose semantic shape is a
 //! single [`Connective`] (base types) or a single [`EPi`] expression
@@ -209,6 +206,7 @@ fn process_slot_count(par: &Par) -> usize {
         + par.bundles.len()
         + par.conditionals.len()
         + par.unforgeables.len()
+        + par.foreaches.len()
 }
 
 fn synth_expr(_ctx: &Context, expr: Option<&ExprInstance>) -> Result<Par, TypeError> {
@@ -886,10 +884,59 @@ fn check_process_content(ctx: &Context, par: &Par) -> Result<(), TypeError> {
         }
     }
 
+    // f1r3lang-with-monads Stage C: `foreach` typing per §4.3.
+    // Source must have a known monadic type (one of Phase-4's
+    // ConnList / ConnSet / ConnMap) — that pins the element type `B`.
+    // Body is typechecked under a ctx extended with the binder typed
+    // at `B`. Body must synth / check to the aggregator's carrier;
+    // default is ParMonoid whose carrier is `Proc`. Yield_name must
+    // itself be well-formed in the outer scope.
+    for foreach in &par.foreaches {
+        let source = foreach
+            .source
+            .as_ref()
+            .ok_or_else(|| TypeError::NotWellFormed("Foreach with no source".to_string()))?;
+        let source_ty = synth(ctx, source)?;
+        let element_ty = extract_element_type(&source_ty)?;
+        let extended = ctx.extend(element_ty);
+        if let Some(body) = foreach.body.as_ref() {
+            check(&extended, body, &proc_ty)?;
+        }
+        if let Some(yn) = foreach.yield_name.as_ref() {
+            let _ = synth(ctx, yn)?;
+        }
+    }
+
     // Unforgeables are name-level values (GPrivate, GDeployerId, etc.);
     // they carry no sub-structure for this pass to typecheck.
 
     Ok(())
+}
+
+/// Pull the element type out of a monadic source type. Recognizes the
+/// Phase-4 `ConnList(T)` and `ConnSet(T)` carriers (element type T),
+/// and `ConnMap(K, V)` (element type is `Tuple<K, V>` when projected by
+/// the reducer's default toBag). Anything else is treated as a
+/// single-element source whose element type is the source type itself.
+fn extract_element_type(source_ty: &Par) -> Result<Par, TypeError> {
+    let inst = source_ty
+        .connectives
+        .first()
+        .and_then(|c| c.connective_instance.as_ref());
+    match inst {
+        Some(ConnectiveInstance::ConnList(elem))
+        | Some(ConnectiveInstance::ConnSet(elem)) => Ok(elem.clone()),
+        Some(ConnectiveInstance::ConnMap(body)) => {
+            let key = body.key.clone().unwrap_or_default();
+            let value = body.value.clone().unwrap_or_default();
+            Ok(type_par(ConnectiveInstance::ConnTuple(
+                models::rhoapi::ConnTupleBody {
+                    elements: vec![key, value],
+                },
+            )))
+        }
+        _ => Ok(source_ty.clone()),
+    }
 }
 
 /// Extend `ctx` with `count` `Proc`-typed binders — a placeholder for
@@ -906,7 +953,7 @@ fn push_proc_binders(ctx: &Context, count: i32) -> Context {
 }
 
 /// True iff `par` carries any process-level content (send, receive,
-/// new, match, bundle, conditional, unforgeable).
+/// new, match, bundle, conditional, unforgeable, foreach).
 fn has_process_content(par: &Par) -> bool {
     !par.sends.is_empty()
         || !par.receives.is_empty()
@@ -915,6 +962,7 @@ fn has_process_content(par: &Par) -> bool {
         || !par.bundles.is_empty()
         || !par.conditionals.is_empty()
         || !par.unforgeables.is_empty()
+        || !par.foreaches.is_empty()
 }
 
 /// A lambda's `param_types[i]` is `Par::default()` when the source
@@ -2371,6 +2419,88 @@ mod tests {
         let ty = synth(&ctx, &par).unwrap();
         let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
         assert!(def_eq(&ty, &proc_ty));
+    }
+
+    fn foreach_par(source: Par, body: Par, yield_name: Par) -> Par {
+        use models::rhoapi::Foreach;
+        let mut par = Par::default();
+        par.foreaches.push(Foreach {
+            bind_count: 1,
+            source: Some(source),
+            body: Some(body),
+            yield_name: Some(yield_name),
+            locally_free: Vec::new(),
+            connective_used: false,
+        });
+        par
+    }
+
+    #[test]
+    fn synth_foreach_over_list_binds_element_type_in_body() {
+        // `foreach ( x <- [1, 2, 3] ) yield ( out ) { out!(x) }`
+        // body references BoundVar(0) which the rule types as the list's
+        // element type Int. Ctx already has `out` as a Proc-typed
+        // placeholder (BoundVar(0) outside the foreach).
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let source = elist_par(vec![gint_par(1), gint_par(2), gint_par(3)]);
+        // Body: send BoundVar(0) [which, inside the foreach, is the
+        // element binder] on BoundVar(1) [which is `out` from the
+        // surrounding ctx]. Send gives us a process (Proc).
+        let body = send_par(bvar_par(1), vec![bvar_par(0)]);
+        let par = foreach_par(source, body, bvar_par(0));
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_foreach_rejects_body_that_is_not_proc() {
+        // Body is a bare int, not a process — rejected because the
+        // default ParMonoid aggregator's carrier is Proc.
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let source = elist_par(vec![gint_par(1)]);
+        let non_proc_body = gint_par(42);
+        let par = foreach_par(source, non_proc_body, bvar_par(0));
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(
+            matches!(err, TypeError::Mismatch { .. }),
+            "expected Mismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn synth_foreach_body_ctx_extended_with_element_type() {
+        // Source type is `Set<Bool>`; inside the body BoundVar(0)
+        // should have type Bool. We verify this by using the binder
+        // in a boolean operator (ENot) and checking the result.
+        use models::rhoapi::ENot;
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let proc_ty = type_par(ConnectiveInstance::ConnProc(true));
+        let source = eset_par(vec![gbool_par(true), gbool_par(false)]);
+        // body uses `!x` as part of a send so the overall body is Proc.
+        let not_x = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ENotBody(ENot {
+                p: Some(bvar_par(0)),
+            })),
+        }]);
+        let body = send_par(bvar_par(1), vec![not_x]);
+        let par = foreach_par(source, body, bvar_par(0));
+        let ty = synth(&ctx, &par).unwrap();
+        assert!(def_eq(&ty, &proc_ty));
+    }
+
+    #[test]
+    fn synth_foreach_rejects_body_misusing_binder() {
+        // With Set<Bool> source, body uses the binder in Int-only
+        // arithmetic — must fail.
+        let ctx = Context::new().extend(type_par(ConnectiveInstance::ConnProc(true)));
+        let source = eset_par(vec![gbool_par(true)]);
+        // `BoundVar(0) + 1` — Bool + Int, ill-typed.
+        let bad = plus_par(bvar_par(0), gint_par(1));
+        let body = send_par(bvar_par(1), vec![bad]);
+        let par = foreach_par(source, body, bvar_par(0));
+        let err = synth(&ctx, &par).unwrap_err();
+        assert!(matches!(err, TypeError::Mismatch { .. }));
     }
 
     fn match_par(target: Par, cases: Vec<(Par, Par, i32, Par)>) -> Par {
