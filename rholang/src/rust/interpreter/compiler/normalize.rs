@@ -140,6 +140,9 @@ pub fn normalize_ann_proc<'ast>(
         Proc::FixedPointPattern { .. } => Err(InterpreterError::NormalizerError(
             "the FixedPoint type pattern has no connective on this branch".to_string(),
         )),
+        Proc::Lambda { .. } | Proc::App { .. } | Proc::Pi { .. } => Err(InterpreterError::NormalizerError(
+            "Lambda, App and Pi are not normalized on this branch".to_string(),
+        )),
 
         Proc::Nil => Ok(ProcVisitOutputs {
             par: input.par.clone(),

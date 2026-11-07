@@ -446,6 +446,25 @@ mod elaboration {
     }
 
     #[test]
+    fn a_continuation_seal_inside_another_keeps_its_own_limit() {
+        let sugar = format!(
+            r#"{NAMES} {{ {{% for (_ <- @"x") {{ {{% {BODY} %}}[c ; 700] }} %}}[d ; 900] | @"z"!(0) }}"#
+        );
+        let par = elaborated(&sugar);
+        let outer = &par.cost_signed_terms[0].body.as_ref().unwrap().news[0].p.as_ref().unwrap().cost_signed_terms[0];
+        let inner = &outer.body.as_ref().unwrap().receives[0].body.as_ref().unwrap().cost_signed_terms[0];
+        assert_eq!(outer.seal.as_ref().unwrap().phlo_limit, 900);
+        assert_eq!(inner.seal.as_ref().unwrap().phlo_limit, 700);
+        let nested = &inner.body.as_ref().unwrap().news[0].p.as_ref().unwrap().receives[0].body.as_ref().unwrap().cost_signed_terms[0];
+        assert_eq!(nested.seal.as_ref().unwrap().phlo_limit, 700, "t's continuations inherit t's limit");
+        let explicit = format!(
+            r#"{{% {NAMES} {{ {{% for (_ <- @"x") {{ {{% {} %}}[c ; 700] }} %}}[d ; 900] | @"z"!(0) }} %}}[u1]"#,
+            body_under("c ; 700")
+        );
+        assert_eq!(par, form(&explicit));
+    }
+
+    #[test]
     fn an_undeclared_limit_is_the_deployments_limit() {
         let par = elaborated(r#"for (_ <- @"x") { Nil }"#);
         let top = &par.cost_signed_terms[0];
