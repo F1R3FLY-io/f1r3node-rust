@@ -403,8 +403,8 @@ mod tests {
         let empty_ok_hash = par_stable_hash(&empty_ok);
         // Pinned bytes (regenerate on intentional roll).
         const EXPECTED_EMPTY_OK: [u8; 32] = [
-            119, 68, 78, 243, 133, 152, 110, 124, 198, 181, 74, 235, 79, 177, 172, 38, 203, 235,
-            114, 155, 208, 120, 203, 73, 74, 176, 191, 128, 143, 49, 155, 88,
+            170, 215, 104, 80, 123, 248, 129, 128, 106, 244, 69, 186, 7, 153, 68, 2, 214, 42, 16,
+            153, 250, 225, 37, 110, 62, 223, 186, 164, 146, 190, 233, 68,
         ];
         assert_eq!(
             empty_ok_hash, EXPECTED_EMPTY_OK,
@@ -419,8 +419,8 @@ mod tests {
         let bad_arg_reply = err(FSERR_BAD_ARG, "example");
         let bad_arg_hash = par_stable_hash(&bad_arg_reply);
         const EXPECTED_BAD_ARG: [u8; 32] = [
-            162, 235, 29, 195, 216, 118, 228, 131, 219, 87, 1, 71, 243, 30, 222, 228, 133, 182,
-            173, 116, 48, 92, 76, 4, 227, 116, 173, 97, 160, 208, 40, 14,
+            146, 81, 213, 200, 8, 226, 147, 76, 228, 185, 97, 13, 247, 227, 103, 9, 46, 0, 215,
+            115, 185, 71, 212, 245, 201, 43, 31, 77, 93, 114, 139, 175,
         ];
         assert_eq!(
             bad_arg_hash, EXPECTED_BAD_ARG,
@@ -439,8 +439,8 @@ mod tests {
         // io hashes identically would still pass the assert_ne!
         // below.  The per-shape pin catches that.
         const EXPECTED_IO_ERR: [u8; 32] = [
-            145, 182, 30, 120, 0, 5, 25, 100, 46, 36, 240, 210, 87, 50, 233, 85, 201, 81, 5, 196,
-            133, 50, 27, 23, 249, 76, 143, 248, 115, 242, 31, 198,
+            149, 153, 20, 226, 249, 188, 224, 143, 7, 130, 192, 44, 81, 54, 175, 132, 68, 77, 54,
+            143, 100, 33, 248, 92, 11, 192, 242, 196, 104, 222, 188, 166,
         ];
         assert_eq!(
             io_hash, EXPECTED_IO_ERR,
@@ -465,8 +465,8 @@ mod tests {
         // — subtly different wire bytes).
         let bare_ok_hash = par_stable_hash(&ok_bare());
         const EXPECTED_OK_BARE: [u8; 32] = [
-            107, 154, 136, 229, 143, 183, 156, 151, 253, 248, 83, 217, 50, 206, 169, 190, 117, 96,
-            239, 93, 96, 129, 178, 138, 137, 110, 95, 226, 205, 74, 121, 74,
+            142, 5, 170, 33, 131, 43, 178, 39, 174, 63, 146, 112, 6, 117, 35, 247, 24, 240, 53,
+            173, 248, 21, 115, 129, 217, 105, 196, 34, 250, 176, 61, 3,
         ];
         assert_eq!(
             bare_ok_hash, EXPECTED_OK_BARE,
@@ -478,8 +478,8 @@ mod tests {
         // (position), etc.  Pins the GInt encoding.
         let ok_int_hash = par_stable_hash(&ok_int(42));
         const EXPECTED_OK_INT_42: [u8; 32] = [
-            135, 92, 153, 234, 253, 51, 233, 32, 72, 147, 67, 172, 235, 243, 145, 115, 207, 158,
-            49, 7, 211, 118, 45, 177, 239, 141, 190, 222, 141, 142, 140, 193,
+            241, 116, 102, 209, 98, 49, 152, 54, 252, 161, 176, 171, 115, 123, 194, 109, 200, 70,
+            79, 38, 162, 1, 70, 31, 118, 230, 23, 45, 57, 246, 64, 48,
         ];
         assert_eq!(
             ok_int_hash, EXPECTED_OK_INT_42,
@@ -491,8 +491,8 @@ mod tests {
         // identically to GInt(0/1) would surface here vs. Case 5.
         let ok_bool_hash = par_stable_hash(&ok_bool(true));
         const EXPECTED_OK_BOOL_TRUE: [u8; 32] = [
-            9, 26, 160, 211, 236, 243, 142, 169, 244, 75, 11, 124, 46, 148, 25, 165, 175, 79, 76,
-            159, 111, 121, 119, 18, 182, 7, 67, 231, 32, 121, 87, 174,
+            81, 243, 181, 249, 143, 252, 31, 18, 194, 196, 124, 144, 240, 229, 253, 165, 7, 190,
+            222, 157, 76, 179, 52, 173, 221, 25, 136, 60, 210, 69, 156, 196,
         ];
         assert_eq!(
             ok_bool_hash, EXPECTED_OK_BOOL_TRUE,
@@ -503,8 +503,8 @@ mod tests {
         // fs_read's reply.  Pins the GByteArray encoding.
         let ok_bytes_hash = par_stable_hash(&ok_bytes(vec![0xaa, 0xbb, 0xcc]));
         const EXPECTED_OK_BYTES_AABBCC: [u8; 32] = [
-            60, 91, 188, 191, 162, 185, 129, 243, 195, 174, 1, 84, 122, 199, 0, 100, 125, 116, 31,
-            94, 167, 4, 85, 128, 232, 30, 151, 152, 174, 161, 147, 132,
+            215, 113, 134, 63, 95, 119, 111, 97, 248, 199, 196, 161, 181, 46, 89, 58, 133, 249,
+            205, 52, 147, 193, 59, 12, 201, 191, 64, 160, 41, 16, 206, 234,
         ];
         assert_eq!(
             ok_bytes_hash, EXPECTED_OK_BYTES_AABBCC,
@@ -515,8 +515,8 @@ mod tests {
         // fs_quarantine's reply.  Pins the GString encoding.
         let ok_string_hash = par_stable_hash(&ok_string("hello".to_string()));
         const EXPECTED_OK_STRING_HELLO: [u8; 32] = [
-            97, 151, 102, 147, 7, 140, 199, 50, 63, 63, 140, 199, 86, 207, 150, 44, 204, 150, 144,
-            193, 214, 127, 140, 187, 182, 171, 17, 60, 110, 41, 236, 81,
+            87, 227, 106, 239, 184, 172, 134, 203, 165, 23, 221, 92, 243, 112, 118, 206, 212, 217,
+            233, 39, 199, 4, 59, 177, 78, 192, 85, 149, 31, 255, 194, 24,
         ];
         assert_eq!(
             ok_string_hash, EXPECTED_OK_STRING_HELLO,
@@ -530,8 +530,8 @@ mod tests {
         let entry_b = ok_string("dir".to_string());
         let ok_nested_hash = par_stable_hash(&ok_list(vec![entry_a, entry_b]));
         const EXPECTED_OK_NESTED_LIST: [u8; 32] = [
-            57, 161, 248, 163, 120, 104, 49, 5, 17, 166, 195, 1, 159, 224, 123, 252, 224, 123, 34,
-            86, 247, 2, 225, 231, 189, 132, 130, 70, 247, 2, 14, 37,
+            184, 232, 174, 228, 189, 2, 114, 53, 39, 217, 77, 241, 187, 107, 12, 99, 31, 28, 140,
+            149, 6, 128, 237, 93, 185, 26, 158, 104, 154, 122, 86, 216,
         ];
         assert_eq!(
             ok_nested_hash, EXPECTED_OK_NESTED_LIST,
@@ -544,8 +544,8 @@ mod tests {
         // FSERR shape would hash differently.
         let eos_hash = par_stable_hash(&err_eos());
         const EXPECTED_ERR_EOS: [u8; 32] = [
-            246, 91, 22, 107, 136, 134, 68, 233, 121, 244, 253, 188, 130, 87, 57, 207, 168, 233,
-            247, 151, 57, 212, 205, 91, 59, 199, 207, 85, 183, 127, 141, 253,
+            56, 254, 196, 226, 42, 242, 45, 86, 165, 152, 198, 173, 31, 249, 57, 106, 152, 165,
+            214, 18, 101, 132, 3, 149, 130, 79, 187, 117, 14, 38, 161, 155,
         ];
         assert_eq!(
             eos_hash, EXPECTED_ERR_EOS,
@@ -572,8 +572,8 @@ mod tests {
         // so `error_record` is a faithful proxy.
         let emap_hash = par_stable_hash(&ok_par(error_record("target", "example error")));
         const EXPECTED_ERR_EMAP: [u8; 32] = [
-            119, 174, 145, 222, 110, 25, 178, 74, 223, 169, 238, 192, 168, 47, 121, 34, 243, 119,
-            170, 166, 155, 148, 121, 95, 85, 166, 50, 225, 247, 60, 29, 139,
+            2, 54, 254, 119, 105, 152, 215, 211, 250, 1, 137, 113, 29, 130, 84, 3, 95, 215, 44, 81,
+            64, 222, 113, 132, 198, 69, 240, 234, 41, 225, 158, 203,
         ];
         assert_eq!(
             emap_hash, EXPECTED_ERR_EMAP,

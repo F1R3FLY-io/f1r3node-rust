@@ -62,6 +62,7 @@ fn bootstrap(channel: Par) -> New {
             bundles: Vec::new(),
             connectives: Vec::new(),
             conditionals: Vec::new(),
+            foreaches: Vec::new(),
             locally_free: Vec::new(),
             connective_used: false,
         }),

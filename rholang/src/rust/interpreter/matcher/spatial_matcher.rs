@@ -1,5 +1,7 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - trait SpatialMatcher
 
+use models::rhoapi::connective::ConnectiveInstance;
+use models::rhoapi::expr::ExprInstance;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
 use models::rust::par_set_type_mapper::ParSetTypeMapper;
 use models::rust::rholang::implicits::{single_expr, vector_par};
@@ -222,6 +224,89 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
                 _ => None,
             },
 
+            // CoC Phase 4.1b: `List<T>` pattern matches a target whose
+            // single expression is an EList and every element spatial-
+            // matches `T`. Free-var captures inside `T` accumulate
+            // across elements through the shared `self.free_map`.
+            Some(ConnList(element_pattern)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(EListBody(list)),
+                }) => {
+                    for element in &list.ps {
+                        self.spatial_match(element.clone(), element_pattern.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
+
+            // CoC Phase 4.2: `Set<T>` pattern — identical shape to
+            // ConnList but against ESet targets.
+            Some(ConnSet(element_pattern)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(ESetBody(set)),
+                }) => {
+                    for element in &set.ps {
+                        self.spatial_match(element.clone(), element_pattern.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
+
+            // CoC Phase 4.3: `Map<K, V>` pattern matches EMap targets
+            // whose every kv pair has key matching `K` and value
+            // matching `V`.
+            Some(ConnMap(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(EMapBody(map)),
+                }) => {
+                    let key_pat = body.key.clone().unwrap_or_default();
+                    let val_pat = body.value.clone().unwrap_or_default();
+                    for kv in &map.kvs {
+                        let k = kv.key.clone().unwrap_or_default();
+                        let v = kv.value.clone().unwrap_or_default();
+                        self.spatial_match(k, key_pat.clone())?;
+                        self.spatial_match(v, val_pat.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
+
+            // CoC Phase 4.4: `Tuple<T_0, …, T_{n-1}>` pattern matches an
+            // ETuple target of matching arity whose each slot spatial-
+            // matches the corresponding T_i.
+            Some(ConnTuple(body)) => match single_expr(&target) {
+                Some(Expr {
+                    expr_instance: Some(ETupleBody(tuple)),
+                }) if tuple.ps.len() == body.elements.len() => {
+                    for (t, p) in tuple.ps.iter().zip(body.elements.iter()) {
+                        self.spatial_match(t.clone(), p.clone())?;
+                    }
+                    Some(())
+                }
+                _ => None,
+            },
+
+            // CoC Phase 5.1: `Proc` pattern matches any target that is
+            // itself a well-formed process (sends/receives/news/
+            // matches/bundles/conditionals/unforgeables present).
+            Some(ConnProc(_)) => {
+                let is_process = !target.sends.is_empty()
+                    || !target.receives.is_empty()
+                    || !target.news.is_empty()
+                    || !target.matches.is_empty()
+                    || !target.bundles.is_empty()
+                    || !target.conditionals.is_empty()
+                    || !target.unforgeables.is_empty();
+                if is_process {
+                    Some(())
+                } else {
+                    None
+                }
+            }
+
             // CoC Phase 2c: `Type` matches any type-level value. Phase
             // 2d (typechecker) will refine this to "target typechecks to
             // Type". For now, match the universe constant, Pi types, and
@@ -262,6 +347,24 @@ impl SpatialMatcher<Par, Connective> for SpatialMatcherContext {
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/matcher/SpatialMatcher.scala - parSpatialMatcher
 impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
     fn spatial_match(&mut self, target: Par, pattern: Par) -> Option<()> {
+        // CoC Phase 3.1: when the pattern is a single Pi expression,
+        // use the typechecker instead of structural matching. The Pi
+        // acts as a type pattern that succeeds iff `target` has that
+        // type up to β-definitional equality. No bindings are produced
+        // — a type pattern is a pure refinement.
+        if let Some(Expr {
+            expr_instance: Some(ExprInstance::EPiBody(_)),
+        }) = pattern.exprs.first()
+        {
+            if is_pure_type_pattern(&pattern) {
+                let ctx = crate::rust::interpreter::typechecker::Context::new();
+                return match crate::rust::interpreter::typechecker::check(&ctx, &target, &pattern) {
+                    Ok(()) => Some(()),
+                    Err(_) => None,
+                };
+            }
+        }
+
         if !pattern.connective_used {
             // guard(pattern == target)
             guard(match_pars(&target, &pattern))
@@ -703,6 +806,60 @@ impl SpatialMatcher<MatchCase, MatchCase> for SpatialMatcherContext {
         guard(target.pattern == pattern.pattern)
             .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }
+}
+
+/// CoC Phase 3.1: a Par qualifies as a "pure type pattern" when its
+/// only content is a Pi expression (no sends/receives/etc. and no
+/// `FreeVar` / `Wildcard` carriers). Such a pattern defers entirely
+/// to the typechecker for matching semantics.
+fn is_pure_type_pattern(pattern: &Par) -> bool {
+    if pattern.exprs.len() != 1 {
+        return false;
+    }
+    if !pattern.sends.is_empty()
+        || !pattern.receives.is_empty()
+        || !pattern.news.is_empty()
+        || !pattern.matches.is_empty()
+        || !pattern.bundles.is_empty()
+        || !pattern.conditionals.is_empty()
+        || !pattern.unforgeables.is_empty()
+        || !pattern.connectives.is_empty()
+    {
+        return false;
+    }
+    match pattern.exprs[0].expr_instance.as_ref() {
+        Some(ExprInstance::EPiBody(pi)) => {
+            !pi_has_free_var_or_wildcard(pi.param_types.iter())
+                && pi
+                    .codomain
+                    .as_ref()
+                    .map(|c| !par_has_free_var_or_wildcard(c))
+                    .unwrap_or(true)
+        }
+        _ => false,
+    }
+}
+
+fn pi_has_free_var_or_wildcard<'a>(mut params: impl Iterator<Item = &'a Par>) -> bool {
+    params.any(par_has_free_var_or_wildcard)
+}
+
+fn par_has_free_var_or_wildcard(par: &Par) -> bool {
+    par.exprs.iter().any(|e| {
+        matches!(
+            e.expr_instance.as_ref(),
+            Some(ExprInstance::EVarBody(EVar {
+                v: Some(Var {
+                    var_instance: Some(FreeVar(_)) | Some(Wildcard(_)),
+                }),
+            }))
+        )
+    }) || par.connectives.iter().any(|c| {
+        matches!(
+            c.connective_instance.as_ref(),
+            Some(ConnectiveInstance::VarRefBody(_))
+        )
+    })
 }
 
 // This implementation for type 'KeyValuePair' is NOT on the Scala side
