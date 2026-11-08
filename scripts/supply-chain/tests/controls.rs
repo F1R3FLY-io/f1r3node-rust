@@ -693,6 +693,68 @@ fn installer_writes_only_the_verified_executable_and_can_run_again() {
 }
 
 #[test]
+fn installer_api_fallback_preserves_checksum_and_download_failure_checks() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tools = dir.path().join("tools");
+    fs::create_dir(&tools).unwrap();
+    fs::create_dir(dir.path().join("supply-chain")).unwrap();
+    for (name, script) in [
+        ("curl", "#!/bin/sh\nprintf partial-download\nexit 22\n"),
+        (
+            "gh",
+            "#!/bin/sh\ncat \"$TEST_RELEASE_ARCHIVE\"\nexit \"$TEST_API_STATUS\"\n",
+        ),
+    ] {
+        let path = tools.join(name);
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let bytes = archive(&[("release/cargo-deny", false)]);
+    let source = dir.path().join("release.tar.gz");
+    fs::write(&source, &bytes).unwrap();
+    let target = install::target(std::env::consts::ARCH, std::env::consts::OS).unwrap();
+    let mut paths = vec![tools];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    for (case, checksum, api_status, succeeds) in [
+        ("valid", digest(&bytes), "0", true),
+        ("wrong-hash", "0".repeat(64), "0", false),
+        ("failed-download", digest(&bytes), "1", false),
+    ] {
+        fs::write(
+            dir.path().join("supply-chain/policy.toml"),
+            format!(
+                "manifests = []\n[scanner]\nversion = \"0.20.2\"\n[scanner.sha256]\n{target} = \"{checksum}\"\n[exceptions]\n"
+            ),
+        )
+        .unwrap();
+        let destination = dir.path().join(case);
+        let result = Command::new(env!("CARGO_BIN_EXE_supply-chain"))
+            .arg("--root")
+            .arg(dir.path())
+            .args(["install", "--install-dir"])
+            .arg(&destination)
+            .env("PATH", &path)
+            .env("TEST_RELEASE_ARCHIVE", &source)
+            .env("TEST_API_STATUS", api_status)
+            .output()
+            .unwrap();
+        assert_eq!(result.status.success(), succeeds, "{case}: {result:?}");
+        if succeeds {
+            assert_eq!(
+                fs::read(destination.join("cargo-deny")).unwrap(),
+                b"fixture"
+            );
+        } else {
+            assert!(!destination.exists());
+        }
+    }
+}
+
+#[test]
 fn supported_scanner_targets_are_explicit() {
     assert_eq!(
         install::target("arm64", "macos").unwrap(),

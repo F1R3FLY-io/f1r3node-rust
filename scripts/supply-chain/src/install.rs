@@ -70,7 +70,7 @@ pub fn scanner(policy: &Policy, destination: &Path) -> Result<()> {
         .get(&target)
         .ok_or_else(|| eyre!("No scanner checksum for {target}."))?;
     let url = format!("https://github.com/EmbarkStudios/cargo-deny/releases/download/{version}/cargo-deny-{version}-{target}.tar.gz");
-    let response = Command::new("curl")
+    let mut response = Command::new("curl")
         .args([
             "--fail",
             "--silent",
@@ -85,6 +85,21 @@ pub fn scanner(policy: &Policy, destination: &Path) -> Result<()> {
             &url,
         ])
         .output()?;
+    if !response.status.success() {
+        response = Command::new("gh")
+            .args([
+                "release",
+                "download",
+                version,
+                "--repo",
+                "EmbarkStudios/cargo-deny",
+                "--pattern",
+                &format!("cargo-deny-{version}-{target}.tar.gz"),
+                "--output",
+                "-",
+            ])
+            .output()?;
+    }
     ensure!(
         response.status.success(),
         "Scanner download failed: {}",

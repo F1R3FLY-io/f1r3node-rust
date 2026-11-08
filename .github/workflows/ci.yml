@@ -814,11 +814,13 @@ jobs:
 
       - name: Install the cleanup model checker
         timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           java_home="${JAVA_HOME_21_X64:?The runner image has no JDK 21}"
           printf '%s\n' "$java_home/bin" >> "$GITHUB_PATH"
           "$java_home/bin/java" -version
-          curl --fail --location --output "$RUNNER_TEMP/tla2tools.jar" https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          gh release download v1.7.4 --repo tlaplus/tlaplus --pattern tla2tools.jar --output "$RUNNER_TEMP/tla2tools.jar"
           echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $RUNNER_TEMP/tla2tools.jar" | sha256sum --check
 
       - name: Verify soak driver and cleanup controls
@@ -876,6 +878,8 @@ jobs:
           toolchain: nightly-2026-02-09
 
       - name: Install verified cargo-deny
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           bash scripts/ci/check-supply-chain.sh install --install-dir "$RUNNER_TEMP/cargo-deny"
           echo "$RUNNER_TEMP/cargo-deny" >> "$GITHUB_PATH"
@@ -908,9 +912,20 @@ jobs:
           ref: ${{ needs.build_base.outputs.TARGET_SHA }}
           persist-credentials: false
 
+      - name: Install verified Lychee
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download lychee-v0.24.2 --repo lycheeverse/lychee --pattern lychee-x86_64-unknown-linux-gnu.tar.gz --output "$RUNNER_TEMP/lychee.tar.gz"
+          echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  $RUNNER_TEMP/lychee.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/lychee/bin"
+          tar -xzf "$RUNNER_TEMP/lychee.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/lychee/bin" lychee-x86_64-unknown-linux-gnu/lychee
+          echo "$RUNNER_TEMP/lychee/bin" >> "$GITHUB_PATH"
+
       - name: Link Checker
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
           # Scope: local file links plus repository-hosting URLs only.
           # The broad exclude drops every http(s) URL; the includes add
           # back github.com, raw.githubusercontent.com, and gitlab.com
@@ -926,18 +941,24 @@ jobs:
           # enable it after that debt is cleared. The accept list keeps
           # 403/429 (rate limits, bot checks) and 503/504 (transient
           # gateway states) from failing hosting-domain checks.
-          args: >-
-            --no-progress
-            --exclude '^https?://'
-            --include '^https?://(www\.)?github\.com'
-            --include '^https?://raw\.githubusercontent\.com'
-            --include '^https?://(www\.)?gitlab\.com'
-            --max-retries 2
-            --retry-wait-time 5
-            --timeout 45
-            --accept 200..=299,403,429,503,504
-            './**/*.md'
-          fail: true
+          mkdir -p lychee
+          status=0
+          lychee --mode task --format markdown --output lychee/out.md \
+            --no-progress \
+            --exclude '^https?://' \
+            --include '^https?://(www\.)?github\.com' \
+            --include '^https?://raw\.githubusercontent\.com' \
+            --include '^https?://(www\.)?gitlab\.com' \
+            --max-retries 2 \
+            --retry-wait-time 5 \
+            --timeout 45 \
+            --accept 200..=299,403,429,503,504 \
+            './**/*.md' || status=$?
+          cat lychee/out.md >> "$GITHUB_STEP_SUMMARY"
+          if grep -Eq 'Total\s+\|\s+0' lychee/out.md; then
+            exit 1
+          fi
+          exit "$status"
 
   test:
     name: Test (${{ matrix.crate }})
