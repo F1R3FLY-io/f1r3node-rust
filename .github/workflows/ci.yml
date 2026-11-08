@@ -954,7 +954,7 @@ jobs:
             --timeout 45 \
             --accept 200..=299,403,429,503,504 \
             './**/*.md' || status=$?
-          cat lychee/out.md >> "$GITHUB_STEP_SUMMARY"
+          cat lychee/out.md | tee -a "$GITHUB_STEP_SUMMARY"
           if grep -Eq 'Total\s+\|\s+0' lychee/out.md; then
             exit 1
           fi
