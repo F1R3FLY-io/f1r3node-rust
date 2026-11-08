@@ -2350,10 +2350,10 @@ async fn a_restore_anchor_is_finalized_even_when_it_reached_the_dag_as_settled_h
 }
 
 /// A vote is findable for as long as the block carrying it is, restarts
-/// included, and an invalid block's body is not history, so its votes never
-/// count.
+/// included. A block is stored as an equivocation only because its twin
+/// arrived first, so its votes are recorded too.
 #[test]
-fn votes_in_valid_blocks_survive_a_restart_and_invalid_blocks_record_none() {
+fn votes_survive_a_restart_including_those_of_a_stored_equivocation() {
     use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
     use block_storage::rust::dag::vote_index::VoteEntry;
     use models::rust::casper::protocol::casper_message::{ClaimFamily, ClaimId, LeakyBucketVote};
@@ -2405,7 +2405,11 @@ fn votes_in_valid_blocks_survive_a_restart_and_invalid_blocks_record_none() {
             restarted
                 .leaky_bucket_votes(&claim, &invalid.sender)
                 .unwrap(),
-            Some(vec![])
+            Some(vec![VoteEntry {
+                block_hash: invalid.block_hash.to_vec(),
+                sequence_number: invalid.seq_num,
+                yea: false,
+            }])
         );
     });
 }

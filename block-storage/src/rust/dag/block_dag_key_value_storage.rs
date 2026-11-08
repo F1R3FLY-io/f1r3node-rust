@@ -1495,15 +1495,15 @@ impl BlockDagKeyValueStorage {
                 drop(lifecycle_guard);
             }
 
-            if !invalid {
-                for vote in &block.body.leaky_bucket_votes {
-                    self.vote_index
-                        .record_once(&vote.claim, &block.sender, VoteEntry {
-                            block_hash: block.block_hash.to_vec(),
-                            sequence_number: block.seq_num,
-                            yea: vote.yea,
-                        })?;
-                }
+            // An equivocation's votes are recorded too: which twin is stored
+            // as the equivocation depends on arrival order.
+            for vote in &block.body.leaky_bucket_votes {
+                self.vote_index
+                    .record_once(&vote.claim, &block.sender, VoteEntry {
+                        block_hash: block.block_hash.to_vec(),
+                        sequence_number: block.seq_num,
+                        yea: vote.yea,
+                    })?;
             }
 
             let block_metadata = BlockMetadata::from_block(block, equivocates, None, None);

@@ -28,9 +28,10 @@ pub struct Accusation {
     pub claim: ClaimId,
 }
 
-/// The spill of each of `claimant`'s valid blocks in the ancestry of a block
-/// citing `parents`, numbered at or above `lowest` and outside the
-/// testimony's freezes, with the block's number.
+/// The spill of each of `claimant`'s blocks in the ancestry of a block citing
+/// `parents`, numbered at or above `lowest` and outside the testimony's
+/// freezes, with the block's number. A block this node stores as an
+/// equivocation counts too: which twin is stored so depends on arrival order.
 fn spills(
     dag: &KeyValueDagRepresentation,
     parents: Vec<BlockHash>,
@@ -51,8 +52,7 @@ fn spills(
             continue;
         }
         pending.extend(block.parents.iter().cloned());
-        if block.is_invalid()
-            || block.sender != *claimant
+        if block.sender != *claimant
             || testimony
                 .freezes
                 .iter()
@@ -108,9 +108,9 @@ fn proves(testimony: &OverflowTestimony, provable: u128) -> bool {
 }
 
 /// The overflow every honest view of `vote_block`'s ancestry holds for
-/// `claimant` under `testimony`: the spill of each of the claimant's valid
-/// blocks numbered at or above `lowest` and outside its freezes, less all it
-/// was paid.
+/// `claimant` under `testimony`: the spill of each of the claimant's blocks
+/// numbered at or above `lowest` and outside its freezes, less all it was
+/// paid.
 pub fn provable_overflow(
     dag: &KeyValueDagRepresentation,
     vote_block: &BlockHash,
@@ -161,8 +161,8 @@ pub fn contradicts_own_ancestry(
 }
 
 /// Whether a judge at a floor numbered `floor_number` can count anything
-/// for `accusation`: its vote block is a valid block of the accused,
-/// numbered no lower than the reach below that floor. Below the reach
+/// for `accusation`: its vote block is a block of the accused, stored as an
+/// equivocation or not, numbered no lower than the reach below that floor. Below the reach
 /// nothing is counted, and a node may hold neither the vote block's body nor
 /// its parents, so the answer must not depend on reading them. A vote block
 /// this node does not hold is `BlockNotHeld`, so the judge fetches it rather
@@ -178,9 +178,7 @@ fn countable(
     }
     let floor_lowest = reach.map_or(0, |reach| floor_number.saturating_sub(reach));
     let vote_block = dag.lookup_unsafe(&accusation.vote_block)?;
-    Ok(!vote_block.is_invalid()
-        && vote_block.sender == accusation.accused
-        && vote_block.block_number >= floor_lowest)
+    Ok(vote_block.sender == accusation.accused && vote_block.block_number >= floor_lowest)
 }
 
 /// The testimony the vote block's nay on the accused claim carries, if it
@@ -346,5 +344,77 @@ impl PendingAccusation {
         let proven = evidence.proves(lowest);
         *kept = Kept::Evidence(evidence);
         Ok(proven)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use block_storage::rust::dag::block_dag_key_value_storage::{
+        BlockDagKeyValueStorage, InsertMode,
+    };
+    use models::rust::block_implicits::get_random_block;
+    use models::rust::casper::protocol::casper_message::BlockMessage;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::*;
+
+    fn block(
+        number: i64,
+        seq: i32,
+        sender: Option<&Validator>,
+        parents: Vec<BlockHash>,
+    ) -> BlockMessage {
+        get_random_block(
+            Some(number),
+            Some(seq),
+            None,
+            None,
+            sender.cloned(),
+            None,
+            None,
+            Some(parents),
+            None,
+            Some(vec![]),
+            None,
+            Some(vec![]),
+            None,
+            None,
+        )
+    }
+
+    /// Whether a nay in an equivocator's block can be judged does not depend
+    /// on which of its twins a node received first.
+    #[tokio::test]
+    async fn an_accusation_is_countable_whichever_twin_arrived_first() {
+        let genesis = block(0, 0, None, vec![]);
+        let accused: Validator = Bytes::from(vec![5u8; 65]);
+        let voting = block(1, 1, Some(&accused), vec![genesis.block_hash.clone()]);
+        let twin = block(1, 1, Some(&accused), vec![genesis.block_hash.clone()]);
+        let accusation = Accusation {
+            accused: accused.clone(),
+            vote_block: voting.block_hash.clone(),
+            claim: ClaimId {
+                family: ClaimFamily::Overflow,
+                target: Bytes::from(vec![6u8; 65]),
+                opened_at: 0,
+                proposer: Bytes::from(vec![6u8; 65]),
+            },
+        };
+
+        let mut answers = Vec::new();
+        for (first, second) in [(&voting, &twin), (&twin, &voting)] {
+            let mut kvm = InMemoryStoreManager::new();
+            let storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            storage.insert(&genesis, InsertMode::Approved).unwrap();
+            storage.insert(first, InsertMode::Normal).unwrap();
+            let dag = storage
+                .insert(second, InsertMode::Equivocation {
+                    sibling: first.block_hash.clone(),
+                })
+                .unwrap();
+            answers.push(countable(&dag, &accusation, 1, None).unwrap());
+        }
+        assert_eq!(answers, [true, true], "(voting block first, twin first)");
     }
 }

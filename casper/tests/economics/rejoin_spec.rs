@@ -1714,3 +1714,80 @@ async fn a_proposer_outside_its_own_committee_holds_back_its_ejection_request() 
     }
     panic!("the validator's own committee never dropped it");
 }
+
+/// The overflow a claimant's ancestry proves does not depend on which of its
+/// twins a node received first: a node holding both answers as a node that
+/// holds only the twin cited.
+#[tokio::test]
+async fn provable_overflow_does_not_depend_on_which_twin_arrived_first() {
+    let (mut nodes, claimant, _) = funded_network_with(proving_overflow).await;
+    let others: Vec<usize> = (0..nodes.len()).filter(|i| *i != claimant).collect();
+    for _ in 0..3 {
+        for index in [claimant, others[0], others[1]] {
+            let block = propose(&mut nodes[index], &[], &[]).await;
+            admit_everywhere(&mut nodes, &block).await;
+        }
+    }
+    for index in [others[0], others[1]] {
+        let block = propose(&mut nodes[index], &[], &[]).await;
+        admit_everywhere(&mut nodes, &block).await;
+    }
+    let cited = propose(&mut nodes[claimant], &[], &[]).await;
+    let twin = propose(&mut nodes[claimant], &[], &[]).await;
+    assert_eq!(cited.seq_num, twin.seq_num);
+    assert_ne!(cited.block_hash, twin.block_hash);
+
+    let (cited_first, twin_first, cited_only) = (others[0], others[1], others[2]);
+    for (index, order) in [
+        (cited_first, vec![&cited, &twin]),
+        (twin_first, vec![&twin, &cited]),
+        (cited_only, vec![&cited]),
+    ] {
+        for block in order {
+            nodes[index]
+                .add_block(block.clone())
+                .await
+                .expect("process");
+        }
+    }
+
+    let claimant_key = identity(&nodes[claimant]);
+    let testimony = models::rust::casper::protocol::casper_message::OverflowTestimony {
+        amount: 0,
+        floor_number: cited.body.state.block_number,
+        claimed_total: 0,
+        freezes: Vec::new(),
+    };
+    let reward = nodes[cited_only]
+        .casper
+        .chain_parameters()
+        .leaky_bucket
+        .reward;
+    let provable = |index: usize, parents: Vec<prost::bytes::Bytes>| {
+        casper::rust::economics::dishonest_vote::provable_overflow_above(
+            &nodes[index]
+                .block_dag_storage
+                .get_representation()
+                .expect("dag"),
+            parents,
+            &claimant_key,
+            &testimony,
+            0,
+            &reward,
+        )
+        .expect("provable overflow")
+    };
+    let honest = provable(cited_only, vec![cited.block_hash.clone()]);
+    assert!(
+        honest > provable(cited_only, cited.header.parents_hash_list.clone()),
+        "the cited twin spills into the claimant's overflow"
+    );
+    assert_eq!(
+        [
+            provable(cited_first, vec![cited.block_hash.clone()]),
+            provable(twin_first, vec![cited.block_hash.clone()]),
+        ],
+        [honest, honest],
+        "(cited twin first, other twin first) against a node holding only the cited twin"
+    );
+}

@@ -235,8 +235,7 @@ impl<'a> VoteHistory<'a> {
 
     /// The votes on `claims` read from the bodies of the blocks on the
     /// voter's own chain down from `at`. A vote on a claim sits in a block
-    /// numbered above the one that opened it, so the walk stops there. An
-    /// invalid block's votes are skipped, as the index never recorded them.
+    /// numbered above the one that opened it, so the walk stops there.
     fn votes_in_bodies<'c>(
         &self,
         at: &BlockHash,
@@ -252,17 +251,15 @@ impl<'a> VoteHistory<'a> {
             if metadata.block_number <= lowest_opened {
                 break;
             }
-            if !metadata.is_invalid() {
-                let block = self.blocks.get(&cursor)?.ok_or_else(|| {
-                    CasperError::RuntimeError(format!(
-                        "the body of block {} on a voter's chain is not held",
-                        hex::encode(&cursor)
-                    ))
-                })?;
-                for vote in &block.body.leaky_bucket_votes {
-                    if let Some(claim) = claims.iter().find(|claim| ***claim == vote.claim) {
-                        votes.entry(*claim).or_insert(vote.yea);
-                    }
+            let block = self.blocks.get(&cursor)?.ok_or_else(|| {
+                CasperError::RuntimeError(format!(
+                    "the body of block {} on a voter's chain is not held",
+                    hex::encode(&cursor)
+                ))
+            })?;
+            for vote in &block.body.leaky_bucket_votes {
+                if let Some(claim) = claims.iter().find(|claim| ***claim == vote.claim) {
+                    votes.entry(*claim).or_insert(vote.yea);
                 }
             }
             match self.dag.self_justification(&cursor)? {

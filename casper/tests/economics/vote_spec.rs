@@ -327,3 +327,61 @@ async fn a_block_skipping_the_oldest_owed_claim_is_invalid() {
         "unexpected verdict: {verdict:?}"
     );
 }
+
+/// An equivocator's vote counts on the branch that carries it whichever of
+/// its twins a node received first, so honest nodes judge the next block on
+/// that branch alike.
+#[tokio::test]
+async fn a_vote_counts_on_its_branch_whichever_twin_arrived_first() {
+    let mut nodes = network(None).await;
+    let target = identity(&nodes[2]);
+    let opening = propose(&mut nodes[0], std::slice::from_ref(&target), &[]).await;
+    admit_everywhere(&mut nodes, &opening).await;
+    let claim = claim_opened_by(&opening, &target);
+
+    let voting = propose(&mut nodes[1], &[], std::slice::from_ref(&target)).await;
+    let twin = propose(&mut nodes[1], &[], &[]).await;
+    assert_eq!(voting.seq_num, twin.seq_num);
+    assert_eq!(voting.body.leaky_bucket_votes, vec![LeakyBucketVote {
+        claim: claim.clone(),
+        yea: true,
+        testimony: None,
+    }]);
+    assert_eq!(twin.body.leaky_bucket_votes, vec![LeakyBucketVote {
+        claim,
+        yea: false,
+        testimony: None,
+    }]);
+    admit_everywhere(std::slice::from_mut(&mut nodes[1]), &voting).await;
+    let above_voting = propose(&mut nodes[1], &[], &[]).await;
+    assert!(above_voting.body.leaky_bucket_votes.is_empty());
+
+    let mut verdicts = Vec::new();
+    for (judge_index, first, second) in [(0, &voting, &twin), (2, &twin, &voting)] {
+        let judge = &mut nodes[judge_index];
+        let verdict = judge.add_block(first.clone()).await.expect("process");
+        assert!(matches!(verdict, Either::Right(ValidBlock::Valid)));
+        let verdict = judge.add_block(second.clone()).await.expect("process");
+        assert!(
+            matches!(
+                verdict,
+                Either::Left(BlockError::Invalid(
+                    InvalidBlock::IgnorableEquivocation | InvalidBlock::AdmissibleEquivocation
+                ))
+            ),
+            "the second twin is an equivocation: {verdict:?}"
+        );
+        verdicts.push(
+            judge
+                .add_block(above_voting.clone())
+                .await
+                .expect("process"),
+        );
+    }
+    assert!(
+        verdicts
+            .iter()
+            .all(|verdict| matches!(verdict, Either::Right(ValidBlock::Valid))),
+        "verdicts by arrival order (voting first, twin first): {verdicts:?}"
+    );
+}

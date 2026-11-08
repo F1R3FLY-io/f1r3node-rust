@@ -1,4 +1,4 @@
-// Leaky-bucket votes by claim and voter, recorded from the bodies of valid
+// Leaky-bucket votes by claim and voter, recorded from the bodies of stored
 // blocks before they become DAG-visible, so a vote is findable as soon as the
 // block that carries it is.
 
