@@ -207,8 +207,27 @@ async fn dropping_incoming_releases_listener_and_stalled_handshakes() {
         matches!(closed, Ok(Ok(0)) | Ok(Err(_))),
         "a dropped incoming stream must close stalled peers"
     );
-    let rebound = TcpListener::bind(address).await;
-    assert!(rebound.is_ok(), "the listener socket must be released");
+    // Until the client closes too, the server's half of the stalled connection sits in
+    // FIN-WAIT-2 on the listener's port, and Linux refuses a new listener there. After the
+    // client's FIN arrives it is in TIME-WAIT, which a new listener may share; only a
+    // listener that was never released keeps the port.
+    drop(client);
+    let rebound = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match TcpListener::bind(address).await {
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                result => return result,
+            }
+        }
+    })
+    .await;
+    assert!(
+        matches!(rebound, Ok(Ok(_))),
+        "the listener socket must be released: {:?}",
+        rebound
+    );
 }
 
 #[cfg(target_os = "linux")]
