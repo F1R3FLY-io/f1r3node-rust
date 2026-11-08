@@ -732,6 +732,9 @@ jobs:
         shell: bash -euo pipefail {0}
         run: .github/scripts/test-release-workflows.sh
 
+      - name: Verify Markdown link fallback
+        run: bash scripts/ci/test-markdown-links.sh
+
       - name: Verify TLA+ gate classification and routing
         shell: bash -euo pipefail {0}
         run: bash scripts/ci/test-check-tla-invariants.sh
@@ -925,7 +928,6 @@ jobs:
       - name: Link Checker
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
           # Scope: local file links plus repository-hosting URLs only.
           # The broad exclude drops every http(s) URL; the includes add
           # back github.com, raw.githubusercontent.com, and gitlab.com
@@ -941,24 +943,7 @@ jobs:
           # enable it after that debt is cleared. The accept list keeps
           # 403/429 (rate limits, bot checks) and 503/504 (transient
           # gateway states) from failing hosting-domain checks.
-          mkdir -p lychee
-          status=0
-          lychee --mode task --format markdown --output lychee/out.md \
-            --no-progress \
-            --exclude '^https?://' \
-            --include '^https?://(www\.)?github\.com' \
-            --include '^https?://raw\.githubusercontent\.com' \
-            --include '^https?://(www\.)?gitlab\.com' \
-            --max-retries 2 \
-            --retry-wait-time 5 \
-            --timeout 45 \
-            --accept 200..=299,403,429,503,504 \
-            './**/*.md' || status=$?
-          cat lychee/out.md | tee -a "$GITHUB_STEP_SUMMARY"
-          if grep -Eq 'Total\s+\|\s+0' lychee/out.md; then
-            exit 1
-          fi
-          exit "$status"
+        run: bash scripts/ci/check-markdown-links.sh
 
   test:
     name: Test (${{ matrix.crate }})
