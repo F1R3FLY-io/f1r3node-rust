@@ -1602,31 +1602,23 @@ impl Validate {
 
     /// Justification regression check.
     ///
-    /// Compares the justifications the sender's current latest message cites
-    /// for other validators against those the new block `b` cites, and rejects
-    /// any that move back to a lower sequence number. The sender's own entry is
-    /// not compared: a block that cites its own sender below its latest message
-    /// shares a sequence number with a held block of that sender, and the
-    /// equivocation check has already judged it.
+    /// Compares the justifications `b`'s own previous block cites for other
+    /// validators against those `b` cites, and rejects any that move back to a
+    /// lower sequence number. Both blocks are signed and `b` cites the
+    /// previous one, so every node holding `b` reaches the same verdict. The
+    /// sender's own entry is not compared: the equivocation check judges it.
     pub fn justification_regressions(
         b: &BlockMessage,
         s: &mut CasperSnapshot,
     ) -> ValidBlockProcessing {
-        match s.dag.latest_message(&b.sender) {
-            Ok(None) => {
-                // `b` is first message from sender of `b`, so regression is not possible
-                Either::Right(ValidBlock::Valid)
-            }
-            Ok(Some(cur_senders_block)) => {
-                // Latest Message from sender of `b` is present in the DAG
-                // Here we comparing view on the network by sender from the standpoint of
-                // his previous block created (current Latest Message of sender)
-                // and new block `b` (potential new Latest Message of sender)
-                let new_sender_block = b;
-                let new_lms =
-                    proto_util::to_latest_message_hashes(&new_sender_block.justifications);
-                let cur_lms =
-                    proto_util::to_latest_message_hashes(&cur_senders_block.justifications);
+        let previous = proto_util::creator_justification_block_message(b)
+            .map(|justification| s.dag.lookup_unsafe(&justification.latest_block_hash))
+            .transpose();
+        match previous {
+            Ok(None) => Either::Right(ValidBlock::Valid),
+            Ok(Some(previous)) => {
+                let new_lms = proto_util::to_latest_message_hashes(&b.justifications);
+                let cur_lms = proto_util::to_latest_message_hashes(&previous.justifications);
 
                 let log_warn =
                     |current_hash: &BlockHash, regressive_hash: &BlockHash, sender: &Validator| {
@@ -1668,9 +1660,7 @@ impl Validate {
                         }
                     };
 
-                    if !new_justification.is_invalid()
-                        && new_justification.sequence_number < cur_justification.sequence_number
-                    {
+                    if new_justification.sequence_number < cur_justification.sequence_number {
                         log_warn(cur_justification_hash, new_justification_hash, sender);
                         return Either::Left(BlockError::Invalid(
                             InvalidBlock::JustificationRegression,
