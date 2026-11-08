@@ -26,9 +26,9 @@ use crate::rust::transport::transport_layer::Blob;
 /// `handle_protocol_handshake_response` for the exact policy.
 ///
 /// Hard-fork surface: changing this constant is a per-release knob.
-/// Current value `1` matches the Merkle block-hash scheme's
+/// Current value `2` matches the Merkle block-hash scheme's
 /// `BLOCK_HASH_SCHEME_VERSION`.
-pub const PROTOCOL_FORMAT_VERSION: u32 = 1;
+pub const PROTOCOL_FORMAT_VERSION: u32 = 2;
 
 pub fn to_protocol_bytes(x: &str) -> Vec<u8> { x.as_bytes().to_vec() }
 

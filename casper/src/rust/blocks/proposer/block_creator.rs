@@ -23,10 +23,12 @@ use models::rust::casper::protocol::casper_message::{
     ProcessedSystemDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::errors::HistoryError;
+use shared::rust::blocking::in_blocking;
 use tracing;
 
 use crate::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -1543,31 +1545,33 @@ fn walk_unfinalized_cone(
     bounds: &UnfinalizedConeBounds,
     mut visit: impl FnMut(&BlockHash, &BlockFacts) -> bool,
 ) -> Result<(), CasperError> {
-    let mut stack: Vec<BlockHash> = roots.to_vec();
-    let mut seen: HashSet<BlockHash> = HashSet::new();
-    while let Some(block_hash) = stack.pop() {
-        if !seen.insert(block_hash.clone())
-            || block_hash == casper_snapshot.last_finalized_block
-            || casper_snapshot.dag.is_finalized(&block_hash)
-        {
-            continue;
+    in_blocking(|| {
+        let mut stack: Vec<BlockHash> = roots.to_vec();
+        let mut seen: HashSet<BlockHash> = HashSet::new();
+        while let Some(block_hash) = stack.pop() {
+            if !seen.insert(block_hash.clone())
+                || block_hash == casper_snapshot.last_finalized_block
+                || casper_snapshot.dag.is_finalized(&block_hash)
+            {
+                continue;
+            }
+            let Some(facts) = held_block_facts(block_store, &block_hash)? else {
+                continue;
+            };
+            if bounds
+                .last_finalized_block_number
+                .is_some_and(|lfb_number| facts.block_number <= lfb_number)
+                || facts.block_number <= bounds.earliest_block_number
+            {
+                continue;
+            }
+            if !visit(&block_hash, &facts) {
+                return Ok(());
+            }
+            stack.extend(facts.parents.iter().cloned());
         }
-        let Some(facts) = held_block_facts(block_store, &block_hash)? else {
-            continue;
-        };
-        if bounds
-            .last_finalized_block_number
-            .is_some_and(|lfb_number| facts.block_number <= lfb_number)
-            || facts.block_number <= bounds.earliest_block_number
-        {
-            continue;
-        }
-        if !visit(&block_hash, &facts) {
-            return Ok(());
-        }
-        stack.extend(facts.parents.iter().cloned());
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn parent_hashes(casper_snapshot: &CasperSnapshot) -> Vec<BlockHash> {
@@ -1715,13 +1719,13 @@ fn storage_has_unresolved_in_scope_deploys(
 #[cfg(test)]
 fn filter_slashable_invalid_messages(
     invalid_latest_messages: HashMap<Validator, BlockHash>,
-    bonds_map: &HashMap<Validator, i64>,
+    bonds_map: &HashMap<Validator, BigInt>,
     active_validators: &[Validator],
 ) -> Vec<(Validator, BlockHash)> {
     invalid_latest_messages
         .into_iter()
         .filter(|(validator, _)| {
-            bonds_map.get(validator).copied().unwrap_or(0) > 0
+            bonds_map.get(validator).cloned().unwrap_or_default() > 0.into()
                 && active_validators.contains(validator)
         })
         .collect()
@@ -1789,9 +1793,9 @@ async fn prepare_slashing_deploys(
         .on_chain_state
         .bonds_map
         .get(&self_id)
-        .copied()
-        .unwrap_or(0);
-    if proposer_bond <= 0 {
+        .cloned()
+        .unwrap_or_default();
+    if proposer_bond <= BigInt::from(0) {
         return Ok(Vec::new());
     }
 
@@ -2025,7 +2029,7 @@ fn current_proposal_validators(casper_snapshot: &CasperSnapshot) -> Vec<Validato
                 .on_chain_state
                 .bonds_map
                 .iter()
-                .filter(|(_, stake)| **stake > 0)
+                .filter(|(_, stake)| **stake > BigInt::from(0))
                 .map(|(validator, _)| validator.clone())
                 .collect()
         };
@@ -3982,7 +3986,7 @@ mod tests {
                 DeployData {
                     term: format!("@{}!(Nil)", time_stamp),
                     time_stamp,
-                    phlo_price: 1,
+                    phlo_price: (1).into(),
                     phlo_limit: 100_000,
                     valid_after_block_number,
                     shard_id: "test".to_string(),
@@ -5584,7 +5588,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block.clone());
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 5);
+        bonds_map.insert(equivocator.clone(), 5.into());
 
         let active_validators = vec![equivocator.clone()];
 
@@ -5610,7 +5614,7 @@ mod tests {
         invalid_latest_messages.insert(equivocator.clone(), invalid_block);
 
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 0);
+        bonds_map.insert(equivocator.clone(), 0.into());
 
         let active_validators = vec![equivocator];
 
@@ -5638,7 +5642,7 @@ mod tests {
 
         // Bond floor > 0 — equivocator's stake stays at 1 after slash.
         let mut bonds_map = HashMap::new();
-        bonds_map.insert(equivocator.clone(), 1);
+        bonds_map.insert(equivocator.clone(), 1.into());
 
         // PoS has removed the slashed validator from the active set.
         let active_validators: Vec<Validator> = vec![];

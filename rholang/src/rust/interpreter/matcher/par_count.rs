@@ -173,7 +173,25 @@ impl ParCount {
                 (p_count_1.clone(), p_count_1)
             }
 
-            Some(ConnByteArray(_)) => {
+            Some(ConnByteArray(_))
+            | Some(ConnInt32(_))
+            | Some(ConnUint64(_))
+            | Some(ConnUint32(_))
+            | Some(ConnUint16(_))
+            | Some(ConnUint8(_))
+            | Some(ConnFloat64(_))
+            | Some(ConnFloat32(_))
+            | Some(ConnBigInt(_))
+            | Some(ConnBigRat(_))
+            | Some(ConnFixedPointBody(_)) => {
+                let mut p_count_1 = self._new();
+                p_count_1.exprs = 1;
+
+                (p_count_1.clone(), p_count_1)
+            }
+
+            // CoC Phase 2c: `Type` matches a single type-level value.
+            Some(ConnType(_)) => {
                 let mut p_count_1 = self._new();
                 p_count_1.exprs = 1;
 
