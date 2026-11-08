@@ -83,8 +83,10 @@ impl BondsParser {
             let public_key = PublicKey::from_bytes(&public_key_bytes);
 
             // Parse stake
-            let stake =
-                TokenAmount::parse(stake_str).map_err(|_| BondsParserError::InvalidStake {
+            let stake = TokenAmount::parse(stake_str)
+                .ok()
+                .filter(|stake| !stake.is_zero())
+                .ok_or_else(|| BondsParserError::InvalidStake {
                     stake: stake_str.to_string(),
                 })?;
 
@@ -268,6 +270,23 @@ mod tests {
             }
             _ => panic!("Expected InvalidLineFormat error"),
         }
+    }
+
+    #[test]
+    fn a_zero_stake_is_refused() {
+        let temp_dir = TempDir::new().unwrap();
+        let bonds_file = temp_dir.path().join("bonds.txt");
+        fs::write(
+            &bonds_file,
+            "04f026cc75502aa420f589ba1437d52eb9055ba26701f112ff1b9a0b98cadec54bc3e77bdef9094b33f6afacd59eb1aed78bc1e1320ce714ec9debaabaf0f37ba3 0\n",
+        )
+        .unwrap();
+
+        let result = BondsParser::parse(&bonds_file);
+        assert!(
+            matches!(&result, Err(BondsParserError::InvalidStake { stake }) if stake == "0"),
+            "{result:?}"
+        );
     }
 
     #[test]
