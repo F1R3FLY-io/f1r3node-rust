@@ -1804,7 +1804,7 @@ mod tests {
 
     use super::*;
 
-    const DAG_STORES: [&str; 11] = [
+    const DAG_STORES: [&str; 12] = [
         "block-metadata",
         "equivocation-tracker",
         "latest-messages",
@@ -1816,6 +1816,7 @@ mod tests {
         "carrier-index",
         "carrier-index-meta",
         "genesis-hash",
+        "leaky-bucket-votes",
     ];
 
     fn hash(i: u32) -> Bytes {
