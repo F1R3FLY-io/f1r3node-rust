@@ -2077,40 +2077,38 @@ impl BlockDagKeyValueStorage {
             }
 
             // Lifecycle event ingest: one body pass projects inclusion and
-            // rejection events into the per-sig lifecycle rows. Invalid
-            // blocks contribute nothing — their bodies are not canonical
-            // history (the carrier index above covers the repeat-deploy
-            // scan's view of them). Appends go through `append_event_once`:
-            // after a crash inside this ingest-first window the block is
-            // not yet DAG-visible, so its redelivery re-runs this pass —
-            // the per-(block, kind) dedup makes that retry write nothing
-            // twice.
+            // rejection events into the per-sig lifecycle rows. An
+            // equivocation contributes too: which twin is stored as the
+            // equivocation depends on arrival order, and the settle pass
+            // decides from the finalized lineage, not from the events.
+            // Appends go through `append_event_once`: after a crash inside
+            // this ingest-first window the block is not yet DAG-visible, so
+            // its redelivery re-runs this pass — the per-(block, kind) dedup
+            // makes that retry write nothing twice.
             {
                 let block_number = block.body.state.block_number;
                 let lifecycle_guard = self.lifecycle.write();
-                if !invalid {
-                    for pd in &block.body.deploys {
-                        lifecycle_guard.append_event_once(
-                            &pd.deploy.sig,
-                            Some(pd.deploy.data.valid_after_block_number),
-                            LifecycleEvent {
-                                height: block_number,
-                                block_hash: block.block_hash.to_vec(),
-                                kind: LifecycleEventKind::Included {
-                                    is_failed: pd.is_failed,
-                                },
-                            },
-                        )?;
-                    }
-                    for rd in &block.body.rejected_deploys {
-                        lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                for pd in &block.body.deploys {
+                    lifecycle_guard.append_event_once(
+                        &pd.deploy.sig,
+                        Some(pd.deploy.data.valid_after_block_number),
+                        LifecycleEvent {
                             height: block_number,
                             block_hash: block.block_hash.to_vec(),
-                            kind: LifecycleEventKind::Rejected {
-                                duplicate: rd.duplicate,
+                            kind: LifecycleEventKind::Included {
+                                is_failed: pd.is_failed,
                             },
-                        })?;
-                    }
+                        },
+                    )?;
+                }
+                for rd in &block.body.rejected_deploys {
+                    lifecycle_guard.append_event_once(&rd.sig, None, LifecycleEvent {
+                        height: block_number,
+                        block_hash: block.block_hash.to_vec(),
+                        kind: LifecycleEventKind::Rejected {
+                            duplicate: rd.duplicate,
+                        },
+                    })?;
                 }
                 drop(lifecycle_guard);
             }

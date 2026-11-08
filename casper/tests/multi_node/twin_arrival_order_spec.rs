@@ -1,3 +1,4 @@
+use casper::rust::api::deploy_finalization_status::{self, DeployFinalizationState};
 use casper::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::util::construct_deploy;
@@ -179,5 +180,80 @@ async fn a_block_is_judged_against_its_own_previous_block() {
     assert!(
         matches!(verdict, Either::Right(ValidBlock::Valid)),
         "an honest block judged after its sender's later block: {verdict:?}"
+    );
+}
+
+/// A deploy carried by one of an equivocator's twins has the same status on
+/// every node once the twin is finalized, whichever twin a node received
+/// first.
+#[tokio::test]
+async fn a_deploys_status_does_not_depend_on_which_twin_arrived_first() {
+    let (mut nodes, shard_id) = network().await;
+    let (carrying, empty, sig) = twins(&mut nodes, &shard_id).await;
+    deliver_twins(&mut nodes[2], &carrying, &empty).await;
+    deliver_twins(&mut nodes[3], &empty, &carrying).await;
+    for index in [0, EQUIVOCATOR] {
+        admit(&mut nodes[index], &carrying).await;
+    }
+    let built_on = propose(&mut nodes[0]).await;
+    assert!(
+        built_on
+            .header
+            .parents_hash_list
+            .contains(&carrying.block_hash),
+        "a node that has seen only the carrying twin builds on it"
+    );
+    admit_everywhere(&mut nodes, &built_on).await;
+    for index in [0, EQUIVOCATOR] {
+        let verdict = nodes[index]
+            .add_block(empty.clone())
+            .await
+            .expect("process");
+        assert!(matches!(verdict, Either::Left(BlockError::Invalid(_))));
+    }
+
+    for _ in 0..12 {
+        for index in [0, 2, 3] {
+            let block = propose(&mut nodes[index]).await;
+            admit_everywhere(&mut nodes, &block).await;
+        }
+    }
+
+    let mut states = Vec::new();
+    for judge in [2, 3] {
+        for _ in 0..12 {
+            nodes[judge]
+                .casper
+                .finalize()
+                .await
+                .expect("finalizer cycle");
+        }
+        let dag = nodes[judge].casper.block_dag().await.expect("dag");
+        let lfb = dag.last_finalized_block();
+        assert!(
+            lfb == carrying.block_hash
+                || dag
+                    .is_dag_ancestor(&carrying.block_hash, &lfb)
+                    .expect("ancestry"),
+            "node {judge}: the finalized block must descend from the carrying twin"
+        );
+        states.push(
+            deploy_finalization_status::resolve(
+                &dag,
+                nodes[judge].casper.block_store(),
+                &sig,
+                None,
+            )
+            .expect("resolve")
+            .state,
+        );
+    }
+    assert_eq!(
+        states,
+        [
+            DeployFinalizationState::Finalized,
+            DeployFinalizationState::Finalized
+        ],
+        "(carrying twin first, empty twin first)"
     );
 }
