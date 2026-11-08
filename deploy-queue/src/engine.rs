@@ -10,19 +10,17 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::error::{EngineStopped, IntakeError};
 use crate::events::{NodeEvent, VerdictState};
-use crate::node::{ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, SubmitOutcome};
+use crate::node::{ChainSnapshot, NodeDeployStatus, NodeError, NodeHttp, ShardValues, SubmitOutcome};
 use crate::pace::Pace;
 use crate::ready::ReadyQueue;
 use crate::record::{DeployView, QueueRecord, QueueState, Sig};
 use crate::store::{QueueStore, StoreError};
 
-/// Heights of measured inclusion the queue keeps in the node's pool: enough
-/// that the node's next block never waits on the queue, little enough that
-/// a backlog waits here rather than in the pool, where every proposal reads
-/// and sorts it.
-const IN_FLIGHT_HEIGHTS: f64 = 3.0;
-/// The in-flight bound never exceeds this many of the shard's full blocks.
-const IN_FLIGHT_CEILING_BLOCKS: usize = 2;
+/// Share of the latency budget a released deploy may spend between release
+/// and its verdict. The rest is the most it may wait in the queue.
+const RELEASED_SHARE_OF_BUDGET: f64 = 0.5;
+/// Released deploys never exceed this many of the shard's full blocks.
+const RELEASED_CEILING_BLOCKS: usize = 2;
 const RETRY_FLOOR: Duration = Duration::from_secs(1);
 const RETRY_CEILING: Duration = Duration::from_secs(30);
 /// Retry-After for a refusal made before the queue has timed a height.
@@ -65,10 +63,10 @@ pub struct QueueSnapshot {
     pub waiting: usize,
     pub closed: usize,
     pub submitted: usize,
-    pub in_flight_limit: usize,
     pub in_block: usize,
+    pub released_limit: usize,
     pub held: usize,
-    pub deploys_per_height: Option<f64>,
+    pub settled_per_height: Option<f64>,
     pub secs_per_height: Option<f64>,
 }
 
@@ -347,24 +345,25 @@ impl Engine {
             ))));
         }
 
-        // A deploy is accepted only when the deploys ahead of it reach blocks
-        // within the citable depth at the measured pace, and it then still
-        // lands inside its own window. Beyond that it would wait minutes; the
-        // client is told to come back instead.
+        // A deploy is accepted only when every deploy ahead of it, queued or
+        // released, settles within the latency budget at the measured pace,
+        // and it then still lands inside its own window. Beyond that it would
+        // wait minutes; the client is told to come back instead.
         let pace = self
             .pace
             .as_ref()
             .expect("a connected engine has a pace");
+        let budget = latency_budget(shard);
         let depth = i64::from(shard.max_parent_depth);
-        let ahead = self.ready.len() + self.waiting.len() + self.count(QueueState::Submitted);
+        let ahead = self.ready.len() + self.waiting.len() + self.released();
         let releasable_from = valid_after.max(chain.tip);
         let last = last_includable(valid_after, shard.deploy_lifespan);
-        let wait = pace.heights_to_include(ahead + 1);
+        let wait = pace.heights_to_settle(ahead + 1);
         let fits = wait.is_some_and(|heights| {
-            heights <= depth && releasable_from + heights + depth <= last
+            heights <= budget && releasable_from + heights + depth <= last
         });
         if !fits {
-            let excess = wait.map(|heights| (heights - depth).max(1));
+            let excess = wait.map(|heights| (heights - budget).max(1));
             let retry_after_secs = excess
                 .and_then(|heights| pace.seconds_for(heights))
                 .unwrap_or(UNTIMED_RETRY_SECS);
@@ -400,7 +399,7 @@ impl Engine {
             "connected to the node"
         );
         if self.pace.is_none() {
-            self.pace = Some(Pace::new(chain.shard.max_user_deploys_per_block));
+            self.pace = Some(Pace::new(latency_budget(&chain.shard)));
         }
         self.chain = Some(chain);
         self.connected = true;
@@ -416,14 +415,7 @@ impl Engine {
                 hash,
                 deploys,
             } => {
-                // Before this block moves any deploy out of the pool.
-                if self.count(QueueState::Submitted) > 0 {
-                    if let Some(pace) = self.pace.as_mut() {
-                        pace.record_outstanding();
-                    }
-                }
                 let block_hash = decode_hex("block hash", &hash);
-                let mut included = 0;
                 for id in deploys {
                     let Some(sig) = decode_hex("deploy id", &id) else {
                         continue;
@@ -437,9 +429,6 @@ impl Engine {
                     if state == QueueState::Queued {
                         self.unplace(&sig);
                     }
-                    if state == QueueState::Submitted {
-                        included += 1;
-                    }
                     let hash = block_hash.clone();
                     self.update(&sig, |record| {
                         record.state = QueueState::InBlock;
@@ -448,13 +437,16 @@ impl Engine {
                         }
                     })?;
                 }
-                if let Some(pace) = self.pace.as_mut() {
-                    pace.record_inclusions(included);
-                }
                 self.observe_tip(number)?;
             }
             NodeEvent::Finalised { number } => self.observe_lfb(number),
             NodeEvent::Verdicts(verdicts) => {
+                // Before these verdicts settle any released deploy.
+                if self.released() > 0 {
+                    if let Some(pace) = self.pace.as_mut() {
+                        pace.record_unsettled();
+                    }
+                }
                 for verdict in verdicts {
                     let Some(sig) = decode_hex("deploy id", &verdict.deploy_id) else {
                         continue;
@@ -660,8 +652,8 @@ impl Engine {
             return Ok(());
         }
         let shard = &chain.shard;
-        let limit = self.in_flight_limit();
-        while self.count(QueueState::Submitted) < limit {
+        let limit = self.released_limit();
+        while self.released() < limit {
             let Some(sig) = self.ready.pop() else {
                 break;
             };
@@ -680,17 +672,25 @@ impl Engine {
         Ok(())
     }
 
-    /// Deploys the node's pool may hold from this queue: the measured
-    /// inclusion of a few heights, at least one so a stalled pace is still
-    /// probed, at most a couple of the shard's full blocks.
-    fn in_flight_limit(&self) -> usize {
+    /// Released deploys still waiting for a verdict: in the node's pool or in
+    /// a block.
+    fn released(&self) -> usize {
+        self.count(QueueState::Submitted) + self.count(QueueState::InBlock)
+    }
+
+    /// Released deploys the queue allows at once: what settles at the
+    /// measured pace within the released share of the latency budget
+    /// (Little's law), at least one so a stalled pace is still probed, at
+    /// most a couple of the shard's full blocks.
+    fn released_limit(&self) -> usize {
         let (Some(chain), Some(pace)) = (&self.chain, &self.pace) else {
             return 0;
         };
         let full_blocks =
-            IN_FLIGHT_CEILING_BLOCKS * chain.shard.max_user_deploys_per_block as usize;
-        let measured = (IN_FLIGHT_HEIGHTS * pace.deploys_per_height()).ceil() as usize;
-        measured.clamp(full_blocks.min(1), full_blocks)
+            RELEASED_CEILING_BLOCKS * chain.shard.max_user_deploys_per_block as usize;
+        let budget = latency_budget(&chain.shard) as f64 * RELEASED_SHARE_OF_BUDGET;
+        pace.deploys_settled_in(budget)
+            .clamp(full_blocks.min(1), full_blocks)
     }
 
     fn release_open(&self) -> bool {
@@ -742,10 +742,10 @@ impl Engine {
             return Ok(());
         }
         chain.tip = number;
-        let outstanding = self.count(QueueState::Submitted) > 0;
+        let unsettled = self.released() > 0;
         if let Some(pace) = self.pace.as_mut() {
-            if outstanding {
-                pace.record_outstanding();
+            if unsettled {
+                pace.record_unsettled();
             }
             pace.on_tip(number, Instant::now());
         }
@@ -970,8 +970,14 @@ impl Engine {
             .as_ref()
             .map(|chain| chain.tip)
             .expect("verdicts arrive once the chain is known");
-        if self.records[sig].state == QueueState::Queued {
+        let before = self.records[sig].state;
+        if before == QueueState::Queued {
             self.unplace(sig);
+        }
+        if matches!(before, QueueState::Submitted | QueueState::InBlock) {
+            if let Some(pace) = self.pace.as_mut() {
+                pace.record_settled(1);
+            }
         }
         self.update(sig, |record| {
             record.state = state;
@@ -1038,10 +1044,10 @@ impl Engine {
             waiting: self.waiting.len(),
             closed: self.closed.len(),
             submitted: self.count(QueueState::Submitted),
-            in_flight_limit: self.in_flight_limit(),
             in_block: self.count(QueueState::InBlock),
+            released_limit: self.released_limit(),
             held: self.records.len(),
-            deploys_per_height: self.pace.as_ref().map(Pace::deploys_per_height),
+            settled_per_height: self.pace.as_ref().map(Pace::settled_per_height),
             secs_per_height: self.pace.as_ref().and_then(Pace::secs_per_height),
         }
     }
@@ -1057,6 +1063,11 @@ impl Engine {
         metrics::gauge!("deploy_queue.connected").set(f64::from(u8::from(self.connected)));
     }
 }
+
+/// The latency budget, in heights, the queue holds a deploy to from intake
+/// to verdict: the shard's citable depth, the span in which a block may
+/// still build on another.
+fn latency_budget(shard: &ShardValues) -> i64 { i64::from(shard.max_parent_depth) }
 
 fn window_open(valid_after: i64, reference_block: i64, deploy_lifespan: i64) -> bool {
     is_open(valid_after, reference_block, deploy_lifespan)
