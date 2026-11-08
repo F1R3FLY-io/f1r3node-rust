@@ -105,7 +105,9 @@ partial clear, generation-lease gap, premature ready/rebase, duplicate publicati
 and wrong recovery terminal. Four reachability witnesses establish successful acknowledgement,
 recovery of the predecessor, recovery of the successor, and refused receipt binding.
 `bash scripts/check-rspace-journal-owner-model.sh` verifies the control and checks each
-counterexample's named invariant, so a parse error or resource failure cannot count as a pass.
+counterexample's named invariant, or TLC's "Deadlock reached" for the lock-order deadlock
+control, and requires the view control's temporal-check line ("Checking temporal properties for
+the complete state space"), so a parse error or resource failure cannot count as a pass.
 The runner is included in the existing stack-safe proof gate and uses its shared bounded TLC
 helper: 512 MiB JVM heap, 2 GiB memory cap, two workers, no swap, and on-disk state storage.
 
@@ -7468,6 +7470,213 @@ module names begin with `durable_`.
 | OG-11 | Caller-held permit. A caller that takes the view gate's write permit and then the owner's `tokio::sync::Mutex`, attaches and calls `checkpoint_view` completes within ten seconds and publishes the next generation, with both locks held at capture and both free afterwards, the phase `Ready`, the store files changed and the hot store's journals empty. | `checkpointing_under_the_held_view_gate_and_owner_mutex_completes` |
 
 No persisted byte, root, identity or wire message changes.
+
+### View gates, owner mutex and incarnations (2026-11-01)
+
+Leaf G01 of task 7931 (commit `d971fad64`) models how callers reach the
+durable owner before any caller is wired to it. The module
+[`RSpaceJournalPublicationOwner.tla`](../../../formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla)
+gains a second specification, `ViewSpec`, beside `Spec`. Its vocabulary:
+
+- A *view* is one RSpace object that shares the durable owner. The model has
+  two views.
+- Each view has a *gate*, the lock that its checkpoints and resets take. A
+  held gate is a *permit*.
+- The owner has one *mutex*, and at most one *pending record*: a publication
+  that has been captured and not yet resolved.
+- An *attachment* is what a view keeps in order to mutate through the owner:
+  its *incarnation*, which names one lifetime of the owner, and its *base*,
+  the root that the view's changes extend.
+
+**Two specifications in one module.**
+
+| | `Spec` | `ViewSpec` |
+|---|---|---|
+| Models | The single-checkpoint publication protocol. | The view layer: gates, mutex, pending record, attachments, close and reopen. |
+| Moves | The protocol record. | The six view variables below. |
+| Holds constant | The six view variables, at `ViewInit`. | The protocol record, at `FrozenState`, one initial state of `Init`. |
+| Next-state relation | `Next` | `ViewNext` |
+| Fairness | None. | Weak fairness of `OwnerAction` and of `ReconcilePending`. |
+| Configuration and deadlock checking | RSpaceJournalPublicationOwner.cfg, off. | RSpaceJournalPublicationOwnerViews.cfg, on. |
+| Properties | Seventeen invariants. | Eight invariants, `ViewTypeInvariant` and the seven below, and `PendingResolves`. |
+
+`Spec` keeps the single-checkpoint protocol. The view variables are constant
+under it, so its state graph, its seventeen invariants and its thirty red
+controls are unchanged. `ViewSpec` holds the protocol record still and moves
+only the view variables. The phases of its pending record, "Captured",
+"RecoveryRequired" and "AwaitingAck", abstract the protocol of `Spec`, with at
+most one acknowledgement.
+
+**The view-layer state.** Six variables, set initially by `ViewInit`:
+
+| Variable | Contents |
+|---|---|
+| *owner* | The owner's incarnation, its live flag, its current root and a ghost session counter (premise P3 below). |
+| *attachment* | For each view, the incarnation and base that it holds and the ghost session that it attached in. |
+| *viewGate* | For each view, "free", the view whose caller holds the gate, or "pending" when a pending record owns it. |
+| *caller* | For each view, the call in progress: its stage, its operation, its permit, its target root and its result. |
+| *ownerMutex* | "free", or the view whose call holds the mutex. |
+| *pending* | The pending record's view, permit, base, phase and acknowledgement count, or `NoPending`. |
+
+**One owner operation.** A caller takes its gate before it calls the owner,
+and the owner mutex after the gate. The owner takes no gate while it holds the
+mutex. Before it captures, the owner reconciles any pending record and checks
+the permit, the incarnation and the base.
+
+![One owner operation of the view-gate model, as an activity diagram, with close and reopen below it. In blue, the caller takes a gate first, through CallCheckpoint, CallReset or CallSpawn, and then the owner mutex through TakeMutex. In amber, while a publication is pending the mutex holder can only resolve it through ReconcileFirst: a RecoveryRequired record whose root is unchanged is dropped and frees its gate, one whose root has moved enters AwaitingAck, and an AwaitingAck record sets the view's base, frees the gate and is cleared. In purple, the decisions of CheckRequest, in order: a checkpoint's permit must be its own view's gate, the attachment's incarnation must be the owner's, and a checkpoint's base must be the owner's root. In red, the refusals refused-permit, refused-incarnation and refused-base, each before anything is captured. In green, a checkpoint's capture, which moves the permit into the pending record and marks its gate pending, the publication, which moves the root and enters AwaitingAck on the outcome new, and the acknowledgement, which sets the view's base to the new root and, when complete, frees the gate and clears the record; and, for a reset or a spawn, ApplyActivation. In amber again, the outcomes unknown-new and unknown-old enter RecoveryRequired and leave the gate held, as does an incomplete acknowledgement, each reporting uncertain. In grey, ReturnCall frees the mutex and the gates that the call holds, while a gate marked pending stays with its record. In teal, below, CloseOwner retires the incarnation of a live, quiescent owner, and ReopenOwner installs a fresh incarnation, advances the session and attaches one view at the current root.](figures/owner-view-gate-protocol.svg)
+
+The figure's source is
+[`owner-view-gate-protocol.puml`](figures/owner-view-gate-protocol.puml).
+
+| Step | Action | Effect |
+|---|---|---|
+| Take a gate | `CallCheckpoint(view, permit)`, `CallReset(view, target)`, `CallSpawn(view)` | The caller takes a free gate: its permit's gate for a checkpoint, its own for a reset, both for a spawn with both callers idle. |
+| Take the mutex | `TakeMutex(view)` | The view waits for the free mutex and then holds it. |
+| Reconcile first | `ReconcileFirst(view)` | While a record is pending the holder can only resolve it, even a record captured through the other view's gate. |
+| Check | `CheckRequest(view)` | With no record pending, in this order: a checkpoint's permit must be its own view's gate, else "refused-permit"; the attachment's incarnation must be the owner's, else "refused-incarnation"; a checkpoint's base must be the owner's root, else "refused-base". |
+| Capture | `CheckRequest(view)` | An admitted checkpoint records its view, permit and base in phase "Captured" and marks the permit's gate "pending". |
+| Publish | `PublishView(view, outcome)` | "new" moves the root and enters "AwaitingAck". "unknown-new" moves the root, "unknown-old" keeps it, and both enter "RecoveryRequired" and report "uncertain". |
+| Acknowledge | `AcknowledgeView(view, completes)` | The view's base becomes the new root. A complete acknowledgement frees the gate and clears the record. An incomplete one keeps the record with one acknowledgement, and the gate stays "pending". |
+| Activate | `ApplyActivation(view)` | An admitted reset moves the root to its target and reattaches the view there. An admitted spawn moves the root to the source view's base and attaches the other view to the same owner at that base. |
+| Return | `ReturnCall(view)` | The mutex and the gates that this call holds are freed. A gate marked "pending" stays with its record. |
+
+`Resolve` is the abstract reconciliation, shared by `ReconcileFirst(view)` and
+by `ReconcilePending`, which acts with the mutex free. A "RecoveryRequired"
+record whose base is still the root keeps the predecessor: its gate is freed
+and the record is cleared. A "RecoveryRequired" record whose root has moved
+enters "AwaitingAck". An "AwaitingAck" record sets its view's base to the root,
+unless it was already acknowledged once, frees the gate and is cleared.
+
+Close and reopen act only on a `Quiescent` owner: the mutex is free, no record
+is pending and every caller is idle. `CloseOwner` makes the owner not live and
+retires the incarnation by incrementing it, which refuses every attachment
+taken before the close. `ReopenOwner(view, incarnation)` takes an incarnation
+that `FreshIncarnation` allows, exactly one more than the value that close
+left. It makes the owner live, advances the ghost session and attaches one view
+at the current root. A view that kept its old attachment is refused.
+
+**The seven invariants.**
+
+| Invariant | Required behavior |
+|---|---|
+| `ExactBaseOrRefuse` | A "Captured" record's base is the owner's root, and a view whose call returned "refused-base" holds a base other than the root. |
+| `NoViewMutationWhilePending` | While a record is pending, its view's gate is marked "pending". |
+| `AckOnce` | A record is acknowledged at most once. Once acknowledged it is "AwaitingAck" with its view's base at the owner's root, so a retry only completes it. |
+| `StaleIncarnationRefused` | A view that holds the mutex at the publish, acknowledge or activation stage has a live owner and an attachment from the owner's current session. |
+| `PermitProvenance` | A pending record's permit is its own view's gate. |
+| `LockOrder` | No view holds the mutex while it waits to take a gate again. |
+| `SpawnSharesOwner` | A view whose call returned "spawned" has the owner's incarnation and root, and the other view's attachment has the same incarnation, session and base. |
+
+`PendingResolves` requires that a pending record is eventually cleared. It is
+checked under two weak-fairness conditions: `OwnerAction`, which is the steps
+of the mutex holder and `TakeMutex`, and `ReconcilePending`. Callers, close and
+reopen have no fairness, so the property never relies on a client calling. The
+control runs with deadlock checking on.
+
+The statement in
+[Publication owner composition (2026-09-06)](#publication-owner-composition-2026-09-06)
+that the model does not establish fairness or eventual repair of permanent I/O
+faults concerns the protocol layer `Spec`, which has no fairness condition.
+`PendingResolves` is bounded evidence about `ViewSpec`. It assumes that the
+abstract `Resolve` always succeeds, so permanent I/O faults stay out of its
+scope too.
+
+**Five faults and three witnesses.** The constant *Fault* selects one defect
+at a time. Each configuration named below is the cfg file with the module's
+name as its prefix. "States" counts the states of TLC's counterexample,
+including the initial state.
+
+| Fault | Defect | Configuration | TLC reports | States |
+|---|---|---|---|---|
+| "retake-gate" | `TakeMutex` sends a checkpoint to `OwnerAcquiresGate`, so the owner waits for a gate that its caller holds. Leaf G08 removed this defect from the owner. | RetakeGateMutant | Invariant `LockOrder` is violated | 3 |
+| "retake-gate" | The same fault, with deadlock checking on and no invariant. | RetakeGateDeadlockMutant | Deadlock reached | 4 |
+| "skip-base" | `CheckRequest` passes any base. | SkipBaseMutant | Invariant `ExactBaseOrRefuse` is violated | 9 |
+| "foreign-permit" | `CheckRequest` accepts a permit of another view's gate. | ForeignPermitMutant | Invariant `PermitProvenance` is violated | 4 |
+| "close-no-bump" | `CloseOwner` keeps the incarnation, so old attachments still pass. | CloseNoBumpMutant | Invariant `StaleIncarnationRefused` is violated | 5 |
+| "reopen-reuses-incarnation" | `FreshIncarnation` asks only for inequality with the closed incarnation, so a reopen can reuse one that a retained attachment holds. | ReopenReusesIncarnationMutant | Invariant `StaleIncarnationRefused` is violated | 6 |
+
+The last fault is the model's negative control for the freshness premise of
+the [caller-authority contract](#exact-contract-and-realization-premises):
+"inequality with only the previous incarnation is insufficient".
+
+Three witnesses are invariants whose violation shows that a case is reachable.
+Each runs with no fault.
+
+| Witness | The reachable case | States |
+|---|---|---|
+| `NeverRefusedStaleBase` | A checkpoint is refused for a stale base. | 9 |
+| `NeverRefusedRetainedIncarnation` | A live owner refuses an attachment retained across a close and a reopen. | 6 |
+| `NeverReconciledByOtherView` | A view that holds the mutex finds the other view's record pending, the case that `ReconcileFirst` resolves. | 8 |
+
+**What TLC measured at commit `d971fad64`.** The runner
+`bash scripts/check-rspace-journal-owner-model.sh` made 41 TLC runs (pgmcp
+artifact 1587): the two controls, the thirty red controls of `Spec` and the
+nine of `ViewSpec`, each passing its designated check.
+
+| Specification | Initial states | States generated | Distinct states | Depth | Outcome |
+|---|---|---|---|---|---|
+| `Spec` | 4 | 1,716,908 | **64,080** | 21 | No error. The counts are those recorded before the view layer. |
+| `ViewSpec` | 1 | 15,945 | **7,962** | 28 | Eight invariants and `PendingResolves` satisfied over the complete state space, with no deadlock. |
+
+TLC's two-worker search is not level-synchronous, so the depth that a run
+prints can differ: one scratch run of `ViewSpec` printed 29, and a one-worker
+run and the gate's two-worker run printed 28 (pgmcp artifact 1586).
+
+**Bounded scope.** This is bounded evidence over two views (`Views`), roots 0
+and 1 (`Roots`) and two close and reopen cycles (`MaxSession`). Generations are
+abstracted: the base check compares roots. Read handles (CA-22) and
+soft-checkpoint restores, which task 7931 forbids refusing by incarnation, are
+outside the model. The model is protocol evidence, not a proof of the Rust
+owner.
+
+**Design premises.** The model rests on five decisions.
+
+- **P1, liveness is checked on `ViewSpec`.** `Spec` has no fairness and has
+  behaviors that need not resolve: `Unwind` and `Recover` can repeat forever,
+  `TightenColdLimits` can make `Recover` refuse permanently, and `PlaceDecoy`
+  and `RemoveDecoy` can disable `CrashAndReopen` intermittently. Its recorded
+  evidence must stay valid, so `Spec` is left as it was and `PendingResolves`
+  is checked on `ViewSpec`. The runner fails unless TLC printed its
+  temporal-check line.
+- **P2, two configurations for "retake-gate".** TLC stops at its first error,
+  and the two errors occur at different depths. `LockOrder` fails at the third
+  state, after `CallCheckpoint` and `TakeMutex`. The first deadlock is at the
+  fourth, after both views have called and one has taken the mutex: it waits
+  for its own gate, and the other waits for the mutex. No single run can show
+  both, so the runner has two entries for one fault.
+- **P3, ghost sessions.** Under the two incarnation faults the incarnation
+  comparison passes by construction, so an attachment of incarnation and base
+  alone cannot falsify `StaleIncarnationRefused`. The model adds ghost session
+  counters on the owner and on attachments. Rust carries no session, and its
+  obligation stays the incarnation check.
+- **P4, roots, not generations.** The model compares roots, as the legacy radix
+  history's refusal ("is stale relative to authority root") does, so a root
+  that recurs passes. `validate_attachment` compares whole catalog slots, which
+  include the generation, so it refuses a superset. The capture's base stays
+  exact, and a refusal then means that the slots differ, possibly only in their
+  generation.
+- **P5, no live test in the checks.** `CheckRequest` does not test the live
+  flag. The retired incarnation of a closed owner is what refuses every old
+  attachment, which makes "close-no-bump" causal: a live test there would
+  refuse the closed owner without the incarnation ever mattering.
+  `StaleIncarnationRefused` still names the live flag, so a closed owner cannot
+  proceed unnoticed. The Rust owner refuses a closed owner first, at check 2 of
+  [`checkpoint_view`](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01).
+  A closed owner holds no incarnation to compare, so that refusal is the Rust
+  form of the failed incarnation test.
+
+**Executable obligations.** The leaves of task 7931 own the tests that refine
+these properties, and each adds its OG rows when it lands.
+
+| Model property | Obligation | Owning leaf |
+|---|---|---|
+| `StaleIncarnationRefused`, `NeverRefusedRetainedIncarnation` | OG-06 and OG-07 | G07, in [owner incarnations](#durable-owner-incarnations-and-close-2026-11-01) |
+| `PermitProvenance`, `NoViewMutationWhilePending` | OG-09 | G08, in [checkpoint views](#durable-owner-checkpoint-views-under-caller-held-permits-2026-11-01) |
+| `ExactBaseOrRefuse`, `NeverRefusedStaleBase` | OG-10 | G08, in the same section |
+| `LockOrder` | OG-11 | G08, in the same section; leaf G15 adds the regression on the hard checkpoint path when it routes that path through the owner |
+| `AckOnce` | JO-13 | G08 migrated the owner's acknowledgement tests |
+| `SpawnSharesOwner` | None yet | Leaf G19 adds its row when spawn attaches through the owner |
+| `PendingResolves`, `NeverReconciledByOtherView` | None yet | The owner's handling of another view's record is decided with the view layer, as the row for `ReconcileFirst` in the checkpoint views section records |
 
 ## Formal-to-executable derivation matrix
 

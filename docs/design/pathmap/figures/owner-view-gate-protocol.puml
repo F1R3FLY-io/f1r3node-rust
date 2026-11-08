@@ -1,0 +1,129 @@
+@startuml owner-view-gate-protocol
+' ============================================================================
+' One owner operation of the view-gate model, with close and reopen (leaf G01
+' of task 7931). Every action is an action of ViewSpec in
+' formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla, whose
+' configuration is RSpaceJournalPublicationOwnerViews.cfg.
+'   BLUE   #BBDEFB  the caller's locks: the view gate first, the owner mutex
+'                   second
+'   AMBER  #FFE0B2  a publication that is still pending: reconciliation and
+'                   the outcomes that leave the record open
+'   PURPLE #E1BEE7  the decisions of the operation
+'   RED    #FFCDD2  the three refusals, before anything is captured
+'   GREEN  #C8E6C9  the effects of an admitted operation: capture, publish,
+'                   acknowledge, activate
+'   GREY   #CFD8DC  the return, which releases the call's locks
+'   TEAL   #B2DFDB  close and reopen, only while the owner is quiescent
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #E1BEE7
+skinparam NoteBorderColor #455A64
+skinparam PartitionBorderColor #455A64
+
+title <b>One owner operation of the view-gate model, with close and reopen</b>\nThe caller takes its gate first and the owner mutex second, and the owner checks before it captures
+
+start
+partition "the caller's locks" {
+  :CallCheckpoint, CallReset or CallSpawn: the caller takes a gate
+  before it calls the owner. A checkpoint takes its permit's gate,
+  a reset its own gate, a spawn both gates with both callers idle.;<<#BBDEFB>>
+  :TakeMutex: the view now holds the owner mutex.
+  Holding it, the owner never waits for a gate (LockOrder).;<<#BBDEFB>>
+}
+partition "reconcile first" {
+  while (a publication is pending?) is (yes)
+    :ReconcileFirst: the holder can only resolve the record,
+    even one captured through the other view's gate.;<<#FFE0B2>>
+    note right #FFF3E0
+      <b>Resolve</b>
+      RecoveryRequired, root unchanged: the predecessor stands,
+      the record's gate is freed and the record is cleared.
+      RecoveryRequired, root moved: the record enters AwaitingAck.
+      AwaitingAck: the view's base becomes the root unless it was
+      already acknowledged, the gate is freed, the record is cleared.
+      With the mutex free, ReconcilePending applies the same Resolve.
+    end note
+  endwhile (no)
+}
+partition "CheckRequest decides before anything is captured, then the admitted operation runs" {
+  if (a checkpoint whose permit is another view's gate?) then (yes)
+    :result "refused-permit";<<#FFCDD2>>
+  else (no)
+    if (the attachment's incarnation differs from the owner's?) then (yes)
+      :result "refused-incarnation";<<#FFCDD2>>
+    else (no)
+      if (a checkpoint whose base is not the owner's root?) then (yes)
+        :result "refused-base";<<#FFCDD2>>
+      else (no)
+        if (which operation?) then (checkpoint)
+          :capture: the pending record takes the view, the permit
+          and the base, in phase Captured, and the permit's gate
+          is marked pending, so the return does not free it.;<<#C8E6C9>>
+          switch (PublishView: the outcome of the publication?)
+          case (new)
+            :the root moves and the record
+            enters AwaitingAck.;<<#C8E6C9>>
+            :AcknowledgeView: the view's base
+            becomes the new root.;<<#C8E6C9>>
+            if (the acknowledgement completes?) then (yes)
+              :the gate is freed, the record is
+              cleared, result "acknowledged";<<#C8E6C9>>
+            else (no)
+              :the record keeps one acknowledgement,
+              the gate stays pending, result "uncertain";<<#FFE0B2>>
+            endif
+          case (unknown-new)
+            :the root moves, the record enters
+            RecoveryRequired, the gate stays
+            pending, result "uncertain";<<#FFE0B2>>
+          case (unknown-old)
+            :the root is kept, the record enters
+            RecoveryRequired, the gate stays
+            pending, result "uncertain";<<#FFE0B2>>
+          endswitch
+        else (reset or spawn)
+          :ApplyActivation: a reset moves the root to its
+          target and reattaches the view there, result "reset".
+          A spawn moves the root to the source view's base and
+          attaches the other view to the same owner at that
+          base, result "spawned".;<<#C8E6C9>>
+        endif
+      endif
+    endif
+  endif
+}
+:ReturnCall: the mutex and every gate that this call holds are freed.
+A gate marked pending stays held by its record.;<<#CFD8DC>>
+stop
+
+start
+partition "close and reopen" {
+  :CloseOwner, only on a live, quiescent owner within its session bound:
+  live becomes false and the incarnation is retired, so every
+  attachment taken before the close fails the incarnation check.;<<#B2DFDB>>
+  :ReopenOwner, only on a closed, quiescent owner: live becomes true,
+  FreshIncarnation installs a new incarnation, the session
+  advances, and one view attaches at the current root.;<<#B2DFDB>>
+  note right #E0F2F1
+    A view that kept its old attachment is
+    refused with "refused-incarnation".
+  end note
+}
+stop
+
+legend right
+  <b>Legend</b>
+  <back:#BBDEFB> blue </back> the caller's locks
+  <back:#FFE0B2> amber </back> a publication still pending
+  <back:#E1BEE7> purple </back> a decision of the operation
+  <back:#FFCDD2> red </back> a refusal before any capture
+  <back:#C8E6C9> green </back> the effects of an admitted operation
+  <back:#CFD8DC> grey </back> the return
+  <back:#B2DFDB> teal </back> close and reopen
+endlegend
+@enduml
