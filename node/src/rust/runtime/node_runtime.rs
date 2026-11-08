@@ -526,6 +526,11 @@ impl NodeRuntime {
 
         // Keep a reference for sealing the startup buffer after engine_init
         let event_bus_for_seal = event_bus.clone();
+        let event_bus_for_deploy_queue = event_bus.clone();
+        let engine_cell_for_deploy_queue = engine_cell_for_heartbeat.clone();
+        let validator_pk_for_deploy_queue = validator_identity_for_heartbeat
+            .as_ref()
+            .map(|v| hex::encode(&v.public_key.bytes));
 
         // Start all concurrent tasks with categorized failure handling
         // Critical tasks: Failure triggers immediate shutdown
@@ -638,6 +643,7 @@ impl NodeRuntime {
         }
 
         // Block processor instance (Tier 2: Critical)
+        let trigger_propose_for_deploy_queue = trigger_propose_f.clone();
         let trigger_propose_for_heartbeat = trigger_propose_f;
 
         let bpi_block_queue_tx = block_processor_queue_tx.clone();
@@ -783,6 +789,17 @@ impl NodeRuntime {
         );
 
         info!("All server tasks started successfully");
+
+        // === SUPPORTIVE TASK: node-local deploy queue (RabbitMQ) ===
+        // A broker outage degrades this node to gRPC/HTTP ingress only; it
+        // never stops the node, so the consumer is not a critical task.
+        let _deploy_queue_started = crate::rust::deploy_queue::spawn(
+            &self.node_conf,
+            validator_pk_for_deploy_queue,
+            engine_cell_for_deploy_queue,
+            trigger_propose_for_deploy_queue,
+            event_bus_for_deploy_queue,
+        );
 
         // Keep variables in scope to avoid unused warnings
         let _ = reporting_http_routes;

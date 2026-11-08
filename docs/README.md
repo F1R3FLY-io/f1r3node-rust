@@ -131,6 +131,7 @@ The native token's name, symbol, and decimals are configured before genesis and 
 | [Joining an Existing Network](./node/joining-a-network.md) | Attaching a node to a shard it did not start with: bootstrap address, required flags, what a completed join looks like, and bonding it as a validator |
 | [API Reference](./node/api-reference.md) | Complete HTTP REST + gRPC endpoint reference with parameters and curl examples |
 | [WebSocket Events](./node/websocket-events.md) | `/ws/events` endpoint: 10 event types, startup replay, payload schemas |
+| [Deploy Queue](./node/deploy-queue.md) | Node-local RabbitMQ buffer in front of deploy ingress: enabling it, publishing, acknowledgement policy, status events, TTL, metrics |
 | [Docker Setup](../docker/README.md) | Docker compose for shard, standalone, monitoring |
 | [Formal Verification](./formal-verification.md) | Verification method, verified areas, implementation obligations, and local tool runs |
 | [CbC Verification Tiers](./cbc-verification-tiers.md) | Refutation with TLC, construction with Rocq, binding with Rust tests, and the promotion rule between them |

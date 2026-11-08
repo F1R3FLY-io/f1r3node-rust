@@ -91,6 +91,7 @@ mod tests {
     fn create_test_node_conf() -> NodeConf {
         NodeConf {
             soak_observer: None,
+            deploy_queue: Default::default(),
             standalone: false,
             autopropose: false,
             protocol_server: ProtocolServer {

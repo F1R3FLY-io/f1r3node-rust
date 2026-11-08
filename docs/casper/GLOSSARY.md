@@ -309,6 +309,36 @@ blocks; rejected deploys are block-body records of a particular merge result.
 *Avoid*: "rejection cache" because persistence and retry eligibility are
 load-bearing properties.
 
+### Deploy queue
+
+The deploy queue is the node-local RabbitMQ queue a node may consume deploys
+from in front of its gRPC/HTTP ingress. Each delivery carries raw
+`DeployDataProto` bytes and passes through the same admission call
+(`BlockAPI::deploy`) as any other deploy; only that call's outcome decides
+whether the delivery is acknowledged. No queue is shared between nodes.
+
+**Preferred usage.** Use for the per-node buffer in front of ingress and the
+consumer that drains it; use [deploy admission](#deploy-admission) for the
+decision process itself.
+*Distinguish from* the [rejected deploy buffer](#rejected-deploy-buffer): the
+queue holds deploys the node has not yet seen; the buffer holds deploys the
+node admitted and later merge-rejected.
+*Avoid*: "deploy pool" for the queue; the pool is `deploy_storage`, which the
+queue feeds.
+
+### Status exchange
+
+The status exchange is the topic exchange on a node's broker where the deploy
+queue consumer publishes its verdicts (`accepted`, `rejected`, `deferred`),
+block lifecycle events for deploys (`included`, `finalized`), and `shard.tip`
+heartbeats carrying block height and the shard parameters a client needs.
+
+**Preferred usage.** Use for the event feed a client follows instead of
+polling; routing keys are `<deployer pk hex>.<sig prefix>` and `shard.tip`.
+*Distinguish from* the WebSocket event stream, which carries the node's own
+`F1r3flyEvent`s to browser clients; the status exchange is per deploy and per
+deployer.
+
 ### Latest message
 
 A latest message is the most recent block a bonded validator has produced,

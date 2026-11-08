@@ -54,6 +54,10 @@ pub struct NodeConf {
 
     #[serde(default, rename = "soak-observer")]
     pub soak_observer: Option<SoakObserverConfig>,
+
+    /// Node-local RabbitMQ deploy queue (see `deploy_queue` module).
+    #[serde(default, rename = "deploy-queue")]
+    pub deploy_queue: crate::rust::deploy_queue::config::DeployQueueConf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

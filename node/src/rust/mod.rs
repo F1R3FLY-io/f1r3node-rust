@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod configuration;
+pub mod deploy_queue;
 pub mod diagnostics;
 pub mod effects;
 pub mod encode;

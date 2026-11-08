@@ -70,6 +70,7 @@ utoipa = { workspace = true, features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "10", features = ["axum", "vendored"] }
 # Metrics dependencies (analog of Scala's Kamon + NewPrometheusReporter)
 metrics = { workspace = true }
+lapin = { workspace = true }
 metrics-exporter-prometheus = "0.15"
 metrics-exporter-influx = "0.2.2"
 sysinfo = "0.28"

@@ -279,6 +279,9 @@ pub mod builder {
                 node_conf.casper.genesis_block_data.epoch_length,
             ));
         }
+        if let Err(msg) = node_conf.deploy_queue.validate() {
+            return Err(eyre::eyre!("{}", msg));
+        }
 
         // The mpd sentinel's real side effect is easy to miss: with no
         // citability horizon, nothing is ever provably beyond contest.
@@ -748,6 +751,84 @@ mod embedded_defaults_tests {
             cfg.api_server.exploratory_deploy_execution_timeout,
             Duration::from_secs(15)
         );
+    }
+
+    #[test]
+    fn embedded_deploy_queue_defaults() {
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("load defaults.conf")
+            .resolve()
+            .expect("deserialize NodeConf");
+        let dq = &cfg.deploy_queue;
+        assert!(!dq.enabled);
+        assert_eq!(dq.amqp_url, "amqp://127.0.0.1:5672/%2f");
+        assert_eq!(dq.queue_name, "");
+        assert_eq!(dq.prefetch, 64);
+        assert_eq!(dq.max_length, 100_000);
+        assert_eq!(dq.ttl_factor, 1.0);
+        assert_eq!(dq.max_pool_backlog, 8192);
+        assert_eq!(dq.max_backoff, Duration::from_secs(30));
+        assert_eq!(dq.deploy_exchange, "f1r3node.deploy");
+        assert_eq!(dq.status_exchange, "f1r3node.deploy.status");
+        assert_eq!(dq.dead_letter_exchange, "f1r3node.deploy.dlx");
+        assert!(!dq.tls.enabled);
+        assert!(dq.validate().is_ok());
+
+        let mut on = dq.clone();
+        on.enabled = true;
+        assert!(on.validate().is_ok());
+        on.prefetch = 0;
+        assert!(on.validate().is_err());
+        on.prefetch = 1;
+        on.amqp_url = "http://x".into();
+        assert!(on.validate().is_err());
+    }
+
+    #[test]
+    fn deploy_queue_section_is_optional_in_user_config() {
+        let user = r#"deploy-queue { enabled = true, amqp-url = "amqps://u:p@broker:5671/%2f", prefetch = 8, max-backoff = "5s" }"#;
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("defaults")
+            .load_str(user)
+            .expect("user")
+            .resolve()
+            .expect("deserialize");
+        assert!(cfg.deploy_queue.enabled);
+        assert_eq!(cfg.deploy_queue.prefetch, 8);
+        assert_eq!(cfg.deploy_queue.max_backoff, Duration::from_secs(5));
+        assert_eq!(cfg.deploy_queue.max_length, 100_000);
+    }
+
+    /// The docker overlays mount a per-validator file that `include`s the
+    /// shard's shared config; this checks the hocon crate honours it.
+    #[test]
+    fn deploy_queue_overlay_includes_shared_config() {
+        let dir = std::env::temp_dir().join(format!("dq-include-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("shard-default.conf"),
+            "casper { shard-name = \"from-include\" }\n",
+        )
+        .unwrap();
+        let overlay = dir.join("rnode.conf");
+        std::fs::write(
+            &overlay,
+            "include \"shard-default.conf\"\n\ndeploy-queue { enabled = true, amqp-url = \"amqp://f1r3:f1r3@rabbitmq-validator1:5672/%2f\" }\n",
+        )
+        .unwrap();
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .expect("defaults")
+            .load_file(&overlay)
+            .expect("overlay")
+            .resolve()
+            .expect("deserialize");
+        assert_eq!(cfg.casper.shard_name, "from-include");
+        assert!(cfg.deploy_queue.enabled);
+        assert!(cfg.deploy_queue.amqp_url.contains("rabbitmq-validator1"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

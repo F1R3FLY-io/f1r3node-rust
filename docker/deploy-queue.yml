@@ -1,0 +1,98 @@
+# =================================================================
+# F1R3FLY RUST NODE - DEPLOY QUEUE OVERLAY FOR shard.yml
+# =================================================================
+# Gives each validator its own RabbitMQ broker and turns the node's
+# deploy-queue consumer on. No broker is shared between validators.
+#
+# Usage:
+#   docker compose -f docker/shard.yml -f docker/deploy-queue.yml up -d
+#
+# Clients publish signed DeployDataProto bytes to exchange f1r3node.deploy
+# on a validator's broker with routing key = that node's queue name
+# (f1r3node.deploy.<shard-name>.<first 16 hex of validator pk>), e.g. with
+# f1r3deploy from F1R3FLY-io/f1r3node-async-rust:
+#   f1r3deploy --node amqp://f1r3:f1r3@localhost:5673/%2f --shard <shard> \
+#              --validator-pk <VALIDATOR1_PUBLIC_KEY> --key-file k.hex deploy x.rho
+#
+# Broker ports on the host: validator1 5673/15673, validator2 5674/15674,
+# validator3 5675/15675 (AMQP / management UI, user f1r3 password f1r3).
+# Design: docs/designs/deploy-queue/.
+
+x-rabbitmq: &default-rabbitmq
+  image: ${RABBITMQ_IMAGE:-rabbitmq:3.13-management-alpine}
+  restart: always
+  networks:
+    - f1r3fly
+  environment:
+    - RABBITMQ_DEFAULT_USER=${DEPLOY_QUEUE_USER:-f1r3}
+    - RABBITMQ_DEFAULT_PASS=${DEPLOY_QUEUE_PASSWORD:-f1r3}
+  healthcheck:
+    test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+    interval: 10s
+    timeout: 5s
+    retries: 12
+  logging:
+    driver: json-file
+    options:
+      max-size: 50m
+      max-file: "2"
+
+services:
+  rabbitmq-validator1:
+    <<: *default-rabbitmq
+    container_name: rabbitmq.validator1
+    ports:
+      - "5673:5672"
+      - "15673:15672"
+    volumes:
+      - rabbitmq-validator1-data:/var/lib/rabbitmq
+
+  rabbitmq-validator2:
+    <<: *default-rabbitmq
+    container_name: rabbitmq.validator2
+    ports:
+      - "5674:5672"
+      - "15674:15672"
+    volumes:
+      - rabbitmq-validator2-data:/var/lib/rabbitmq
+
+  rabbitmq-validator3:
+    <<: *default-rabbitmq
+    container_name: rabbitmq.validator3
+    ports:
+      - "5675:5672"
+      - "15675:15672"
+    volumes:
+      - rabbitmq-validator3-data:/var/lib/rabbitmq
+
+  # Compose merges volumes by container path, so the rnode.conf mount below
+  # replaces shard.yml's; the shared default.conf is mounted beside it and
+  # included from the per-validator file.
+  validator1:
+    depends_on:
+      rabbitmq-validator1:
+        condition: service_healthy
+    volumes:
+      - ./conf/default.conf:/var/lib/rnode/shard-default.conf
+      - ./conf/deploy-queue/validator1.conf:/var/lib/rnode/rnode.conf
+
+  validator2:
+    depends_on:
+      rabbitmq-validator2:
+        condition: service_healthy
+    volumes:
+      - ./conf/default.conf:/var/lib/rnode/shard-default.conf
+      - ./conf/deploy-queue/validator2.conf:/var/lib/rnode/rnode.conf
+
+  validator3:
+    depends_on:
+      rabbitmq-validator3:
+        condition: service_healthy
+    volumes:
+      - ./conf/default.conf:/var/lib/rnode/shard-default.conf
+      - ./conf/deploy-queue/validator3.conf:/var/lib/rnode/rnode.conf
+
+volumes:
+  rabbitmq-validator1-data:
+  rabbitmq-validator2-data:
+  rabbitmq-validator3-data:

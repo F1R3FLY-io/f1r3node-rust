@@ -66,6 +66,7 @@ impl WebApiRoutes {
                 get(deploy_finalization_status_handler),
             )
             .route("/pending-deploys", get(pending_deploys_handler))
+            .route("/deploy-queue", get(deploy_queue_handler))
             .route("/balance/{address}", get(balance_handler))
             .route("/registry/{uri}", get(registry_handler))
             .route("/validators", get(validators_handler))
@@ -369,6 +370,22 @@ pub async fn pending_deploys_handler(
     AppQuery(query): AppQuery<DeployerQuery>,
 ) -> Response {
     pending_deploys_logic(app_state.web_api.clone(), query).await
+}
+
+#[utoipa::path(
+    get,
+    path = "/deploy-queue",
+    responses(
+        (
+            status = 200,
+            description = "State of this node's RabbitMQ deploy queue: `enabled`, and when enabled the queue and exchange names, `prefetch`, `max_length`, `ttl_ms`, `connected`, `stalled`, `depth`, and consumed/deferred counters",
+            body = serde_json::Value,
+        ),
+    ),
+    tag = "WebAPI"
+)]
+pub async fn deploy_queue_handler() -> Response {
+    Json(crate::rust::deploy_queue::status::http_snapshot()).into_response()
 }
 
 /// Core of `pending_deploys_handler`, split out so tests can exercise the

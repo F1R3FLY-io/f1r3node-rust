@@ -1,0 +1,34 @@
+# Deploy-queue overlay for docker/standalone.yml: one broker beside the node.
+#   docker compose -f docker/standalone.yml -f docker/deploy-queue-standalone.yml up -d
+# Broker on the host: AMQP 5672, management UI 15672 (f1r3 / f1r3).
+services:
+  rabbitmq-standalone:
+    image: ${RABBITMQ_IMAGE:-rabbitmq:3.13-management-alpine}
+    container_name: rabbitmq.standalone
+    restart: always
+    networks:
+      - f1r3fly-standalone
+    environment:
+      - RABBITMQ_DEFAULT_USER=${DEPLOY_QUEUE_USER:-f1r3}
+      - RABBITMQ_DEFAULT_PASS=${DEPLOY_QUEUE_PASSWORD:-f1r3}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - rabbitmq-standalone-data:/var/lib/rabbitmq
+
+  standalone:
+    depends_on:
+      rabbitmq-standalone:
+        condition: service_healthy
+    volumes:
+      - ./conf/standalone-dev.conf:/var/lib/rnode/shard-default.conf
+      - ./conf/deploy-queue/standalone.conf:/var/lib/rnode/rnode.conf
+
+volumes:
+  rabbitmq-standalone-data:

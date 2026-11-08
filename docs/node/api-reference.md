@@ -457,6 +457,18 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 | `400` | Signature is not valid hex (`invalid_hash`) |
 | `500` | Node-side failure |
 
+#### `GET /api/deploy-queue`
+
+State of this node's RabbitMQ [deploy queue](deploy-queue.md). Always answers; `enabled` is `false` when the queue is off.
+
+```bash
+curl http://localhost:40403/api/deploy-queue
+```
+
+```json
+{"enabled": true, "queue": "f1r3node.deploy.root.04fa70d7be5eb750", "deploy_exchange": "f1r3node.deploy", "status_exchange": "f1r3node.deploy.status", "prefetch": 64, "max_length": 100000, "ttl_ms": 250000, "connected": true, "stalled": false, "depth": 12, "consumed": {"accepted": 1041, "duplicate": 2, "rejected": 7}, "deferred": 0, "status_published": 2106, "status_publish_failed": 0}
+```
+
 #### `GET /api/pending-deploys`
 
 Bulk snapshot of deploys currently queued in the node's local proposer pools: `deploy_storage` (submitted, not yet proposed) and `rejected_deploy_buffer` (recovering after a merge conflict). Each entry carries an `isRejected` flag so consumers can distinguish fresh deploys from recovery-backlog deploys.
