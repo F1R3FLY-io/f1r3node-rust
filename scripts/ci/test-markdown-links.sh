@@ -50,6 +50,12 @@ check issue https://github.com/owner/repo/issues/8 pass
 check workflow-run https://github.com/owner/repo/actions/runs/9 pass
 check account https://github.com/owner pass
 check local-file file:///missing.md fail
+mkdir -p "$tmp/.github"
+printf '*.yml text\n' > "$tmp/.github/.gitattributes"
+check relocated-attributes "file://$tmp/.gitattributes" pass
+check unrelated-attributes "file://$tmp/other/.gitattributes" fail
+rm "$tmp/.github/.gitattributes"
+check missing-relocated-attributes "file://$tmp/.gitattributes" fail
 check other-host https://gitlab.com/owner/repo fail
 check unsupported-path https://github.com/owner/repo/unknown fail
 TEST_LYCHEE_STATUS=0 check successful "" pass

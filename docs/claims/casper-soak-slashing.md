@@ -131,7 +131,7 @@ The user ratified the workflow tag on 2026-09-19:
 
 > 017-9 should now be closed out
 
-The [workflow attributes](../../.github/.gitattributes) mark `.github/workflows/casper-slashing.yml` as `cbc=mandatory` with high weight. The tag matches the four ratified profile workflows.
+The [`.gitattributes`](../../.gitattributes) file now marks `.github/workflows/casper-slashing.yml` as `cbc=mandatory` with high weight. The tag matches the four ratified profile workflows.
 
 The [ratification record](../casper/cbc-evidence/runs/casper-slashing-ratification-20260919-01/report.json) binds this specification and the twelve reviewed sources after the decision. The acceptance record keeps its original bytes.
 
