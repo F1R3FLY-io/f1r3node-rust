@@ -1,0 +1,2038 @@
+{
+  "task": 7929,
+  "experiment": 446,
+  "measured_commit": "941ff07d821f9b7b5e8dc5d0a8e62310c328b32c",
+  "decision_bundle": "decision-20261101T101751Z",
+  "decision_data_finished_utc": "2026-11-03T04:58:48+00:00",
+  "summaries": [
+    {
+      "file": "rspace-fixed-delta-scaling-2026-11-03-process-summary.tsv",
+      "sha256": "ce160ae5f75bd065e76bd1c3b45474449fb9dad4b9e116e9f365aaf8a07fde65",
+      "bytes": 234796,
+      "member": "decision-20261101T101751Z/decision-20261101T101751Z/process-summary.tsv"
+    },
+    {
+      "file": "rspace-fixed-delta-scaling-2026-11-03-verify.tsv",
+      "sha256": "41d13409336d6b5ddf69e52a327769ef648236a0f6f8db7c4fdd729b4ae0a126",
+      "bytes": 606910,
+      "member": "decision-20261101T101751Z/decision-20261101T101751Z/verify.tsv"
+    },
+    {
+      "file": "rspace-fixed-delta-scaling-2026-11-03-analysis.json",
+      "sha256": "6b88202d5df248303add6b19cad4f7f4c71fff8919a23bc063c17026bcc522a0",
+      "bytes": 129583,
+      "member": "decision-20261101T101751Z/decision-20261101T101751Z/analysis.json"
+    }
+  ],
+  "artifact_count": 114,
+  "archives": [
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/metadata.json",
+      "format": "gzip+base64",
+      "file_sha256": "0f773e39c468642a69e40d403eca0f20eeba2634db4c44b376d0288f09b5707b",
+      "file_bytes": 12482,
+      "gzip_sha256": "0748d36a71481a0824d9949d138ab8c45965730f768c2cb9dd5cf79067888968",
+      "gzip_bytes": 3450,
+      "artifacts": [
+        {
+          "artifact_id": 1159,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "b49a8daea02c7e72de6e5ba840ede8a04cbb78a1f123640a09ed54995277f08c",
+          "content_bytes": 5034
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/analysis.json",
+      "format": "gzip+base64",
+      "file_sha256": "ce58f159cc0db33f8f7b055d37deba9146e1fdd0c0785decd1e5aa843090a0bd",
+      "file_bytes": 61328,
+      "gzip_sha256": "a3565f01324bd6a3bab9399df98cac559524c6cb41865a4524b5ccb36a6e75d1",
+      "gzip_bytes": 6933,
+      "artifacts": [
+        {
+          "artifact_id": 1160,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "c4c96066799f17e6e1fabe9aec830eea6a6f405f118bd0612e40937553f479ce",
+          "content_bytes": 9739
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/fixtures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "a192c538dcaf2cfbf5f921672cafc15a6e835b475b16f65c120f17e9d5ddf033",
+      "file_bytes": 6245,
+      "gzip_sha256": "4b4c5cef9a318764d577f8e2e021c4fad76b8a5ed143d661826b4a1aba4d5aec",
+      "gzip_bytes": 1841,
+      "artifacts": [
+        {
+          "artifact_id": 1161,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "8d552030724f556479dac71f9df427e23fe98f1d355cf7ba8b971a36b0779b9e",
+          "content_bytes": 2860
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/verify.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "a387111cfa088411032b3d3cb045d0205af50d70b3002bff2d456df5efd1e7fc",
+      "file_bytes": 143373,
+      "gzip_sha256": "a7034f12aebef8e385d280fc7f483105b26268d2e72ec3867fb32f472e9c0fac",
+      "gzip_bytes": 32777,
+      "artifacts": [
+        {
+          "artifact_id": 1162,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "bc89930b9a261f6fec587ad9a838eab573b8b005d8a9fd2576df24e31c87dfcb",
+          "content_bytes": 44652
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/process-summary.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "2186524d2a0cd2867c6a276a1fe0bed3e80b0f67a7a0efe13760bc79a76097ff",
+      "file_bytes": 7044,
+      "gzip_sha256": "b79c2cbb743d4a8931cdda3217866115cac489d0ea16ab26d211112bfc4db8fc",
+      "gzip_bytes": 2892,
+      "artifacts": [
+        {
+          "artifact_id": 1163,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "ca1b2728fb72027cea924b1f86af95070279c9dc06bf2568a8ec66fe5a4ff258",
+          "content_bytes": 4285
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/samples.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "7c8b637f653f8faa26591803a79cfc72e149783a3c617c857e3596073d1a8749",
+      "file_bytes": 158571,
+      "gzip_sha256": "05f2641543ced85d5fa285a2344dcbb23171edc4d99bb23ac62a7eed75327e4d",
+      "gzip_bytes": 59297,
+      "artifacts": [
+        {
+          "artifact_id": 1164,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "c497b598ee2f20c6eec0f83688a91f0f3b6d70157b4a5d5116e914e4571e59e1",
+          "content_bytes": 80478
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/failures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "6d14833824c0012952155e7a77bb6a24042ab077fe06da22df83747251cfe68f",
+      "file_bytes": 81,
+      "gzip_sha256": "13d0d684cb6a3bebd02bbf02b3d2dc2486cf390d440580823346909cc95446c7",
+      "gzip_bytes": 85,
+      "artifacts": [
+        {
+          "artifact_id": 1165,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "155c517b33d93d938d14a3d4c6c5519c3e2688b362af93f1199a47776becf1d7",
+          "content_bytes": 485
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/idle-decisions.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "1a46b6fd69221e1f07ef51d50c07c57e8588f03e676163783fba3d49190b50a2",
+      "file_bytes": 3420,
+      "gzip_sha256": "9816456072a3369fa77286a8f5ca13676b475d619c5da08adab645ad2133a558",
+      "gzip_bytes": 407,
+      "artifacts": [
+        {
+          "artifact_id": 1166,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "055d3bbe73b338d66599445999b44515f472ae7143f483e3390b8831e81117f3",
+          "content_bytes": 928
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "pilot/pilot-20261029T085245Z/children.log",
+      "format": "gzip+base64",
+      "file_sha256": "703024069f8e090344e10a95357c1960eeb26b1f882e27ee356593c43fa6b0e6",
+      "file_bytes": 761533,
+      "gzip_sha256": "73864c7c9897fee91b86de89c8cebb0772162f50a4c321edc9feab17a9c8078b",
+      "gzip_bytes": 130318,
+      "artifacts": [
+        {
+          "artifact_id": 1167,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "9048101a5fd8a6519d11e677f21591f252454ebbe57aa7979b0f92d48db08f7f",
+          "content_bytes": 176422
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "archive/pilot-20261029T085245Z-cpu-snapshots.tar",
+      "format": "gzip+base64",
+      "file_sha256": "e23479bcdeb417617d5c0c116126c14bc7c967037a5d914f8e4a8cefa2dd07c3",
+      "file_bytes": 716800,
+      "gzip_sha256": "80a1bc71d9873539772bf7a73167a3217a57202a22c84f72d2bfa841772296f8",
+      "gzip_bytes": 36469,
+      "artifacts": [
+        {
+          "artifact_id": 1168,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "00de58b059a316f95c8a631e5c241499843288cc068b6338856213035272e9f3",
+          "content_bytes": 49670
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "feasibility/pilot-feasibility-20261029.txt",
+      "format": "gzip+base64",
+      "file_sha256": "00d641c14529fa99dd92e018e1b25b6f083bd6a9d2cfc7e3f7e68e2c4c52eb99",
+      "file_bytes": 1642,
+      "gzip_sha256": "32ab01acdfd137e9fc1c4ccf5e1b451894e317cc49aaafd7e708aa1a1ac7aaa6",
+      "gzip_bytes": 556,
+      "artifacts": [
+        {
+          "artifact_id": 1169,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "bdf64ff23c9b25a53be027ffe96c31a9595b969954fbc946d0ff3a9bfaacfab4",
+          "content_bytes": 1142
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "feasibility/projection-20261029.txt",
+      "format": "gzip+base64",
+      "file_sha256": "893e136173506b4dccdc82d686db5e3ca8ef73d901df2a2ced8959f55c9427b3",
+      "file_bytes": 5655,
+      "gzip_sha256": "8550f965c26394020bf6987cd834c85a65c72a1dd522ecc451289454c0a6a686",
+      "gzip_bytes": 660,
+      "artifacts": [
+        {
+          "artifact_id": 1170,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "89c164265b71e4f42099500cdc3a70d0e00fb32e917cffebb44e34f770c6f6b9",
+          "content_bytes": 1273
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "archive/uprof-trial-20261029T115945Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "4de51f338f234017f7224850762886842fd91247f6d943edbf4cccb896fedd63",
+      "file_bytes": 133120,
+      "gzip_sha256": "4c8ee69c88ee9d1aea0f4ea4011d0a991b497eb1f9308798dca49002d4d60817",
+      "gzip_bytes": 19959,
+      "artifacts": [
+        {
+          "artifact_id": 1171,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "68fc8ca070d134a264bf9105cd8ec1e942e7d063b6b440765262f5e1a78c8cdb",
+          "content_bytes": 27357
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z",
+      "path": "archive/measurement-scripts-c36.tar",
+      "format": "gzip+base64",
+      "file_sha256": "f5a7e3c4eb27d41000a339852d4f51f28842db7cefbfa3bf0afd8787e319dd20",
+      "file_bytes": 40960,
+      "gzip_sha256": "eb7b3f23eb8e824923711d4f282de149775aa3e8126e5ef02a855bfb39cc8a44",
+      "gzip_bytes": 9720,
+      "artifacts": [
+        {
+          "artifact_id": 1172,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "04300b78c91de980c4519412da6c041728d8b3b20a2b678f74232af71c34e636",
+          "content_bytes": 13518
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/metadata.json",
+      "format": "gzip+base64",
+      "file_sha256": "27e4ab672049ba78ff9c3f26acc11dc09d41f6c6d61eaeaeea91ae51a8cda633",
+      "file_bytes": 8832,
+      "gzip_sha256": "e48b499182af773207c1c7f9c9101efca2fcfc5881488bcec939ebdad4dca5e0",
+      "gzip_bytes": 3215,
+      "artifacts": [
+        {
+          "artifact_id": 1180,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "87d5b6452b8bcbd2f53f9b7f9fb678929b7a5468b65b3001734d063202230239",
+          "content_bytes": 4717
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/analysis.json",
+      "format": "gzip+base64",
+      "file_sha256": "e2238918e1ab5b8c0d3d1ced8aef6d6314502e09d69678fe8cec2e69f619971e",
+      "file_bytes": 26738,
+      "gzip_sha256": "6b6d103429b32bf07387b8574fbf35f0428fb4a7a52f37a09fd0861b0a7f3fdb",
+      "gzip_bytes": 3590,
+      "artifacts": [
+        {
+          "artifact_id": 1181,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "40ed55265852ec1e469054399b9da1b1ca6997ef0550a041ca20683f2de40a90",
+          "content_bytes": 5224
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/manifest.json",
+      "format": "gzip+base64",
+      "file_sha256": "3f95e7832a158187ea51b4f18623ee08e8a138af10da00734445b41ed0b77223",
+      "file_bytes": 3698,
+      "gzip_sha256": "c2a12d00e4ee8e739f7fe77c602f6de41e4705a1ec18099108d678c7b1489005",
+      "gzip_bytes": 1285,
+      "artifacts": [
+        {
+          "artifact_id": 1182,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "1f24526782a977e0d92c8ed96cd334cbb9aff35d8ebbfcc83b645de7d2f20ed1",
+          "content_bytes": 2111
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/fixtures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "2e84794d32f28a22ea3dbb48c98d50e0c0a6912d7642d24b0acfa240b6ade1e4",
+      "file_bytes": 1982,
+      "gzip_sha256": "d975d790a51aed95aee07a4cb2cd23f4ead5de913db344d3c64e5a88edd1aa86",
+      "gzip_bytes": 866,
+      "artifacts": [
+        {
+          "artifact_id": 1183,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "613563c4aedc163fed0653f1c92048b27bd7dd08da17e5e7600d61aa97e860c1",
+          "content_bytes": 1542
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/verify.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "d179aced8ae98403a8f6753d22fc3f158f1274833bf46cbbb5d6c91961a576c1",
+      "file_bytes": 15662,
+      "gzip_sha256": "a95886ddf1df0abab4389f55b012e398c2fe8e0eeec129ab386c2cbe87f32361",
+      "gzip_bytes": 2899,
+      "artifacts": [
+        {
+          "artifact_id": 1184,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "74db8f956a892d6df4c3f4997a45b537414f979b8c49535add73f8d8f71b2b12",
+          "content_bytes": 4289
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/process-summary.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "66ff81291535b758e57aefe8f4a8a798315cd2055fb57d6c2b8fb3a88fffcdb4",
+      "file_bytes": 2471,
+      "gzip_sha256": "16c434396cb8b1d762fb60962832a88508dc0ac5989b57277a4a2555050a2279",
+      "gzip_bytes": 991,
+      "artifacts": [
+        {
+          "artifact_id": 1185,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "f2e4c3d07a5cad7a5b3f635c95a49b7e8e8fdd3a7b894328c527c7e0cd241f34",
+          "content_bytes": 1719
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/samples.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "95a0a967d788a7c738cd2f71c01da041c0273717e451a57c0f006c51a8af5b9b",
+      "file_bytes": 16950,
+      "gzip_sha256": "467f5bc2b8cf56c3e5dc5194542319bba6098c54c2cf7ceef667482e51ac2a13",
+      "gzip_bytes": 4976,
+      "artifacts": [
+        {
+          "artifact_id": 1186,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "469c95679f3792941cff25a14444bd135e6eeae048f7ce59380bb401b3ec5277",
+          "content_bytes": 7095
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/failures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "6d14833824c0012952155e7a77bb6a24042ab077fe06da22df83747251cfe68f",
+      "file_bytes": 81,
+      "gzip_sha256": "13d0d684cb6a3bebd02bbf02b3d2dc2486cf390d440580823346909cc95446c7",
+      "gzip_bytes": 85,
+      "artifacts": [
+        {
+          "artifact_id": 1187,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "155c517b33d93d938d14a3d4c6c5519c3e2688b362af93f1199a47776becf1d7",
+          "content_bytes": 485
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/idle-decisions.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "9e5180852d3fbe78e6604b8260cf773d9611cc6ef7da20b087ce5292ffd641a6",
+      "file_bytes": 707,
+      "gzip_sha256": "3f22dd7301f5a31559553d28253ab1d59497359e58ed13c76437d232485b2c89",
+      "gzip_bytes": 168,
+      "artifacts": [
+        {
+          "artifact_id": 1188,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "a7114d8e3080e62c4f68e2df3f82178e58b25a04cd8f7142ccbd5232ea281893",
+          "content_bytes": 602
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z/children.log",
+      "format": "gzip+base64",
+      "file_sha256": "d3ef20286d41e406fefd34ed61ebc3118a795d1f888fb7072d8bf5d18811db4f",
+      "file_bytes": 90806,
+      "gzip_sha256": "5d017bd447af44f7ac047951b049cd53cf30d86532bd2baaefa2b317479a6d9a",
+      "gzip_bytes": 10401,
+      "artifacts": [
+        {
+          "artifact_id": 1189,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "741ce835615e305ddb17102ada2356ea262e3704e52238ce28e85d58e53d18cb",
+          "content_bytes": 14424
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "pilot/pilot-nc-v1-20261029T120209Z.driver.log",
+      "format": "gzip+base64",
+      "file_sha256": "85c3ea334cb520753b444cf3163abc3889dc6ec9e2eccc5a41893e228d9b0ca2",
+      "file_bytes": 317,
+      "gzip_sha256": "000b91b5012ef59c3f432c1e5122c887b20487e19c8b8ca525645b666e0df949",
+      "gzip_bytes": 180,
+      "artifacts": [
+        {
+          "artifact_id": 1190,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "e831264b75a4a2d8757a57944494584931965b73f09d913ffdf5da0154a1a3d8",
+          "content_bytes": 640
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-v1-20261029T120209Z",
+      "path": "archive/pilot-nc-v1-20261029T120209Z-cpu-snapshots.tar",
+      "format": "gzip+base64",
+      "file_sha256": "d553f17edf31c7f3de212d298f23367b4fb1db714ed5eff2a9a0c0a1ea8d321f",
+      "file_bytes": 163840,
+      "gzip_sha256": "6ef73e85dd0d657b9397b61109fdb7216687bd0feac65217cfd5f2428343220e",
+      "gzip_bytes": 7858,
+      "artifacts": [
+        {
+          "artifact_id": 1191,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "b022b1dd4b3c03e267a40f0c03dc9e78ed0fd91e5005b4cdf7a3beb1d6e3276c",
+          "content_bytes": 11025
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/metadata.json",
+      "format": "gzip+base64",
+      "file_sha256": "95891b9ba3fe6b610c6c25ed47b839196d2fd0ceffb6755927e12565b788926d",
+      "file_bytes": 17780,
+      "gzip_sha256": "e1156dcb8f56245542dc65a4c44279e1ed0c65dcd9bb3e30b0f06fef7c0703cd",
+      "gzip_bytes": 3887,
+      "artifacts": [
+        {
+          "artifact_id": 1192,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "1b8f070ae30082a19525d9a3ca2a2cc51c0de489267ebfb5d87c8406d9e2cc5f",
+          "content_bytes": 5626
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/analysis.json",
+      "format": "gzip+base64",
+      "file_sha256": "7739a68b6d54f10b196cd7140129ccb5430dce6d70eb5c85ce4f3f20e0d0aa0b",
+      "file_bytes": 37465,
+      "gzip_sha256": "24345fa5651b177d42d00070201e7177e963cec56e0782507c3e434e4958257e",
+      "gzip_bytes": 2731,
+      "artifacts": [
+        {
+          "artifact_id": 1193,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "60c739c0fa0ed58d7e9895f9174b18fb8edc8fe57768fc1792a58f11b2186e99",
+          "content_bytes": 4065
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/manifest.json",
+      "format": "gzip+base64",
+      "file_sha256": "c915cc5a436ea6bfb47befe8102dae157a293fb5f2a833b0bccdb9aff0044d56",
+      "file_bytes": 6413,
+      "gzip_sha256": "329df413e42d111aeb8535fa449c9ec211f388c2de1c96c1f98729b7691684da",
+      "gzip_bytes": 1994,
+      "artifacts": [
+        {
+          "artifact_id": 1194,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "cd743fed6b6f4510a71685394d5705b597be76f31c36a17a0b8939e4487bad1a",
+          "content_bytes": 3067
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/fixtures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "fc53c1411985f7477c121dc509946081769a49ee0d0c57f4fe82eaa8fe56a189",
+      "file_bytes": 3801,
+      "gzip_sha256": "98b4005f3f5e02578b656729eca1fd9d0a04271019fcfbbfbe5035f8d1b03484",
+      "gzip_bytes": 1467,
+      "artifacts": [
+        {
+          "artifact_id": 1195,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "572bb4bf1c7300f9b069ef079399cb2caef5be108f5be711719245ab60827f1e",
+          "content_bytes": 2353
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/verify.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "91d00708c0e4b82e33eccf3624a078bcb8a4386c4269335fa516fb01b88a782e",
+      "file_bytes": 1124,
+      "gzip_sha256": "273f179bf152efd403fe0759c7264a8255646edfa1cbdd8ff9a77af4947dcd11",
+      "gzip_bytes": 398,
+      "artifacts": [
+        {
+          "artifact_id": 1196,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "495dde5f21c50fc96edd7979bac61308ed1efb5a73509de51a5da115fc7c120c",
+          "content_bytes": 907
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/process-summary.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "85260f8e70bca794647248acd73ee34759dafe15a7fcbdeb2c771e625c11fdec",
+      "file_bytes": 2329,
+      "gzip_sha256": "caef779d9e30a29e0c23e8711a5ca7e4e7add248f5a78117a2677a8068302389",
+      "gzip_bytes": 542,
+      "artifacts": [
+        {
+          "artifact_id": 1197,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "7115288c252084cb73d1e0caf6b2f42c7d7e2b9e092a7ba8c5a3a22fa768cf2a",
+          "content_bytes": 1111
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/samples.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "8258fc9bcd396e02271d5d86b430a9c349373cd7e5d43b9d2bbc2fa3203e4853",
+      "file_bytes": 316,
+      "gzip_sha256": "41462f1e3cc42d3cb7e6f8f0858038730dbc32e1a3608db4f927844d202ed517",
+      "gzip_bytes": 146,
+      "artifacts": [
+        {
+          "artifact_id": 1198,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "3daf8758be4300c0b242096b7cc9fcb2da219d5636288a623a7869f241e3049e",
+          "content_bytes": 567
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/failures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "a1a2e2fa72e39d4f37deabe01f1f4c96709efa5a73236b981f00a08157f9815b",
+      "file_bytes": 3281,
+      "gzip_sha256": "3e8dbcfeee024b99a9ace36b232cc9c3c625c95639a4d41591564f9d340625e0",
+      "gzip_bytes": 572,
+      "artifacts": [
+        {
+          "artifact_id": 1199,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "76225c97581b99a87537240f0ee1e40526de377e5e6ac17226ea5ed200984839",
+          "content_bytes": 1145
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/idle-decisions.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "b72224f330edfb0bacc0c2dec712799305d3d5395260f94b323e6e4b3a43fd0b",
+      "file_bytes": 1517,
+      "gzip_sha256": "7603c2618ab5ba6f52f077176e92457a3d08a173b07a3f22af95503ea5fbf696",
+      "gzip_bytes": 255,
+      "artifacts": [
+        {
+          "artifact_id": 1200,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "2ed87f256a8d4d2859721b65a8aac47d7db48234ceca6c9a9db4cb0a95981d6e",
+          "content_bytes": 721
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z/children.log",
+      "format": "gzip+base64",
+      "file_sha256": "532aa43791ed1e2bfaf1a0f38992444349063c6a7e4c9f237d0c0c20c3230852",
+      "file_bytes": 47176,
+      "gzip_sha256": "34a7653fe886adff918f4ed14d980c94269017a0c2bcba9370f39a996cb6b4c4",
+      "gzip_bytes": 2914,
+      "artifacts": [
+        {
+          "artifact_id": 1201,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "9c8ee817477d67097b57df192d99b2ad4bf228f3818f825895c4ec4c665da072",
+          "content_bytes": 4312
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "pilot/pilot-nc-scan-20261029T122846Z.driver.log",
+      "format": "gzip+base64",
+      "file_sha256": "dcdb70763f30f2a16a84574dd59d3cf5e6a660a98e009ea78ef134a17d22bbc7",
+      "file_bytes": 1775,
+      "gzip_sha256": "7bd1e905245a4ff410c7ed2505267f65876d804d92511e16a98d6a5b83951e83",
+      "gzip_bytes": 349,
+      "artifacts": [
+        {
+          "artifact_id": 1202,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "b55e6e22afce795c374fde4755f67081edec3170420d34d2446c3ac748cea088",
+          "content_bytes": 874
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T122846Z",
+      "path": "archive/pilot-nc-scan-20261029T122846Z-cpu-snapshots.tar",
+      "format": "gzip+base64",
+      "file_sha256": "359931306dd38573c6c90a4a9e65da79dab1ec8d618de86c58eaffe27540cce4",
+      "file_bytes": 327680,
+      "gzip_sha256": "76bc16ebcfcbf36e02019b0c3801349da56f320d71d6cfc5a1b502b95becde1e",
+      "gzip_bytes": 16459,
+      "artifacts": [
+        {
+          "artifact_id": 1203,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "3d5cd02064764c8a0ca4e87675b66c502d1a9444256e99344468a50f201358c3",
+          "content_bytes": 22647
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/metadata.json",
+      "format": "gzip+base64",
+      "file_sha256": "be9628277d15b8bdcda503087f0c643b503aefc64b01cd8fb78a073c05c51842",
+      "file_bytes": 10420,
+      "gzip_sha256": "c526d08be2326cd1fead1c4557180dfac3b464c3cb71c2c73646246d72e2c6cb",
+      "gzip_bytes": 3301,
+      "artifacts": [
+        {
+          "artifact_id": 1204,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "4132359eb1eef7ff8e789ba7b6bc6816536ae146f535930b250322437aefbd35",
+          "content_bytes": 4835
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/analysis.json",
+      "format": "gzip+base64",
+      "file_sha256": "fcaa20e3c889e7b446e8b7a50b7a329ef4c6562bd11587b0316f1db44b6e9e67",
+      "file_bytes": 43986,
+      "gzip_sha256": "630597776aa22e431456a5b23339cd0626759d1a981e46c7a88674eecc46094c",
+      "gzip_bytes": 5266,
+      "artifacts": [
+        {
+          "artifact_id": 1205,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "21a4ff8328a39f44f6b05086e3875d4303291c41e51bbc2f10ef79392f64b1f0",
+          "content_bytes": 7490
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/manifest.json",
+      "format": "gzip+base64",
+      "file_sha256": "1a29754eac85223d71b714ca410478202ac32d4d4d17edcc3572be2e396c10e9",
+      "file_bytes": 6029,
+      "gzip_sha256": "302a4786caf289c886bdaed91728d8adb6fc23282d69af392041fef2b6dff48c",
+      "gzip_bytes": 1885,
+      "artifacts": [
+        {
+          "artifact_id": 1206,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "64d02bb3c9f33afd28d657b0469e1123ee4e819dde1047566821f977c3543e69",
+          "content_bytes": 2922
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/fixtures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "0da6937a9a6e47009e8b07a2ac3269dd41617381abc51ee58780ab263c564223",
+      "file_bytes": 3801,
+      "gzip_sha256": "47034b0f04e8c7ad9c7f94083dbf95554f5b16782a7da970244ab184469263bc",
+      "gzip_bytes": 1467,
+      "artifacts": [
+        {
+          "artifact_id": 1207,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "6ef1ba32d9c37d01848c43018f203cacd622421d7e5b8c3bd1e46cdbfdcc021c",
+          "content_bytes": 2353
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/verify.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "9d15a1648d21f8a08e3593704ccc7fde8005743609cbf7251bd498ae5ebb1d27",
+      "file_bytes": 30531,
+      "gzip_sha256": "c78d91c4ff8c7ef9781d3d24f848f0f1fccaaf8144bc3bd5cb63e8b1abc93d99",
+      "gzip_bytes": 7092,
+      "artifacts": [
+        {
+          "artifact_id": 1208,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "bd623cb805c571fbca63de8adca357411778f9d0080660c560c92fcfac9d8425",
+          "content_bytes": 9951
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/process-summary.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "8e7ca4d043e4656d35b86bc65d9a17ef7408a145787288200956f6fa5625d6ad",
+      "file_bytes": 4451,
+      "gzip_sha256": "234007c99b8691cb47344da78cf138d4e751e593a27cee2aa6ed530d5e245043",
+      "gzip_bytes": 1798,
+      "artifacts": [
+        {
+          "artifact_id": 1209,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "81c1588e92ebeb7f317f2186ef1d15cc1b7771d074c8c7bde98098e6c761e28a",
+          "content_bytes": 2810
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/samples.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "03aac936eccdeebc6b0b7aa8de4e79a3ec80c8aef33ed0c4c419af3ccbb0b35d",
+      "file_bytes": 33609,
+      "gzip_sha256": "106b63c6b36c3e3f0698821f35cc4a50c5fc4a9178d173bcc5d18d252bcffeb2",
+      "gzip_bytes": 10790,
+      "artifacts": [
+        {
+          "artifact_id": 1210,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "94c6d4ecd02b0c3464e52953637b2327a5029382904c7c16545f578762e549d1",
+          "content_bytes": 14950
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/failures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "6d14833824c0012952155e7a77bb6a24042ab077fe06da22df83747251cfe68f",
+      "file_bytes": 81,
+      "gzip_sha256": "13d0d684cb6a3bebd02bbf02b3d2dc2486cf390d440580823346909cc95446c7",
+      "gzip_bytes": 85,
+      "artifacts": [
+        {
+          "artifact_id": 1211,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "155c517b33d93d938d14a3d4c6c5519c3e2688b362af93f1199a47776becf1d7",
+          "content_bytes": 485
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/idle-decisions.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "084010fc089c434e75a3dd4e08c5d660543b7e763b691642c73c95af82f80129",
+      "file_bytes": 1403,
+      "gzip_sha256": "cefea999e23e8cb764aac547d9dded15d780c2038936c2ecd4ecf81bb567a72d",
+      "gzip_bytes": 244,
+      "artifacts": [
+        {
+          "artifact_id": 1212,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "79ef8a88b62895bebcea732c011b189eedf13b6094ebec7419a189e227018838",
+          "content_bytes": 709
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z/children.log",
+      "format": "gzip+base64",
+      "file_sha256": "7e4bc3fd6c86391806589cfd3a575321655afc44005b88f394558cc941b4857b",
+      "file_bytes": 182114,
+      "gzip_sha256": "00375f652e583b67ed2fd73e073ff8e2d66ee316565c880f85e3c0e0360a20d5",
+      "gzip_bytes": 24969,
+      "artifacts": [
+        {
+          "artifact_id": 1213,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "71f4532bfaeb36ebf247c9f245f7a62379c805ff28f43c3669df57b8fd21ccbf",
+          "content_bytes": 34105
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "pilot/pilot-nc-scan-20261029T155714Z.driver.log",
+      "format": "gzip+base64",
+      "file_sha256": "7beee399cfee7d9e0d594affc824425afdf1939cbbcaf60052f2c6fa17af087b",
+      "file_bytes": 319,
+      "gzip_sha256": "673bcde153043e50252e57b28a11a430d8cf59739c3d5f0f7e8fdd33194ad417",
+      "gzip_bytes": 183,
+      "artifacts": [
+        {
+          "artifact_id": 1214,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "dbe05d73d08ac253d58b7345a2188c35172916ce060b828404c26f33c512b408",
+          "content_bytes": 646
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-scan-20261029T155714Z",
+      "path": "archive/pilot-nc-scan-20261029T155714Z-cpu-snapshots.tar",
+      "format": "gzip+base64",
+      "file_sha256": "2d8e98f3644cd5e50114f183725312abbd810cd2ccf09dc2dab146e57a54db56",
+      "file_bytes": 296960,
+      "gzip_sha256": "2307b95d5646981ccb3fad6629b06bc1c045d205ef92f238377bd5adc3f9bd46",
+      "gzip_bytes": 13970,
+      "artifacts": [
+        {
+          "artifact_id": 1215,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "e782af9e37719973165640b39b681596a995ec1b528b80c4730477975b3cdc09",
+          "content_bytes": 19284
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/metadata.json",
+      "format": "gzip+base64",
+      "file_sha256": "cdb4c20f35c6012f778b12940c01e47e6c6f8878843a86c59265ceb37af53171",
+      "file_bytes": 10425,
+      "gzip_sha256": "b4889ddc6026333026d8e3b31d2241400f765f11c0e384234df6860772340e78",
+      "gzip_bytes": 3308,
+      "artifacts": [
+        {
+          "artifact_id": 1216,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "3e4789d41cf13035200f3f6c6df7bd7a7264a256bfee498b79ca22e1ce0c3d34",
+          "content_bytes": 4844
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/analysis.json",
+      "format": "gzip+base64",
+      "file_sha256": "e99ae13f918291bacd702299122379541d9396a4ad73c2959e1b01a764abf920",
+      "file_bytes": 44071,
+      "gzip_sha256": "81498988081bc36119835e54c8cc6ad9c667eefaa25e8a30fca4e88c7d96b26d",
+      "gzip_bytes": 5301,
+      "artifacts": [
+        {
+          "artifact_id": 1217,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "d73f3e9acab992ab135c63dec5012ddc736ee1f4b20c33b47045301e707e62c1",
+          "content_bytes": 7534
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/manifest.json",
+      "format": "gzip+base64",
+      "file_sha256": "c607a99beda77436220382243bd4623ff4c008a148c8c72fc6d8376c0ea74f59",
+      "file_bytes": 6029,
+      "gzip_sha256": "d0d4481e033e8d8b132a74b902c31710b918fa2b457ff88e972aba95a91365e3",
+      "gzip_bytes": 1896,
+      "artifacts": [
+        {
+          "artifact_id": 1218,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "3d2c5878210ae1856826ae163f20873ac1ccd50090aefa0b0d5bb65f2b985a8b",
+          "content_bytes": 2934
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/fixtures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "b2dd864b8985c5f5e9c42a6ce9af26df2684f1e451de479e5af063dacf4633f1",
+      "file_bytes": 3801,
+      "gzip_sha256": "4199ea12625aef254daad9cb3cb17e032c536253a992a6f59e46dcd3915377fc",
+      "gzip_bytes": 1465,
+      "artifacts": [
+        {
+          "artifact_id": 1219,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "38bbfe6e729c8cdbb0119e00c3e25993f451c60a06e199d1dbf509a2347c2601",
+          "content_bytes": 2353
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/verify.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "4b34847eb1b2e71e206c7d92cf47fa37d8cfe2a6432048b7fcb12d3c4cc7d00c",
+      "file_bytes": 30327,
+      "gzip_sha256": "49bd079d17e485a87711ab4690d9b58ad0bb24a80d36a34627f4b9f6ea5c6ad2",
+      "gzip_bytes": 6799,
+      "artifacts": [
+        {
+          "artifact_id": 1220,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "52c20a8320aa7bb0fe48d3b170f0f9653e0b48c851dbe16d090f523662c74c34",
+          "content_bytes": 9558
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/process-summary.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "088074d90af6d8771e8e1d2c7261b74ed2a1b316002dd45d801e5c9b9f468438",
+      "file_bytes": 4477,
+      "gzip_sha256": "de40ae918c9f37c09805ef929c0a7f9e0f29b1540e82613a759673865147e996",
+      "gzip_bytes": 1816,
+      "artifacts": [
+        {
+          "artifact_id": 1221,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "da9fbe18c9ca1c6fb6360c0a503992ea3e178f42de8b965d3f2edc5472ed08ff",
+          "content_bytes": 2834
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/samples.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "8cd8e6f1dc6a8c4a57d6b2b11d5e2757bb2407d89336ddfb7e2f6e8b40045e1e",
+      "file_bytes": 34098,
+      "gzip_sha256": "2ec1a6dab54496069f9de21e232ac84d485c3ef8ee72717a605f12c04c589476",
+      "gzip_bytes": 11308,
+      "artifacts": [
+        {
+          "artifact_id": 1222,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "08755db9889b9d47058fe037f42f64d67b64c5ab5f19396a1fd4baf6ba76467e",
+          "content_bytes": 15651
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/failures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "6d14833824c0012952155e7a77bb6a24042ab077fe06da22df83747251cfe68f",
+      "file_bytes": 81,
+      "gzip_sha256": "13d0d684cb6a3bebd02bbf02b3d2dc2486cf390d440580823346909cc95446c7",
+      "gzip_bytes": 85,
+      "artifacts": [
+        {
+          "artifact_id": 1223,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "155c517b33d93d938d14a3d4c6c5519c3e2688b362af93f1199a47776becf1d7",
+          "content_bytes": 485
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/idle-decisions.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "084010fc089c434e75a3dd4e08c5d660543b7e763b691642c73c95af82f80129",
+      "file_bytes": 1403,
+      "gzip_sha256": "cefea999e23e8cb764aac547d9dded15d780c2038936c2ecd4ecf81bb567a72d",
+      "gzip_bytes": 244,
+      "artifacts": [
+        {
+          "artifact_id": 1224,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "79ef8a88b62895bebcea732c011b189eedf13b6094ebec7419a189e227018838",
+          "content_bytes": 709
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z/children.log",
+      "format": "gzip+base64",
+      "file_sha256": "666e18422134da768e08ce00d6675b75b20d1de8c823e879f87b73652455245d",
+      "file_bytes": 182432,
+      "gzip_sha256": "bbb082bf6987011d1a6d83e3b0cd36ef3ad86ad004315aa4524dce5380bba6ea",
+      "gzip_bytes": 25307,
+      "artifacts": [
+        {
+          "artifact_id": 1225,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "2279810c807e80a6c37dcb126e61533844dc0c6e6375359db32b96d907a7a797",
+          "content_bytes": 34562
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "pilot/pilot-nc-clone-20261029T133559Z.driver.log",
+      "format": "gzip+base64",
+      "file_sha256": "fdce7c26e467a1ef44972b1ca750d3d0db4cc134ea836397673afe4c8b48672b",
+      "file_bytes": 320,
+      "gzip_sha256": "dede76b1f64f65eed1e59b63839aa91db2b00022bf1eca0975de2b3966f2ba2e",
+      "gzip_bytes": 185,
+      "artifacts": [
+        {
+          "artifact_id": 1226,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "b7aad7e294155b3239b0b5a0fc3fb4e4d855a2d8c2d084af85adef2c64734b48",
+          "content_bytes": 651
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-clone-20261029T133559Z",
+      "path": "archive/pilot-nc-clone-20261029T133559Z-cpu-snapshots.tar",
+      "format": "gzip+base64",
+      "file_sha256": "df48ac9cd877265d69a000502d2a8bef6af051cc9d441cbcee6c66dd8be63b9d",
+      "file_bytes": 296960,
+      "gzip_sha256": "2c254c181887f82f2f4bd7feaf97d786e931a9dd7c9dd504c00312e3dffb02c6",
+      "gzip_bytes": 14392,
+      "artifacts": [
+        {
+          "artifact_id": 1227,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "12b9c78ed13f92805321a41ca976febe00241e56dbeab074e1277be780586133",
+          "content_bytes": 19856
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/metadata.json",
+      "format": "gzip+base64",
+      "file_sha256": "d3a45bddce901c8d2a6f068baaff450d47174cae9e2f89085d76956ad516e027",
+      "file_bytes": 12903,
+      "gzip_sha256": "fcab341d9981bb6231f54e04bfd667579ec16799e085bf1d0a2e20e640848b96",
+      "gzip_bytes": 3589,
+      "artifacts": [
+        {
+          "artifact_id": 1228,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "794709eb46646db025b22321dfe822b9368b2c0477f3f50b40839b5816ee358e",
+          "content_bytes": 5224
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/analysis.json",
+      "format": "gzip+base64",
+      "file_sha256": "b1a2a78242c95d9d29b9487817851ea7baa3db39c463001a17e88e687712264f",
+      "file_bytes": 42985,
+      "gzip_sha256": "58d2ebd24752925f96b8aceac77aa89227d631d5cf309d6c5c9784bb874100e4",
+      "gzip_bytes": 4894,
+      "artifacts": [
+        {
+          "artifact_id": 1229,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "c4fa08d2127f906f3ccf17ddf5649c592c2f7badfbdc2f9138d1b176fc4ee14b",
+          "content_bytes": 6987
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/manifest.json",
+      "format": "gzip+base64",
+      "file_sha256": "0e3dcad7a3fd594dd9ad55283734d9fe325ca39f50270aaaeda61726e253d3c8",
+      "file_bytes": 6417,
+      "gzip_sha256": "43626a7152d9be5f823dc7dd5e702bcf8baa6852f618200c76a6818aa525121e",
+      "gzip_bytes": 1996,
+      "artifacts": [
+        {
+          "artifact_id": 1230,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "43b3d7af5b34a4f56775d8632ede22a1aedd7edf83b6dca4e8a9c85d2db3f0ef",
+          "content_bytes": 3072
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/fixtures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "5c64966e0c3837d25b85c9f863b7c0a0a1c161ecec0ccfaa82737404f56109f9",
+      "file_bytes": 3801,
+      "gzip_sha256": "fbfa5a90e976c46d21539c35af047813926182d395b61b17ea21fc8c58c55365",
+      "gzip_bytes": 1467,
+      "artifacts": [
+        {
+          "artifact_id": 1231,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "db62d459e4b8a06e61b4d966005aa6ab76952000e0c634a489c6a076eb34e170",
+          "content_bytes": 2353
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/verify.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "91d00708c0e4b82e33eccf3624a078bcb8a4386c4269335fa516fb01b88a782e",
+      "file_bytes": 1124,
+      "gzip_sha256": "273f179bf152efd403fe0759c7264a8255646edfa1cbdd8ff9a77af4947dcd11",
+      "gzip_bytes": 398,
+      "artifacts": [
+        {
+          "artifact_id": 1232,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "495dde5f21c50fc96edd7979bac61308ed1efb5a73509de51a5da115fc7c120c",
+          "content_bytes": 907
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/process-summary.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "dc7ec0571010a12e2becd1148ce4dd79c00dd082eec6173b98b342e1ec487042",
+      "file_bytes": 4581,
+      "gzip_sha256": "18d86955cb8332280daba19fbb1f5cd7abbc9cd0fec800cf67e797cf81f5426e",
+      "gzip_bytes": 1845,
+      "artifacts": [
+        {
+          "artifact_id": 1233,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "1cef453ed06d0fb82753d097c8163ac5bff1822b0b6239f34d13449c198a1507",
+          "content_bytes": 2871
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/samples.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "dc9786b034af229cee9103fb7c60e3c1fb0e419fcf02786faf38a3fc6a832223",
+      "file_bytes": 34649,
+      "gzip_sha256": "6ff1f4022f58a4ca6d5b75612c7eb469663437db20c91d40a5d41faba3f9f136",
+      "gzip_bytes": 11430,
+      "artifacts": [
+        {
+          "artifact_id": 1234,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "6cbba43a9b56239faf7251bfa62a26d64a6051a9ba349f6ef214c215ee76279f",
+          "content_bytes": 15813
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/failures.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "058ddfe40f53a13952e922d98dc3953e909563564079adc0071aa2a2eae45b43",
+      "file_bytes": 1169,
+      "gzip_sha256": "7c447320d45d4053932dd951019d27c5e368a8a060839136f5bf7a3bf7777c40",
+      "gzip_bytes": 324,
+      "artifacts": [
+        {
+          "artifact_id": 1235,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "09b501c6afd41331f4d6ede744177ad4d084aa5b2cd8856c4a9677252319531e",
+          "content_bytes": 808
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/idle-decisions.tsv",
+      "format": "gzip+base64",
+      "file_sha256": "21c49236342cd0b16cdc6e4e43901f31d3a6316b3940d7526b325db6f1296b21",
+      "file_bytes": 1518,
+      "gzip_sha256": "e04a3eee8299fdb553e3d5659d9d700977c62d383ed02ce6a070c8404306447e",
+      "gzip_bytes": 258,
+      "artifacts": [
+        {
+          "artifact_id": 1236,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "2c017a21e1eb7b084ea0a6024cd78b37238cc7cc622fc219e0fed4df4d772217",
+          "content_bytes": 725
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z/children.log",
+      "format": "gzip+base64",
+      "file_sha256": "38e05518c1734f04ac908be0d4be065a7bedc10645e1ed9c8a9fc4f0c5350aa7",
+      "file_bytes": 109143,
+      "gzip_sha256": "b0fc0b3b78ec8c140881e61d910f2395cf8b3afbd1f375b21b3af899f8764ec1",
+      "gzip_bytes": 18739,
+      "artifacts": [
+        {
+          "artifact_id": 1237,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "3d3edbca8bb6c924fa634f4eb777c64b1b099e4b21b171be747c3d2abbd56ed9",
+          "content_bytes": 25691
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "pilot/pilot-nc-order-20261029T144430Z.driver.log",
+      "format": "gzip+base64",
+      "file_sha256": "ad017e83262575ec8d813ea451bb489bf334d256b7b0e861546f16aea0397df0",
+      "file_bytes": 1514,
+      "gzip_sha256": "97d1db072ce72c6885d434473ef8a6e59febe6ade77151afe3a55e066fc4426a",
+      "gzip_bytes": 355,
+      "artifacts": [
+        {
+          "artifact_id": 1238,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "1a2b9a39c5da138beeea5f7d7e2ad9641804d0a50c54a5ee7e47691d4996b805",
+          "content_bytes": 883
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-nc-order-20261029T144430Z",
+      "path": "archive/pilot-nc-order-20261029T144430Z-cpu-snapshots.tar",
+      "format": "gzip+base64",
+      "file_sha256": "a9864957a73925ed34b1cf2f0d281caf19e4648d1c6a79a112788db8200a44b8",
+      "file_bytes": 327680,
+      "gzip_sha256": "66abe9648e6b5f44cc88a2db023a958887f1db43f0326924d3d07ea47cbc07d8",
+      "gzip_bytes": 16403,
+      "artifacts": [
+        {
+          "artifact_id": 1239,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "de5cae88954c54eaadb280529bda5f1a25dc5e1c25810eab960e4c5fe93bb249",
+          "content_bytes": 22571
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-scan-20261029T120209Z.log",
+      "format": "gzip+base64",
+      "file_sha256": "a5b54405a5d07d93e23f1ee1a2671a9c0cef26e2895b55f9176eadfe65ed4fb8",
+      "file_bytes": 287730,
+      "gzip_sha256": "1802828f13162d755bba9e4017045cd99beb5609aeac0211725e0d3f71d6c855",
+      "gzip_bytes": 19791,
+      "artifacts": [
+        {
+          "artifact_id": 1240,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "57b56c347c6985cdfda6a29203086849870408aaefd4af62b1b9a8549e847dc5",
+          "content_bytes": 27134
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-scan-20261029T120209Z.log.stderr",
+      "format": "gzip+base64",
+      "file_sha256": "873d532b3f5669c6c582cf5f7376d7f56201658b80ab01c6e36fb2464f7d4e0b",
+      "file_bytes": 730,
+      "gzip_sha256": "a3643600de2cc29f5a8ddae17fe74d299377bcf6c7aa6c0706d3eb78a42c91a0",
+      "gzip_bytes": 411,
+      "artifacts": [
+        {
+          "artifact_id": 1241,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "44393c988a71f8fcdb0ec4403699c0fb13fdc6216c04ee82b53cdcd7afc534a2",
+          "content_bytes": 956
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/pipeline-nc-scan-20261029T120209Z.out",
+      "format": "gzip+base64",
+      "file_sha256": "539bde8d122d0a217478ba102c48869c0eb364114c4e97231991d9c0756796f4",
+      "file_bytes": 842,
+      "gzip_sha256": "b282f383100ff405b1ae85afb9e08168e594c8e47b9b4a7c7d6ffb32cfb670fb",
+      "gzip_bytes": 532,
+      "artifacts": [
+        {
+          "artifact_id": 1242,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "eddd8273e81143271eb9974ca824f2ec93c2017a20afaac29e1d6654e9f0a2c6",
+          "content_bytes": 1116
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-scan-20261029T155623Z.log",
+      "format": "gzip+base64",
+      "file_sha256": "26cd3c0829f2681c9f43722bd4a957d1dcbd5509a3bb8540113fa73774fb4244",
+      "file_bytes": 287731,
+      "gzip_sha256": "6429d7907636ea93e846c5dd8b345112c0f14324ec2a6e6fb795a969c87b705f",
+      "gzip_bytes": 19850,
+      "artifacts": [
+        {
+          "artifact_id": 1243,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "3287380d1d17b06f4f46cfcb2f895c573a70909e063ae3b5ca8bd7828ce2cc1c",
+          "content_bytes": 27215
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-scan-20261029T155623Z.log.stderr",
+      "format": "gzip+base64",
+      "file_sha256": "bfc21c752b242140c20c565313cb4d183579a1e0095f5285c9ca9fd6fd29c86d",
+      "file_bytes": 890,
+      "gzip_sha256": "dde4c54572345280546a49489184546dc2b0d80b46a13852d504fb2be02fa499",
+      "gzip_bytes": 449,
+      "artifacts": [
+        {
+          "artifact_id": 1244,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "8a538072f562e334737a051f029889086aea7fae425f09d4df2f20d436f38216",
+          "content_bytes": 1008
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/nc-scan-r1-20261029T155623Z.out",
+      "format": "gzip+base64",
+      "file_sha256": "a733fc291100d6b7dc16a6609abcf469ee61290f1cd5bbc17d04372663ab224c",
+      "file_bytes": 842,
+      "gzip_sha256": "1efa1a892fac95a36d226ba2af0aa35f1eaf5b8f6e4b085d842c01bb5be6e257",
+      "gzip_bytes": 531,
+      "artifacts": [
+        {
+          "artifact_id": 1245,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "53a202355958e3c7e67153e2d460b9adec32e7cbf40c266e3d9d998739014df1",
+          "content_bytes": 1106
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-clone-20261029T122846Z.log",
+      "format": "gzip+base64",
+      "file_sha256": "386c8bd638d117c0e3290d13aa6c12a5e292eb011cc766d4f17822342f6b1fb6",
+      "file_bytes": 287730,
+      "gzip_sha256": "83ac8bf466294fe4bb4727fbb43cd78a0e8fc341be47678a227e6fa6e790c36a",
+      "gzip_bytes": 19838,
+      "artifacts": [
+        {
+          "artifact_id": 1246,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "53959512cdfbd4039b2083a00f2f506f34a26c4cf564cf3dc7a63f3b54e0e3a7",
+          "content_bytes": 27200
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-clone-20261029T122846Z.log.stderr",
+      "format": "gzip+base64",
+      "file_sha256": "25be2fd475d854f7998350bafd8a6e2cc5bdbb4e6a4ae0eab3218225b483b263",
+      "file_bytes": 730,
+      "gzip_sha256": "44cef4b27d7779a7b99a0e20b89709ea0086490824a5e5d7d4eb3f34b5d31b0f",
+      "gzip_bytes": 412,
+      "artifacts": [
+        {
+          "artifact_id": 1247,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "e985ded43fb18fdf11abf4cbb1a4bbbbd5b39cec96354b4219ac7d2d6cdfaabc",
+          "content_bytes": 961
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/pipeline-nc-clone-20261029T122846Z.out",
+      "format": "gzip+base64",
+      "file_sha256": "75d7dbf6181206e018c703df932adb02ba02d8bc16f4f1d49589b73fd44f8281",
+      "file_bytes": 845,
+      "gzip_sha256": "f58331ace8f316c08f1e87424c7b66f1b82091e997ed073a5f93dc17eda18de9",
+      "gzip_bytes": 533,
+      "artifacts": [
+        {
+          "artifact_id": 1248,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "725a6c62f1b173766ceed45bb9a675bc4c8436df4b32885dde7824d8fe19fc9d",
+          "content_bytes": 1117
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-order-20261029T134441Z.log",
+      "format": "gzip+base64",
+      "file_sha256": "c508b27c0f40ab9dbd2a36e9d38400e53235b0355c9ed9acf0d1a49b60b30747",
+      "file_bytes": 287730,
+      "gzip_sha256": "6828329df467b962919cfccbad165b8d5b80825f7e071a5b6f255c489e749576",
+      "gzip_bytes": 19830,
+      "artifacts": [
+        {
+          "artifact_id": 1249,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "19e942d85d0252a630936aa14f4fa62ddbae520c932b69e365edab452f76f930",
+          "content_bytes": 27187
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/control-nc-order-20261029T134441Z.log.stderr",
+      "format": "gzip+base64",
+      "file_sha256": "a6698fff0db709af6bceabd6baff373a272c18e4ceff32ef08f23ec605286b83",
+      "file_bytes": 730,
+      "gzip_sha256": "7cb8683c6421e36afdfcb9a46eecadc2fe7329aadd02a1c5c794102bdb6b32a3",
+      "gzip_bytes": 412,
+      "artifacts": [
+        {
+          "artifact_id": 1250,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "f146b6a1b7e4623779dd2657ddb8f7fc2e02a4a3956eef0a060372963d0ca818",
+          "content_bytes": 961
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/followup-nc-order-20261029T134441Z.out",
+      "format": "gzip+base64",
+      "file_sha256": "32985701ed0fad928a41ecaa756293d91bfdb6ced79b359d0037535a9353d086",
+      "file_bytes": 845,
+      "gzip_sha256": "b4ff28b7b86e7d45f14a7ebcf654e93953be37580d545b158e4a8e6eedeb858c",
+      "gzip_bytes": 532,
+      "artifacts": [
+        {
+          "artifact_id": 1251,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "ae9c6f658b90a96053a8d521045bf0ada95157db876b3068217bee46304105f9",
+          "content_bytes": 1117
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "build/pipeline-nc-order-20261029T133559Z.out",
+      "format": "gzip+base64",
+      "file_sha256": "17235827aca4bf45c5c3c88017ff18726eda999cd42689989f6b7c685fc51940",
+      "file_bytes": 185,
+      "gzip_sha256": "298b511ab8ba8e2a9b900f55afaae77a39d4793e098a010f45723de3aeda99ec",
+      "gzip_bytes": 163,
+      "artifacts": [
+        {
+          "artifact_id": 1252,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "ff49aff403a133db8b929673818671e04215b2f85aa3e52d189a636c503955d9",
+          "content_bytes": 618
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "controls-check/sw01-nc-order-20261029T134530Z.log",
+      "format": "gzip+base64",
+      "file_sha256": "51f8eec8b4bd3535e6c62f79c12ff5ed0a37af4196e2279d7aaffae1a5c6ca4e",
+      "file_bytes": 1333,
+      "gzip_sha256": "f9b6a31f95f431658f670fab96960ba9a8cb618a6cc0dbcc7c200707186f48bb",
+      "gzip_bytes": 525,
+      "artifacts": [
+        {
+          "artifact_id": 1253,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "5870be3e38aff1e4d7aa1e83714236cc8e6889556a11958ff2b4961393f31990",
+          "content_bytes": 1102
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "control-pipeline.log",
+      "format": "gzip+base64",
+      "file_sha256": "ae18699a868b6de5d3e8badb8f54fcde8d4d7000bcd84cab92c447f74639834d",
+      "file_bytes": 2161,
+      "gzip_sha256": "46e5ec5a72f3d914261359ba290cb65910cd534e45137b11e689a56549896237",
+      "gzip_bytes": 619,
+      "artifacts": [
+        {
+          "artifact_id": 1254,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "08d80220fc37945450fb0a86f56beaa84140b6dfec340f9df8f23d6149bfd1a1",
+          "content_bytes": 1217
+        }
+      ]
+    },
+    {
+      "record_set": "control-builds",
+      "path": "lane.log",
+      "format": "gzip+base64",
+      "file_sha256": "b683f27fbaa46698b99193737821e92c2f2f0d86448e984d4a85af2e362b2f67",
+      "file_bytes": 2922,
+      "gzip_sha256": "5c69842f661d9facdbe83b11812e679587f68fb7fb499d164d0e4eb8b562a0ba",
+      "gzip_bytes": 485,
+      "artifacts": [
+        {
+          "artifact_id": 1255,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "bb8e46dac2cff32e4bcd795e53ca40ce6ef57f5c647d05abf4a77715b13a6d66",
+          "content_bytes": 1023
+        }
+      ]
+    },
+    {
+      "record_set": "measurement-scripts-c41",
+      "path": "archive/measurement-scripts-c41.tar",
+      "format": "gzip+base64",
+      "file_sha256": "d11942508408f0c2f3d816a2345ca62a542b96c9ed33b73b5041cf46eef3664e",
+      "file_bytes": 51200,
+      "gzip_sha256": "175ed6244ae7cca2b741006b7413a3516f509ac391a52f05f5b099f47a77baa3",
+      "gzip_bytes": 11489,
+      "artifacts": [
+        {
+          "artifact_id": 1256,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "0555219f6d3e84651ce5b01e96c622487bde038da561c04418ddb44f1b0020f7",
+          "content_bytes": 15910
+        }
+      ]
+    },
+    {
+      "record_set": "text",
+      "path": "archive-manifest-control-pilots.md",
+      "format": "text",
+      "file_sha256": "33db05745fe02058790b37ec6152a2ccd6463373397f1390dba7c65b879188b8",
+      "file_bytes": 11342,
+      "artifacts": [
+        {
+          "artifact_id": 1257,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "33db05745fe02058790b37ec6152a2ccd6463373397f1390dba7c65b879188b8",
+          "content_bytes": 11342
+        }
+      ]
+    },
+    {
+      "record_set": "diagnostics-5-9",
+      "path": "archive/diagnostics-5-9-section-5-9-20261031T234454Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "6caa57e27e72c97c9ad4c5cac5c2e07d8e6e3492d23e2a2bb6377b89a0c52517",
+      "file_bytes": 5601280,
+      "gzip_sha256": "58dd369649d05d8a279b6dbefca70c119b086b54ef43050be0b9bf85c2b8965d",
+      "gzip_bytes": 218435,
+      "artifacts": [
+        {
+          "artifact_id": 1303,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "a9bd2d664cc1388b83fe542115201514c9e48a10fe7f6b23098b6d902f1cd1a0",
+          "content_bytes": 295493
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "decision-20261101T101751Z",
+      "description": "decision population (qualified; accepted=false, G4 failed)",
+      "source_files": 931,
+      "archived_files": 868,
+      "sha256_only_files": 63,
+      "path": "archive/r10-13979/decision-20261101T101751Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "4f2ad35d3513ed6dfb64b2eb7eb9881ddca72f722d689f5779ea5306eb87d34b",
+      "file_bytes": 32778240,
+      "gzip_sha256": "7ea19f32c10b485680323887b7f9778778ce993ae74a159fa33a4240675f62e7",
+      "gzip_bytes": 6063908,
+      "artifacts": [
+        {
+          "artifact_id": 1616,
+          "part": 1,
+          "parts": 9,
+          "content_sha256": "1436400bfdfc7e18935365f7795fce047830577c036cf29ba34ede81ccef7697",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1617,
+          "part": 2,
+          "parts": 9,
+          "content_sha256": "c8062c72c85a524049ba42427b6ac94d53891d0c32bc27290c27f8d31f3eb908",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1618,
+          "part": 3,
+          "parts": 9,
+          "content_sha256": "0c201d11c431e5d07a22b89c5b109e43c44b204bfcf9c16403f5d09a445a33bd",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1619,
+          "part": 4,
+          "parts": 9,
+          "content_sha256": "ec8ac247706af06d9e68334e1e5745e63f20b1e1faa487ae05db26196e97bba9",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1620,
+          "part": 5,
+          "parts": 9,
+          "content_sha256": "df777064830fe4bad96ea9895f9e842c4d37235f1b9fb8c5fbc3f7e1d121bad1",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1621,
+          "part": 6,
+          "parts": 9,
+          "content_sha256": "966ce1a360c03f3b012acbf4a79bd2b96bbc8fbf9373e590ae6d440c208ab810",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1622,
+          "part": 7,
+          "parts": 9,
+          "content_sha256": "40cef5484c656b3899a527f5d47e796321d9ad8b46abed4db7e80cc1ab5c9352",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1623,
+          "part": 8,
+          "parts": 9,
+          "content_sha256": "05f045ad7adc1245d1b067ad3c32f3b02ae580a76f9b22515b2c6ffcd15d6671",
+          "content_bytes": 912238
+        },
+        {
+          "artifact_id": 1624,
+          "part": 9,
+          "parts": 9,
+          "content_sha256": "36334f1b4002c5ceb2f3186e4525aabd27b2ee26a7bd7c729d9f2ef37d59f686",
+          "content_bytes": 897255
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "controls-nc-scan-20261031T232114Z",
+      "description": "NC-SCAN control population (qualified, detected)",
+      "source_files": 95,
+      "archived_files": 77,
+      "sha256_only_files": 18,
+      "path": "archive/r10-13979/controls-nc-scan-20261031T232114Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "e4b1702b5c886db141e73ba8935a520753f04a9866a2389e1d06feb42f11ce1a",
+      "file_bytes": 1392640,
+      "gzip_sha256": "d7806e5d3fa4bae23c218184bae2bdd0592f386c8a42bd1974c076a351f11e1f",
+      "gzip_bytes": 146659,
+      "artifacts": [
+        {
+          "artifact_id": 1625,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "1446ac9398b8aab0a461cc34c862116774dfc725f5c32976b69111dfb3981a6f",
+          "content_bytes": 198522
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "controls-nc-clone-20261101T014638Z",
+      "description": "NC-CLONE control population (qualified, detected)",
+      "source_files": 87,
+      "archived_files": 69,
+      "sha256_only_files": 18,
+      "path": "archive/r10-13979/controls-nc-clone-20261101T014638Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "63d25a08b2cb5747a5c812bfe9c7e13083b8e107fc983cebf8e40be4b7611f8c",
+      "file_bytes": 1290240,
+      "gzip_sha256": "2a8a20c9df93426500d89ecedbca8284cda4edf1eacafba6e369705bffe454f4",
+      "gzip_bytes": 141223,
+      "artifacts": [
+        {
+          "artifact_id": 1626,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "2ef21dba1881ce938161709100024e97072f994774d8cb4bb3646ebbe3035f92",
+          "content_bytes": 191180
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "controls-nc-order-20261101T040936Z",
+      "description": "NC-ORDER attempt 1 (aborted by IdleAdmissionError; partial population retained, not qualified)",
+      "source_files": 120,
+      "archived_files": 102,
+      "sha256_only_files": 18,
+      "path": "archive/r10-13979/controls-nc-order-20261101T040936Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "ff2243f730ca71fcccd71cac076a85fdaf83e8bb4e236dad76f67818a648924b",
+      "file_bytes": 1617920,
+      "gzip_sha256": "75f51720e86dc6e150e57cfa5688be0705ec946429c114cc4e002ef998177d4a",
+      "gzip_bytes": 159421,
+      "artifacts": [
+        {
+          "artifact_id": 1627,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "7e10bd497b0d68f1652b8d839619451415bdb5383f089a6da34cb736337ba2f2",
+          "content_bytes": 215763
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "controls-nc-order-20261101T063119Z",
+      "description": "NC-ORDER attempt 2 (aborted by IdleAdmissionError; partial population retained, not qualified)",
+      "source_files": 136,
+      "archived_files": 118,
+      "sha256_only_files": 18,
+      "path": "archive/r10-13979/controls-nc-order-20261101T063119Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "817ca46a160dd9c01246aed45a8e0373f2f87e526ce74aad555fa9616bbbfea5",
+      "file_bytes": 1505280,
+      "gzip_sha256": "cb8e1e77091eb018e373c17217907111b247b54daa04153b7945f93ccd4e1dcf",
+      "gzip_bytes": 107309,
+      "artifacts": [
+        {
+          "artifact_id": 1628,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "87b36ebd0ec62d551b6bb96c12f20f8e7575c190795adde5a23a3e7bff710c3d",
+          "content_bytes": 145365
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "controls-nc-order-20261101T063314Z",
+      "description": "NC-ORDER attempt 3 (aborted by IdleAdmissionError; partial population retained, not qualified)",
+      "source_files": 115,
+      "archived_files": 97,
+      "sha256_only_files": 18,
+      "path": "archive/r10-13979/controls-nc-order-20261101T063314Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "b5bc46c68b5c938c22cadf63c556cd9ab354f111b9ec1b0aa741030e5507421b",
+      "file_bytes": 1228800,
+      "gzip_sha256": "2b49151cf1b630e0c18a62402364ae96aac88598098d47853c48d24cfdb9afa0",
+      "gzip_bytes": 89053,
+      "artifacts": [
+        {
+          "artifact_id": 1629,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "8280932a570ead7a87187e7f109ffffa92dff5efb2b8c82fca822ef8cdeb0a2d",
+          "content_bytes": 120704
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "controls-nc-order-20261101T065818Z",
+      "description": "NC-ORDER control population after the C3 quiet wait (qualified, detected)",
+      "source_files": 75,
+      "archived_files": 57,
+      "sha256_only_files": 18,
+      "path": "archive/r10-13979/controls-nc-order-20261101T065818Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "548bada6f968548ae2d8890403b03075df6e867aabafd075c9837a07259d753e",
+      "file_bytes": 1034240,
+      "gzip_sha256": "29e2492e64486997c43134e05d3252949aa2c4bb28481113519e776294595012",
+      "gzip_bytes": 119652,
+      "artifacts": [
+        {
+          "artifact_id": 1630,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "64670951bb3b2408cf3e7d1f182bfb5b76e5e16ac1cdce3f9d26941e460dd571",
+          "content_bytes": 162038
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "controls-nc-v1-20261101T092116Z",
+      "description": "NC-V1 control population (qualified, detected)",
+      "source_files": 42,
+      "archived_files": 33,
+      "sha256_only_files": 9,
+      "path": "archive/r10-13979/controls-nc-v1-20261101T092116Z.tar",
+      "format": "gzip+base64",
+      "file_sha256": "f192f3bf6169de88018e154859e382180c7697c6bcf6640262254d02523b56b4",
+      "file_bytes": 563200,
+      "gzip_sha256": "3c6b3986e30e1c8fe4a819764998dff036b8c891a9d8a39b3d5af3e9a2c4c2e3",
+      "gzip_bytes": 64103,
+      "artifacts": [
+        {
+          "artifact_id": 1631,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "a18dcb2ef9a385dd87897cfd6c16f4fe0b71e2e95218373159f0689d3b4f2527",
+          "content_bytes": 86994
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "lane-records-c3",
+      "description": "lane and pipeline logs, the measured binary's build log",
+      "source_files": 9,
+      "archived_files": 9,
+      "sha256_only_files": 0,
+      "path": "archive/r10-13979/lane-records-c3.tar",
+      "format": "gzip+base64",
+      "file_sha256": "8ccc4b061d897e26cc2a5e0f426b8a173e1f893772ada48d799325937efeac85",
+      "file_bytes": 276480,
+      "gzip_sha256": "2600e81560cdfa415c971af6d9491a4f59d6e38a1dc0a0174affb85f9c3952ba",
+      "gzip_bytes": 22282,
+      "artifacts": [
+        {
+          "artifact_id": 1632,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "5b4e9e7f225fed17bc4e051cf06900322a06c436bc3617efd939ebd32954802a",
+          "content_bytes": 30484
+        }
+      ]
+    },
+    {
+      "record_set": "r10-13979",
+      "bundle": "scripts-c42",
+      "description": "C3 lane scripts, addendum C3 and this archiver",
+      "source_files": 5,
+      "archived_files": 5,
+      "sha256_only_files": 0,
+      "path": "archive/r10-13979/scripts-c42.tar",
+      "format": "gzip+base64",
+      "file_sha256": "1f0c8439507eccc8fe133454aac382231102da4c94dbc688a60ce97c323c3de1",
+      "file_bytes": 51200,
+      "gzip_sha256": "40206d40b5cd6b17518b1679ab8cd1f281756eabfd1ccde93cf37423c967471a",
+      "gzip_bytes": 10598,
+      "artifacts": [
+        {
+          "artifact_id": 1633,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "4515dafab38e468c03bd90072fe83a81461ee9b6f0749fa32d7c304c06701035",
+          "content_bytes": 14694
+        }
+      ]
+    },
+    {
+      "record_set": "pilot-20261029T085245Z-addendum",
+      "path": "pilot/pilot-20261029T085245Z/manifest.json",
+      "format": "gzip+base64",
+      "file_sha256": "d9e2f284647e3c8b57526dac3a8eaa23a220bd70a9f2427847fc1de4e9a8a68d",
+      "file_bytes": 12808,
+      "gzip_sha256": "fd113d28f530bb43ab888decebf70ce97d6a563695eb9267d4d1f3cc667311e6",
+      "gzip_bytes": 3588,
+      "artifacts": [
+        {
+          "artifact_id": 1634,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "83b5e4db9164e319f0a84e884ae93cc5a38c128655c5c657fc7c397c5e5f91fa",
+          "content_bytes": 5220
+        }
+      ]
+    },
+    {
+      "record_set": "text",
+      "path": "manifest-13979.md",
+      "format": "text",
+      "file_sha256": "db5a7dd090ab5ce6df1323d8c1281ee9f6a88ce8e65af3dbca42ffab1187d9b3",
+      "file_bytes": 28478,
+      "artifacts": [
+        {
+          "artifact_id": 1635,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "db5a7dd090ab5ce6df1323d8c1281ee9f6a88ce8e65af3dbca42ffab1187d9b3",
+          "content_bytes": 28478
+        }
+      ]
+    },
+    {
+      "record_set": "text",
+      "path": "manifest-13979.py",
+      "format": "text",
+      "file_sha256": "7efb9c8950cf53bfe3b081bcdc048906bf439d035745e78b21faf15c294f5ed2",
+      "file_bytes": 11343,
+      "artifacts": [
+        {
+          "artifact_id": 1636,
+          "part": 1,
+          "parts": 1,
+          "content_sha256": "7efb9c8950cf53bfe3b081bcdc048906bf439d035745e78b21faf15c294f5ed2",
+          "content_bytes": 11343
+        }
+      ]
+    }
+  ]
+}
