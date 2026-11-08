@@ -58,7 +58,7 @@ fn mk_snapshot(
     shard_conf.disable_validator_progress_check = false;
 
     let mut bonds_map = HashMap::new();
-    bonds_map.insert(validator.clone(), 100);
+    bonds_map.insert(validator.clone(), 100.into());
     snapshot.on_chain_state = OnChainCasperState {
         shard_conf,
         bonds_map,
@@ -210,11 +210,11 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -222,7 +222,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -231,7 +231,7 @@ async fn run_compute_parents_post_state_finalized_skew_regression() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -450,11 +450,11 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -462,7 +462,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -476,9 +476,9 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
                     &construct_deploy::DEFAULT_PUB,
                 )
                 .expect("Failed to create default deployer vault address"),
-            initial_balance: 9_000_000,
+            initial_balance: 9_000_000.into(),
         }],
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -528,7 +528,7 @@ async fn run_compute_parents_dag_cover_fast_path_regression() {
     let side_deploy = construct_deploy::source_deploy_now_full(
         r#"@"secondary-parent-fast-path"!!(1)"#.to_string(),
         None,
-        Some(1),
+        Some((1).into()),
         Some(construct_deploy::DEFAULT_SEC.clone()),
         None,
         Some(shard_name.clone()),
@@ -713,11 +713,11 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -725,7 +725,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -734,7 +734,7 @@ async fn run_compute_parents_post_state_missing_mergeable_regression() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -926,11 +926,11 @@ async fn run_block_index_cache_bound_test() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![GenesisValidator {
                 pk: validator_pk.clone(),
-                stake: 100,
+                stake: 100.into(),
             }],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -938,7 +938,7 @@ async fn run_block_index_cache_bound_test() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -947,7 +947,7 @@ async fn run_block_index_cache_bound_test() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),
@@ -1152,12 +1152,12 @@ async fn run_visible_blocks_scope_test() {
         timestamp: 0,
         block_number: 0,
         proof_of_stake: ProofOfStake {
-            minimum_bond: 1,
-            maximum_bond: i64::MAX,
+            minimum_bond: 1.into(),
+            maximum_bond: (i64::MAX as u64).into(),
             validators: vec![
-                GenesisValidator { pk: v1_pk.clone(), stake: 100 },
-                GenesisValidator { pk: v2_pk.clone(), stake: 100 },
-                GenesisValidator { pk: v3_pk.clone(), stake: 100 },
+                GenesisValidator { pk: v1_pk.clone(), stake: 100.into() },
+                GenesisValidator { pk: v2_pk.clone(), stake: 100.into() },
+                GenesisValidator { pk: v3_pk.clone(), stake: 100.into() },
             ],
             epoch_length: 1000,
             quarantine_length: 50000,
@@ -1165,7 +1165,7 @@ async fn run_visible_blocks_scope_test() {
             fault_tolerance_threshold_ppm: 0,
             max_parent_depth: 15,
             deploy_lifespan: 50,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             pos_multi_sig_public_keys: vec![
                 "04db91a53a2b72fcdcb201031772da86edad1e4979eb6742928d27731b1771e0bc40c9e9c9fa6554bdec041a87cee423d6f2e09e9dfb408b78e85a4aa611aad20c".to_string(),
                 "042a736b30fffcc7d5a58bb9416f7e46180818c82b15542d0a7819d1a437aa7f4b6940c50db73a67bfc5f5ec5b5fa555d24ef8339b03edaa09c096de4ded6eae14".to_string(),
@@ -1174,7 +1174,7 @@ async fn run_visible_blocks_scope_test() {
             pos_multi_sig_quorum: 2,
         },
         vaults: Vec::new(),
-        supply: i64::MAX,
+        supply: (i64::MAX as u64).into(),
         version: 1,
         native_token_name: "F1R3CAP".to_string(),
         native_token_symbol: "F1R3".to_string(),

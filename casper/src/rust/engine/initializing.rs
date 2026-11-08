@@ -1362,7 +1362,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .state
             .bonds
             .iter()
-            .filter(|bond| bond.stake == 0)
+            .filter(|bond| bond.stake.is_zero())
             .map(|bond| bond.validator.to_vec())
             .collect();
 

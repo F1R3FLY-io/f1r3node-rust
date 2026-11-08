@@ -143,9 +143,9 @@ fn expected_validation_ok(
             .on_chain_state
             .bonds_map
             .get(&metadata.sender)
-            .copied()
-            .unwrap_or(0);
-        if bond <= 0 {
+            .cloned()
+            .unwrap_or_default();
+        if bond <= 0.into() {
             return false;
         }
         if !seen.insert((metadata.sender, target_activation_epoch)) {
@@ -210,9 +210,9 @@ fuzz_target!(|input: Input| {
                     .on_chain_state
                     .bonds_map
                     .get(&metadata.sender)
-                    .copied()
-                    .unwrap_or(0);
-                if bond <= 0 {
+                    .cloned()
+                    .unwrap_or_default();
+                if bond <= 0.into() {
                     continue;
                 }
                 // Lex-smallest-hash tie-breaker mirrors the production rule

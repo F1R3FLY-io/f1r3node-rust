@@ -56,7 +56,10 @@ mod tests {
 
         fn normalized_initial_fault(
             &self,
-            weights: std::collections::HashMap<models::rust::validator::Validator, u64>,
+            weights: std::collections::HashMap<
+                models::rust::validator::Validator,
+                num_bigint::BigInt,
+            >,
         ) -> Result<f32, CasperError> {
             self.inner.normalized_initial_fault(weights)
         }

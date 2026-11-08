@@ -1436,6 +1436,7 @@ impl BlockDagKeyValueStorage {
         hot_window: i64,
     ) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
+        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(block_metadata_kv_store.clone());
 
@@ -1450,7 +1451,6 @@ impl BlockDagKeyValueStorage {
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store.clone());
 
-        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(invalid_blocks_kv_store.clone());
 
@@ -2480,7 +2480,7 @@ mod tests {
                 })
                 .collect(),
             weight_map: (0..3u8)
-                .map(|v| (validator(v + 10), 1_000_000i64))
+                .map(|v| (validator(v + 10), 1_000_000u64.into()))
                 .collect::<BTreeMap<_, _>>(),
             block_number: i as i64,
             sequence_number: (i / 3) as i32,

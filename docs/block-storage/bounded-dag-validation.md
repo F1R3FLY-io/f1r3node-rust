@@ -72,7 +72,23 @@ Conditional writes still hold one write lock for the complete operation, and ite
 The persistent and detached DAG paths remain separate because snapshot reconstruction uses the detached path.
 Atomic publication, view sequencing, migration, and the GC state machine retain their existing behavior.
 
+### Validation after merging upstream uint256 support
+
+The merge of upstream `43d69b76046a3750527ad4495074f71a6dd15afb` preserves bounded DAG startup, paginated historical slashing reads, and the shared atomic in-memory backend.
+Slashing now uses upstream's `BigInt` bonds. The shared backend drops `replace_if_values`, matching upstream's removal of that trait method and its obsolete migration path.
+New upstream API fixtures use the existing test-only DAG accessors, and deploy tests unwrap fallible membership results.
+
+The locked, offline workspace all-target check and production-node check with default features disabled passed, as did workspace formatting and Clippy with warnings denied.
+Release tests passed 455 shared/storage cases, 28 GC cases, 39 finality-floor cases, 20 slashing authorization regressions, and two in-memory backend cases: 544 passing tests and one existing ignored test.
+Upstream removed the conditional replacement regression together with that API; the other in-memory regressions remain.
+The repository pre-commit checks passed; their optional dependency audit was skipped because `cargo-deny` is unavailable locally.
+The upstream CI pins and signed cleanup package were imported without local changes. These local results do not establish CI or network-soak acceptance for the merged revision.
+
+Run the slashing regressions with `rtk cargo test --locked --offline --release -p casper --test mod slash_authorization_regressions`; the other release commands are listed below.
+
 ### Validation after production simplification
+
+These results describe revision `db5c8e70c439a48dbdc1b3775ee9bf70ca7ccaee`, before merging the upstream uint256 token changes.
 
 Workspace formatting and the locked, offline all-target workspace compile passed after removing the programs and test hooks.
 The production-node compile with default features disabled also passed.

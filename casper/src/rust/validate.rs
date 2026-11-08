@@ -51,6 +51,7 @@ use models::rust::casper::protocol::casper_message::{
     ApprovedBlock, BlockMessage, ProcessedSystemDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use prost::Message;
 use rspace_plus_plus::rspace::history::Either;
@@ -280,12 +281,12 @@ impl Validate {
         let weight = if b.header.parents_hash_list.is_empty() {
             proto_util::weight_map(genesis)
                 .get(&b.sender)
-                .copied()
-                .unwrap_or(0)
+                .cloned()
+                .unwrap_or_default()
         } else {
             proto_util::weight_from_sender(block_store, b)?
         };
-        if weight > 0 {
+        if weight > BigInt::from(0) {
             Ok(true)
         } else {
             tracing::warn!(
@@ -501,7 +502,7 @@ impl Validate {
                 ..
             })
         }) {
-            let mut parent_bonds: std::collections::HashMap<Validator, i64> =
+            let mut parent_bonds: std::collections::HashMap<Validator, BigInt> =
                 std::collections::HashMap::new();
             for parent_hash in &block.header.parents_hash_list {
                 let parent_block = match block_store.get(parent_hash) {
@@ -517,11 +518,11 @@ impl Validate {
                     parent_bonds
                         .entry(bond.validator.clone())
                         .and_modify(|existing| {
-                            if bond.stake > *existing {
-                                *existing = bond.stake;
+                            if bond.stake.as_bigint() > existing {
+                                *existing = bond.stake.to_bigint();
                             }
                         })
-                        .or_insert(bond.stake);
+                        .or_insert_with(|| bond.stake.to_bigint());
                 }
             }
             if parent_bonds.is_empty() {
@@ -1756,9 +1757,9 @@ impl Validate {
                 }
             };
         let bonds = proto_util::bonds(block);
-        let bonds_by_validator: HashMap<&Validator, i64> = bonds
+        let bonds_by_validator: HashMap<&Validator, BigInt> = bonds
             .iter()
-            .map(|bond| (&bond.validator, bond.stake))
+            .map(|bond| (&bond.validator, bond.stake.to_bigint()))
             .collect();
         let mut slash_targets = HashSet::new();
 
@@ -1791,8 +1792,8 @@ impl Validate {
             let target_activation_epoch = (*target_activation_epoch).into();
             let bond = bonds_by_validator
                 .get(&metadata.sender)
-                .copied()
-                .unwrap_or(0);
+                .cloned()
+                .unwrap_or_default();
             let authorized = match received_slash_deploy_authorized(
                 block.body.state.block_number,
                 metadata.block_number,
@@ -1830,8 +1831,8 @@ impl Validate {
             let bond = bonds_by_validator
                 .get(&metadata.sender)
                 .or_else(|| bonds_by_validator.get(&justification.validator))
-                .copied()
-                .unwrap_or(0);
+                .cloned()
+                .unwrap_or_default();
             let slash_required = match received_slash_deploy_authorized(
                 block.body.state.block_number,
                 metadata.block_number,
@@ -1926,11 +1927,11 @@ impl Validate {
             Ok(committee) => {
                 let bonds_set: HashSet<_> = proto_util::bonds(b)
                     .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
                     .collect();
                 let committee_set: HashSet<_> = committee
                     .iter()
-                    .map(|bond| (bond.validator.clone(), bond.stake))
+                    .map(|bond| (bond.validator.clone(), bond.stake.clone()))
                     .collect();
 
                 if bonds_set == committee_set {
@@ -1960,11 +1961,11 @@ impl Validate {
             Ok(computed_bonds) => {
                 let bonds_set: HashSet<_> = bonds
                     .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
+                    .map(|bond| (&bond.validator, bond.stake.clone()))
                     .collect();
                 let computed_bonds_set: HashSet<_> = computed_bonds
                     .iter()
-                    .map(|bond| (&bond.validator, bond.stake))
+                    .map(|bond| (&bond.validator, bond.stake.clone()))
                     .collect();
 
                 if bonds_set == computed_bonds_set {
@@ -1984,12 +1985,14 @@ impl Validate {
     }
 
     /// All of deploys must have greater or equal phloPrice than minPhloPrice
-    pub fn phlo_price(b: &BlockMessage, min_phlo_price: i64) -> ValidBlockProcessing {
-        if b.body
-            .deploys
-            .iter()
-            .all(|deploy| deploy.deploy.data.phlo_price >= min_phlo_price)
-        {
+    pub fn phlo_price(
+        b: &BlockMessage,
+        min_phlo_price: &shared::rust::token_amount::TokenAmount,
+    ) -> ValidBlockProcessing {
+        if b.body.deploys.iter().all(|deploy| {
+            deploy.deploy.data.validate_amounts().is_ok()
+                && deploy.deploy.data.phlo_price >= *min_phlo_price
+        }) {
             Either::Right(ValidBlock::Valid)
         } else {
             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
@@ -2068,11 +2071,11 @@ mod merge_recovery_validation_tests {
                     bonds: vec![
                         Bond {
                             validator: offender.clone(),
-                            stake: 1000,
+                            stake: 1000.into(),
                         },
                         Bond {
                             validator: sender.clone(),
-                            stake: 1000,
+                            stake: 1000.into(),
                         },
                     ],
                     block_number,

@@ -127,23 +127,6 @@ impl KeyValueStore for MemoryKeyValueStore {
         })
     }
 
-    fn replace_if_values(
-        &self,
-        replacements: Vec<(ByteBuffer, ByteBuffer, ByteBuffer)>,
-    ) -> Result<usize, KvStoreError> {
-        self.with_rows_mut(|rows| {
-            let mut count = 0;
-            for (key, expected, replacement) in replacements {
-                let key = encode_length_prefixed(&key);
-                if rows.get(&key) == Some(&expected) {
-                    rows.insert(key, replacement);
-                    count += 1;
-                }
-            }
-            Ok(count)
-        })
-    }
-
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError> {
         self.iterate_while(&mut |key, value| {
             f(key, value);
