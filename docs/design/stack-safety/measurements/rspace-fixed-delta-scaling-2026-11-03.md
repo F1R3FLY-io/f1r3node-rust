@@ -568,8 +568,10 @@ The record sets:
 | `pilot-20261029T085245Z-addendum` | 1634 | The treatment pilot's `manifest.json`, which the first pilot archive left out |
 | `text` | 1635, 1636 | `manifest-13979.md`, the top-level archive manifest, and `manifest-13979.py`, its generator and coverage audit |
 
-Three artifacts record decisions rather than archived data, so they are not listed: the feasibility amendments
-(artifact 1173), the control-pilot addendum (artifact 1178) and the section 5.9 outcome note (artifact 1304).
+Six artifacts record decisions and outcomes rather than archived data, so they are not listed: the feasibility
+amendments (artifact 1173), the control-pilot addendum (artifact 1178), the section 5.9 predictions (artifact 1276),
+the refined width model (artifact 1277), the heaptrack outcome (artifact 1281) and the strace and uProf outcome
+(artifact 1304).
 
 ### 7.2 The part format and restoring a file
 

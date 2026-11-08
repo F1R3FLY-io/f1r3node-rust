@@ -14876,10 +14876,15 @@ $`c^*`$, the smallest charge per key or per state that would lift H1's bound abo
 1.4142 ns per key on U and 16 ns per state on R.
 
 The pilot forecast the G4 miss (pgmcp artifact 1178, observation O2; interval [0.380, 0.390] on U).
-The working hypothesis, H-O2, attributes the bytes to copy-on-write copies of the widening 256-way
-level-1 nodes of the reachability ledger's PathMap, about $`72 \min(\ell / 256, 256)`$ bytes per
-copied node for a ledger of $`\ell`$ digests. The model matched the pilot's measured bind bytes to
-within 15%, the heaptrack and strace diagnostics are pgmcp artifact 1303, and their outcome is
+Hypothesis H-O2 attributes the bytes to copy-on-write copies of the widening 256-way level-1 nodes
+of the reachability ledger's PathMap, about $`72 \min(\ell / 256, 256)`$ bytes per copied node for
+a ledger of $`\ell`$ digests. The model matched the pilot's measured bind bytes to within 15%. The
+section 5.9 diagnostics, run on the pilot's fixtures, confirm the mechanism on axis U: heaptrack
+attributes 93.2%, 97.9% and 99.41% of the bind bytes at $`2^{10}`$, $`2^{14}`$ and $`2^{18}`$ keys
+to `run_ledger_trial`, and its bind totals equal the verify run's counter exactly (pgmcp artifacts
+1277 and 1281). The refined width model's predictions, registered before the largest trace was
+read, hold. Heaptrack ran on axis U only, so axis R has the model's prediction and no attribution.
+The heaptrack, strace and uProf outputs are artifact 1303, and the strace and uProf outcome is
 artifact 1304. Allocation counts stay logarithmic and thread CPU and wall time pass, so this is a
 cost in copied bytes per touched node, not extra allocations and not a correctness failure. The
 defect is bug item `rspace-ledger-trial-cow-allocation-growth` (pgmcp item 13988), which holds the
@@ -15852,7 +15857,7 @@ collection if none arrives.
 | [`measurements/rspace-fixed-delta-scaling-2026-11-03-analysis.json`](measurements/rspace-fixed-delta-scaling-2026-11-03-analysis.json) | SS-C36's analysis: qualification, H1 and the gates G1 to G10, and the descriptive statistics with $`c^*`$ (§5.63) |
 | [`measurements/rspace-fixed-delta-scaling-2026-11-03-manifest.json`](measurements/rspace-fixed-delta-scaling-2026-11-03-manifest.json) | SS-C36's manifest: the sha256 of every archived file and of each pgmcp artifact that holds it (§5.63) |
 | pgmcp artifacts 1616 to 1636 | SS-C36's raw populations: the decision population (1616 to 1624), the four control populations (1625, 1626, 1630, 1631), three interrupted NC-ORDER attempts (1627 to 1629), the lane records and scripts (1632, 1633), the pilot addendum (1634) and the top-level archive manifest with its generator (1635, 1636) (§5.63) |
-| pgmcp artifacts 1159 to 1172, 1180 to 1257 and 1303 | SS-C36's pilots, control pilots and their builds (1159 to 1172, 1180 to 1256), the control-pilot archive manifest (1257) and the heaptrack, strace and uProf diagnostics (1303); artifacts 1173, 1178 and 1304 record the feasibility amendments, the control-pilot addendum and the diagnostics outcome (§5.63) |
+| pgmcp artifacts 1159 to 1172, 1180 to 1257 and 1303 | SS-C36's pilots, control pilots and their builds (1159 to 1172, 1180 to 1256), the control-pilot archive manifest (1257) and the heaptrack, strace and uProf diagnostics (1303); artifacts 1173, 1178, 1276, 1277, 1281 and 1304 record the feasibility amendments, the control-pilot addendum, the section 5.9 predictions, the refined width model, the heaptrack outcome and the strace and uProf outcome (§5.63) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of

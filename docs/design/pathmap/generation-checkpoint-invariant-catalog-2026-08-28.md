@@ -6687,8 +6687,8 @@ smallest, middle and largest strata. All four are qualified and detected.
 **The missed G4 prediction.** G4 predicted an exponent of at most 0.25 for the
 bytes allocated per commit, and the pilot had already forecast the miss: the
 control-pilot addendum (pgmcp artifact 1178, observation O2) reported a pilot
-interval of [0.380, 0.390] on U. The working hypothesis, H-O2 (pgmcp progress
-notes 25705 and 25707), is that the bytes come from copy-on-write copies of the
+interval of [0.380, 0.390] on U. Hypothesis H-O2 (pgmcp progress notes 25705
+and 25707) is that the bytes come from copy-on-write copies of the
 widening 256-way level-1 nodes of the ledger's PathMap. `run_ledger_trial`
 clones the predecessor's `PathMap<DigestState>` and inserts one 56-byte state
 for each touched reference (`ledger_trial.rs:135` and `:335`). The first
@@ -6697,8 +6697,15 @@ slot, an `OrdinaryCoFree` of pathmap 0.3.4 with its optional inline
 `DigestState`, is 72 bytes. For a ledger of $`\ell`$ digests a level-1 node
 holds about $`\min(\ell / 256, 256)`$ slots, so copying one costs about
 $`72 \min(\ell / 256, 256)`$ bytes. The model matched the pilot's measured bind
-bytes to within 15%, the heaptrack and strace diagnostics are pgmcp artifact
-1303, and their outcome is artifact 1304. Allocation counts stay logarithmic
+bytes to within 15%. The section 5.9 diagnostics, run on the pilot's fixtures,
+confirm the mechanism on axis U: heaptrack attributes 93.2%, 97.9% and 99.41%
+of the bind bytes at $`2^{10}`$, $`2^{14}`$ and $`2^{18}`$ keys to
+`run_ledger_trial`, and its bind totals equal the verify run's counter exactly
+(pgmcp artifacts 1277 and 1281). The refined width model's predictions,
+registered before the largest trace was read, hold. Heaptrack ran on axis U
+only, so axis R has the model's prediction and no attribution. The heaptrack,
+strace and uProf outputs are pgmcp artifact 1303, and the strace and uProf
+outcome is artifact 1304. Allocation counts stay logarithmic
 and thread CPU and wall time pass, so this is a cost in copied bytes per touched
 node: memory bandwidth and allocator pressure that grow with the ledger, not
 extra allocations and not a correctness failure. The defect is bug item
