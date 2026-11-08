@@ -406,6 +406,69 @@ impl std::fmt::Display for NoNewDeploysError {
 
 impl std::error::Error for NoNewDeploysError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposeRefusal {
+    NotBonded,
+    NotEnoughNewBlocks,
+    TooFarAheadOfLastFinalized,
+    HistoryIncomplete,
+    MissingBlock,
+}
+
+impl ProposeRefusal {
+    pub fn from_failure(failure: &ProposeFailure) -> Option<Self> {
+        match failure {
+            ProposeFailure::CheckConstraintsFailure(check) => Some(match check {
+                CheckProposeConstraintsFailure::NotBonded => ProposeRefusal::NotBonded,
+                CheckProposeConstraintsFailure::NotEnoughNewBlocks => {
+                    ProposeRefusal::NotEnoughNewBlocks
+                }
+                CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized => {
+                    ProposeRefusal::TooFarAheadOfLastFinalized
+                }
+                CheckProposeConstraintsFailure::HistoryIncomplete => {
+                    ProposeRefusal::HistoryIncomplete
+                }
+            }),
+            ProposeFailure::MissingBlock(_) => Some(ProposeRefusal::MissingBlock),
+            ProposeFailure::NoNewDeploys
+            | ProposeFailure::InternalDeployError
+            | ProposeFailure::BugError => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ProposeRefusedError {
+    pub refusal: ProposeRefusal,
+    pub message: String,
+}
+
+impl std::fmt::Display for ProposeRefusedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ProposeRefusedError {}
+
+fn propose_failure_error(status: &ProposeStatus, seq_number: i32) -> eyre::Report {
+    let refusal = match status {
+        ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
+            tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
+            return eyre::Report::new(NoNewDeploysError);
+        }
+        ProposeStatus::Failure(failure) => ProposeRefusal::from_failure(failure),
+        ProposeStatus::Success(_) => None,
+    };
+    let message = format!("Failure: {} (seqNum {})", status, seq_number);
+    tracing::debug!("{}", message);
+    match refusal {
+        Some(refusal) => eyre::Report::new(ProposeRefusedError { refusal, message }),
+        None => eyre::eyre!("{}", message),
+    }
+}
+
 impl BlockAPI {
     fn find_deploy_scan_depth() -> usize { 128 }
 
@@ -734,13 +797,9 @@ impl BlockAPI {
 
             let r: ApiErr<String> = match proposer_result {
                 ProposerResult::Empty => log_debug("Failure: another propose is in progress"),
-                ProposerResult::Failure(ref status, seq_number) => match status {
-                    ProposeStatus::Failure(ProposeFailure::NoNewDeploys) => {
-                        tracing::debug!("Propose: no new deploys (seqNum {})", seq_number);
-                        Err(eyre::Report::new(NoNewDeploysError))
-                    }
-                    _ => log_debug(&format!("Failure: {} (seqNum {})", status, seq_number)),
-                },
+                ProposerResult::Failure(ref status, seq_number) => {
+                    Err(propose_failure_error(status, seq_number))
+                }
                 ProposerResult::Started(seq_number) => {
                     log_success(&format!("Propose started (seqNum {})", seq_number))
                 }
@@ -2136,11 +2195,16 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use prost::bytes::Bytes;
     use tokio::sync::Semaphore;
 
     use super::{
-        await_exploratory_deploy_task, deploy_is_block_expired, ExploratoryDeployOutcome,
-        ExploratoryDeployTaskError,
+        await_exploratory_deploy_task, deploy_is_block_expired, propose_failure_error,
+        ExploratoryDeployOutcome, ExploratoryDeployTaskError, NoNewDeploysError, ProposeRefusal,
+        ProposeRefusedError,
+    };
+    use crate::rust::blocks::proposer::propose_result::{
+        CheckProposeConstraintsFailure, ProposeFailure, ProposeStatus,
     };
 
     struct DropSignal(Arc<AtomicBool>);
@@ -2179,5 +2243,67 @@ mod tests {
         assert!(deploy_is_block_expired(0, 50, 50).unwrap());
         assert!(!deploy_is_block_expired(1, 50, 50).unwrap());
         assert!(!deploy_is_block_expired(0, 49, 50).unwrap());
+    }
+
+    #[test]
+    fn expected_propose_refusals_are_typed() {
+        let cases = vec![
+            (
+                ProposeFailure::CheckConstraintsFailure(CheckProposeConstraintsFailure::NotBonded),
+                ProposeRefusal::NotBonded,
+                "Failure: Proposal failed: validator is not bonded (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::NotEnoughNewBlocks,
+                ),
+                ProposeRefusal::NotEnoughNewBlocks,
+                "Failure: Proposal failed: Must wait for more blocks from other validators (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::TooFarAheadOfLastFinalized,
+                ),
+                ProposeRefusal::TooFarAheadOfLastFinalized,
+                "Failure: Proposal failed: too far ahead of the last finalized block (seqNum 7)",
+            ),
+            (
+                ProposeFailure::CheckConstraintsFailure(
+                    CheckProposeConstraintsFailure::HistoryIncomplete,
+                ),
+                ProposeRefusal::HistoryIncomplete,
+                "Failure: Proposal failed: this node's history does not reach far enough to build a snapshot; it is still catching up (seqNum 7)",
+            ),
+            (
+                ProposeFailure::MissingBlock(Bytes::from_static(&[0xab; 32])),
+                ProposeRefusal::MissingBlock,
+                "Failure: Proposal failed: MissingBlock abababababababab — requested from peers, retrying (seqNum 7)",
+            ),
+        ];
+
+        for (failure, expected_refusal, expected_message) in cases {
+            let err = propose_failure_error(&ProposeStatus::Failure(failure), 7);
+            let refused = err
+                .downcast_ref::<ProposeRefusedError>()
+                .unwrap_or_else(|| panic!("untyped propose refusal: {}", err));
+            assert_eq!(refused.refusal, expected_refusal);
+            assert_eq!(err.to_string(), expected_message);
+        }
+    }
+
+    #[test]
+    fn propose_faults_stay_untyped() {
+        let no_new_deploys =
+            propose_failure_error(&ProposeStatus::Failure(ProposeFailure::NoNewDeploys), 1);
+        assert!(no_new_deploys.downcast_ref::<NoNewDeploysError>().is_some());
+
+        for failure in [
+            ProposeFailure::InternalDeployError,
+            ProposeFailure::BugError,
+        ] {
+            let err = propose_failure_error(&ProposeStatus::Failure(failure), 1);
+            assert!(err.downcast_ref::<ProposeRefusedError>().is_none());
+            assert!(err.downcast_ref::<NoNewDeploysError>().is_none());
+        }
     }
 }
