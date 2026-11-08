@@ -1503,8 +1503,11 @@ from them. They leave these questions open:
 - The trusted bind of task 11945 derives the deltas and runs the trials; the
   trusted publication that replaces cold re-admission is task 11946, its fault
   acceptance is task 7928 (the faulted trusted histories section), and the
-  scaling claim against geometrically growing history is task 7929. CL-07
-  shows work independence on small cases only.
+  scaling measurement against geometrically growing history is the
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29):
+  thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history,
+  while allocated bytes fail gate G4. CL-07 shows work independence on small
+  cases only.
 - A trial that removes an object's last reference in both domains leaves a
   zero entry in `states`. Every report, enumeration and inventory ignores it.
   Production retention is keep-all, so no production path creates one before
@@ -2462,8 +2465,9 @@ constructors. These questions remain open:
 - The trusted successor that replaces cold re-admission on ordinary commits is
   task 7927, which task 11946 completes (the trusted successor publication
   section); its comparison with cold admission after every step is task 7928
-  (the faulted trusted histories section), and the scaling evidence is task
-  7929.
+  (the faulted trusted histories section), and the scaling evidence is the
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29):
+  thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history.
 - At a terminal that is not a checkpoint, no $`\mathrm{DATA}`$ is declared, so
   step 7 has nothing to compare. A V2 source can have such a terminal only after
   a V2 successor, which this task refuses; task 7926 must bind the metadata of
@@ -2743,8 +2747,11 @@ consecutive, the last inner node of the right spine gathers up to 256 children,
 and every commit re-encodes it, up to $`\beta(w)`$ bytes, while a V1 manifest
 reaches that size only at about 184 entries. Below roughly two hundred entries a
 V2 commit can therefore write more bytes than the V1 manifest it replaces; its
-cost, unlike the manifest's, does not grow with $`n`$. Task 7929 measures the
-scaling.
+cost, unlike the manifest's, does not grow with $`n`$. The
+[fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29)
+measures it: at 256 to 65,536 retained states the median V2 step wrote 1,538
+to 4,088 bytes, so the V1 manifest exceeds it from 26 to 72 entries on and is
+10.1 to 2,387 times larger at those history sizes.
 
 **Binding a successor, in literate form.** `bind_durable_transaction`
 (`durable/admission.rs:1586-1671`) turns a sealed mutation into a durable
@@ -3032,7 +3039,9 @@ capstones.
   publication replaces re-admission on ordinary commits (the trusted successor
   publication section). Comparing that successor with cold admission after
   every step is task 7928 (the faulted trusted histories section), and the
-  scaling evidence is task 7929.
+  scaling evidence is the
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29):
+  thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history.
 - Superseded radix nodes stay in their packs until compaction or the garbage
   collector reclaims them; the collector must treat the metadata closure of
   every retained anchor as live (tasks 7943 to 7945).
@@ -3186,7 +3195,10 @@ before, and no metadata object may be sealed.
 - The writer section's cost remarks now apply by default: the first successor of
   every V1 directory migrates its whole history once, and below roughly two
   hundred entries a V2 commit can write more bytes than the V1 manifest it
-  replaces (derived, not measured); task 7929 measures the scaling.
+  replaces (derived, not measured). The
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29)
+  measures the median V2 step at 1,538 to 4,088 bytes for 256 to 65,536
+  retained states, so the V1 manifest exceeds it from 26 to 72 entries on.
 - The TLA+ and Rocq sources are unchanged. `RSpaceRetentionV2Upgrade` lets a
   publisher choose either format until the first V2 publication and only V2
   after it (`AppointableFormats`, `RSpaceRetentionV2Upgrade.tla:81-93`). A
@@ -3388,7 +3400,10 @@ is described in the next section.
   (`retained_state_maxima_is_cold_componentwise_max`); an eviction needs a
   recomputation (`eviction_requires_recomputation_counterexample`), which is the
   concern of task 7756.
-- No scaling is claimed (task 7929). Task 11946 checks the publication's
+- No scaling is claimed here; the
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29)
+  measures it (thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history,
+  with gate G4 failing on allocated bytes). Task 11946 checks the publication's
   faults in-process on real files; crossing generated histories with
   failpoints at every hook is task 7928 (the faulted trusted histories
   section).
@@ -4787,8 +4802,10 @@ types, keep a trusted successor honest: each mutant compiles and publishes.
   crash check covers every trusted hook at a single step, all in-process on
   real files. Crossing generated histories with failpoints at every hook,
   eviction and reset-target references, pinned readers and cancellation is
-  task 7928 (the faulted trusted histories section), and the scaling claim
-  against geometrically growing history is task 7929.
+  task 7928 (the faulted trusted histories section), and the scaling
+  measurement against geometrically growing history is the
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29):
+  thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history.
 - No persisted byte, identity, cold report or cold-checked outcome changes.
 - The owner stays out of RSpace until task 7931 wires the substrate in.
 - A catalog damaged after the publication returns is the trade that J-067
@@ -5160,7 +5177,10 @@ call that script. TH-01 and TH-03 cite the four new capstones.
   needs the maxima recomputed and this family extended.
 - Reset identity and activation remain task 7756, and the substrate stays out
   of RSpace until task 7931 wires it in.
-- No scaling is claimed (task 7929), and no power-loss claim is made.
+- No scaling is claimed here; the
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29)
+  measures it (thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history,
+  with gate G4 failing on allocated bytes). No power-loss claim is made.
 - No persisted byte, identity, format, wire message or production outcome
   changes.
 
@@ -6135,7 +6155,10 @@ of the [torn reclamation intents section](#torn-reclamation-intents-bug-11970-20
   needs the maxima recomputed and the TH family extended.
 - Reset identity and activation remain task 7756, and the substrate stays out
   of RSpace until task 7931 wires it in.
-- No scaling is claimed (task 7929). Faults are injected in-process and the
+- No scaling is claimed here; the
+  [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29)
+  measures it (thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history,
+  with gate G4 failing on allocated bytes). Faults are injected in-process and the
   operating system keeps every write, so no power-loss claim is made.
 - The timing holds for one seed, one host and pinning to one CPU. The
   unpinned figures are inferences from the sweep's own unpinned runs.
@@ -6177,9 +6200,9 @@ fixture, the oracles and three properties, SW-01 to SW-03. They check, at
 geometrically growing sizes, that each trusted commit's work equals an oracle
 computed independently from the objects that the commit changes. The second
 slice adds the release-mode harness, its driver and SW-04, which checks the
-harness itself (the harness subsection below). The section still claims no
-scaling result: the preregistered measurement, a later slice, records its
-results here.
+harness itself (the harness subsection below). The third slice (task 11990)
+runs the preregistered measurement and records its results and its limits at
+the end of this section, after the SW rows.
 
 **Terms.**
 
@@ -6206,7 +6229,11 @@ trial's domain crosses between 0 and 1, and it quotes the object's bytes then.
 The activation phase runs before the deactivation phase
 (`ledger_trial.rs:142-143`).
 
-**Cost implied by the code.** The measurement must confirm each row.
+**Cost implied by the code.** The measurement confirms the logical work below:
+the verify routine asserts it at every commit, and every verify run of the
+decision population completed (the results at the end of this section). The
+table does not price the bytes that each `states` insert copies, the cost that
+gate G4 measures.
 
 | Step | Work per trusted commit | Source |
 |---|---|---|
@@ -6552,6 +6579,148 @@ group or others can open fails the synthetic child.
 | SW-02 | History growth. Every commit passes the verify routine, and each commit's current and retained work is the same at every history size and for both writers. The test prints each commit's metadata bytes for both writers, and from 64 historical states up the V1 manifest is larger than the V2 step at every commit. | `trusted_commit_work_is_unchanged_by_geometric_history_growth` |
 | SW-03 | Last-reference deletion. The deleted closure is the part of $`\mathrm{cl}(B)`$ off the manifest, the namespace roots and every kept key's search path. It is disjoint from $`\mathrm{cl}(T)`$, holds each deleted key's leaf, and has between $`m`$ and $`2m - 1`$ objects. The retained frontier is exactly the new path $`\mathrm{cl}(T) \setminus \mathrm{cl}(B)`$, and after the commit every object of $`\mathrm{cl}(B) \setminus \mathrm{cl}(T)`$ has current count zero and a positive retained count. Every commit passes the verify routine. | `last_reference_deletion_expands_exactly_the_deleted_closure` |
 | SW-04 | Harness determinism and fail-closed probes. A `/proc/self/io` copy that lacks any of `rchar`, `wchar`, `syscr`, `syscw`, `read_bytes` and `write_bytes`, or is truncated anywhere before the last of those values, is refused, as is a status copy that lacks `VmRSS`, `VmHWM` or `VmSwap`, and a `/proc` read that fills its buffer. Equal or decreasing clock readings, a zero allocation count, and tmpfs and ramfs are refused. 27 malformed cells are refused, and the schedule permutation is a bijection for every length up to 64 under four seeds. For each of the U, E and L cells, a build child prints a header and a fixture record; two verify children print the same records except the 32 per-phase probe fields and the process record; and a time child prints one sample per commit, with the labels in order, every nanosecond field positive, zero probes and the verify children's target chain. In E only the reclaim commit unlinks files, and they include `reclaim.v1`. | `scaling_harness_is_deterministic_and_fails_closed` |
+
+**The results (task 11990).** The preregistered measurement is pgmcp experiment
+446, and it asks the question that opens this section. Its decision population,
+`decision-20261101T101751Z`, was collected at commit `941ff07d` on one pinned
+CPU and ended on 2026-11-03. It has 21 cells, each with one build, two verify
+runs and 3 warm-up and 31 decision time processes. A process runs
+$`W = 4`$ warm-up commits and $`T = 32`$ timed commits; the E cells run
+$`W = 4`$, $`K = 8`$, one reclaim commit and $`T = 16`$.
+
+| Axis | Measures | Keys $`N`$ | History $`H`$ | Per-commit change |
+|---|---|---|---|---|
+| U | current-state growth | $`2^{10}, 2^{12}, 2^{14}, 2^{16}, 2^{18}`$ | $`2^{10}`$ | replace 1 key |
+| R | retained-history growth | $`2^{12}`$ | $`2^{8}, 2^{10}, 2^{12}, 2^{14}, 2^{16}`$ | replace 1 key |
+| D | delta size | $`2^{14}`$ | $`2^{10}`$ | replace $`d \in \{1, 4, 16, 64, 256\}`$ keys |
+| L | last-reference deletion | $`2^{14}`$, plus $`36m`$ reserve keys | $`2^{10}`$ | delete one aligned group of $`m \in \{1, 4, 16, 64, 256\}`$ keys |
+| E | physical eviction | $`2^{10}, 2^{14}, 2^{18}`$ | $`2^{10}`$ | replace 1 key, with deferred, reclaim and timed commits |
+
+The axes share two cells: U at $`2^{12}`$ keys is R at $`2^{10}`$ states, and
+U at $`2^{14}`$ keys is D at $`d = 1`$. The first figure below shows what one
+trusted commit touches and where the bytes that G4 measures are copied. The
+second shows the experiment as it ran.
+
+![The work of one trusted commit. Sealing the mutation, binding it through the current, retained and metadata ledger trials, preparing it and publishing it touch only the objects, references and records that the commit changes, not the N keys or the H retained states; the bytes copied per touched ledger node do grow with the ledger, the cost that gate G4 found](figures/fixed-delta-commit-work.svg)
+
+![The fixed-delta scaling experiment as it ran: the preregistration before any sample, the pilots, which never decide, the four negative controls, each its own population and run first, the decision population of 21 cells, the separate diagnostics and the durable records; amendments may change only feasibility and order, never thresholds, metrics, arms, seeds or the analysis](figures/fixed-delta-scaling-protocol.svg)
+
+The committed [measurement record](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03.md) defines every column and key and
+derives its four data files from the pgmcp archives by a program that it
+carries: the [process summary](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-process-summary.tsv), the
+[verify records](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-verify.tsv), the [analysis](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-analysis.json) and the
+[artifact manifest](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-manifest.json), which pins the sha256 of every archived
+population. Unless a row says otherwise, the values below come from the
+analysis, and each exponent is its estimate with the 95% interval in brackets.
+
+**The decision.** Result 483 of experiment 446, decided on 2026-11-08, accepts
+its one hypothesis, H1: the statistic, the larger upper 95% bound of the two
+thread CPU exponents, is 0.2086 against the threshold 0.25. The verdict covers
+H1 only. The task's preregistered rule also requires a qualified decision
+population, G1 to G9 and every control detected. The population is qualified,
+with no retained failure, and all four controls were detected, but gate G4
+fails on allocated bytes, so the rule is not met: the analysis reports
+`qualified` as `true` and `accepted` as `false`.
+
+| Gate | Verdict | Measurements |
+|---|---|---|
+| H1 | pass | Thread CPU exponent. U 0.1964 [0.1881, 0.2086]; R 0.1363 [0.1333, 0.1395]. Bound 0.25. |
+| G1 | pass | 2 verify runs per cell, 0 problems. Exact work held at every verify commit. |
+| G2 | pass | The two verify runs agree on all 27 compared fields; 0 time-chain mismatches. |
+| G3 | pass | Wall time exponent. U 0.1586 [0.1508, 0.1699]; R 0.1098 [0.1059, 0.1138]. Bound 0.25. |
+| G4, allocation count | pass | U 0.1091 [0.1050, 0.1130]; R 0.0529 [0.0479, 0.0576]. Bound 0.25. Identical in both verify runs. |
+| G4, allocated bytes | **fail** | U 0.4130 [0.4086, 0.4174]; R 0.3186 [0.3137, 0.3234]. Both upper bounds exceed 0.25. Identical in both verify runs. |
+| G5 | pass | Exponents in verify run 1: `syscr` U 0.0366 [0.0366, 0.0366], R 0; `syscw` 0 on U and R; `rchar` U 0.0500 [0.0423, 0.0575], R 0.0291 [0.0212, 0.0368]; `wchar` U 0.0437 [0.0381, 0.0492], R 0.0229 [0.0170, 0.0286]. The largest upper bound over both runs is 0.0575, against 0.25. The pack and index growth equal the encoded appends. |
+| G6 | pass | `rss_end` minus `rss_start`, largest stratum's median minus the smallest's, with its upper 97.5% bound, at most 1 MiB. U: $`-315{,}392`$ B, bound $`-151{,}552`$ B. R: 700,416 B, bound 757,760 B. No swap and no out-of-memory kill. |
+| G7 | pass | 0 problems: every V2 commit wrote at most 518,500 bytes with $`2 + \mathit{meta\_exp} \le 103`$, and the metadata objects equal the writer model's bytes. The NC-V1 control checks the V1 manifest law. The crossover is the table below. |
+| G8 | pass | Thread CPU exponent. D 0.6527 [0.6493, 0.6564]; L 0.2772 [0.2746, 0.2801]. Bound 1.25. Every L commit deleted a nonempty closure equal to its excess current expansions. |
+| G9 | pass | Each verify run has one reclaim commit, only it unlinks files, they are the superseded packs, one index and `reclaim.v1`, and the effects are trusted. No threshold applies; the differences are the table below. |
+| G10 | not applicable here | Each control is its own population with its own G10, the control table below. |
+
+Among the G4 and G5 exponents, only `rchar` on axis U differs between the two
+verify runs, by less than 0.0002. A value printed as 0 is floating-point noise
+below $`3 \times 10^{-16}`$. For scale, the median over the 31 time processes of
+a commit's thread CPU time rises from 433,658.5 ns at $`N = 2^{10}`$ to 1,131,847 ns at $`N = 2^{18}`$, and from
+471,453 ns at $`H = 2^{8}`$ to 916,373 ns at $`H = 2^{16}`$.
+
+Per R stratum, over its timed verify commits, this table compares V2's median
+metadata bytes with the V1 manifest of the same commits,
+$`96 + 56(H + c + 1)`$ bytes at commit $`c`$. The crossover is the smallest
+retained-entry count whose V1 manifest exceeds the measured V2 median.
+
+| $`H`$ | Median V2 metadata bytes | Median V1 manifest bytes | V1 over V2 | Crossover entries |
+|---|---|---|---|---|
+| $`2^{8}`$ | 1,538 | 15,580 | 10.13 | 26 |
+| $`2^{10}`$ | 1,661 | 58,588 | 35.27 | 28 |
+| $`2^{12}`$ | 2,392 | 230,620 | 96.41 | 42 |
+| $`2^{14}`$ | 4,088 | 918,748 | 224.74 | 72 |
+| $`2^{16}`$ | 1,538 | 3,671,260 | 2,387.04 | 26 |
+
+These are the medians at the measured history sizes, so the crossover at 26 to
+72 entries sits below the derived worst case of the writer section (about 184
+entries), which assumes a full last inner node.
+
+Gate G9's within-process thread CPU differences, in microseconds, are medians
+over 31 processes with 95% bootstrap intervals:
+
+| E cell keys | Deferred minus timed | Reclaim minus timed |
+|---|---|---|
+| $`2^{10}`$ | 7.4 [4.2, 11.2] | 181.1 [175.8, 185.2] |
+| $`2^{14}`$ | 5.2 [$`-0.3`$, 10.5] | 571.2 [547.0, 593.8] |
+| $`2^{18}`$ | 14.8 [$`-8.4`$, 46.3] | 7,827.3 [7,375.5, 8,134.4] |
+
+$`c^*`$ is 1.4142 ns per key on U (the grid point $`j = 2`$), which is 32.75%
+of the largest stratum's median of 1,131,847 ns, and 16 ns per state on R (the
+grid point $`j = 16`$), which is 114.43% of the median of 916,373 ns.
+
+**The negative controls.** Each control is its own population, collected before
+the decision population with five time processes of eight timed commits on the
+smallest, middle and largest strata. All four are qualified and detected.
+
+| Control | Mutation | Population (pgmcp artifact) | Expected signal, as measured |
+|---|---|---|---|
+| NC-SCAN | before `authorized_roots`, the trial loads every predecessor ledger entry's object (`ledger_trial.rs:129`) | `controls-nc-scan-20261031T232114Z` (1625) | CPU: U 0.845 [0.841, 0.849], R 0.597 [0.572, 0.613]. `rchar`: U 0.831 [0.830, 0.833], R 0.555 [0.554, 0.555]. G1 still passes, which is why the timing and I/O gates exist. |
+| NC-CLONE | the $`O(1)`$ ledger map clone becomes an entry-by-entry rebuild (`ledger_trial.rs:135`) | `controls-nc-clone-20261101T014638Z` (1626) | CPU: U 0.835 [0.826, 0.852], R 0.653 [0.648, 0.658]. `alloc_count`: U 0.836 [0.836, 0.837], R 0.628 [0.628, 0.629]. `alloc_bytes`: U 0.799 [0.798, 0.800], R 0.596 [0.596, 0.597]. |
+| NC-ORDER | the deactivation phase runs before the activation phase (`ledger_trial.rs:142-143` swapped) | `controls-nc-order-20261101T065818Z` (1630) | G1 fails at every cell. CPU: U 0.971 [0.968, 0.974]. SW-01, run against the mutant export, fails (pgmcp artifact 1253). |
+| NC-V1 | committed code, the V1 writer (`admission.rs:1388`), a natural control | `controls-nc-v1-20261101T092116Z` (1631) | On R, metadata bytes equal $`96 + 56n`$. CPU: R 0.666 [0.662, 0.671]. |
+
+**The missed G4 prediction.** G4 predicted an exponent of at most 0.25 for the
+bytes allocated per commit, and the pilot had already forecast the miss: the
+control-pilot addendum (pgmcp artifact 1178, observation O2) reported a pilot
+interval of [0.380, 0.390] on U. The working hypothesis, H-O2 (pgmcp progress
+notes 25705 and 25707), is that the bytes come from copy-on-write copies of the
+widening 256-way level-1 nodes of the ledger's PathMap. `run_ledger_trial`
+clones the predecessor's `PathMap<DigestState>` and inserts one 56-byte state
+for each touched reference (`ledger_trial.rs:135` and `:335`). The first
+insertion under a shared node copies that node's whole slot vector, and one
+slot, an `OrdinaryCoFree` of pathmap 0.3.4 with its optional inline
+`DigestState`, is 72 bytes. For a ledger of $`\ell`$ digests a level-1 node
+holds about $`\min(\ell / 256, 256)`$ slots, so copying one costs about
+$`72 \min(\ell / 256, 256)`$ bytes. The model matched the pilot's measured bind
+bytes to within 15%, the heaptrack and strace diagnostics are pgmcp artifact
+1303, and their outcome is artifact 1304. Allocation counts stay logarithmic
+and thread CPU and wall time pass, so this is a cost in copied bytes per touched
+node: memory bandwidth and allocator pressure that grow with the ledger, not
+extra allocations and not a correctness failure. The defect is bug item
+`rspace-ledger-trial-cow-allocation-growth` (pgmcp item 13988), which holds the
+evidence and the consensus-change assessment. The measurement records it and
+does not redesign the ledger.
+
+**What the measurement does not claim.**
+
+- It holds for one host and one core.
+- The binary is the release library test binary, which still contains the
+  `cfg(test)` hooks and a toggled counting allocator, not a production build.
+- The keys are data-only: each is a datum on its own channel.
+- The history shares the current roots: each historical state differs from the
+  current one only by its legacy root (the fixture above).
+- fsync was measured on one filesystem, ext4.
+- It makes no power-loss claim and no concurrency claim.
+- It is not the LMDB verdict (task 5693). It measures no semantic eviction,
+  because no eviction policy exists under keep-all retention, and axis E
+  reclaims only physical files. It activates nothing (task 7931).
+- $`c^*`$ bounds only what the timing gate excludes by itself: an extra cost per
+  key or per state below $`c^*`$ would pass H1.
 
 ### Fallible legacy state-authority facets (2026-11-01)
 
@@ -7349,7 +7518,7 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | CL-04 | `EXEC_ONLY` | `CheckedLedgerTrial.every_trial_retains_the_bit_identical_predecessor`, `CheckedLedgerTrial.refused_trial_retries_from_identical_predecessor` | P | The immutable borrow of the predecessor enforces retention; load and parse refusals have no model counterpart. |
 | CL-05 | `EXEC_ONLY` | `CheckedLedgerTrial.trial_accepts_at_exact_measured_limits`, `CheckedLedgerTrial.trial_refuses_one_below_on_that_axis`, `CheckedDomainComposition.composed_trial_is_the_conjunction_of_domain_trials` | P | Exact boundaries are checked per axis and domain on generated trials; the trusted bind's per-domain limits are checked at their exact values and one below (TS-04, task 11945). |
 | CL-06 | `EXEC_ONLY` | `CheckedDomainComposition.composed_trial_agrees_with_cold_domains`, `CheckedDomainComposition.canonical_composed_step_preserves_entry_domains`, `CheckedDomainComposition.evicting_one_root_alias_keeps_retained_support` | P | The deltas come from the test model's entries; the trusted bind derives them from the receipt (TS-01 and TS-03, task 11945), and the metadata domain belongs to tasks 7925 and 7926. |
-| CL-07 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory` | P | Work independence is checked on small generated cases; the scaling claim against geometrically growing history is task 7929. |
+| CL-07 | `EXEC_ONLY` | `IncrementalReachability.root_delta_execution_has_exact_changed_frontier_work`, `CheckedLedgerTrial.union_peak_is_the_add_phase_cold_inventory` | P | Work independence is checked on small generated cases. SW-01 to SW-03 check exact work at larger generated sizes, and the [fixed-delta trusted commit scaling section](#fixed-delta-trusted-commit-scaling-2026-10-29) measures the scaling against geometrically growing history: thread CPU exponents 0.1964 in the key count and 0.1363 in the retained history, upper 95% bounds 0.2086 and 0.1395, while gate G4 fails on allocated bytes at 0.4130 and 0.3186. |
 | CL-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Stack bounds are platform evidence; both walks keep their work on the heap. |
 | CL-09 | `EXEC_ONLY` | `CreditedClosureLedger.epoch_wide_credit_mutant_double_counts_a_shared_child`, `CreditedClosureLedger.unexpanded_crossing_mutant_leaves_an_uncredited_child`, `CheckedLedgerTrial.partial_commit_mutant_replaces_the_predecessor`, `CheckedDomainComposition.retained_sign_mutant_drops_the_predecessor_closure`, `CheckedDomainComposition.deduplicated_alias_mutant_drops_a_shared_closure` | P | Negative controls: closed fixture theorems, plus generated detections whose counts must all be positive. |
 | RV-01 | `EXEC_ONLY` | `RetentionV2Format.retention_key_is_an_exact_48_byte_bijection` | D | Identity validity in the theory is the production `ObjectRefV1` length rule; the production parser and the model decoder are also compared on arbitrary 48-byte strings. |
