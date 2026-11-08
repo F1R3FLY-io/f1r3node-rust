@@ -79,6 +79,7 @@ ignore = [
     "RUSTSEC-2026-0367", # extract() preserves SUID/SGID bits
     "RUSTSEC-2026-0368", # extract() creates symlinks outside the destination
     "RUSTSEC-2026-0369", # extract() applies permissions through symlinks
+    "RUSTSEC-2026-0429", # extract() aborts on a symlink entry with a large declared size
 
     # proc-macro-error2 2.0.1 is unmaintained and has no successor release.
     # It is a compile-time dependency of the getset proc-macro, reached
