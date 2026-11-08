@@ -338,7 +338,7 @@
     ]
   },
   "source_sha256": {
-    "Cargo.toml": "dc833f0779e36336ab02f388e6bc20202f6bc3384c0cf0b83ab4ff5797e5e6db",
+    "Cargo.toml": "a844d5954934063d27770b6c5e48b5af8e6273d235e12a9f5871d493e5003dae",
     "docs/design/pathmap/workspace-regression-formal-invariant-catalog-2026-08-28.md": "cc72fa6bf31244fcb6b61c011209bf063b12c37599b9c1a96e90caaad78298f6",
     "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.cfg": "e0db6e472c7e81869d38db0489c18311306cc9c1b54f40ca4a2a2678714db0dc",
     "formal/tlaplus/stack_safe_pda/RSpaceRecordReplayAuthorityLifecycle.tla": "acec8e9788712614d5bec9b01d83598b65bfb10004ad2a6ac7fd59bd992146a9",

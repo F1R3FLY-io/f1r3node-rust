@@ -15,6 +15,7 @@ members = [
 	"graphz",
 	"formal/loom/cost_accounting",
 	"formal/loom/pathmap_anchor",
+	"formal/verified_score_store",
 ]
 
 [workspace.dependencies]
