@@ -26,6 +26,7 @@ mod mutation_codec;
 mod mutation_streaming_properties;
 mod object_codec;
 mod object_store_collision;
+mod owner_checkpoint_view;
 #[cfg(unix)]
 mod owner_history_production;
 mod owner_incarnation;

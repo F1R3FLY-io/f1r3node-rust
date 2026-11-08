@@ -132,7 +132,7 @@ pub(crate) struct DurableAuthorityViewV1<P: SemanticProfile> {
 impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     pub(crate) fn into_rspace_authority(
         self,
-        hot: std::sync::Arc<
+        hot: &std::sync::Arc<
             Box<
                 dyn crate::rspace::hot_store::HotStore<
                         P::Channel,
@@ -142,7 +142,6 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
                     >,
             >,
         >,
-        operation_gate: std::sync::Arc<tokio::sync::RwLock<()>>,
     ) -> Result<
         DurableRSpaceAuthorityV1<P>,
         Box<(Self, rspace_authority::DurableRSpaceTransactionError)>,
@@ -150,7 +149,7 @@ impl<P: SemanticProfile> DurableAuthorityViewV1<P> {
     where
         P::Channel: Clone + std::hash::Hash + Eq,
     {
-        DurableRSpaceAuthorityV1::from_view(self, hot, operation_gate)
+        DurableRSpaceAuthorityV1::from_view(self, hot)
     }
     /// Return the exact catalog image selected during restart recovery.
     ///

@@ -45,28 +45,64 @@ use crate::rspace::persistence::{
 pub(super) type Profile = RSpaceSemanticProfile<String, String, String, String>;
 pub(super) type Store = Arc<Box<dyn HotStore<String, String, String, String>>>;
 
-fn poll_checkpoint(owner: &mut DurableRSpaceAuthorityV1<Profile>) {
-    drop(poll_checkpoint_with(owner, publication_limits()));
+fn poll_checkpoint(
+    owner: &mut DurableRSpaceAuthorityV1<Profile>,
+    gate: &Arc<RwLock<()>>,
+    hot: &Store,
+) {
+    drop(poll_checkpoint_with(owner, gate, hot, publication_limits()));
 }
 
-pub(super) fn poll_checkpoint_with(
-    owner: &mut DurableRSpaceAuthorityV1<Profile>,
-    limits: DurableRSpacePublicationLimitsV1,
-) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+pub(super) fn poll_once<T>(future: impl std::future::Future<Output = T>) -> T {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
-    let mut checkpoint = std::pin::pin!(owner.checkpoint(limits));
-    match checkpoint
+    let mut future = std::pin::pin!(tokio::task::unconstrained(future));
+    match future
         .as_mut()
         .poll(&mut Context::from_waker(Waker::noop()))
     {
-        Poll::Ready(result) => result,
+        Poll::Ready(output) => output,
         Poll::Pending => panic!("an uncontended owner checkpoint completes on its first poll"),
     }
 }
 
+pub(super) async fn checkpoint_with(
+    owner: &mut DurableRSpaceAuthorityV1<Profile>,
+    gate: &Arc<RwLock<()>>,
+    hot: &Store,
+    limits: DurableRSpacePublicationLimitsV1,
+) -> Result<StateVersionV1, Box<DurableRSpaceTransactionError>> {
+    if let JournalPublicationPhaseV1::Captured |
+    JournalPublicationPhaseV1::RecoveryRequired |
+    JournalPublicationPhaseV1::AwaitingAck = owner.phase(hot)
+    {
+        let terminal = owner.pending_terminal().map(|slot| slot.state());
+        let recovered = owner.reconcile(limits).map_err(Box::new)?;
+        if terminal == Some(recovered) {
+            return Ok(recovered);
+        }
+    }
+    let permit = Arc::clone(gate).write_owned().await;
+    let attachment = owner.attach(hot).map_err(Box::new)?;
+    owner
+        .checkpoint_view(permit, attachment, gate, hot, limits)
+        .await
+        .map_err(Box::new)
+}
+
+pub(super) fn poll_checkpoint_with(
+    owner: &mut DurableRSpaceAuthorityV1<Profile>,
+    gate: &Arc<RwLock<()>>,
+    hot: &Store,
+    limits: DurableRSpacePublicationLimitsV1,
+) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+    poll_once(checkpoint_with(owner, gate, hot, limits)).map_err(|error| *error)
+}
+
 fn observed_checkpoint(
     owner: &mut DurableRSpaceAuthorityV1<Profile>,
+    gate: &Arc<RwLock<()>>,
+    hot: &Store,
     limits: DurableRSpacePublicationLimitsV1,
 ) -> (
     Result<StateVersionV1, DurableRSpaceTransactionError>,
@@ -74,7 +110,7 @@ fn observed_checkpoint(
     u64,
 ) {
     reset_cold_admissions();
-    let (result, trace) = traced(|| poll_checkpoint_with(owner, limits));
+    let (result, trace) = traced(|| poll_checkpoint_with(owner, gate, hot, limits));
     (result, trace, cold_admissions())
 }
 
@@ -225,7 +261,7 @@ fn run_owner_boundary_unwind_child(index: usize, case: &str) {
     let point = owner_boundary_points()[index];
     let (scratch, hot, gate, owner) = fixture();
     populate(&hot);
-    let old = owner.state().unwrap();
+    let old = owner.state(&hot).unwrap();
     let old_key = owner.generation_key();
     let new_key = GenerationLeaseKeyV1::new(
         old_key.epoch() + 1,
@@ -269,7 +305,7 @@ fn run_owner_boundary_unwind_child(index: usize, case: &str) {
         }
         panic!("journal owner boundary unwind");
     });
-    poll_checkpoint(&mut verify.owner);
+    poll_checkpoint(&mut verify.owner, &verify.gate, &verify.hot);
 }
 
 pub(super) fn store_files(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
@@ -308,7 +344,7 @@ async fn owner_recovery_rejects_foreign_third_and_same_state_different_terminals
         arm_generation_checkpoint_publication_failpoint(
             GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
         );
-        assert!(owner.checkpoint(publication_limits()).await.is_err());
+        assert!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err());
         let expected = owner.pending_terminal().unwrap();
         let original = store_files(scratch.path());
         let (other_dir, mut other_hot, other_gate, mut other) = fixture();
@@ -345,7 +381,7 @@ async fn owner_recovery_rejects_foreign_third_and_same_state_different_terminals
                 .unwrap(),
             );
             other = view
-                .into_rspace_authority(Arc::clone(&other_hot), other_gate)
+                .into_rspace_authority(&other_hot)
                 .unwrap_or_else(|failure| panic!("{:?}", failure.1));
         }
         populate(&other_hot);
@@ -355,17 +391,18 @@ async fn owner_recovery_rejects_foreign_third_and_same_state_different_terminals
                 Datum::create(&"channel".to_owned(), "different".to_owned(), false),
             );
         }
-        other.checkpoint(publication_limits()).await.unwrap();
+        poll_checkpoint_with(&mut other, &other_gate, &other_hot, publication_limits()).unwrap();
         if variant == 1 {
             other_hot.put_datum(
                 &"channel".to_owned(),
                 Datum::create(&"channel".to_owned(), "third".to_owned(), false),
             );
-            other.checkpoint(publication_limits()).await.unwrap();
+            poll_checkpoint_with(&mut other, &other_gate, &other_hot, publication_limits())
+                .unwrap();
         }
         if variant == 2 {
             assert_eq!(
-                other.state().unwrap(),
+                other.state(&other_hot).unwrap(),
                 expected.state(),
                 "same semantic target, different physical terminal"
             );
@@ -380,7 +417,7 @@ async fn owner_recovery_rejects_foreign_third_and_same_state_different_terminals
             ),
             "variant {variant}"
         );
-        assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+        assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::RecoveryRequired);
         assert!(gate.try_read().is_err());
         assert_eq!(owner.pending_terminal(), Some(expected));
         assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
@@ -404,7 +441,7 @@ async fn damaged_selected_publication_stays_nonready_until_the_same_files_are_re
     arm_generation_checkpoint_publication_failpoint(
         GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
     );
-    assert!(owner.checkpoint(publication_limits()).await.is_err());
+    assert!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err());
     let terminal = owner.pending_terminal().unwrap();
     let original = store_files(scratch.path());
     let mut damaged = original.clone();
@@ -417,7 +454,7 @@ async fn damaged_selected_publication_stays_nonready_until_the_same_files_are_re
     replace_store_files(scratch.path(), &damaged);
     for _ in 0..3 {
         assert!(owner.reconcile(publication_limits()).is_err());
-        assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+        assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::RecoveryRequired);
         assert!(gate.try_read().is_err());
         assert_eq!(owner.pending_terminal(), Some(terminal));
         assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
@@ -450,16 +487,16 @@ proptest! {
                 let before = hot.get_data(&channel).len();
                 for _ in before..count { hot.put_datum(&channel, Datum::create(&channel, "datum".to_owned(), false)); }
                 for _ in count..before { hot.remove_datum(&channel, 0).unwrap(); }
-                let old = owner.state().unwrap();
+                let old = owner.state(&hot).unwrap();
                 let changed = step == 0 || before != count;
                 if interrupt && changed {
                     arm_generation_checkpoint_publication_failpoint(if published {
                         GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery
                     } else { GenerationCheckpointPublicationHookPointV1::AfterCommitSync });
-                    assert!(owner.checkpoint(publication_limits()).await.is_err());
+                    assert!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err());
                     assert!(gate.try_read().is_err());
                 }
-                let next = owner.checkpoint(publication_limits()).await.unwrap();
+                let next = poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap();
                 assert_eq!(next.generation(), old.generation() + u64::from(changed));
                 assert_eq!(hot.get_data(&channel).len(), count);
                 assert_empty(&hot);
@@ -470,7 +507,7 @@ proptest! {
                 hot = Arc::new(HotStoreInstances::create_from_durable(&view, DurableHotStoreBootstrapLimits::default()).unwrap());
                 assert_eq!(hot.get_data(&channel).len(), count);
                 assert_empty(&hot);
-                owner = view.into_rspace_authority(Arc::clone(&hot), Arc::clone(&gate)).unwrap_or_else(|failure| panic!("{:?}", failure.1));
+                owner = view.into_rspace_authority(&hot).unwrap_or_else(|failure| panic!("{:?}", failure.1));
             }
         });
     }
@@ -484,20 +521,13 @@ fn successor_pin_failure_retains_the_admitted_successor_old_pin_and_permit_for_r
     let registry = owner.generation_leases();
     let old_key = owner.generation_key();
     let counter = registry.replace_lease_counter_for_test(u64::MAX);
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
-    {
-        let mut checkpoint = std::pin::pin!(owner.checkpoint(publication_limits()));
-        assert!(matches!(
-            checkpoint
-                .as_mut()
-                .poll(&mut Context::from_waker(Waker::noop())),
-            Poll::Ready(Err(DurableRSpaceTransactionError::Lease(
-                crate::rspace::persistence::GenerationLeaseError::CounterOverflow
-            )))
-        ));
-    }
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::AwaitingAck);
+    assert!(matches!(
+        poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()),
+        Err(DurableRSpaceTransactionError::Lease(
+            crate::rspace::persistence::GenerationLeaseError::CounterOverflow
+        ))
+    ));
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::AwaitingAck);
     assert!(registry.has_active(old_key).unwrap());
     assert!(gate.try_read().is_err());
     assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
@@ -522,7 +552,7 @@ async fn a_stale_capture_is_rejected_before_publication_even_when_its_journal_by
     for point in [JournalOwnerHookPoint::AfterCapture, JournalOwnerHookPoint::AfterPreparation] {
         let (scratch, hot, gate, mut owner) = fixture();
         populate(&hot);
-        let old = owner.state().unwrap();
+        let old = owner.state(&hot).unwrap();
         let files = store_files(scratch.path());
         let changed = Arc::clone(&hot);
         let _hook = journal_owner_hooks::arm(point, move || {
@@ -537,12 +567,12 @@ async fn a_stale_capture_is_rejected_before_publication_even_when_its_journal_by
                 )
                 .unwrap();
         });
-        assert!(owner.checkpoint(publication_limits()).await.is_err());
-        assert_eq!(owner.state().unwrap(), old);
+        assert!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err());
+        assert_eq!(owner.state(&hot).unwrap(), old);
         assert_eq!(store_files(scratch.path()), files);
         assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
         assert!(gate.try_read().is_ok());
-        owner.checkpoint(publication_limits()).await.unwrap();
+        poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap();
         assert_empty(&hot);
     }
 }
@@ -670,7 +700,8 @@ pub(super) fn minimal_publication_limits() -> DurableRSpacePublicationLimitsV1 {
     }
 }
 
-fn fixture() -> (PersistenceTrialDir, Store, Arc<RwLock<()>>, DurableRSpaceAuthorityV1<Profile>) {
+pub(super) fn fixture()
+-> (PersistenceTrialDir, Store, Arc<RwLock<()>>, DurableRSpaceAuthorityV1<Profile>) {
     let scratch = trial_scratch("journal-owner-");
     let image = checkpoint_image_for_profile::<Profile>(fixture_for_profile(Profile::ID));
     install_checkpoint_image(scratch.path(), &image);
@@ -687,7 +718,7 @@ fn fixture() -> (PersistenceTrialDir, Store, Arc<RwLock<()>>, DurableRSpaceAutho
     );
     let gate = Arc::new(RwLock::new(()));
     let owner = view
-        .into_rspace_authority(Arc::clone(&hot), Arc::clone(&gate))
+        .into_rspace_authority(&hot)
         .unwrap_or_else(|failure| panic!("{:?}", failure.1));
     (scratch, hot, gate, owner)
 }
@@ -718,14 +749,14 @@ pub(super) fn assert_empty(hot: &Store) {
 #[tokio::test]
 async fn owner_checkpoint_clears_all_journals_after_authenticated_publication_and_reopens() {
     let (scratch, hot, gate, mut owner) = fixture();
-    let old = owner.state().unwrap();
+    let old = owner.state(&hot).unwrap();
     let registry = owner.generation_leases();
     let old_pin = owner.generation_key();
     populate(&hot);
     let before = hot.snapshot();
-    let next = owner.checkpoint(publication_limits()).await.unwrap();
+    let next = poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap();
     assert_eq!(next.generation(), old.generation() + 1);
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
     assert!(gate.try_read().is_ok());
     assert_empty(&hot);
     assert_eq!(before.data, hot.snapshot().data);
@@ -762,16 +793,16 @@ async fn owner_checkpoint_clears_all_journals_after_authenticated_publication_an
 #[tokio::test]
 async fn owner_noop_and_preparation_refusal_leave_files_journals_and_authority_unchanged() {
     let (scratch, hot, gate, mut owner) = fixture();
-    let old = owner.state().unwrap();
+    let old = owner.state(&hot).unwrap();
     let catalog = fs::read(scratch.path().join("catalog.v1")).unwrap();
-    assert_eq!(owner.checkpoint(publication_limits()).await.unwrap(), old);
+    assert_eq!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap(), old);
     assert_empty(&hot);
     populate(&hot);
     let pending = hot.pending_deltas().unwrap();
     let mut refused = publication_limits();
     refused.wal.max_objects = 0;
-    assert!(owner.checkpoint(refused).await.is_err());
-    assert_eq!(owner.state().unwrap(), old);
+    assert!(poll_checkpoint_with(&mut owner, &gate, &hot, refused).is_err());
+    assert_eq!(owner.state(&hot).unwrap(), old);
     assert_eq!(fs::read(scratch.path().join("catalog.v1")).unwrap(), catalog);
     assert_eq!(pending.data, hot.pending_deltas().unwrap().data);
     assert!(gate.try_read().is_ok());
@@ -781,7 +812,7 @@ async fn owner_noop_and_preparation_refusal_leave_files_journals_and_authority_u
             .try_acquire_writer()
             .is_err()
     );
-    owner.checkpoint(publication_limits()).await.unwrap();
+    poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap();
     assert_empty(&hot);
 }
 
@@ -795,13 +826,16 @@ async fn owner_uncertain_old_and_new_publications_retain_the_gate_and_original_w
     ] {
         let (scratch, hot, gate, mut owner) = fixture();
         populate(&hot);
-        let old = owner.state().unwrap();
+        let old = owner.state(&hot).unwrap();
         let registry = owner.generation_leases();
         let old_pin = owner.generation_key();
         arm_generation_checkpoint_publication_failpoint(point);
-        assert!(owner.checkpoint(publication_limits()).await.is_err(), "{point:?}");
-        assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
-        assert!(owner.state().is_err());
+        assert!(
+            poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err(),
+            "{point:?}"
+        );
+        assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::RecoveryRequired);
+        assert!(owner.state(&hot).is_err());
         assert!(gate.try_read().is_err());
         assert!(registry.has_active(old_pin).unwrap());
         assert!(
@@ -821,14 +855,17 @@ async fn owner_uncertain_old_and_new_publications_retain_the_gate_and_original_w
         ) {
             assert_eq!(recovered, old);
             assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
-            owner.checkpoint(publication_limits()).await.unwrap();
+            poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap();
         } else {
             assert_eq!(recovered, terminal.unwrap().state());
             assert_empty(&hot);
-            assert_eq!(owner.checkpoint(publication_limits()).await.unwrap(), recovered);
+            assert_eq!(
+                poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap(),
+                recovered
+            );
         }
         assert_empty(&hot);
-        assert_eq!(owner.state().unwrap().generation(), old.generation() + 1);
+        assert_eq!(owner.state(&hot).unwrap().generation(), old.generation() + 1);
     }
 }
 
@@ -849,7 +886,7 @@ fn run_owner_publication_unwind_child(case: &str) {
     impl Drop for VerifyOnDrop {
         fn drop(&mut self) {
             assert!(self.gate.try_read().is_err());
-            assert_eq!(self.owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+            assert_eq!(self.owner.phase(&self.hot), JournalPublicationPhaseV1::RecoveryRequired);
             let terminal = self.owner.pending_terminal().unwrap();
             let catalog = fs::read(self.scratch.path().join("catalog.v1")).unwrap();
             assert_eq!(self.owner.reconcile(publication_limits()).unwrap(), terminal.state());
@@ -879,7 +916,7 @@ fn run_owner_publication_unwind_child(case: &str) {
         GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
         || panic!("owner publication unwind"),
     );
-    poll_checkpoint(&mut verify.owner);
+    poll_checkpoint(&mut verify.owner, &verify.gate, &verify.hot);
 }
 
 #[tokio::test]
@@ -888,11 +925,12 @@ async fn cancelling_a_checkpoint_waiting_for_the_exact_gate_does_not_capture_or_
     use std::task::{Context, Poll, Waker};
     let (scratch, hot, gate, mut owner) = fixture();
     populate(&hot);
-    let old = owner.state().unwrap();
+    let old = owner.state(&hot).unwrap();
     let catalog = fs::read(scratch.path().join("catalog.v1")).unwrap();
     let held = gate.read().await;
     {
-        let mut checkpoint = std::pin::pin!(owner.checkpoint(publication_limits()));
+        let mut checkpoint =
+            std::pin::pin!(checkpoint_with(&mut owner, &gate, &hot, publication_limits()));
         assert!(matches!(
             checkpoint
                 .as_mut()
@@ -900,12 +938,12 @@ async fn cancelling_a_checkpoint_waiting_for_the_exact_gate_does_not_capture_or_
             Poll::Pending
         ));
     }
-    assert_eq!(owner.state().unwrap(), old);
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(owner.state(&hot).unwrap(), old);
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
     assert_eq!(fs::read(scratch.path().join("catalog.v1")).unwrap(), catalog);
     assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
     drop(held);
-    owner.checkpoint(publication_limits()).await.unwrap();
+    poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).unwrap();
     assert_empty(&hot);
 }
 
@@ -925,8 +963,8 @@ async fn invalidated_base_cannot_release_a_refused_capture_as_ready() {
                     changed.clear();
                 }
             });
-            assert!(owner.checkpoint(publication_limits()).await.is_err());
-            assert!(owner.state().is_err(), "invalid hot base reported Ready at {point:?}");
+            assert!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err());
+            assert!(owner.state(&hot).is_err(), "invalid hot base reported Ready at {point:?}");
             assert!(gate.try_read().is_err());
             assert!(owner.reconcile(publication_limits()).is_err());
             assert!(gate.try_read().is_err());
@@ -954,7 +992,7 @@ fn invalidated_base_cannot_release_old_recovery_or_report_ready() {
             arm_generation_checkpoint_publication_failpoint(
                 GenerationCheckpointPublicationHookPointV1::AfterCommitSync,
             );
-            poll_checkpoint(&mut owner);
+            poll_checkpoint(&mut owner, &gate, &hot);
             let files = store_files(scratch.path());
             if replace {
                 hot.set_state(hot.snapshot());
@@ -966,7 +1004,7 @@ fn invalidated_base_cannot_release_old_recovery_or_report_ready() {
                     owner.reconcile(publication_limits()).is_err(),
                     "invalid hot base accepted after exact old recovery"
                 );
-                assert!(owner.state().is_err());
+                assert!(owner.state(&hot).is_err());
                 assert!(gate.try_read().is_err());
                 assert_eq!(store_files(scratch.path()), files);
                 assert!(
@@ -985,8 +1023,8 @@ fn invalidated_base_cannot_release_old_recovery_or_report_ready() {
         } else {
             hot.clear();
         }
-        assert!(owner.state().is_err());
-        assert_ne!(owner.phase(), JournalPublicationPhaseV1::Ready);
+        assert!(owner.state(&hot).is_err());
+        assert_ne!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
     }
 }
 
@@ -1014,7 +1052,7 @@ fn run_invalid_base_unwind_child(replace: bool, case: &str) {
                     self.owner.reconcile(publication_limits()).is_err(),
                     "invalid hot base accepted after exact old recovery"
                 );
-                assert!(self.owner.state().is_err());
+                assert!(self.owner.state(&self.hot).is_err());
                 assert!(self.gate.try_read().is_err());
                 assert_eq!(store_files(self.scratch.path()), files);
                 assert!(
@@ -1040,7 +1078,7 @@ fn run_invalid_base_unwind_child(replace: bool, case: &str) {
     };
     let _hook =
         journal_owner_hooks::arm(JournalOwnerHookPoint::AfterCapture, || panic!("capture unwind"));
-    poll_checkpoint(&mut verify.owner);
+    poll_checkpoint(&mut verify.owner, &verify.gate, &verify.hot);
 }
 
 pub(super) fn assert_journals_unchanged(
@@ -1074,8 +1112,6 @@ pub(super) fn assert_journals_unchanged(
 /// any durable mutation, and stays ready with its journals and operation gate
 /// intact.
 pub(super) fn assert_v2_owner_checkpoint_refuses_before_durable_mutation() {
-    use std::future::Future;
-    use std::task::{Context, Poll, Waker};
     let scratch = trial_scratch("journal-owner-v2-");
     let source = migrate_checkpoint_source_to_v2(&fixture_for_profile(Profile::ID));
     install_checkpoint_image(scratch.path(), &checkpoint_image_for_profile::<Profile>(source));
@@ -1095,24 +1131,15 @@ pub(super) fn assert_v2_owner_checkpoint_refuses_before_durable_mutation() {
     );
     let gate = Arc::new(RwLock::new(()));
     let mut owner = view
-        .into_rspace_authority(Arc::clone(&hot), Arc::clone(&gate))
+        .into_rspace_authority(&hot)
         .unwrap_or_else(|failure| panic!("{:?}", failure.1));
-    let old = owner.state().expect("a fresh owner is ready");
+    let old = owner.state(&hot).expect("a fresh owner is ready");
     populate(&hot);
     let files = store_files(scratch.path());
     let before = hot
         .pending_deltas()
         .expect("the populated journals are readable");
-    let result = {
-        let mut checkpoint = std::pin::pin!(owner.checkpoint(publication_limits()));
-        match checkpoint
-            .as_mut()
-            .poll(&mut Context::from_waker(Waker::noop()))
-        {
-            Poll::Ready(result) => result,
-            Poll::Pending => panic!("an uncontended owner checkpoint completes in one poll"),
-        }
-    };
+    let result = poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits());
     assert!(
         matches!(
             result,
@@ -1124,11 +1151,11 @@ pub(super) fn assert_v2_owner_checkpoint_refuses_before_durable_mutation() {
     );
     assert_eq!(
         owner
-            .state()
+            .state(&hot)
             .expect("a refused successor leaves the owner ready"),
         old
     );
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
     assert_eq!(store_files(scratch.path()), files);
     assert_journals_unchanged(&hot, &before);
     assert!(gate.try_read().is_ok(), "the refused checkpoint released the operation gate");
@@ -1156,13 +1183,13 @@ fn acknowledgement_conflict_retains_both_pins_and_never_republishes() {
                 )
                 .unwrap();
         });
-        poll_checkpoint(&mut owner);
+        poll_checkpoint(&mut owner, &gate, &hot);
         let terminal = owner.pending_terminal().unwrap();
         let files = store_files(scratch.path());
         let pending = hot.pending_deltas().unwrap();
         for _ in 0..3 {
             assert!(owner.reconcile(publication_limits()).is_err());
-            assert_eq!(owner.phase(), JournalPublicationPhaseV1::AwaitingAck);
+            assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::AwaitingAck);
             assert!(gate.try_read().is_err());
             assert!(owner.generation_leases().has_active(old_key).unwrap());
             assert!(
@@ -1196,7 +1223,7 @@ fn run_ack_conflict_unwind_child(case: &str) {
             let pending = self.hot.pending_deltas().unwrap();
             for _ in 0..3 {
                 assert!(self.owner.reconcile(publication_limits()).is_err());
-                assert_eq!(self.owner.phase(), JournalPublicationPhaseV1::AwaitingAck);
+                assert_eq!(self.owner.phase(&self.hot), JournalPublicationPhaseV1::AwaitingAck);
                 assert!(self.gate.try_read().is_err());
                 assert!(
                     self.owner
@@ -1242,21 +1269,21 @@ fn run_ack_conflict_unwind_child(case: &str) {
             .unwrap();
         panic!("acknowledgement completion unwind");
     });
-    poll_checkpoint(&mut verify.owner);
+    poll_checkpoint(&mut verify.owner, &verify.gate, &verify.hot);
 }
 
 #[tokio::test]
 async fn cold_restart_before_acknowledgement_selects_old_or_new_without_delta_replay() {
     for published in [false, true] {
         let (scratch, hot, gate, mut owner) = fixture();
-        let old = owner.state().unwrap();
+        let old = owner.state(&hot).unwrap();
         populate(&hot);
         arm_generation_checkpoint_publication_failpoint(if published {
             GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery
         } else {
             GenerationCheckpointPublicationHookPointV1::AfterCommitSync
         });
-        assert!(owner.checkpoint(publication_limits()).await.is_err());
+        assert!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err());
         let expected = owner.pending_terminal().unwrap();
         assert!(!hot.pending_deltas().unwrap().data.unwrap().is_empty());
         drop(owner);
@@ -1287,10 +1314,10 @@ async fn cold_restart_before_acknowledgement_selects_old_or_new_without_delta_re
         );
         assert_eq!(cold.get_joins(&channel).len(), usize::from(published));
         let mut reopened = view
-            .into_rspace_authority(Arc::clone(&cold), gate)
+            .into_rspace_authority(&cold)
             .unwrap_or_else(|failure| panic!("{:?}", failure.1));
         cold.put_datum(&channel, Datum::create(&channel, "datum".to_owned(), false));
-        let next = reopened.checkpoint(publication_limits()).await.unwrap();
+        let next = poll_checkpoint_with(&mut reopened, &gate, &cold, publication_limits()).unwrap();
         assert_eq!(next.generation(), old.generation() + u64::from(published) + 1);
         assert_eq!(cold.get_data(&channel).len(), usize::from(published) + 1);
         assert_empty(&cold);
@@ -1310,7 +1337,7 @@ async fn constructor_refuses_foreign_or_invalidated_hot_authority_without_losing
             DurableAdmissionLimitsV1::UNBOUNDED,
         )
         .unwrap();
-        assert_eq!(view.state(), other_owner.state().unwrap());
+        assert_eq!(view.state(), other_owner.state(&other_hot).unwrap());
         assert_eq!(store_files(scratch.path()), store_files(other_scratch.path()));
         let pin = GenerationLeaseKeyV1::from_catalog(view.catalog());
         let registry = view.generation_leases();
@@ -1335,7 +1362,7 @@ async fn constructor_refuses_foreign_or_invalidated_hot_authority_without_losing
             Arc::clone(&other_hot)
         };
         let failure = view
-            .into_rspace_authority(invalid, Arc::clone(&gate))
+            .into_rspace_authority(&invalid)
             .err()
             .expect("crossed authority must be refused");
         let (view, _) = *failure;
@@ -1349,11 +1376,11 @@ async fn constructor_refuses_foreign_or_invalidated_hot_authority_without_losing
         );
         assert_eq!(store_files(scratch.path()), store_files(other_scratch.path()));
         let mut owner = view
-            .into_rspace_authority(Arc::clone(&correct), Arc::clone(&gate))
+            .into_rspace_authority(&correct)
             .unwrap_or_else(|failure| panic!("{:?}", failure.1));
         populate(&correct);
-        let next = owner.checkpoint(publication_limits()).await.unwrap();
-        assert_eq!(next.generation(), other_owner.state().unwrap().generation() + 1);
+        let next = poll_checkpoint_with(&mut owner, &gate, &correct, publication_limits()).unwrap();
+        assert_eq!(next.generation(), other_owner.state(&other_hot).unwrap().generation() + 1);
         assert_empty(&correct);
         assert_empty(&other_hot);
     }
@@ -1361,17 +1388,17 @@ async fn constructor_refuses_foreign_or_invalidated_hot_authority_without_losing
 
 fn production_empty_checkpoint_consults_no_limit() {
     let (scratch, hot, gate, mut owner) = fixture();
-    let old = owner.state().expect("a fresh owner is ready");
+    let old = owner.state(&hot).expect("a fresh owner is ready");
     let files = store_files(scratch.path());
     for limits in [publication_limits(), minimal_publication_limits()] {
-        let (checkpointed, trace, cold) = observed_checkpoint(&mut owner, limits);
+        let (checkpointed, trace, cold) = observed_checkpoint(&mut owner, &gate, &hot, limits);
         assert_eq!(checkpointed.expect("an empty checkpoint consults no limit"), old);
         assert_eq!(
             (trace, cold),
             (Vec::new(), 0),
             "an empty checkpoint ran publication phases or a cold check"
         );
-        assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+        assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
         assert_eq!(store_files(scratch.path()), files);
         assert_empty(&hot);
         assert!(gate.try_read().is_ok());
@@ -1380,17 +1407,18 @@ fn production_empty_checkpoint_consults_no_limit() {
     let before = hot
         .pending_deltas()
         .expect("the populated journals are readable");
-    let (refused, trace, cold) = observed_checkpoint(&mut owner, minimal_publication_limits());
+    let (refused, trace, cold) =
+        observed_checkpoint(&mut owner, &gate, &hot, minimal_publication_limits());
     assert!(refused.is_err(), "the minimal limits admitted a populated checkpoint: {refused:?}");
     assert_eq!(
         (trace, cold),
         (Vec::new(), 0),
         "a refused populated checkpoint ran publication phases or a cold check"
     );
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
     assert_eq!(
         owner
-            .state()
+            .state(&hot)
             .expect("a refused checkpoint leaves the owner ready"),
         old
     );
@@ -1408,16 +1436,16 @@ fn production_awaiting_retry_acknowledges_once_without_cold_check() {
         let old_key = owner.generation_key();
         let counter = registry.replace_lease_counter_for_test(u64::MAX);
         assert!(matches!(
-            poll_checkpoint_with(&mut owner, publication_limits()),
+            poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()),
             Err(DurableRSpaceTransactionError::Lease(GenerationLeaseError::CounterOverflow))
         ));
-        assert_eq!(owner.phase(), JournalPublicationPhaseV1::AwaitingAck);
+        assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::AwaitingAck);
         let terminal = owner
             .pending_terminal()
             .expect("an awaiting owner retains its published terminal");
         let files = store_files(scratch.path());
         registry.replace_lease_counter_for_test(counter);
-        let (retried, trace, cold) = observed_checkpoint(&mut owner, retry);
+        let (retried, trace, cold) = observed_checkpoint(&mut owner, &gate, &hot, retry);
         assert_eq!(
             retried.expect("an awaiting retry acknowledges its published successor"),
             terminal.state()
@@ -1427,7 +1455,7 @@ fn production_awaiting_retry_acknowledges_once_without_cold_check() {
             (Vec::new(), 0),
             "an awaiting retry ran publication phases or a cold check"
         );
-        assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+        assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
         assert_eq!(store_files(scratch.path()), files);
         assert_empty(&hot);
         assert!(gate.try_read().is_ok());
@@ -1441,7 +1469,7 @@ fn production_awaiting_retry_acknowledges_once_without_cold_check() {
                 .has_active(GenerationLeaseKeyV1::from_catalog(terminal))
                 .expect("read the successor pin")
         );
-        let (repeated, trace, cold) = observed_checkpoint(&mut owner, retry);
+        let (repeated, trace, cold) = observed_checkpoint(&mut owner, &gate, &hot, retry);
         assert_eq!(
             repeated.expect("an acknowledged owner checkpoints its empty journal"),
             terminal.state()
@@ -1460,8 +1488,8 @@ fn production_awaiting_retry_acknowledges_once_without_cold_check() {
     arm_generation_checkpoint_publication_failpoint(
         GenerationCheckpointPublicationHookPointV1::AfterCatalogSyncBeforeRecovery,
     );
-    assert!(poll_checkpoint_with(&mut owner, publication_limits()).is_err());
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+    assert!(poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits()).is_err());
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::RecoveryRequired);
     let terminal = owner
         .pending_terminal()
         .expect("a published checkpoint retains its terminal");
@@ -1480,7 +1508,7 @@ fn production_awaiting_retry_acknowledges_once_without_cold_check() {
         "{refused:?}"
     );
     assert_eq!(cold_admissions(), 1);
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::RecoveryRequired);
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::RecoveryRequired);
     assert_eq!(owner.pending_terminal(), Some(terminal));
     assert!(gate.try_read().is_err());
     assert_eq!(store_files(scratch.path()), files);
@@ -1492,23 +1520,23 @@ fn production_awaiting_retry_acknowledges_once_without_cold_check() {
         terminal.state()
     );
     assert_eq!(cold_admissions(), 1);
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
     assert_empty(&hot);
     assert!(gate.try_read().is_ok());
 }
 
 fn production_trusted_owner_success_skips_incoming_admission_limits() {
-    let (scratch, hot, _gate, mut owner) = fixture();
+    let (scratch, hot, gate, mut owner) = fixture();
     populate(&hot);
     let incoming = DurableRSpacePublicationLimitsV1 {
         admission: ZERO_ADMISSION,
         ..publication_limits()
     };
-    let (published, trace, cold) = observed_checkpoint(&mut owner, incoming);
+    let (published, trace, cold) = observed_checkpoint(&mut owner, &gate, &hot, incoming);
     let next = published
         .expect("the trusted owner checkpoint never consults the incoming admission limits");
     assert_eq!((trace, cold), (FORMAL_PUBLICATION_PHASE_ORDER[2..=14].to_vec(), 0));
-    assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+    assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
     assert_empty(&hot);
     drop(owner);
     match DurableDirectoryV1::open(scratch.path())
@@ -1573,7 +1601,7 @@ fn twin_policy_evidence(base: StateVersionV1, hot: &Store) -> TrustedPolicyEvide
 
 fn production_trusted_policy_refusal_changes_nothing() {
     let (scratch, hot, gate, mut owner) = fixture();
-    let old = owner.state().expect("a fresh owner is ready");
+    let old = owner.state(&hot).expect("a fresh owner is ready");
     populate(&hot);
     let evidence = twin_policy_evidence(old, &hot);
     let files = store_files(scratch.path());
@@ -1583,7 +1611,7 @@ fn production_trusted_policy_refusal_changes_nothing() {
     let mut refusals = [0usize; 2];
     for (axis, policy, expected) in evidence.lowered() {
         let (refused, trace, cold) =
-            observed_checkpoint(&mut owner, DurableRSpacePublicationLimitsV1 {
+            observed_checkpoint(&mut owner, &gate, &hot, DurableRSpacePublicationLimitsV1 {
                 trusted: policy,
                 ..publication_limits()
             });
@@ -1596,10 +1624,10 @@ fn production_trusted_policy_refusal_changes_nothing() {
             }
         }
         assert_eq!((trace, cold), (Vec::new(), 0), "{axis:?}");
-        assert_eq!(owner.phase(), JournalPublicationPhaseV1::Ready);
+        assert_eq!(owner.phase(&hot), JournalPublicationPhaseV1::Ready);
         assert_eq!(
             owner
-                .state()
+                .state(&hot)
                 .expect("a refused checkpoint leaves the owner ready"),
             old
         );
@@ -1614,7 +1642,7 @@ fn production_trusted_policy_refusal_changes_nothing() {
     }
     assert!(refusals.iter().all(|&count| count > 0), "{refusals:?}");
     let (published, trace, cold) =
-        observed_checkpoint(&mut owner, DurableRSpacePublicationLimitsV1 {
+        observed_checkpoint(&mut owner, &gate, &hot, DurableRSpacePublicationLimitsV1 {
             trusted: evidence.exact(),
             ..publication_limits()
         });

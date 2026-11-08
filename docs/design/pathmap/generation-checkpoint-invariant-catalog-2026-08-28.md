@@ -3354,7 +3354,7 @@ axes are the 21 work axes (seven per domain) and the 11 state ceilings.
 | TS-10 | On 128 generated histories, for each reclamation sidecar (absent, deferred because it is pinned, and reclaimable), the trusted and cold-checked publications of a step make the same durable writes, ending with the same sidecar resolution (nothing, keeping the intent bytes, and removing the superseded files), and both return the cold successor; the three sidecars give pairwise different writes. The transliteration satisfies `AdoptionFollowsDirectorySyncAndResolution`, and adoption before the directory sync violates it. | `trusted_and_cold_checked_publication_write_identical_bytes` |
 | TS-11 | The transliteration satisfies all nine invariants and reaches an indeterminate catalog write, a published failure of the sidecar resolution and a staging failure before the swap. Every one of the thirteen trusted hooks has a failure behavior, every such behavior replays in the model to its production class (definitely not published from the prepare write through the swap's verification, indeterminate at the slot write, published with an error from the catalog file sync on) with every invariant intact, and the fault-free path replays to ready. On 64 generated histories, every fault setting of every step, with the old, torn or new catalog image persisted, replays to the publication's outcome class; a changed policy replays to the policy refusal; and a retry publishes the same successor. At every trusted hook, every interrupted pack image (each prefix of the transaction between its synced and its written end, with and without a torn tail, under each catalog image that the hook allows) recovers the appointed prefix: the predecessor's entries under an old, torn or foreign catalog, the successor's under the new one. A retry from that prefix rebuilds exactly the uninterrupted pack. | `trusted_incremental_publication_recovers_and_retries_every_phase` |
 | TS-12 | On 256 generated owner requests with an empty journal, a checkpoint under the incoming cold limits and under tightened ones (all zero, or loose with one axis at zero) accepts the current authority with no change, makes no cold check and attempts no publication. | `owner_empty_checkpoint_under_tightened_cold_limits_performs_no_cold_check` |
-| TS-13 | On 256 generated owners awaiting acknowledgement, reconciliation and the checkpoint retry acknowledge the pending successor exactly once and make no cold check, with the same outcome under the incoming and the tightened cold limits. Recovery, by contrast, consults the cold limits once: it accepts the recovered authority under loose limits and refuses under zero limits. | `owner_awaiting_ack_retry_under_tightened_cold_limits_acknowledges_once_without_cold_check` |
+| TS-13 | On 256 generated owners awaiting acknowledgement, reconciliation and the checkpoint retry, which reconciles before it checkpoints, acknowledge the pending successor exactly once and make no cold check, with the same outcome under the incoming and the tightened cold limits. Recovery, by contrast, consults the cold limits once: it accepts the recovered authority under loose limits and refuses under zero limits. | `owner_awaiting_ack_retry_under_tightened_cold_limits_acknowledges_once_without_cold_check` |
 | TS-14 | On 128 generated histories, for every positive axis of the successor's measured cold demand, the cold-checked publication under limits one below on that axis runs cold admission and is refused after publication with the measured demand, while the trusted publication of the same receipt returns the successor; such axes occur. The transliteration satisfies `ColdModeSuccessIncludesColdAdmission`, reaches cold success (`NeverColdReady`) and trusted success under tight limits, and the skipped-admission control violates the invariant. | `trusted_success_does_not_imply_cold_admission_under_incoming_limits` |
 | TS-15 | On 64 generated histories, for every positive axis of the exact policy lowered by one, the owner's checkpoint of a captured journal is refused and stays ready, emits no event, makes no cold check, and makes exactly one publication attempt, which writes nothing. The transliteration reaches a trusted policy refusal. | `owner_trusted_policy_refusal_leaves_files_journals_and_authority_unchanged` |
 | TS-16 | On a four-object fixture, two retention histories whose maxima are both 1 object and 3 bytes have maxima of 1 object and 3 bytes, and of 1 object and 2 bytes, after evicting the same entry, so the maxima cannot follow an eviction without a recomputation. On 256 generated histories, every successor's maxima equal the componentwise maxima of the cold per-state inventories, and the componentwise maximum of the predecessor's maxima and the target's inventory; per-state preflight accepts at the maxima and refuses one below on each positive component. | `trusted_retained_state_maxima_equal_cold_requirements` |
@@ -4712,7 +4712,7 @@ functions; each case runs all four scenarios on real directories.
 | TS-10 | `production_trusted_and_cold_publication_write_identical_bytes`, 16 cases | A trusted chain and a cold-checked history start from equal directories after a fresh checkpoint whose reclamation sidecar is absent, deferred by a pin, or reclaimable. After every step the two directories hold identical bytes and the two cores are equal. The first step resolves the sidecar as the test model's `resolve_sidecar` predicts: an absent sidecar leaves every file, a deferred one keeps its intent and the superseded files, and a reclaimable one removes the superseded index, the genesis pack and `reclaim.v1`. The three resolutions differ, and each occurs. |
 | TS-11 | `production_trusted_publication_faults_recover_and_retry`, 16 cases, and `production_trusted_crash_recovers_and_retries_every_phase` | A faulted and a reference trusted chain start from a deferred sidecar. A changed endpoint ceiling is refused `TrustedPolicyMismatch` with no hook and no file changed. One fault per step, in rotation: the active pack shortened by one byte at `AfterArtifactDirectorySync` stops the publication after hook 8 with `TrustedSuccessorAssembly(PackTail)`, whose available length is one below the authorized one, definitely not published, after which recovery and a trusted retry publish; a failed catalog directory sync stops it after hook 12 with `PublishedCatalogDirectory`, published; and the reclamation intent corrupted at `AfterCatalogSyncBeforeRecovery` stops it after hook 14 with `PublishedRecovery` (`InvalidData`), published. After each fault and its recovery, the faulted chain's core equals the bound successor and the reference chain's core, and the two directories hold identical bytes. All three faults occur. The crash check runs the incremental crash harness in trusted mode at each of hooks 2 to 14 and at every proper prefix of the catalog slot write. |
 | TS-12 | `production_empty_checkpoint_consults_no_limit` | An owner's empty checkpoint, under the normal limits and under minimal limits that set every limit to its least value, returns the current state with no hook and no cold check, leaving the owner ready, the files unchanged and the gate free. With populated journals, the minimal limits refuse the checkpoint with no hook and no cold check, leaving the owner ready at the same state and the files and journals unchanged. |
-| TS-13 | `production_awaiting_retry_acknowledges_once_without_cold_check` | A generation-lease counter at $`2^{64} - 1`$ makes the successor's pin overflow, so the owner awaits acknowledgement. A retry under the normal or the minimal limits acknowledges the published terminal with no hook, no cold check and no file changed, releases the predecessor's pin and holds the successor's; a second retry is an empty checkpoint at the same state; and both limit sets acknowledge the same state. A failure at `AfterCatalogSyncBeforeRecovery` leaves the owner in `RecoveryRequired`; reconciliation under zero admission limits is refused after one cold check, keeping the terminal and the permit, and reconciliation under unbounded limits acknowledges the terminal after one cold check. |
+| TS-13 | `production_awaiting_retry_acknowledges_once_without_cold_check` | A generation-lease counter at $`2^{64} - 1`$ makes the successor's pin overflow, so the owner awaits acknowledgement. A retry under the normal or the minimal limits, which reconciles before it checkpoints, acknowledges the published terminal with no hook, no cold check and no file changed, releases the predecessor's pin and holds the successor's; a second retry is an empty checkpoint at the same state; and both limit sets acknowledge the same state. A failure at `AfterCatalogSyncBeforeRecovery` leaves the owner in `RecoveryRequired`; reconciliation under zero admission limits is refused after one cold check, keeping the terminal and the permit, and reconciliation under unbounded limits acknowledges the terminal after one cold check. |
 | TS-14 | `production_trusted_success_does_not_imply_cold_admission`, 32 cases, and `production_trusted_owner_success_skips_incoming_admission_limits` | A trusted chain publishes each step under the unbounded policy. The cold demand of its successor, lowered by one on a rotating positive axis, gives the incoming limits, under which a cold-checked history refuses the same step: at its bind (`AdmissionPreflight`, `Inventory` or `RetentionWrite`), or after its publication (`PublishedAdmission`, published). Both occur, and the two cores stay equal. In the owner witness, a checkpoint of populated journals under zero admission limits publishes trustedly with hooks 2 to 14 and no cold check; cold admission of the same directory under those limits is refused, and under unbounded limits it admits the same state. |
 | TS-15 | `production_trusted_policy_refusal_changes_nothing` | A twin directory measures the exact policy of the owner's journal mutation. Every positive axis lowered by one is refused at the owner's trusted bind as `expected_refusal` predicts, with no hook and no cold check, leaving the owner ready at the same state, the files and journals unchanged and the gate free; ceiling and trial refusals both occur. The exact policy publishes the measured target with hooks 2 to 14 and no cold check. |
 | TS-17 | `check_trusted_durable_chain`, the corner chain | Each corner transition binds and publishes trustedly under the unbounded policy. The published core's shape equals the summary derived at the bind and the model state's cold shape; the cold-checked acquisition of each trusted core before its step, and the restart admission at the end, agree with the trusted summary. |
@@ -5607,7 +5607,7 @@ production checks that TH-08's test makes, in addition to its model half.
 
 | Row | Production check | What it requires |
 |---|---|---|
-| TH-08 | `production_owner_histories`, four seeded and thirty-two generated histories, and `run_owner_history_unwind_child` through `authority_unwind_child` | `ReopenDiscardsVolatileJournal`: after every restart by path, from every phase that a history reaches, the reopened owner's five journals are empty and its hot store holds the durable contents, and after every step a hot store bootstrapped from a cold copy does the same. `RecoveryAcceptsOnlyExactTerminal`: every reconcile, explicit, implicit or under a decoy bound to the store's pathname, adopts exactly the predecessor after an outcome class that keeps it and exactly the retained terminal after one that selects it; the decoy is never adopted or written; a reconcile under zero admission limits is refused and keeps RecoveryRequired, the terminal, the gate and the journals. `AtMostOneAcknowledgement`: each of the four acknowledgement retries after a successor pin overflow acknowledges with no hook, no cold admission and no index construction, and after an unwind past the acknowledgement the retry acknowledges through the committed marker and the next checkpoint publishes one generation. `GateHeldUntilResolution`: the operation gate is held exactly in the open phases, edits are blocked there, and a checkpoint cancelled while a reader holds the gate captures and publishes nothing and leaves the gate free. |
+| TH-08 | `production_owner_histories`, four seeded and thirty-two generated histories, and `run_owner_history_unwind_child` through `authority_unwind_child` | `ReopenDiscardsVolatileJournal`: after every restart by path, from every phase that a history reaches, the reopened owner's five journals are empty and its hot store holds the durable contents, and after every step a hot store bootstrapped from a cold copy does the same. `RecoveryAcceptsOnlyExactTerminal`: every reconcile, explicit, implicit (the one that a checkpoint retry runs before it checkpoints) or under a decoy bound to the store's pathname, adopts exactly the predecessor after an outcome class that keeps it and exactly the retained terminal after one that selects it; the decoy is never adopted or written; a reconcile under zero admission limits is refused and keeps RecoveryRequired, the terminal, the gate and the journals. `AtMostOneAcknowledgement`: each of the four acknowledgement retries after a successor pin overflow acknowledges with no hook, no cold admission and no index construction, and after an unwind past the acknowledgement the retry acknowledges through the committed marker and the next checkpoint publishes one generation. `GateHeldUntilResolution`: the operation gate is held exactly in the open phases, edits are blocked there, and a checkpoint cancelled while a reader holds the gate captures and publishes nothing and leaves the gate free. |
 
 **Reachability.** Some behaviours of the owner model cannot be reached, or
 mean nothing, in production histories, and the slice replaces them.
@@ -6898,8 +6898,8 @@ Each recovers a view of an installed checkpoint image and opens owners on it.
   the attachment is accepted and the writer lock is held. After close it
   requires all of the following:
   - the attachment is refused as `OwnerClosed`;
-  - `attach`, `checkpoint`, `reconcile`, `state` and a second `close` each
-    return `Closed`, and `phase` is `Closed`;
+  - `attach`, `checkpoint_view`, `reconcile`, `state` and a second `close`
+    each return `Closed`, and `phase` is `Closed`;
   - the view gate is free, the journals and the store files are unchanged, the
     writer lock can be taken, and a fresh recovery reads the recorded state.
 - `reopened_owners_refuse_every_earlier_incarnation` (OG-07) runs three cycles
@@ -6950,9 +6950,346 @@ failure reports every one of them.
 
 | ID | Required property | Test |
 |---|---|---|
-| OG-06 | Close revocation. Closing a quiescent durable owner refuses its earlier attachment as `OwnerClosed`, and `attach`, `checkpoint`, `reconcile`, `state` and a second `close` each return `Closed`, with `phase` reporting `Closed`. Close leaves the view gate free and the writer lock available, changes neither the hot store's journals nor the store files, and a fresh recovery reads the state recorded before close. | `close_revokes_old_attachments_without_mutation` |
+| OG-06 | Close revocation. Closing a quiescent durable owner refuses its earlier attachment as `OwnerClosed`, and `attach`, `checkpoint_view`, `reconcile`, `state` and a second `close` each return `Closed`, with `phase` reporting `Closed`. Close leaves the view gate free and the writer lock available, changes neither the hot store's journals nor the store files, and a fresh recovery reads the state recorded before close. | `close_revokes_old_attachments_without_mutation` |
 | OG-07 | Fresh incarnation on reopen. Over three cycles of close, recovery and reopen at an unchanged base, each new owner accepts only its own attachment and refuses every earlier one as `StaleIncarnation` naming both incarnations. The owners' incarnations increase. | `reopened_owners_refuse_every_earlier_incarnation` |
 | OG-08 | Pinned reads across close. A read handle taken before `into_rspace_authority` survives the owner's close. Close leaves exactly the handle's lease and frees the writer lock, while the handle still reads its generation's semantic roots and keeps the generation's exact key active, so `retire_pack_range_if_unleased` refuses its pack range. Once the handle is dropped, no lease is left and the range can be retired. | `pinned_reads_survive_owner_close_until_the_last_reader_releases` |
+
+No persisted byte, root, identity or wire message changes.
+
+### Durable owner checkpoint views under caller-held permits (2026-11-01)
+
+`RSpace::create_checkpoint` in
+[`rspace.rs`](../../../rspace++/src/rspace/rspace.rs) holds its operation
+gate's write permit while it checkpoints. Before this slice the durable owner
+in
+[`rspace_authority.rs`](../../../rspace++/src/rspace/persistence/durable/rspace_authority.rs)
+kept that gate as a field, and its `checkpoint` took a write permit of the
+same gate itself, with `write_owned().await`. A tokio `RwLock` is not
+reentrant: the second write request waits for the first permit, which the
+waiting caller holds, so a `create_checkpoint` that called the owner would
+never return. Nothing calls the owner from `RSpace` yet, so the deadlock was
+latent; task 7931 is the task that adds the call. The view extension of
+[`RSpaceJournalPublicationOwner.tla`](../../../formal/tlaplus/stack_safe_pda/RSpaceJournalPublicationOwner.tla)
+reproduces it. Its fault `retake-gate` makes the owner take the view gate
+again while it holds the owner mutex. `RetakeGateMutant` reports the
+violation of `LockOrder`, one state before the deadlock, and
+`RetakeGateDeadlockMutant`, which checks no invariant, reports the deadlock.
+
+This slice, leaf G08 of task 7931, replaces `checkpoint(limits)` with
+`checkpoint_view(permit, attachment, gate, hot, limits)`. The caller takes the
+permit and passes it in, and the owner takes no lock.
+
+- **Arguments.**
+  - `permit`, an `OwnedRwLockWriteGuard<()>` taken by value, is a write permit
+    of the caller's view gate.
+  - `attachment` is the `ViewAttachmentV1` that the caller obtained from
+    `attach`.
+  - `gate` is the caller's view gate, an `Arc<tokio::sync::RwLock<()>>`.
+  - `hot` is the caller's hot store, whose journal the checkpoint captures.
+  - `limits` are the publication limits, as before.
+- **The owner keeps neither the gate nor the hot store.** Its fields are now
+  its lifecycle, the generation-lease registry, its durable core and its
+  pending publication. `from_view` and `from_view_with` take the hot store by
+  reference only to validate its journal base, and `attach`, `state` and
+  `phase` take the caller's hot store. The pending record keeps the permit and
+  a reference to the store that captured, so `reconcile` and the
+  acknowledgement act on that store, and `reconcile` keeps its signature.
+- **Two refusals.** `DurableRSpaceTransactionError` gains `ForeignPermit` and
+  `Attachment(ViewAttachmentRefusalV1)`. Converting a
+  `ViewAttachmentRefusalV1` maps `OwnerClosed` to the existing `Closed` and
+  the other two refusals to `Attachment`, so `checkpoint_view`, given a permit
+  of its gate, refuses a closed owner with `Closed`, as every other operation
+  does.
+
+`checkpoint_view` decides in this order, before it captures anything:
+
+| Order | Check | Refusal when it fails |
+|---|---|---|
+| 1 | The permit was issued by `gate`: `Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(&permit), gate)`. | `ForeignPermit` |
+| 2 | The owner is live. | `Closed` |
+| 3 | The attachment's incarnation is the owner's. | `Attachment(StaleIncarnation { attached, current })` |
+| 4 | The attachment's base is the owner's current catalog slot. | `Attachment(StaleBase { attached, current })` |
+| 5 | No publication is pending. | `Unresolved(phase)` |
+| 6 | The hot store's journal names the owner's authority. | `Journal(..)` |
+
+Checks 2 to 4 are `validate_attachment`, unchanged since the incarnation slice
+above, and check 6 is the base validation that `checkpoint` already made. A
+refusal drops the permit when the call returns, so the caller's gate is free
+again, and nothing has been captured. Once every check passes, the capture
+moves the permit into the pending record, and from there:
+
+- an empty journal, or a refusal before publication begins, drops the record
+  and the permit with it, as before;
+- a publication whose outcome is unknown keeps the record in
+  `RecoveryRequired`, and the permit inside it keeps the gate held until
+  `reconcile` resolves the outcome, which is the base model's
+  `GateHeldUntilResolution`;
+- a successful publication is acknowledged in the same call:
+  `acknowledge_successor` adopts the successor and pins its generation, and
+  only then drops the permit.
+
+The permit is therefore held from the call until acknowledgement or refusal,
+and, when the outcome is unknown, until reconciliation. The caller protocol
+of this slice, and the owner's decisions:
+
+```text
+caller of view v
+  1. permit ← gate_v.write_owned().await         the view gate first
+  2. owner  ← owner_mutex.lock().await            the owner mutex second
+  3. a      ← owner.attach(&hot)
+  4. owner.checkpoint_view(permit, a, &gate_v, &hot, limits)
+        │
+        ├─ permit issued by gate_v? ────── no ──▶ ForeignPermit
+        ├─ owner live? ─────────────────── no ──▶ Closed
+        ├─ incarnation current? ────────── no ──▶ Attachment(StaleIncarnation)
+        ├─ base current? ───────────────── no ──▶ Attachment(StaleBase)
+        ├─ nothing pending? ────────────── no ──▶ Unresolved(phase)
+        ├─ journal names the authority? ── no ──▶ Journal(..)
+        │                                         each refusal drops the permit
+        ▼
+     capture: the pending record takes the permit and the capturing store
+        │
+        ├─ empty journal, or refused before publication ──▶ record dropped, gate free
+        ├─ outcome unknown ──▶ RecoveryRequired: record kept, gate held until reconcile
+        ▼
+     AwaitingAck ──▶ acknowledge_successor: successor adopted and pinned,
+                     then the permit dropped ──▶ Ok(state), gate free
+```
+
+**A pending publication.** The owner no longer reconciles inside a
+checkpoint. While a publication is pending, its record holds the permit of the
+gate that captured it, so no caller of that gate can take a new permit, and
+`checkpoint_view` refuses any other caller with `Unresolved(phase)`. A caller
+resolves the publication first:
+
+1. It locks the owner mutex, holding no gate, and calls `reconcile(limits)`,
+   which needs no permit and acts on the store kept in the record. It takes no
+   gate while it holds the mutex, so the lock order holds.
+2. If reconciliation adopted the retained terminal, the journal is published
+   and acknowledged, and the checkpoint is done. If it kept the predecessor,
+   the journal is still in the hot store, and the caller checkpoints it again
+   with a new permit and a new attachment.
+
+That is what `checkpoint` did inside the owner. The tests that drove
+`checkpoint` now follow this protocol through `checkpoint_with` in
+[`durable_rspace_authority.rs`](../../../rspace++/tests/persistence/durable_rspace_authority.rs).
+When the owner's phase is `Captured`, `RecoveryRequired` or `AwaitingAck`, the
+helper records the retained terminal, reconciles, and returns the reconciled
+state if it is the terminal's. Otherwise it takes a write permit with
+`write_owned().await`, attaches and calls `checkpoint_view`. It returns early
+exactly when `checkpoint` did:
+
+- `checkpoint` returned early when the reconciled state differed from the
+  state before reconciliation. That state was the predecessor's, because a
+  pending owner adopts its successor only at acknowledgement.
+- A successful `reconcile` of a pending publication returns one of two states:
+  the predecessor's, when recovery finds the catalog unchanged, or the
+  retained terminal's, once the terminal is acknowledged.
+- The terminal's generation is the predecessor's plus one. A sealed
+  transaction's target is the state at its mutation batch's target generation
+  ([`transaction.rs`](../../../rspace++/src/rspace/persistence/transaction.rs)).
+  `RSpaceMutationBatchV1::new` in
+  [`mutation.rs`](../../../rspace++/src/rspace/persistence/mutation.rs) sets
+  that generation to the base generation plus one, and
+  `require_contiguous_generation` refuses every parsed batch whose target is
+  another generation.
+- The reconciled state therefore differs from the predecessor's exactly when
+  it is the terminal's, so both forms return early in the same cases, and both
+  return an error of `reconcile` unchanged.
+- A closed owner holds no pending publication, because `close` refuses while
+  one is pending. Its phase is `Closed`, so the helper does not reconcile, and
+  `attach` refuses with `Closed`, the refusal that `checkpoint` returned
+  first.
+
+A checkpoint is now cancelled at the helper's `write_owned().await`, where its
+caller waits, because the owner no longer waits anywhere.
+`cancelling_a_checkpoint_waiting_for_the_exact_gate_does_not_capture_or_publish`
+and the cancellation step of the owner histories cancel it there while a
+reader holds the gate, and observe what they observed before: the first poll
+is pending, nothing is captured or published, the store is unchanged, and the
+journals keep their entries.
+
+**Lock order.** The caller takes its view gate before the owner mutex, as
+`CallCheckpoint` precedes `TakeMutex` in the model, and the owner takes
+neither: `checkpoint_view` is `async` for its callers but contains no await
+point. No path through the owner can therefore wait for a gate while the owner
+mutex is held, which is `LockOrder`.
+
+**Relation to the model.**
+
+| Model | This slice |
+|---|---|
+| `CallCheckpoint(view, permit)` takes `viewGate[permit]` for the caller. | The caller takes `gate.write_owned()` and passes the guard by value. |
+| `TakeMutex(view)`. Under the fault `retake-gate` the owner then takes the view gate again (`OwnerAcquiresGate`), which `LockOrder` forbids. | The caller holds the owner mutex, the `&mut self` of `checkpoint_view`, and the owner takes no gate. |
+| `CheckRequest(view)` checks `permitOk`, then `incarnationOk`, then `baseOk`. `CloseOwner` increments the incarnation, so on a closed owner every attachment fails `incarnationOk`. | Checks 1, 3 and 4 in the model's order. Check 2 refuses a closed owner first, as `Closed`, which names the reason that `incarnationOk` fails there. |
+| `CheckRequest` is enabled only when `pending = NoPending`; a view that holds the mutex over a pending record takes `ReconcileFirst` instead. | Check 5 refuses with `Unresolved(phase)`, and the caller reconciles first, as described above. |
+| The capture sets `pending.permit` to the request's permit and marks `viewGate[permit]` as `"pending"`, so `ReturnCall` does not free it. | The pending record owns the guard, so returning from the call does not release the gate. |
+| `PublishView(view, outcome)`: the outcome `new` enters `AwaitingAck` for the caller to acknowledge; any other outcome enters `RecoveryRequired` and reports `uncertain`, with the gate still marked. | `publish_captured`: a success enters `AwaitingAck`, and `checkpoint_view` acknowledges at once; an unknown outcome returns its error and keeps the record and its permit. |
+| `AcknowledgeView(view, completes)` frees `viewGate[pending.permit]` and sets the view's attachment base to the new root; an incomplete acknowledgement keeps the gate. | `acknowledge_successor` adopts the successor and drops the permit last; a failed acknowledgement keeps the record and the permit. The attachment is a value that the caller holds, so the caller attaches again to obtain the new base. |
+| `ReconcilePending`, with the mutex free, takes `Resolve`: a kept predecessor frees the gate and clears `pending`; a changed root enters `AwaitingAck`, whose resolution sets the attachment base and frees the gate. | `reconcile(limits)`, under the owner mutex alone: a kept predecessor drops the record and its permit; the retained terminal is acknowledged, which drops them once the successor is adopted. |
+| `ReconcileFirst(view)`: a view that holds the mutex resolves the pending record first, even one captured through another view's gate; the witness `NeverReconciledByOtherView` reaches that case. | Not taken. With one gate per owner, the only configuration before the view layer of task 7931, a pending record holds the caller's own gate, so no caller reaches `ReconcileFirst`, as in the model with one view. Whether a view may resolve a publication captured through another view's gate is decided with that view layer; until then `checkpoint_view` refuses it with `Unresolved(phase)`, which the unbound test below pins. |
+| `PermitProvenance`: a pending record holds its own view's permit. `ForeignPermitMutant` violates it. | Check 1 admits only a guard of `gate`, and the record keeps that guard. OG-09, and the red control without check 1. |
+| `NoViewMutationWhilePending`: while a record exists, its view's gate is marked pending. | The record owns the guard, so the gate stays held while the record exists. OG-09's second owner and the unbound test observe the gate still held after a refusal. |
+| `ExactBaseOrRefuse`: a captured record's base is the owner's root, and a `refused-base` result names an attachment whose base differs from that root. `SkipBaseMutant` violates it. | Check 4, and the capture takes its predecessor from the owner's current slot. OG-10, and the red control without check 4. |
+| The witness `NeverRefusedStaleBase` is violated: a stale base is refused. | OG-10 observes that refusal. |
+| `LockOrder`: no view holds the mutex while it waits to take its gate again. `RetakeGateMutant` violates it. | The owner takes no gate. OG-11, and the red control that takes the gate again. |
+
+**Relation to the legacy repository.** OG-10 asks that a stale base be refused
+in the same class as the legacy route. `checkpoint_at` in
+[`history_repository_impl.rs`](../../../rspace++/src/rspace/history/history_repository_impl.rs)
+compares the caller's expected root with the authority's current verified root
+before it writes, and refuses a difference with
+`RootError::RootCatalogConflict { expected_generation, actual_generation }`.
+Both refusals come before any write, both name the caller's base and the
+current one, and both are retried by taking the current base again. OG-10
+drives the two routes through the same history and compares those three
+observations.
+
+**Relation to the caller registry.** At the owner, OG-09 and OG-10 witness two
+rows that task 7932 still owes through the caller routes: CA-01,
+`permit_requires_exact_authority`, since neither a permit of another gate nor
+an attachment of another base authorizes a capture, and CA-08,
+`publication_invalidates_all_old_view_permits`, since an attachment taken
+before a publication is refused after it. Their derivation rows do not cite
+those rows, for the reason given at VR-01.
+
+**The tests.** The three bound tests and one unbound test are in
+[`owner_checkpoint_view.rs`](../../../rspace++/tests/persistence/owner_checkpoint_view.rs).
+Each opens an owner with the fixture of the durable owner tests and populates
+its hot store. Below, "no effects" means no publication hook, no cold
+admission and no index construction.
+
+- `a_foreign_gate_permit_is_refused_before_capture_without_mutation` (OG-09)
+  passes a write permit of a second, free gate, in two cases.
+  - On a ready owner with a current attachment, it requires the refusal
+    `ForeignPermit`, no capture hook and no effects; the phase `Ready`, with
+    the state, the generation key, the three bag journals and the store files
+    unchanged; both gates free; and the attachment still accepted by
+    `validate_attachment`.
+  - On an owner whose checkpoint failed at `AfterCatalogSyncBeforeRecovery`,
+    so that its publication awaits recovery, it requires the refusal
+    `ForeignPermit` and no effects; the phase `RecoveryRequired`, with the
+    retained terminal, the journals and the store files unchanged; and the
+    view gate held by the pending publication while the second gate is free.
+    Reconciling then returns the terminal's state and frees the view gate.
+- `a_stale_base_is_refused_like_a_legacy_root_conflict_without_mutation`
+  (OG-10) attaches and checkpoints once, so that the attachment is one
+  generation behind, then attaches again at the new base and puts one more
+  datum into the hot store.
+  - With a permit of the view gate, the stale attachment must be refused as
+    `Attachment(StaleBase { attached, current })`, naming the two catalog
+    slots, with no effects; the phase `Ready`, with the state, the generation
+    key, the journals and the store files unchanged; and the gate free. The
+    fresh attachment must then publish the next generation.
+  - An in-memory legacy repository runs the same history through
+    `checkpoint_at`. After one checkpoint advances its root, a checkpoint at
+    the earlier root must be refused with `RootCatalogConflict` naming both
+    generations, the root must be unchanged, and a checkpoint at the current
+    root must publish the next generation.
+- `checkpointing_under_the_held_view_gate_and_owner_mutex_completes` (OG-11)
+  runs on a tokio runtime with the owner in a `tokio::sync::Mutex`. Within a
+  ten-second timeout it takes the view gate's write permit, then the mutex,
+  attaches and awaits `checkpoint_view`, and a capture hook records whether
+  the gate and the mutex are held at capture. It requires the next generation
+  within the timeout; both locks held at capture and both free afterwards;
+  the phase `Ready` at the next generation; the store files changed; and the
+  hot store's journals empty.
+- `a_pending_publication_refuses_another_gates_own_permit` leaves a
+  publication awaiting recovery, as OG-09's second case does, then calls
+  `checkpoint_view` with a second gate and that gate's own permit. The permit
+  passes check 1 and the attachment is still current, so check 5 must refuse
+  with `Unresolved(RecoveryRequired)` and no effects, leaving the terminal,
+  the journals and the store files unchanged, the view gate held and the
+  second gate free.
+
+The last test is bound to no ID. It pins the refusal that stands for the
+model's `ReconcileFirst` until the view layer decides that case, as described
+above. Each test compares all of its observations in one assertion, so a
+failure reports every one of them.
+
+**The migrated tests.** Four test files called `checkpoint`, `attach`, `state`
+or `phase` without a gate or a hot store, and now pass them:
+
+- [`durable_rspace_authority.rs`](../../../rspace++/tests/persistence/durable_rspace_authority.rs)
+  defines `checkpoint_with`, and every checkpoint of its tests goes through it;
+- [`owner_history_production.rs`](../../../rspace++/tests/persistence/owner_history_production.rs),
+  which runs the owner histories of TH-08, passes the history's gate and hot
+  store at every step and gives a reopened owner a new gate;
+- in [`owner_incarnation.rs`](../../../rspace++/tests/persistence/owner_incarnation.rs),
+  OG-06 calls `checkpoint_view` on the closed owner with a permit of the free
+  view gate and requires `Closed`;
+- [`durable_read_handle.rs`](../../../rspace++/tests/persistence/durable_read_handle.rs)
+  checkpoints under a gate of its own.
+
+Apart from OG-11 and the two cancellations, the tests poll each checkpoint
+once with `poll_once` and require that poll to complete. An uncontended
+checkpoint has nothing to wait for, and a checkpoint that waits fails its test
+instead of hanging it, which is how the first red control below fails. Inside
+a tokio task every polled acquisition of a tokio lock spends one unit of the
+task's cooperative budget, and once the budget is spent even a free lock
+reports `Pending`. `poll_once` therefore polls under
+`tokio::task::unconstrained`, which exempts the future from the budget. No
+expected value of a migrated test changed. One test polled `checkpoint` by
+hand and matched `Poll::Ready(Err(Lease(CounterOverflow)))`; it now matches
+`Err(Lease(CounterOverflow))` from `poll_checkpoint_with`, which polls once
+and requires the poll to be ready.
+
+**Earlier sections.** Three rows describe a checkpoint retry that reconciled
+inside `checkpoint`. The retry now reconciles before it checkpoints, and the
+rows say so. Their tests check what they checked before; only the place of the
+reconciliation moved.
+
+- TS-13 in the trusted successor capability section: reconciliation and the
+  checkpoint retry, which reconciles before it checkpoints, acknowledge the
+  pending successor exactly once.
+- TS-13 in the trusted successor publication section: a retry, which
+  reconciles before it checkpoints, acknowledges the published terminal.
+- TH-08 in the journal-owner histories on real files section: an implicit
+  reconcile is the one that a checkpoint retry runs before it checkpoints.
+
+OG-06's row, and the description of its test in the owner incarnation section
+above, now name `checkpoint_view`, which the test calls on the closed owner.
+The rest of that section records that slice on its own tree and is unchanged,
+including its red control without the closed-owner check of `checkpoint`; the
+same check is now check 2 of `checkpoint_view`. Also unchanged, because they
+describe `checkpoint` as it was when they were written and measured, are the
+journal owner's description in the trusted successor publication section, the
+cancellation paragraph of the faulted trusted histories section, which names
+the gate as the owner's only await, and the measurement tables that count
+checkpoint retries.
+
+**Red controls.** Four production controls are each applied to an export of
+the candidate tree. Each runs the red selection of 137 tests: the four of this
+file, the five incarnation tests and the 128 durable persistence tests whose
+module names begin with `durable_`.
+
+- The owner takes the view gate again, with
+  `Arc::clone(gate).write_owned().await` after `validate_attachment`, as the
+  model's fault `retake-gate` does. Every checkpoint then waits for the permit
+  that its own caller holds: `poll_once` reports the pending first poll, and
+  OG-11's timeout expires. 26 tests fail: the four of this file, the twenty
+  durable owner tests, the read-handle test of VR-01, and the V2 durable
+  publication test that checkpoints through the owner. The incarnation tests
+  pass, because OG-06's closed owner is refused before the second wait.
+- Without check 1, OG-09's ready owner captures under the foreign permit and
+  publishes the next generation through all thirteen publication hooks, and
+  its pending owner refuses with `Unresolved(RecoveryRequired)` instead of
+  `ForeignPermit`. OG-09 fails.
+- Without the base comparison in `validate_attachment`, OG-10's stale
+  attachment is accepted, and the owner publishes the next generation from
+  its current base. OG-10 fails.
+- Without check 5, the other gate's permit captures again over the pending
+  publication. The new record replaces the pending one, so the retained
+  terminal is lost and the view gate is freed while the outcome is still
+  unknown. The unbound test fails.
+
+**The OG rows.**
+
+| ID | Required property | Test |
+|---|---|---|
+| OG-09 | Permit provenance. `checkpoint_view` refuses a write permit of another gate as `ForeignPermit` before it captures. On a ready owner the refusal runs no capture and no publication, and leaves the phase `Ready`, the state, the generation key, the hot store's journals and the store files unchanged, both gates free, and the attachment still valid. On an owner whose publication awaits recovery, the refusal runs no publication and leaves `RecoveryRequired`, the retained terminal, the journals and the store files unchanged, the view gate held by the pending publication and the other gate free; reconciliation then reaches the terminal and frees the view gate. | `a_foreign_gate_permit_is_refused_before_capture_without_mutation` |
+| OG-10 | Exact base. An attachment taken one generation before the owner's current base is refused as `Attachment(StaleBase { attached, current })`, naming both catalog slots, before capture, with no publication and with the phase `Ready`, the state, the generation key, the journals, the store files and the gate unchanged; an attachment at the current base then publishes the next generation. The legacy repository, through the same history, refuses a stale expected root with `RootCatalogConflict` naming both generations, keeps its root, and publishes the next generation from the current root. | `a_stale_base_is_refused_like_a_legacy_root_conflict_without_mutation` |
+| OG-11 | Caller-held permit. A caller that takes the view gate's write permit and then the owner's `tokio::sync::Mutex`, attaches and calls `checkpoint_view` completes within ten seconds and publishes the next generation, with both locks held at capture and both free afterwards, the phase `Ready`, the store files changed and the hot store's journals empty. | `checkpointing_under_the_held_view_gate_and_owner_mutex_completes` |
 
 No persisted byte, root, identity or wire message changes.
 
@@ -7192,6 +7529,9 @@ Classification is explicit: **D** is directly entailed at the model's abstractio
 | OG-06 | `CloseOwner`, `StaleIncarnationRefused` | `EXEC_ONLY` | P | Partially entailed (task 7931): `CloseOwner` fires only from `Quiescent` and leaves the owner not live, and `StaleIncarnationRefused` requires a live owner for every caller that publishes, acknowledges or applies. The writer lock, the view gate, the journals and the store files are not in the model; their preservation across close is the executable refinement obligation. |
 | OG-07 | `StaleIncarnationRefused`, `NeverRefusedRetainedIncarnation` | `EXEC_ONLY` | P | Partially entailed (task 7931): `StaleIncarnationRefused` requires the caller's attachment to come from the live owner's session, and the counterexample to the witness `NeverRefusedRetainedIncarnation` reaches the refusal of a retained attachment. The model's `FreshIncarnation` is exactly one more than the closed owner's value; the refinement obligation is that the shared counter's greater value differs from every earlier incarnation at an unchanged base. |
 | OG-08 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the lease count, writer lock, reads, key activity and reclamation decision of a read handle across the owner's close. It witnesses the caller registry's CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite, for the reason given at VR-01. |
+| OG-09 | `PermitProvenance`, `NoViewMutationWhilePending` | `EXEC_ONLY` | P | Partially entailed (task 7931): `PermitProvenance` requires a pending record to hold its own view's permit, and `NoViewMutationWhilePending` requires that view's gate to stay marked while the record exists; `ForeignPermitMutant` violates the first. The guard's identity, the capture hook, the journals and the store files are not in the model; refusing another gate's guard before capture, and preserving them, is the executable refinement obligation. |
+| OG-10 | `ExactBaseOrRefuse`, `NeverRefusedStaleBase` | `EXEC_ONLY` | P | Partially entailed (task 7931): `ExactBaseOrRefuse` requires a captured record's base to be the owner's root and a `refused-base` result to name an attachment whose base differs from that root, and the counterexample to the witness `NeverRefusedStaleBase` reaches that refusal; `SkipBaseMutant` violates the invariant. The catalog slots that the refusal names, the effects it leaves unchanged and the legacy repository's `RootCatalogConflict` are not in the model; they are the executable refinement obligation. |
+| OG-11 | `LockOrder` | `EXEC_ONLY` | P | Partially entailed (task 7931): `LockOrder` forbids a view that holds the owner mutex from waiting to take its gate again; `RetakeGateMutant` violates it one state before the deadlock, and `RetakeGateDeadlockMutant` reaches the deadlock. That `checkpoint_view` contains no await point, and that a tokio caller holding both locks completes, are the executable refinement obligation. |
 | OG-12 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result types of the legacy facet accessors and the conversion of an unavailable facet into each caller's error type. No model states a property of Rust accessor results or error types. |
 | OG-39 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 7931): the result of the RSpace constructors when the history repository refuses the store. No model states a property of Rust constructor results or panics. |
 | VR-01 | `EXEC_ONLY` | `EXEC_ONLY` | E | Executable-only (task 12397): the lease count, lease key activity and reclamation decision of a durable read handle across a successor and owner teardown. It witnesses the caller registry's CA-21, `pinned_generation_cannot_be_reclaimed`, and CA-22, `owner_teardown_preserves_retained_readers`, which this matrix does not cite: listing `RSpaceCallerAuthority.v` among its Rocq sources would oblige a row here for every capstone of that file. |
@@ -7683,6 +8023,49 @@ persisted byte, root, identity or wire message changed. See the durable owner
 incarnations and close section and pgmcp artifacts 1604 and 1607 for the gate
 and measurement logs, 1608 for the locations of the check's warnings, and 1605
 and 1606 for the earlier gate and its full clippy output.
+
+The 2026-11-01 owner checkpoint view slice of task 7931 adds OG-09, OG-10 and
+OG-11, so the catalog/derivation/binding registry now contains **236** IDs. On
+an export of the candidate tree, the four tests of the new file, the five
+owner-incarnation tests and the 20 durable owner tests passed in release and
+in debug, and the 128 tests of the durable persistence modules, the 21
+trusted-chain tests and the owner-history test of TH-08 passed in release.
+Four production controls were each applied to the export, and each made
+exactly the predicted tests fail among the 137 tests of the new file, the
+owner-incarnation module and the durable persistence modules:
+
+- The owner taking the view gate again made 26 fail: the four tests of the new
+  file, the 20 durable owner tests, VR-01 and the V2 durable publication test.
+  Every checkpoint except OG-11's was still pending at its first poll, and
+  OG-11 observed `(None, None, Ready, Some(7), true, true)` against the
+  required `(Some(Some(8)), Some((true, true)), Ready, Some(8), true, false)`:
+  no completion within ten seconds, no capture and nothing published.
+- `checkpoint_view` without check 1 made OG-09, and only OG-09, fail. Its
+  ready owner published generation 8 through all thirteen publication hooks
+  under the foreign permit, and its pending owner refused with
+  `Unresolved(RecoveryRequired)` instead of `ForeignPermit`.
+- `validate_attachment` without its base comparison made OG-10, and only
+  OG-10, fail. The stale attachment was accepted, and the owner published
+  generation 9 from its current base.
+- `checkpoint_view` without check 5 made the unbound test, and only it, fail.
+  The other gate's permit captured again over the pending publication, which
+  lost its retained terminal and freed the view gate.
+
+The export was then restored to the candidate blobs, and the 137 tests passed
+again. The library tests passed with 904 tests in release (10 ignored), the
+`mod` target with 179, and every rspace++ test target with 1,464 tests in 28
+binaries (13 ignored); the manifest test passed. `cargo check` of every
+workspace target passed, with the same eight warnings as before, all in files
+this slice does not touch, and clippy passed on `rspace_plus_plus` with
+warnings denied; clippy of every rspace++ test target lists the same 127
+findings as before this slice, none new. The 17 obligation checkers passed
+with `--check` and `--self-test`, and the PathMap aggregate with `--check`.
+The workspace-regression registry hashes the manifest test's file and the
+persistence test module, so it was regenerated, and the PathMap aggregate
+takes its new manifest digest. No persisted byte, root, identity or wire
+message changed. See the durable owner checkpoint views section and pgmcp
+artifacts 1610 and 1611 for the gate and measurement logs, and 1612 for the
+full output of the first control.
 
 ## Caller-authority contract (2026-09-06)
 

@@ -17,7 +17,7 @@ use super::durable_publication::{
 use super::durable_recovery::{checkpoint_image_for_profile, limits};
 use super::durable_rspace_authority::{
     Profile, Store, ZERO_ADMISSION, assert_authority_unwind_child, assert_empty,
-    assert_journals_unchanged, minimal_publication_limits, poll_checkpoint_with,
+    assert_journals_unchanged, checkpoint_with, minimal_publication_limits, poll_checkpoint_with,
     publication_limits,
 };
 use super::support::{PersistenceTrialDir, trial_scratch};
@@ -279,7 +279,7 @@ impl OwnerHistoryTrial {
         let (reopened, effects) = observed_effects(|| reopen(&live));
         let (owner, hot, gate) = reopened?;
         prop_assert_eq!(effects, recovered_effects(Vec::new()));
-        let origin = ready_state(&owner)?;
+        let origin = ready_state(&owner, &hot)?;
         let slot = select(&read_image(&live))?.slot();
         prop_assert_eq!(slot.state(), origin);
         let mut trial = Self {
@@ -308,6 +308,10 @@ impl OwnerHistoryTrial {
     }
 
     fn hot(&self) -> &Store { self.hot.as_ref().expect("the trial holds its hot store") }
+
+    fn handles(&self) -> (Arc<RwLock<()>>, Store) {
+        (Arc::clone(&self.gate), Arc::clone(self.hot()))
+    }
 
     fn finish(&mut self) -> Result<(), TestCaseError> {
         drop(self.owner.take());
@@ -560,8 +564,10 @@ impl OwnerHistoryTrial {
         settled: &OwnerHistorySettled,
         coverage: &mut OwnerHistoryCoverage,
     ) -> Result<(), TestCaseError> {
-        let (published, effects) =
-            observed_effects(|| poll_checkpoint_with(self.owner_mut(), publication_limits()));
+        let (gate, hot) = self.handles();
+        let (published, effects) = observed_effects(|| {
+            poll_checkpoint_with(self.owner_mut(), &gate, &hot, publication_limits())
+        });
         let state =
             published.map_err(|error| failure("a changed checkpoint was not published", error))?;
         prop_assert_eq!(effects, PublicationEffects::trusted());
@@ -591,8 +597,9 @@ impl OwnerHistoryTrial {
         before: &PendingDeltas,
         coverage: &mut OwnerHistoryCoverage,
     ) -> Result<(), TestCaseError> {
+        let (gate, hot) = self.handles();
         let (checkpointed, effects) =
-            observed_effects(|| poll_checkpoint_with(self.owner_mut(), bounds));
+            observed_effects(|| poll_checkpoint_with(self.owner_mut(), &gate, &hot, bounds));
         let state =
             checkpointed.map_err(|error| failure("an empty checkpoint was refused", error))?;
         prop_assert_eq!(effects, no_effects());
@@ -628,8 +635,10 @@ impl OwnerHistoryTrial {
                 OwnerHistoryFault::Torn(prefix) => arm_catalog_slot_write_prefix(prefix),
             }
         });
-        let (published, effects) =
-            observed_effects(|| poll_checkpoint_with(self.owner_mut(), publication_limits()));
+        let (gate, hot) = self.handles();
+        let (published, effects) = observed_effects(|| {
+            poll_checkpoint_with(self.owner_mut(), &gate, &hot, publication_limits())
+        });
         drop(armed);
         prop_assert!(fired.get(), "the owner's preparation hook did not arm the fault");
         prop_assert_eq!(effects, traced_effects(trace));
@@ -728,8 +737,10 @@ impl OwnerHistoryTrial {
     ) -> Result<(), TestCaseError> {
         let registry = self.owner().generation_leases();
         let counter = registry.replace_lease_counter_for_test(u64::MAX);
-        let (published, effects) =
-            observed_effects(|| poll_checkpoint_with(self.owner_mut(), publication_limits()));
+        let (gate, hot) = self.handles();
+        let (published, effects) = observed_effects(|| {
+            poll_checkpoint_with(self.owner_mut(), &gate, &hot, publication_limits())
+        });
         registry.replace_lease_counter_for_test(counter);
         drop(registry);
         match published {
@@ -760,11 +771,17 @@ impl OwnerHistoryTrial {
         coverage: &mut OwnerHistoryCoverage,
     ) -> Result<(), TestCaseError> {
         let gate = Arc::clone(&self.gate);
+        let hot = Arc::clone(self.hot());
         let reader = gate
             .try_read()
             .map_err(|error| failure("a ready owner's gate refused a reader", error))?;
         let (pending, effects) = observed_effects(|| {
-            let mut checkpoint = std::pin::pin!(self.owner_mut().checkpoint(publication_limits()));
+            let mut checkpoint = std::pin::pin!(checkpoint_with(
+                self.owner_mut(),
+                &gate,
+                &hot,
+                publication_limits()
+            ));
             checkpoint
                 .as_mut()
                 .poll(&mut Context::from_waker(Waker::noop()))
@@ -774,9 +791,9 @@ impl OwnerHistoryTrial {
         prop_assert!(pending, "a checkpoint contended at the gate did not wait");
         prop_assert_eq!(effects, no_effects());
         let owner = self.owner();
-        prop_assert_eq!(owner.phase(), Phase::Ready);
+        prop_assert_eq!(owner.phase(self.hot()), Phase::Ready);
         prop_assert_eq!(owner.pending_terminal(), None);
-        prop_assert_eq!(ready_state(owner)?, self.model.adopted.state());
+        prop_assert_eq!(ready_state(owner, self.hot())?, self.model.adopted.state());
         same_files(
             "a cancelled checkpoint changed the store",
             files,
@@ -798,8 +815,10 @@ impl OwnerHistoryTrial {
         coverage: &mut OwnerHistoryCoverage,
     ) -> Result<(), TestCaseError> {
         let kept = self.model.kept();
-        let (checkpointed, effects) =
-            observed_effects(|| poll_checkpoint_with(self.owner_mut(), publication_limits()));
+        let (gate, hot) = self.handles();
+        let (checkpointed, effects) = observed_effects(|| {
+            poll_checkpoint_with(self.owner_mut(), &gate, &hot, publication_limits())
+        });
         let state = checkpointed.map_err(|error| failure("an implicit reconcile failed", error))?;
         assert_empty(self.hot());
         match kept {
@@ -904,8 +923,9 @@ impl OwnerHistoryTrial {
         files: &Snapshot,
         coverage: &mut OwnerHistoryCoverage,
     ) -> Result<(), TestCaseError> {
+        let (gate, hot) = self.handles();
         let (retried, effects) = observed_effects(|| match checkpoint {
-            true => poll_checkpoint_with(self.owner_mut(), bounds),
+            true => poll_checkpoint_with(self.owner_mut(), &gate, &hot, bounds),
             false => self.owner_mut().reconcile(bounds),
         });
         let state =
@@ -954,7 +974,7 @@ impl OwnerHistoryTrial {
     fn check_settled(&self, settled: &OwnerHistorySettled) -> Result<(), TestCaseError> {
         let owner = self.owner();
         let model = &self.model;
-        prop_assert_eq!(owner.phase(), model.phase);
+        prop_assert_eq!(owner.phase(self.hot()), model.phase);
         prop_assert_eq!(
             self.gate.try_read().is_ok(),
             model.phase == Phase::Ready,
@@ -964,14 +984,14 @@ impl OwnerHistoryTrial {
         prop_assert!(pinned(&registry, model.adopted)?, "the adopted generation is not pinned");
         match model.phase {
             Phase::Ready => {
-                prop_assert_eq!(ready_state(owner)?, model.adopted.state());
+                prop_assert_eq!(ready_state(owner, self.hot())?, model.adopted.state());
                 prop_assert_eq!(
                     owner.generation_key(),
                     GenerationLeaseKeyV1::from_catalog(model.adopted)
                 );
             }
             Phase::RecoveryRequired | Phase::AwaitingAck => {
-                unresolved(owner, model.phase)?;
+                unresolved(owner, self.hot(), model.phase)?;
                 prop_assert_eq!(owner.pending_terminal(), model.terminal);
                 if let Some(terminal) = model.terminal {
                     prop_assert!(
@@ -1055,14 +1075,14 @@ impl OwnerHistoryTrial {
         let owner = self.owner();
         match self.model.phase {
             Phase::Ready => {
-                prop_assert_eq!(ready_state(owner)?, view.state());
+                prop_assert_eq!(ready_state(owner, self.hot())?, view.state());
                 prop_assert_eq!(
                     owner.generation_key(),
                     GenerationLeaseKeyV1::from_catalog(view.catalog())
                 );
                 Ok(())
             }
-            phase => unresolved(owner, phase),
+            phase => unresolved(owner, self.hot(), phase),
         }
     }
 }
@@ -1135,17 +1155,21 @@ fn normalized_edit(
     Ok(())
 }
 
-fn ready_state(owner: &DurableRSpaceAuthorityV1<Profile>) -> Result<StateVersionV1, TestCaseError> {
+fn ready_state(
+    owner: &DurableRSpaceAuthorityV1<Profile>,
+    hot: &Store,
+) -> Result<StateVersionV1, TestCaseError> {
     owner
-        .state()
+        .state(hot)
         .map_err(|error| failure("a ready owner reported no state", error))
 }
 
 fn unresolved(
     owner: &DurableRSpaceAuthorityV1<Profile>,
+    hot: &Store,
     phase: Phase,
 ) -> Result<(), TestCaseError> {
-    match owner.state() {
+    match owner.state(hot) {
         Err(DurableRSpaceTransactionError::Unresolved(reported)) if reported == phase => Ok(()),
         state => Err(failure("an open owner reported another state", state)),
     }
@@ -1250,7 +1274,7 @@ fn reopen(live: &Path) -> Result<Reopened, TestCaseError> {
     assert_empty(&hot);
     let gate = Arc::new(RwLock::new(()));
     let owner = view
-        .into_rspace_authority(Arc::clone(&hot), Arc::clone(&gate))
+        .into_rspace_authority(&hot)
         .map_err(|refused| failure("the recovered view refused its hot store", &refused.1))?;
     Ok((owner, hot, gate))
 }
@@ -1529,7 +1553,7 @@ pub(super) fn run_owner_history_unwind_child(case: &str, marker: PathBuf) {
             assert!(self.observed.get(), "the acknowledgement hook did not run");
             let new_key = GenerationLeaseKeyV1::from_catalog(self.terminal);
             let trial = &mut self.trial;
-            assert_eq!(trial.owner().phase(), Phase::AwaitingAck);
+            assert_eq!(trial.owner().phase(trial.hot()), Phase::AwaitingAck);
             assert!(trial.gate.try_read().is_err());
             assert_empty(trial.hot());
             let registry = trial.owner().generation_leases();
@@ -1545,14 +1569,16 @@ pub(super) fn run_owner_history_unwind_child(case: &str, marker: PathBuf) {
             );
             assert_eq!(trial.owner().pending_terminal(), Some(self.terminal));
             let files = directory_snapshot(&trial.live);
-            let (retried, effects) =
-                observed_effects(|| poll_checkpoint_with(trial.owner_mut(), publication_limits()));
+            let (gate, hot) = trial.handles();
+            let (retried, effects) = observed_effects(|| {
+                poll_checkpoint_with(trial.owner_mut(), &gate, &hot, publication_limits())
+            });
             assert_eq!(
                 retried.expect("the retry acknowledges the published successor"),
                 self.terminal.state()
             );
             assert_eq!(effects, no_effects());
-            assert_eq!(trial.owner().phase(), Phase::Ready);
+            assert_eq!(trial.owner().phase(trial.hot()), Phase::Ready);
             assert!(trial.gate.try_read().is_ok());
             assert!(
                 !registry

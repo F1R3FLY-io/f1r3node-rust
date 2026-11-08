@@ -6,7 +6,7 @@ use super::checkpoint_wal::fixture_for_profile;
 use super::durable_publication::install_checkpoint_image;
 use super::durable_recovery::{checkpoint_image_for_profile, limits};
 use super::durable_rspace_authority::{
-    Profile, Store, poll_checkpoint_with, populate, publication_limits, store_files,
+    Profile, Store, poll_once, populate, publication_limits, store_files,
 };
 use super::support::{PersistenceTrialDir, trial_scratch};
 use crate::rspace::bag::BagDelta;
@@ -48,12 +48,12 @@ fn open_owner(
     let hot = hot_store(&view);
     let gate = Arc::new(RwLock::new(()));
     let owner = view
-        .into_rspace_authority(Arc::clone(&hot), Arc::clone(&gate))
+        .into_rspace_authority(&hot)
         .unwrap_or_else(|failure| panic!("open the durable owner: {:?}", failure.1));
     (hot, gate, owner)
 }
 
-fn journal_bags(hot: &Store) -> [Option<BagDelta>; 3] {
+pub(super) fn journal_bags(hot: &Store) -> [Option<BagDelta>; 3] {
     let pending = hot.pending_deltas().expect("read the hot store's journals");
     [pending.data, pending.continuations, pending.joins]
 }
@@ -71,23 +71,33 @@ fn writer_is_free(path: &std::path::Path) -> bool {
 fn close_revokes_old_attachments_without_mutation() {
     let scratch = installed_store("owner-incarnation-close-");
     let (hot, gate, mut owner) = open_owner(recover(scratch.path()));
-    let attachment = owner.attach().expect("attach to the live owner");
+    let attachment = owner.attach(&hot).expect("attach to the live owner");
     populate(&hot);
-    let old = owner.state().expect("read the live owner's state");
+    let old = owner.state(&hot).expect("read the live owner's state");
     let journals = journal_bags(&hot);
     let files = store_files(scratch.path());
     let live = (owner.validate_attachment(attachment), writer_is_free(scratch.path()));
     owner.close().expect("close the quiescent owner");
     let refused = (
         owner.validate_attachment(attachment),
-        matches!(owner.attach(), Err(DurableRSpaceTransactionError::Closed)),
+        matches!(owner.attach(&hot), Err(DurableRSpaceTransactionError::Closed)),
         matches!(
-            poll_checkpoint_with(&mut owner, publication_limits()),
+            poll_once(
+                owner.checkpoint_view(
+                    Arc::clone(&gate)
+                        .try_write_owned()
+                        .expect("take the free view gate"),
+                    attachment,
+                    &gate,
+                    &hot,
+                    publication_limits(),
+                )
+            ),
             Err(DurableRSpaceTransactionError::Closed)
         ),
         matches!(owner.reconcile(publication_limits()), Err(DurableRSpaceTransactionError::Closed)),
-        matches!(owner.state(), Err(DurableRSpaceTransactionError::Closed)),
-        owner.phase(),
+        matches!(owner.state(&hot), Err(DurableRSpaceTransactionError::Closed)),
+        owner.phase(&hot),
         matches!(owner.close(), Err(DurableRSpaceTransactionError::Closed)),
     );
     let gate_free = matches!(gate.try_write(), Ok(_));
@@ -127,8 +137,8 @@ fn reopened_owners_refuse_every_earlier_incarnation() {
     let mut attachments = Vec::with_capacity(CYCLES + 1);
     let mut observed = Vec::with_capacity(CYCLES);
     let mut expected = Vec::with_capacity(CYCLES);
-    let (_, _, first) = open_owner(recover(scratch.path()));
-    attachments.push(first.attach().expect("attach to the first owner"));
+    let (first_hot, _, first) = open_owner(recover(scratch.path()));
+    attachments.push(first.attach(&first_hot).expect("attach to the first owner"));
     owners.push(first);
     for _ in 0..CYCLES {
         owners
@@ -136,8 +146,8 @@ fn reopened_owners_refuse_every_earlier_incarnation() {
             .expect("an owner is open")
             .close()
             .expect("close the quiescent owner");
-        let (_, _, reopened) = open_owner(recover(scratch.path()));
-        let current = reopened.attach().expect("attach to the reopened owner");
+        let (hot, _, reopened) = open_owner(recover(scratch.path()));
+        let current = reopened.attach(&hot).expect("attach to the reopened owner");
         observed.push(
             attachments
                 .iter()
@@ -273,14 +283,8 @@ fn an_exhausted_allocator_refuses_the_owner_and_returns_its_view() {
     let view = recover(scratch.path());
     let state = view.state();
     let hot = hot_store(&view);
-    let gate = Arc::new(RwLock::new(()));
     let exhausted = OwnerIncarnationAllocatorV1::starting_at(u64::MAX);
-    let (view, error) = match DurableRSpaceAuthorityV1::from_view_with(
-        view,
-        Arc::clone(&hot),
-        Arc::clone(&gate),
-        &exhausted,
-    ) {
+    let (view, error) = match DurableRSpaceAuthorityV1::from_view_with(view, &hot, &exhausted) {
         Ok(_) => panic!("an exhausted incarnation allocator opened an owner"),
         Err(failure) => *failure,
     };
@@ -290,9 +294,9 @@ fn an_exhausted_allocator_refuses_the_owner_and_returns_its_view() {
     );
     let returned = view.state();
     let reopened = view
-        .into_rspace_authority(hot, gate)
+        .into_rspace_authority(&hot)
         .unwrap_or_else(|failure| panic!("open the durable owner: {:?}", failure.1))
-        .state()
+        .state(&hot)
         .expect("read the reopened owner's state");
     assert_eq!(
         (refused, returned, reopened),

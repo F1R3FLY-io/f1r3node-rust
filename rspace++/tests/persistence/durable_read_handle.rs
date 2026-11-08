@@ -5,7 +5,9 @@ use tokio::sync::RwLock;
 use super::checkpoint_wal::fixture_for_profile;
 use super::durable_publication::install_checkpoint_image;
 use super::durable_recovery::{checkpoint_image_for_profile, limits};
-use super::durable_rspace_authority::{Profile, populate, publication_limits};
+use super::durable_rspace_authority::{
+    Profile, poll_checkpoint_with, populate, publication_limits,
+};
 use super::support::trial_scratch;
 use crate::rspace::hot_store::{DurableHotStoreBootstrapLimits, HotStoreInstances};
 use crate::rspace::persistence::durable::{DurableAdmissionLimitsV1, recover_read_authority};
@@ -38,13 +40,12 @@ async fn read_handle_pins_its_generation_across_a_successor_and_owner_teardown()
         HotStoreInstances::create_from_durable(&view, DurableHotStoreBootstrapLimits::default())
             .expect("bootstrap the hot store from the view"),
     );
+    let gate = Arc::new(RwLock::new(()));
     let mut owner = view
-        .into_rspace_authority(Arc::clone(&hot), Arc::new(RwLock::new(())))
+        .into_rspace_authority(&hot)
         .unwrap_or_else(|failure| panic!("{:?}", failure.1));
     populate(&hot);
-    let next = owner
-        .checkpoint(publication_limits())
-        .await
+    let next = poll_checkpoint_with(&mut owner, &gate, &hot, publication_limits())
         .expect("publish and acknowledge a successor");
     assert_eq!(next.generation(), old_state.generation() + 1);
     assert_eq!(handle.semantic_roots().expect("read through the handle"), old_roots);

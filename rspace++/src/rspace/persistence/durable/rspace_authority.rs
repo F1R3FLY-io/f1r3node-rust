@@ -60,6 +60,8 @@ pub(crate) enum DurableRSpaceTransactionError {
     },
     Closed,
     IncarnationExhausted(OwnerIncarnationExhaustedV1),
+    ForeignPermit,
+    Attachment(ViewAttachmentRefusalV1),
 }
 
 impl From<MutationError> for DurableRSpaceTransactionError {
@@ -100,6 +102,15 @@ impl From<RSpaceError> for DurableRSpaceTransactionError {
 
 impl From<OwnerIncarnationExhaustedV1> for DurableRSpaceTransactionError {
     fn from(error: OwnerIncarnationExhaustedV1) -> Self { Self::IncarnationExhausted(error) }
+}
+
+impl From<ViewAttachmentRefusalV1> for DurableRSpaceTransactionError {
+    fn from(refusal: ViewAttachmentRefusalV1) -> Self {
+        match refusal {
+            ViewAttachmentRefusalV1::OwnerClosed => Self::Closed,
+            refusal => Self::Attachment(refusal),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,19 +192,31 @@ enum OwnerLifecycleV1 {
     },
 }
 
+type OwnerHotStoreV1<P> = Arc<
+    Box<
+        dyn HotStore<
+                <P as SemanticProfile>::Channel,
+                <P as SemanticProfile>::Pattern,
+                <P as SemanticProfile>::Datum,
+                <P as SemanticProfile>::Continuation,
+            >,
+    >,
+>;
+
 pub(crate) struct DurableRSpaceAuthorityV1<P: SemanticProfile>
 where P::Channel: Clone + Hash + Eq
 {
     lifecycle: OwnerLifecycleV1,
     registry: GenerationLeaseRegistryV1,
     source: Arc<DurableAuthorityCoreV1<P>>,
-    hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
-    operation_gate: Arc<RwLock<()>>,
     pending: Option<Box<PendingJournalPublicationV1<P>>>,
 }
 
-struct PendingJournalPublicationV1<P: SemanticProfile> {
+struct PendingJournalPublicationV1<P: SemanticProfile>
+where P::Channel: Clone + Hash + Eq
+{
     permit: OwnedRwLockWriteGuard<()>,
+    hot: OwnerHotStoreV1<P>,
     captured: CapturedHotJournalV1,
     predecessor: CatalogSlotV1,
     expected: Option<CatalogSlotV1>,
@@ -209,21 +232,29 @@ enum PendingJournalPhaseV1<P: SemanticProfile> {
     },
 }
 
+impl<P: SemanticProfile> PendingJournalPhaseV1<P> {
+    fn observed(&self) -> JournalPublicationPhaseV1 {
+        match self {
+            Self::Captured => JournalPublicationPhaseV1::Captured,
+            Self::RecoveryRequired => JournalPublicationPhaseV1::RecoveryRequired,
+            Self::AwaitingAck { .. } => JournalPublicationPhaseV1::AwaitingAck,
+        }
+    }
+}
+
 impl<P: SemanticProfile> DurableRSpaceAuthorityV1<P>
 where P::Channel: Clone + Hash + Eq
 {
     pub(crate) fn from_view(
         view: DurableAuthorityViewV1<P>,
-        hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
-        operation_gate: Arc<RwLock<()>>,
+        hot: &OwnerHotStoreV1<P>,
     ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, DurableRSpaceTransactionError)>> {
-        Self::from_view_with(view, hot, operation_gate, &OWNER_INCARNATIONS)
+        Self::from_view_with(view, hot, &OWNER_INCARNATIONS)
     }
 
     pub(crate) fn from_view_with(
         view: DurableAuthorityViewV1<P>,
-        hot: Arc<Box<dyn HotStore<P::Channel, P::Pattern, P::Datum, P::Continuation>>>,
-        operation_gate: Arc<RwLock<()>>,
+        hot: &OwnerHotStoreV1<P>,
         incarnations: &OwnerIncarnationAllocatorV1,
     ) -> Result<Self, Box<(DurableAuthorityViewV1<P>, DurableRSpaceTransactionError)>> {
         if let Err(error) =
@@ -249,41 +280,48 @@ where P::Channel: Clone + Hash + Eq
             },
             registry,
             source: source.into_core(),
-            hot,
-            operation_gate,
             pending: None,
         })
     }
 
-    pub(crate) fn phase(&self) -> JournalPublicationPhaseV1 {
-        match (&self.lifecycle, self.pending.as_ref().map(|pending| &pending.phase)) {
-            (OwnerLifecycleV1::Closed { .. }, _) => JournalPublicationPhaseV1::Closed,
-            (_, None) if self.validate_base().is_ok() => JournalPublicationPhaseV1::Ready,
-            (_, None) => JournalPublicationPhaseV1::Invalidated,
-            (_, Some(PendingJournalPhaseV1::Captured)) => JournalPublicationPhaseV1::Captured,
-            (_, Some(PendingJournalPhaseV1::RecoveryRequired)) => {
-                JournalPublicationPhaseV1::RecoveryRequired
-            }
-            (_, Some(PendingJournalPhaseV1::AwaitingAck { .. })) => {
-                JournalPublicationPhaseV1::AwaitingAck
-            }
-        }
+    fn pending_phase(&self) -> Option<JournalPublicationPhaseV1> {
+        self.pending
+            .as_ref()
+            .map(|pending| pending.phase.observed())
     }
 
-    pub(crate) fn state(&self) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+    fn quiescent_state(&self) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
         let OwnerLifecycleV1::Live { .. } = self.lifecycle else {
             return Err(DurableRSpaceTransactionError::Closed);
         };
-        if self.pending.is_some() {
-            return Err(DurableRSpaceTransactionError::Unresolved(self.phase()));
+        match self.pending_phase() {
+            Some(phase) => Err(DurableRSpaceTransactionError::Unresolved(phase)),
+            None => Ok(self.source.authority().slot().state()),
         }
-        self.validate_base()?;
-        Ok(self.source.authority().slot().state())
     }
 
-    fn validate_base(&self) -> Result<(), RSpaceError> {
-        self.hot
-            .validate_journal_authority(self.source.authority().slot(), &self.registry)
+    pub(crate) fn phase(&self, hot: &OwnerHotStoreV1<P>) -> JournalPublicationPhaseV1 {
+        match (&self.lifecycle, self.pending_phase()) {
+            (OwnerLifecycleV1::Closed { .. }, _) => JournalPublicationPhaseV1::Closed,
+            (_, Some(phase)) => phase,
+            (_, None) => match self.validate_base(hot) {
+                Ok(()) => JournalPublicationPhaseV1::Ready,
+                Err(_) => JournalPublicationPhaseV1::Invalidated,
+            },
+        }
+    }
+
+    pub(crate) fn state(
+        &self,
+        hot: &OwnerHotStoreV1<P>,
+    ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+        let state = self.quiescent_state()?;
+        self.validate_base(hot)?;
+        Ok(state)
+    }
+
+    fn validate_base(&self, hot: &OwnerHotStoreV1<P>) -> Result<(), RSpaceError> {
+        hot.validate_journal_authority(self.source.authority().slot(), &self.registry)
     }
 
     pub(crate) fn pending_terminal(&self) -> Option<CatalogSlotV1> {
@@ -301,11 +339,14 @@ where P::Channel: Clone + Hash + Eq
         }
     }
 
-    pub(crate) fn attach(&self) -> Result<ViewAttachmentV1, DurableRSpaceTransactionError> {
+    pub(crate) fn attach(
+        &self,
+        hot: &OwnerHotStoreV1<P>,
+    ) -> Result<ViewAttachmentV1, DurableRSpaceTransactionError> {
         let OwnerLifecycleV1::Live { incarnation, .. } = self.lifecycle else {
             return Err(DurableRSpaceTransactionError::Closed);
         };
-        self.state()?;
+        self.state(hot)?;
         Ok(ViewAttachmentV1 {
             incarnation,
             base: self.source.authority().slot(),
@@ -343,33 +384,36 @@ where P::Channel: Clone + Hash + Eq
             return Err(DurableRSpaceTransactionError::Closed);
         };
         let generation = generation_lease.key();
-        if self.pending.is_some() {
-            return Err(DurableRSpaceTransactionError::Unresolved(self.phase()));
-        }
-        self.lifecycle = OwnerLifecycleV1::Closed { generation };
-        Ok(())
-    }
-
-    pub(crate) async fn checkpoint(
-        &mut self,
-        limits: DurableRSpacePublicationLimitsV1,
-    ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
-        let OwnerLifecycleV1::Live { .. } = self.lifecycle else {
-            return Err(DurableRSpaceTransactionError::Closed);
-        };
-        if self.pending.is_some() {
-            let old = self.source.authority().slot().state();
-            let recovered = self.reconcile(limits)?;
-            if recovered != old {
-                return Ok(recovered);
+        match self.pending_phase() {
+            Some(phase) => Err(DurableRSpaceTransactionError::Unresolved(phase)),
+            None => {
+                self.lifecycle = OwnerLifecycleV1::Closed { generation };
+                Ok(())
             }
         }
-        let permit = Arc::clone(&self.operation_gate).write_owned().await;
-        self.validate_base()?;
+    }
+
+    pub(crate) async fn checkpoint_view(
+        &mut self,
+        permit: OwnedRwLockWriteGuard<()>,
+        attachment: ViewAttachmentV1,
+        gate: &Arc<RwLock<()>>,
+        hot: &OwnerHotStoreV1<P>,
+        limits: DurableRSpacePublicationLimitsV1,
+    ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
+        if !Arc::ptr_eq(OwnedRwLockWriteGuard::rwlock(&permit), gate) {
+            return Err(DurableRSpaceTransactionError::ForeignPermit);
+        }
+        self.validate_attachment(attachment)?;
+        if let Some(phase) = self.pending_phase() {
+            return Err(DurableRSpaceTransactionError::Unresolved(phase));
+        }
+        self.validate_base(hot)?;
         let predecessor = self.source.authority().slot();
-        let captured = self.hot.capture_pending_journal(predecessor)?;
+        let captured = hot.capture_pending_journal(predecessor)?;
         self.pending = Some(Box::new(PendingJournalPublicationV1 {
             permit,
+            hot: Arc::clone(hot),
             captured,
             predecessor,
             expected: None,
@@ -377,9 +421,11 @@ where P::Channel: Clone + Hash + Eq
         }));
         #[cfg(test)]
         hooks::run(hooks::JournalOwnerHookPoint::AfterCapture);
-        let publication = self.publish_captured(limits);
-        if publication.is_err() && self.phase() == JournalPublicationPhaseV1::Captured {
-            self.validate_base()?;
+        let publication = self.publish_captured(hot, limits);
+        if let (Err(_), Some(JournalPublicationPhaseV1::Captured)) =
+            (&publication, self.pending_phase())
+        {
+            self.validate_base(hot)?;
             self.pending = None;
         }
         publication?;
@@ -388,16 +434,17 @@ where P::Channel: Clone + Hash + Eq
 
     fn publish_captured(
         &mut self,
+        hot: &OwnerHotStoreV1<P>,
         limits: DurableRSpacePublicationLimitsV1,
     ) -> Result<(), DurableRSpaceTransactionError> {
         let pending = self.pending.as_mut().expect("checkpoint owns its capture");
-        self.hot.validate_pending_journal(&pending.captured)?;
+        hot.validate_pending_journal(&pending.captured)?;
         let observation = pending.captured.observation();
         let mutation =
             match mutation_batch_from_observation(pending.predecessor.state(), observation) {
                 Ok(mutation) => mutation,
                 Err(MutationError::EmptyBatch) => {
-                    self.validate_base()?;
+                    self.validate_base(hot)?;
                     self.pending = None;
                     return Ok(());
                 }
@@ -422,7 +469,7 @@ where P::Channel: Clone + Hash + Eq
             .prepare_transaction(lease, &sealed, sequence, limits.wal)?;
         #[cfg(test)]
         hooks::run(hooks::JournalOwnerHookPoint::AfterPreparation);
-        self.hot.validate_pending_journal(&pending.captured)?;
+        hot.validate_pending_journal(&pending.captured)?;
         pending.phase = PendingJournalPhaseV1::RecoveryRequired;
         let successor = publish_trusted_incremental_v1(
             lease,
@@ -449,13 +496,14 @@ where P::Channel: Clone + Hash + Eq
         &mut self,
         limits: DurableRSpacePublicationLimitsV1,
     ) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
-        if self.pending.is_none() {
-            return self.state();
-        }
-        if self.phase() == JournalPublicationPhaseV1::AwaitingAck {
+        let Some(pending) = self.pending.as_ref() else {
+            return self.quiescent_state();
+        };
+        let hot = Arc::clone(&pending.hot);
+        if let PendingJournalPhaseV1::AwaitingAck { .. } = pending.phase {
             return self.acknowledge_successor();
         }
-        self.validate_base()?;
+        self.validate_base(&hot)?;
         let OwnerLifecycleV1::Live { lease, .. } = &mut self.lifecycle else {
             return Err(DurableRSpaceTransactionError::Closed);
         };
@@ -473,11 +521,10 @@ where P::Channel: Clone + Hash + Eq
             .as_mut()
             .expect("reconciliation retains its capture");
         if actual == pending.predecessor {
-            self.hot
-                .validate_journal_authority(actual, &self.registry)?;
+            hot.validate_journal_authority(actual, &self.registry)?;
             self.source = successor;
             self.pending = None;
-            return self.state();
+            return self.state(&hot);
         }
         if pending.expected != Some(actual) {
             return Err(DurableRSpaceTransactionError::UnexpectedTerminal {
@@ -495,14 +542,16 @@ where P::Channel: Clone + Hash + Eq
 
     fn acknowledge_successor(&mut self) -> Result<StateVersionV1, DurableRSpaceTransactionError> {
         let Some(pending) = self.pending.as_mut() else {
-            return self.state();
+            return self.quiescent_state();
         };
+        let hot = Arc::clone(&pending.hot);
+        let observed = pending.phase.observed();
         let PendingJournalPhaseV1::AwaitingAck {
             successor,
             generation_lease,
         } = &mut pending.phase
         else {
-            return Err(DurableRSpaceTransactionError::Unresolved(self.phase()));
+            return Err(DurableRSpaceTransactionError::Unresolved(observed));
         };
         if generation_lease.is_none() {
             #[cfg(test)]
@@ -514,7 +563,7 @@ where P::Channel: Clone + Hash + Eq
         }
         #[cfg(test)]
         hooks::run(hooks::JournalOwnerHookPoint::AfterSuccessorPin);
-        self.hot.acknowledge_pending_journal(
+        hot.acknowledge_pending_journal(
             &pending.captured,
             pending
                 .expected
@@ -523,7 +572,7 @@ where P::Channel: Clone + Hash + Eq
         )?;
         #[cfg(test)]
         hooks::run(hooks::JournalOwnerHookPoint::AfterAcknowledgement);
-        self.hot.validate_journal_acknowledgement(
+        hot.validate_journal_acknowledgement(
             &pending.captured,
             successor.authority().slot(),
             &self.registry,
@@ -549,6 +598,6 @@ where P::Channel: Clone + Hash + Eq
         self.source = successor;
         *current_pin = generation_lease.expect("successor pin precedes acknowledgement");
         drop(permit);
-        self.state()
+        self.state(&hot)
     }
 }
