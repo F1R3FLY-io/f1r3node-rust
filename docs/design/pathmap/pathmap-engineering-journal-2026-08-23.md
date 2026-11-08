@@ -22770,6 +22770,262 @@ recipe remain required.
 changes. Task 7939 discharges DT-01 to DT-10 as executable properties and promotes DT into
 the manifest; task 7940 owns negotiation, a user stop point.
 
+### J-258 — 2026-11-08: the cost of a trusted commit, measured (task 7929)
+
+**DERIVED.** Task 7929 asks whether a trusted commit costs only what it changes. A trusted
+commit seals a mutation, binds it under an exact trusted policy, prepares it and publishes it
+with no physical recovery and no cold admission. The code therefore implies that its work
+depends on the keys that it changes, and not on the $`N`$ keys of the current state or the
+$`H`$ states of the retained history. Pgmcp experiment 446 tests that implication. It was
+preregistered on 2026-10-29, before any sample, at commit `941ff07d`, from the reviewed plan
+(pgmcp artifact 1155). It has one hypothesis and ten gates:
+
+- **H1.** The thread CPU time of a trusted commit that replaces one key has a log-log exponent
+  whose upper 95% bound is at most 0.25, on axis U ($`N = 2^{10}`$ to $`2^{18}`$ keys at
+  $`H = 2^{10}`$) and on axis R ($`H = 2^{8}`$ to $`2^{16}`$ states at $`N = 2^{12}`$). An
+  exponent is the slope of the logarithm of a per-commit cost against the logarithm of the
+  axis's size: 0 means independent of the size, and 1 means linear in it.
+- **G1 to G10.** Exact work; determinism; wall time; allocations; I/O; resident memory;
+  metadata; the delta axis D and the deletion axis L; physical eviction on axis E; and four
+  negative controls.
+
+The catalog's
+[fixed-delta section](generation-checkpoint-invariant-catalog-2026-08-28.md#fixed-delta-trusted-commit-scaling-2026-10-29)
+defines the fixture, the oracles, the axes and the properties SW-01 to SW-04, and it records
+the results with two figures, [the work of one commit](figures/fixed-delta-commit-work.svg) and
+[the experiment as it ran](figures/fixed-delta-scaling-protocol.svg).
+[Section 5.63 of the stack-safety report](../stack-safety/stack-safety-report-2026-07-29.md#563-fixed-delta-trusted-commit-scaling-ss-c36)
+(SS-C36) records the numbers against that report's register and makes no stack claim. The
+[measurement record](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03.md)
+holds the committed summaries and the program that derives them. This entry holds what those
+do not: the decisions, the amendments, the cost audit, the evidence claim by claim, and the
+boundary.
+
+Eight commits carry the task. `a2b72cc21` adds SW-01 to SW-03, `941ff07d` the harness, its
+driver and SW-04, `9ba5bc24d` the measurement files, `b8681ca82` the figures, `99a79e326` the
+catalog results and `05ce34ef` the stack-safety section. `bedff591` corrects how those
+records describe hypothesis H-O2 (see CORRECTION below), and the commit of this entry closes
+the task.
+
+**RESULT.** The decision population, `decision-20261101T101751Z`, has 21 cells, each with one
+build, two verify runs and 31 decision time processes, collected on CPU 2 of one host from
+2026-11-01 to 2026-11-03. A verify run executes the commits in the child's verify mode, with
+the oracle checks, the allocation counter and the `/proc/self/io` probes. A time process runs
+them in time mode, with none of those, and its clocks are the timing samples. H1 holds. The
+thread CPU exponent is **0.1964** [0.1881, 0.2086] on U and **0.1363** [0.1333, 0.1395] on R,
+where a bracket is a 95% stratified bootstrap interval (10,000 resamples, seed 7929). The
+statistic, the larger upper bound, is 0.2086 against the threshold 0.25, and result 483 of
+experiment 446, decided on 2026-11-08, accepts H1.
+
+The task's preregistered rule requires more: a qualified population, G1 to G9 and every
+control detected. The population is qualified and all four controls were detected, but G4
+fails on allocated bytes, at **0.4130** [0.4086, 0.4174] on U and **0.3186** [0.3137, 0.3234]
+on R. The rule is therefore not met. The analysis reports `qualified` as `true` and `accepted`
+as `false`, and the driver's collection run exited 1 for that reason. The work is exact, and
+thread CPU, wall time and I/O grow with exponents below 0.25; allocated bytes do not stay
+under that bound.
+
+**DECISIONS.**
+1. The criteria stayed frozen. The thresholds, metrics, arms, seeds and analysis were fixed at
+   preregistration, and the pilot could amend only feasibility. There is one hypothesis, so no
+   multiplicity correction applies.
+2. The miss is recorded, not repaired. G4 stays a failed gate. Under this task's execution
+   boundary a cost that grows becomes a separate bug item with a consensus-change assessment,
+   not a redesign inside 7929, so task 13981 filed bug item
+   `rspace-ledger-trial-cow-allocation-growth` (pgmcp item 13988).
+3. Semantic eviction is not measured. Keep-all retention is binding, and
+   `evict_retention_v2` has no production caller: task 7756 adds the retention policy that
+   evicts history. Axis E measures only physical eviction, the reclamation of a superseded
+   generation's files that a trusted publish completes.
+4. Ledger copies are accounted three ways. Logical writes are derived from the code, net new
+   entries and zero-count entries are measured, and physical node copies are inferred from
+   allocated bytes and attributed with heaptrack. Counting copies directly would need PathMap's
+   counters feature, a Cargo change that the reviewed plan excludes.
+5. Every stratum was kept, by the user's decision ("Keep all sizes"). The pilot's largest
+   high-water mark was 953 MiB against the 16 GiB cap.
+6. The measurement shared the host with the rest of the campaign, by the user's decision
+   ("Parallel, but there are only 32 cores on this machine"). Amendment A2 carries the
+   consequences.
+7. The raw populations live in pgmcp, and the repository keeps the summaries and the
+   derivation program, because `target/` is not durable.
+
+**THE PILOT'S AMENDMENTS AND THE ADDENDA.** Pilot data never enter decisions, and every item
+below was recorded before any decision data. A1 to A3 are pgmcp artifact 1173, C1, C2 and O2
+are artifact 1178, and C3 is `addendum-c3-record.md` in artifact 1633.
+
+| Item | Content |
+|---|---|
+| A1, child timeout | 3,600 s becomes 7,200 s for every later population. The longest pilot child took 2,275.8 s. A timeout is still a failure that stops the lane. |
+| A2, host rule | A user-authorized deviation from "one heavy job at a time". The measurement keeps CPU 2 and its SMT sibling 34, idle admission before every child is unchanged, and other heavy jobs of this session run on cores 16 to 31 and their siblings, under a memory cap and at most one at a time. Contention can only add time, and more at larger strata, so it can only raise the time exponents, which works against acceptance. The count gates do not depend on timing. |
+| A3, rerun rule | A population interrupted by idle admission is rerun in full in a new directory, at most three attempts. Any other interruption stops the lane. Partial populations never enter decisions. |
+| C1, NC-SCAN correction | The first NC-SCAN build scanned in every trial and refused with a missing object in the metadata trial, so it did not implement its definition. The corrected build guards the scan with the current domain, the only trial whose predecessor argument is the predecessor commit's ledger. The definition and the protocol are unchanged. |
+| C2, lane order | The controls run first. The decision population starts only if every control population is qualified and detected. |
+| O2, allocated bytes | In the treatment pilot the bytes allocated per commit grow, with interval [0.380, 0.390] on U, and the addendum predicts that G4 will fail on the decision data. |
+| C3, confinement | NC-ORDER was interrupted by idle admission in all three attempts. The diagnosis is that `AllowedCPUs` has no effect on this host, because the cpuset controller is not delegated, so the fenced jobs ran on every core. Every later heavy job also runs under `taskset`, each attempt waits for 60 consecutive admitted snapshots, and the A3 budget is restored. The three interrupted populations are kept (artifacts 1627 to 1629) and never enter decisions. NC-SCAN and NC-CLONE are not rerun: their lower bounds are far above 0.25, counters do not depend on contention, and children run in a seeded, shuffled order. |
+
+A2 promised a list of the jobs that shared the host. Artifact 1641 lists this session's
+timestamp-named job logs that started during each population attempt: 204 in all, 132 of them
+during the decision population. Other sessions' jobs are not listed. This session neither ran
+nor controlled them, and idle admission before every child is the guard against them.
+
+**THE COST AUDIT.** The catalog's table of the cost implied by the code gives the work step by
+step. The audit below states what the measurement had to confirm and what the code does not
+price.
+
+| Cost term | Derived from the code | Checked by |
+|---|---|---|
+| References, expansions and quoted bytes per domain | exactly the changed frontier of the current, retained and metadata domains | G1, at every verify commit |
+| Ledger and index maps | a PathMap clone copies only its root reference | H1, G3 and the NC-CLONE control |
+| Logical ledger writes | $`\sum_D \mathrm{refs}_D`$ plus the root deltas, 5 for V2 and 3 for V1: one `states` insert per consumed event and one roots insert per root delta | derived, not measured |
+| Net new and zero-count ledger entries | the fresh digests, and the superseded metadata objects | check 6 of the verify routine, at every commit |
+| Bytes copied by each `states` insert | not priced | G4, the gate that failed |
+| V2 metadata step | at most 518,500 bytes and $`2 + \mathit{meta\_exp} \le 103`$, where $`\mathit{meta\_exp}`$ is the metadata trial's expansion count | G7 |
+| V1 metadata, the natural control | $`96 + 56n`$ bytes for $`n`$ historical entries | G7 and NC-V1 |
+| Last-reference deletion, axis L | $`O(m)`$ closure work for $`m`$ deleted keys | G8 |
+| Physical eviction, axis E | the unlink of the superseded generation's files | G9 |
+| Cold path | absent: no physical recovery, no cold admission and no index construction | TS-09 and check 4 of the verify routine |
+
+The work terms are exact, yet thread CPU still rises, from 433,658.5 ns to 1,131,847 ns over
+U's 256-fold range and from 471,453 ns to 916,373 ns over R's. The plan expected some growth:
+the fixed-width hexadecimal channel names give about $`\log_{16} N`$ trie levels, which
+predicts an exponent of at most about 0.11 over U (inference), and cache and
+translation-lookaside-buffer residency grows with the heap (inference), which the plan's risk 4
+said could push the exponent toward 0.25. The measured 0.1964 exceeds the depth estimate.
+Neither term was measured here, so this entry does not attribute the difference. The section
+5.9 strace and uProf runs cannot attribute it either, because cold admission takes at least
+98.25% of each profiled child's test time (artifact 1304). Hardware-counter sampling of the
+commit path would test it.
+
+**THE EVIDENCE.** In the table, `collect` is the driver's collection command in the capped
+scope of the stack-safety report's appendix A.13, run from the frozen export of `941ff07d`.
+`analyze` is the same driver with `--analyze-only --check --output POPULATION_DIRECTORY`, which
+recomputes `analysis.json` from a restored population with no new run. The decision population
+is pgmcp artifacts 1616 to 1624. Its committed summaries are the
+[verify records](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-verify.tsv),
+the [process summary](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-process-summary.tsv)
+and the [analysis](../stack-safety/measurements/rspace-fixed-delta-scaling-2026-11-03-analysis.json).
+
+The four negative controls are populations of their own, in which a known defect must make a
+gate fail. NC-SCAN loads every predecessor ledger entry's object before `authorized_roots`.
+NC-CLONE turns the $`O(1)`$ ledger map clone into an entry-by-entry rebuild. NC-ORDER runs the
+deactivation phase before the activation phase. NC-V1 is committed code: the V1 writer, whose
+manifest grows with the history. The first three are mutants applied only to an export and
+never committed.
+
+| Claim | Command and artifact | Result | Uncertainty | Decision |
+|---|---|---|---|---|
+| C1, exact work | `collect` verify mode, `analyze` G1 and G2; artifacts 1616 to 1624 | Work equals the oracle at every verify commit, with 0 problems in 2 verify runs per cell (1,470 commit records). The runs agree on all 27 compared fields, with 0 time-chain mismatches | none: exact counts, and both runs agree | G1 and G2 pass |
+| C2, U thread CPU exponent | `collect` time mode, `analyze` H1; artifacts 1616 to 1624 | 0.1964, from 433,658.5 ns at $`N = 2^{10}`$ to 1,131,847 ns at $`N = 2^{18}`$ | [0.1881, 0.2086] | H1 passes on U |
+| C3, R thread CPU exponent | `collect` time mode, `analyze` H1; artifacts 1616 to 1624 | 0.1363, from 471,453 ns at $`H = 2^{8}`$ to 916,373 ns at $`H = 2^{16}`$ | [0.1333, 0.1395] | H1 passes on R; the statistic is 0.2086 |
+| C4, wall time | `collect` time mode, `analyze` G3; artifacts 1616 to 1624 | U 0.1586; R 0.1098 | U [0.1508, 0.1699]; R [0.1059, 0.1138] | G3 passes |
+| C5, allocations | `collect` verify mode, `analyze` G4; artifacts 1616 to 1624 | Count: U 0.1091, R 0.0529. Bytes: U 0.4130, R 0.3186 | Count: U [0.1050, 0.1130], R [0.0479, 0.0576]. Bytes: U [0.4086, 0.4174], R [0.3137, 0.3234]. Both verify runs are identical | **G4 fails on bytes**, so the rule is not met; bug item 13988 |
+| C6, I/O | `collect` verify mode, `analyze` G5; artifacts 1616 to 1624 | `syscr` U 0.0366, R 0; `syscw` 0 on both axes; `rchar` U 0.0500, R 0.0291; `wchar` U 0.0437, R 0.0229. Pack and index growth equal the encoded appends | `syscr` U [0.0366, 0.0366]; `rchar` U [0.0423, 0.0575], R [0.0212, 0.0368]; `wchar` U [0.0381, 0.0492], R [0.0170, 0.0286]. A value printed as 0 is noise below $`3 \times 10^{-16}`$. Between the runs only `rchar` on U differs, by under 0.0002 | G5 passes; the largest upper bound is 0.0575 |
+| C7, resident memory | `collect` time mode, `analyze` G6; artifacts 1616 to 1624 | Largest stratum's median minus the smallest's. U: $`-315{,}392`$ B. R: 700,416 B. No swap and no out-of-memory kill | Upper 97.5% bound of the difference of medians: U $`-151{,}552`$ B; R 757,760 B | G6 passes; the bound is 1 MiB |
+| C8, metadata bytes and the V1 crossover | `collect` verify mode, `analyze` G7; artifacts 1616 to 1624 | Every V2 commit wrote at most 518,500 bytes with $`2 + \mathit{meta\_exp} \le 103`$. At $`H = 2^{8}, 2^{10}, 2^{12}, 2^{14}, 2^{16}`$ the median V2 step is 1,538, 1,661, 2,392, 4,088 and 1,538 bytes, the V1 manifest is 10.13, 35.27, 96.41, 224.74 and 2,387.04 times larger, and it exceeds the median V2 step from 26, 28, 42, 72 and 26 entries on | none: exact bytes per commit | G7 passes |
+| C9, deletion closure | `collect` verify mode and time mode, `analyze` G8; artifacts 1616 to 1624 | Every L commit deleted a nonempty closure equal to its excess current expansions. Thread CPU exponent: L 0.2772 against $`m`$, D 0.6527 against $`d`$ | L [0.2746, 0.2801]; D [0.6493, 0.6564]. The closure counts are exact | G8 passes; the bound is 1.25 |
+| C10, eviction cost | `collect` verify mode and time mode, `analyze` G9; artifacts 1616 to 1624 | Each verify run has one reclaim commit, only it unlinks files, and they are the superseded packs, one index and `reclaim.v1`. Reclaim minus timed thread CPU is 181.1, 571.2 and 7,827.3 microseconds at $`2^{10}`$, $`2^{14}`$ and $`2^{18}`$ keys; deferred minus timed is 7.4, 5.2 and 14.8 microseconds | Reclaim: [175.8, 185.2], [547.0, 593.8], [7,375.5, 8,134.4]. Deferred: [4.2, 11.2], [-0.3, 10.5], [-8.4, 46.3]. 95% bootstrap intervals | G9 passes; it has no threshold |
+| C11, negative controls | `collect` with `--controls`, `analyze` G10 of each population; artifacts 1625, 1626, 1630 and 1631, and 1253 for SW-01 | Every control is detected. NC-SCAN: G1 still passes, CPU U 0.845, R 0.597, `rchar` U 0.831, R 0.555. NC-CLONE: CPU U 0.835, R 0.653, `alloc_count` U 0.836, R 0.628, `alloc_bytes` U 0.799, R 0.596. NC-ORDER: G1 fails at every cell and SW-01 fails, CPU U 0.971. NC-V1: metadata bytes equal $`96 + 56n`$, CPU R 0.666 | CPU: NC-SCAN U [0.841, 0.849], R [0.572, 0.613]; NC-CLONE U [0.826, 0.852], R [0.648, 0.658]; NC-ORDER U [0.968, 0.974]; NC-V1 R [0.662, 0.671]. Counters: NC-SCAN `rchar` U [0.830, 0.833], R [0.554, 0.555]; NC-CLONE `alloc_count` U [0.836, 0.837], R [0.628, 0.629], `alloc_bytes` U [0.798, 0.800], R [0.596, 0.597] | G10 detects every control in its own population |
+| C12, $`c^*`$ | `analyze`, descriptive statistics; artifacts 1616 to 1624 | 1.4142 ns per key on U, a charge that is 32.75% of the largest stratum's median, and 16 ns per state on R, 114.43% of that stratum's median | The grid step is a factor of $`2^{1/4}`$; H1's upper bound at $`c^*`$ is 0.2510 on U and 0.2644 on R | Descriptive, with no gate: an extra cost per key or per state below $`c^*`$ would pass H1 |
+
+Here $`c^*`$ is the smallest $`c`$ on the grid $`2^{j/4}`$ for which adding $`c \cdot x`$ to
+every process median of the stratum of size $`x`$ lifts H1's upper bound above 0.25.
+
+**THE METADATA ZERO-ENTRY NOTE.** Every V2 commit deactivates the predecessor retention anchor
+in the metadata domain. The old anchor and the radix nodes that the commit supersedes reach
+count zero and stay in the ledger's `states` map as zero-count entries: a trial stores the
+updated state even when the count reaches zero
+(`rspace++/src/rspace/persistence/closure/ledger_trial.rs:335`), and no code under
+`rspace++/src/rspace/persistence` removes a `states` entry. Check 6 of the verify routine
+confirms at every commit that these entries grow by exactly the superseded radix nodes and the
+old anchor. This is a nuance of the catalog's statement that no production path creates a zero
+entry before eviction exists. That statement concerns an object that loses its last reference
+in both the current and the retained domain, which keep-all retention does not produce. The
+metadata domain is separate, and its zero-count entries arise on every V2 commit. The catalog
+assigns reclaiming zero entries to the garbage collector's contract (tasks 7943 to 7945).
+
+**THE MISSED G4 PREDICTION.** G4 predicted at most 0.25 for the bytes allocated per commit, and
+the pilot had already forecast the miss (O2). The decision data confirm it (C5) while the
+allocation count stays small: each commit makes few allocations, but some of them copy large
+nodes.
+
+Hypothesis H-O2 names the cost: PathMap copy-on-write copies of the widening nodes of the
+reachability ledger. `run_ledger_trial` starts from a clone of the predecessor's
+`PathMap<DigestState>` (`ledger_trial.rs:135`) and inserts the updated state once per consumed
+event (`ledger_trial.rs:335`). The first insertion under a shared node copies that node's whole
+slot vector, and a slot is 72 bytes. For a ledger of $`\ell`$ entries a level-1 node holds about
+$`\min(\ell / 256, 256)`$ slots, and a node that a trial reaches through one of its keys has an
+expected width of $`256 \left(1 - (255/256)^{\ell/256 + 1}\right)`$ slots (artifact 1277).
+
+The section 5.9 diagnostics tested this on the pilot's fixtures before the decision population
+ran. They registered predictions (pgmcp artifact 1276). One prediction failed at $`2^{14}`$
+keys, because its ledger size came from NC-ORDER's expansions, which count each state object
+twice and omit the retained-history and metadata objects, and the corrected width model fixed
+that input before the largest trace was read (artifact 1277). Every prediction then held at
+$`2^{18}`$ keys (artifact 1281). Heaptrack attributes 93.2%, 97.9% and 99.41% of the bind bytes
+at $`2^{10}`$, $`2^{14}`$ and $`2^{18}`$ keys to `run_ledger_trial`, and its bind totals equal
+the verify run's counter exactly, at 9,719,022, 31,818,530 and 112,455,838 bytes over 36
+commits. G4's allocation metric therefore contains no instrumentation allocations in bind at
+those cells. Heaptrack ran on axis U only, so axis R has the model's prediction and no
+attribution. The diagnostics' outputs are artifact 1303, and the strace and uProf outcome is
+artifact 1304.
+
+A node holds at most 256 slots, so level-1 width saturates, and past $`\ell = 65{,}536`$
+entries level-2 nodes start to widen. Over the measured range the growth reads as a power law.
+This entry claims no asymptotic class.
+
+Bug item 13988 holds the mechanism and the consensus-change assessment. The ledger is never
+persisted, and the one durable format derived from its logical content is the generation
+checkpoint descriptor. A remedy is therefore byte-neutral if it preserves the logical map from
+digest to declared length and domain counts, the root multiplicities, the three inventories,
+enumeration of positive-count objects in ascending digest order, and every refusal. A remedy
+that changes the key, the enumeration order or the inventory definition would change the
+persisted descriptor and needs the user's explicit go-ahead.
+
+**WHAT THE MEASUREMENT DOES NOT CLAIM.**
+- It holds for one host and one core.
+- The binary is the release library test binary, which still contains the `cfg(test)` hooks and
+  a toggled counting allocator, not a production build.
+- The keys are data-only: each is a datum on its own channel.
+- The history shares the current roots: each historical state differs from the current one only
+  by its legacy root.
+- fsync was measured on one filesystem, ext4.
+- It makes no power-loss claim and no concurrency claim.
+- It is not the LMDB verdict (task 5693). It measures no semantic eviction, because no eviction
+  policy exists under keep-all retention. It activates nothing (task 7931).
+- $`c^*`$ bounds only what the timing gate excludes by itself.
+
+**CORRECTION.** The catalog and the stack-safety report at first called H-O2 a working
+hypothesis and named artifact 1304 as the outcome of the diagnostics. Artifact 1304 is the
+strace and uProf outcome; the heaptrack outcome that confirms H-O2 on axis U is artifact 1281.
+`bedff591` corrects both documents and adds to the measurement record the three artifacts that
+it had not listed (1276, 1277 and 1281). Its derivation program is unchanged.
+
+**VERIFICATION BOUNDARY.** Each commit was gated on an export of its candidate tree, with red
+controls that make its checker fail.
+
+| Check | Scope | Result | Log | SHA-256 |
+|---|---|---|---|---|
+| the raw archive | the populations, pilots, diagnostics and lane records | 114 artifacts, each listed once | `manifest-13979.md` (pgmcp artifact 1635) | `db5a7dd090ab5ce6df1323d8c1281ee9f6a88ce8e65af3dbca42ffab1187d9b3` |
+| the measurement files | `9ba5bc24d` | gate fail=0; the derivation program regenerates the four derived files byte for byte | `target/perf/logs/11990/13982-gate-20261108T181014Z.log` (artifact 1638) | `da7fd0c8bdc6ea9260dd2e35274ec183db13e69aafb1aa2dc0808aa9b9480c04` |
+| the figures | `b8681ca82` | gate fail=0 | `target/perf/logs/11990/13983-gate-20261108T171447Z.log` (artifact 1637) | `41b989813da5d08b9ca8e5d859d6c192d22b0f2f9e2ffd2f2961d26f452228ef` |
+| the catalog results | `99a79e326` | gate fail=0; every value checked against the analyses; the property-manifest test passes in debug and release | `target/perf/logs/11990/13984-gate-20261108T183421Z.log` (artifact 1639) | `b62ef2349e58f3fd92284b9a114c74e1e659838b83c18330791b7b4ca26843ae` |
+| the stack-safety section | `05ce34ef` | gate fail=0; 115 red controls | `target/perf/logs/11990/13985-gate-20261108T185258Z.log` (artifact 1640) | `b6532ab64f721c8c90b97d5610d88d20e27c31c1b7d3ed091c55dfd4c40ed03d` |
+| the H-O2 correction | `bedff591` | gate fail=0; 13 red controls; the property-manifest test passes in debug and release | `target/perf/logs/11990/13986s-gate-20261108T190440Z.log` (artifact 1642) | `8f2ca7ce6253de643c8f642948d86408da2f1622e84af4a0ac0279061c67ad02` |
+| the job list of A2 | this session's job logs during each population | 204 job logs | artifact 1641 | `e02e540d13a8a10e08b96b515dd6a15fbba1d7fdb347d19fda66b44fc9359b18` |
+
+The logs live under `target/`, which is not durable; pgmcp holds sanitized copies as the
+artifacts named above, with the repository root written as `.` and the home directory as `~`.
+These are agent-run results; independent review and the approved pgmcp verification recipe
+remain required.
+
+**BOUNDARY.** No production source, wire message, physical format or consensus identity
+changes, and no persisted byte changes: `a2b72cc21` and `941ff07d` touch tests, the driver,
+documentation and generated obligation registries, and the later commits touch documentation
+and measurement files only. Task 5693 owns the LMDB verdict, and this measurement is not that
+verdict. Task 7756 owns the retention policy that evicts history. Task 7931 owns activation,
+and nothing is activated here. There is no power-loss claim. Bug item 13988 owns the growth of
+allocated bytes, and this entry does not fix it.
+
 ## Upstream PathMap integration request register
 
 This register separates local integration code from changes worth proposing to PathMap's
