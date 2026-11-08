@@ -17,7 +17,8 @@ pub enum IntakeError {
     Duplicate(Sig),
     #[error(
         "deploy queue is full: the deploys ahead of this one would not land before its \
-         validity window closes; retry in {retry_after_secs}s"
+         validity window closes; sign it again with a current validAfterBlockNumber and \
+         retry in {retry_after_secs}s"
     )]
     QueueFull { retry_after_secs: u64 },
     #[error("deploy queue is not connected to its node; retry in {retry_after_secs}s")]

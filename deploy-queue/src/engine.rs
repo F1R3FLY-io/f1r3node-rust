@@ -16,9 +16,9 @@ use crate::ready::ReadyQueue;
 use crate::record::{DeployView, QueueRecord, QueueState, Sig};
 use crate::store::{QueueStore, StoreError};
 
-/// Share of the latency budget a released deploy may spend between release
-/// and its verdict. The rest is the most it may wait in the queue.
-const RELEASED_SHARE_OF_BUDGET: f64 = 0.5;
+/// Share of the citable depth a released deploy may spend between release
+/// and its verdict.
+const RELEASED_SHARE_OF_DEPTH: f64 = 0.5;
 /// Released deploys never exceed this many of the shard's full blocks.
 const RELEASED_CEILING_BLOCKS: usize = 2;
 const RETRY_FLOOR: Duration = Duration::from_secs(1);
@@ -345,27 +345,26 @@ impl Engine {
             ))));
         }
 
-        // A deploy is accepted only when every deploy ahead of it, queued or
-        // released, settles within the latency budget at the measured pace,
-        // and it then still lands inside its own window. Beyond that it would
-        // wait minutes; the client is told to come back instead.
+        // A deploy is accepted when every deploy ahead of it, queued or
+        // released, settles at the measured pace early enough that it still
+        // lands inside its own window with the citable depth to spare. The
+        // depth covers a pace that slows after the deploy was accepted.
         let pace = self
             .pace
             .as_ref()
             .expect("a connected engine has a pace");
-        let budget = latency_budget(shard);
-        let depth = i64::from(shard.max_parent_depth);
+        let depth = citable_depth(shard);
         let ahead = self.ready.len() + self.waiting.len() + self.released();
         let releasable_from = valid_after.max(chain.tip);
         let last = last_includable(valid_after, shard.deploy_lifespan);
         let wait = pace.heights_to_settle(ahead + 1);
-        let fits = wait.is_some_and(|heights| {
-            heights <= budget && releasable_from + heights + depth <= last
-        });
+        let fits = wait.is_some_and(|heights| releasable_from + heights + depth <= last);
         if !fits {
-            let excess = wait.map(|heights| (heights - budget).max(1));
-            let retry_after_secs = excess
-                .and_then(|heights| pace.seconds_for(heights))
+            let fresh_span = last_includable(chain.tip, shard.deploy_lifespan) - chain.tip;
+            let retry_after_secs = wait
+                .and_then(|heights| {
+                    pace.seconds_for(heights_until_a_fresh_window_fits(heights, depth, fresh_span))
+                })
                 .unwrap_or(UNTIMED_RETRY_SECS);
             return Ok(Err(IntakeError::QueueFull { retry_after_secs }));
         }
@@ -399,7 +398,7 @@ impl Engine {
             "connected to the node"
         );
         if self.pace.is_none() {
-            self.pace = Some(Pace::new(latency_budget(&chain.shard)));
+            self.pace = Some(Pace::new(citable_depth(&chain.shard)));
         }
         self.chain = Some(chain);
         self.connected = true;
@@ -679,7 +678,7 @@ impl Engine {
     }
 
     /// Released deploys the queue allows at once: what settles at the
-    /// measured pace within the released share of the latency budget
+    /// measured pace within the released share of the citable depth
     /// (Little's law), at least one so a stalled pace is still probed, at
     /// most a couple of the shard's full blocks.
     fn released_limit(&self) -> usize {
@@ -688,8 +687,8 @@ impl Engine {
         };
         let full_blocks =
             RELEASED_CEILING_BLOCKS * chain.shard.max_user_deploys_per_block as usize;
-        let budget = latency_budget(&chain.shard) as f64 * RELEASED_SHARE_OF_BUDGET;
-        pace.deploys_settled_in(budget)
+        let span = citable_depth(&chain.shard) as f64 * RELEASED_SHARE_OF_DEPTH;
+        pace.deploys_settled_in(span)
             .clamp(full_blocks.min(1), full_blocks)
     }
 
@@ -1064,10 +1063,17 @@ impl Engine {
     }
 }
 
-/// The latency budget, in heights, the queue holds a deploy to from intake
-/// to verdict: the shard's citable depth, the span in which a block may
+/// The shard's citable depth: the span, in heights, in which a block may
 /// still build on another.
-fn latency_budget(shard: &ShardValues) -> i64 { i64::from(shard.max_parent_depth) }
+fn citable_depth(shard: &ShardValues) -> i64 { i64::from(shard.max_parent_depth) }
+
+/// Heights until a deploy signed now would fit: the line ahead, `wait`
+/// heights long, must shrink until it and the depth fit a fresh window of
+/// `fresh_span` heights. A refused deploy's own window only closes while
+/// it waits, so the client signs again rather than resubmitting it.
+fn heights_until_a_fresh_window_fits(wait: i64, depth: i64, fresh_span: i64) -> i64 {
+    (wait + depth - fresh_span).max(1)
+}
 
 fn window_open(valid_after: i64, reference_block: i64, deploy_lifespan: i64) -> bool {
     is_open(valid_after, reference_block, deploy_lifespan)
@@ -1106,5 +1112,23 @@ async fn wait_until(at: Option<Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_counts_the_heights_until_a_fresh_window_fits() {
+        // A 299-height fresh window with a 25-height depth holds a 274-height line.
+        assert_eq!(heights_until_a_fresh_window_fits(300, 25, 299), 26);
+        assert_eq!(heights_until_a_fresh_window_fits(275, 25, 299), 1);
+    }
+
+    #[test]
+    fn a_line_that_fits_a_fresh_window_retries_after_one_height() {
+        // Refused only because its own window was signed long ago.
+        assert_eq!(heights_until_a_fresh_window_fits(10, 25, 299), 1);
     }
 }

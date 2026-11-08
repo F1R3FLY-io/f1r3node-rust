@@ -22,6 +22,7 @@ use deploy_queue::record::QueueState;
 use deploy_queue::store::QueueStore;
 use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_request::DeployRequest;
+use models::rust::deploy_window::last_includable_block;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -179,6 +180,25 @@ fn deploy(valid_after: i64, shard_id: &str, seed: u8) -> Signed<DeployData> {
     .unwrap()
 }
 
+/// One deployer's `number`th deploy, for lines longer than the seeds allow.
+fn numbered_deploy(valid_after: i64, number: i64) -> Signed<DeployData> {
+    Signed::create(
+        DeployData {
+            term: "new x in { x!(1) }".to_string(),
+            time_stamp: number,
+            phlo_price: 1,
+            phlo_limit: 100_000,
+            valid_after_block_number: valid_after,
+            shard_id: "root".to_string(),
+            expiration_timestamp: None,
+            parameters: Vec::new(),
+        },
+        Box::new(Secp256k1),
+        PrivateKey::from_bytes(&[200; 32]),
+    )
+    .unwrap()
+}
+
 fn block_added(number: i64, deploy_ids: &[&[u8]]) -> Value {
     json!({
         "event": "block-added",
@@ -322,7 +342,7 @@ async fn a_refusal_from_the_node_is_terminal() {
 #[tokio::test(flavor = "multi_thread")]
 async fn release_waits_for_released_deploys_to_settle() {
     let node = FakeNode::new(10, 9);
-    // Full blocks large enough that the budget, not the ceiling, binds.
+    // Full blocks large enough that the depth, not the ceiling, binds.
     node.status.lock().unwrap()["maxUserDeploysPerBlock"] = json!(128);
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
@@ -336,13 +356,13 @@ async fn release_waits_for_released_deploys_to_settle() {
     assert_eq!(
         node.received().len(),
         13,
-        "release stops at the budget; queue {:?}",
+        "release stops at half the depth; queue {:?}",
         queue.handle.snapshot().await.unwrap()
     );
     let snapshot = queue.handle.snapshot().await.unwrap();
     assert_eq!(
         snapshot.released_limit, 13,
-        "half of a 25-height budget at one deploy per height"
+        "half of a 25-height depth at one deploy per height"
     );
     assert_eq!((snapshot.submitted, snapshot.ready), (13, 3));
 
@@ -380,21 +400,25 @@ async fn release_waits_for_released_deploys_to_settle() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_queue_longer_than_the_citable_depth_refuses() {
+async fn a_backlog_past_the_citable_depth_waits_within_its_window() {
     let node = FakeNode::new(10, 9);
-    // A long window, so the wait bound, not the window, is what refuses.
     node.status.lock().unwrap()["deployLifespan"] = json!(300);
     let url = node.clone().serve().await;
     let dir = tempfile::tempdir().unwrap();
     let queue = Queue::start(&url, dir.path()).await;
 
-    // At one deploy per height and a depth of 25, the 26th deploy in line
-    // would wait past the depth.
-    for seed in 30..55 {
-        accept(&queue.handle, deploy(5, "root", seed)).await.unwrap();
+    // At one deploy per height, a deploy fits while the tip, its place in
+    // line and the 25-height depth stay inside its window.
+    let last = last_includable_block(10, 300).unwrap();
+    let fitting = last - 10 - 25;
+    assert!(fitting > 25, "the window, not the depth, bounds the line");
+    for number in 0..fitting {
+        accept(&queue.handle, numbered_deploy(10, number))
+            .await
+            .unwrap_or_else(|error| panic!("deploy {} of {} refused: {}", number, fitting, error));
     }
     assert!(matches!(
-        accept(&queue.handle, deploy(5, "root", 55)).await,
+        accept(&queue.handle, numbered_deploy(10, fitting)).await,
         Err(IntakeError::QueueFull { .. })
     ));
     queue.stop();

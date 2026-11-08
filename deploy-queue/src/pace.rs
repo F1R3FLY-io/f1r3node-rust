@@ -64,7 +64,7 @@ impl Pace {
     pub fn record_unsettled(&mut self) { self.unsettled_since_tip = true; }
 
     /// Marks that the queue withheld deploys during the current height
-    /// because its released deploys already filled the budget.
+    /// because its released deploys already filled their limit.
     pub fn record_held_back(&mut self) { self.held_back_since_tip = true; }
 
     pub fn on_tip(&mut self, tip: i64, now: Instant) {
