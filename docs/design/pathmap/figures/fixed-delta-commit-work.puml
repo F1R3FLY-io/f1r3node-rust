@@ -1,0 +1,138 @@
+@startuml fixed-delta-commit-work
+' ============================================================================
+' The work of one trusted commit, as the fixed-delta scaling experiment of
+' task 7929 (pgmcp experiment 446) measured it at commit 941ff07d: the four
+' probed phases of the verify routine (ScalingChain::commit in
+' rspace++/tests/persistence/trusted_scaling_properties.rs) and the five timed
+' phases of the time child (run_timed in trusted_scaling_resource.rs). Each
+' trial runs run_ledger_trial (rspace++/src/rspace/persistence/closure/
+' ledger_trial.rs); the bind is bind_trusted_transaction in durable/admission.rs.
+'   BLUE   #1565C0  sealing, staging, the radix edit and preparation
+'   AMBER  #EF6C00  the ledger trials, which expand only the objects whose
+'                   count crosses between 0 and 1
+'   RED    #C62828  the measured cost that grows with the ledger (G4, H-O2)
+'   GREEN  #2E7D32  the durable appends and the published successor
+'   GREY   #607D8B  the release of shared persistent structures
+'   TEAL   #00796B  what the probes read
+'   PURPLE #6A1B9A  the negative controls, each where it acts
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+skinparam PartitionBorderColor #455A64
+
+title <b>The work of one trusted commit</b>\nthe objects, references and records that each step touches depend on the keys the commit changes,\nnot on the <latex>N</latex> keys or the <latex>H</latex> retained states; the bytes copied per touched ledger node do grow with the ledger
+
+start
+partition "seal" {
+  :rewrite the search paths of the changed keys:
+  loaded, edited and emitted nodes, exact path chunks;<<#BBDEFB>>
+}
+partition "bind" {
+  :stage the sealed objects in memory
+  over the core's pinned store;<<#BBDEFB>>
+  repeat
+    :next trial domain:
+    current, retained, then metadata;<<#FFE0B2>>
+    note right #FFF3E0
+      <b>Objects each trial expands</b>
+      current, adding <latex>T</latex> and removing <latex>B</latex>:
+          <latex>X_{\mathrm{current}} = \mathrm{cl}(T) \mathbin{\triangle} \mathrm{cl}(B)</latex>
+      retained, adding <latex>T</latex>: <latex>X_{\mathrm{retained}} = \mathrm{cl}(T) \setminus U</latex>
+      metadata, adding <latex>a'</latex> and removing <latex>a</latex>:
+          <latex>X_{\mathrm{metadata}} = (I' \mathbin{\triangle} I) \cup \{a, a'\}</latex>
+      ----
+      <latex>\mathrm{cl}(r)</latex>: the objects reachable from root <latex>r</latex>;
+      <latex>U</latex>: the retained union; <latex>I, I'</latex>: the radix nodes
+      before and after the edit; <latex>a, a'</latex>: the anchors.
+      References: one per root event and one per
+      out-reference of an expanded object.
+    end note
+    if (metadata domain?) then (yes)
+      :V2 writer: path-local edit of the history radix
+      at the predecessor's 48-byte key and a new
+      136-byte anchor <latex>a'</latex>;<<#BBDEFB>>
+      note left #F3E5F5
+        <b>NC-V1</b>, the natural control, keeps the
+        V1 writer: no radix edit and no metadata
+        trial, but every commit rewrites the whole
+        manifest, <latex>96 + 56n</latex> bytes for <latex>n</latex> entries.
+      end note
+    else (no)
+    endif
+    :authorize the root removals;<<#FFE0B2>>
+    note left #F3E5F5
+      <b>NC-SCAN</b> (revision r1) first loads, in the
+      current trial, the object of every predecessor
+      ledger entry: about <latex>|U|</latex> reads per commit, a
+      CPU and read-byte cost that grows with <latex>N</latex>
+      and <latex>H</latex>. The work counters do not see the
+      reads, so G1 still passes.
+    end note
+    :clone the predecessor's ledger maps
+    (a PathMap clone copies one root reference);<<#FFE0B2>>
+    note right #F3E5F5
+      <b>NC-CLONE</b> rebuilds the states map entry
+      by entry: the allocations grow with the
+      ledger, about <latex>|U|</latex> entries.
+    end note
+    :activation: add the roots and expand each object
+    whose count crosses from 0 to 1;<<#FFE0B2>>
+    :deactivation: remove the roots and expand each object
+    whose count crosses from 1 to 0;<<#FFE0B2>>
+    note right #F3E5F5
+      <b>NC-ORDER</b> swaps the two phases: the current
+      trial expands <latex>|\mathrm{cl}(B)| + |\mathrm{cl}(T)|</latex>, which
+      exceeds <latex>|X_{\mathrm{current}}|</latex> by <latex>2\,|\mathrm{cl}(B) \cap \mathrm{cl}(T)|</latex>,
+      so the verify routine's work check fails.
+    end note
+    :each state insertion copies the shared trie nodes
+    on its 32-byte digest path (copy-on-write);<<#FFCDD2>>
+    note left #FFEBEE
+      <b>Measured: G4 fails on bytes (H-O2).</b>
+      A level-1 node of a ledger with <latex>L</latex> entries holds about
+      <latex>\min(L/256,\ 256)</latex> slots of 72 bytes, so a copied node
+      costs up to about 18 KiB. The allocation-byte
+      exponent is 0.413 on U and 0.319 on R; the
+      allocation-count exponent stays within the bound
+      (0.109 on U, 0.053 on R).
+    end note
+    :refuse at the first exceeded final inventory,
+    else keep the successor ledger;<<#FFE0B2>>
+  repeat while (another domain?) is (yes) not (no)
+}
+partition "prepare" {
+  :classify the fresh objects against the committed index
+  and frame the log-pack transaction;<<#BBDEFB>>
+}
+partition "publish" {
+  :append the prepare header, the mutation, a record per
+  fresh object and the commit record to the active pack,
+  and one 72-byte index record per fresh object to the index;<<#C8E6C9>>
+  :clone the committed index (a PathMap) and insert the new records,
+  copy the retention manifest bytes (the 136-byte V2 anchor)
+  and swap the catalog slot: no physical recovery,
+  no cold admission and no index construction;<<#C8E6C9>>
+}
+partition "release (timed only)" {
+  :drop the prepared and bound transactions
+  and the predecessor core;<<#CFD8DC>>
+}
+stop
+
+legend right
+  <b>What the probes read</b>
+  <back:#B2DFDB>verify mode</back>: around seal, bind, prepare and
+  publish, the deltas of <i>/proc/self/io</i> and of the
+  thread-local allocation counter, net of one I/O
+  calibration per phase and one trace per commit
+  <back:#B2DFDB>time mode</back>: six readings of the thread CPU,
+  process CPU and wall clocks bound five phases;
+  a process's statistic is the median, over its
+  <latex>T</latex> timed commits, of their per-commit sum
+endlegend
+@enduml

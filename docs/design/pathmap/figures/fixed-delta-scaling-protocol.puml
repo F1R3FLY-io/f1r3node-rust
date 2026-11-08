@@ -1,0 +1,126 @@
+@startuml fixed-delta-scaling-protocol
+' ============================================================================
+' The preregistered fixed-delta scaling experiment of task 7929 (pgmcp
+' experiment 446), in the order it ran, with the amendments recorded before
+' any decision data: A1-A3 (artifact 1173), C1, C2 and O2 (artifact 1178) and
+' C3. The driver is scripts/bench/rspace-fixed-delta-scaling.py; the child is
+' the ignored test scale_child in rspace++/tests/persistence/
+' trusted_scaling_resource.rs; the idle rule is benchmark_host.cpu_snapshot.
+'   INDIGO #283593  preregistration and the frozen protocol
+'   AMBER  #EF6C00  feasibility: the pilots and the recorded amendments
+'   PURPLE #6A1B9A  the negative controls, run first
+'   TEAL   #00796B  the host guards before every attempt and every child
+'   BLUE   #1565C0  the decision population
+'   GREEN  #2E7D32  analysis, acceptance and durable records
+'   RED    #C62828  outcomes that stop or invalidate a population
+'   GREY   #607D8B  diagnostics, never pooled with timing data
+' ============================================================================
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName "DejaVu Sans"
+skinparam shadowing false
+skinparam ArrowThickness 1.4
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBorderColor #455A64
+skinparam NoteBorderColor #455A64
+skinparam PartitionBorderColor #455A64
+
+title <b>The fixed-delta scaling experiment, as it ran</b>\npreregistered before any sample; amendments may change only feasibility and order, never thresholds, metrics, arms, seeds or analysis
+
+start
+partition "preregister" {
+  :open experiment 446 at commit 941ff07d:
+  hypothesis, metric, criterion and protocol;<<#C5CAE9>>
+  note right #E8EAF6
+    <b>H1.</b> On each of U (<latex>N = 2^{10} \ldots 2^{18}</latex>, <latex>H = 2^{10}</latex>)
+    and R (<latex>H = 2^{8} \ldots 2^{16}</latex>, <latex>N = 2^{12}</latex>), the per-commit
+    thread CPU time of one-key replacements has a
+    log-log exponent whose upper 95% bound is at most 0.25.
+    The statistic is the larger of the two upper bounds.
+  end note
+  :build the release lib test binary from an export
+  of the commit and pin it by its sha256;<<#C5CAE9>>
+}
+partition "pilots (never decide)" {
+  :treatment pilot: each axis's extremes,
+  1 verify run and 2 time processes per cell;<<#FFE0B2>>
+  :amendments A1-A3: child timeout 7200 s; measure on CPU 2
+  with other heavy jobs fenced away; a population interrupted
+  by idle admission is rerun in full, at most three attempts;<<#FFE0B2>>
+  :control pilots: one feasibility run of each control;<<#FFE0B2>>
+  :addendum: C1 corrects NC-SCAN to revision r1; C2 runs
+  the controls first; O2 forecasts the G4 allocation-byte miss;<<#FFE0B2>>
+}
+partition "controls (each its own population, run first)" {
+  repeat
+    :next control: NC-SCAN, NC-CLONE, NC-ORDER, then NC-V1;<<#E1BEE7>>
+    :quiet wait (addendum C3, from NC-ORDER's fourth attempt on):
+    the idle rule must admit 60 consecutive one-second snapshots;<<#B2DFDB>>
+    :run the population: 5 processes, <latex>T = 8</latex>, at the
+    smallest, middle and largest strata of U and R;<<#E1BEE7>>
+    note right #F3E5F5
+      NC-SCAN, NC-CLONE and NC-ORDER run release
+      binaries built from mutated exports; NC-V1 runs
+      the V1 writer on committed code. Every child
+      passes the same per-child idle admission.
+    end note
+    if (interrupted by idle admission?) then (yes)
+      :keep the partial population for the record (it never
+      decides) and rerun in full in a new directory;<<#FFCDD2>>
+      note right #FFEBEE
+        NC-ORDER was interrupted three times. Addendum C3
+        then confined this session's heavy jobs with taskset,
+        restored the three-attempt budget and added the wait.
+      end note
+    else (no)
+    endif
+  repeat while (another control or rerun?) is (yes) not (no)
+  if (G10: every control qualified and detected?) then (yes)
+  else (no)
+    :an undetected control invalidates the experiment;<<#FFCDD2>>
+    stop
+  endif
+}
+partition "decision population (21 cells)" {
+  :quiet wait: 60 consecutive admitted snapshots;<<#B2DFDB>>
+  :build each cell's fixture once
+  (catalog, pack and index);<<#BBDEFB>>
+  :two verify runs per cell: exact work, sealed objects,
+  metadata, effects, files and ledger at every commit;<<#BBDEFB>>
+  repeat
+    :time-process round: every cell once,
+    in an order shuffled with seed 7929;<<#BBDEFB>>
+    :idle admission before every child: CPU 2 and its sibling
+    <latex>\ge</latex> 90% idle and at least three physical cores more than half idle,
+    from one-second mpstat snapshots, at most 30 tries;<<#B2DFDB>>
+    :run the child under taskset on CPU 2, with the
+    7200 s timeout, in a 16 GiB scope without swap;<<#BBDEFB>>
+  repeat while (3 warm-up and 31 decision rounds done?) is (no) not (yes)
+  :write the summaries, metadata.json
+  and manifest.json;<<#C8E6C9>>
+  :analyze H1 and G1 to G9;<<#C8E6C9>>
+  if (qualified, and H1 and G1 to G9 pass?) then (yes)
+    :the experiment is accepted;<<#C8E6C9>>
+  else (no)
+    :accepted = false: record each failing gate with its evidence,
+    give a missed prediction a new hypothesis, and file a cost that
+    grows with history as a bug item with a consensus-change assessment;<<#FFCDD2>>
+    note right #FFEBEE
+      Observed: H1, G1 to G3 and G5 to G9 pass;
+      G4 fails on allocation bytes (H-O2).
+    end note
+  endif
+}
+partition "diagnostics (separate runs)" {
+  :AMD uProf time-based sampling on the U and R extremes,
+  heaptrack (record only) and strace -f -c on the U extremes;<<#CFD8DC>>
+}
+partition "records" {
+  :archive every raw file as pgmcp artifacts with sha256
+  values, under a top-level manifest;<<#C8E6C9>>
+  :record the U and R upper bounds on experiment 446,
+  finalize the run and decide;<<#C8E6C9>>
+  :commit the summary files, the figures and the
+  catalog, stack-safety and journal entries;<<#C8E6C9>>
+}
+stop
+@enduml
