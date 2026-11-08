@@ -333,6 +333,7 @@ Abbreviations used throughout are ABI (application binary interface), CBR (conse
 | **SS-C31** | this checkpoint; campaign-root-4131 | f1r3node | target-root equality and FFI response success mistaken for authority $`\rightarrow`$ generation-scoped replay reactivation plus affine capability publication and failure closure | native stack remains $`O(1)`$; no recursive traversal, stack-growth shim, or depth cap; exhaustive six-operation by three-fault-phase matrix | **no production consensus change**; 26/26 formal bindings, 7 rejected safety/liveness controls, one two-publication witness, 78/78 boundary tests, and exact release workspace 5,122/5,122 | [5.58](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31) |
 | **SS-C32** | this checkpoint; pgmcp `rspace-set-channel-prefix-local-transaction` | f1r3node | whole-store clone/mutate/publish for each newly loaded channel $`\rightarrow`$ private relative Bag plus prefix-rooted insertion into one unique guarded trie | measured new-channel construction exponent **1.99273 $`\rightarrow`$ 1.00258** through 16,000 channels; exact 20,000-bind release gate **7.52 s / 151,408 KiB / zero swap** | **yes for new-channel construction**; 27 Rocq invariants, 20 rejected mutants, frozen-success differential, and exact state metrics | [5.59](#559-prefix-local-rspace-channel-publication-ss-c32) |
 | **SS-C33** | `c3d48beb1`, `68534b6fc`, `a5c08c87c`, `e94735461`, `9ab98a331`; pgmcp `guarded-pathmap-final-root-allocation-teardown` | f1r3node | shallow CoW candidate pruning and $`O(k)`$ pending detached payloads $`\rightarrow`$ ownership-disjoint streaming structural rebuild plus byte-preorder payload disposal and value-free one-edge teardown | native stack $`O(1)`$ in trie depth; detached-payload retention $`O(1)`$; depth **65,536** on **256 KiB**; loaded replacement slope **0.99925**; four final-teardown slopes **0.95785–0.98911** | **yes for ownership/stack/time-scaling closure**; final topology remains allocation-heavy pending PMU-005; absolute concurrent-load latency is provisional | [5.60](#560-ownership-disjoint-structural-publication-and-two-phase-pathmap-teardown-ss-c33) |
+| **SS-C36** | `941ff07d` (measured), `9ba5bc24d` (data); pgmcp experiment 446 | f1r3node | per-commit cost of a trusted commit against the current state and the retained history; a scaling measurement, no traversal converted | no stack figure: thread CPU exponents U **0.1964** [0.1881, 0.2086] and R **0.1363** [0.1333, 0.1395]; allocated bytes fail G4 at U **0.4130** and R **0.3186** | **no** (no stack claim) | [5.63](#563-fixed-delta-trusted-commit-scaling-ss-c36) |
 | **SS-D1** | `d2591fa1` | f1r3node | task-spawn boundary per-branch deep clone | 2,867 $`\rightarrow`$ **0** *(this site)* | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D2** | `94dc983f` | f1r3node | ownership to the substitution; **15** deep copies | incl. $`O(n^2)`$ $`\rightarrow`$ $`O(n)`$ | **yes** | [5.5.3](#553-the-three-repairs) |
 | **SS-D3** | `9082d12c` | f1r3node | `inj_attempt` read-back clone $`\rightarrow`$ by-move | 2,852 $`\rightarrow`$ **0** | **yes** | [5.5.3](#553-the-three-repairs) |
@@ -573,6 +574,7 @@ register rows (SS-C5…SS-C14, SS-Y6) and the stack-safety consequences.
   - [5.56 Formally verified generation checkpoint publication [SS-C29]](#556-formally-verified-generation-checkpoint-publication-ss-c29)
   - [5.57 Formally refined kind-1 PREPARE streaming and fixed native-stack envelope [SS-C30]](#557-formally-refined-kind-1-prepare-streaming-and-fixed-native-stack-envelope-ss-c30)
   - [5.58 Formally verified replay authority and affine FFI failure closure [SS-C31]](#558-formally-verified-replay-authority-and-affine-ffi-failure-closure-ss-c31)
+  - [5.63 Fixed-delta trusted commit scaling [SS-C36]](#563-fixed-delta-trusted-commit-scaling-ss-c36)
 - [6. Discussion](#6-discussion)
   - [6.1 Why the explicit-worklist shape, and why it is *smaller* than what it replaces](#61-why-the-explicit-worklist-shape-and-why-it-is-smaller-than-what-it-replaces)
   - [6.2 Why the SCC is the unit of conversion](#62-why-the-scc-is-the-unit-of-conversion)
@@ -14823,6 +14825,85 @@ seven capstones closed under the global context, the module check succeeded, and
 `admit`, `Abort`, or axiom shortcut was used. Runtime integration, durable persistence,
 compaction, migration, and LMDB parity remain separate campaign gates.
 
+### 5.63 Fixed-delta trusted commit scaling [SS-C36]
+
+SS-C36 records the preregistered measurement of what one trusted commit costs as the current state
+and the retained history grow (pgmcp experiment 446, task 7929). A trusted commit seals a mutation,
+binds it under an exact trusted policy, prepares it and publishes it with no physical recovery and
+no cold admission, so its work should depend on the keys that it changes, not on the $`N`$ keys of
+the current state or the $`H`$ retained states. SS-C36 is a scaling measurement and makes **no stack
+claim**: it measures time, allocations, I/O, resident memory and metadata bytes, not native stack
+depth, and it converts no traversal.
+
+The cost audit, the fixture, the oracles, the harness and the gates are defined in the invariant
+catalog's [fixed-delta trusted commit scaling section](../pathmap/generation-checkpoint-invariant-catalog-2026-08-28.md#fixed-delta-trusted-commit-scaling-2026-10-29).
+Every value below is **MEASURED (q)**, quoted from the committed
+[measurement record](measurements/rspace-fixed-delta-scaling-2026-11-03.md) and its [analysis](measurements/rspace-fixed-delta-scaling-2026-11-03-analysis.json),
+[process summary](measurements/rspace-fixed-delta-scaling-2026-11-03-process-summary.tsv), [verify records](measurements/rspace-fixed-delta-scaling-2026-11-03-verify.tsv) and
+[artifact manifest](measurements/rspace-fixed-delta-scaling-2026-11-03-manifest.json). The raw populations are the pgmcp artifacts that Appendix B
+lists.
+
+The decision population, `decision-20261101T101751Z`, was collected at commit `941ff07d` on one
+pinned CPU and ended on 2026-11-03. It has 21 cells, each with two verify runs and 31 decision time
+processes. Axis U grows the current state ($`N = 2^{10}`$ to $`2^{18}`$ keys at $`H = 2^{10}`$),
+axis R grows the retained history ($`H = 2^{8}`$ to $`2^{16}`$ states at $`N = 2^{12}`$), axes D and
+L grow the replaced delta and the deleted group, and axis E measures physical eviction. Each
+exponent is the stratified log-log slope, written as the estimate with its 95% interval in brackets.
+
+Result 483 of experiment 446, decided on 2026-11-08, accepts its one hypothesis, H1: the larger
+upper 95% bound of the two thread CPU exponents is 0.2086, against the threshold 0.25. The task's
+preregistered rule also requires a qualified decision population, G1 to G9 and every control
+detected. The population is qualified and all four negative controls were detected, but gate G4
+fails on allocated bytes, so the rule is not met: the analysis reports `qualified` as `true` and
+`accepted` as `false`.
+
+| Gate | Verdict | Measured |
+|---|---|---|
+| H1, thread CPU | pass | U 0.1964 [0.1881, 0.2086]; R 0.1363 [0.1333, 0.1395]; bound 0.25 |
+| G1, exact work | pass | 2 verify runs per cell, 0 problems |
+| G2, determinism | pass | the verify runs agree on all 27 compared fields; 0 time-chain mismatches |
+| G3, wall time | pass | U 0.1586 [0.1508, 0.1699]; R 0.1098 [0.1059, 0.1138]; bound 0.25 |
+| G4, allocation count | pass | U 0.1091 [0.1050, 0.1130]; R 0.0529 [0.0479, 0.0576]; bound 0.25 |
+| G4, allocated bytes | **fail** | U 0.4130 [0.4086, 0.4174]; R 0.3186 [0.3137, 0.3234]; bound 0.25 |
+| G5, I/O | pass | largest upper bound over `syscr`, `syscw`, `rchar` and `wchar`, across both verify runs: 0.0575; bound 0.25 |
+| G6, resident memory | pass | largest stratum's median minus the smallest's. U: $`-315{,}392`$ B, upper 97.5% bound $`-151{,}552`$ B. R: 700,416 B, upper 97.5% bound 757,760 B. Bound 1 MiB; no swap and no out-of-memory kill |
+| G7, metadata | pass | every V2 commit wrote at most 518,500 bytes with $`2 + \mathit{meta\_exp} \le 103`$; the median V2 step is 1,538 to 4,088 bytes, the V1 manifest is 10.1 to 2,387 times larger, and it exceeds the median V2 step from 26 to 72 entries on |
+| G8, axes D and L | pass | D 0.6527 [0.6493, 0.6564]; L 0.2772 [0.2746, 0.2801]; bound 1.25 |
+| G9, eviction | pass | the trusted effects hold; reclaim minus timed thread CPU is 181.1, 571.2 and 7,827.3 microseconds at $`2^{10}`$, $`2^{14}`$ and $`2^{18}`$ keys; no threshold applies |
+| G10, controls | all detected | NC-SCAN CPU U 0.845 [0.841, 0.849], R 0.597 [0.572, 0.613]; NC-CLONE CPU U 0.835 [0.826, 0.852], R 0.653 [0.648, 0.658]; NC-ORDER G1 fails at every cell, CPU U 0.971 [0.968, 0.974]; NC-V1 CPU R 0.666 [0.662, 0.671] |
+
+$`c^*`$, the smallest charge per key or per state that would lift H1's bound above 0.25, is
+1.4142 ns per key on U and 16 ns per state on R.
+
+The pilot forecast the G4 miss (pgmcp artifact 1178, observation O2; interval [0.380, 0.390] on U).
+The working hypothesis, H-O2, attributes the bytes to copy-on-write copies of the widening 256-way
+level-1 nodes of the reachability ledger's PathMap, about $`72 \min(\ell / 256, 256)`$ bytes per
+copied node for a ledger of $`\ell`$ digests. The model matched the pilot's measured bind bytes to
+within 15%, the heaptrack and strace diagnostics are pgmcp artifact 1303, and their outcome is
+artifact 1304. Allocation counts stay logarithmic and thread CPU and wall time pass, so this is a
+cost in copied bytes per touched node, not extra allocations and not a correctness failure. The
+defect is bug item `rspace-ledger-trial-cow-allocation-growth` (pgmcp item 13988), which holds the
+consensus-change assessment.
+
+The measurement does not claim the following.
+
+- It holds for one host and one core.
+- The binary is the release library test binary, which still contains the `cfg(test)` hooks and a
+  toggled counting allocator, not a production build.
+- The keys are data-only: each is a datum on its own channel.
+- The history shares the current roots: each historical state differs from the current one only by
+  its legacy root.
+- fsync was measured on one filesystem, ext4.
+- It makes no power-loss claim and no concurrency claim.
+- It is not the LMDB verdict (task 5693). It measures no semantic eviction, because no eviction
+  policy exists under keep-all retention, and axis E reclaims only physical files. It activates
+  nothing (task 7931).
+- $`c^*`$ bounds only what the timing gate excludes by itself: an extra cost per key or per state
+  below $`c^*`$ would pass H1.
+
+Two pre-existing gaps are noted and not fixed here: the register of section 0 has no SS-C34 or
+SS-C35 rows, and the table of contents has no entries for 5.59 to 5.62.
+
 ---
 
 ## 6. Discussion
@@ -15669,6 +15750,34 @@ systemd-run --user --scope \
 It passes 4,502/4,502 tests with 53 skipped in 139.111 seconds. The log SHA-256 is
 `cc4cf12ae290fce055b73ddcc1e2041788242fe2cb0af7d2f92fc4bae56122c4`.
 
+**A.13 — SS-C36 fixed-delta trusted commit scaling.** The
+[measurement record](measurements/rspace-fixed-delta-scaling-2026-11-03.md) holds the protocol and, in its section 9, the program that derives the
+committed summaries from the pgmcp archives. Recomputing the analysis from a restored population
+needs no new run:
+
+```bash
+python3 scripts/bench/rspace-fixed-delta-scaling.py --analyze-only --check --output POPULATION_DIRECTORY
+```
+
+A fresh collection needs a checkout of commit `941ff07d`, its release test binary (`BINARY` is the
+executable that `cargo` prints) and the prescribed capped scope:
+
+```bash
+cargo test --locked --release -p rspace_plus_plus --lib --no-run
+mkdir -p target/perf/tmp
+systemd-run --user --scope --quiet --expand-environment=no -p MemoryMax=16G -p MemorySwapMax=0 \
+  env SCALE_CAPPED=1 TMPDIR="$PWD/target/perf/tmp" \
+  python3 -I scripts/bench/rspace-fixed-delta-scaling.py --binary BINARY --output POPULATION_DIRECTORY \
+    --cpu 2 --child-timeout 7200
+```
+
+The decision population used this scope, this environment and these driver options. Its lane script,
+`run-populations-c3.sh` in pgmcp artifact 1633, ran them from a frozen export of that commit and set
+`GIT_DIR` to a pinned repository only so that the driver could read the commit that it records. The
+driver refuses decision data unless `SCALE_CAPPED` is 1 and the measured CPU's governor reads
+`performance`, and before each child it waits for an idle snapshot of that CPU and stops the
+collection if none arrives.
+
 ---
 
 ## Appendix B — raw data locations
@@ -15737,6 +15846,13 @@ It passes 4,502/4,502 tests with 53 skipped in 139.111 seconds. The log SHA-256 
 | [`measurements/parbag-certified-protobuf-egress-2026-08-26.tsv`](measurements/parbag-certified-protobuf-egress-2026-08-26.tsv) | SS-C18's complete 101-pair balanced raw matrix with exact allocation, traversal, census, transcript, and memo counters (§5.45) |
 | [`measurements/parbag-certified-protobuf-egress-analysis-2026-08-26.json`](measurements/parbag-certified-protobuf-egress-analysis-2026-08-26.json) | SS-C18's locked 100,000-resample paired analysis, confidence intervals, corrected tests, and resource invariants (§5.45) |
 | [`measurements/parbag-certified-protobuf-egress-summary-2026-08-26.tsv`](measurements/parbag-certified-protobuf-egress-summary-2026-08-26.tsv) | SS-C18's five-cell decision table (§5.45) |
+| [`measurements/rspace-fixed-delta-scaling-2026-11-03.md`](measurements/rspace-fixed-delta-scaling-2026-11-03.md) | SS-C36's measurement record: terms, provenance, every column and key, the derivation program and the verification of the committed summaries (§5.63) |
+| [`measurements/rspace-fixed-delta-scaling-2026-11-03-process-summary.tsv`](measurements/rspace-fixed-delta-scaling-2026-11-03-process-summary.tsv) | SS-C36's 714 time-process summaries of the decision population: 3 warm-up and 31 decision processes in each of 21 cells (§5.63) |
+| [`measurements/rspace-fixed-delta-scaling-2026-11-03-verify.tsv`](measurements/rspace-fixed-delta-scaling-2026-11-03-verify.tsv) | SS-C36's 1,470 verify records of the decision population's two verify runs (§5.63) |
+| [`measurements/rspace-fixed-delta-scaling-2026-11-03-analysis.json`](measurements/rspace-fixed-delta-scaling-2026-11-03-analysis.json) | SS-C36's analysis: qualification, H1 and the gates G1 to G10, and the descriptive statistics with $`c^*`$ (§5.63) |
+| [`measurements/rspace-fixed-delta-scaling-2026-11-03-manifest.json`](measurements/rspace-fixed-delta-scaling-2026-11-03-manifest.json) | SS-C36's manifest: the sha256 of every archived file and of each pgmcp artifact that holds it (§5.63) |
+| pgmcp artifacts 1616 to 1636 | SS-C36's raw populations: the decision population (1616 to 1624), the four control populations (1625, 1626, 1630, 1631), three interrupted NC-ORDER attempts (1627 to 1629), the lane records and scripts (1632, 1633), the pilot addendum (1634) and the top-level archive manifest with its generator (1635, 1636) (§5.63) |
+| pgmcp artifacts 1159 to 1172, 1180 to 1257 and 1303 | SS-C36's pilots, control pilots and their builds (1159 to 1172, 1180 to 1256), the control-pilot archive manifest (1257) and the heaptrack, strace and uProf diagnostics (1303); artifacts 1173, 1178 and 1304 record the feasibility amendments, the control-pilot addendum and the diagnostics outcome (§5.63) |
 | [`../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv`](../pathmap/measurements/epm1-fixed-scale-2026-08-03.tsv) | the EPM1 fixed-scale benchmark (PathMap report §5.4) |
 
 **Volatile (`/tmp`) run logs** — these do not survive a reboot; the regeneration commands of
