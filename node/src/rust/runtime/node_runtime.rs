@@ -994,13 +994,18 @@ async fn node_discovery_loop(
     loop {
         tracing::debug!("nodeDiscoveryLoop: Starting iteration");
 
-        if !node_conf.standalone && connections.read().is_ok_and(|conns| conns.is_empty()) {
-            if let Ok(conf) = rp_conf_cell.read() {
-                match known_peers.seed(&kademlia_store, &conf.local.id).await {
-                    Ok(0) => {}
-                    Ok(seeded) => info!("Seeded discovery with {} known peer(s)", seeded),
-                    Err(e) => tracing::warn!("Failed to seed known peers: {}", e),
-                }
+        if !node_conf.standalone {
+            match connections.read() {
+                Ok(conns) if conns.is_empty() => match rp_conf_cell.read() {
+                    Ok(conf) => match known_peers.seed(&kademlia_store, &conf.local.id).await {
+                        Ok(0) => {}
+                        Ok(seeded) => info!("Seeded discovery with {} known peer(s)", seeded),
+                        Err(e) => tracing::warn!("Failed to seed known peers: {}", e),
+                    },
+                    Err(e) => tracing::warn!("Failed to read RPConf to seed known peers: {}", e),
+                },
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Failed to read connections to seed known peers: {}", e),
             }
         }
 
@@ -1050,10 +1055,13 @@ async fn node_discovery_loop(
             }
         }
 
-        if let Ok(conns) = connections.read() {
-            if let Err(e) = known_peers.save(conns.into_vec()) {
-                tracing::warn!("{}", e);
+        match connections.read() {
+            Ok(conns) => {
+                if let Err(e) = known_peers.save(conns.into_vec()) {
+                    tracing::warn!("{}", e);
+                }
             }
+            Err(e) => tracing::warn!("Failed to read connections to save known peers: {}", e),
         }
 
         // Sleep for configured lookup interval before next iteration

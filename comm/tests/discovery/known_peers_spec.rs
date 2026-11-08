@@ -129,16 +129,20 @@ fn save_keeps_the_last_good_set_when_the_node_is_isolated() {
 }
 
 #[tokio::test]
-async fn seed_skips_the_local_node() {
+async fn seed_skips_the_local_node_and_suppressed_peers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("known-peers");
     let local = peer(1, "validator3");
     let validator1 = peer(3, "validator1");
+    let refused = peer(4, "validator2");
 
     let mut known = KnownPeers::load(path);
-    known.save(vec![local.clone(), validator1.clone()]).unwrap();
+    known
+        .save(vec![local.clone(), validator1.clone(), refused.clone()])
+        .unwrap();
 
     let store = KademliaStore::new(local.id.clone(), Arc::new(SilentRpc));
+    store.evict_unreachable_peer(&refused).unwrap();
     assert_eq!(known.seed(&store, &local.id).await.unwrap(), 1);
     assert_eq!(store.peers().unwrap(), vec![validator1]);
 }
