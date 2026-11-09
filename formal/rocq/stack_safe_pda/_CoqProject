@@ -169,6 +169,7 @@ theories/RPB3IndependentOracleParOrderBridge.v
 theories/RPB3IndependentOracleStringMapVerdictBridge.v
 theories/RPB3IndependentOracleUnscoredFamilyBridge.v
 theories/RPB3IndependentOracleMessageAssembly.v
+theories/RPB3IndependentOracleRecursiveMatch.v
 theories/RPB3RecursiveParUnfold.v
 theories/RPB3IndependentTypedSemanticReference.v
 theories/RPB3SourceIndexedFrames.v
