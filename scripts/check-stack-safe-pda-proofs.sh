@@ -1357,10 +1357,15 @@ rocq_reject_placeholders theories/RPB3IndependentOracleRegionChildBridge.v
 TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleRegionChildBridge.v 6 \
   "decoded-node conversion and child rebase facts at any depth"
+rocq_reject_placeholders theories/RPB3IndependentOracleScalarContractBridge.v
+TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleScalarContractBridge.v 13 \
+  "generated scalar rules against the oracle contract table"
 TLC_MEMORY_HIGH=11G TLC_RSS=13G TLC_RUNTIME_MAX_SEC=1800 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
-  StackSafePDA.RPB3IndependentOracleRegionChildBridge
+  StackSafePDA.RPB3IndependentOracleRegionChildBridge \
+  StackSafePDA.RPB3IndependentOracleScalarContractBridge
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
