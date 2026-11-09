@@ -1455,6 +1455,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleEMethodScoreBridge.v
 TLC_MEMORY_HIGH=4G TLC_RSS=5G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleEMethodScoreBridge.v 21 \
   "EMethod helper projects from the oracle"
+rocq_reject_placeholders theories/RPB3IndependentOracleOrderedCollectionScoreBridge.v
+TLC_MEMORY_HIGH=4G TLC_RSS=5G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleOrderedCollectionScoreBridge.v 14 \
+  "ordered collection helpers project from the oracle"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1481,7 +1485,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentOracleBinaryExprScoreBridge \
   StackSafePDA.RPB3IndependentOracleConnectiveArmScoreBridge \
   StackSafePDA.RPB3IndependentOracleEMapCarrierScoreBridge \
-  StackSafePDA.RPB3IndependentOracleEMethodScoreBridge
+  StackSafePDA.RPB3IndependentOracleEMethodScoreBridge \
+  StackSafePDA.RPB3IndependentOracleOrderedCollectionScoreBridge
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
