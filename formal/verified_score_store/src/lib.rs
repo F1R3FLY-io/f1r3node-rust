@@ -1,5 +1,6 @@
 use vstd::prelude::*;
 pub mod admission_observable_spec;
+pub mod admission_event_checker;
 
 verus! {
 

@@ -4583,7 +4583,7 @@ fn rpb3_admission_observable_spec_is_gated_and_defined_once() {
     let cursor_runner = read_repository_file("scripts/check-rpb3-admission-cursor-verus.sh");
     for marker in [
         "formal/verified_score_store/src/admission_observable_spec.rs",
-        "verification results:: 139 verified, 0 errors",
+        "verification results:: 185 verified, 0 errors",
     ] {
         assert!(
             cursor_runner.contains(marker),
@@ -4638,5 +4638,45 @@ fn rpb3_admission_observable_spec_is_gated_and_defined_once() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn rpb3_admission_event_checker_is_gated_and_refines_the_shared_spec() {
+    let cursor_runner = read_repository_file("scripts/check-rpb3-admission-cursor-verus.sh");
+    assert!(
+        cursor_runner.contains("formal/verified_score_store/src/admission_event_checker.rs"),
+        "RPB3 admission cursor gate is missing the admission event checker"
+    );
+    let verified_store = read_repository_file("formal/verified_score_store/src/lib.rs");
+    assert!(verified_store.contains("pub mod admission_event_checker;"));
+    let event_checker =
+        read_repository_file("formal/verified_score_store/src/admission_event_checker.rs");
+    for marker in [
+        "use crate::admission_observable_spec::*;",
+        "pub closed spec fn wf(",
+        "pub fn new(",
+        "pub fn check_event(",
+        "observable_step(old(self)@, final(self)@, event@)",
+        "observable_next(old(self)@, event@) is None",
+        "final(self).image() == old(self).image()",
+    ] {
+        assert!(
+            event_checker.contains(marker),
+            "admission event checker is missing `{marker}`"
+        );
+    }
+    for forbidden in [
+        "external_body",
+        "assume(",
+        "admit()",
+        "#[verifier",
+        "fn observable_next(",
+        "fn observable_step(",
+    ] {
+        assert!(
+            !event_checker.contains(forbidden),
+            "admission event checker contains `{forbidden}`"
+        );
     }
 }
