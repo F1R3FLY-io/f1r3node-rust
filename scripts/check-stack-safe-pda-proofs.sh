@@ -1511,6 +1511,10 @@ rocq_reject_placeholders theories/RPB3TotalExprPayloadFamilies.v
 TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
   rocq_compile_with_closed_count theories/RPB3TotalExprPayloadFamilies.v 83 \
   "expression payload families return a result on typed-valid input"
+rocq_reject_placeholders theories/RPB3TotalNameAndPathMapFamilies.v
+TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
+  rocq_compile_with_closed_count theories/RPB3TotalNameAndPathMapFamilies.v 123 \
+  "name and PathMap families return a result on typed-valid input"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1551,7 +1555,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentOracleExprPayloadAgreement \
   StackSafePDA.RPB3ParFamilyScoreOrderControls \
   StackSafePDA.RPB3ScoreClassBehaviour \
-  StackSafePDA.RPB3TotalExprPayloadFamilies
+  StackSafePDA.RPB3TotalExprPayloadFamilies \
+  StackSafePDA.RPB3TotalNameAndPathMapFamilies
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
