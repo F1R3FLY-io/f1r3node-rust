@@ -490,7 +490,7 @@ pub async fn status_handler(State(app_state): State<AppState>) -> Response {
     request_body = DeployRequest,
     responses(
         (status = 200, description = "Deploy accepted; returns the deploy ID (hex)", body = String),
-        (status = 400, description = "Malformed request body or invalid field value (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
+        (status = 400, description = "Malformed request body or invalid field value, including a signature that does not verify (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`)", body = ApiErrorResponse),
         (status = 409, description = "Deploy is already known (`duplicate_deploy`)", body = ApiErrorResponse),
         (status = 422, description = "Term is structurally valid but failed execution (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`)", body = ApiErrorResponse),
         (status = 500, description = "Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`)", body = ApiErrorResponse),
