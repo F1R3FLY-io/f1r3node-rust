@@ -470,14 +470,14 @@ async fn timely_verdicts_grow_the_release_window() {
         node.received().len() == 26
     })
     .await;
-    // Thirteen timely verdicts with deploys held back: at the round's end
-    // slow start doubles the window.
+    // Timely verdicts with deploys held back: at the round's end the window
+    // grows by one.
     advance(&node, 12, 24);
-    eventually("the doubled window is released", || async {
-        node.received().len() == 39
+    eventually("the grown window is released", || async {
+        node.received().len() == 27
     })
     .await;
-    assert_eq!(released_limit(&queue).await, 26);
+    assert_eq!(released_limit(&queue).await, 14);
     queue.stop();
 }
 
@@ -506,8 +506,8 @@ async fn a_deploy_that_keeps_losing_does_not_shrink_its_queue() {
     let snapshot = queue.handle.snapshot().await.unwrap();
     assert_eq!(queue.state(&stuck).await, Some(QueueState::Submitted));
     assert_eq!(
-        snapshot.slow_start_threshold,
-        Some(256.0),
+        snapshot.release_cuts,
+        Some(0),
         "a deploy unsettled for 50 heights among timely ones never halves the window: {:?}",
         snapshot
     );
