@@ -492,15 +492,17 @@ jobs:
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then unshallow=(--unshallow); fi
           git fetch --quiet --no-tags "${unshallow[@]}" --filter=tree:0 origin "$BASE_SHA" "$HEAD_SHA"
           source_validator="$RUNNER_TEMP/commit-policy-source.sh"
-          git show "${BASE_SHA}:.github/scripts/commit-policy-source.sh" > "$source_validator" 2>/dev/null ||
-            cp .github/scripts/commit-policy-source.sh "$source_validator"
-          source_bases="$(bash "$source_validator")"
           ratification=(--ratified-from "$BASE_SHA")
-          while IFS= read -r source_sha; do
-            if [ -n "$source_sha" ]; then
-              ratification+=(--ratified-from "$source_sha")
-            fi
-          done <<< "$source_bases"
+          if git show "${BASE_SHA}:.github/scripts/commit-policy-source.sh" > "$source_validator" 2>/dev/null; then
+            source_bases="$(bash "$source_validator")"
+            while IFS= read -r source_sha; do
+              if [ -n "$source_sha" ]; then
+                ratification+=(--ratified-from "$source_sha")
+              fi
+            done <<< "$source_bases"
+          else
+            echo "::notice::Source ratification is disabled until the validator exists in the base commit."
+          fi
           count="$(git rev-list --count "${BASE_SHA}..${HEAD_SHA}")"
           if [ "$count" -gt 250 ]; then
             echo "::warning::The pull request has ${count} commits; the commits API lists 250, so later author commits are not exempt"

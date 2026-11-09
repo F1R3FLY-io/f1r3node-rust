@@ -69,7 +69,9 @@ The base copy of `.github/scripts/commit-policy-source.sh` validates each transf
 
 After validation, the checker finds all merge bases between the PR head and the protected source tip. Those shared ancestors add accepted source authors to the ratified set. This supports snapshots and later base updates. PR-only commits and later source commits cannot ratify identities absent from shared history. Denied identities and forbidden trailers still fail. Ordinary feature PRs and forks retain their existing checks.
 
-The policy files must reach a target branch before that branch can use the updated base copies. A merge into `dev` alone does not update the checker on `ca-canary`.
+If the base commit lacks the source validator, the job uses target-only ratification and reports a notice. It never executes the PR copy of the source validator. A trusted validator failure stops the job.
+
+The policy files must reach a target branch before that branch can use source ratification. A merge into `dev` alone does not update the checker on `ca-canary`.
 
 ### Script Tests
 

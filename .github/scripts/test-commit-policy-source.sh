@@ -153,6 +153,63 @@ if bash "$CHECKER" range 'HEAD~1..HEAD' --repo "$TMP/repo" --ratified-from "$BAS
 	fail "source ratification bypassed a forbidden trailer"
 fi
 
+awk '
+	/^          source_validator=/ { capture = 1 }
+	capture && /^          count=/ { exit }
+	capture { sub(/^          /, ""); print }
+' "$ROOT/.github/workflows/ci.yml" >"$TMP/source-selection.sh"
+[ -s "$TMP/source-selection.sh" ] || fail "the workflow source-selection block is missing"
+cat >>"$TMP/source-selection.sh" <<'SH'
+printf '%s\n' "${ratification[@]}" >"$RATIFICATION_FILE"
+SH
+mkdir -p "$TMP/runner" "$TMP/repo/.github/scripts"
+cat >"$TMP/working-validator.sh" <<'SH'
+printf ran >"$VALIDATOR_MARKER"
+printf '%s\n' "$HEAD_SHA"
+SH
+cp "$TMP/working-validator.sh" "$TMP/repo/.github/scripts/commit-policy-source.sh"
+
+selection() {
+	(cd "$TMP/repo" && env BASE_SHA="$1" HEAD_SHA="$UNACCEPTED" \
+		RUNNER_TEMP="$TMP/runner" VALIDATOR_MARKER="$TMP/validator-ran" \
+		RATIFICATION_FILE="$TMP/ratification" TRUSTED_SOURCE="$ACCEPTED" \
+		bash -euo pipefail "$TMP/source-selection.sh" >"$TMP/selection-out" 2>"$TMP/selection-err")
+}
+
+selection "$BASE" || fail "an absent base validator stopped target-only checks"
+[ ! -e "$TMP/validator-ran" ] || fail "the workflow ran a working-copy validator absent from the base"
+[ "$(cat "$TMP/ratification")" = "$(printf '%s\n' --ratified-from "$BASE")" ] ||
+	fail "an absent base validator added source ratification"
+if bash "$CHECKER" range "$BASE..$UNACCEPTED" --repo "$TMP/repo" \
+	--ratified-from "$BASE" >"$TMP/out" 2>&1; then
+	fail "target-only rollout checks accepted a PR-only author"
+fi
+
+git -C "$TMP/repo" checkout -q --detach "$BASE"
+cat >"$TMP/repo/.github/scripts/commit-policy-source.sh" <<'SH'
+printf '%s\n' "$TRUSTED_SOURCE"
+SH
+git -C "$TMP/repo" add .github/scripts/commit-policy-source.sh
+git -C "$TMP/repo" -c core.hooksPath=/dev/null commit -q -m trusted-validator
+TRUSTED_BASE="$(git -C "$TMP/repo" rev-parse HEAD)"
+cp "$TMP/working-validator.sh" "$TMP/repo/.github/scripts/commit-policy-source.sh"
+selection "$TRUSTED_BASE" || fail "the trusted base validator failed"
+[ ! -e "$TMP/validator-ran" ] || fail "a working-copy validator replaced the trusted base validator"
+[ "$(cat "$TMP/ratification")" = "$(printf '%s\n' --ratified-from "$TRUSTED_BASE" --ratified-from "$ACCEPTED")" ] ||
+	fail "the trusted validator did not add its source to target ratification"
+bash "$CHECKER" range "$TRUSTED_BASE..$ACCEPTED" --repo "$TMP/repo" \
+	--ratified-from "$TRUSTED_BASE" --ratified-from "$ACCEPTED"
+
+printf '%s\n' 'exit 1' >"$TMP/repo/.github/scripts/commit-policy-source.sh"
+git -C "$TMP/repo" add .github/scripts/commit-policy-source.sh
+git -C "$TMP/repo" -c core.hooksPath=/dev/null commit -q -m failing-validator
+FAILING_BASE="$(git -C "$TMP/repo" rev-parse HEAD)"
+cp "$TMP/working-validator.sh" "$TMP/repo/.github/scripts/commit-policy-source.sh"
+if selection "$FAILING_BASE"; then
+	fail "the workflow ignored a trusted validator failure"
+fi
+[ ! -e "$TMP/validator-ran" ] || fail "a failed trusted validator fell back to the working copy"
+
 for required in "\${BASE_SHA}:.github/scripts/commit-policy-source.sh" \
 	"source_bases=\"\$(bash \"\$source_validator\")\"" "ratification+=(--ratified-from \"\$source_sha\")" \
 	"\"\${ratification[@]}\" --exempt-authors \"\$exempt\" --denied \"\$denied\"" \
