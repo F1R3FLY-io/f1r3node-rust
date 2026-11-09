@@ -39,13 +39,15 @@ struct Round {
 /// deploy released before the round still waiting) is a stall and halves it
 /// too. One deploy that keeps losing merges is one late verdict in
 /// its round, never a cut by itself. Otherwise, if deploys were held back
-/// for want of room, the window grows: by the round's timely verdicts below
-/// the slow-start threshold (doubling), by one above it. Queues sharing the
-/// shard see the same rounds and converge on equal shares of it.
+/// for want of room and some settled in time, the window grows by one. It starts at one deploy per
+/// height of a round, already near what a validator settles, so growth is
+/// additive from the start: doubling would overshoot the shard by the time
+/// a round's late verdicts could show it. Queues sharing the shard see the
+/// same rounds and converge on equal shares of it.
 #[derive(Debug, Clone)]
 pub struct ReleaseWindow {
     window: f64,
-    slow_start_threshold: f64,
+    cuts: u64,
     ceiling: f64,
     round_heights: f64,
     round: Option<Round>,
@@ -63,7 +65,7 @@ impl ReleaseWindow {
         let ceiling = ceiling.max(1) as f64;
         Self {
             window: round_heights.ceil().min(ceiling),
-            slow_start_threshold: ceiling,
+            cuts: 0,
             ceiling,
             round_heights,
             round: None,
@@ -148,16 +150,11 @@ impl ReleaseWindow {
         };
         match cut {
             Some(_) => {
-                self.slow_start_threshold = (self.window / 2.0).max(1.0);
-                self.window = self.slow_start_threshold;
+                self.window = (self.window / 2.0).max(1.0);
+                self.cuts += 1;
             }
-            None if round.held_back => {
-                let step = if self.window < self.slow_start_threshold {
-                    round.on_time as f64
-                } else {
-                    1.0
-                };
-                self.window = (self.window + step).min(self.ceiling);
+            None if round.held_back && round.on_time > 0 => {
+                self.window = (self.window + 1.0).min(self.ceiling);
             }
             None => {}
         }
@@ -178,7 +175,8 @@ impl ReleaseWindow {
 
     pub fn window(&self) -> f64 { self.window }
 
-    pub fn slow_start_threshold(&self) -> f64 { self.slow_start_threshold }
+    /// Times the window has been halved.
+    pub fn cuts(&self) -> u64 { self.cuts }
 
     pub fn late_share(&self) -> Option<f64> { self.late_share }
 
@@ -237,7 +235,7 @@ mod tests {
         assert_eq!(w.on_tip(13, Some(0)), None, "released at the round's start is not older than it");
         w.record_held_back();
         assert_eq!(w.on_tip(26, Some(0)), Some(Cut::Stall));
-        assert_eq!(w.limit(), 6);
+        assert_eq!(w.limit(), 6, "a round without timely verdicts does not grow the window");
         assert_eq!(
             w.on_tip(39, Some(0)),
             None,
@@ -246,19 +244,19 @@ mod tests {
     }
 
     #[test]
-    fn growth_doubles_per_round_until_a_cut_then_adds_one_per_round() {
+    fn growth_is_one_deploy_per_held_back_round() {
         let mut w = started();
         round(&mut w, 13, 13, 0, true);
-        assert_eq!(w.limit(), 26);
-        round(&mut w, 26, 26, 0, false);
-        assert_eq!(w.limit(), 26, "without deploys held back demand, not capacity, is the limit");
-        round(&mut w, 39, 26, 0, true);
-        assert_eq!(w.limit(), 52);
-        round(&mut w, 52, 10, 30, true);
-        assert_eq!((w.limit(), w.slow_start_threshold()), (26, 26.0));
-        round(&mut w, 65, 26, 0, true);
-        assert_eq!(w.limit(), 27);
-        assert_eq!(w.release_rate(), Some(27.0 / 3.0));
+        assert_eq!(w.limit(), 14, "a round of timely verdicts adds one, however many");
+        round(&mut w, 26, 14, 0, false);
+        assert_eq!(w.limit(), 14, "without deploys held back demand, not capacity, is the limit");
+        round(&mut w, 39, 14, 0, true);
+        assert_eq!(w.limit(), 15);
+        round(&mut w, 52, 5, 10, true);
+        assert_eq!((w.limit(), w.cuts()), (7, 1));
+        round(&mut w, 65, 7, 0, true);
+        assert_eq!(w.limit(), 8);
+        assert_eq!(w.release_rate(), Some(8.5 / 3.0));
     }
 
     /// Two queues share a shard that settles `capacity` deploys a height.
