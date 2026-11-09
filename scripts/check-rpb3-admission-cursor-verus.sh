@@ -83,6 +83,7 @@ source_files=(
   "$model_dir/rpb3_epm_loop_continuation_source.rs"
   "$model_dir/rpb3_epm_loop_observation_bridge.rs"
   "$model_dir/rpb3_integrated_source_trace_composition.rs"
+  "$model_dir/rpb3_integrated_dispatcher.rs"
   "$model_dir/rpb3_epathmap_terminal_nested_return_composition.rs"
   "$model_dir/rpb3_canonical_path_eof_owner_obligation_refinement.rs"
   "$model_dir/rpb3_integrated_admission.rs"
@@ -1642,6 +1643,63 @@ check_proof_inventory() {
     exit 1
   fi
 }
+proofs_rpb3_integrated_dispatcher=(
+  product_epm_receipts_carried_congruent
+  product_map_step_is_functional
+  live_source_continue_is_functional
+  live_source_continue_indexed_is_functional
+  live_source_map_key_is_functional
+  live_runtime_continue_is_functional
+  live_runtime_continue_indexed_is_functional
+  live_runtime_map_key_is_functional
+  integrated_score_finish_shape_is_functional
+  live_runtime_root_score_is_functional
+  live_runtime_message_child_score_is_functional
+  integrated_map_pop_shape_is_functional
+  live_runtime_message_child_complete_is_functional
+  live_runtime_map_value_accept_is_functional
+  live_runtime_map_entry_finish_is_functional
+  live_runtime_message_push_is_functional
+  live_runtime_message_push_indexed_is_functional
+  live_runtime_message_epm_push_indexed_is_functional
+  live_runtime_map_value_push_is_functional
+  live_runtime_map_value_push_indexed_is_functional
+  epm_continue_event_step_is_functional
+  linked_epm_continue_is_functional
+  product_epm_continue_is_functional
+  live_runtime_epm_continue_is_functional
+  accept_child_is_functional
+  product_epm_child_return_is_functional
+  live_runtime_epm_map_value_accept_is_functional
+  live_runtime_epm_end_is_functional
+  product_epm_finish_accept_is_functional
+  live_runtime_epm_finish_accept_is_functional
+  integrated_live_non_push_is_functional
+  integrated_message_push_route_implies_observed
+  integrated_map_value_push_route_implies_observed
+  integrated_live_relation_non_push_refines_live_step
+  integrated_live_relation_message_push_refines_live_step
+  integrated_live_relation_map_value_push_refines_live_step
+  integrated_live_relation_refines_live_step
+  integrated_step_is_function
+  same_act_source_view_preserves_event_count
+  act_forward_frame_is_layout_wf
+  integrated_epm_cursor_admission_preserves_wf
+  integrated_act_forward_product_preserves_wf
+  integrated_act_forward_preserves_wf
+  integrated_step_preserves_wf
+  integrated_kind_guards_are_exclusive
+  product_linked_top_is_epathmap_frame
+  product_map_message_step_requires_message_top
+  live_runtime_message_push_is_message_top
+  live_runtime_message_push_indexed_is_message_top
+  live_runtime_message_epm_push_indexed_is_message_top
+  live_source_continue_is_message_top
+  live_source_continue_indexed_is_message_top
+  live_runtime_continue_is_message_top
+  live_runtime_continue_indexed_is_message_top
+  integrated_live_step_establishes_kind_guard
+)
 gated_modules=(
   rpb3_act_source_product_integration
   rpb3_admission_cursor
@@ -1688,6 +1746,7 @@ gated_modules=(
   rpb3_generic_message_eof_source_refinement
   rpb3_indexed_region_source_projection
   rpb3_integrated_admission
+  rpb3_integrated_dispatcher
   rpb3_integrated_source_trace_composition
   rpb3_live_canonical_path_descendant_action_lift
   rpb3_live_canonical_path_map_finish_action_lift
@@ -3689,6 +3748,24 @@ for proof in "${map_push_checked_receipt_proofs[@]}"; do
   if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
     cat "$proof_log"
     echo "rpb3-admission-cursor: map push checked receipt $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+for proof in "${proofs_rpb3_integrated_dispatcher[@]}"; do
+  proof_log="$evidence_dir/integrated-dispatcher-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_integrated_dispatcher --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: integrated dispatcher $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: integrated dispatcher $proof did not verify" >&2
     exit 1
   fi
   sha256sum "$proof_log"

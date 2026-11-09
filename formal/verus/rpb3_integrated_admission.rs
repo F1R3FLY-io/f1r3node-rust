@@ -84,6 +84,8 @@ mod rpb3_epm_loop_observation_bridge;
 #[cfg(all(rpb3_live_push, rpb3_terminal))]
 mod rpb3_integrated_source_trace_composition;
 mod rpb3_epathmap_terminal_nested_return_composition;
+#[cfg(rpb3_live_push)]
+mod rpb3_integrated_dispatcher;
 
 use {
     rpb3_admission_cursor as admission, rpb3_epathmap_event_refinement as epm,
