@@ -73,8 +73,9 @@ Given a base state and a set of deploy chains to merge:
   rule: a **produce-only write** (a produce that does not consume the base) adds a message,
   exactly as running the branches one after the other would, so the merge keeps every such
   write. Protection is decided by the authenticated tag, never by the shape of a datum
-  (ratified 2026-08-22). Rationale: a RhoVM read of a tagged cell holding two datums trips the
-  merge type's single-value invariant and **halts finalization** (safety **S7**).
+  (ratified 2026-08-22). Rationale: a RhoVM read of an IntegerAdd cell holding two datums
+  trips the IntegerAdd single-value invariant and **halts finalization** (safety **S7**). A
+  BitmaskOr read folds every datum by OR, so it has no such invariant.
 - **R-SPLIT.** `combine(fold user, fold system)` **MUST** equal `fold(all deploys)` on the
   conflict-relevant produce/consume fields, so conflict detection on the split index equals
   detection on the monolithic index. The user/system partition **MUST NOT** hide a
@@ -152,7 +153,7 @@ Given a base state and a set of deploy chains to merge:
 | **S4** | The removed single-value-cell check silently dropped a real, non-number conflict (violates R-CONFLICT) — **GAP-3**. |
 | **S5** | The user/system event-log split hides a cross-partition conflict (violates R-SPLIT) — **P2**. |
 | **S6** | A comparator hardening breaks agreement with a live `v0.4.16` node on an input the old order already resolved deterministically (violates R-APPEND). |
-| **S7** | A merge persists a **tagged number cell** holding > 1 datum, so a later RhoVM read trips the merge type's single-value invariant and **halts finalization** (violates R-SVC) — RCA-asi-devnet-finality-halt. |
+| **S7** | A merge persists an IntegerAdd **tagged number cell** holding > 1 datum, so a later RhoVM read trips the IntegerAdd single-value invariant and **halts finalization** (violates R-SVC) — RCA-asi-devnet-finality-halt. |
 
 ## 8. Conformance
 

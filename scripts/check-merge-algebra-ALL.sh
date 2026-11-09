@@ -119,7 +119,7 @@ fi
 echo "== [3/4] Rust modality companions (fail-soft) =="
 if command -v cargo >/dev/null 2>&1; then
   if cargo test -p rspace_plus_plus --lib merger:: >/tmp/ma_rust_rspace.log 2>&1; then
-    pass "Rust rspace_plus_plus merger:: (GAP-1 combine, Finding-A pin ignored, GAP-3 subsumption + §3c produce-only escape, P2)"
+    pass "Rust rspace_plus_plus merger:: (GAP-1 combine, Finding-A pin ignored, GAP-3 subsumption + produce-only writes are not conflicts, P2)"
   else
     fail "Rust rspace_plus_plus merger:: tests failed (see /tmp/ma_rust_rspace.log)"; tail -20 /tmp/ma_rust_rspace.log | sed 's/^/      /'
   fi
