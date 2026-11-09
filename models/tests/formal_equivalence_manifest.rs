@@ -4397,7 +4397,7 @@ fn rpb3_admission_formal_artifacts_are_manifested() {
     assert!(has_runner_command(&runner, &[
         "rocq_compile_with_closed_count",
         "theories/RPB3Admission.v",
-        "370"
+        "371"
     ],));
     assert!(has_runner_command(&runner, &[
         "rocq_compile_with_closed_count",

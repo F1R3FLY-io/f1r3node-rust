@@ -632,7 +632,7 @@ rpb3_source_indexed_admission_prerequisites() {
 canonical_key_protocol_proofs() {
   local TLC_MEMORY_HIGH=1536M TLC_RSS=2G TLC_CPU_QUOTA=100% TLC_TASKS_MAX=64
   rocq_reject_placeholders theories/RPB3Admission.v
-  rocq_compile_with_closed_count theories/RPB3Admission.v 370 \
+  rocq_compile_with_closed_count theories/RPB3Admission.v 371 \
     "RPB3 fold, ordered semantic slots, canonical-key transport and storage contracts"
   rocq_check_modules "standalone canonical-key transport and source-indexed admission" \
     StackSafePDA.RPB3SourceIndexedFrames StackSafePDA.RPB3Admission

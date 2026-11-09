@@ -12226,3 +12226,81 @@ Print Assumptions decreasing_or_out_of_range_occurrence_is_refused.
 Print Assumptions three_source_ordered_occurrences_are_preserved.
 
 End OrderedSemanticSlots.
+
+(** * Concrete non-vacuity, termination and determinism
+
+    The admission machine of [SourceIndexedFrames] on concrete generated wire
+    inputs, all through the same reducer: an admitted ordered New, an admitted
+    Par whose Send children are in score order and an accepted exact claimed
+    score; refusals for a malformed unforgeable payload, a trailing root byte, a
+    New with reversed map keys, a Par whose Send children are out of score order
+    and a forged claimed score.  The machine terminates on every input and its
+    terminal result is unique, with no fuel and no depth cap. *)
+
+From StackSafePDA Require RPB3SourceIndexedTermination.
+
+Definition concrete_witness_hash (_ : list nat) : nat := 0.
+
+Definition concrete_admitted_new_body : list nat :=
+  [18; 0; 34; 3; 10; 1; 97; 34; 3; 10; 1; 98].
+
+Definition concrete_reversed_new_body : list nat :=
+  [18; 0; 34; 3; 10; 1; 98; 34; 3; 10; 1; 97].
+
+Definition concrete_trailing_new_body : list nat :=
+  concrete_admitted_new_body ++ [0].
+
+Definition concrete_malformed_unforgeable_body : list nat :=
+  [10; 3; 10; 2; 42].
+
+Definition concrete_ascending_send_par_body : list nat :=
+  [10; 0; 10; 2; 24; 1].
+
+Definition concrete_descending_send_par_body : list nat :=
+  [10; 2; 24; 1; 10; 0].
+
+Theorem concrete_nonvacuity_and_termination :
+  SourceIndexedFrames.source_indexed_root_accepts concrete_witness_hash 20
+    concrete_admitted_new_body = true /\
+  SourceIndexedFrames.source_indexed_root_accepts concrete_witness_hash 1
+    concrete_ascending_send_par_body = true /\
+  SourceIndexedFrames.source_indexed_root_claimed_score concrete_witness_hash 20
+    concrete_admitted_new_body
+    (RPB3SemanticReducer.canonical_score_bytes
+      RPB3RecursiveAuxiliarySourceReference.ordered_two_absent_value_maps_new_score) =
+    SourceIndexedFrames.ClaimedScoreAccepted /\
+  SourceIndexedFrames.source_indexed_root_accepts concrete_witness_hash 60
+    concrete_malformed_unforgeable_body = false /\
+  SourceIndexedFrames.source_indexed_root_accepts concrete_witness_hash 20
+    concrete_trailing_new_body = false /\
+  SourceIndexedFrames.source_indexed_root_accepts concrete_witness_hash 20
+    concrete_reversed_new_body = false /\
+  SourceIndexedFrames.source_indexed_root_accepts concrete_witness_hash 1
+    concrete_descending_send_par_body = false /\
+  SourceIndexedFrames.source_indexed_root_claimed_score concrete_witness_hash 20
+    concrete_admitted_new_body
+    (RPB3SemanticReducer.canonical_score_bytes
+      RPB3RecursiveAuxiliarySourceReference.ordered_two_absent_value_maps_new_score ++ [0]) =
+    SourceIndexedFrames.ClaimedScoreRejected /\
+  (forall hash_fn type_id bytes,
+    exists final,
+      RPB3SourceIndexedTermination.reaches
+        (RPB3RecursiveAuxiliarySourceReference.recursive_par_reference hash_fn)
+        hash_fn bytes
+        (RPB3SourceIndexedTermination.root_configuration type_id bytes) final /\
+      RPB3SourceIndexedTermination.terminal final /\
+      (forall another,
+        RPB3SourceIndexedTermination.reaches
+          (RPB3RecursiveAuxiliarySourceReference.recursive_par_reference hash_fn)
+          hash_fn bytes
+          (RPB3SourceIndexedTermination.root_configuration type_id bytes) another ->
+        RPB3SourceIndexedTermination.terminal another -> another = final) /\
+      RPB3SourceIndexedTermination.terminal_root_result final =
+        SourceIndexedFrames.source_indexed_root_full_result hash_fn type_id bytes).
+Proof.
+  refine (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ (conj _ _)))))))).
+  1-8: vm_compute; reflexivity.
+  exact RPB3SourceIndexedTermination.fuel_free_source_indexed_root_terminates_deterministically.
+Qed.
+
+Print Assumptions concrete_nonvacuity_and_termination.
