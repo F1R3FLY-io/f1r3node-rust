@@ -63,18 +63,31 @@ source "${SCRIPT_DIR}/functions.sh"
 # Python interpreter is not needed inside the sandbox.
 PROGRAMS="swipl bash ls"
 
-if [ ! -f ${CACHE_DIR}/cached_programs_binds ]; then
+# Bind caches hold host paths, so their directory is keyed on their inputs.
+CACHE_KEY=$(printf '%s\n' "$(swipl --home)" "${PETTA_DIR}" "${SANDBOX_LIB_PATH}" | sha256sum | cut -c1-16)
+BIND_CACHE="${CACHE_DIR}/${CACHE_KEY}"
+mkdir -p "${BIND_CACHE}"
+
+# Atomic publish: a concurrent run never reads a half-written file.
+cache_write() {
+  local tmp
+  tmp="$(mktemp "$1.XXXXXX")"
+  printf '%s\n' "$2" >"${tmp}"
+  mv -f "${tmp}" "$1"
+}
+
+if [ ! -f ${BIND_CACHE}/cached_programs_binds ]; then
     PROGRAMS_BINDS=$(generate-binds-exes ${PROGRAMS})
+    cache_write "${BIND_CACHE}/cached_programs_binds" "${PROGRAMS_BINDS}"
 else
-    PROGRAMS_BINDS=$(<${CACHE_DIR}/cached_programs_binds)
-    echo "${PROGRAMS_BINDS}" >${CACHE_DIR}/cached_programs_binds
+    PROGRAMS_BINDS=$(<${BIND_CACHE}/cached_programs_binds)
 fi
 
 # Options for re-creating the swipl home inside the  sandbox. We can't just
 # bind the whole directory because we need to create the symlink
 # `/lib/swipl/lib/x86_64-linux -> /lib`.
 SWIPL_HOME_DIR=$(swipl --home)
-if [ ! -f ${CACHE_DIR}/cached_swipl_home_binds ]; then
+if [ ! -f ${BIND_CACHE}/cached_swipl_home_binds ]; then
   SWIPL_HOME_BINDS="
     --dir /lib/swipl
     --ro-bind ${SWIPL_HOME_DIR}/ABI /lib/swipl/ABI
@@ -90,9 +103,9 @@ if [ ! -f ${CACHE_DIR}/cached_swipl_home_binds ]; then
     --ro-bind ${SWIPL_HOME_DIR}/library /lib/swipl/library
     --ro-bind ${SWIPL_HOME_DIR}/swipl.home /lib/swipl/swipl.home
   "
-  echo "${SWIPL_HOME_BINDS}" >${CACHE_DIR}/cached_swipl_home_binds
+  cache_write "${BIND_CACHE}/cached_swipl_home_binds" "${SWIPL_HOME_BINDS}"
 else
-  SWIPL_HOME_BINDS=$(<${CACHE_DIR}/cached_swipl_home_binds)
+  SWIPL_HOME_BINDS=$(<${BIND_CACHE}/cached_swipl_home_binds)
 fi
 
 # Shared libraries that come with the SWI-Prolog distribution. We ignore
@@ -101,12 +114,12 @@ fi
 # linkage (janus.pl fails to initialize if its shared object is missing); they
 # are never exercised because the MeTTa libraries invoke no py-call, and the
 # Python interpreter and standard library are not bound into the sandbox.
-if [ ! -f ${CACHE_DIR}/cached_swipl_libs_binds ]; then
+if [ ! -f ${BIND_CACHE}/cached_swipl_libs_binds ]; then
     SWIPL_LIBS=$(find ${SWIPL_HOME_DIR}/lib/x86_64-linux -type f | grep -v libjpl)
     SWIPL_LIBS_BINDS=$(generate-binds-libs ${SWIPL_LIBS})
-    echo "${SWIPL_LIBS_BINDS}" >${CACHE_DIR}/cached_swipl_libs_binds
+    cache_write "${BIND_CACHE}/cached_swipl_libs_binds" "${SWIPL_LIBS_BINDS}"
 else
-    SWIPL_LIBS_BINDS=$(<${CACHE_DIR}/cached_swipl_libs_binds)
+    SWIPL_LIBS_BINDS=$(<${BIND_CACHE}/cached_swipl_libs_binds)
 fi
 
 # Metta program to run
@@ -169,10 +182,9 @@ PETTA_BLOCK_GOAL=$(petta_block_preds_goal)
 # exported-function list, so `!(git-import! ...)` becomes an
 # inert, unregistered symbol. Generated from the pinned PeTTa so it tracks
 # upstream automatically; the check fails the run loudly if the strip no-ops.
-# Generate once per CACHE_DIR. The sed+mv publishes the file atomically (mv on
-# one filesystem is atomic), so concurrent petta.sh invocations never read a
-# half-written patch and never race on the shared path.
-PATCHED_LIB_IMPORT="${CACHE_DIR}/lib_import.no-git-import.metta"
+# Named by the content hash of its source, so a changed tree never gets a stale
+# patch. sed+mv publishes it atomically.
+PATCHED_LIB_IMPORT="${CACHE_DIR}/lib_import.no-git-import.$(sha256sum "${PETTA_DIR}/lib/lib_import.metta" | cut -c1-16).metta"
 if [ ! -f "${PATCHED_LIB_IMPORT}" ]; then
   tmp="$(mktemp "${CACHE_DIR}/lib_import.XXXXXX")"
   sed 's/git-import! //g' "${PETTA_DIR}/lib/lib_import.metta" >"${tmp}"
@@ -206,18 +218,48 @@ if [ "${PETTA_MODE}" = "NODE" ]; then
   # NODE mode: emit NDJSON frames for println!/trace!, final result as {"type":"result","value":[...]}
   # Override println! by making it dynamic, abolishing the old clause, and asserting the new frame-emitting clause.
   NODE_BINDS=""
-  # Deterministic budget: if PETTA_MAX_INFERENCES is set (node sets it; standalone
-  # leaves it unset), wrap the run in call_with_inference_limit/3 and emit an error
-  # frame on exceed instead of a result. Rust maps {"type":"error"} to a SwiplError.
-  if [[ -v PETTA_MAX_INFERENCES && -n "${PETTA_MAX_INFERENCES}" && "${PETTA_MAX_INFERENCES}" != "0" ]]; then
-    NODE_RUN_AND_EMIT="call_with_inference_limit(load_metta_file('${LOAD_PATH}', Results), ${PETTA_MAX_INFERENCES}, PettaInfOutcome), ( PettaInfOutcome == inference_limit_exceeded -> json_write_dict(current_output, _{type:'error', reason:'inference_limit_exceeded'}), nl(current_output) ; json_write_dict(current_output, _{type:'result', value:Results}), nl(current_output) )"
-  else
-    NODE_RUN_AND_EMIT="load_metta_file('${LOAD_PATH}', Results), json_write_dict(current_output, _{type:'result', value:Results}), nl(current_output)"
+  SWIPL_LIMIT_OPTS="--stack_limit=${PETTA_STACK_LIMIT_BYTES:-8g}"
+  if [[ -n "${PETTA_TABLE_SPACE_BYTES:-}" ]]; then
+    SWIPL_LIMIT_OPTS="${SWIPL_LIMIT_OPTS} --table_space=${PETTA_TABLE_SPACE_BYTES}"
   fi
-  GOAL="${PETTA_BLOCK_GOAL}, ${PLN_LIBRARY_GOAL}assertz(silent(true)), assertz(working_dir('${WORKDIR}')), catch(use_module(library(json)), _, use_module(library(http/json))), dynamic('println!'/2), abolish('println!'/2), asserta(('println!'(Arg,true) :- swrite(Arg,RArg), json_write_dict(current_output, _{channel:'rho:io:stdout',arguments:[RArg]}), nl(current_output))), ${NODE_RUN_AND_EMIT}."
+  NODE_INT_GOAL=""
+  if [[ -n "${PETTA_MAX_INTEGER_SIZE_BYTES:-}" ]]; then
+    NODE_INT_GOAL="set_prolog_flag(max_integer_size, ${PETTA_MAX_INTEGER_SIZE_BYTES}), "
+  fi
+  OUT_MAX="${PETTA_MAX_OUTPUT_CHARS:-inf}"
+  # The node sets PETTA_ALLOWED_FUNS: consensus_lockdown/1 is then the first goal.
+  NODE_FIRST_GOAL="${PETTA_BLOCK_GOAL}"
+  if [[ -n "${PETTA_ALLOWED_FUNS:-}" ]]; then
+    read -r -a ALLOWED_FUNS <<<"${PETTA_ALLOWED_FUNS}"
+    ALLOWED_ITEMS=""
+    for f in "${ALLOWED_FUNS[@]}"; do
+      ALLOWED_ITEMS="${ALLOWED_ITEMS:+${ALLOWED_ITEMS}, }$(metta_quote_atom "${f}")"
+    done
+    NODE_FIRST_GOAL="consensus_lockdown([${ALLOWED_ITEMS}])"
+  fi
+  # Deterministic budget: if PETTA_MAX_INFERENCES is set (node sets it; standalone
+  # leaves it unset), wrap the run and the result serialization in
+  # call_with_inference_limit/3, and check the count again after the run (a caught
+  # limit exception does not stop the run). Failures emit a canonical reason.
+  NODE_LOAD="load_metta_file('${LOAD_PATH}', Results), with_output_to(string(VS), json_write_dict(current_output, Results, [width(0)]))"
+  if [[ -v PETTA_MAX_INFERENCES && -n "${PETTA_MAX_INFERENCES}" && "${PETTA_MAX_INFERENCES}" != "0" ]]; then
+    NODE_RUN="call_with_inference_limit((${NODE_LOAD}), ${PETTA_MAX_INFERENCES}, PO)"
+    NODE_OVER="(PO == inference_limit_exceeded ; PN > ${PETTA_MAX_INFERENCES})"
+    NODE_BUDGET="${PETTA_MAX_INFERENCES}"
+  else
+    NODE_RUN="(${NODE_LOAD})"
+    NODE_OVER="fail"
+    NODE_BUDGET="PN"
+  fi
+  NODE_REASON="( PE == inference_limit_exceeded -> PR = inference_limit_exceeded, PI = ${NODE_BUDGET} ; PE = error(resource_error(stack), _) -> PR = stack_limit_exceeded ; PE = error(resource_error(memory), _) -> PR = memory_limit_exceeded ; PE = error(resource_error(tripwire(max_integer_size, _)), _) -> PR = max_integer_size_exceeded ; PE = error(resource_error(tripwire(max_output_chars, _)), _) -> PR = output_limit_exceeded ; PE = error(permission_error(_, consensus, PX), _) -> format(atom(PR), 'consensus_forbidden(~q)', [PX]) ; PE = error(PF, _) -> format(atom(PR), '~q', [PF]) ; format(atom(PR), '~q', [PE]) )"
+  NODE_EMIT_ERROR="json_write_dict(current_output, _{type:'error', reason:PR, inferences:PI}, [width(0)])"
+  NODE_RUN_AND_EMIT="statistics(inferences, PI0), catch(${NODE_RUN}, PE, true), statistics(inferences, PI1), PN is PI1 - PI0, ( nonvar(PE) -> ${NODE_REASON}, (var(PI) -> PI = PN ; true), ${NODE_EMIT_ERROR} ; ${NODE_OVER} -> PR = inference_limit_exceeded, PI = ${NODE_BUDGET}, ${NODE_EMIT_ERROR} ; nb_getval(petta_out, OT1), string_length(VS, VL), OT1 + VL + 1 > ${OUT_MAX} -> PR = output_limit_exceeded, PI = PN, ${NODE_EMIT_ERROR} ; format(current_output, '{\"type\":\"result\",\"inferences\":~d,\"value\":~s}', [PN, VS]) ), nl(current_output)"
+  NODE_PRINTLN="('println!'(Arg,true) :- swrite(Arg,RArg), with_output_to(string(OF), json_write_dict(current_output, _{channel:'rho:io:stdout',arguments:[RArg]}, [width(0)])), string_length(OF, OL), nb_getval(petta_out, OT0), OT is OT0 + OL + 1, ( OT > ${OUT_MAX} -> throw(error(resource_error(tripwire(max_output_chars, ${OUT_MAX})), _)) ; nb_setval(petta_out, OT), write(current_output, OF), nl(current_output) ))"
+  GOAL="${NODE_FIRST_GOAL}, ${PLN_LIBRARY_GOAL}assertz(silent(true)), assertz(working_dir('${WORKDIR}')), catch(use_module(library(json)), _, use_module(library(http/json))), nb_setval(petta_out, 0), dynamic('println!'/2), abolish('println!'/2), asserta(${NODE_PRINTLN}), ${NODE_INT_GOAL}${NODE_RUN_AND_EMIT}."
 else
   # NORMAL mode (default): emit single {results:[...]} JSON envelope, raw println!/trace! to stdout
   NODE_BINDS=""
+  SWIPL_LIMIT_OPTS="--stack_limit=8g"
   GOAL="${PETTA_BLOCK_GOAL}, ${PLN_LIBRARY_GOAL}assertz(silent(true)), assertz(working_dir('${WORKDIR}')), load_metta_file('${LOAD_PATH}', Results), catch(use_module(library(json)), _, use_module(library(http/json))), json_write_dict(current_output, #{results:Results})."
 fi
 
@@ -228,11 +270,11 @@ if [ ! $SANDBOX_LIB_PATH ]; then
   libsandbox.so library"
   exit 1
 else
-  if [ ! -f ${CACHE_DIR}/cached_sandbox_lib_binds ]; then
+  if [ ! -f ${BIND_CACHE}/cached_sandbox_lib_binds ]; then
     SANDBOX_LIB_BINDS=$(generate-binds-libs ${SANDBOX_LIB_PATH})
-    echo "${SANDBOX_LIB_BINDS}" >${CACHE_DIR}/cached_sandbox_lib_binds
+    cache_write "${BIND_CACHE}/cached_sandbox_lib_binds" "${SANDBOX_LIB_BINDS}"
   else
-    SANDBOX_LIB_BINDS=$(<${CACHE_DIR}/cached_sandbox_lib_binds)
+    SANDBOX_LIB_BINDS=$(<${BIND_CACHE}/cached_sandbox_lib_binds)
   fi
 fi
 
@@ -245,7 +287,8 @@ SECCOMP_SYSCALL_ALLOW=${SECCOMP_SYSCALL_ALLOW:-$DEFAULT_SECCOMP_SYSCALL_ALLOW}
 
 ### BUBBLEWRAP ###
 
-(exec bwrap \
+run_sandbox() {
+  bwrap \
       --dir /bin \
       --dir /usr \
       --dir /usr/share \
@@ -291,7 +334,32 @@ SECCOMP_SYSCALL_ALLOW=${SECCOMP_SYSCALL_ALLOW:-$DEFAULT_SECCOMP_SYSCALL_ALLOW}
       --setenv SECCOMP_SYSCALL_ALLOW "${SECCOMP_SYSCALL_ALLOW}" \
       --file 11 /etc/passwd \
       --file 12 /etc/group \
-    swipl --stack_limit=8g -q -s /lib/PeTTa/src/metta.pl -g "${GOAL}" -t halt \
+    swipl ${SWIPL_LIMIT_OPTS} -q -s /lib/PeTTa/src/metta.pl -g "${GOAL}" -t halt \
     11< <(getent passwd $UID 65534) \
-    12< <(getent group $(id -g) 65534) \
-)
+    12< <(getent group $(id -g) 65534)
+}
+
+if [ "${PETTA_MODE}" != "NODE" ]; then
+  run_sandbox
+  exit
+fi
+
+# NODE mode buffers the output, so an aborted run emits only one error frame. The
+# address-space limit bounds atoms, and its abort becomes memory_limit_exceeded.
+OUT_DIR="$(mktemp -d)"
+trap 'rm -rf "${OUT_DIR}"' EXIT
+rc=0
+(
+  ulimit -c 0
+  if [[ -n "${PETTA_ADDRESS_SPACE_BYTES:-}" ]]; then
+    ulimit -v "$((PETTA_ADDRESS_SPACE_BYTES / 1024))"
+  fi
+  run_sandbox
+) >"${OUT_DIR}/out" 2>"${OUT_DIR}/err" || rc=$?
+cat "${OUT_DIR}/err" >&2
+if [ "${rc}" -ne 0 ] && grep -q "Could not allocate memory" "${OUT_DIR}/err"; then
+  echo '{"type":"error","reason":"memory_limit_exceeded"}'
+  exit 0
+fi
+cat "${OUT_DIR}/out"
+exit "${rc}"

@@ -197,7 +197,8 @@ function generate-binds-libs() {
 # Quote a predicate name as a Prolog single-quoted atom.
 metta_quote_atom() {
     local NAME=$1
-    local ESCAPED="${NAME//\'/\'\'}"
+    local ESCAPED="${NAME//\\/\\\\}"
+    ESCAPED="${ESCAPED//\'/\'\'}"
     echo "'${ESCAPED}'"
 }
 
