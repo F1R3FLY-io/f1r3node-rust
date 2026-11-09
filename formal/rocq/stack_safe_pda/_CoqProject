@@ -173,6 +173,7 @@ theories/RPB3IndependentOracleMessageAssembly.v
 theories/RPB3IndependentOracleRecursiveMatch.v
 theories/RPB3IndependentOracleBinaryExprScoreBridge.v
 theories/RPB3IndependentOracleConnectiveArmScoreBridge.v
+theories/RPB3IndependentOracleEMapCarrierScoreBridge.v
 theories/RPB3ExprPayloadHelperControls.v
 theories/RPB3RecursiveParUnfold.v
 theories/RPB3IndependentTypedSemanticReference.v
