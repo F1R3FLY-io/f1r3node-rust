@@ -86,7 +86,7 @@ impl TransportLayer for StuckTransport {
 }
 
 /// A transport whose every send takes `per_send`, counting the block requests
-/// (`BlockRequest` and `HasBlockRequest`) it sends.
+/// (`BlockRequest` and `HasBlockRequest`) as each send starts.
 struct SlowTransport {
     per_send: Duration,
     requests_sent: AtomicUsize,
@@ -106,10 +106,10 @@ fn is_block_request(msg: &Protocol) -> bool {
 #[async_trait]
 impl TransportLayer for SlowTransport {
     async fn send(&self, _peer: &PeerNode, msg: &Protocol) -> Result<(), CommError> {
-        tokio::time::sleep(self.per_send).await;
         if is_block_request(msg) {
             self.requests_sent.fetch_add(1, Ordering::SeqCst);
         }
+        tokio::time::sleep(self.per_send).await;
         Ok(())
     }
 
