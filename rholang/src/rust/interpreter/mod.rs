@@ -32,6 +32,7 @@ pub mod storage;
 pub mod substitute;
 pub mod system_processes;
 pub mod test_utils;
+pub mod typechecker;
 pub mod util;
 
 pub fn unwrap_option_safe<A>(opt: Option<A>) -> Result<A, InterpreterError> {

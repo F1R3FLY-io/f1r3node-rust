@@ -40,7 +40,7 @@ pub enum DispatchType {
 }
 
 impl RholangAndScalaDispatcher {
-    pub(crate) fn reducer(&self) -> Result<Arc<DebruijnInterpreter>, InterpreterError> {
+    pub(super) fn reducer(&self) -> Result<Arc<DebruijnInterpreter>, InterpreterError> {
         self.reducer
             .get()
             .and_then(|weak| weak.upgrade())

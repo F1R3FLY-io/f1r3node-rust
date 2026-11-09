@@ -1,14 +1,20 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
+use num_bigint::BigInt;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::KvStoreError;
 
 pub struct Clique;
 
 impl Clique {
-    pub fn find_maximum_clique_by_weight<A>(edges: &[(A, A)], weights: &HashMap<A, i64>) -> i64
-    where A: Eq + Hash + Clone + Ord {
+    pub fn find_maximum_clique_by_weight<A>(
+        edges: &[(A, A)],
+        weights: &HashMap<A, BigInt>,
+    ) -> BigInt
+    where
+        A: Eq + Hash + Clone + Ord,
+    {
         Self::find_maximum_clique_by_weight_metered(&NoopWork, edges, weights)
             .expect("The no-op work meter cannot reject clique search")
     }
@@ -16,8 +22,8 @@ impl Clique {
     pub fn find_maximum_clique_by_weight_metered<A, W>(
         meter: &W,
         edges: &[(A, A)],
-        weights: &HashMap<A, i64>,
-    ) -> Result<i64, KvStoreError>
+        weights: &HashMap<A, BigInt>,
+    ) -> Result<BigInt, KvStoreError>
     where
         A: Eq + Hash + Clone + Ord,
         W: WorkMeter,
@@ -37,13 +43,13 @@ impl Clique {
         let mut best_weight = None;
         for weight in weights.values() {
             meter.step(WorkKind::Clique)?;
-            best_weight = Some(best_weight.map_or(*weight, |best: i64| best.max(*weight)));
+            best_weight = Some(best_weight.map_or(weight, |best: &BigInt| best.max(weight)));
         }
-        let mut best_weight = best_weight.unwrap_or(0);
+        let mut best_weight = best_weight.cloned().unwrap_or_default();
         Self::expand_max_weight(
             meter,
             0,
-            0,
+            BigInt::from(0),
             &nodes,
             &HashSet::new(),
             &adj,
@@ -51,16 +57,6 @@ impl Clique {
             &mut best_weight,
         )?;
         Ok(best_weight)
-    }
-
-    fn sum<W: WorkMeter>(left: i64, right: i64) -> Result<i64, KvStoreError> {
-        if W::ENABLED {
-            left.checked_add(right).ok_or_else(|| {
-                KvStoreError::InvalidArgument("observation_work:stake_overflow".to_string())
-            })
-        } else {
-            Ok(left + right)
-        }
     }
 
     fn copy_set<A: Eq + Hash + Clone, W: WorkMeter>(
@@ -104,12 +100,12 @@ impl Clique {
     fn expand_max_weight<A, W>(
         meter: &W,
         depth: usize,
-        ans_weight: i64,
+        ans_weight: BigInt,
         p: &HashSet<A>,
         x: &HashSet<A>,
         adj: &HashMap<A, HashSet<A>>,
-        weights: &HashMap<A, i64>,
-        best_weight: &mut i64,
+        weights: &HashMap<A, BigInt>,
+        best_weight: &mut BigInt,
     ) -> Result<(), KvStoreError>
     where
         A: Eq + Hash + Clone + Ord,
@@ -125,13 +121,14 @@ impl Clique {
         if p.is_empty() {
             return Ok(());
         }
-        let mut remaining_weight = 0;
+        let mut remaining_weight = BigInt::from(0);
         for vertex in p {
             meter.step(WorkKind::Clique)?;
-            remaining_weight =
-                Self::sum::<W>(remaining_weight, *weights.get(vertex).unwrap_or(&0))?;
+            if let Some(weight) = weights.get(vertex) {
+                remaining_weight += weight;
+            }
         }
-        if Self::sum::<W>(ans_weight, remaining_weight)? <= *best_weight {
+        if &ans_weight + remaining_weight <= *best_weight {
             return Ok(());
         }
         let empty = HashSet::new();
@@ -161,6 +158,7 @@ impl Clique {
                 candidates.push(vertex.clone());
             }
         }
+        let zero_weight = BigInt::from(0);
         let mut current_p = Self::copy_set(meter, p)?;
         let mut current_x = Self::copy_set(meter, x)?;
         for vertex in candidates {
@@ -171,7 +169,7 @@ impl Clique {
             Self::expand_max_weight(
                 meter,
                 depth + 1,
-                Self::sum::<W>(ans_weight, *weights.get(&vertex).unwrap_or(&0))?,
+                &ans_weight + weights.get(&vertex).unwrap_or(&zero_weight),
                 &new_p,
                 &new_x,
                 adj,

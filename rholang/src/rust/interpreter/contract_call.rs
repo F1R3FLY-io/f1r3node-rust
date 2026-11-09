@@ -5,7 +5,6 @@ use prost::Message;
 
 use super::dispatch::{DispatchType, RhoDispatch};
 use super::errors::InterpreterError;
-use super::rho_runtime::RhoISpace;
 
 /**
  * This is a tool for unapplying the messages sent to the system contracts.
@@ -22,13 +21,14 @@ use super::rho_runtime::RhoISpace;
  * The Seq[Par] returned by unapply contains the message content and can be further unapplied as needed to match the
  * required signature.
  *
- * @param space the rspace instance
+ * The reply is sent through the reducer's produce, so a COMM it fires is handled exactly like one fired by a
+ * Rholang send.
+ *
  * @param dispatcher the dispatcher
  *
  * See rholang/src/main/scala/coop/rchain/rholang/interpreter/ContractCall.scala
  */
 pub struct ContractCall {
-    pub space: RhoISpace,
     pub dispatcher: RhoDispatch,
 }
 
@@ -54,20 +54,13 @@ impl ContractCall {
                 contract_args.2,
             );
 
-            let space = self.space.clone();
             let dispatcher = self.dispatcher.clone();
             let produce = Box::new(move |values: &[Par], ch: &Par| {
-                let space = space.clone();
-                let rand = rand.clone();
-                // clone inputs locally to satisfy ownership of underlying APIs
                 let values_vec: Vec<Par> = values.to_vec();
                 let ch_cloned: Par = ch.clone();
                 Box::pin(async move {
-                    dispatcher
-                        .reducer()?
-                        .update_mergeable_channels(&ch_cloned)
-                        .await;
-                    let produce_result = space
+                    let reducer = dispatcher.reducer()?;
+                    let dispatch_type = reducer
                         .produce(
                             ch_cloned,
                             ListParWithRandom {
@@ -78,45 +71,17 @@ impl ContractCall {
                         )
                         .await?;
 
-                    let is_replay = space.is_replay().await;
-
-                    let dispatch_result = match produce_result {
-                        Some((cont, channels, produce)) => {
-                            dispatcher
-                                .dispatch(
-                                    cont.continuation,
-                                    channels.iter().map(|c| c.matched_datum.clone()).collect(),
-                                    is_replay,
-                                    produce
-                                        .output_value
-                                        .iter()
-                                        .map(|p| {
-                                            Par::decode(&p[..]).map_err(|e| {
-                                                InterpreterError::DecodeError(e.to_string())
-                                            })
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                )
-                                .await
-                        }
-
-                        None => Ok(DispatchType::Skip),
-                    };
-
-                    match dispatch_result {
-                        Ok(dispatch_type) => match dispatch_type {
-                            DispatchType::NonDeterministicCall(items) => items
-                                .iter()
-                                .map(|p| {
-                                    Par::decode(&p[..])
-                                        .map_err(|e| InterpreterError::DecodeError(e.to_string()))
-                                })
-                                .collect::<Result<Vec<_>, _>>(),
-                            DispatchType::FailedNonDeterministicCall(e) => Err(e),
-                            DispatchType::DeterministicCall => Ok(Vec::new()),
-                            DispatchType::Skip => Ok(Vec::new()),
-                        },
-                        Err(e) => Err(e),
+                    match dispatch_type {
+                        DispatchType::NonDeterministicCall(items) => items
+                            .iter()
+                            .map(|p| {
+                                Par::decode(&p[..])
+                                    .map_err(|e| InterpreterError::DecodeError(e.to_string()))
+                            })
+                            .collect::<Result<Vec<_>, _>>(),
+                        DispatchType::FailedNonDeterministicCall(e) => Err(e),
+                        DispatchType::DeterministicCall => Ok(Vec::new()),
+                        DispatchType::Skip => Ok(Vec::new()),
                     }
                 })
                     as Pin<
