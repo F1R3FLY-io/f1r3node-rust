@@ -13,8 +13,8 @@
 '      A record whose score is undefined is not eligible.
 '   4. The agent orders the eligible records by the score and the tie key,
 '      then fires or parks, as for a built-in metric.
-'   5. Native replay repeats the same steps with the same reservations and
-'      reaches the same COMM.
+'   5. Native replay repeats the same steps and reaches the same COMM. Decision
+'      89 removed the reservations of the engine and of the read.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 49-tl-score-query.puml   Check: ./render.sh --check
@@ -41,19 +41,20 @@ autonumber
 participant "Deploy" as DEPLOY $rrs_host
 participant "VectorDB agent" as AGENT $rrs_agent
 participant "TL engine" as ENGINE $rrs_tl_engine
-participant "Host-work meter\nof the deploy" as METER $rrs_meter
+' Changed by decision 89: the node has no host-work budget, so the engine has no meter. The text before:
+' participant "Host-work meter\nof the deploy" as METER $rrs_meter
 database "RSpace\n(the collection)" as RSPACE $rrs_storage
 
 == Native play on the proposer ==
 DEPLOY -> AGENT : for (@r <- @"docs" ~ (q; score = tl:Score{...},\n  tensors = {"W": w}, k = 2)) { ... }
 AGENT -> AGENT : parse_query: score, tensors, precision\n(ConflictingParams, RadiusNeedsDistance, QueryNeedsVector)
 AGENT -> ENGINE : decode, normalize and check the score\nunder Emb : [Sym, D], q : [D] and the shapes of tensors
-ENGINE -> METER : reserve each phase before it runs
+' ENGINE -> METER : reserve each phase before it runs
 ENGINE --> AGENT : the checked NF: record-local, no recursion
 loop each record r of the collection, in canonical order
-  AGENT -> RSPACE : read r (reserved first)
+  AGENT -> RSPACE : read r
   AGENT -> ENGINE : <latex>s(r) = [\![\mathit{score}]\!]_{x \mapsto r}</latex>
-  ENGINE -> METER : reserve each step (decision 40)
+  ' ENGINE -> METER : reserve each step (decision 40)
   ENGINE --> AGENT : s(r), or ⊥: then r is not eligible
 end
 AGENT -> AGENT : <latex>E = \{ r : s(r) \ne \bot,\ s(r) \ge \tau,\ \mathrm{id}(r) \in \mathit{ids} \}</latex>\nordered by s (highest first), then by the tie key κ
@@ -66,17 +67,17 @@ end
 == Native replay on a validator ==
 DEPLOY -> AGENT : the same receive, from the same block
 AGENT -> ENGINE : the same decode, normalization and check
-ENGINE -> METER : the same reservations, in the same order
+' ENGINE -> METER : the same reservations, in the same order
 AGENT -> RSPACE : the same COMM, paired with the trace
-note over AGENT, METER
+note over AGENT, ENGINE
   TL evaluation is a pure function of the term, the params,
-  the records and the precision, so play and replay reserve
-  the same host work and reach the same state.
+  the records and the precision, so play and replay
+  reach the same state.
 end note
 
 legend bottom
 **Concept colors**
-|<$rrs_host>      | the deploy and the meter: code that the design calls |
+|<$rrs_host>      | the deploy: code that the design calls |
 |<$rrs_agent>     | the VectorDB agent |
 |<$rrs_tl_engine> | the TL engine |
 |<$rrs_storage>   | consensus state in RSpace |

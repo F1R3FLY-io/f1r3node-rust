@@ -116,8 +116,10 @@ Each later phase adds one section for each new model or suite, and it adds its r
 Phase P4 keeps its rows of those tables in its own section [11](#11-phase-p4-the-hashmapqueue-slice).
 The Rocq gate also checks the module `Encoding.v` of phase P2 and the six modules of phase P4.
 It also checks `AgentReadCoverage.v` of decision 42 and `LegacyCharges.v` of decision 45.
-So its total count of closed headlines is 115 over 11 modules, not 23.
+So its total count of closed headlines was 115 over 11 modules at the close of phase P4, not 23.
 The section of phase P2 documents the 12 headlines of P2 in `Encoding.v`, and section 11 documents the 3 headlines that P4 adds to it.
+
+Changed by [decision 90](decision-register.md#decision-90): the merge of `702496775` removes `LegacyCharges.v` with Option P, because DR-134 of the base deletes the legacy meter. [Decision 96](decision-register.md#decision-96) removes `AgentReadCoverage.v`.
 
 ## 2. Acceptance categories
 
@@ -132,7 +134,7 @@ So this dossier names the planned recipe ids and step keys, without recipe hashe
 | Category | Evidence in P1 | Local gate | Recipe: step keys |
 |---|---|---|---|
 | Formally modeled | `check-model-map.py` checks the 70 items of the [model map](glossary.md#model-map), 32 of them required. Each item exists in the code and cites Rocq definitions and TLA+ operators that exist. Each of the 29 headlines (H1 to H23, T1 to T6) names an existing theorem or operator, and each fix rule names its items and headlines. The checker also checks each Rust line citation of the formal files. `check-closure.py modeled` checks the model items of the realignment leaves. | `python3 scripts/verify-reified/check-model-map.py` and `check-closure.py modeled` | `rrs-p1-checks`: `p1-model-map`, `p1-closure-modeled` |
-| Formal verification passes | The 23 Rocq headlines close under the global context, and `rocqchk` accepts each module. The 27 Rocq mutants of P1 fail in their expected declarations. TLC explores 6 safe configurations completely. Each of 11 Unsafe configurations refutes exactly one invariant, and its complement violates no other invariant. Apalache proves BASE and STEP of `IndInv` (also with the legacy charges of decision 45) and `LockIndInv`, and 4 Error controls break them in the expected conjunct. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` | `rrs-p1-rocq-ec`: `fresh-kernel`. `rrs-p1-rocq-vs`: `fresh-kernel`. `rrs-p1-rocq-negative`: `p1-rocq-negative`. `rrs-p1-tla-checkpoint`: its 29 steps (section [5.2](#52-checkpointreplaytla)). `rrs-p1-tla-lock`: its 9 steps (section [5.3](#53-txnlockcoveragetla)). |
+| Formal verification passes | The 23 Rocq headlines close under the global context, and `rocqchk` accepts each module. The 27 Rocq mutants of P1 fail in their expected declarations. TLC explores 6 safe configurations completely. Each of 11 Unsafe configurations refutes exactly one invariant, and its complement violates no other invariant. Apalache proves BASE and STEP of `IndInv` (also with the legacy charges of decision 45, and with peeks in a token deploy since decision 90) and `LockIndInv`, and 4 Error controls break them in the expected conjunct. | `scripts/check-reified-rspaces-proofs.sh`, `scripts/check-reified-rspaces-tla-invariants.sh` | `rrs-p1-rocq-ec`: `fresh-kernel`. `rrs-p1-rocq-vs`: `fresh-kernel`. `rrs-p1-rocq-negative`: `p1-rocq-negative`. `rrs-p1-tla-checkpoint`: its 29 steps (section [5.2](#52-checkpointreplaytla)). `rrs-p1-tla-lock`: its 9 steps (section [5.3](#53-txnlockcoveragetla)). |
 | Every invariant extracted as a property-based test | The [invariant map](glossary.md#invariant-map) names at least one property test for each of the 29 P1 ids and for the checklist entry O1. The 25 P1 properties and `prop_ordinary_play_replay_equal` run 64 cases with a fixed seed. `check-closure.py invariants` checks the headlines of the realignment leaves. | `check-invariant-map.py --phase P1`, `check-invariant-map.py --phase ORD`, and the cargo targets of section [10.3](#103-rust-suites) | `rrs-p1-checks`: `p1-invariant-map`, `p1-invariant-map-ord`, `p1-closure-invariants`. `rrs-p1-rspace`: `p1-props`. `rrs-p1-regression`: `p1-regression-ordinary`. |
 | Implementation complete | `check-complete.py --phase p1` finds the 11 entry points of P1 and no forbidden token in the 3 P1 sources. It also finds no ignored test and no `/tmp` path in the P1 tests, and each property file sets `failure_persistence: None`. `check-complete.py --production-scan` finds none of the 24 consensus tokens in production code. `check-footprint.py` passes the policies `p1` and `p1-realign`. `check-consensus-checklist.py --milestone p1` and `check-closure.py entry-points` pass. | `python3 scripts/verify-reified/check-complete.py` and the other checkers | `rrs-p1-checks`: `p1-complete`, `p1-production-scan`, `p1-footprint`, `p1-footprint-realign`, `p1-consensus-checklist`, `p1-closure-entry-points`. For the formal leaves: `rrs-p1-rocq-ec`: `fresh-kernel`, and `rrs-p1-tla-checkpoint`: `p1-tla-safe-mc-checkpointreplay-twoblock`. |
 | Thoroughly tested | The substrate suites (18 library tests, 82 integration tests, 4 golden-corpus tests, 3 tests over `Par`, 1 host-bounds test), the whole `rspace++` suite, the regression suite of section [8](#8-regression-checks-for-ordinary-execution), the HEAD suites, the 273 checker self-tests, the audit harness, and the ledger-copy controls. | `cargo test` (section [10.3](#103-rust-suites)) and `python3 scripts/verify-reified/run-checker-tests.py` | `rrs-p1-rspace`: `p1-lib`, `p1-integration`, `p1-legacy-golden`. `rrs-p1-rspace-full`: `p1-full-rspace`. `rrs-p1-rholang`: `p1-rholang-par`, `p1-rholang-host-bounds`. `rrs-p1-regression`: its 10 steps (section [8.1](#81-consensus-preservation-checklist)). `rrs-p1-head-rspace`: `p1-head-storage`, `p1-head-replay`, `p1-head-observer`, `p1-head-history`, `p1-head-lib-history`. `rrs-p1-rholang-matcher`: `p1-head-rholang-matcher`. `rrs-p1-checks`: `p1-checker-tests`, `p1-audit-rocq`, `p1-audit-source`, `p1-ledger-copy`, `p1-ledger-copy-controls`. `rrs-p1-rocq-negative`: `p1-rocq-negative` (for `rrs-fv-event-correlation`). |
@@ -176,11 +178,15 @@ The gate `scripts/check-reified-rspaces-proofs.sh` copies the tree into a scratc
 
 1. **Hygiene.** A scan of a copy without comments finds no axiom, admission, top-level hypothesis, checker bypass, or import outside `Stdlib`.
 2. **Standalone.** `coqc -q -noglob` compiles each module in a fresh directory.
-3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expects 17 for EventCorrelation.v and 6 for VolatileSweep.v.
+3. **Headlines.** Each `Print Assumptions` line prints `Closed under the global context`. The gate expected 17 for EventCorrelation.v and 6 for VolatileSweep.v at the close of phase P1, and it expects 23 and 8 today.
 4. **Kernel check.** `rocqchk -o -R . '' <module>` checks the compiled `.vo` file and each of its dependencies again. The context summary must report `Axioms: <none>`, no constant that relies on type-in-type, no unsafe fixpoint, and no assumed positivity.
 5. **Project.** `make -j1` builds the library `ReifiedRSpaces` from `_CoqProject`, and `rocqchk -o -Q theories ReifiedRSpaces` checks it.
-6. **Total.** The count of closed headlines is 115 over 11 modules. P1 has 23 and `Encoding.v` has 15. The six P4 modules have 67 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decisions-46-and-47), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45)). `AgentReadCoverage.v` has 8 (section [11.10](#1110-metering-of-decision-42)), and `LegacyCharges.v` has 2 (section [11.14](#1114-legacy-charges-of-decision-45)). `Encoding.v` has 12 headlines of P2 and 3 of I-20.
-7. **Negative controls.** The 75 mutants fail in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 29 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decisions-46-and-47), [11.12](#1112-re-entry-of-decision-43), [11.13](#1113-peek-re-store-of-decision-45) and [11.14](#1114-legacy-charges-of-decision-45) hold 5, 1, 3, 3 and 5. Decision 47 later replaces the mutant of section [11.11](#1111-native-execution-of-decisions-46-and-47) with two (Table 47). The 11 pristine modules compile first.
+6. **Total.** At the close of phase P4, the count of closed headlines was 115 over 11 modules, and the gate expects 293 today. P1 had 23 and `Encoding.v` had 15. The six P4 modules had 67 (sections [11.3](#113-rocq-models-of-p4), [11.11](#1111-native-execution-of-decisions-46-and-47), [11.12](#1112-re-entry-of-decision-43) and [11.13](#1113-peek-re-store-of-decision-45)). `AgentReadCoverage.v` had 8 (section [11.10](#1110-metering-of-decision-42)), and `LegacyCharges.v` had 2 (section [11.14](#1114-legacy-charges-of-decision-45)). `Encoding.v` had 12 headlines of P2 and 3 of I-20.
+7. **Negative controls.** At the close of phase P4, the 75 mutants failed in their expected declarations. Sections [6.1](#61-rocq-mutants) and [11.5](#115-negative-controls-of-p4) hold 29 and 29 of them. Sections [11.10](#1110-metering-of-decision-42), [11.11](#1111-native-execution-of-decisions-46-and-47), [11.12](#1112-re-entry-of-decision-43), [11.13](#1113-peek-re-store-of-decision-45) and [11.14](#1114-legacy-charges-of-decision-45) hold 5, 1, 3, 3 and 5. Decision 47 later replaces the mutant of section [11.11](#1111-native-execution-of-decisions-46-and-47) with two (Table 47). The 11 pristine modules compile first.
+
+Changed by [decision 90](decision-register.md#decision-90): the merge of `702496775` removes `LegacyCharges.v` with Option P. [Decision 96](decision-register.md#decision-96) removes `AgentReadCoverage.v`.
+Its 2 headlines and the 5 mutants of section [11.14](#1114-legacy-charges-of-decision-45) go with it.
+So the gate of that merge expects 306 headlines over 29 modules, the sum of `EXPECTED_PER_MODULE`.
 
 The last host run printed `reified-rspaces proofs: PASS=53 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/option-p-gates/proofs.log`).
 The `Print Assumptions` lines are [lines 9318 to 9344 of EventCorrelation.v](../../../formal/rocq/reified_rspaces/theories/EventCorrelation.v#L9318-L9344) and [lines 1857 to 1864 of VolatileSweep.v](../../../formal/rocq/reified_rspaces/theories/VolatileSweep.v#L1857-L1864).
@@ -200,23 +206,23 @@ The last column gives the property tests that the [invariant map](glossary.md#in
 
 | Id | Theorem | Statement | Assumptions | Property tests |
 |---|---|---|---|---|
-| H1 | `commit_trace_eq_host` (`EventCorrelation.v:5515`) | A commit of the staged operations makes exactly the observer calls, events, status, and replay bindings of the host run of the same operations. | None | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H2 | `commit_state_eq_host` (`EventCorrelation.v:5573`) | The committed store equals the host store: equal continuations, joins, and counters, and each data list a permutation of the host list. Since [decision 45](decision-register.md#decision-45), the statement has no premise on peeks. | None | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H3 | `counter_timing_play_replay` (`EventCorrelation.v:6214`) | The play counter closure and the replay rule give the same COMM. A rejected replay fire rolls its increment back exactly, and the staged counter view advances as the host counter does. | None | `prop_counter_timing_play_equals_replay` |
-| H4 | `verify_sound_complete` (`EventCorrelation.v:6304`) | `verify` pairs a COMM exactly when the log holds the trigger event and an unpaired recorded occurrence remains, and `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, with no pairing and no change of the bindings (conjunct 3, `stage_without_trigger_unpaired`). An unpaired fire never commits: it emits no event and no effect, and it keeps the bindings and the store (conjunct 6, `unpaired_fire_inert`). | None | `prop_space_txn_replay_divergence_typed_at_commit`, `prop_space_txn_replay_requires_trigger_event` |
-| H5 | `replay_pairs_each_comm_once` (`EventCorrelation.v:6508`) | `rig` sets up the binding invariant from the play log. A replay transaction never pairs a COMM more often than the log records it, and its commit removes exactly the committed pairings. | None | `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
-| H6 | `view_commit_coherent` (`EventCorrelation.v:5600`) | The staged view is the committed store. The commit stops at the first rejected operation, and the store then equals the view after the operations before it. | None | `prop_space_txn_view_equals_committed_store` |
-| H7 | `joins_lockstep_preserved` (`EventCorrelation.v:5623`) | Staging and commit keep the join entries in lockstep with the waiting continuations. | None | `prop_space_txn_joins_lockstep` |
-| H8 | `sub_order_between` (`EventCorrelation.v:8438`) | A sub-order sorts after its parent and before every later scheduler order. The sub-orders of one parent strictly increase, and no scheduler order equals a sub-order. | None | `prop_sub_orders_contiguous_and_disjoint` |
-| H9 | `abort_inert` (`EventCorrelation.v:7173`) | A dropped transaction, also after access errors, and a commit after a store swap change no store, binding, observer call, event, or generation. The checkpoint then gives the same history map. | None | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
-| H10 | `coverage_total` (`EventCorrelation.v:6096`) | For every committed operation, an event of the same operation covers each store change, and every COMM follows its trigger event. | None | `prop_event_coverage_holds_for_generated_commits` |
-| H11 | `peek_reproduces_trace_eq_host` (`EventCorrelation.v:5850`) | With the re-offer (FR-10) and the re-stores ([decision 45](decision-register.md#decision-45)) as the next operations, a commit makes the observer calls, events, status, and bindings of the host run, whose reducer sends the peeked data again, and the stores are equal. A fire never stores a datum, its receipt carries the stored persist flags, and the re-stores are exactly the sends of `produce_peeks`, each with the identity of its record. | None | `prop_space_txn_peek_restore` |
-| H12 | `reporting_trace_is_replay_trace` (`EventCorrelation.v:7258`) | Reporting stages and commits exactly as replay does, and its host operations are those of replay. | None | `prop_space_txn_reporting_equals_replay`, `prop_space_txn_peek_restore` |
-| H17 | `non_canonical_fails_closed` (`EventCorrelation.v:7115`) | A group that is not non-decreasing fails with `NonCanonicalChannelOrder` before any store or cache effect. A non-decreasing group passes, also when it repeats a channel, and the sorted list is the only canonical member of its permutation class. | None | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
-| H19 | `directive_fails_closed` (`EventCorrelation.v:7298`) | In replay and reporting, a replay directive rejects the operation with no change of store, bindings, events, or effects, and the commit stops there. | None | `prop_space_txn_replay_directive_fails_closed` |
-| H20 | `parent_order_single_txn` (`EventCorrelation.v:8711`) | `sub_order` is injective. A second commit under one parent in one evaluation scope fails before any effect, and a scope reset, a store swap, and a session change each reset the tracker. | None | `prop_space_txn_parent_order_single_commit` |
-| H21 | `view_identity_is_store_identity` (`EventCorrelation.v:8832`) | View lookups and the installed guard respect the store identity, and the staged view agrees with the committed store. A view keyed by the Rust ordering disagrees for two channels with one store identity. | None | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
-| H23 | `replay_reproduces_play_run` (`EventCorrelation.v:7848`) | Play and replay stage the same operations from the same view, and replay is rigged with the commit log of play. Then replay stages exactly the operations of play, and its commit makes the observer calls of play without the directive queries, the events of play, the status of play, and the store of play. So an operation that play rejects, for example for lack of phlo, fails replay at the same call, after the same prefix (decision 36). | None. The statement takes two premises: the observer ignores the directive queries, and it gives no directive. `replay_premises_satisfiable` shows the observer of a phlo limit that meets both. | `prop_space_txn_replay_reproduces_play_rejection` |
+| H1 | `commit_trace_eq_host` (`EventCorrelation.v:5518`) | A commit of the staged operations makes exactly the observer calls, events, status, and replay bindings of the host run of the same operations. | None | `prop_space_txn_play_trace_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H2 | `commit_state_eq_host` (`EventCorrelation.v:5576`) | The committed store equals the host store: equal continuations, joins, and counters, and each data list a permutation of the host list. Since [decision 45](decision-register.md#decision-45), the statement has no premise on peeks. | None | `prop_space_txn_play_root_equals_host`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H3 | `counter_timing_play_replay` (`EventCorrelation.v:6217`) | The play counter closure and the replay rule give the same COMM. A rejected replay fire rolls its increment back exactly, and the staged counter view advances as the host counter does. | None | `prop_counter_timing_play_equals_replay` |
+| H4 | `verify_sound_complete` (`EventCorrelation.v:6307`) | `verify` pairs a COMM exactly when the log holds the trigger event and an unpaired recorded occurrence remains, and `recorded_comms` reports the same copies. A replay fire without its trigger event stages unpaired, with no pairing and no change of the bindings (conjunct 3, `stage_without_trigger_unpaired`). An unpaired fire never commits: it emits no event and no effect, and it keeps the bindings and the store (conjunct 6, `unpaired_fire_inert`). | None | `prop_native_space_replay_fails_closed` |
+| H5 | `replay_pairs_each_comm_once` (`EventCorrelation.v:6511`) | `rig` sets up the binding invariant from the play log. A replay transaction never pairs a COMM more often than the log records it, and its commit removes exactly the committed pairings. | None | `prop_space_txn_repeated_channel_groups_equal_host`, `prop_space_txn_peek_restore` |
+| H6 | `view_commit_coherent` (`EventCorrelation.v:5603`) | The staged view is the committed store. The commit stops at the first rejected operation, and the store then equals the view after the operations before it. | None | `prop_space_txn_view_equals_committed_store` |
+| H7 | `joins_lockstep_preserved` (`EventCorrelation.v:5626`) | Staging and commit keep the join entries in lockstep with the waiting continuations. | None | `prop_space_txn_joins_lockstep` |
+| H8 | `sub_order_between` (`EventCorrelation.v:8441`) | A sub-order sorts after its parent and before every later scheduler order. The sub-orders of one parent strictly increase, and no scheduler order equals a sub-order. | None | `prop_sub_orders_contiguous_and_disjoint` |
+| H9 | `abort_inert` (`EventCorrelation.v:7176`) | A dropped transaction, also after access errors, and a commit after a store swap change no store, binding, observer call, event, or generation. The checkpoint then gives the same history map. | None | `prop_space_txn_abort_inert`, `prop_space_txn_non_canonical_inputs_fail_closed` |
+| H10 | `coverage_total` (`EventCorrelation.v:6099`) | For every committed operation, an event of the same operation covers each store change, and every COMM follows its trigger event. | None | `prop_event_coverage_holds_for_generated_commits` |
+| H11 | `peek_reproduces_trace_eq_host` (`EventCorrelation.v:5853`) | With the re-offer (FR-10) and the re-stores ([decision 45](decision-register.md#decision-45)) as the next operations, a commit makes the observer calls, events, status, and bindings of the host run, whose reducer sends the peeked data again, and the stores are equal. A fire never stores a datum, its receipt carries the stored persist flags, and the re-stores are exactly the sends of `produce_peeks`, each with the identity of its record. | None | `prop_space_txn_peek_restore` |
+| H12 | `reporting_trace_is_replay_trace` (`EventCorrelation.v:7261`) | Reporting stages and commits exactly as replay does, and its host operations are those of replay. | None | `prop_space_txn_peek_restore` |
+| H17 | `non_canonical_fails_closed` (`EventCorrelation.v:7118`) | A group that is not non-decreasing fails with `NonCanonicalChannelOrder` before any store or cache effect. A non-decreasing group passes, also when it repeats a channel, and the sorted list is the only canonical member of its permutation class. | None | `prop_space_txn_non_canonical_inputs_fail_closed`, `prop_space_txn_repeated_channel_groups_equal_host` |
+| H19 | `directive_fails_closed` (`EventCorrelation.v:7301`) | In replay and reporting, a replay directive rejects the operation with no change of store, bindings, events, or effects, and the commit stops there. | None | `prop_native_space_replay_fails_closed` |
+| H20 | `parent_order_single_txn` (`EventCorrelation.v:8714`) | `sub_order` is injective. A second commit under one parent in one evaluation scope fails before any effect, and a scope reset, a store swap, and a session change each reset the tracker. | None | `prop_space_txn_parent_order_single_commit` |
+| H21 | `view_identity_is_store_identity` (`EventCorrelation.v:8835`) | View lookups and the installed guard respect the store identity, and the staged view agrees with the committed store. A view keyed by the Rust ordering disagrees for two channels with one store identity. | None | `prop_space_txn_store_identity_ignores_ord_only_fields`, `prop_space_txn_par_identity_ignores_locally_free` |
+| H23 | `replay_reproduces_play_run` (`EventCorrelation.v:7851`) | Play and replay stage the same operations from the same view, and replay is rigged with the commit log of play. Then replay stages exactly the operations of play, and its commit makes the observer calls of play without the directive queries, the events of play, the status of play, and the store of play. So an operation that play rejects, for example for lack of phlo, fails replay at the same call, after the same prefix (decision 36). | None. The statement takes two premises: the observer ignores the directive queries, and it gives no directive. `replay_premises_satisfiable` shows the observer of a phlo limit that meets both. | `prop_native_space_replay_denial_keeps_prefix` |
 
 Since [decision 36](decision-register.md#decision-36), H1, H2, and H11 assume in replay that every staged fire paired (the premise `fire_paired`).
 A successful staging implied this premise before decision 36, and H4 and H23 now cover the unpaired fire.
@@ -254,6 +260,10 @@ The recipe generator reads the same arrays, so the gate and the recipes check th
 The state counts and depths below come from the last host run, the run of Option P of decision 45, which printed `reified-rspaces tla: PASS=162 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/d45/tla-lc/gate.log`).
 That run also checked the P4 modules of section [11.4](#114-tla-models-of-p4).
 
+Changed by [decision 90](decision-register.md#decision-90): the merge of `702496775` removes the Legacy mode of `CheckpointReplay.tla`.
+The runs of that merge on 2026-10-27 give the counts of the new configurations of section [5.2](#52-checkpointreplaytla).
+Every configuration of a token deploy keeps its count and depth of the run of decision 45.
+
 ### 5.2 CheckpointReplay.tla
 
 [CheckpointReplay.tla](../../../formal/tlaplus/reified_rspaces/CheckpointReplay.tla) composes a proposer that plays with a validator that replays, for one or two blocks.
@@ -271,6 +281,13 @@ Since [decision 45](decision-register.md#decision-45), the constant `Peeks` adds
 The COMM of a peek fire removes the record, and a re-store with the same identity stores it again.
 The constant `Legacy` runs a legacy deploy with the charges of Option P, which section [11.14](#1114-legacy-charges-of-decision-45) describes.
 
+Changed by [decision 90](decision-register.md#decision-90): DR-134 of `feature/cost-accounted-rho` deletes the legacy meter, so the merge of `702496775` removes Option P.
+The module no longer has the constant `Legacy`, the chain of the legacy charges, or the ghost run of the host program.
+So every deploy is a token deploy.
+The invariant U13 goes with the Legacy mode, and so do the controls `LegacyPreAfterObserve`, `LegacyTailDropped`, and `RetainPeek`.
+The new configurations check the scenarios of the retired legacy configurations with peeks in a token deploy.
+Restore the Legacy mode with `git show 6bf10a721:formal/tlaplus/reified_rspaces/CheckpointReplay.tla`.
+
 #### 5.2.1 Invariants of CheckpointReplay.tla
 
 *Table 7. The invariants of CheckpointReplay.tla.*
@@ -282,7 +299,7 @@ The constant `Legacy` runs a legacy deploy with the charges of Option P, which s
 | T3 | `PairedOnce` | Replay pairs each COMM at most as often as the play log records it. |
 | T4 | `NoVolatileResidue` | No history trie, of play or of replay, holds data, continuations, or joins of a volatile channel. |
 | T6 | `ReplayOutcomeEqual` | When the published log is the commit log of play, replay never diverges, and the replayed deploy ends with the failed flag and the spending of play. |
-| U13 | `LegacyChargesFollowHost` | In a legacy deploy, whenever play has no open transaction, play has the legacy state and the stop point of the host program. U13 is an id of the P4 map (section [11.14](#1114-legacy-charges-of-decision-45)). |
+| U13 | `LegacyChargesFollowHost` | Removed by decision 90 with the Legacy mode. It said: In a legacy deploy, whenever play has no open transaction, play has the legacy state and the stop point of the host program. U13 is an id of the P4 map (section [11.14](#1114-legacy-charges-of-decision-45)). |
 | Auxiliary | `TypeOK` | The type invariant of the module. It is not a property of the substrate. |
 | Auxiliary | `IndInv` | The inductive strengthening of T3 and T4 for the Apalache checks. TLC also checks it on every reachable state of both safe configurations. |
 
@@ -305,50 +322,60 @@ T6 uses these variables of the model:
 \end{aligned}
 ```
 
-The inductive invariant is a conjunction of ten parts:
+The inductive invariant is a conjunction of nine parts:
 
 ```math
-\mathit{IndInv} \triangleq \mathit{TypeOK} \land \mathit{TxnShapeInv} \land \mathit{ProgressInv} \land \mathit{DataInv} \land \mathit{PairedOnce} \land \mathit{NoVolatileResidue} \land \mathit{BindingInv} \land \mathit{StagedInv} \land \mathit{SweptClean} \land \mathit{LegacyInv}
+\mathit{IndInv} \triangleq \mathit{TypeOK} \land \mathit{TxnShapeInv} \land \mathit{ProgressInv} \land \mathit{DataInv} \land \mathit{PairedOnce} \land \mathit{NoVolatileResidue} \land \mathit{BindingInv} \land \mathit{StagedInv} \land \mathit{SweptClean}
 ```
 
 `BindingInv` says that the bindings hold the recorded occurrences that replay has not paired yet.
 `StagedInv` says that the pairings of an open replay transaction stay within them.
 `SweptClean` says that a swept store has no volatile residue, and the other parts make the bounds of `TypeOK` inductive.
-`LegacyInv` bounds the legacy logs, and it keeps each remaining budget non-negative until its run fails (section [11.14](#1114-legacy-charges-of-decision-45)).
+Changed by [decision 90](decision-register.md#decision-90): `IndInv` had a tenth part, `LegacyInv`, which goes with the Legacy mode.
+`LegacyInv` bounded the legacy logs, and it kept each remaining budget non-negative until its run failed (section [11.14](#1114-legacy-charges-of-decision-45)).
 
 #### 5.2.2 Configurations and results of CheckpointReplay.tla
 
 Every configuration sets `SpacesInBlockHash = TRUE`.
 The constant `Budget` is the phlo limit of a deploy, in charges, and `Forge` lets the proposer omit the COMM of its last fire.
 The flags `UseUuid`, `RootIgnoresVolatile`, `DoublePair`, `JoinResidue`, `StagingDivergence`, and `AcceptUnpaired` turn on the wrong rules of the Unsafe configurations.
-The flags `LegacyPreAfterObserve`, `LegacyTailDropped`, and `RetainPeek` of decision 45 do the same, and `Peeks` and `Legacy` select the mode.
+Until [decision 90](decision-register.md#decision-90), the flags `LegacyPreAfterObserve`, `LegacyTailDropped`, and `RetainPeek` of decision 45 did the same, and `Peeks` and `Legacy` selected the mode.
 The four older Unsafe configurations set `Budget=8`, which no run reaches, and `Forge=FALSE`.
 The bounds column quotes the `\* BOUNDS:` line of each file exactly.
+
+Changed by [decision 90](decision-register.md#decision-90): the module has no flag `Legacy` and no legacy flags.
+So the bounds lines do not name `Legacy`, and `Peeks` alone selects the mode.
+The seven legacy configurations are retired.
+Every line of a retired file is a comment, and its row keeps the last bounds and results of the run of decision 45.
+The gate lists each retired file in `RETIRED_CONFIGS`, and no leg checks it.
 
 *Table 8. The configurations of CheckpointReplay.tla.*
 
 | Configuration | Leg | Bounds | Distinct states | Depth | Result |
 |---|---|---|---|---|---|
-| `MC_CheckpointReplay.cfg` | safe | `Chans={"d1","d2","v1"}, Vol={"v1"}, Vals={"a","b"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | 145,255 | 22 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
-| `MC_CheckpointReplay_TwoBlock.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | 94,049 | 41 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
-| `UuidUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 1,904 | 10 | Refutes exactly `ReplayPrefixEqual` |
-| `RootIgnoresVolatileUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 329 | 6 | Refutes exactly `SameRootIffSameState` |
-| `DoublePairUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 2,765 | 12 | Refutes exactly `PairedOnce` |
-| `JoinResidueUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 329 | 6 | Refutes exactly `NoVolatileResidue` |
-| `StagingDivergenceUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=FALSE, Peeks=FALSE, Legacy=FALSE` | 5,146 | 18 | Refutes exactly `ReplayOutcomeEqual` |
-| `AcceptUnpairedUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | 2,988 | 12 | Refutes exactly `ReplayPrefixEqual` |
-| `MC_CheckpointReplay_IndBase_Apalache.cfg` | Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 0 | `NoError` |
-| `MC_CheckpointReplay_IndStep_Apalache.cfg` | Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 1 | `NoError` |
-| `DoublePairUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 1 | `Error` in `StagedInv`, marker `vStaged[` |
-| `MC_CheckpointReplay_Peek.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=4, Forge=TRUE, Peeks=TRUE, Legacy=FALSE` | 34,991 | 22 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
-| `MC_CheckpointReplay_Legacy.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 34,351 | 22 | No invariant violated (T1 to T4, T6, U13, `TypeOK`, `IndInv`) |
-| `MC_CheckpointReplay_Legacy_TwoBlock.cfg` | safe | `Chans={"d1"}, Vol={}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 38,602 | 43 | No invariant violated (T1 to T4, T6, U13, `TypeOK`, `IndInv`) |
-| `LegacyPreAfterObserveUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 26,034 | 18 | Refutes exactly `ReplayOutcomeEqual` |
-| `LegacyTailDroppedUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 90 | 4 | Refutes exactly `LegacyChargesFollowHost` |
-| `RetainPeekUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 326 | 5 | Refutes exactly `LegacyChargesFollowHost` |
-| `MC_CheckpointReplay_Legacy_IndBase_Apalache.cfg` | Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | - | 0 | `NoError` |
-| `MC_CheckpointReplay_Legacy_IndStep_Apalache.cfg` | Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | - | 1 | `NoError` |
-| `JoinResidueUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE, Legacy=FALSE` | - | 1 | `Error` in `SweptClean`, marker `Swept"` |
+| `MC_CheckpointReplay.cfg` | safe | `Chans={"d1","d2","v1"}, Vol={"v1"}, Vals={"a","b"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=TRUE, Peeks=FALSE` | 145,255 | 22 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
+| `MC_CheckpointReplay_TwoBlock.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE` | 94,049 | 41 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
+| `UuidUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE` | 1,904 | 10 | Refutes exactly `ReplayPrefixEqual` |
+| `RootIgnoresVolatileUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE` | 329 | 6 | Refutes exactly `SameRootIffSameState` |
+| `DoublePairUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE` | 2,765 | 12 | Refutes exactly `PairedOnce` |
+| `JoinResidueUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=FALSE, Peeks=FALSE` | 329 | 6 | Refutes exactly `NoVolatileResidue` |
+| `StagingDivergenceUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=3, Forge=FALSE, Peeks=FALSE` | 5,146 | 18 | Refutes exactly `ReplayOutcomeEqual` |
+| `AcceptUnpairedUnsafe.cfg` | unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=8, Forge=TRUE, Peeks=FALSE` | 2,988 | 12 | Refutes exactly `ReplayPrefixEqual` |
+| `MC_CheckpointReplay_IndBase_Apalache.cfg` | Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE` | - | 0 | `NoError` |
+| `MC_CheckpointReplay_IndStep_Apalache.cfg` | Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE` | - | 1 | `NoError` |
+| `DoublePairUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE` | - | 1 | `Error` in `StagedInv`, marker `vStaged[` |
+| `MC_CheckpointReplay_Peek.cfg` | safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=4, Forge=TRUE, Peeks=TRUE` | 34,991 | 22 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`) |
+| `MC_CheckpointReplay_Peek_TwoBlock.cfg` | safe | `Chans={"d1"}, Vol={}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=4, Forge=TRUE, Peeks=TRUE` | 33,410 | 43 | No invariant violated (T1 to T4, T6, `TypeOK`, `IndInv`). Added by decision 90: the scenario of `MC_CheckpointReplay_Legacy_TwoBlock.cfg` in a token deploy |
+| `MC_CheckpointReplay_Peek_IndBase_Apalache.cfg` | Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=3, Forge=TRUE, Peeks=TRUE` | - | 0 | `NoError`. Added by decision 90: BASE of `IndInv` with peeks in a token deploy |
+| `MC_CheckpointReplay_Peek_IndStep_Apalache.cfg` | Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=3, Forge=TRUE, Peeks=TRUE` | - | 1 | `NoError`. Added by decision 90: STEP of `IndInv` with peeks in a token deploy |
+| `MC_CheckpointReplay_Legacy.cfg` | retired, was safe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 34,351 | 22 | No invariant violated (T1 to T4, T6, U13, `TypeOK`, `IndInv`) in the run of decision 45. Retired by decision 90 |
+| `MC_CheckpointReplay_Legacy_TwoBlock.cfg` | retired, was safe | `Chans={"d1"}, Vol={}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 38,602 | 43 | No invariant violated (T1 to T4, T6, U13, `TypeOK`, `IndInv`) in the run of decision 45. Retired by decision 90 |
+| `LegacyPreAfterObserveUnsafe.cfg` | retired, was unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 26,034 | 18 | Refutes exactly `ReplayOutcomeEqual` in the run of decision 45. Retired by decision 90 |
+| `LegacyTailDroppedUnsafe.cfg` | retired, was unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 90 | 4 | Refutes exactly `LegacyChargesFollowHost` in the run of decision 45. Retired by decision 90 |
+| `RetainPeekUnsafe.cfg` | retired, was unsafe | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=1, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | 326 | 5 | Refutes exactly `LegacyChargesFollowHost` in the run of decision 45. Retired by decision 90 |
+| `MC_CheckpointReplay_Legacy_IndBase_Apalache.cfg` | retired, was Apalache BASE | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | - | 0 | `NoError` in the run of decision 45. Retired by decision 90 |
+| `MC_CheckpointReplay_Legacy_IndStep_Apalache.cfg` | retired, was Apalache STEP | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=1, MaxTxns=1, Blocks=2, Budget=12, Forge=TRUE, Peeks=TRUE, Legacy=TRUE` | - | 1 | `NoError` in the run of decision 45. Retired by decision 90 |
+| `JoinResidueUnsafe_IndStep_Apalache.cfg` | Apalache Error control | `Chans={"d1","v1"}, Vol={"v1"}, Vals={"a"}, Konts={"k"}, MaxTxnOps=2, MaxTxns=2, Blocks=2, Budget=3, Forge=TRUE, Peeks=FALSE` | - | 1 | `Error` in `SweptClean`, marker `Swept"` |
 
 #### 5.2.3 Unsafe controls and complements of CheckpointReplay.tla
 
@@ -362,13 +389,14 @@ The bounds column quotes the `\* BOUNDS:` line of each file exactly.
 | `JoinResidueUnsafe` | `JoinResidue = TRUE` | T4 `NoVolatileResidue` | The sweep removes data and continuations only, as `remove_all_continuations` does, so a volatile join entry reaches the history trie. | 6,813 states, depth 22, no other violation |
 | `StagingDivergenceUnsafe` | `StagingDivergence = TRUE` | T6 `ReplayOutcomeEqual` | An unpaired replay fire fails at staging, which is the rule of decision 19. Play runs out of phlo at a produce fire of its second transaction, so the log lacks that COMM. Replay drops the transaction and rejects an honest block, as in the [replay finding](findings/space-replay-out-of-phlo.md). | 6,561 states, depth 22, no other violation |
 | `AcceptUnpairedUnsafe` | `AcceptUnpaired = TRUE` | T1 `ReplayPrefixEqual` | An unpaired replay fire commits as if it paired. When the proposer omits the COMM of its last fire, the validator commits and logs that fire, so its log stops being a prefix of the published log. | 8,357 states, depth 22, no other violation |
-| `LegacyPreAfterObserveUnsafe` | `LegacyPreAfterObserve = TRUE` | T6 `ReplayOutcomeEqual` | The pre-charge of a fire comes after its observer calls. Play runs out of phlo at that pre-charge, so the log lacks the fire. Replay then reaches the pairing check first and diverges on an honest block. | 34,227 states, depth 22, no other violation |
-| `LegacyTailDroppedUnsafe` | `LegacyTailDropped = TRUE` | U13 `LegacyChargesFollowHost` | The job charges no tail after the commit, so the legacy log of play misses the post-charges of the last operation. | 33,887 states, depth 22, no other violation |
-| `RetainPeekUnsafe` | `RetainPeek = TRUE` | U13 `LegacyChargesFollowHost` | A peek fire keeps its record, as the retention before Rule E did. The space then makes one host step fewer than the host program, which removes the record and sends it again. | 35,243 states, depth 22, no other violation |
+| `LegacyPreAfterObserveUnsafe` | `LegacyPreAfterObserve = TRUE` | T6 `ReplayOutcomeEqual` | The pre-charge of a fire comes after its observer calls. Play runs out of phlo at that pre-charge, so the log lacks the fire. Replay then reaches the pairing check first and diverges on an honest block. | 34,227 states, depth 22, no other violation in the run of decision 45. Retired by decision 90 with the Legacy mode |
+| `LegacyTailDroppedUnsafe` | `LegacyTailDropped = TRUE` | U13 `LegacyChargesFollowHost` | The job charges no tail after the commit, so the legacy log of play misses the post-charges of the last operation. | 33,887 states, depth 22, no other violation in the run of decision 45. Retired by decision 90 with the Legacy mode |
+| `RetainPeekUnsafe` | `RetainPeek = TRUE` | U13 `LegacyChargesFollowHost` | A peek fire keeps its record, as the retention before Rule E did. The space then makes one host step fewer than the host program, which removes the record and sends it again. | 35,243 states, depth 22, no other violation in the run of decision 45. Retired by decision 90 with the Legacy mode |
 
 #### 5.2.4 Apalache checks of CheckpointReplay.tla
 
 The gate runs six Apalache checks on this module, with the names `base`, `step`, `step-doublepair-unsafe`, `step-joinresidue-unsafe`, `legacy-base`, and `legacy-step`.
+Changed by [decision 90](decision-register.md#decision-90): the checks `peek-base` and `peek-step` replace `legacy-base` and `legacy-step`, so the six names end with `peek-base` and `peek-step`.
 BASE checks `Init` against `IndInv`, and STEP starts from `IndInit`, the set of every state that satisfies `IndInv`.
 Both pass with `NoError`, so `PairedOnce` and `NoVolatileResidue` hold at every depth for the constants of the configuration.
 With `DoublePair`, one replay stage step breaks `StagedInv`, and the violation holds the marker `vStaged[`.
@@ -378,19 +406,29 @@ The budget, the forged logs, and the stops of decision 36 keep `IndInv` inductiv
 The checks `legacy-base` and `legacy-step` prove `IndInv` with peeks and the legacy charges, with one operation in one transaction of each block.
 The recipe steps are `p1-tla-apalache-base`, `p1-tla-apalache-step`, `p1-tla-apalache-step-doublepair-unsafe`, `p1-tla-apalache-step-joinresidue-unsafe`, `p1-tla-apalache-legacy-base`, and `p1-tla-apalache-legacy-step`.
 
+Changed by [decision 90](decision-register.md#decision-90): the checks `peek-base` and `peek-step` prove `IndInv` with peeks in a token deploy.
+Each block has one transaction with one operation.
+Their limit is `Budget=3`, the largest spending of one peek fire and its re-store.
+Both pass with `NoError` in the runs of 2026-10-27.
+The recipe generator reads the names of `APALACHE_CHECKS`, so a recipe of this gate names `p1-tla-apalache-peek-base` and `p1-tla-apalache-peek-step`.
+
 #### 5.2.5 The two-block replay model
 
 The configuration `MC_CheckpointReplay_TwoBlock.cfg` is the two-block replay model of the leaf `rrs-fv-rocq-tla-two-block-replay-model`.
 The validator of block 2 resets to the root of block 1, and TLC explores 94,049 distinct states to depth 41 with no violation.
 Its Unsafe controls are the nine configurations of Table 9 with their complements, which use `Blocks=1`.
 Its Apalache checks use `Blocks=2`.
+
+Changed by [decision 90](decision-register.md#decision-90): three of the nine controls are retired with the Legacy mode, so six controls remain.
+The configuration `MC_CheckpointReplay_Peek_TwoBlock.cfg` checks two blocks with peeks: 33,410 distinct states to depth 43, with no violation.
+
 The invariant map names these property tests for T1 to T4 and T6:
 
-- T1 `ReplayPrefixEqual`: `prop_space_txn_replay_pairs_play_log`, `prop_space_txn_cross_replay_with_host`, and `prop_space_txn_repeated_channel_groups_equal_host`.
+- T1 `ReplayPrefixEqual`: `prop_native_space_replay_reproduces_play`, `prop_space_txn_cross_replay_with_host`, and `prop_space_txn_repeated_channel_groups_equal_host`.
 - T2 `SameRootIffSameState`: `prop_space_txn_play_root_equals_host`.
-- T3 `PairedOnce`: `prop_space_txn_replay_divergence_typed_at_commit`.
+- T3 `PairedOnce`: `prop_native_space_replay_reproduces_play`.
 - T4 `NoVolatileResidue`: `prop_sweep_volatile_exact_and_root_neutral`.
-- T6 `ReplayOutcomeEqual`: `prop_space_txn_replay_reproduces_play_rejection`.
+- T6 `ReplayOutcomeEqual`: `prop_native_space_replay_denial_keeps_prefix`.
 
 The integration suite checks the same replay on the Rust code (section [7.4](#74-deterministic-substrate-suites)).
 Its group B tests the checkpoints, and its group C tests the replay.
@@ -401,6 +439,10 @@ They also include `p1-tla-joinresidueunsafe`, `p1-tla-joinresidueunsafe-compleme
 Decision 45 adds `p1-tla-safe-mc-checkpointreplay-peek`, `p1-tla-safe-mc-checkpointreplay-legacy`, and `p1-tla-safe-mc-checkpointreplay-legacy-twoblock`.
 It also adds `p1-tla-legacypreafterobserveunsafe`, `p1-tla-legacytaildroppedunsafe`, and `p1-tla-retainpeekunsafe`, each with its step `-complement`.
 Its other steps are the six Apalache steps above.
+
+Changed by [decision 90](decision-register.md#decision-90): a recipe of the gate of the merge of `702496775` has 22 steps.
+It drops `p1-tla-safe-mc-checkpointreplay-legacy`, `p1-tla-safe-mc-checkpointreplay-legacy-twoblock`, and the three legacy controls with their complements.
+It adds `p1-tla-safe-mc-checkpointreplay-peek-twoblock`, and its two Apalache steps of peeks replace the two legacy steps.
 
 ### 5.3 TxnLockCoverage.tla
 
@@ -465,7 +507,7 @@ It shows that a passing check depends on the rule that the control changes [[DLS
 
 ### 6.1 Rocq mutants
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 75 mutants.
+At the close of phase P4, the script `scripts/verify-reified/rocq-negative-controls.py` held 75 mutants.
 Table 12 holds 29 and Table 39 of section [11.5](#115-negative-controls-of-p4) holds 29.
 Table 45 of section [11.10](#1110-metering-of-decision-42) holds 5, and Table 47 of section [11.11](#1111-native-execution-of-decisions-46-and-47) held 1, and holds 2 since decision 47.
 Table 50 of section [11.12](#1112-re-entry-of-decision-43) and Table 55 of section [11.13](#1113-peek-re-store-of-decision-45) hold 3 each, and Table 59 of section [11.14](#1114-legacy-charges-of-decision-45) holds 5.
@@ -525,14 +567,14 @@ The Error controls are `step-doublepair-unsafe` (marker `vStaged[`), `step-joinr
 
 ### 6.3 Rust negative controls
 
-The substrate suites hold five negative controls:
+The substrate suites hold four negative controls:
 
-- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:4064`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:4080`) show that the event correlation of the commit rejects a defect.
-- `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2199`) pins the HEAD behavior that `JoinResidueUnsafe` models.
-- `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2510`) shows that the host refuses a checkpoint with one channel set under two orders.
-- `space_store_handle_host_replay_repeated_channel_control` (`reified_space_store_handle.rs:3439`) shows that host replay of a repeated channel can compute another COMM than the play log.
+- `correlation_rejects_datum_without_produce_event` (`space_store_handle.rs:6378`) and `correlation_rejects_comm_before_trigger` (`space_store_handle.rs:6400`) show that the event correlation of the commit rejects a defect.
+- `space_store_handle_remove_all_continuations_keeps_joins_control` (`reified_space_store_handle.rs:2355`) pins the HEAD behavior that `JoinResidueUnsafe` models.
+- `space_store_handle_host_permuted_keys_break_checkpoint_control` (`reified_space_store_handle.rs:2690`) shows that the host refuses a checkpoint with one channel set under two orders.
+- Changed by [decision 89](decision-register.md#decision-89) (DR-129): host replay of a repeated channel now follows the play log. So `space_store_handle_host_replay_follows_a_repeated_channel` (`reified_space_store_handle.rs:3755`) replaces the former fifth control.
 
-The P4 suite `rholang/tests/reified_queue_replay.rs` holds the control of [decision 36](decision-register.md#decision-36), `space_queue_out_of_phlo_sweep_replays_equal` (`reified_queue_replay.rs:850`).
+The P4 suite `rholang/tests/reified_queue_replay.rs` holds the control of [decision 36](decision-register.md#decision-36), `space_queue_out_of_phlo_sweep_replays_equal` (`reified_queue_replay.rs:1149`).
 It plays a space deploy out of phlo at many limits, and it replays each play log as Casper does.
 On the code before the fix, 143 of its 232 deploys replayed to another outcome than play (`target/verification/reified-rspaces/p4/fx-c/step1-sweep-before.log`).
 After the fix, every deploy replays to the outcome of play (`step3-sweep-after.log` of the same directory).
@@ -559,7 +601,7 @@ The runner sets `sys.dont_write_bytecode`, so a run writes no `__pycache__` dire
 ### 7.1 Configuration
 
 Each [property-based test](glossary.md#property-based-test) of P1 uses the library proptest 1.11.0 [[CH00](#ref-ch00), [PT](#ref-pt)].
-Its configuration fixes `cases: 64`, `rng_seed: RngSeed::Fixed(SEED)` with `SEED = 0x0E0_5EED_2026_1004`, and `failure_persistence: None` (`reified_space_store_handle_props.rs:47-56`, `reified_space_store_handle_par.rs:347-353`).
+Its configuration fixes `cases: 64`, `rng_seed: RngSeed::Fixed(SEED)` with `SEED = 0x0E0_5EED_2026_1004`, and `failure_persistence: None` (`reified_space_store_handle_props.rs:66-75`, `reified_space_store_handle_par.rs:356-362`).
 The recipes also set `PROPTEST_CASES=64` and `PROPTEST_RNG_SEED=20261004` in their environment.
 These variables feed only `ProptestConfig::default()`, and the explicit fields override them, so a run has the same cases with or without the variables.
 Without failure persistence, a run writes nothing to the source tree.
@@ -568,67 +610,64 @@ The generators also make groups that are not canonical, with the probability 0.1
 They make sorted groups that repeat a channel, with the probability 0.15, which the substrate must accept (FR-1').
 Where a property allows peeks, a generated consume peeks with the probability 0.6.
 
-### 7.2 The 25 P1 properties
+### 7.2 The 23 P1 properties
 
-*Table 14. The 25 properties of phase P1 in the invariant map.*
+*Table 14. The 23 properties of phase P1 in the invariant map.*
 
 | # | Property | Location | Covers | What it checks |
 |---|---|---|---|---|
-| 1 | `prop_space_txn_play_trace_equals_host` | `reified_space_store_handle_props.rs:2389` | H1 | A commit of staged operations gives the observer calls and events of the host. |
-| 2 | `prop_space_txn_play_root_equals_host` | `reified_space_store_handle_props.rs:2394` | H2, T2 | The committed state, and so the checkpoint root, equals the host state. |
-| 3 | `prop_space_txn_replay_pairs_play_log` | `reified_space_store_handle_props.rs:2399` | H5, T1 | Replay pairs every COMM of the play log once and reaches the play root. |
-| 4 | `prop_space_txn_cross_replay_with_host` | `reified_space_store_handle_props.rs:2404` | T1 | A host play log replays through transactions, a transaction play log replays through the host, and both logs are equal. |
-| 5 | `prop_space_txn_replay_divergence_typed_at_commit` | `reified_space_store_handle_props.rs:2409` | H4, T3 | A replay fire whose COMM the log does not hold stages as in play, with no host call, and stays unpaired. The commit applies the operations before it, makes the calls of the fire through its COMM call, and fails with `ReplayDivergence`. Nothing of the fire or after it is logged, applied, or unbound. |
-| 6 | `prop_space_txn_view_equals_committed_store` | `reified_space_store_handle_props.rs:2414` | H6 | The reads after staging equal the store after the commit, also with peek fires and their re-offers. |
-| 7 | `prop_space_txn_joins_lockstep` | `reified_space_store_handle_props.rs:2419` | H7 | Join entries and continuations change in lockstep, in the view and in the committed store. |
-| 8 | `prop_sweep_volatile_exact_and_root_neutral` | `reified_space_store_handle_props.rs:2424` | H13, H14, H15, T4 | The sweep removes exactly the volatile records, continuations, and joins, keeps the durable state, and does not move the root. |
-| 9 | `prop_sub_orders_contiguous_and_disjoint` | `reified_space_store_handle_props.rs:2429` | H8 | Sub-orders sort between their parent and the next step, never equal a reduction order, and keep the events of a transaction together. |
-| 10 | `prop_space_txn_abort_inert` | `reified_space_store_handle_props.rs:2445` | H9 | A transaction that drops without a commit leaves no event, observer call, write, or counter change, and it releases its locks. |
-| 11 | `prop_event_coverage_holds_for_generated_commits` | `reified_space_store_handle_props.rs:2450` | H10 | Each committed store change has its event, and each COMM follows its trigger event. |
-| 12 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | H5, H11, H12 | A peek fire has the calls, events, and state of the HEAD peek path, with the re-offer and the re-stores as the next produces, and it replays and reports from the play log. |
-| 13 | `prop_space_txn_reporting_equals_replay` | `reified_space_store_handle_props.rs:2460` | H12 | Reporting replays exactly as replay does, and it reports what the host reporting space reports. |
-| 14 | `prop_root_leaf_record_count_matches_history` | `reified_space_store_handle_props.rs:2465` | H16 | The root leaf record count is the number of records in the leaf. |
-| 15 | `prop_counter_timing_play_equals_replay` | `reified_space_store_handle_props.rs:2470` | H3 | Play counts the fired produce, replay increments before it matches, and both give the COMMs of the host. |
-| 16 | `prop_space_txn_replay_requires_trigger_event` | `reified_space_store_handle_props.rs:2475` | H4 | Without the trigger event in the log, the fire stages unpaired, and the commit fails with `ReplayDivergence` after the calls of the fire, with the operations before it applied. With the complete log, the same fire pairs and commits. |
-| 17 | `prop_space_txn_non_canonical_inputs_fail_closed` | `reified_space_store_handle_props.rs:2491` | H9, H17, H22 | A group that is not canonical fails before any store or cache effect, and the checkpoint root equals the reference. |
-| 18 | `prop_space_txn_reads_root_neutral` | `reified_space_store_handle_props.rs:2501` | H18 | Reads of canonical keys never change the checkpoint root. |
-| 19 | `prop_space_txn_replay_directive_fails_closed` | `reified_space_store_handle_props.rs:2511` | H19 | A native replay directive rejects its operation with no effect, and the operations before it stay applied. |
-| 20 | `prop_space_txn_parent_order_single_commit` | `reified_space_store_handle_props.rs:2519` | H20 | At most one transaction commits under one parent order, and a second commit fails with `ParentOrderReused` and no effect. |
-| 21 | `prop_space_txn_store_identity_ignores_ord_only_fields` | `reified_space_store_handle_props.rs:2524` | H21 | Channels that differ only in a field of the Rust ordering are one channel for every decision of the substrate. |
-| 22 | `prop_space_txn_rejects_uncovered_channels` | `reified_space_store_handle_props.rs:2531` | T5 | An operation on a channel without its stripe fails with `UnlockedChannel` and no effect, and the final state equals a serial order. |
-| 23 | `prop_space_txn_par_identity_ignores_locally_free` | `reified_space_store_handle_par.rs:356` | H21 | `Par` channels that differ only in `locally_free` stage, read, commit, and checkpoint as one channel. |
-| 24 | `prop_space_txn_repeated_channel_groups_equal_host` | `reified_space_store_handle_props.rs:2536` | H1, H2, H5, H17, T1 | Sorted groups that repeat a channel give the calls, events, state, and root of the host, and they replay to the play root. |
-| 25 | `prop_space_txn_replay_reproduces_play_rejection` | `reified_space_store_handle_props.rs:2483` | H23, T6 | Play rejects its n-th fallible observer call, as a deploy that runs out of phlo there, and keeps its log. Replay with that log fails at the same call, with the outcome, the observer calls without the directive queries, and the state of play, and it uses every recorded event. |
+| 1 | `prop_space_txn_play_trace_equals_host` | `reified_space_store_handle_props.rs:2654` | H1 | A commit of staged operations gives the observer calls and events of the host. |
+| 2 | `prop_space_txn_play_root_equals_host` | `reified_space_store_handle_props.rs:2659` | H2, T2 | The committed state, and so the checkpoint root, equals the host state. |
+| 3 | `prop_space_txn_cross_replay_with_host` | `reified_space_store_handle_props.rs:2491` | T1 | A transaction play log replays through the host, and both logs are equal. |
+| 4 | `prop_space_txn_view_equals_committed_store` | `reified_space_store_handle_props.rs:2514` | H6 | The reads after staging equal the store after the commit, also with peek fires and their re-offers. |
+| 5 | `prop_space_txn_joins_lockstep` | `reified_space_store_handle_props.rs:2518` | H7 | Join entries and continuations change in lockstep, in the view and in the committed store. |
+| 6 | `prop_sweep_volatile_exact_and_root_neutral` | `reified_space_store_handle_props.rs:2523` | H13, H14, H15, T4 | The sweep removes exactly the volatile records, continuations, and joins, keeps the durable state, and does not move the root. |
+| 7 | `prop_sub_orders_contiguous_and_disjoint` | `reified_space_store_handle_props.rs:2528` | H8 | Sub-orders sort between their parent and the next step, never equal a reduction order, and keep the events of a transaction together. |
+| 8 | `prop_space_txn_abort_inert` | `reified_space_store_handle_props.rs:2549` | H9 | A transaction that drops without a commit leaves no event, observer call, write, or counter change, and it releases its locks. |
+| 9 | `prop_event_coverage_holds_for_generated_commits` | `reified_space_store_handle_props.rs:2554` | H10 | Each committed store change has its event, and each COMM follows its trigger event. |
+| 10 | `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2559` | H5, H11, H12 | A peek fire has the calls, events, and state of the HEAD peek path, with the re-offer and the re-stores as the next produces, and it replays and reports from the play log. |
+| 11 | `prop_root_leaf_record_count_matches_history` | `reified_space_store_handle_props.rs:2583` | H16 | The root leaf record count is the number of records in the leaf. |
+| 12 | `prop_counter_timing_play_equals_replay` | `reified_space_store_handle_props.rs:2470` | H3 | Play counts the fired produce. The COMMs of the receipts equal those of the log, which equal the COMMs of the host. |
+| 13 | `prop_space_txn_non_canonical_inputs_fail_closed` | `reified_space_store_handle_props.rs:2643` | H9, H17, H22 | A group that is not canonical fails before any store or cache effect, and the checkpoint root equals the reference. |
+| 14 | `prop_space_txn_reads_root_neutral` | `reified_space_store_handle_props.rs:2653` | H18 | Reads of canonical keys never change the checkpoint root. |
+| 15 | `prop_space_txn_parent_order_single_commit` | `reified_space_store_handle_props.rs:2671` | H20 | At most one transaction commits under one parent order, and a second commit fails with `ParentOrderReused` and no effect. |
+| 16 | `prop_space_txn_store_identity_ignores_ord_only_fields` | `reified_space_store_handle_props.rs:2676` | H21 | Channels that differ only in a field of the Rust ordering are one channel for every decision of the substrate. |
+| 17 | `prop_space_txn_rejects_uncovered_channels` | `reified_space_store_handle_props.rs:2687` | T5 | An operation on a channel without its stripe fails with `UnlockedChannel` and no effect, and the final state equals a serial order. |
+| 18 | `prop_space_txn_par_identity_ignores_locally_free` | `reified_space_store_handle_par.rs:359` | H21 | `Par` channels that differ only in `locally_free` stage, read, commit, and checkpoint as one channel. |
+| 19 | `prop_space_txn_repeated_channel_groups_equal_host` | `reified_space_store_handle_props.rs:2692` | H1, H2, H5, H17, T1 | Sorted groups that repeat a channel give the calls, events, state, and root of the host, and they replay to the play root. |
+| 20 | `prop_native_space_replay_fails_closed` | `native_session/space.rs:4113` | H4, H19 | An outcome that does not fit, another candidate, or a row that is not ready fails the commit closed. The failed operation has no effect, and the operations before it stay applied. |
+| 21 | `prop_native_space_replay_denial_keeps_prefix` | `native_session/space.rs:4066` | H23, T6 | A recorded denial at one operation fails the commit with the denial error of the epoch. The operations before it stay applied, as play of the prefix applies them. |
+| 22 | `prop_native_space_replay_reproduces_play` | `native_session/space.rs:4031` | T1, T3 | Native replay over the rows of play commits the receipts, the store and the produce counters of play. It consumes one row for each operation. |
+| 23 | `space_native_vectordb_replay_equal` | `rholang/tests/reified_native_spaces.rs:1644` | H29 | The test plays deploys in order on one chain and certifies each through its own native replay from its parent root. |
 
-### 7.3 The 19 witness tests
+### 7.3 The 18 witness tests
 
 A [witness test](glossary.md#witness-test) is a deterministic test of one case of a headline or a rule.
-The invariant map lists 19 witness tests for P1.
+The invariant map lists 18 witness tests for P1.
 The test `space_store_handle_commit_checks_cost_changed_entries` covers no headline, because the models do not include cost.
 
-*Table 15. The 19 witness tests of phase P1.*
+*Table 15. The 18 witness tests of phase P1.*
 
 | Test | Location | Rule | Covers | What it shows |
 |---|---|---|---|---|
-| `space_store_handle_repeated_group_consume_fire_binds_distinct_records` | `reified_space_store_handle.rs:3208` | FR-1' | H1, H2, H17 | A consume on a group that repeats a channel binds one record for each occurrence. |
-| `space_store_handle_repeated_group_produce_fire_binds_incoming_once` | `reified_space_store_handle.rs:3284` | FR-1' | H1, H2, H9, H17 | A produce-side fire binds the incoming datum exactly once, and a fire that binds it twice fails closed. |
-| `space_store_handle_unsorted_repeat_fails_closed` | `reified_space_store_handle.rs:3371` | FR-1' | H9, H17, H18 | A repeat out of sorted order fails before any access, and the checkpoint keeps the reference root. |
-| `space_store_handle_evaluation_scope_resets_parent_orders` | `reified_space_store_handle.rs:3497` | FR-5' | H20 | After `begin_evaluation_scope`, a second evaluation of one deploy commits under the same parent order. |
-| `space_store_handle_store_reset_resets_parent_orders` | `reified_space_store_handle.rs:3532` | FR-5' | H20 | A reset or a revert starts a new tracking scope. |
-| `space_store_handle_sweep_in_open_transaction_fails_closed` | `reified_space_store_handle.rs:3567` | FR-9' | H13 | A sweep in an open transaction of the same task fails with `NestedTransaction` before it takes a lock. |
-| `space_store_handle_commit_checks_cost_changed_entries` | `reified_space_store_handle.rs:3751` | FR-7' | none | The always-on checks copy as many records for 1 stored record as for 32. |
-| `space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored` | `reified_space_store_handle.rs:3978` | FR-10 | H5, H6, H11 | A produce-side peek join removes its stored non-persistent record and never stores its incoming datum, in the view or in the store ([decision 45](decision-register.md#decision-45)). |
-| `space_store_handle_peek_reoffer_fires_next_waiter` | `reified_space_store_handle.rs:4072` | FR-10 | H3, H6, H11 | The re-offer fires the next waiter, and the counter steps once for each produce. |
-| `space_store_handle_peek_reoffer_stores_without_waiter` | `reified_space_store_handle.rs:4171` | FR-10 | H1, H3, H11 | With no second waiter, the re-offer stores the datum, as the HEAD re-produce does. |
-| `space_store_handle_peek_reoffer_equals_head_reproduce` | `reified_space_store_handle.rs:4238` | FR-10 | H1, H11 | The re-offer has the calls, events, contents, and root of the HEAD re-produce. |
-| `space_store_handle_peek_reoffer_authority_conflict_fails_at_reoffer` | `reified_space_store_handle.rs:4328` | FR-10 | H1, H6, H11 | A conflicting authority fails the commit at the re-offer, and the peek fire stays applied. |
-| `space_store_handle_peek_reoffer_replay_and_report` | `reified_space_store_handle.rs:4369` | FR-10 | H1, H4, H5, H11, H12, T1 | A peek fire and its re-offer replay and report from their play log with the play root. |
-| `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4492` | FR-10 | H1, H11 | Every result of a peek fire keeps the persist flag of the host, and the re-store and the re-offer report Stored with the identities of their records. |
-| `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | FR-10 | H1, H2, H11, H12 | A peek and its re-stores have the events, observer calls, state, and root of the HEAD program, whose reducer sends the peeked data again, in play, replay, and reporting. |
-| `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | FR-10 | H2, H11 | Control: the removal and the re-store leave one copy of the record. A re-store without the removal leaves two copies, and a removal without the re-store loses the record. |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4435` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
-| `space_store_handle_replay_reproduces_play_rejection` | `reified_space_store_handle.rs:1997` | Decision 36 | H23, T6 | For each position of a fallible observer call, play fails there and keeps its log. Replay with that log fails at the same call, with the outcome, the calls, and the state of play. |
-| `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:850` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
+| `space_store_handle_repeated_group_consume_fire_binds_distinct_records` | `reified_space_store_handle.rs:3432` | FR-1' | H1, H2, H17 | A consume on a group that repeats a channel binds one record for each occurrence. |
+| `space_store_handle_repeated_group_produce_fire_binds_incoming_once` | `reified_space_store_handle.rs:3514` | FR-1' | H1, H2, H9, H17 | A produce-side fire binds the incoming datum exactly once, and a fire that binds it twice fails closed. |
+| `space_store_handle_unsorted_repeat_fails_closed` | `reified_space_store_handle.rs:3673` | FR-1' | H9, H17, H18 | A repeat out of sorted order fails before any access, and the checkpoint keeps the reference root. |
+| `space_store_handle_evaluation_scope_resets_parent_orders` | `reified_space_store_handle.rs:3832` | FR-5' | H20 | After `begin_evaluation_scope`, a second evaluation of one deploy commits under the same parent order. |
+| `space_store_handle_store_reset_resets_parent_orders` | `reified_space_store_handle.rs:3890` | FR-5' | H20 | A reset or a revert starts a new tracking scope. |
+| `space_store_handle_sweep_in_open_transaction_fails_closed` | `reified_space_store_handle.rs:3938` | FR-9' | H13 | A sweep in an open transaction of the same task fails with `NestedTransaction` before it takes a lock. |
+| `space_store_handle_commit_checks_cost_changed_entries` | `reified_space_store_handle.rs:4125` | FR-7' | none | The always-on checks copy as many records for 1 stored record as for 32. |
+| `space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored` | `reified_space_store_handle.rs:4389` | FR-10 | H5, H6, H11 | A produce-side peek join removes its stored non-persistent record and never stores its incoming datum, in the view or in the store ([decision 45](decision-register.md#decision-45)). |
+| `space_store_handle_peek_reoffer_fires_next_waiter` | `reified_space_store_handle.rs:4497` | FR-10 | H3, H6, H11 | The re-offer fires the next waiter, and the counter steps once for each produce. |
+| `space_store_handle_peek_reoffer_stores_without_waiter` | `reified_space_store_handle.rs:4596` | FR-10 | H1, H3, H11 | With no second waiter, the re-offer stores the datum, as the HEAD re-produce does. |
+| `space_store_handle_peek_reoffer_equals_head_reproduce` | `reified_space_store_handle.rs:4663` | FR-10 | H1, H11 | The re-offer has the calls, events, contents, and root of the HEAD re-produce. |
+| `space_store_handle_peek_reoffer_authority_conflict_fails_at_reoffer` | `reified_space_store_handle.rs:4767` | FR-10 | H1, H6, H11 | A conflicting authority fails the commit at the re-offer, and the peek fire stays applied. |
+| `space_store_handle_peek_reoffer_replay_and_report` | `reified_space_store_handle.rs:4427` | FR-10 | H1, H11, T1 | A peek fire and its re-offer play the log and the root of the HEAD operations, and host replay of that log with the HEAD operations reaches the same root. |
+| `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:5009` | FR-10 | H1, H11 | Every result of a peek fire keeps the persist flag of the host, and the re-store and the re-offer report Stored with the identities of their records. |
+| `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:5167` | FR-10 | H1, H2, H11, H12 | A peek and its re-stores have the events, observer calls, state, and root of the HEAD program, whose reducer sends the peeked data again, in play, replay, and reporting. |
+| `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:5332` | FR-10 | H2, H11 | Control: the removal and the re-store leave one copy of the record. A re-store without the removal leaves two copies, and a removal without the re-store loses the record. |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:6801` | FR-10 | H11 | The receipt keeps the flag of the host for every result, and results that do not line up with the candidates fail closed. |
+| `space_queue_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:1149` | Decision 36 | H23, T6 | A queue deploy that runs out of phlo at each limit of a sweep replays to the error codes and the cost of play, which Casper compares. A divergent pair at the limit 100000 does too. |
 
 ### 7.4 Deterministic substrate suites
 
@@ -637,7 +676,7 @@ The test `space_store_handle_commit_checks_cost_changed_entries` covers no headl
 | Suite | Tests | Subject | Recipe: step |
 |---|---|---|---|
 | `rspace++/tests/reified_space_store_handle.rs`, group A | 22 | Host parity of every operation shape against a twin host. | `rrs-p1-rspace`: `p1-integration` |
-| Group B | 5 | Checkpoints, history read-through, and the LMDB round trip `space_store_handle_lmdb_checkpoint_round_trip` (`reified_space_store_handle.rs:1324`). | The same step |
+| Group B | 5 | Checkpoints, history read-through, and the LMDB round trip `space_store_handle_lmdb_checkpoint_round_trip` (`reified_space_store_handle.rs:1381`). | The same step |
 | Group C | 11 | Replay lookup parity with host replay, the typed divergence at commit, and the replay of a rejection of play ([decision 36](decision-register.md#decision-36)). | The same step |
 | Group D | 7 | The volatile sweep. | The same step |
 | Group E | 3 | Reporting delegation. | The same step |
@@ -685,28 +724,28 @@ The prefix `rs/` stands for `rspace++/src/rspace/`, and `ri/` stands for `rholan
 
 | # | Item | Checks: test or checker, step, category | Assertion |
 |---|---|---|---|
-| 1 | COMM produce sort | `reified_ordinary_regression_r1_comm_produce_sort` (`reified_ordinary_regression.rs:1081`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1561`), `p1-regression-ordinary` (T)<br>`prop_space_txn_play_trace_equals_host` (`reified_space_store_handle_props.rs:2389`), `p1-regression-substrate-props` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `rs/replay_rspace/**`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C) | Join COMMs list their produces in the order of `COMM::new`, as at HEAD, and the substrate logs the same event bytes as the host. |
-| 2 | No retention of peeked or matched-persistent data | `reified_ordinary_regression_r2_peek_removes_and_reproduces` (`reified_ordinary_regression.rs:1228`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r8_state_dump` (`reified_ordinary_regression.rs:1981`), `p1-regression-ordinary` (T)<br>`producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:323`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:370`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_persistent_flag_should_return_continuation_and_data_and_not_insert_persistent_data` (`storage_actions_test.rs:414`), `p1-regression-head-storage` (T)<br>`peek_removal_does_not_refund_or_recharge_an_introduction` (`comm_observer_tests.rs:470`), `p1-regression-head-observer` (T)<br>`creating_a_comm_event_with_peek_consume_first_should_replay_correctly` (`replay_rspace_tests.rs:472`), `p1-regression-head-replay` (T)<br>`creating_a_comm_event_with_peek_produce_first_should_replay_correctly` (`replay_rspace_tests.rs:545`), `p1-regression-head-replay` (T)<br>`creating_comm_events_on_many_channels_with_peek_should_replay_correctly` (`replay_rspace_tests.rs:607`), `p1-regression-head-replay` (T)<br>Footprint `byte_identical`: `rspace++/tests/storage_actions_test.rs`, `rspace++/tests/replay_rspace_tests.rs`, `rspace++/tests/comm_observer_tests.rs`, `rspace++/tests/comm_observer_tests/**`, `rs/rspace/ops_consume.rs`, `rs/rspace/ops_produce.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `ri/reduce.rs`, `p1-footprint` (C) | A peek removes the datum and the reducer produces it again with the same identity, and the six HEAD peek tests of decision 19 pass unchanged. |
-| 3 | Greedy joins | `reified_ordinary_regression_r3_greedy_join_first_match` (`reified_ordinary_regression.rs:1424`), `p1-regression-ordinary` (T)<br>`joined_consume_with_same_channel_given_twice_followed_by_produce_should_not_error` (`storage_actions_test.rs:914`), `p1-regression-head-storage` (T)<br>Production scan, key `production_scan.patterns`: `datum_index_key`, `search_data_candidates`, `p1-production-scan` (C)<br>Phase scan of `p1`, key `forbidden_anywhere`: the same tokens, `p1-complete` (C)<br>Footprint `byte_identical`: `rs/match.rs`, `rs/space_matcher.rs`, `ri/matcher/**`, `p1-footprint` (C) | The greedy matcher leaves a join unmatched where a backtracking search would match it, and no arity index or backtracking search exists. |
+| 1 | COMM produce sort | `reified_ordinary_regression_r1_comm_produce_sort` (`reified_ordinary_regression.rs:1153`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`prop_space_txn_play_trace_equals_host` (`reified_space_store_handle_props.rs:2654`), `p1-regression-substrate-props` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `rs/replay_rspace/**`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C) | Join COMMs list their produces in the order of `COMM::new`, as at HEAD, and the substrate logs the same event bytes as the host. |
+| 2 | No retention of peeked or matched-persistent data | `reified_ordinary_regression_r2_peek_removes_and_reproduces` (`reified_ordinary_regression.rs:1312`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r8_state_dump` (`reified_ordinary_regression.rs:2104`), `p1-regression-ordinary` (T)<br>`producing_then_consuming_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:323`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_peek_should_return_continuation_and_data_and_remove_peeked_data` (`storage_actions_test.rs:370`), `p1-regression-head-storage` (T)<br>`consuming_then_producing_on_same_channel_with_persistent_flag_should_return_continuation_and_data_and_not_insert_persistent_data` (`storage_actions_test.rs:414`), `p1-regression-head-storage` (T)<br>`peek_removal_does_not_refund_or_recharge_an_introduction` (`comm_observer_tests.rs:446`), `p1-regression-head-observer` (T)<br>`creating_a_comm_event_with_peek_consume_first_should_replay_correctly` (`replay_rspace_tests.rs:472`), `p1-regression-head-replay` (T)<br>`creating_a_comm_event_with_peek_produce_first_should_replay_correctly` (`replay_rspace_tests.rs:545`), `p1-regression-head-replay` (T)<br>`creating_comm_events_on_many_channels_with_peek_should_replay_correctly` (`replay_rspace_tests.rs:607`), `p1-regression-head-replay` (T)<br>Footprint `byte_identical`: `rspace++/tests/storage_actions_test.rs`, `rspace++/tests/replay_rspace_tests.rs`, `rspace++/tests/comm_observer_tests.rs`, `rspace++/tests/comm_observer_tests/**`, `rs/rspace/ops_consume.rs`, `rs/rspace/ops_produce.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `ri/reduce.rs`, `p1-footprint` (C) | A peek removes the datum and the reducer produces it again with the same identity, and the six HEAD peek tests of decision 19 pass unchanged. |
+| 3 | Greedy joins | `reified_ordinary_regression_r3_greedy_join_first_match` (`reified_ordinary_regression.rs:1516`), `p1-regression-ordinary` (T)<br>`joined_consume_with_same_channel_given_twice_followed_by_produce_should_not_error` (`storage_actions_test.rs:914`), `p1-regression-head-storage` (T)<br>Production scan, key `production_scan.patterns`: `datum_index_key`, `search_data_candidates`, `p1-production-scan` (C)<br>Phase scan of `p1`, key `forbidden_anywhere`: the same tokens, `p1-complete` (C)<br>Footprint `byte_identical`: `rs/match.rs`, `rs/space_matcher.rs`, `ri/matcher/**`, `p1-footprint` (C) | The greedy matcher leaves a join unmatched where a backtracking search would match it, and no arity index or backtracking search exists. |
 | 4 | No production EventCoverage | Footprint `byte_identical`: `casper/src/rust/merging/block_index.rs`, `casper/src/rust/merging/mod.rs`, key `no_new_files`: `casper/src/**`, `p1-footprint` (C)<br>Production scan: `event_coverage`, `p1-production-scan` (C)<br>Phase scan of `p1`: `event_coverage`, `p1-complete` (C) | Both merging files equal HEAD, `casper/src` gains no file, and no source holds the token. |
-| 5 | Leaf, serializer, and event-struct formats | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1477`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1561`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, key `no_new_files`: `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, `p1-footprint` (C) | Leaf bytes and event bytes equal the corpora, and a new field of a host struct fails to compile in R5. |
-| 6 | Derived bincode and candidate ranking | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1561`), `p1-regression-ordinary` (T)<br>`deterministic_candidates_hash_unchanged` (`reified_ordinary_regression.rs:2269`), `p1-regression-ordinary` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/space_matcher.rs`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Consumes and produces take candidates in ascending order of the hash of their bincode, and the hashes equal the corpus. |
-| 7 | Produce and Consume identities | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1561`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_event_identities` (`legacy_golden_corpus.rs:42`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_channel_hashes` (`legacy_golden_corpus.rs:28`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/hashing/**`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Event identities and channel hashes equal the corpora. |
-| 8 | Event proto bytes | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1561`), `p1-regression-ordinary` (T)<br>Production scan: `write_exclusive`, `writeExclusive`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `casper/src/**`, key `no_new_files`: `models/src/main/protobuf/**`, `p1-footprint` (C) | The prost bytes of the events equal the corpus, and no protobuf or Rust source holds the field of M-1. |
+| 5 | Leaf, serializer, and event-struct formats | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1592`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, key `no_new_files`: `rs/trace/**`, `rs/serializers/**`, `rs/history/**`, `p1-footprint` (C) | Leaf bytes and event bytes equal the corpora, and a new field of a host struct fails to compile in R5. |
+| 6 | Derived bincode and candidate ranking | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`deterministic_candidates_hash_unchanged` (`reified_ordinary_regression.rs:2426`), `p1-regression-ordinary` (T)<br>Footprint `byte_identical`: `rs/internal.rs`, `rs/trace/**`, `rs/space_matcher.rs`, `rs/rspace/ops_produce.rs`, `rs/rspace/ops_consume.rs`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Consumes and produces take candidates in ascending order of the hash of their bincode, and the hashes equal the corpus. |
+| 7 | Produce and Consume identities | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>`legacy_golden_corpus_event_identities` (`legacy_golden_corpus.rs:42`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_channel_hashes` (`legacy_golden_corpus.rs:28`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/trace/**`, `rs/hashing/**`, `models/src/main/protobuf/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `p1-footprint` (C) | Event identities and channel hashes equal the corpora. |
+| 8 | Event proto bytes | `reified_ordinary_regression_r5_event_struct_and_proto_bytes` (`reified_ordinary_regression.rs:1679`), `p1-regression-ordinary` (T)<br>Production scan: `write_exclusive`, `writeExclusive`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `casper/src/**`, key `no_new_files`: `models/src/main/protobuf/**`, `p1-footprint` (C) | The prost bytes of the events equal the corpus, and no protobuf or Rust source holds the field of M-1. |
 | 9 | Merger unchanged | Footprint `byte_identical`: `rs/merger/**`, `casper/src/rust/merging/**`, key `no_new_files`: `rs/merger/**`, `casper/src/**`, `p1-footprint` (C) | Both merger trees equal HEAD byte for byte and gain no file. |
-| 10 | Host replay acceptance | `reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2070`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3262`), `p1-regression-ordinary` (T, P)<br>`ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3273`), `p1-regression-ordinary` (T)<br>`ordinary_program_generator_covers_every_construct` (`reified_ordinary_regression.rs:3461`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `rs/replay_rspace/**`, `casper/src/rust/rholang/replay_runtime.rs`, `p1-footprint` (C) | Replay of a fixed program and of 64 generated programs reaches the play roots with the play costs, and the property rejects both replay mutants. |
-| 11 | Cost and host-work accounting | `reified_ordinary_regression_r6_cost_vectors` (`reified_ordinary_regression.rs:1890`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2070`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3262`), `p1-regression-ordinary` (T, P)<br>Footprint `byte_identical`: `ri/accounting/**`, `ri/host_work.rs`, `models/src/rust/host_work.rs`, `rs/rspace/accounting.rs`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The cost and host-work vectors equal the corpus, and play and replay charge the same cost. |
-| 12 | Hot-store dedup identity | `space_store_handle_parity_continuation_dedup` (`reified_space_store_handle.rs:462`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical`: `rs/hot_store.rs`, `rs/hot_store/**`, `rs/internal.rs`, `models/src/main/protobuf/**`, `models/build.rs`, key `no_new_files`: `rs/hot_store/**`, `p1-footprint` (C) | The host keeps one of two identical continuations, and the code of that identity equals HEAD. |
-| 13 | Checkpoint root | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1477`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2070`), `p1-regression-ordinary` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_empty_radix_root` (`legacy_golden_corpus.rs:59`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/history/**`, `rs/hashing/**`, `rs/hot_store.rs`, `rs/hot_store_action.rs`, `rs/hot_store_trie_action.rs`, `rs/rspace/ispace_impl.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, `p1-footprint` (C) | The empty-state root, the fixed-term root, and the checkpoint roots equal their HEAD constants and corpora. |
+| 10 | Host replay acceptance | `reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2196`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3419`), `p1-regression-ordinary` (T, P)<br>`ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3430`), `p1-regression-ordinary` (T)<br>`ordinary_program_generator_covers_every_construct` (`reified_ordinary_regression.rs:3618`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `rs/replay_rspace/**`, `casper/src/rust/rholang/replay_runtime.rs`, `p1-footprint` (C) | Replay of a fixed program and of 64 generated programs reaches the play roots with the play costs, and the property rejects both replay mutants. |
+| 11 | Cost and host-work accounting | `reified_ordinary_regression_r6_cost_vectors` (`reified_ordinary_regression.rs:2013`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2196`), `p1-regression-ordinary` (T)<br>`prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3419`), `p1-regression-ordinary` (T, P)<br>Footprint `byte_identical`: `ri/accounting/**`, `ri/host_work.rs`, `models/src/rust/host_work.rs`, `rs/rspace/accounting.rs`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The cost and host-work vectors equal the corpus, and play and replay charge the same cost. |
+| 12 | Hot-store dedup identity | `space_store_handle_parity_continuation_dedup` (`reified_space_store_handle.rs:510`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical`: `rs/hot_store.rs`, `rs/hot_store/**`, `rs/internal.rs`, `models/src/main/protobuf/**`, `models/build.rs`, key `no_new_files`: `rs/hot_store/**`, `p1-footprint` (C) | The host keeps one of two identical continuations, and the code of that identity equals HEAD. |
+| 13 | Checkpoint root | `reified_ordinary_regression_r4_leaf_bytes` (`reified_ordinary_regression.rs:1592`), `p1-regression-ordinary` (T)<br>`reified_ordinary_regression_r9_play_replay_equality` (`reified_ordinary_regression.rs:2196`), `p1-regression-ordinary` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>`legacy_golden_corpus_nonempty_root_and_event` (`legacy_golden_corpus.rs:75`), `p1-regression-legacy-golden` (T)<br>`legacy_golden_corpus_empty_radix_root` (`legacy_golden_corpus.rs:59`), `p1-regression-legacy-golden` (T)<br>Footprint `byte_identical`: `rs/history/**`, `rs/hashing/**`, `rs/hot_store.rs`, `rs/hot_store_action.rs`, `rs/hot_store_trie_action.rs`, `rs/rspace/ispace_impl.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, `p1-footprint` (C) | The empty-state root, the fixed-term root, and the checkpoint roots equal their HEAD constants and corpora. |
 | 14 | Scheduler footprints | Footprint `approved_edits`: `ri/deterministic_reduction.rs`, `p1-footprint` (C)<br>Footprint `byte_identical`: `models/src/main/protobuf/**`, `models/build.rs`, `p1-footprint` (C) | The scheduler code and the prost encoding of channel keys hold only approved edits, and P1 approves none. |
 | 15 | System byte names | Footprint `byte_identical`: `ri/system_processes.rs`, `p1-footprint` (C) | The byte names and the fixed channels of the system processes equal HEAD. |
-| 16 | No schema shift | `reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:1917`), `p1-regression-ordinary` (T)<br>`ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:284`), `p1-regression-source` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>Footprint `byte_identical`: `*.proto`, `comm/src/main/protobuf/**`, `comm/src/scalapb/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, key `no_new_files`: `models/src/main/protobuf/**`, `comm/src/main/protobuf/**`, `p1-footprint` (C)<br>Scheduled from p2 (owner P2): `protobuf_schema_unchanged_vs_head`, `ordinary_prost_unchanged`, and `ordinary_bincode_unchanged` in `models/tests/reified_encoding.rs`, step `encoding` | Twenty ordinary terms and every repository source keep their bytes, every protobuf file equals HEAD, and both HEAD constants hold. |
-| 17 | `ISpace` implementors | `reified_space_txn_host_bounds_hold_for_par_hosts` (`reified_space_txn_host_bounds.rs:40`), `p1-regression-host-bounds` (T)<br>Production scan: `suffix_key`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `rs/rspace_interface.rs`, `rs/replay_rspace_interface.rs`, `rs/tuplespace_interface.rs`, `rs/rspace/ispace_impl.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `rs/reporting_rspace.rs`, `ri/deterministic_reduction.rs`, `p1-footprint` (C) | The `rspace++` implementors compile and serve as `Par` hosts, and the traits equal HEAD. |
+| 16 | No schema shift | `reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:2002`), `p1-regression-ordinary` (T)<br>`ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:284`), `p1-regression-source` (T)<br>`empty_state_hash_should_be_the_same_as_hard_coded_cached_value` (`casper/tests/util/rholang/runtime_spec.rs:18`), `p1-regression-casper-fixture` (T)<br>`state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_without_hard_fork` (`casper/tests/util/rholang/runtime_spec.rs:43`), `p1-regression-casper-fixture` (T)<br>Footprint `byte_identical`: `*.proto`, `comm/src/main/protobuf/**`, `comm/src/scalapb/**`, `models/build.rs`, `models/src/rust/serde_helpers.rs`, `casper/tests/util/rholang/runtime_spec.rs`, `casper/src/rust/util/rholang/runtime_manager.rs`, key `no_new_files`: `models/src/main/protobuf/**`, `comm/src/main/protobuf/**`, `p1-footprint` (C)<br>Scheduled from p2 (owner P2): `protobuf_schema_unchanged_vs_head`, `ordinary_prost_unchanged`, and `ordinary_bincode_grows_by_the_formula` in `models/tests/reified_encoding.rs`, step `encoding` | Twenty ordinary terms and every repository source keep their bytes, every protobuf file equals HEAD, and both HEAD constants hold. |
+| 17 | `ISpace` implementors | `reified_space_txn_host_bounds_hold_for_par_hosts` (`reified_space_txn_host_bounds.rs:42`), `p1-regression-host-bounds` (T)<br>Production scan: `suffix_key`, `p1-production-scan` (C)<br>Footprint `byte_identical`: `rs/rspace_interface.rs`, `rs/replay_rspace_interface.rs`, `rs/tuplespace_interface.rs`, `rs/rspace/ispace_impl.rs`, `p1-footprint` (C)<br>Footprint `approved_edits`: `rs/replay_rspace.rs`, `rs/reporting_rspace.rs`, `ri/deterministic_reduction.rs`, `p1-footprint` (C) | The `rspace++` implementors compile and serve as `Par` hosts, and the traits equal HEAD. |
 | 18 | No synthesized multi-channel join | Footprint `byte_identical` until p1: `ri/reduce.rs`, key `no_new_files`: `rholang/src/**`, `p1-footprint` (C)<br>Scheduled from p4 (owner P4): `reified_handle_cross_block_merge_no_conflict` and its control `reified_handle_cross_block_merge_join_handle_conflicts` in `rholang/tests/reified_merge.rs`, step `reified-merge` | P1 adds no file under `rholang/src` and leaves `reduce.rs` unchanged, so no synthesized machinery exists. |
 | 19 | Namespaced channels never mergeable | Footprint `byte_identical` until p1: `ri/reduce.rs`, key `no_new_files`: `rholang/src/**`, `p1-footprint` (C)<br>Scheduled from p4 (owner P4): `reified_namespaced_channels_never_mergeable` in `rholang/tests/reified_queue.rs`, step `reified-queue` | P1 has no routing, and the detection of mergeable channels still matches only tagged tuples. |
-| 20 | Volatile sweep scope | `prop_sweep_volatile_exact_and_root_neutral` (`reified_space_store_handle_props.rs:2424`), `p1-regression-substrate-props` (T)<br>`space_store_handle_sweep_in_open_transaction_fails_closed` (`reified_space_store_handle.rs:3567`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical` until p1: `ri/reduce.rs`, `p1-footprint` (C)<br>Scheduled from p7 (owner P7): `reified_volatile_sweep_skips_ordinary_channels` in `rholang/tests/reified_volatile_sweep.rs`, step `reified-volatile-sweep` | The sweep removes exactly the listed volatile channels, and no production code calls it in P1. |
+| 20 | Volatile sweep scope | `prop_sweep_volatile_exact_and_root_neutral` (`reified_space_store_handle_props.rs:2703`), `p1-regression-substrate-props` (T)<br>`space_store_handle_sweep_in_open_transaction_fails_closed` (`reified_space_store_handle.rs:3938`), `p1-regression-substrate-integration` (T)<br>Footprint `byte_identical` until p1: `ri/reduce.rs`, `p1-footprint` (C)<br>Scheduled from p7 (owner P7): `reified_volatile_sweep_skips_ordinary_channels` in `rholang/tests/reified_volatile_sweep.rs`, step `reified-volatile-sweep` | The sweep removes exactly the listed volatile channels, and no production code calls it in P1. |
 | 21 | Protected runtime files | Footprint `byte_identical`: `ri/contract_call.rs`, `ri/dispatch.rs`, `rs/rspace/ispace_impl.rs`, `ri/accounting/**`, key `no_new_files`: `ri/accounting/**`, `p1-footprint` (C) | The four protected paths equal HEAD byte for byte. |
-| 22 | Parser conservative extension | `ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:284`), `p1-regression-source` (T)<br>`ordinary_float_forms_unchanged` (`reified_source_normalization.rs:507`), `p1-regression-source` (T)<br>`reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:1917`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `ri/compiler/**`, `p1-footprint` (C) | Every source and every float form that HEAD accepts keeps its bytes. |
+| 22 | Parser conservative extension | `ordinary_source_normalization_unchanged` (`reified_source_normalization.rs:297`), `p1-regression-source` (T)<br>`ordinary_float_forms_unchanged` (`reified_source_normalization.rs:533`), `p1-regression-source` (T)<br>`reified_ordinary_regression_r7_term_prost_and_bincode_bytes` (`reified_ordinary_regression.rs:2040`), `p1-regression-ordinary` (T)<br>Footprint `approved_edits`: `ri/compiler/**`, `p1-footprint` (C) | Every source and every float form that HEAD accepts keeps its bytes. |
 
 *Table 18. The 10 steps of the recipe `rrs-p1-regression` and their exact counts.*
 
@@ -731,31 +770,31 @@ They are the HEAD history tests (`--test mod -- history::`, 24 tests, and `--lib
 ### 8.2 Corpora and provenance
 
 A [regression corpus](glossary.md#regression-corpus) holds the expected outputs of a capture run.
-A capture run writes into a capture directory, and the captures of ordinary execution and of float forms require that directory under `target/` (`reified_ordinary_regression.rs:318-340`, `reified_source_normalization.rs:375-429`).
+A capture run writes into a capture directory, and the captures of ordinary execution and of float forms require that directory under `target/` (`reified_ordinary_regression.rs:345-367`, `reified_source_normalization.rs:398-455`).
 A separate merge or copy then puts the result into `test-vectors/`, so a normal test run never writes to the source tree.
 
 *Table 19. The corpora of P1, with their provenance and capture commands.*
 
 | Corpus | Content | Provenance | Capture command |
 |---|---|---|---|
-| `test-vectors/ordinary-execution-v1.json` | The sections `r1_comm_produce_sort` to `r9_play_replay_equality` and `deterministic_candidates`. | Captured on 2026-10-05 in a clean export of `4d67b5ccc`, with the harness file copied in ([8.8](#88-the-merge-of-featurecost-accounted-rho)). The earlier captures were at `6f7a80da3` and at `11c39d77d`. Sections R1, R2, R4, R5, R7, R8 and R9 are byte-identical to them. Toolchain: `rustc 1.95.0-nightly (6efa357bf 2026-02-08)`. | The corpus records the command, which starts with `git archive 4d67b5ccc` and runs `cargo test --offline -p rholang --test reified_ordinary_regression` in the export with `RRS_CAPTURE_ORDINARY_OUT` under its `target`. Then `python3 scripts/verify-reified/merge-ordinary-capture.py --capture-dir <fragments> --output test-vectors/ordinary-execution-v1.json --capture-command '<the command>' --revision 4d67b5ccc42c4e510162d075f7ed423bf8175563 --code-identical-to '<the text of the corpus>'` joins the fragments `r1` to `r9` and `dc`. Its option `--check` compares the result with the corpus. |
-| `test-vectors/ordinary-source-normalization-v1.json` | One entry for each of the 192 `.rho` and `.rhox` files of `4d67b5ccc`: 127 `ok`, 63 `error`, and 2 `panic`. | Captured on 2026-10-05 in a clean export of `4d67b5ccc`, with the parser of HEAD (`02cef80`). The placeholder `resourcePolicyGetter` takes the value of the default genesis, the empty text. The earlier capture was at `6f7a80da3`. Rule: each `ok` entry normalizes to identical prost and stable hashes. The entry of `casper/src/main/resources/SystemVault.rho` was captured again on 2026-10-11 for the DR-119 backport ([decision 81](decision-register.md#decision-81)). The revert of [decision 84](decision-register.md#decision-84) restored the entry of 2026-10-05 (section [34.10](#3410-the-revert-of-the-dr-119-backport)). | In the export: `RRS_CAPTURE_SOURCES_OUT=<absolute directory under target> RRS_CAPTURE_REVISION=4d67b5ccc42c4e510162d075f7ed423bf8175563 cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_source_normalization_unchanged`. The corpus records no command, and this one comes from the capture code (`reified_source_normalization.rs:176-223`, `reified_source_normalization.rs:284-290`). |
-| `test-vectors/ordinary-float-forms-v1.json` | 15 float forms: 13 `ok`, and `sync_dot` and `sync_dot_new` rejected. | Captured on 2026-10-05 in a clean export of `4d67b5ccc`, with the parser revision `02cef80d32214ecdac3ee7d3b91c3786a34174d5` and no active parser patch. The earlier capture was at `11c39d77d`, and only the form `suffixed` changed. Rule: an accepted form keeps its hashes, and a rejected form can become accepted. | The corpus records the command: in the export, `RRS_CAPTURE_FLOATS_OUT` and `RRS_CAPTURE_REVISION=4d67b5ccc42c4e510162d075f7ed423bf8175563` with `cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_float_forms_unchanged`. The capture also needs `RRS_CAPTURE_COMMAND`, which holds this command. |
+| `test-vectors/ordinary-execution-v2.json` | The sections `r1_comm_produce_sort` to `r9_play_replay_equality` and `deterministic_candidates`. | Captured from the merge of `702496775` with decision 112. `models/tests/reified_encoding.rs` keeps reading `ordinary-execution-v1.json` for the prost role. Toolchain: `rustc 1.95.0-nightly (6efa357bf 2026-02-08)`. | The corpus records `R1 ten runs, release binary, RUST_TEST_THREADS=4`. Each run of `reified_ordinary_regression` sets `RRS_CAPTURE_ORDINARY_OUT` under `target`. Then `python3 scripts/verify-reified/merge-ordinary-capture.py --capture-dir <fragments> --output test-vectors/ordinary-execution-v2.json --capture-command '<the command>' --revision 'merge of 702496775 with decision 112' --code-identical-to '<the text of the corpus>'` joins the fragments `r1` to `r9` and `dc`. Its option `--check` compares the result with the corpus. |
+| `test-vectors/ordinary-source-normalization-v2.json` | One entry for each of 209 `.rho` and `.rhox` files: 139 `ok`, 68 `error`, and 2 `panic`. | Captured from the merge of `702496775` with decision 112. The corpus holds the 209 keys of v1. The placeholder `resourcePolicyGetter` takes the value of the default genesis, the empty text. Rule: each `ok` entry normalizes to identical prost and stable hashes. | `RRS_CAPTURE_SOURCES_OUT=<absolute directory under target> RRS_CAPTURE_REVISION='merge of 702496775 with decision 112' cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_source_normalization_unchanged`. Then `jq` keeps the 209 keys of v1. The corpus records no command, and this one comes from the capture code (`reified_source_normalization.rs:176-223`, `reified_source_normalization.rs:284-290`). |
+| `test-vectors/ordinary-float-forms-v2.json` | 15 float forms: 13 `ok`, and 2 `error` (`sync_dot` and `sync_dot_new`). | Captured from the merge of `702496775` with decision 112, with the parser revision `6548aec3a5736f35055e546a5ae92e6a4c3a8f39`, a path dependency through a `[patch]`. Rule: an accepted form keeps its hashes, and a rejected form can become accepted. | The corpus records `R1 binary of decision 112 (step5-build-3)`. The capture sets `RRS_CAPTURE_FLOATS_OUT`, `RRS_CAPTURE_REVISION` and `RRS_CAPTURE_COMMAND`, and it runs the test `ordinary_float_forms_unchanged`. For a path dependency, `capture_parser_source` also needs `RRS_CAPTURE_PARSER_SOURCE` and `RRS_CAPTURE_PARSER_REVISION`. |
 | `test-vectors/legacy-golden-corpus-v1.json` | Channel hashes, event identities and bytes, the protobuf bytes of `Par`, and state roots. | Captured from three revisions: the legacy branch `rust/dev` at `95be4feb`, the legacy Reified branch at `ff479042`, and the current code at `e748426`. The file is byte-identical to its backup copy. | The corpus records seven commands of the earlier campaign, for example `python3 scripts/capture-legacy-golden-corpus.py`. Those capture scripts exist only in the backup, so the corpus is frozen evidence that this repository cannot capture again. |
 | `test-vectors/head-file-digests-4d67b5ccc.json` | The SHA-256 digest of each of the 4,470 files that `4d67b5ccc` tracks (`roots: ["."]`). | Pinned on the host from the git objects of the base revision, on 2026-10-05. The file `test-vectors/head-file-digests-6f7a80da3.json` keeps the 4,300 digests of the base before the merge, which the milestone policies `p1`, `p1-realign` and `p2` used. | `python3 scripts/verify-reified/check-footprint.py --pin`. It needs git and the objects of the base revision, so it runs only on the host. |
 
 ### 8.3 The ordinary play/replay property
 
-The property `prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3258-3270`) generates ordinary Rholang programs of one or two deploys.
+The property `prop_ordinary_play_replay_equal` (`reified_ordinary_regression.rs:3415-3427`) generates ordinary Rholang programs of one or two deploys.
 It plays each program and replays it under the replay rules of Casper, and it requires that replay accepts what play did.
 It is the property of the checklist entry O1, and its witness tests are R9 and the negative control of section [8.4](#84-negative-controls-of-the-regression-suite).
 
 #### 8.3.1 Protocols D and B
 
-The function `play_replay_equal` (`reified_ordinary_regression.rs:3248-3256`) runs two protocols on fresh runtimes, and both must pass:
+The function `play_replay_equal` (`reified_ordinary_regression.rs:3405-3413`) runs two protocols on fresh runtimes, and both must pass:
 
-- **Protocol D** (`reified_ordinary_regression.rs:3102-3167`). Play creates a checkpoint after each deploy. Replay resets to the start root once. For each deploy, replay rigs the log of the deploy, evaluates it, passes `check_replay_data`, and creates a checkpoint. Then it discards its event log, as Casper does after each deploy.
-- **Protocol B** (`reified_ordinary_regression.rs:3173-3245`), the block protocol of Casper. Play takes the event log after each deploy (`casper/src/rust/rholang/runtime.rs:939`) and creates one checkpoint for the block. Replay resets once, rigs and evaluates each deploy, and discards its event log after each deploy (`casper/src/rust/rholang/replay_runtime.rs:192-193`, `casper/src/rust/rholang/replay_runtime.rs:599`). Then it creates one checkpoint for the block.
+- **Protocol D** (`reified_ordinary_regression.rs:3259-3324`). Play creates a checkpoint after each deploy. Replay resets to the start root once. For each deploy, replay rigs the log of the deploy, evaluates it, passes `check_replay_data`, and creates a checkpoint. Then it discards its event log, as Casper does after each deploy.
+- **Protocol B** (`reified_ordinary_regression.rs:3330-3402`), the block protocol of Casper. Play takes the event log after each deploy (`casper/src/rust/rholang/runtime.rs:609`) and creates one checkpoint for the block. Replay resets once, rigs and evaluates each deploy, and discards its event log after each deploy (`casper/src/rust/rholang/replay_runtime.rs:162-163`, `casper/src/rust/rholang/replay_runtime.rs:536`). Then it creates one checkpoint for the block.
 
 The pseudocode below gives both protocols in the order of the code.
 
@@ -786,9 +825,9 @@ The property found a latent asymmetry of HEAD that Casper never reaches.
 The tracker records it as the finding `rrs-finding-head-replay-checkpoint-produce-counter`.
 The campaign records it and does not change HEAD ([decision 12](decision-register.md#decision-12)).
 
-- `RSpace::create_checkpoint` takes the event log and resets the [produce counter](glossary.md#produce-counter) (`rspace++/src/rspace/rspace/ispace_impl.rs:82-83`).
-- `ReplayRSpace::create_checkpoint` checks the replay data, writes the history, and makes a new hot store, but it keeps the event log and the produce counter (`rspace++/src/rspace/replay_rspace.rs:166-181`).
-- `ReplayRSpace::take_event_log` clears both (`rspace++/src/rspace/replay_rspace.rs:396-400`), and so does `ReplayRSpace::reset` (`rspace++/src/rspace/replay_rspace.rs:183-188`).
+- `RSpace::create_checkpoint` takes the event log and resets the [produce counter](glossary.md#produce-counter) (`rspace++/src/rspace/rspace/ispace_impl.rs:75-76`).
+- `ReplayRSpace::create_checkpoint` checks the replay data, writes the history, and makes a new hot store, but it keeps the event log and the produce counter (`rspace++/src/rspace/replay_rspace.rs:173-188`).
+- `ReplayRSpace::take_event_log` clears both (`rspace++/src/rspace/replay_rspace.rs:329-333`), and so does `ReplayRSpace::reset` (`rspace++/src/rspace/replay_rspace.rs:190-195`).
 
 The first run of the property used protocol D without the discard of the replay event log.
 In that run, deploy 0 stored the datum `@"rrs-prop-c01"!(0)`, and deploy 1 received it.
@@ -797,7 +836,7 @@ So the [times-repeated](glossary.md#times-repeated) value of the COMM in replay 
 `check_replay_data` then failed with `UnusedCommEvent` in deploy 1 (`target/verification/reified-rspaces/p1-closeout/rt/ro-property-1.log`).
 
 Casper never checkpoints a replay between two deploys without a discard of the event log.
-So protocol D now discards it, as the comment at `reified_ordinary_regression.rs:3150` records.
+So protocol D now discards it, as the comment at `reified_ordinary_regression.rs:3307` records.
 
 #### 8.3.3 Generator bounds
 
@@ -825,9 +864,9 @@ Each exclusion keeps every case free of errors and keeps the termination proof s
 
 The generator and the renderer enforce three rules by construction:
 
-- **S1 (strata).** A receive body uses only channels whose level is above the highest level of the channels of the receive. The generator draws the body with `gen_body(top + 1, depth + 1)` (`reified_ordinary_regression.rs:2485-2506`).
-- **S2 (no persistent pair).** No channel carries both `!!` and `<=` in one case, across deploys too. The renderer collects each channel that carries a persistent receive, and it prints `!!` only on other channels (`reified_ordinary_regression.rs:2843-2893`).
-- **S3 (static channels).** A received variable never appears in channel position. The only exception is the aliased join, whose two variables carry one fixed public channel name. The resolver maps each channel to a static channel or to a `new` binder (`reified_ordinary_regression.rs:2807-2839`).
+- **S1 (strata).** A receive body uses only channels whose level is above the highest level of the channels of the receive. The generator draws the body with `gen_body(top + 1, depth + 1)` (`reified_ordinary_regression.rs:2642-2663`).
+- **S2 (no persistent pair).** No channel carries both `!!` and `<=` in one case, across deploys too. The renderer collects each channel that carries a persistent receive, and it prints `!!` only on other channels (`reified_ordinary_regression.rs:3000-3050`).
+- **S3 (static channels).** A received variable never appears in channel position. The only exception is the aliased join, whose two variables carry one fixed public channel name. The resolver maps each channel to a static channel or to a `new` binder (`reified_ordinary_regression.rs:2964-2996`).
 
 #### 8.3.5 Termination: Lemmas A and B
 
@@ -858,12 +897,12 @@ The inner join has the body `gen_body(level + 1, 1)`, with levels above $`\ell`$
 
 *Proof.* Let $`k`$ be the continuation of the COMM. There are two cases.
 
-- *Case 1: $`k`$ is non-persistent* (`<-` or `<<-`). Then $`k`$ is a linear item. When $`k`$ is stored, the produce that fires it removes it, in play (`rspace++/src/rspace/rspace/ops_produce.rs:202-205`) and in replay (`rspace++/src/rspace/replay_rspace.rs:1414-1420`). When $`k`$ is the arriving consume, the host fires it and does not store it, in play (`rspace++/src/rspace/rspace/ops_consume.rs:124-143`) and in replay (`rspace++/src/rspace/replay_rspace.rs:1059-1062`).
+- *Case 1: $`k`$ is non-persistent* (`<-` or `<<-`). Then $`k`$ is a linear item. When $`k`$ is stored, the produce that fires it removes it, in play (`rspace++/src/rspace/rspace/ops_produce.rs:374-376`) and in replay (`rspace++/src/rspace/replay_rspace.rs:1312-1318`). When $`k`$ is the arriving consume, the host fires it and does not store it, in play (`rspace++/src/rspace/rspace/ops_consume.rs:254-291`) and in replay (`rspace++/src/rspace/replay_rspace.rs:946-949`).
 
-  The reducer consumes again only for a persistent continuation (`rholang/src/rust/interpreter/reduce.rs:848-913`). Its re-produce paths issue only sends (`rholang/src/rust/interpreter/reduce.rs:722-788` and `rholang/src/rust/interpreter/reduce.rs:999-1002`). So no step restores $`k`$.
-- *Case 2: $`k`$ is persistent* (`<=`). By S2, no channel of $`k`$ carries `!!`, so each matched datum is non-persistent, which makes it a linear item. The host removes each non-persistent matched datum. On the produce side, `remove_matched_datum_and_join` removes the stored data (`rspace++/src/rspace/rspace/ops_produce.rs:228-248`, and `rspace++/src/rspace/replay_rspace.rs:1798-1818` in replay), and the arriving datum is never stored (`rspace++/src/rspace/rspace/ops_produce.rs:163-210`). On the consume side, `store_persistent_data` removes them (`rspace++/src/rspace/rspace/ops_consume.rs:192-202`, and `rspace++/src/rspace/replay_rspace.rs:1686-1696` in replay).
+  The reducer consumes again only for a persistent continuation (`rholang/src/rust/interpreter/reduce.rs:1469-1538`). Its re-produce paths issue only sends (`rholang/src/rust/interpreter/reduce.rs:1306-1392` and `rholang/src/rust/interpreter/reduce.rs:1640-1643`). So no step restores $`k`$.
+- *Case 2: $`k`$ is persistent* (`<=`). By S2, no channel of $`k`$ carries `!!`, so each matched datum is non-persistent, which makes it a linear item. The host removes each non-persistent matched datum. On the produce side, `remove_matched_datum_and_join` removes the stored data (`rspace++/src/rspace/rspace/ops_produce.rs:729-753`, and `rspace++/src/rspace/replay_rspace.rs:1705-1725` in replay), and the arriving datum is never stored (`rspace++/src/rspace/rspace/ops_produce.rs:268-379`). On the consume side, `store_persistent_data` removes them (`rspace++/src/rspace/rspace/ops_consume.rs:443-459`, and `rspace++/src/rspace/replay_rspace.rs:1593-1603` in replay).
 
-  The persistent re-produce (`rholang/src/rust/interpreter/reduce.rs:722-788`) needs a persistent arriving send, which S2 excludes. The peek re-produce (`rholang/src/rust/interpreter/reduce.rs:999-1002`) needs a peek continuation, and $`k`$ has the single arrow `<=`. So nothing restores the matched data.
+  The persistent re-produce (`rholang/src/rust/interpreter/reduce.rs:1306-1392`) needs a persistent arriving send, which S2 excludes. The peek re-produce (`rholang/src/rust/interpreter/reduce.rs:1640-1643`) needs a peek continuation, and $`k`$ has the single arrow `<=`. So nothing restores the matched data.
 
 A join has at least one channel, so in both cases the COMM removes at least one linear item that nothing restores. ∎
 
@@ -894,7 +933,7 @@ If a defect of the generator makes a program loop, the deploy ends after about 7
 The vector `out_of_phlo` of R6 shows that HEAD reports this error deterministically, and the conjunct on errors then fails.
 R9 uses `EVALUATION_PHLO` = 100,000,000, so a loop under that limit would take minutes.
 
-The configuration is `property_config` (`reified_ordinary_regression.rs:2304-2311`): 64 cases, the fixed seed `0x0E0_5EED_2026_1004`, and no failure persistence.
+The configuration is `property_config` (`reified_ordinary_regression.rs:2461-2468`): 64 cases, the fixed seed `0x0E0_5EED_2026_1004`, and no failure persistence.
 Each case builds its own multi-thread runtime with 2 workers, as R9 does.
 The file `.cargo/config.toml` sets `RUST_MIN_STACK` to 8 MiB for the test threads.
 In a debug build on the host, the property took 8.7 s, and the whole target of 13 tests took 10.6 s.
@@ -913,7 +952,7 @@ The seed pair of deploy 0 guarantees this COMM.
 
 ### 8.4 Negative controls of the regression suite
 
-- **The named control.** `ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3273`) replays the programs of R9 and R8 as two deploys. The unmutated replay must pass, which shows that each failure below comes from its mutation alone. The mutants `ReplaySeed` (another seed in replay) and `ExtraSend` (one more send in replay) must fail. In the last run, each mutant failed `check_replay_data` in deploy 0 of protocol D with `UnusedCommEvent` and 16 leftover entries (`target/verification/reified-rspaces/p1-closeout/rt/negative-control-protocols-nocapture.log`).
+- **The named control.** `ordinary_play_replay_negative_control_detects_mutants` (`reified_ordinary_regression.rs:3430`) replays the programs of R9 and R8 as two deploys. The unmutated replay must pass, which shows that each failure below comes from its mutation alone. The mutants `ReplaySeed` (another seed in replay) and `ExtraSend` (one more send in replay) must fail. In the last run, each mutant failed `check_replay_data` in deploy 0 of protocol D with `UnusedCommEvent` and 16 leftover entries (`target/verification/reified-rspaces/p1-closeout/rt/negative-control-protocols-nocapture.log`).
 - **The property mutant.** A one-off run set `ReplaySeed` in the property itself. The property failed on its first case and shrank it to the one-deploy program `@"rrs-prop-c00"!(0) | for (@x0 <- @"rrs-prop-c00") { @"rrs-prop-out0"!(x0) } | @"rrs-prop-c00"!(0)`. Its replay failed in protocol D with `UnusedCommEvent` (`target/verification/reified-rspaces/p1-closeout/regression-mutant-replay-seed.log`).
 - **The cost mutant.** A one-off run changed a cost constant in a scratch copy of the worktree (`target/verification/reified-rspaces/p1-capture/mutant-65-r6.log`). R6 then failed on seven host-work vectors, for example `VerificationBytes` of the join program, 9,623,240 for the expected 9,623,236. The plan names this kind of drift, a constant changed from 65 to 66, as a reason for R6.
 - **The checker unit tests.** The module `test_checkers` holds the negative controls of the regression checkers. They test the consensus-checklist checker (20 tests), the production scan (7), and the footprint checker (14). They also test the completeness checker (11) and the ORD phase of the invariant map (8).
@@ -931,7 +970,7 @@ Each item needs at least one active check, or the checker prints `FAIL: item N h
 
 | Item | Check | Active from | Owner |
 |---|---|---|---|
-| 16 | `protobuf_schema_unchanged_vs_head`, `ordinary_prost_unchanged`, `ordinary_bincode_unchanged` | p2 | P2 |
+| 16 | `protobuf_schema_unchanged_vs_head`, `ordinary_prost_unchanged`, `ordinary_bincode_grows_by_the_formula` | p2 | P2 |
 | 18 | `reified_handle_cross_block_merge_no_conflict`, `reified_handle_cross_block_merge_join_handle_conflicts` | p4 | P4 |
 | 19 | `reified_namespaced_channels_never_mergeable` | p4 | P4 |
 | 20 | `reified_volatile_sweep_skips_ordinary_channels` | p7 | P7 |
@@ -1020,6 +1059,15 @@ A capture in the campaign tree itself would compare the hooks with their own out
 | R3, greedy join | The same order. The data `[1, 5]` and `[1, 6]` no longer make the greedy matcher fail. | The witness data are now `[1, 1]` and `[1, 6]`. A search at `4d67b5ccc` gave `[1, 1]` and `[1, 2]` as witnesses, and seven other values as non-witnesses. |
 | R6, cost vectors | DR-88 to DR-92 change the host-work reservations of native execution. Native funded execution now refuses the external call of the program `system_process`. | None. The legacy phlo of every program is unchanged. |
 
+**The v2 corpora.** [Decision 112](decision-register.md#decision-112) captures new corpora, and the comparison with v1 found only these classes of change.
+
+- **Order.** `canonical_rank` sorts the deterministic candidates by source hash, and `COMM::new` sorts the produces by channel hash in section r5.
+- **X-1.** The aliased join `r3_greedy_join_first_match.control` permutes its data order, assignment and matrix, and `comm_count` stays 1.
+- **Field.** Every changed row of the syntax corpus and of the source capture holds a Reified form.
+- **M-7.** The id of a data channel or a collection counter holds the canonical bincode of the inner channel. Each `Par` of the inner channel adds 8 bytes to the id, and the channel bytes pay for them at the byte rate.
+
+The masked comparison passes the key `source` only when its value is a string.
+
 **The template value of the source corpus.** At `4d67b5ccc`, `TokenMetadata.rhox` has the placeholder `$$resourcePolicyGetter$$`.
 The harness gave every unknown placeholder the value `0`, so the text `0rs!(` did not parse.
 The harness now gives it the empty value, which is the value of the default genesis without a resource policy (`standard_deploys.rs`, `token_metadata_with_policy`).
@@ -1032,14 +1080,15 @@ The script excludes the design ledger, whose bytes are pinned, and the closure p
 
 **The changes of models and tests.** Two of the 25 checks found a changed claim, and one found a defect of the merge:
 
-1. DR-84 changed the split of the scheduler: child $`i`$ of a split at step $`s`$ now appends the one segment $`(s, i + 1)`$. `EventCorrelation.v` models this split in `sched_part`. The lemma `sched_part_nonzero` replaces the parity lemma in the proof of `sched_op_no_extension`, and H8 `sub_order_between` keeps its statement. The property `prop_sub_orders_contiguous_and_disjoint` generates paths of the new shape.
-2. The dispatcher now evaluates a fired body with `eval_continuation`, which detaches the evaluation in a reduction. A dispatch then ends the participant that makes it. The handle method `produce` sent its reply after its fires in that participant.
-So a deploy that fired a waiter through a handle aborted the process. The reply is now the last branch of the outcome ([design N6](design.md#n6-scheduling)). The test `reducer_space_routing_then_runs_after_the_fires_in_its_own_branch` covers it, and `prop_use_wrapper_restores_ctx` found the defect.
+1. DR-84 changed the split of the scheduler: child $`i`$ of a split at step $`s`$ then appended the one segment $`(s, i + 1)`$. `EventCorrelation.v` models this split in `sched_part`. The lemma `sched_part_nonzero` replaces the parity lemma in the proof of `sched_op_no_extension`, and H8 `sub_order_between` keeps its statement. The property `prop_sub_orders_contiguous_and_disjoint` generates paths of the new shape. Changed by [decision 90](decision-register.md#decision-90) (DR-132): H8 now states the result for the path form of the base scheduler before DR-132 ([design S5.7](design.md#s57-parent-tracking-fr-5)).
+2. The dispatcher evaluated a fired body with `eval_continuation`, which detached the evaluation in a reduction. A dispatch then ended the participant that made it. The handle method `produce` sent its reply after its fires in that participant.
+So a deploy that fired a waiter through a handle aborted the process. The merge made the reply the last branch of the outcome ([design N6](design.md#n6-scheduling)), and `prop_use_wrapper_restores_ctx` found the defect. Changed by [decision 90](decision-register.md#decision-90) (DR-132): racing evaluation has no participants, but the reply stays the last branch of the outcome, and `reducer_space_routing_then_runs_as_the_last_branch` covers it.
 3. DR-75 changed the waiter order of the host, so the test helper `peek_tried_first` of `reified_space_store_handle.rs` now orders waiters by the hash of their source consume.
-4. The root entry `inj_with_host_work` of the reducer did not begin an evaluation scope. It now does, as `inj` and `inj_with_observation` do (FR-5').
-   No production path reaches it, because the interpreter enters the reducer through `inj_with_observation`.
-   The test `reducer_space_routing_inj_with_host_work_begins_an_evaluation_scope` creates a space and then sends to it twice through that entry.
-   With the hook line commented out, the test fails in its first run with `ParentOrderReused` (`target/verification/reified-rspaces/merge-car/mutant-scope.log`).
+4. The root entry `inj_with_host_work` of the reducer did not begin an evaluation scope. The merge made it begin one, as `inj` and `inj_with_observation` did (FR-5').
+   No production path reached it, because the interpreter entered the reducer through `inj_with_observation`.
+   The test `reducer_space_routing_inj_with_host_work_begins_an_evaluation_scope` created a space and then sent to it twice through that entry.
+   With the hook line commented out, the test failed in its first run with `ParentOrderReused` (`target/verification/reified-rspaces/merge-car/mutant-scope.log`).
+   Changed by [decision 89](decision-register.md#decision-89): the base removed this root entry, and the test is gone.
 
 **The results on the merged tree.** The gate run of 2026-10-05 passed all 46 steps (`target/verification/reified-rspaces/merge-car/gates/summary.txt`).
 The library run of `rholang` printed `test result: ok. 2157 passed; 0 failed; 3 ignored`.
@@ -1318,9 +1367,9 @@ The TLA+ gate takes the longest time: `MC_TxnLockCoverage.cfg` takes about 6.5 m
 
 ### 10.3 Rust suites
 
-1. Run `cargo test -p rspace_plus_plus --lib space_store_handle` for the 18 library tests.
-2. Run `cargo test -p rspace_plus_plus --test reified_space_store_handle` for the 82 integration tests.
-3. Run `cargo test -p rspace_plus_plus --test reified_space_store_handle_props` for the 24 properties.
+1. Run `cargo test -p rspace_plus_plus --lib space_store_handle` for the 27 library tests.
+2. Run `cargo test -p rspace_plus_plus --test reified_space_store_handle` for the 85 integration tests.
+3. Run `cargo test -p rspace_plus_plus --test reified_space_store_handle_props` for the 18 properties.
 4. Run `cargo test -p rspace_plus_plus --test legacy_golden_corpus` for the 4 golden-corpus tests.
 5. Run `cargo test -p rholang --test reified_space_store_handle_par --test reified_space_txn_host_bounds` for 3 and 1 tests.
 6. Run `cargo test -p rholang --test reified_ordinary_regression` for R1 to R9 and the 4 tests of the close-out.
@@ -1370,8 +1419,8 @@ P4 proves eleven groups of claims, with 80 Rocq headlines (Q1 to Q80) and 13 TLA
 - **The queue.** The queue is head-only on both sides, first in, first out, and bounded. It keeps the invariant INV after each operation (Q29 to Q37, U1 to U3).
 - **Routing and references.** The classification of channels and of space references is total and deterministic. The use context acts as a lexical closure (Q38 to Q47).
 - **Factories and handles.** The family indices, the constructors, the space ids, and the creation are deterministic. A persistent call aborts, and handle calls merge like contract calls (Q48 to Q55, U5 to U8).
-- **The refresh of I-20.** The strict decode of a refreshed marker tuple is the decode of the model, and it commutes with substitution (Q56 to Q58).
-- **Metering.** An operation reserves each read and copy before it makes it, and no reservation follows its commit. Its charges do not depend on the list order of the store or on unread payloads (Q59 to Q66, section [11.10](#1110-metering-of-decision-42)).
+- **The refresh of I-20.** [Decision 112](decision-register.md#decision-112) retired the refresh, because no decoder reads a derived flag (`decode_ignores_flags`).
+- **Metering.** Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so no operation reserves a read (former Q59 to Q66, section [11.10](#1110-metering-of-decision-42)).
 - **Native execution.** Native play and a bound native replay runtime run a space deploy. A native replay runtime that is not bound yet fails closed (Q67 as decision 47 amends it, section [11.11](#1111-native-execution-of-decisions-46-and-47)).
 - **Re-entry.** A re-issued persistent operation keeps the order of its first round and re-enters at its place (Q68 to Q77, U9 to U12, section [11.12](#1112-re-entry-of-decision-43)).
 - **Peek re-store.** A peek fire removes what the host removes, and the agent stores the record again (Q78, section [11.13](#1113-peek-re-store-of-decision-45)).
@@ -1401,7 +1450,7 @@ The pgmcp runs of the P4 leaves take place in the freeze of [decision 35](decisi
 #### 11.3.1 The gate in P4
 
 The proofs gate of section [4.1](#41-toolchain-and-kernel-checks) now checks eleven modules, with the expected count of each module.
-Table 25 gives the counts of all eleven modules, and the total is 115 closed headlines.
+Table 25 gives the counts of all eleven modules at the close of phase P4, and the total was 115 closed headlines.
 The run at the P4 milestone printed `reified-rspaces proofs: PASS=45 FAIL=0 SKIP=0` (`target/verification/reified-rspaces/p4/pc/gate-proofs.log`).
 Its last leg ran 65 negative checks: the 9 pristine modules and the 56 mutants of that milestone.
 
@@ -1425,9 +1474,12 @@ Its last leg ran 86 negative checks: the 11 pristine modules and 75 mutants.
 | [HeadOnlyDisciplines.v](../../../formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v) | 20 | P4 (9), decision 43 (10), and decision 45 (1) |
 | [SpaceRefs.v](../../../formal/rocq/reified_rspaces/theories/SpaceRefs.v) | 11 | P4 (10) and decision 46 (1) |
 | [SpaceFactory.v](../../../formal/rocq/reified_rspaces/theories/SpaceFactory.v) | 8 | P4 |
-| [AgentReadCoverage.v](../../../formal/rocq/reified_rspaces/theories/AgentReadCoverage.v) | 8 | Decision 42 |
-| [LegacyCharges.v](../../../formal/rocq/reified_rspaces/theories/LegacyCharges.v) | 2 | Decision 45, Option P |
+| `AgentReadCoverage.v`, removed by [decision 96](decision-register.md#decision-96) | 8 | Decision 42 |
+| `LegacyCharges.v`, removed by decision 90 | 2 | Decision 45, Option P |
 | Total | 115 | |
+
+Changed by [decision 90](decision-register.md#decision-90): the merge of `702496775` removes `LegacyCharges.v` and its 2 headlines with Option P.
+Restore the module with `git show 6bf10a721:formal/rocq/reified_rspaces/theories/LegacyCharges.v`.
 
 Each headline of the tables below has no assumption: `Print Assumptions` reports `Closed under the global context`.
 The last column gives the property tests that the invariant map names for the headline.
@@ -1498,14 +1550,14 @@ HeadOnlyDisciplines.v models the plans of the queue for every matcher, with pers
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
 | Q29 | `queue_head_is_min_ord` (`HeadOnlyDisciplines.v:530`) | The head of each side has the least order and bytes. | `prop_queue_candidates_head_only` |
-| Q30 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:928`) | A produce keeps INV: no pending match between the heads. | `prop_queue_produce_preserves_invariant` |
-| Q31 | `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:948`) | A consume keeps INV. | `prop_queue_consume_preserves_invariant` |
-| Q32 | `queue_fifo` (`HeadOnlyDisciplines.v:1135`) | Records leave in arrival order. | `prop_queue_fifo` |
-| Q33 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1218`) | A head that does not match blocks the entries behind it. | `prop_queue_head_blocks` |
-| Q34 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1380`) | A plan stages at most `FIRE_ROUND_CAP` fires, and at most one more fire than the queue holds, or it re-issues. | `prop_queue_loop_bounded` |
-| Q35 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1046`) | The order of an operation is new in its collection. | `prop_queue_ord_fresh` |
-| Q36 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1552`) | The plan ignores the list order of the staged view. | `prop_queue_plan_permutation_invariant` |
-| Q37 | `legacy_scan_violates_head_blocks` (`HeadOnlyDisciplines.v:3457`) | The legacy waiter scan breaks head-only matching, as a computed example. | `prop_legacy_scan_breaks_head_blocks` |
+| Q30 | `queue_produce_preserves_inv` (`HeadOnlyDisciplines.v:932`) | A produce keeps INV: no pending match between the heads. | `prop_queue_produce_preserves_invariant` |
+| Q31 | `queue_consume_preserves_inv` (`HeadOnlyDisciplines.v:952`) | A consume keeps INV. | `prop_queue_consume_preserves_invariant` |
+| Q32 | `queue_fifo` (`HeadOnlyDisciplines.v:1139`) | Records leave in arrival order. | `prop_queue_fifo` |
+| Q33 | `queue_head_blocks` (`HeadOnlyDisciplines.v:1222`) | A head that does not match blocks the entries behind it. | `prop_queue_head_blocks` |
+| Q34 | `queue_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:1384`) | A plan stages at most `FIRE_ROUND_CAP` fires, and at most one more fire than the queue holds, or it re-issues. | `prop_queue_loop_bounded` |
+| Q35 | `queue_ord_fresh` (`HeadOnlyDisciplines.v:1050`) | The order of an operation is new in its collection. | `prop_queue_ord_fresh` |
+| Q36 | `queue_plan_permutation_invariant` (`HeadOnlyDisciplines.v:1556`) | The plan ignores the list order of the staged view. | `prop_queue_plan_permutation_invariant` |
+| Q37 | `legacy_scan_violates_head_blocks` (`HeadOnlyDisciplines.v:3461`) | The legacy waiter scan breaks head-only matching, as a computed example. | `prop_legacy_scan_breaks_head_blocks` |
 
 #### 11.3.6 Headlines of SpaceRefs.v
 
@@ -1515,16 +1567,16 @@ SpaceRefs.v models the classification of space references, the routing rules R1 
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q38 | `classify_space_ref_total_deterministic` (`SpaceRefs.v:523`) | Every space reference meets exactly one of the five rules of `classify_space_ref`. | `prop_classify_space_ref_total` |
-| Q39 | `handle_requires_write_flag` (`SpaceRefs.v:554`) | A reference names a native space only as a bare handle or as a writable bundle of one. | `prop_handle_requires_write_flag` |
-| Q40 | `reified_non_handle_not_a_space_ref` (`SpaceRefs.v:585`) | A Reified id that is not a handle is `NotASpaceRef`, never an agent. | `prop_reified_non_handle_not_a_space_ref` |
-| Q41 | `route_total_deterministic` (`SpaceRefs.v:728`) | A route fails only on the key, and it depends on the context only through its native space. | `prop_route_total` |
-| Q42 | `route_rules` (`SpaceRefs.v:763`) | The routing rules R1 to R5. | `prop_route_rules` |
-| Q43 | `space_name_route_ignores_ctx` (`SpaceRefs.v:791`) | A space name routes to its own space under every context. | `prop_space_name_route_ignores_ctx` |
-| Q44 | `r7_route_ignores_ctx` (`SpaceRefs.v:872`) | The R7 backend agrees with the reducer on every channel that is not forged. | `prop_r7_route_ignores_ctx` |
-| Q45 | `ordinary_channels_route_default` (`SpaceRefs.v:977`) | The channels of an ordinary program route to the default space, and the fast path is exact. | `prop_ordinary_channels_route_default` |
-| Q46 | `use_wrapper_restores_ctx` (`SpaceRefs.v:1117`) | A body that the reducer stores under a context runs in that context when it fires. | `prop_use_wrapper_restores_ctx` |
-| Q47 | `handle_dispatch_total` (`SpaceRefs.v:1314`) | The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name. | `prop_handle_dispatch_total` |
+| Q38 | `classify_space_ref_total_deterministic` (`SpaceRefs.v:624`) | Every space reference meets exactly one of the five rules of `classify_space_ref`. | `prop_classify_space_ref_total` |
+| Q39 | `handle_requires_write_flag` (`SpaceRefs.v:655`) | A reference names a native space only as a bare handle or as a writable bundle of one. | `prop_handle_requires_write_flag` |
+| Q40 | `reified_non_handle_not_a_space_ref` (`SpaceRefs.v:686`) | A Reified id that is not a handle is `NotASpaceRef`, never an agent. | `prop_reified_non_handle_not_a_space_ref` |
+| Q41 | `route_total_deterministic` (`SpaceRefs.v:829`) | A route fails only on the key, and it depends on the context only through its native space. | `prop_route_total` |
+| Q42 | `route_rules` (`SpaceRefs.v:864`) | The routing rules R1 to R5. | `prop_route_rules` |
+| Q43 | `space_name_route_ignores_ctx` (`SpaceRefs.v:892`) | A space name routes to its own space under every context. | `prop_space_name_route_ignores_ctx` |
+| Q44 | `r7_route_ignores_ctx` (`SpaceRefs.v:973`) | The R7 backend agrees with the reducer on every channel that is not forged. | `prop_r7_route_ignores_ctx` |
+| Q45 | `ordinary_channels_route_default` (`SpaceRefs.v:1085`) | The channels of an ordinary program route to the default space, and the fast path is exact. | `prop_ordinary_channels_route_default` |
+| Q46 | `use_wrapper_restores_ctx` (`SpaceRefs.v:1254`) | A body that the reducer stores under a context runs in that context when it fires. | `prop_use_wrapper_restores_ctx` |
+| Q47 | `handle_dispatch_total` (`SpaceRefs.v:1454`) | The handle process drops a call on a non-handle, aborts on a dangling handle, and replies only on a reply name. | `prop_handle_dispatch_total` |
 
 #### 11.3.7 Headlines of SpaceFactory.v
 
@@ -1534,33 +1586,34 @@ SpaceFactory.v models the families, the constructor, the derivation of the space
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q48 | `family_index_bijective` (`SpaceFactory.v:256`) | The 32 families have the indices 0 to 31, one each. | `prop_family_index_bijective`, `prop_get_space_agent_returns_family_capability` |
-| Q49 | `aliases_map_to_family` (`SpaceFactory.v:338`) | The URNs and the FIPS aliases parse to their families, and a config names its family. | `prop_aliases_map_to_family`, `prop_get_space_agent_returns_family_capability` |
-| Q50 | `qualifier_matrix` (`SpaceFactory.v:383`) | The HashSet store takes only `seq`, and P4 creates only default spaces. From P7 step 1, gate 3 also accepts `temp` (section [27.4](#274-formal-models)). | `prop_qualifier_matrix`, `prop_qualifier_parse_roundtrip` |
-| Q51 | `constructor_parse_canonical` (`SpaceFactory.v:515`) | Every canonical constructor parses back from its elements. | `prop_constructor_parse_canonical`, `prop_qualifier_parse_roundtrip` |
-| Q52 | `constructor_parse_sound` (`SpaceFactory.v:539`) | The parser accepts only the canonical sequence of a qualifier, a theory, and params. The statement has no premise on the `locally_free` bits, because the parser rejects a qualifier element with bits as `NonCanonical`. | `prop_constructor_parse_sound` |
-| Q53 | `sid_derivation_deterministic` (`SpaceFactory.v:669`) | The space id is the 32-byte draw of the random state of the call. | `prop_sid_derivation_deterministic` |
-| Q54 | `persistent_op_call_aborts` (`SpaceFactory.v:731`) | A persistent send to an op that takes calls, or to a handle, aborts before the call. | `prop_persistent_op_call_aborts` |
-| Q55 | `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:816`) | A creation over an existing config record aborts in play and in replay alike, and a commit applies all three operations or none. | `prop_space_already_exists_is_deterministic_abort`, `prop_prepare_commit_atomic` |
+| Q48 | `family_index_bijective` (`SpaceFactory.v:265`) | The 32 families have the indices 0 to 31, one each. | `prop_family_index_bijective`, `prop_get_space_agent_returns_family_capability` |
+| Q49 | `aliases_map_to_family` (`SpaceFactory.v:347`) | The URNs and the FIPS aliases parse to their families, and a config names its family. | `prop_aliases_map_to_family`, `prop_get_space_agent_returns_family_capability` |
+| Q50 | `qualifier_matrix` (`SpaceFactory.v:438`) | The HashSet store takes only `seq`, and P4 creates only default spaces. From P7 step 1, gate 3 also accepts `temp` (section [27.4](#274-formal-models)). | `prop_qualifier_matrix`, `prop_qualifier_parse_roundtrip` |
+| Q51 | `constructor_parse_canonical` (`SpaceFactory.v:562`) | Every canonical constructor parses back from its elements. | `prop_constructor_parse_canonical`, `prop_qualifier_parse_roundtrip` |
+| Q52 | `constructor_parse_sound` (`SpaceFactory.v:586`) | The parser accepts only the canonical sequence of a qualifier, a theory, and params. The statement has no premise on the `locally_free` bits, because the parser rejects a qualifier element with bits as `NonCanonical`. | `prop_constructor_parse_sound` |
+| Q53 | `sid_derivation_deterministic` (`SpaceFactory.v:716`) | The space id is the 32-byte draw of the random state of the call. | `prop_sid_derivation_deterministic` |
+| Q54 | `persistent_op_call_aborts` (`SpaceFactory.v:840`) | A persistent send to an op that takes calls, or to a handle, aborts before the call. | `prop_persistent_op_call_aborts` |
+| Q55 | `space_already_exists_is_deterministic_abort` (`SpaceFactory.v:938`) | A creation over an existing config record aborts in play and in replay alike, and a commit applies all three operations or none. | `prop_space_already_exists_is_deterministic_abort`, `prop_prepare_commit_atomic` |
 
 #### 11.3.8 Encoding.v and the refresh of I-20
 
 P4 refines [Encoding.v](../../../formal/rocq/reified_rspaces/theories/Encoding.v) of phase P2 in four ways for [decision I-20](decision-register.md#i-20).
 The first three refinements are new headlines, which Table 32 lists.
+Changed by [decision 112](decision-register.md#decision-112): the three headlines retired with the refresh, and the headline `decode_ignores_flags` of `SyntaxFields.v` replaces them.
 
-*Table 32. The 3 headlines that I-20 adds to Encoding.v.*
+*Table 32. The 3 headlines that I-20 added, and their successor since decision 112.*
 
 | Id | Theorem | Statement | Property tests |
 |---|---|---|---|
-| Q56 | `refresh_strict_decode_erase` (`Encoding.v:1854`) | After the refresh, the strict decode is the decode of the model, and it accepts only the derived flags. | `marker_forging_grants_no_capability` |
-| Q57 | `connective_marker_tuple_recognized` (`Encoding.v:1872`) | A canonical marker tuple whose flag `connective_used` is true is recognized. | `reified_encoding_roundtrip` |
-| Q58 | `refreshed_decode_commutes_with_subst` (`Encoding.v:2105`) | After the refresh, the strict decode of a substituted tuple commutes with the substitution. | `reified_decode_commutes_with_substitution` |
+| Q56 | `decode_ignores_flags` (`SyntaxFields.v:1212`) | No decoder reads a derived flag of a holder, so a stale flag never rejects a legal construct. | `former_marker_tuple_is_ordinary` |
+| Q57 | `decode_ignores_flags` (`SyntaxFields.v:1212`) | A construct whose holder has a stale flag decodes to the construct with that flag. | `reified_encoding_roundtrip` |
+| Q58 | `decode_ignores_flags` (`SyntaxFields.v:1212`) | The flags of a holder do not change a decode. `fields_commute_with_subst` proves the commutation with substitution. | `reified_decode_commutes_with_substitution` |
 
 The fourth refinement corrects two notes of the module:
 
 - **The note on the abstraction α.** The function α maps a `GPrivate` with the flag `connective_used` false to the model term of a private name. A `GPrivate` with the flag true maps to the term of other values, because the marker decoder rejects such a head. The function α forgets the flags of every expression and of its `Par`.
 - **The note on the substitution.** The premises of `decode_commutes_with_subst` hold up to the flags, because the baseline keeps the flags of a substituted tuple, list, or map. Q58 proves the statement with the flags.
-- **The consistency of the premises.** The corollaries `decode_commutes_with_concrete_subst` (`Encoding.v:2151`) and `refreshed_decode_commutes_with_concrete_subst` (`Encoding.v:2162`) discharge every premise with a concrete substitution. So the premises are consistent.
+- **The consistency of the premises.** The corollaries `decode_commutes_with_concrete_subst` (`Encoding.v:2154`) and `refreshed_decode_commutes_with_concrete_subst` (`Encoding.v:2165`) discharge every premise with a concrete substitution. So the premises are consistent.
 
 ### 11.4 TLA+ models of P4
 
@@ -1672,7 +1725,7 @@ A restriction that removed the longer run would have to stop other elements from
 
 ### 11.5 Negative controls of P4
 
-The script `scripts/verify-reified/rocq-negative-controls.py` holds 75 mutants. Tables 12, 39, 45, 47, 50, 55 and 59 hold 29, 29, 5, 1, 3, 3 and 5 of them.
+At the close of phase P4, the script `scripts/verify-reified/rocq-negative-controls.py` held 75 mutants. Tables 12, 39, 45, 47, 50, 55 and 59 hold 29, 29, 5, 1, 3, 3 and 5 of them.
 
 The run after the merge of [decision 44](decision-register.md#decision-44) passed all 57 mutants, after the 9 pristine modules compiled (`target/verification/reified-rspaces/merge-car/proofs-2.log`).
 The run of [decision 42](decision-register.md#decision-42) passed all 62 mutants, after the 10 pristine modules compiled (`target/verification/reified-rspaces/d42/proofs.log`).
@@ -1714,67 +1767,55 @@ The run of its Option P passed all 75 mutants, after the 11 pristine modules com
 | `enc-use-flag-ignores-body` | Encoding.v | The derived flag of a USE tuple ignores the flag of the body. | `connective_marker_tuple_recognized` |
 | `enc-strict-check-dropped` | Encoding.v | The strict decoder ignores the flags. | `refresh_strict_decode_erase` |
 
+Changed by [decision 112](decision-register.md#decision-112): `Encoding.v` leaves the gate, so the three `enc-` mutants of this table are commented out in `scripts/verify-reified/rocq-negative-controls.py`.
+
+Changed by [decision 106](decision-register.md#decision-106): `sf-recorded-op-aborts` replaces `sf-ann-not-a-call-op` in `scripts/verify-reified/rocq-negative-controls.py`.
+A persistent send to `ann` now passes A21 in either case, so the old mutant keeps every conjunct of `persistent_op_call_aborts` true.
+The new mutant makes `is_recorded_op` false for every op, so `!!` on `embed` and `ann` aborts at A21, and `persistent_op_call_aborts` fails.
+
 The TLA+ controls of P4 are the four Unsafe configurations of Table 37 and the two Apalache Error controls of Table 38.
 
 ### 11.6 Property-based tests
 
-The 78 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
+The 76 properties of `rholang/tests/reified_p4_props.rs` run the real code of P4.
 A pure property and a property over the in-memory agent run 64 cases.
 A property that evaluates deploys on a Rholang runtime runs 16 cases.
-Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:156-181`).
+Every configuration fixes the seed `0x0E0D_2026_1005_4E71` and sets `failure_persistence: None`, and the runtime configuration limits the shrink to 64 iterations (`reified_p4_props.rs:185-210`).
 So a run has the same cases on every host, and it writes nothing to the source tree.
-The 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#1114-legacy-charges-of-decision-45)) run 64 cases each, with the seed `0x0E0D_2026_1006_0045`.
+Retired by [decision 90](decision-register.md#decision-90): the 3 properties of `rholang/tests/reified_legacy_charges.rs` (section [11.14](#1114-legacy-charges-of-decision-45)) are comments now.
 
-*Table 40. The 87 properties of phase P4 in the invariant map.*
+*Table 40. The 81 properties of phase P4 in the invariant map.*
 
 | Group | Properties | Location | Covers |
 |---|---|---|---|
-| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:573-967` | Q1 to Q11 |
-| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1460-1795` | Q12 to Q19 |
-| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2128`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:5514-5938` | Q20 to Q28 |
-| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3077-3526` | Q29 to Q37, Q62 and Q63 for `prop_queue_plan_permutation_invariant`, and U10 for `prop_queue_loop_bounded` |
-| Metering | `prop_agent_reservation_cut_rejects_without_effect` to `prop_agent_reserves_its_own_work_beyond_the_matcher` (3) | `reified_p4_props.rs:4586-4702` | Q59 to Q61, Q64 to Q66 |
-| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6318-6607` | Q38 to Q46 |
-| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6848-7260` | Q48 to Q55 |
-| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7526-8105` | U1 to U8, and U12 |
-| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8560-8843` | Q47 to Q51, Q55 |
-| Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3840-4422` | Q68 to Q77, U1 to U3, and U9 to U12 |
-| Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4774` | Q78 |
-| Legacy charges (decision 45, Option P) | `prop_legacy_charges_equal_charging_rspace`, `prop_legacy_chain_log_is_host_order`, `prop_legacy_replay_stops_with_play` (3) | `reified_legacy_charges.rs:173-783` | Q79 and Q80, U13 for the last two |
-| Native execution | `reified_native_play_runs_a_space_deploy`, `reified_native_replay_reproduces_a_space_deploy`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:338-412` | Q67 |
-| I-20 | `marker_forging_grants_no_capability` (`reified_marker_recognition.rs:756`), `reified_encoding_roundtrip` (`reified_encoding.rs:158`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1289`) (3) | Two test files of P2 | Q56 to Q58 |
+| Namespace | `prop_kind_byte_injective` to `prop_canonical_inner_bytes_respects_par_eq` (11) | `reified_p4_props.rs:630-1063` | Q1 to Q11 |
+| Record envelopes | `prop_datum_envelope_roundtrip` to `prop_envelope_unknown_version_rejected` (8) | `reified_p4_props.rs:1518-1925` | Q12 to Q19 |
+| Counters | `prop_check1_restatement_matches_merger` (`reified_p4_props.rs:2186`) and `prop_queue_writes_race_on_counter` to `prop_counter_free_peek_admits_write_skew` (8) | `reified_p4_props.rs:5616-6070` | Q20 to Q28 |
+| Queue | `prop_queue_candidates_head_only` to `prop_legacy_scan_breaks_head_blocks` (9) | `reified_p4_props.rs:3073-3517` | Q29 to Q37, and U10 for `prop_queue_loop_bounded` |
+| References and routing | `prop_classify_space_ref_total` to `prop_use_wrapper_restores_ctx` (9) | `reified_p4_props.rs:6442-6745` | Q38 to Q46 |
+| Factories | `prop_family_index_bijective` to `prop_space_already_exists_is_deterministic_abort` (8) | `reified_p4_props.rs:6987-7462` | Q48 to Q55 |
+| TLA+ invariants | `prop_queue_no_pending_match_any_schedule` to `prop_handle_calls_merge_like_contracts` (8) | `reified_p4_props.rs:7726-8374` | U1 to U8, and U12 |
+| Leaf extras | `prop_handle_dispatch_total`, `prop_get_space_agent_returns_family_capability`, `prop_qualifier_parse_roundtrip`, `prop_prepare_commit_atomic` (4) | `reified_p4_props.rs:8826-9115` | Q47 to Q51, Q55 |
+| Re-entry (decision 43) | `prop_queue_reissue_keeps_first_round_ord` to `prop_queue_persistent_reissue_charged_once` (8) | `reified_p4_props.rs:3844-4435` | Q68 to Q77, U1 to U3, and U9 to U12 |
+| Peek re-store (decision 45) | `prop_queue_restore_realizes_plan` (1) | `reified_p4_props.rs:4671` | Q78 |
+| Native execution | `reified_native_play_runs_a_space_deploy`, `reified_native_replay_reproduces_a_space_deploy`, `reified_native_host_program_plays_and_replays_unchanged` (3) | `reified_native_fail_closed.rs:326-400` | Q67 |
+| I-20 | `former_marker_tuple_is_ordinary` (`reified_marker_recognition.rs:937`), `reified_encoding_roundtrip` (`reified_encoding.rs:163`), `reified_decode_commutes_with_substitution` (`reified_marker_recognition.rs:1303`) (3) | Two test files of P2 | Q56 to Q58 |
 
-*Table 41. The 27 witness tests of phase P4.*
+*Table 41. The 11 witness tests of phase P4.*
 
 | Test | Location | Covers |
 |---|---|---|
-| `reified_marker_flags_change_derived_flags_only` | `reified/reducer_hooks.rs:2648` | Q56 |
-| `reified_marker_flags_use_body_with_connective_send_is_canonical` | `reified/reducer_hooks.rs:2400` | Q57 |
-| `reified_marker_flags_variable_bound_to_connective_is_canonical` | `reified/reducer_hooks.rs:2451` | Q58 |
-| `space_already_exists_aborts` | `reified/factory.rs:206` | Q55 |
-| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:819` | Q54 |
-| `forged_channels_route_to_the_context_space` | `reified/route.rs:345` | Q42 |
-| `agent_tagged_names_route_to_the_agent` | `reified/route.rs:374` | Q42 |
-| `space_names_route_intrinsically` | `reified/route.rs:331` | Q43 |
-| `ordinary_unforgeable_names_route_to_the_default_space` | `reified/route.rs:464` | Q45 |
-| `handle_under_a_bundle_without_write_flag_is_not_writable` | `reified/scope.rs:249` | Q39 |
-| `other_reified_ids_are_not_space_refs_and_other_values_are_agents` | `reified/scope.rs:263` | Q40 |
-| `wrap_body_restores_the_context_as_a_use_tuple` | `reified/scope.rs:308` | Q46 |
-| `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:461` | Q59 |
-| `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:251` | Q59 |
-| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:745` | Q61 |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3811` | Q78 |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3884` | Q78 |
-| `legacy_charges_of_a_store_and_a_park` | `reified/legacy_charges.rs:416` | Q79 |
-| `legacy_charges_of_a_produce_fire_follow_handle_result` | `reified/legacy_charges.rs:442` | Q79 |
-| `legacy_charges_of_a_consume_fire_refund_the_consume` | `reified/legacy_charges.rs:504` | Q79 |
-| `legacy_charges_of_a_continuation_without_a_body_fail_closed` | `reified/legacy_charges.rs:546` | Q79 |
-| `legacy_chain_is_active_only_in_a_metered_legacy_deploy` | `reified/legacy_charges.rs:567` | Q79, Q80 |
-| `legacy_chain_charges_in_host_order` | `reified/legacy_charges.rs:632` | Q79 |
-| `legacy_chain_pre_charge_stops_before_its_operation` | `reified/legacy_charges.rs:661` | Q79 |
-| `legacy_chain_tail_fails_after_the_commit` | `reified/legacy_charges.rs:708` | Q79 |
-| `space_queue_legacy_replay_equal` | `reified_queue_replay.rs:1001` | Q79, Q80 |
-| `space_queue_legacy_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:862` | Q80 |
+| `space_already_exists_aborts` | `reified/factory.rs:211` | Q55 |
+| `persistent_sends_abort_on_every_call_op_and_every_handle` | `reified/system_channels.rs:893` | Q54 |
+| `forged_channels_route_to_the_context_space` | `reified/route.rs:347` | Q42 |
+| `agent_tagged_names_route_to_the_agent` | `reified/route.rs:376` | Q42 |
+| `space_names_route_intrinsically` | `reified/route.rs:333` | Q43 |
+| `ordinary_unforgeable_names_route_to_the_default_space` | `reified/route.rs:466` | Q45 |
+| `handle_under_a_bundle_without_write_flag_is_not_writable` | `reified/scope.rs:273` | Q39 |
+| `other_reified_ids_are_not_space_refs_and_other_values_are_agents` | `reified/scope.rs:287` | Q40 |
+| `wrap_body_restores_the_context_as_a_use_tuple` | `reified/scope.rs:332` | Q46 |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:7092` | Q78 |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:7165` | Q78 |
 
 After [decision 46](decision-register.md#decision-46), the invariant-map checker printed `invariant-map: PASS=213 FAIL=0 MISSING=0 PENDING=0` for the phase `P4`, and `PASS=333` for all phases (`target/verification/reified-rspaces/d46/invariant-map-p4.log`, `invariant-map-all.log`).
 The P4 entries of the map have the test status `required`, because every P4 test exists and passes.
@@ -1805,7 +1846,7 @@ Each run printed `test result: ok` with 0 failures (`target/verification/reified
 
 The suite `reified_queue_replay.rs` also holds `space_queue_out_of_phlo_sweep_replays_equal`, the regression test of the [replay finding](findings/space-replay-out-of-phlo.md), so its last run printed 8 tests.
 
-The P4 modules hold 198 unit tests: 191 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
+At the P4 milestone, the P4 modules held 198 unit tests: 191 in `rholang/src/rust/interpreter/reified/` and `spaces/`, and 7 in `models/src/rust/space_factory_urn.rs`.
 Two of them came with the merge of [decision 44](decision-register.md#decision-44) (section [8.8](#88-the-merge-of-featurecost-accounted-rho)).
 [Decision 42](decision-register.md#decision-42) replaced four unit tests that pinned the old meter and added eight (section [11.10](#1110-metering-of-decision-42)).
 [Decision 43](decision-register.md#decision-43) added eight unit tests of the re-entry (section [11.12](#1112-re-entry-of-decision-43)), and decision 45 added ten.
@@ -1820,8 +1861,8 @@ The suites of ordinary execution of section 8 also passed in the same run.
 
 | # | Item | Check | Assertion |
 |---|---|---|---|
-| 18 | No synthesized multi-channel join | `reified_handle_cross_block_merge_no_conflict` (`reified_merge.rs:515`) and its control `reified_handle_cross_block_merge_join_handle_conflicts` (`reified_merge.rs:571`), step `reified-merge` | Handle calls on disjoint collections merge like contract calls. A join of the handle with a descriptor channel makes every pair of calls conflict. |
-| 19 | Namespaced channels never mergeable | `reified_namespaced_channels_never_mergeable` (`reified_queue.rs:1889`), step `reified-queue` | A tuple channel with a mergeable tag routes to the space inside a `use` block, and only the control channel outside is mergeable. No channel with the tag `0xE0` is mergeable. |
+| 18 | No synthesized multi-channel join | `reified_handle_cross_block_merge_no_conflict` (`reified_merge.rs:619`) and its control `reified_handle_cross_block_merge_join_handle_conflicts` (`reified_merge.rs:675`), step `reified-merge` | Handle calls on disjoint collections merge like contract calls. A join of the handle with a descriptor channel makes every pair of calls conflict. |
+| 19 | Namespaced channels never mergeable | `reified_namespaced_channels_never_mergeable` (`reified_queue.rs:2048`), step `reified-queue` | A tuple channel with a mergeable tag routes to the space inside a `use` block, and only the control channel outside is mergeable. No channel with the tag `0xE0` is mergeable. |
 
 The checklist checker printed `consensus-checklist (milestone p4): ITEMS=22 CHECKS=118 PASS=112 FAIL=0 SCHEDULED=1 RETIRED=5` (`target/verification/reified-rspaces/p4/fx-c/gate-consensus-checklist-p4.log`).
 The scheduled check is the P7 sweep test of item 20.
@@ -1853,18 +1894,21 @@ Run each cargo command under the resource limits of section [10.3](#103-rust-sui
 
 ### 11.10 Metering of decision 42
 
-[Decision 42](decision-register.md#decision-42) aligns the host work of the queue agent with DR-88 of `feature/cost-accounted-rho`.
-The agent reserves each of its own reads and copies on the meter of the job before it makes them.
-It prepays the work of the outcome at staging.
-The module `formal/rocq/reified_rspaces/theories/AgentReadCoverage.v` restates the metering rule of that branch.
-The rule is prefix coverage: every prefix of a run reads at most the units that the same prefix has reserved.
+Retired by [decision 89](decision-register.md#decision-89) and [decision 96](decision-register.md#decision-96): DR-131 of the base removed host work, and merge 2 deleted `AgentReadCoverage.v`.
+This section, with Tables 44, 45 and 46, records the last state before that removal.
+
+[Decision 42](decision-register.md#decision-42) aligned the host work of the queue agent with DR-88 of `feature/cost-accounted-rho`.
+The agent reserved each of its own reads and copies on the meter of the job before it made them.
+It prepaid the work of the outcome at staging.
+The module `formal/rocq/reified_rspaces/theories/AgentReadCoverage.v` restated the metering rule of that branch.
+The rule was prefix coverage: every prefix of a run read at most the units that the same prefix had reserved.
 
 ```math
 \forall\, p, s.\; t = p \mathbin{+\!\!+} s \;\Longrightarrow\; \sum_{e \in p} \mathrm{read}(e) \;\le\; \sum_{e \in p} \mathrm{reserved}(e)
 ```
 
 Here $`t`$ is the event list of one operation, $`p`$ is a prefix of $`t`$, and $`\mathrm{read}`$ and $`\mathrm{reserved}`$ give the units of one event.
-The module proves the 8 headlines of Table 44, with no axiom.
+The module proved the 8 headlines of Table 44, with no axiom.
 The gate run printed `PASS headlines AgentReadCoverage: 8 x 'Closed under the global context'`, and `rocqchk` reported `Axioms <none>` (`target/verification/reified-rspaces/d42/proofs.log`).
 
 *Table 44. The headlines of AgentReadCoverage.v.*
@@ -1881,7 +1925,7 @@ The gate run printed `PASS headlines AgentReadCoverage: 8 x 'Closed under the gl
 | Q66 | `unprepaid_trace_uncovered` | Negative control: without the prepaid reservations, the outcome after the commit breaks the rule. |
 
 Table 45 gives the five mutants of the module.
-Each mutant reverts one part of the rule, and the gate requires that it fails in the expected declaration.
+Each mutant reverted one part of the rule, and the gate required that it failed in the expected declaration.
 
 *Table 45. The Rocq mutants of decision 42.*
 
@@ -1894,30 +1938,30 @@ Each mutant reverts one part of the rule, and the gate requires that it fails in
 | `arc-scan-copies-every-entry` | A scan copies every entry instead of the head only. | `scan_reserved` |
 
 Table 46 gives the tests of decision 42.
-The properties run 64 cases each with the seed of section [11.6](#116-property-based-tests).
+The properties ran 64 cases each with the seed of section [11.6](#116-property-based-tests).
 
 *Table 46. The tests of decision 42.*
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:4586` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
-| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:4637` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
-| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:4702` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
-| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3475` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
-| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3077` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
-| `scan_meter_maps_amounts_to_the_branch_dimensions` | `reified/costs.rs:358` | A reservation charges VerificationOperations, VerificationBytes, and SearchStateBytes, and no other dimension. |
-| `scan_meter_accepts_exact_credit_and_rejects_each_smaller_dimension` | `reified/costs.rs:432` | The exact credit suffices, and one unit less in any dimension rejects. |
-| `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs:461` | A reserved copy charges the triple of the copy walk of the branch (Q59). |
-| `scan_meter_skips_walks_without_a_budget` | `reified/costs.rs:495` | Without a budget, every reservation passes, and a metered encode gives the bytes of bincode. |
-| `metered_matching_reserves_on_the_branch_dimensions` | `reified/costs.rs:517` | The metered matcher charges the three dimensions and no `SearchCandidates`. |
-| `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs:251` | `bind` adds nothing to the reservations of the matcher, and an unguarded `admits` charges one operation, whatever the size of the body (Q59). |
-| `legacy_mapping_dropped_operations_and_backing` | `spaces/matching.rs:302` | Negative control: the old mapping of the meter kept only the scanned bytes of the matcher. |
-| `space_counter_bump_reserves_its_work_on_the_branch_dimensions` | `spaces/counter.rs:721` | A bump charges the three dimensions and no `SearchCandidates`, and a zero budget rejects it. |
-| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs:745` | A cut budget rejects a bump before its commit, with no event and no change of the counters (Q61). |
+| `prop_agent_reservation_cut_rejects_without_effect` | `reified_p4_props.rs:4607` | The exact usage of an operation commits. One unit less in any charged dimension fails with `HostWorkRejected`, logs no event, and leaves the collection unchanged (Q59 to Q61, Q66). |
+| `prop_agent_charge_independent_of_unread_payloads` | `reified_p4_props.rs:4658` | Padding of up to 4 KiB on the entries that an operation does not meet leaves its usage unchanged (Q64). |
+| `prop_agent_reserves_its_own_work_beyond_the_matcher` | `reified_p4_props.rs:4723` | A forwarding meter records the reservations of the matcher, and the agent reserves more in each charged dimension (Q65). |
+| `prop_queue_plan_permutation_invariant` | `reified_p4_props.rs:3486` | Two list orders of one collection give equal usage in every dimension (Q62, Q63). |
+| `prop_queue_candidates_head_only` | `reified_p4_props.rs:3087` | A counting matcher bounds the matcher calls, because no charge counts them now, and the usage of `SearchCandidates` is zero. |
+| `scan_meter_maps_amounts_to_the_branch_dimensions` | `reified/costs.rs` | A reservation charges VerificationOperations, VerificationBytes, and SearchStateBytes, and no other dimension. |
+| `scan_meter_accepts_exact_credit_and_rejects_each_smaller_dimension` | `reified/costs.rs` | The exact credit suffices, and one unit less in any dimension rejects. |
+| `scan_meter_copy_equals_clone_backing_copy_and_cleanup` | `reified/costs.rs` | A reserved copy charges the triple of the copy walk of the branch (Q59). |
+| `scan_meter_skips_walks_without_a_budget` | `reified/costs.rs` | Without a budget, every reservation passes, and a metered encode gives the bytes of bincode. |
+| `metered_matching_reserves_on_the_branch_dimensions` | `reified/costs.rs` | The metered matcher charges the three dimensions and no `SearchCandidates`. |
+| `space_matching_reserves_only_what_the_matcher_reads` | `spaces/matching.rs` | `bind` adds nothing to the reservations of the matcher, and an unguarded `admits` charges one operation, whatever the size of the body (Q59). |
+| `legacy_mapping_dropped_operations_and_backing` | `spaces/matching.rs` | Negative control: the old mapping of the meter kept only the scanned bytes of the matcher. |
+| `space_counter_bump_reserves_its_work_on_the_branch_dimensions` | `spaces/counter.rs` | A bump charges the three dimensions and no `SearchCandidates`, and a zero budget rejects it. |
+| `space_counter_bump_cut_budget_rejects_without_effect` | `spaces/counter.rs` | A cut budget rejects a bump before its commit, with no event and no change of the counters (Q61). |
 
-Decision 42 changes no state, no event, and no outcome of an operation.
-So the models of sections [11.3](#113-rocq-models-of-p4) and [11.4](#114-tla-models-of-p4) do not change.
-The suites of Table 42 pass with their earlier assertions.
+Decision 42 changed no state, no event, and no outcome of an operation.
+So the models of sections [11.3](#113-rocq-models-of-p4) and [11.4](#114-tla-models-of-p4) did not change.
+The suites of Table 42 passed with their earlier assertions.
 
 ### 11.11 Native execution of decisions 46 and 47
 
@@ -1945,12 +1989,14 @@ The mutant of decision 46, `sr-native-play-runs-spaces`, is retired with its hea
 
 | Test | Location | What it checks |
 |---|---|---|
-| `reified_native_play_runs_a_space_deploy` | `reified_native_fail_closed.rs:338` | A native play of a factory call runs without an error and stores the records of the config and of the space counter (Q67). |
-| `reified_native_replay_reproduces_a_space_deploy` | `reified_native_fail_closed.rs:384` | The native replay environment replays the play journal: no error, a complete journal, the phlo usage of play, equal authority events and byte observations, and the post-state root of play (Q67). |
-| `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:412` | A program without spaces plays and replays natively without an error, with a complete journal, equal usage and the post-state root of play (Q67). |
-| `native_replay_runtime_fails_closed` | `reified/runtime.rs:720` | A native replay runtime that is not bound yet fails every space entry with `RuntimeUnavailable`. |
-| `native_replay_runtime_binds_once_and_resets_its_scope` | `reified/runtime.rs:738` | The environment binds a native replay runtime once, and its evaluation scope resets the committed parents of its store. |
-| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:777` | A host runtime runs space jobs when its budget runs no native deploy. |
+| `reified_native_play_runs_a_space_deploy` | `reified_native_fail_closed.rs:326` | A native play of a factory call runs without an error and stores the records of the config and of the space counter (Q67). |
+| `reified_native_replay_reproduces_a_space_deploy` | `reified_native_fail_closed.rs:372` | The native replay environment replays the play journal: no error, a complete journal, the phlo usage of play, equal authority events and byte observations, and the post-state root of play (Q67). |
+| `reified_native_host_program_plays_and_replays_unchanged` | `reified_native_fail_closed.rs:400` | A program without spaces plays and replays natively without an error, with a complete journal, equal usage and the post-state root of play (Q67). |
+| `native_replay_runtime_fails_closed` | `reified/runtime.rs:948` | A native replay runtime that is not bound yet fails every space entry with `RuntimeUnavailable`. |
+| `native_replay_runtime_binds_once_and_resets_its_scope` | `reified/runtime.rs:966` | The environment binds a native replay runtime once, and its evaluation scope resets the committed parents of its store. |
+| `host_runtime_is_available_outside_native_execution` | `reified/runtime.rs:1009` | A host runtime runs space jobs when its budget runs no native deploy. Retired by [decision 90](decision-register.md#decision-90) (C6), and the two tests below restate it. |
+| `host_runtime_fails_closed_outside_native_execution` | `reified/runtime.rs:1019` | A host runtime whose budget runs no native deploy fails every space entry with `RuntimeUnavailable`. Added by decision 90 (C6). |
+| `host_runtime_is_available_in_native_execution` | `reified/runtime.rs:1035` | A host runtime runs space jobs when its budget runs a native deploy. Added by decision 90 (C6). |
 
 **The hazard of decision 46.** A run of the suite with the guard of `ReifiedRuntime::host` removed and without a native backend (`target/verification/reified-rspaces/d46/mutant-no-native-guard.log`) shows why decision 46 failed closed.
 Native play then ran the space operation without an error, and native replay failed with `native replay has incomplete operations`.
@@ -1962,8 +2008,8 @@ Decision 47 removes the guard and adds the native backend in one change, so nati
 The element re-enters at its place.
 It is at the head of its side when that side is empty or its order precedes the head.
 Otherwise it rests behind the head and fires nothing.
-`operation_ord` (`spaces/generic.rs:1915-1943`) checks the kept order against the counter.
-`Cx::at_head` (`spaces/generic.rs:1090-1111`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:65-74`) compares two orders.
+`operation_ord` (`spaces/generic.rs:4077-4094`) checks the kept order against the counter.
+`Cx::at_head` (`spaces/generic.rs:2398-2417`) places the element, and `QueueDiscipline::precedes` (`spaces/disciplines/queue.rs:65-74`) compares two orders.
 
 `HeadOnlyDisciplines.v` adds the 10 headlines of Table 49, with no axiom.
 The module defines the elements in flight $`F`$ and the re-entry plans.
@@ -1980,16 +2026,16 @@ The module compiles in 6 s, prints `Closed under the global context` for all 19 
 
 | Id | Headline | Claim |
 |---|---|---|
-| Q68 | `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2342`) | A re-entry never spends a persistent element. It re-issues again, or it ends stored or parked at its place. |
-| Q69 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2373`) | A re-issued persistent element keeps the order of its first round, and its round bumps the counter by one and keeps $`\mathrm{wf}'`$. |
-| Q70 | `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2712`) | Every fresh operation and every re-entry keeps $`\mathrm{wf}'`$ and SHADOW. |
-| Q71 | `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2781`) | SHADOW with no element in flight is INV, and every run of rounds keeps SHADOW and has INV whenever no element is in flight. |
-| Q72 | `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2946`) | Over runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays. |
-| Q73 | `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3021`) | A re-entry behind an older head rests at its place and fires nothing, and a fire meets the head of the other side. |
-| Q74 | `queue_reentry_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:3089`) | A re-entry stages at most `FIRE_ROUND_CAP` fires, and a re-issue carries the first order exactly for a persistent element. |
-| Q75 | `queue_reentry_permutation_invariant` (`HeadOnlyDisciplines.v:3149`) | A re-entry depends on the entries of the collection, not on their list order. |
-| Q76 | `fresh_ord_reissue_loses_first_round_place` (`HeadOnlyDisciplines.v:3503`) | Negative control C0: with a fresh order, a re-issued persistent element rests behind a younger record. |
-| Q77 | `nonpersistent_first_ord_reentry_breaks_quiescent_inv` (`HeadOnlyDisciplines.v:3556`) | Negative control C1: an element that is not persistent and keeps its order leaves a pending match with nothing in flight. |
+| Q68 | `persistent_reentry_never_spent` (`HeadOnlyDisciplines.v:2346`) | A re-entry never spends a persistent element. It re-issues again, or it ends stored or parked at its place. |
+| Q69 | `queue_reissue_keeps_ord` (`HeadOnlyDisciplines.v:2377`) | A re-issued persistent element keeps the order of its first round, and its round bumps the counter by one and keeps $`\mathrm{wf}'`$. |
+| Q70 | `queue_reentry_preserves_shadow_inv` (`HeadOnlyDisciplines.v:2716`) | Every fresh operation and every re-entry keeps $`\mathrm{wf}'`$ and SHADOW. |
+| Q71 | `queue_quiescent_inv` (`HeadOnlyDisciplines.v:2785`) | SHADOW with no element in flight is INV, and every run of rounds keeps SHADOW and has INV whenever no element is in flight. |
+| Q72 | `queue_fifo_with_reentries` (`HeadOnlyDisciplines.v:2950`) | Over runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays. |
+| Q73 | `queue_head_blocks_reentry` (`HeadOnlyDisciplines.v:3025`) | A re-entry behind an older head rests at its place and fires nothing, and a fire meets the head of the other side. |
+| Q74 | `queue_reentry_loop_bounded_or_reissues` (`HeadOnlyDisciplines.v:3093`) | A re-entry stages at most `FIRE_ROUND_CAP` fires, and a re-issue carries the first order exactly for a persistent element. |
+| Q75 | `queue_reentry_permutation_invariant` (`HeadOnlyDisciplines.v:3153`) | A re-entry depends on the entries of the collection, not on their list order. |
+| Q76 | `fresh_ord_reissue_loses_first_round_place` (`HeadOnlyDisciplines.v:3507`) | Negative control C0: with a fresh order, a re-issued persistent element rests behind a younger record. |
+| Q77 | `nonpersistent_first_ord_reentry_breaks_quiescent_inv` (`HeadOnlyDisciplines.v:3560`) | Negative control C1: an element that is not persistent and keeps its order leaves a pending match with nothing in flight. |
 
 Two proof strategies failed, and the module header records them.
 An `injection` or `inversion` on an equation of `Some (offer_loop ...)` ran out of memory, so the proofs use the lemmas `some_injective` and `triple_injective` instead.
@@ -2030,29 +2076,29 @@ The properties run 64 cases each with the seed of section [11.6](#116-property-b
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:3970` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
-| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:4027` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
-| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:4142` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
-| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:4183` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
-| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:4214` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
-| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:4254` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
-| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:4299` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
-| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:4329` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
-| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:4363` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
-| `space_queue_replay_reproduces_the_reentries` | `spaces/generic.rs:4452` | Replay stages the transactions of a divergent pair and of a capped re-entry, pairs the three equal COMMs of the pair, and reaches the root of play. |
-| `space_queue_reissue_persistent_send` | `reified_queue.rs:1043` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
-| `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1114` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
-| `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1163` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
-| `space_queue_divergent_pair_exhausts_phlo` | `reified_queue.rs:1270` | A divergent pair repeats one produce identity and one COMM, and the counter bumps of its rounds spend the phlo. |
-| `prop_queue_loop_bounded` | `reified_p4_props.rs:3366` | A re-issue carries the first order exactly when the operation is persistent (Q74). |
-| `prop_queue_reissue_keeps_first_round_ord` | `reified_p4_props.rs:3840` | In runs with re-entries between other operations, every re-issue keeps the first order of a persistent element, every step bumps the counter once, and $`\mathrm{wf}'`$ holds (Q68, Q69). |
-| `prop_queue_shadow_invariant_with_inflight` | `reified_p4_props.rs:3889` | After every step of a run with re-entries SHADOW holds, and a step with no persistent element in flight leaves no pending match (Q70, Q71). |
-| `prop_queue_fifo_with_reentries` | `reified_p4_props.rs:3931` | In runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays (Q72). |
-| `prop_queue_nonpersistent_reissue_fresh_ord` | `reified_p4_props.rs:3991` | A send that fires 64 or more peek waiters re-issues unchanged, and its re-entry stores at most its record at the order of its new bump (Q77). |
-| `prop_queue_reentry_head_blocks` | `reified_p4_props.rs:4154` | A re-entry behind an older head of its side fires nothing and rests at its kept order, and a fire meets the head of the other side (Q73, Q74). |
-| `prop_queue_reentry_permutation_invariant` | `reified_p4_props.rs:4237` | Two list orders of one collection give the same re-entry: outcomes, events, entries, and host work (Q75). |
-| `prop_fresh_ord_reissue_loses_first_round_place` | `reified_p4_props.rs:4336` | The kept order re-enters ahead of a younger datum and fires the persistent waiter again, and a fresh order rests behind it and fires nothing (Q76). |
-| `prop_queue_persistent_reissue_charged_once` | `reified_p4_props.rs:4422` | On a runtime, a persistent send or receive that re-issues has one data-channel identity and one introduction row, and it rests at its first order (Q69). |
+| `space_queue_divergent_pairs_reissue_after_one_round` | `spaces/generic.rs:7251` | A divergent pair re-issues with the order of its first round in every round, on both sides, and each round bumps the counter. |
+| `space_queue_round_cap_reissues_the_rest` | `spaces/generic.rs:7308` | A capped send and a capped receive re-issue with the order of their first round, and the rest rests at that order. |
+| `space_queue_reissue_keeps_the_first_round_ord_and_identity` | `spaces/generic.rs:7423` | Every round of a capped persistent send stages the same record, so every produce event on the data channel is equal (Q69). |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `spaces/generic.rs:7464` | A younger datum stored between two rounds stays behind the re-entry, which fires the head waiter. |
+| `space_queue_reissue_stores_behind_an_older_reentry` | `spaces/generic.rs:7495` | A re-entry that finds an older entry at the head of its side rests at its place and fires nothing (Q73). |
+| `space_queue_shadowed_pair_resolves_at_reentry` | `spaces/generic.rs:7535` | Between two rounds the heads match while the send in flight precedes the head record, and the next round resolves the pair (Q70). |
+| `space_queue_nonpersistent_reissue_takes_a_fresh_ord` | `spaces/generic.rs:7580` | A datum that is not persistent re-issues with no order and joins the tail at its new order (Q77). |
+| `space_queue_reissued_receive_keeps_its_first_round_ord` | `spaces/generic.rs:7615` | A capped persistent receive re-enters ahead of a younger waiter and parks at its first order. |
+| `space_queue_reentry_rejects_an_inconsistent_order` | `spaces/generic.rs:7649` | A kept order outside the orders of the counter, or equal to the order of a stored entry, fails with `Inconsistent` and changes nothing. |
+| `space_native_persistent_retry_rows` | `rholang/tests/reified_native_spaces.rs:427` | Play records the re-offer of a persistent element as a retry, a staged space produce links to the retry, and native replay reproduces the play. |
+| `space_queue_reissue_persistent_send` | `reified_queue.rs:1096` | In a deploy, a capped persistent send rests at its first order, and its produce events on the data channel are equal. |
+| `space_queue_reissue_reenters_ahead_of_younger_records` | `reified_queue.rs:1171` | In a deploy, a body of the first round sends a younger datum, and the second round re-enters ahead of it and fires the head waiter. |
+| `space_queue_reissue_keeps_one_produce_identity` | `reified_queue.rs:1255` | A capped persistent send has one introduction row for its one identity, and every observed event has its row. |
+| `space_queue_divergent_pair_exhausts_phlo` | `reified_queue.rs:1367` | A divergent pair repeats one produce identity and one COMM, and the counter bumps of its rounds spend the phlo. |
+| `prop_queue_loop_bounded` | `reified_p4_props.rs:3370` | A re-issue carries the first order exactly when the operation is persistent (Q74). |
+| `prop_queue_reissue_keeps_first_round_ord` | `reified_p4_props.rs:3844` | In runs with re-entries between other operations, every re-issue keeps the first order of a persistent element, every step bumps the counter once, and $`\mathrm{wf}'`$ holds (Q68, Q69). |
+| `prop_queue_shadow_invariant_with_inflight` | `reified_p4_props.rs:3893` | After every step of a run with re-entries SHADOW holds, and a step with no persistent element in flight leaves no pending match (Q70, Q71). |
+| `prop_queue_fifo_with_reentries` | `reified_p4_props.rs:3935` | In runs with re-entries, the records that are not persistent leave in increasing order, each older than every such record that stays (Q72). |
+| `prop_queue_nonpersistent_reissue_fresh_ord` | `reified_p4_props.rs:3995` | A send that fires 64 or more peek waiters re-issues unchanged, and its re-entry stores at most its record at the order of its new bump (Q77). |
+| `prop_queue_reentry_head_blocks` | `reified_p4_props.rs:4158` | A re-entry behind an older head of its side fires nothing and rests at its kept order, and a fire meets the head of the other side (Q73, Q74). |
+| `prop_queue_reentry_permutation_invariant` | `reified_p4_props.rs:4241` | Two list orders of one collection give the same re-entry: outcomes, events and entries (Q75). Changed by [decision 89](decision-register.md#decision-89): before, the property also compared the host work. |
+| `prop_fresh_ord_reissue_loses_first_round_place` | `reified_p4_props.rs:4333` | The kept order re-enters ahead of a younger datum and fires the persistent waiter again, and a fresh order rests behind it and fires nothing (Q76). |
+| `prop_queue_persistent_reissue_charged_once` | `reified_p4_props.rs:4419` | On a runtime, a persistent send or receive that re-issues has one data-channel identity and one introduction row, and it rests at its first order (Q69). |
 
 Each property must fail when the rule that it checks is broken.
 The script `.reified-rspaces-work/d43/run_mutants.py` applies five mutants to `spaces/generic.rs`, runs the unit tests of the agent and the P4 properties, and restores the file.
@@ -2078,14 +2124,14 @@ The pair still ends when the phlo runs out.
 
 [Decision 45](decision-register.md#decision-45) (Rule E) makes a peek fire on a space remove what the host removes.
 The substrate keeps no record for a peek, also not the stored candidates of a produce-side peek join.
-`check_peeks` (`rspace++/src/rspace/space_store_handle.rs:1519-1534`) only admits the peek set, and `removed_records` (`rspace++/src/rspace/space_store_handle.rs:1592-1625`) returns every stored non-persistent candidate of a fire.
-`fired_receipt` (`rspace++/src/rspace/space_store_handle.rs:3202-3238`) keeps the persist flags of the host's `wrap_result`.
+`check_peeks` (`rspace++/src/rspace/space_store_handle.rs:1709-1724`) only admits the peek set, and `removed_records` (`rspace++/src/rspace/space_store_handle.rs:1786-1819`) returns every stored non-persistent candidate of a fire.
+`fired_receipt` (`rspace++/src/rspace/space_store_handle.rs:4745-4781`) keeps the persist flags of the host's `wrap_result`.
 The play and replay backends always call `remove_matched_datum_and_join` or `store_persistent_data`.
 
 The agent then makes a [re-store](glossary.md#re-store).
-`receive_head` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:1842-1847`).
-Right after the fire, `Discipline::restore` and its default `Cx::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:442-449`, `1253-1268`) stage a produce of the same record bytes with the outcome Store and `persist = false`.
-`Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:2145-2158`) gives the re-store the cost authority of the record, as `produce_peeks` does.
+`receive_head` copies a peeked head record that is not persistent (`rholang/src/rust/interpreter/spaces/generic.rs:3964-3969`).
+Right after the fire, `Discipline::restore` and its default `Cx::restore` (`rholang/src/rust/interpreter/spaces/generic.rs:1074-1081`, `2711-2725`) stage a produce of the same record bytes with the outcome Store and `persist = false`.
+`Introduction::for_record` (`rholang/src/rust/interpreter/spaces/record.rs:1616-1650`) gives the re-store the cost authority of the record, as `produce_peeks` does.
 The re-store bumps no counter, and the record keeps its envelope, its order, and its place at the head.
 
 The substrate change and the re-store land in one commit.
@@ -2101,13 +2147,13 @@ So P5 must offer such a re-store through the produce plan.
 
 | Id | Headline | Claim |
 |---|---|---|
-| H2 | `commit_state_eq_host` (`EventCorrelation.v:5573`) | The committed store equals the host store, with no premise on peeks. |
-| H11 | `peek_reproduces_trace_eq_host` (`EventCorrelation.v:5850`) | A transaction with the re-stores right after a peek fire commits with the calls, events, status, bindings, and store of the host program, whose reducer sends the peeked data again. A fire never stores a datum, and the re-stores are exactly the sends of `produce_peeks`. |
-| Q78 | `queue_restore_realizes_plan` (`HeadOnlyDisciplines.v:3402`) | For a consume, a produce, and a re-entry, the staged operations of the code, with the re-store, give the records of the logical plan under the substrate effects of Rule E, up to list order. |
+| H2 | `commit_state_eq_host` (`EventCorrelation.v:5576`) | The committed store equals the host store, with no premise on peeks. |
+| H11 | `peek_reproduces_trace_eq_host` (`EventCorrelation.v:5853`) | A transaction with the re-stores right after a peek fire commits with the calls, events, status, bindings, and store of the host program, whose reducer sends the peeked data again. A fire never stores a datum, and the re-stores are exactly the sends of `produce_peeks`. |
+| Q78 | `queue_restore_realizes_plan` (`HeadOnlyDisciplines.v:3406`) | For a consume, a produce, and a re-entry, the staged operations of the code, with the re-store, give the records of the logical plan under the substrate effects of Rule E, up to list order. |
 
 `HeadOnlyDisciplines.v` also proves two computed counterexamples with no assumption.
-In `restore_over_retention_duplicates` (`HeadOnlyDisciplines.v:3594`), the re-store over the old retention duplicates the peeked record.
-In `removal_without_restore_loses_record` (`HeadOnlyDisciplines.v:3624`), the removal without the re-store loses it.
+In `restore_over_retention_duplicates` (`HeadOnlyDisciplines.v:3598`), the re-store over the old retention duplicates the peeked record.
+In `removal_without_restore_loses_record` (`HeadOnlyDisciplines.v:3628`), the removal without the re-store loses it.
 `EventCorrelation.v` keeps its 17 headlines, and `HeadOnlyDisciplines.v` now has 20.
 
 *Table 55. The Rocq mutants of decision 45 in HeadOnlyDisciplines.v.*
@@ -2124,19 +2170,19 @@ The three mutants of decision 45 in `EventCorrelation.v` are in Table 12: `ec-pe
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_store_handle_peek_events_equal_host_and_restores` | `reified_space_store_handle.rs:661` | A peek and its re-store have the events, calls, contents, and root of the host, also with a produce-side peek and its re-offer. |
-| `space_store_handle_peek_fires_replay_and_report` | `reified_space_store_handle.rs:3006` | A peek fire and its re-store replay and report from their play log, and the play log and root equal the HEAD program. |
-| `space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored` | `reified_space_store_handle.rs:3978` | A produce-side peek join removes its stored record and never stores its incoming datum. |
-| `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:4492` | Every result of a peek fire keeps the persist flag of the host. |
-| `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:4641` | A peek and its re-stores equal the HEAD program in play, replay, and reporting: events, calls, counters, state, and root. |
-| `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:4792` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
-| `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2455` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
-| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:4435` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
-| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:3811` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
-| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:3844` | The re-store registers the authority of the record, and the peek registers its own. |
-| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:3884` | A peek of a persistent record removes nothing and stores nothing again. |
-| `space_queue_observer_parity` | `reified_queue.rs:1336` | In deploys, the space events of each queue step equal the host events of the same program, the re-store after a peek included. |
-| `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4774` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
+| `space_store_handle_peek_events_equal_host_and_restores` | `reified_space_store_handle.rs:709` | A peek and its re-store have the events, calls, contents, and root of the host, also with a produce-side peek and its re-offer. |
+| `space_store_handle_peek_fires_replay_and_report` | `reified_space_store_handle.rs:3219` | A peek fire and its re-store replay and report from their play log, and the play log and root equal the HEAD program. |
+| `space_store_handle_produce_peek_join_removes_stored_and_leaves_incoming_unstored` | `reified_space_store_handle.rs:4389` | A produce-side peek join removes its stored record and never stores its incoming datum. |
+| `space_store_handle_peek_fire_receipt_flags` | `reified_space_store_handle.rs:5009` | Every result of a peek fire keeps the persist flag of the host. |
+| `space_store_handle_peek_restore_equals_head_reproduce` | `reified_space_store_handle.rs:5167` | A peek and its re-stores equal the HEAD program in play, replay, and reporting: events, calls, counters, state, and root. |
+| `space_store_handle_restore_without_removal_duplicates_record` | `reified_space_store_handle.rs:5332` | Control: Rule E leaves one copy, a re-store without the removal leaves two, and a removal without the re-store leaves none. |
+| `prop_space_txn_peek_restore` | `reified_space_store_handle_props.rs:2739` | Generated peek runs with re-offers and re-stores equal the HEAD peek path exactly, and they replay and report (H5, H11, H12). |
+| `space_store_handle_receipt_keeps_the_host_flags` | `space_store_handle.rs:6801` | The receipt keeps the flag of the host, and results that do not line up fail closed. |
+| `space_queue_peek_restores_the_head_record` | `spaces/generic.rs:7092` | A queue peek logs the consume, the COMM, and the re-store, and the re-store has the identity of the first produce. |
+| `space_queue_peek_restore_registers_the_record_authority` | `spaces/generic.rs:7125` | The re-store registers the authority of the record, and the peek registers its own. |
+| `space_queue_peek_of_a_persistent_record_restores_nothing` | `spaces/generic.rs:7165` | A peek of a persistent record removes nothing and stores nothing again. |
+| `space_queue_observer_parity` | `reified_queue.rs:1458` | In deploys, the space events of each queue step equal the host events of the same program, the re-store after a peek included. |
+| `prop_queue_restore_realizes_plan` | `reified_p4_props.rs:4671` | Over runs that peek often, a peek keeps the records, its receipt keeps the persist flag, and the re-store follows the COMM with the identity of the record (Q78). |
 
 The script `.reified-rspaces-work/d45/run_mutants.py` applies three mutants to `spaces/generic.rs`, runs the unit tests of the agent and the property `prop_queue_restore_realizes_plan`, and restores the file.
 Each mutant made at least one of its expected tests fail (`target/verification/reified-rspaces/d45/mutants.log`).
@@ -2163,17 +2209,20 @@ The legacy storage charges of `ChargingRSpace` follow in Option P of decision 45
 
 ### 11.14 Legacy charges of decision 45
 
-[Decision 45](decision-register.md#decision-45) (Option P) makes each staged space operation of a legacy deploy pay the [legacy charges](glossary.md#legacy-charge) of its host call.
-The [finding](findings/space-legacy-storage-charges.md) records the gap that Option P closes.
-Section [N10 of the design](design.md#n10-legacy-charges) gives the rule, and [Rule SM-8a](specification.md#13-entries-and-operations) states it.
+Retired by [decision 90](decision-register.md#decision-90): DR-134 of the base deleted the legacy meter, so the merge of `702496775` removed Option P, `LegacyCharges.v` and `reified/legacy_charges.rs`.
+This section records the last state of Option P.
+
+[Decision 45](decision-register.md#decision-45) (Option P) made each staged space operation of a legacy deploy pay the [legacy charges](glossary.md#legacy-charge) of its host call.
+The [finding](findings/space-legacy-storage-charges.md) records the gap that Option P closed.
+Section [N10 of the design](design.md#n10-legacy-charges) records the retirement, and [Rule SM-8a](specification.md#13-entries-and-operations) stated the rule.
 This section gives the evidence: the Rocq module `LegacyCharges.v`, the TLA+ invariant `LegacyChargesFollowHost`, the tests, and the negative controls.
 
-**The code.** `produce_charges` (`reified/legacy_charges.rs:59-83`) and `consume_charges` (`reified/legacy_charges.rs:88-112`) restate the pre-charge of `ChargingRSpace`.
-They also restate the post-charges of its `handle_result`, and `fire_post` (`reified/legacy_charges.rs:142-174`) gives the post-charges of a fire in that order.
+**The code.** `produce_charges` (`reified/legacy_charges.rs`) and `consume_charges` (`reified/legacy_charges.rs`) restate the pre-charge of `ChargingRSpace`.
+They also restate the post-charges of its `handle_result`, and `fire_post` (`reified/legacy_charges.rs`) gives the post-charges of a fire in that order.
 
-**The chain.** `LegacyChain::attach` (`reified/legacy_charges.rs:262-279`) puts three steps into the callback `before_observe` of operation $`i`$.
+**The chain.** `LegacyChain::attach` (`reified/legacy_charges.rs`) puts three steps into the callback `before_observe` of operation $`i`$.
 The steps are the carried post-charges of operation $`i-1`$, the registration of operation $`i`$, and the pre-charge of operation $`i`$.
-`LegacyChain::finish` (`reified/legacy_charges.rs:283-292`) charges the post-charges of the last operation after the commit.
+`LegacyChain::finish` (`reified/legacy_charges.rs`) charges the post-charges of the last operation after the commit.
 Every staging site of `spaces/generic.rs` and `spaces/counter.rs` stages through the chain, and each prepared job calls `finish` before its outcome.
 Outside test code, only `LegacyChain` calls `txn.produce` and `txn.consume` in the P4 sources.
 
@@ -2187,10 +2236,10 @@ The property `prop_legacy_charges_equal_charging_rspace` ties the abstract charg
 
 | Id | Headline | Claim |
 |---|---|---|
-| Q79 | `legacy_rebracket_eq_host` (`LegacyCharges.v:713`) | For every list of operations, budget, initial log, and call history, the space run makes the legacy log, remaining budget, status, calls, and applied operations of the host program. A stop at the pre-charge of operation $`i`$ applies the first $`i`$ operations, and a stop at a post-charge of operation $`i`$ applies the first $`i+1`$ operations. |
-| Q80 | `legacy_replay_stops_with_play` (`LegacyCharges.v:747`) | Replay stages the operations of play and pairs each operation whose body play applied. Then replay makes the legacy log, remaining budget, status, calls, and applied operations of play, and it never diverges. |
+| Q79 | `legacy_rebracket_eq_host` | For every list of operations, budget, initial log, and call history, the space run makes the legacy log, remaining budget, status, calls, and applied operations of the host program. A stop at the pre-charge of operation $`i`$ applies the first $`i`$ operations, and a stop at a post-charge of operation $`i`$ applies the first $`i+1`$ operations. |
+| Q80 | `legacy_replay_stops_with_play` | Replay stages the operations of play and pairs each operation whose body play applied. Then replay makes the legacy log, remaining budget, status, calls, and applied operations of play, and it never diverges. |
 
-The lemma `commit_finish_rebracket` (`LegacyCharges.v:449`) is the core of both proofs.
+The lemma `commit_finish_rebracket` is the core of both proofs.
 By induction on the operations, the commit loop and the tail equal the carry and then the flat host run.
 The proof only re-associates binds, so it holds for every charge rule, call acceptance, and replay pairing.
 Q79 applies the lemma to the empty chain, and `host_ops_stops` gives the applied operations at each stop point.
@@ -2198,9 +2247,9 @@ Q80 rewrites both runs to the flat form, and `host_op_pairing` shows that a pair
 The two premises of Q80 restate H23 of `EventCorrelation.v`, because the modules do not import each other.
 
 The module also proves two counterexamples with no assumption.
-In `legacy_tail_dropped_breaks_eq` (`LegacyCharges.v:828`), a run without the tail misses the post-charges of its last operation.
-In `legacy_pre_after_observe_breaks_prefix` (`LegacyCharges.v:879`), a late pre-charge stops at the point of the host, but with one more operation applied.
-`legacy_negative_controls_computed` (`LegacyCharges.v:923`) computes both counterexamples on a concrete instance.
+In `legacy_tail_dropped_breaks_eq`, a run without the tail misses the post-charges of its last operation.
+In `legacy_pre_after_observe_breaks_prefix`, a late pre-charge stops at the point of the host, but with one more operation applied.
+`legacy_negative_controls_computed` computes both counterexamples on a concrete instance.
 The module compiles alone, prints `Closed under the global context` for both headlines, and `rocqchk` reports `Axioms <none>`.
 
 *Table 59. The Rocq mutants of decision 45, Option P, in LegacyCharges.v.*
@@ -2264,14 +2313,14 @@ The host program uses the staging order of the space.
 | `prop_legacy_charges_equal_charging_rspace` | `reified_legacy_charges.rs:173` | Generated host programs run on the real `ChargingRSpace`. For each call, the charges of the equivalent staged operation equal the new log entries, value and label. All 8 shapes of call occur (Q79). |
 | `prop_legacy_chain_log_is_host_order` | `reified_legacy_charges.rs:667` | Generated transactions with generated budgets make the legacy log and the stop of the host program. All 6 kinds of transaction occur, the stops in the commit and in the tail included (Q79). |
 | `prop_legacy_replay_stops_with_play` | `reified_legacy_charges.rs:775` | Replay with the log of play makes the legacy log, the stop, and the store of play (Q80). |
-| `legacy_charges_of_a_store_and_a_park` | `reified/legacy_charges.rs:416` | A store pays the storage of its record and the event fee of one channel. A park pays the storage of its continuation and the event fee of its channels. |
-| `legacy_charges_of_a_produce_fire_follow_handle_result` | `reified/legacy_charges.rs:442` | A produce-side fire pays the refunds, the event fee, and the COMM fee in the order of `handle_result`. |
-| `legacy_charges_of_a_consume_fire_refund_the_consume` | `reified/legacy_charges.rs:504` | A consume-side fire always refunds the storage of its consume. |
-| `legacy_charges_of_a_continuation_without_a_body_fail_closed` | `reified/legacy_charges.rs:546` | A continuation without a body fails closed, where `ChargingRSpace` panics. |
-| `legacy_chain_is_active_only_in_a_metered_legacy_deploy` | `reified/legacy_charges.rs:567` | The chain charges only a legacy deploy with a metered budget. |
-| `legacy_chain_charges_in_host_order` | `reified/legacy_charges.rs:632` | The callbacks and the tail make the log of the host program. |
-| `legacy_chain_pre_charge_stops_before_its_operation` | `reified/legacy_charges.rs:661` | A pre-charge that runs out of phlo stops the commit before its operation, and the operations before it stay applied. |
-| `legacy_chain_tail_fails_after_the_commit` | `reified/legacy_charges.rs:708` | A tail that runs out of phlo fails after the full commit. |
+| `legacy_charges_of_a_store_and_a_park` | `reified/legacy_charges.rs` | A store pays the storage of its record and the event fee of one channel. A park pays the storage of its continuation and the event fee of its channels. |
+| `legacy_charges_of_a_produce_fire_follow_handle_result` | `reified/legacy_charges.rs` | A produce-side fire pays the refunds, the event fee, and the COMM fee in the order of `handle_result`. |
+| `legacy_charges_of_a_consume_fire_refund_the_consume` | `reified/legacy_charges.rs` | A consume-side fire always refunds the storage of its consume. |
+| `legacy_charges_of_a_continuation_without_a_body_fail_closed` | `reified/legacy_charges.rs` | A continuation without a body fails closed, where `ChargingRSpace` panics. |
+| `legacy_chain_is_active_only_in_a_metered_legacy_deploy` | `reified/legacy_charges.rs` | The chain charges only a legacy deploy with a metered budget. |
+| `legacy_chain_charges_in_host_order` | `reified/legacy_charges.rs` | The callbacks and the tail make the log of the host program. |
+| `legacy_chain_pre_charge_stops_before_its_operation` | `reified/legacy_charges.rs` | A pre-charge that runs out of phlo stops the commit before its operation, and the operations before it stay applied. |
+| `legacy_chain_tail_fails_after_the_commit` | `reified/legacy_charges.rs` | A tail that runs out of phlo fails after the full commit. |
 | `space_queue_legacy_replay_equal` | `reified_queue_replay.rs:1001` | Legacy deploys on queues replay with the cost, the storage charges in order, every charge as a multiset, and the root of play. |
 | `space_queue_legacy_out_of_phlo_sweep_replays_equal` | `reified_queue_replay.rs:862` | The out-of-phlo sweep of decision 36 in a legacy deploy: every limit replays to the outcome of play. |
 
@@ -2313,7 +2362,7 @@ Its first step, W0, freezes a baseline of the queue before the engine changes.
 ### 12.1 The queue parity golden
 
 The suite `rholang/tests/reified_queue_parity.rs` pins what the queue agent does on a fixed set of deploys.
-The golden file `test-vectors/reified-queue-parity-v1.json` was captured at the commit of Option P of decision 45 (`2c2b45bf5`).
+The golden file `test-vectors/reified-queue-parity-v2.json` was captured from the merge of `702496775` with decision 112.
 Every later step of P5 must leave the golden unchanged.
 
 *Table 63. The scenarios of the queue parity golden.*
@@ -2326,18 +2375,18 @@ Every later step of P5 must leave the golden unchanged.
 | `reentry` | 3 | The re-entry of decision 43 ahead of a younger datum |
 | `divergent_pair` | 1 | A persistent receive and a persistent send that re-issue until the phlo runs out (A10) |
 | `persistent_operations` | 3 | A persistent send with two waiters, and a persistent receive that drains a queue |
-| `legacy_budget` | 5 | The deploys of a legacy budget, with the legacy charges of Option P |
 
 Each record of a deploy holds these values:
 
 - The events of the deploy, in order. Each event has every field of its identity: the hashes, the channels, the peeks, and `times_repeated`.
 - The phlo cost, the error codes, and the root after the deploy.
-- For a token budget, the host-work usage of each dimension, under a metered budget with no binding limit.
-- For a legacy budget, the storage charges in order and all legacy charges as a multiset.
+
+The id of a data channel or a collection counter holds the canonical bincode of the inner channel ([decision 112](decision-register.md#decision-112)).
+Each `Par` of the inner channel adds 8 bytes to the id.
+The channel bytes of a produce or a consume pay for the id at the byte rate.
 
 The deploys name the space only through injected names, so no host operation interleaves with the space jobs.
-A token scenario runs twice on fresh stores: with the plain evaluation of a user deploy, and under a metered host-work budget.
-The suite requires the same events, costs, errors, and roots from both runs.
+Each scenario runs `RACING_RUNS` times on a runtime with each worker count of `RACING_WORKERS`, and every run must give the records of the first run.
 The counts of waiters are literals, so the deploys of the golden do not change with `FIRE_ROUND_CAP`.
 
 **Determinism.** Two captures on the same host gave byte-identical fragments.
@@ -2360,7 +2409,7 @@ To capture, do these steps from the repository root:
 
 1. Set `RRS_CAPTURE_QUEUE_PARITY_OUT` to an absolute directory under `target/`.
 2. Run `cargo test -p rholang --test reified_queue_parity`. Each scenario writes one fragment.
-3. Run `python3 scripts/verify-reified/merge-queue-parity-capture.py --capture-dir <directory> --output test-vectors/reified-queue-parity-v1.json --capture-command <command>`.
+3. Run `python3 scripts/verify-reified/merge-queue-parity-capture.py --capture-dir <directory> --output test-vectors/reified-queue-parity-v2.json --capture-command <command>`.
 
 The merge script fails on a missing fragment, on a fragment of another scenario, and on an unknown fragment.
 Five checker self-tests cover these rules and the check mode (Table 13).
@@ -2372,13 +2421,13 @@ It wires no new family. The family agent has one arm, `hashmap:queue`, and the b
 
 S1 makes these changes:
 
-- `FamilyAgent` (`spaces/families.rs:535-626`) reads the config once and runs the agent of the family that the config names. The runtime installs it.
+- `FamilyAgent` (`spaces/families.rs:993-1096`) reads the config once and runs the agent of the family that the config names. The runtime installs it.
 - `Discipline` holds the plans of the operations. The default plans are the head driver `offer_head` and `receive_head`, the P4 plans as free functions over the discipline.
-- `Cx` (`spaces/generic.rs:772-775`) is the only path from a plan to the transaction. It adds group fires over `[D; n]`, retirements and lifts.
+- `Cx` (`spaces/generic.rs:714-717`) is the only path from a plan to the transaction. It adds group fires over `[D]`, retirements and lifts.
   `Cx` and `AllocCx` expose no raw transaction, and the legacy chain of a plan is private to `generic.rs`. So the types keep the design rule that only `generic.rs` and `counter.rs` stage operations.
-- `run_with` (`spaces/generic.rs:2544-2714`) checks the key, the params and the query before the bump, and bumps the counter only for a discipline that uses one.
+- `run_with` (`spaces/generic.rs:5506-5799`) checks the key, the params and the query before the bump, and bumps the counter only for a discipline that uses one.
 - The outer-store hooks check a routed key, stage the records of a creation, and allocate index names. A store without an allocator answers with `Baseline` and no work.
-- The substrate gives the canonical order of DR-75 over borrowed views (`space_store_handle.rs:342-350`, `382-394`).
+- The substrate gives the canonical order of DR-75 over borrowed views (`space_store_handle.rs:843-851`, `890-902`).
 
 **Acceptance.** The queue parity golden of 12.1 is unchanged, with its host-work usage.
 Every P4 suite passes unchanged, apart from the helper literals that the new fields need.
@@ -2389,24 +2438,24 @@ So the golden pins the one comparison of the family check.
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_engine_staged_kinds_stay_one_byte` | `generic.rs:5455` | A staged kind is one byte, so the reserved staged list of a head-only plan keeps its size. |
-| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:5462` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
-| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:5548` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
-| `space_engine_capacity_abort_stages_nothing` | `generic.rs:5598` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. |
-| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:5633` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
-| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:5697` | A retirement and a lift remove their records and dispatch nothing. |
-| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:5749` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
-| `space_engine_staged_list_growth_is_reserved_before_it_grows` | `generic.rs:6222` | A list at its capacity reserves the doubled buffer before it grows. A budget that is one operation short rejects the growth and leaves the list unchanged. |
-| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:6270` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
-| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:6291` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
-| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:6317` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
-| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:6361` | The family agent gives the fires, events, records, waiters and host work of the queue agent. |
-| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:6551` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
-| `space_families_wire_exactly_the_listed_families` | `families.rs:687` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
-| `space_families_dispatch_by_config_reserves_one_comparison_per_arm` | `families.rs:872` | Each arm that the dispatch tries reserves one comparison of the names of the config and of the arm. The arm of `hashmap:queue` comes first, so it reserves what the P4 agent reserves. |
-| `space_order_primitives_reserve_the_restated_formula` | `space_store_handle.rs:3910` | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. |
-| `harness_session_runs_a_queue_space_under_the_family_agent` | `reified_p5_harness.rs:28` | The shared session creates a space and runs deploys under the family agent. |
-| `harness_agent_env_runs_the_family_agent_in_fifo_order` | `reified_p5_harness.rs:65` | Over the shared agent environment, the family agent delivers in send order and bumps once for each operation (64 cases). |
+| `space_engine_staged_kinds_stay_one_byte` | removed by merge 1 | A staged kind is one byte, so the reserved staged list of a head-only plan keeps its size. Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so merge 1 removed this test. |
+| `space_engine_checks_params_and_queries_before_the_bump` | `generic.rs:9230` | An unknown key, a query that the discipline does not take, and a rejected value fail before the bump. The counter and the log stay unchanged. |
+| `space_engine_plans_see_the_round_counter_and_the_operation` | `generic.rs:9316` | A plan sees the counter value of its round (`Cx::bumped`), and each settle hook sees its operation (`OpView`). |
+| `space_engine_capacity_abort_stages_nothing` | `generic.rs:9369` | A store or a park on a full side fails with `CellOccupied`, and the transaction applies nothing. Disabled by [decision 92](decision-register.md#decision-92): a failure at a position of the state commits the anchor of its job. `space_engine_positional_failure_commits_the_anchor_only` (`generic.rs:9408`) checks the new rule. |
+| `space_engine_group_fire_lines_up_and_dispatches_its_prefix` | `generic.rs:9445` | A fire over `[D; 3]` that binds one result removes three records and dispatches one result. A group that does not line up stages nothing. |
+| `space_engine_retire_and_lift_fire_without_dispatch` | `generic.rs:9640` | A retirement and a lift remove their records and dispatch nothing. |
+| `space_engine_outcome_dispatches_the_prefix_of_a_group_fire` | `generic.rs:9790` | The outcome keeps the prefix of a prefix fire and rejects a missing or extra count. |
+| `space_engine_staged_list_growth_is_reserved_before_it_grows` | removed by merge 1 | A list at its capacity reserves the doubled buffer before it grows. A budget that is one operation short rejects the growth and leaves the list unchanged. Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so merge 1 removed this test. |
+| `space_engine_operation_ord_without_a_counter_is_zero` | `generic.rs:10542` | Without a counter every order is 0, and a re-issued order other than 0 is `Inconsistent`. |
+| `space_engine_allocation_without_an_allocator_is_baseline` | `generic.rs:10562` | An allocation in a HashMap space is `Baseline` and logs nothing, and a missing config is `DanglingHandle`. |
+| `space_engine_allocator_store_creates_and_allocates_its_names` | `generic.rs:10588` | A store with an allocator stages its creation record and allocates names through the take and the put of the allocator. |
+| `space_engine_family_agent_runs_a_queue_as_its_own_agent_does` | `generic.rs:10632` | The family agent gives the fires, events, records and waiters of the queue agent. Changed by [decision 89](decision-register.md#decision-89): before, it also gave the host work of the queue agent. |
+| `space_engine_family_agent_rejects_a_family_that_is_not_wired` | `generic.rs:10809` | An operation, an allocation and a creation of a family that is not wired fail with `FamilyUnavailable` and log nothing. |
+| `space_families_wire_exactly_the_listed_families` | `families.rs:1163` | Only the wired families have an agent and param schemas, and each family takes the schemas of its discipline. |
+| `space_families_dispatch_by_config` | `families.rs:1363` | Each wired pair of names dispatches to its family, and each pair that is not wired dispatches to no family. Changed by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so the dispatch reserves no comparison. |
+| `space_order_primitives_reserve_the_restated_formula` | removed by merge 1 | Each primitive of the space order reserves what `MeteredOrder` of the branch reserves. Both orders run the one `canonical_order`. Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so merge 1 removed this test. |
+| `harness_session_runs_a_queue_space_under_the_family_agent` | `reified_p5_harness.rs:32` | The shared session creates a space and runs deploys under the family agent. |
+| `harness_agent_env_runs_the_family_agent_in_fifo_order` | `reified_p5_harness.rs:69` | Over the shared agent environment, the family agent delivers in send order and bumps once for each operation (64 cases). |
 
 **The shared harness.** The P5 suites include `rholang/tests/support/` with `#[path]`.
 It holds the property runner, the agent environment and the runtime session of the P4 queue suite for any family.
@@ -2427,7 +2476,7 @@ The differential moved there from `reified_legacy_charges.rs`, whose three prope
 ### 12.3 The engine models
 
 Two Rocq modules and one TLA+ module model the two drivers of the engine: the head driver of S1 and the scan driver ([design N11.2](design.md#n112-the-scan-driver)).
-An appendix of `AgentReadCoverage.v` models the metering of the S1 primitives.
+An appendix of `AgentReadCoverage.v` modeled the metering of the S1 primitives, and [decision 96](decision-register.md#decision-96) removed it.
 The models count the fire of a receive before its peek restore, as the code does.
 A second send that meets a full transaction re-issues before it fires ([decision 49](decision-register.md#decision-49)).
 
@@ -2435,15 +2484,14 @@ A second send that meets a full transaction re-issues before it fires ([decision
 
 | Headline | Location | Property test |
 |---|---|---|
-| `space_match_is_injected_match` | `Match.v:642` | `prop_engine_match_is_the_injected_matcher` |
-| `guard_once_greedy_like_head` | `Match.v:685` | `prop_engine_guard_checked_once_as_the_host_checks_it` |
-| `wildcard_matcher_degenerate` | `Match.v:876` | `prop_engine_wildcard_matcher_breaks_pattern_enforcement` |
-| `consume_fires_only_matching` | `GenericRSpace.v:1096` | `prop_engine_consume_fires_only_matching` |
-| `produce_fires_only_matching` | `GenericRSpace.v:1109` | `prop_engine_produce_fires_only_matching` |
-| `unordered_no_pending_match` | `GenericRSpace.v:1124` | `prop_engine_no_guard_free_pending_match` |
-| `peek_restore_equals_host_reproduce` | `GenericRSpace.v:1156` | `prop_engine_peek_restore_equals_host_reproduce` |
-| `scan_reissue_identity_stable` | `GenericRSpace.v:1300` | `prop_engine_scan_reissue_keeps_identity` |
-| `engine_primitives_trace_covered` | `AgentReadCoverage.v:998` | `prop_engine_primitives_reserve_before_they_read`, `prop_cell_reservation_cut_rejects_without_effect` |
+| `space_match_is_injected_match` | `Match.v:644` | `prop_engine_match_is_the_injected_matcher` |
+| `guard_once_greedy_like_head` | `Match.v:687` | `prop_engine_guard_checked_once_as_the_host_checks_it` |
+| `wildcard_matcher_degenerate` | `Match.v:878` | `prop_engine_wildcard_matcher_breaks_pattern_enforcement` |
+| `consume_fires_only_matching` | `GenericRSpace.v:1107` | `prop_engine_consume_fires_only_matching` |
+| `produce_fires_only_matching` | `GenericRSpace.v:1120` | `prop_engine_produce_fires_only_matching` |
+| `unordered_no_pending_match` | `GenericRSpace.v:1135` | `prop_engine_no_guard_free_pending_match` |
+| `peek_restore_equals_host_reproduce` | `GenericRSpace.v:1167` | `prop_engine_peek_restore_equals_host_reproduce` |
+| `scan_reissue_identity_stable` | `GenericRSpace.v:1311` | `prop_engine_scan_reissue_keeps_identity` |
 
 `GenericRSpace.tla` checks the bag, the set and the cell with the invariants V1 to V8.
 It covers every schedule of five operations and every canonical order.
@@ -2462,18 +2510,18 @@ Table 67 lists the Unsafe controls. Each one refutes exactly its invariant, and 
 | `RestoreOpAuthorityUnsafe.cfg` | the re-store takes the authority of the operation | `PeekRestoresRecord` |
 | `RestoreNoReofferUnsafe.cfg` | the re-store is a plain store with no re-offer | `PeekRestoresRecord` |
 
-`rholang/tests/reified_engine_props.rs` holds one property for each headline and invariant: 16 properties, 2 witness tests and 2 oracle controls.
+`rholang/tests/reified_engine_props.rs` holds one property for each headline and invariant: 15 properties, 2 witness tests and 2 oracle controls.
 The properties run the real bag, queue and cell disciplines and a probe of the set.
 Each property asserts a minimum count of the cases that reach its key behavior.
-The 24 Rocq negative controls fail inside the lemma whose statement they make false (Table 68).
+The 22 Rocq negative controls fail inside the lemma whose statement they make false (Table 68).
 
 *Table 68. The negative controls of the engine models, by group.*
 
 | Group | Controls | What they revert |
 |---|---|---|
-| `mt-*` | 7 | the injected matcher, the guard rule of the host, and the wildcard instance (F17 to F19) |
+| `mt-*` | 9 | the injected matcher, the guard rule of the host, the wildcard instance (F17 to F19), and the theory check of a send and of a receive (design v3 TH-6) |
 | `gr-*` | 13 | the fire rules, the restore of Rule E, and the re-issue identity (F20 to F22, decision 43) |
-| `arc-*` | 4 | the reservations of the staged list, of group fires, of the capacity check and of prefix outcomes (decision 42) |
+| `arc-*` | 0 | Disabled by [decision 96](decision-register.md#decision-96) (DR-131): `AgentReadCoverage.v` is gone, so its four controls of this group are comments. |
 
 ### 12.4 The bag and the scan driver
 
@@ -2483,23 +2531,23 @@ The bag runs on the scan driver ([design N11.2](design.md#n112-the-scan-driver))
 
 | Headline | Location | Property test |
 |---|---|---|
-| `bag_visit_order_canonical` | `DataCollection.v:243` | `prop_bag_visit_order_canonical` |
-| `bag_consume_first_spatial_match` | `DataCollection.v:445` | `prop_bag_consume_first_spatial_match` |
-| `bag_persistent_match_not_removed` | `DataCollection.v:536` | `prop_bag_persistent_match_not_removed` |
-| `bag_multiplicity_preserved` | `DataCollection.v:559` | `prop_bag_multiplicity_preserved` |
-| `bag_removal_keeps_equal_duplicate` | `DataCollection.v:578` | `prop_bag_removal_keeps_equal_duplicate` |
-| `bag_peek_restore_is_host_second_send` | `DataCollection.v:725` | `prop_bag_legacy_charges_equal_host`, `prop_bag_restore_registers_the_record_authority` |
-| `scan_trace_covered` | `DataCollection.v:856` | `prop_bag_reservation_cut_rejects_without_effect` |
+| `bag_visit_order_canonical` | `DataCollection.v:251` | `prop_bag_visit_order_canonical` |
+| `bag_consume_first_spatial_match` | `DataCollection.v:453` | `prop_bag_consume_first_spatial_match` |
+| `bag_persistent_match_not_removed` | `DataCollection.v:544` | `prop_bag_persistent_match_not_removed` |
+| `bag_multiplicity_preserved` | `DataCollection.v:567` | `prop_bag_multiplicity_preserved` |
+| `bag_removal_keeps_equal_duplicate` | `DataCollection.v:586` | `prop_bag_removal_keeps_equal_duplicate` |
+| `bag_peek_restore_is_host_second_send` | `DataCollection.v:733` | `prop_bag_observer_calls_equal_host`, `prop_bag_restore_registers_the_record_authority` |
 | `waiter_removal_by_record_identity` | `ContinuationCollection.v:273` | `prop_bag_waiter_removal_by_record_identity` |
 | `pattern_equality_removal_can_remove_another_waiter` | `ContinuationCollection.v:289` | `prop_bag_equal_pattern_waiters_stay_distinct` |
 | `park_byte_identity_idempotent` | `ContinuationCollection.v:308` | `prop_bag_park_byte_identity_idempotent` |
-| `waiter_visit_order_canonical` | `ContinuationCollection.v:337` | `prop_bag_waiter_visit_order_canonical` |
-| `head_waiter_unique` | `ContinuationCollection.v:367` | `prop_head_waiter_unique` |
+| `waiter_visit_order_canonical` | `ContinuationCollection.v:338` | `prop_bag_waiter_visit_order_canonical` |
+| `head_waiter_unique` | `ContinuationCollection.v:368` | `prop_head_waiter_unique` |
 
-`rholang/tests/reified_bag.rs` holds 18 tests and 13 properties.
-Its host differential runs each program on a real `ChargingRSpace` and on the bag agent, with the follow-up calls of the reducer.
-The differential compares the events and the charges.
-The 16 Rocq negative controls fail inside their expected headlines.
+`rholang/tests/reified_bag.rs` holds 17 tests and 12 properties.
+Its host differential checks that each operation of a generated program makes the observer calls of its host program.
+The calls include the second send of each peek and its fires.
+The differential also compares the fires and the stores.
+The 14 Rocq negative controls fail inside their expected headlines.
 Five single changes of `scan.rs` each make tests fail (Table 70), and an MD5 check shows that each run restored the file.
 
 *Table 70. The Rust mutation checks of the scan driver.*
@@ -2522,7 +2570,7 @@ Five single changes of `scan.rs` each make tests fail (Table 70), and an MD5 che
 | `cell_restore_never_occupied` | `CellDiscipline.v:858` | `prop_cell_restore_never_occupied` |
 | `cell_reentry_as_fresh` | `CellDiscipline.v:889` | `prop_cell_reentry_as_fresh` |
 
-`rholang/tests/reified_cell.rs` holds 17 tests and 4 properties, and `cell.rs` holds 4 unit tests.
+`rholang/tests/reified_cell.rs` holds 16 tests and 3 properties, and `cell.rs` holds 4 unit tests.
 Seven Rocq negative controls fail inside their expected declarations: three on the capacity check, two on the re-store, and two on the re-entry rule.
 Three Rust mutants of `cell.rs` make the expected tests fail, and each twin property has a control of its own in the run.
 
@@ -2532,22 +2580,21 @@ Three Rust mutants of `cell.rs` make the expected tests fail, and each twin prop
 
 | Headline | Location | Property test |
 |---|---|---|
-| `fixed_array_allocates_at_most_size` | `OuterStorage.v:313` | `prop_fixed_array_allocates_at_most_size` |
-| `fixed_array_out_of_names_exact` | `OuterStorage.v:330` | `prop_fixed_array_out_of_names_exact` |
-| `cyclic_array_index_mod_size` | `OuterStorage.v:376` | `prop_cyclic_array_index_mod_size` |
-| `allocation_batch_atomic` | `OuterStorage.v:402` | `prop_allocation_batch_atomic` |
-| `fixed_array_indices_sequential` | `OuterStorage.v:345` | `prop_fixed_array_indices_sequential` |
-| `allocator_indices_distinct` | `OuterStorage.v:450` | `prop_allocator_indices_distinct` |
-| `allocator_identities_unique` | `OuterStorage.v:555` | `prop_allocator_identities_unique` |
-| `alloc_trace_covered` | `OuterStorage.v:695` | `prop_alloc_trace_covered` |
+| `fixed_array_allocates_at_most_size` | `OuterStorage.v:318` | `prop_fixed_array_allocates_at_most_size` |
+| `fixed_array_out_of_names_exact` | `OuterStorage.v:335` | `prop_fixed_array_out_of_names_exact` |
+| `cyclic_array_index_mod_size` | `OuterStorage.v:381` | `prop_cyclic_array_index_mod_size` |
+| `allocation_batch_atomic` | `OuterStorage.v:407` | `prop_allocation_batch_atomic` |
+| `fixed_array_indices_sequential` | `OuterStorage.v:350` | `prop_fixed_array_indices_sequential` |
+| `allocator_indices_distinct` | `OuterStorage.v:455` | `prop_allocator_indices_distinct` |
+| `allocator_identities_unique` | `OuterStorage.v:560` | `prop_allocator_identities_unique` |
 | `vector_index_is_counter` | `VectorStore.v:184` | `prop_vector_index_is_counter` |
 | `vector_gensym_distinct` | `VectorStore.v:204` | `prop_vector_gensym_distinct` |
 | `vector_gensym_monotonic` | `VectorStore.v:219` | `prop_vector_gensym_monotonic` |
 | `hashmap_iteration_permutation_invariant` | `HashMapStore.v:211` | `prop_hashmap_iteration_permutation_invariant` |
 | `hashmap_get_put_other` | `HashMapStore.v:256` | `prop_hashmap_get_put_other` |
 
-`rholang/tests/reified_array_vector.rs` holds 25 tests and 15 properties, and the allocator and the stores hold 17 unit tests.
-The 21 Rocq negative controls fail inside their expected headlines.
+`rholang/tests/reified_array_vector.rs` holds 22 tests and 14 properties, and the allocator and the stores hold 18 unit tests.
+The 22 Rocq negative controls of `OuterStorage.v`, `VectorStore.v` and `HashMapStore.v` fail inside their expected headlines.
 `CounterConflict.tla` models the allocator: `MC_CounterConflict_Allocator.cfg` finds 326,700 states with no violation.
 The Unsafe control `LazyAllocatorUnsafe.cfg` creates the allocator at the first allocation, and it refutes exactly `NoDuplicateIndex`.
 
@@ -2563,14 +2610,14 @@ A forged channel inside the `use` block of an Array space fails with `NotAnIndex
 
 | Headline | Location | Property test |
 |---|---|---|
-| `prefix_key_iff_prefix` | `PathMapPrefix.v:584` | `prop_prefix_key_iff_prefix`, `prop_segments_are_a_prefix_code`, `prop_path_keys_are_injective`, `prop_metered_keys_equal_unmetered_keys` |
-| `reroot_ident` | `PathMapPrefix.v:843` | `prop_reroot_ident` |
-| `reroot_compose` | `PathMapPrefix.v:850` | `prop_reroot_compose`, `prop_head_adapter_roundtrip`, `prop_prefixed_maps_keep_their_order` |
-| `reroot_injective` | `PathMapPrefix.v:922` | `prop_reroot_injective` |
-| `fips_example` | `PathMapPrefix.v:959` | `prop_unit_shift` |
-| `candidate_order_total` | `PathMapPrefix.v:1014` | `prop_candidate_order_total` |
+| `prefix_key_iff_prefix` | `PathMapPrefix.v:586` | `prop_prefix_key_iff_prefix`, `prop_segments_are_a_prefix_code`, `prop_path_keys_are_injective` |
+| `reroot_ident` | `PathMapPrefix.v:845` | `prop_reroot_ident` |
+| `reroot_compose` | `PathMapPrefix.v:852` | `prop_reroot_compose`, `prop_head_adapter_roundtrip`, `prop_prefixed_maps_keep_their_order` |
+| `reroot_injective` | `PathMapPrefix.v:924` | `prop_reroot_injective` |
+| `fips_example` | `PathMapPrefix.v:961` | `prop_unit_shift` |
+| `candidate_order_total` | `PathMapPrefix.v:1016` | `prop_candidate_order_total` |
 
-The layer holds 33 unit tests, 11 of them properties, which run on the shared runner of `rholang/tests/support/props.rs`.
+The layer (`path_codec.rs`, `reroot.rs` and `adapter.rs`) holds 29 unit tests, 10 of them properties, which run on the shared runner of `rholang/tests/support/props.rs`.
 The 17 Rocq negative controls fail inside their expected lemmas. One control changes two places, the serializer of a tag and its parser.
 
 ### 12.8 The families
@@ -2579,19 +2626,19 @@ The 17 Rocq negative controls fail inside their expected lemmas. One control cha
 
 | Headline | Location | Property test |
 |---|---|---|
-| `registered_families_complete` | `SpaceFactory.v:1444` | `prop_registered_families_complete`, `prop_factory_config_names_its_family` |
-| `aliases_bind_family_capability` | `SpaceFactory.v:1533` | `prop_aliases_bind_family_capability`, `prop_factory_config_names_its_family` |
-| `constructor_params_validated` | `SpaceFactory.v:1938` | `prop_constructor_params_validated` |
-| `priorities_validated` | `SpaceFactory.v:2075` | `prop_priorities_validated` |
-| `array_size_validated` | `SpaceFactory.v:2188` | `prop_array_size_validated` |
+| `registered_families_complete` | `SpaceFactory.v:1571` | `prop_registered_families_complete`, `prop_factory_config_names_its_family` |
+| `aliases_bind_family_capability` | `SpaceFactory.v:1660` | `prop_aliases_bind_family_capability`, `prop_factory_config_names_its_family` |
+| `constructor_params_validated` | `SpaceFactory.v:2065` | `prop_constructor_params_validated` |
+| `priorities_validated` | `SpaceFactory.v:2202` | `prop_priorities_validated` |
+| `array_size_validated` | `SpaceFactory.v:2315` | `prop_array_size_validated` |
 
-`rholang/tests/reified_families.rs` holds 10 tests and 6 properties, and the factory modules hold 27 unit tests.
+`rholang/tests/reified_families.rs` holds 10 tests and 7 properties, and `families.rs` and the modules of `spaces/factory/` hold 25 unit tests.
 Every check of the suite runs for each registered family, so a new arm extends the suite with no edit.
 The 20 Rocq negative controls fail inside their expected lemmas, and the 6 controls of P4 still pass on the extended module.
 
 ### 12.9 The receive queries and the allocation jobs
 
-`query_source_routes_inner_channel` (`SpaceRefs.v:1665`) states the route of a receive query.
+`query_bind_routes_its_channel` (`SpaceRefs.v:1946`) states the route of a bind with a query.
 `prop_query_bind_routes_inner_channel` (the hooks) and `prop_query_source_routes_inner_channel` (`rholang/tests/reified_hooks_p5.rs`) test it.
 `rholang/tests/reified_hooks_p5.rs` holds 9 tests and 1 property, and the five Rocq negative controls fail inside the headline.
 The test `reducer_space_routing_allocation_jobs_give_index_names` checks that each allocation job stamps the authority of the process that evaluates the `new` on the allocator record.
@@ -2607,19 +2654,18 @@ A plan opens only below the cap.
 
 | Headline | Location |
 |---|---|
-| `stack_head_is_max_ord` | `StackDiscipline.v:556` |
-| `stack_produce_preserves_inv` | `StackDiscipline.v:1043` |
-| `stack_consume_preserves_inv` | `StackDiscipline.v:1049` |
-| `stack_lifo` | `StackDiscipline.v:1255` |
-| `stack_head_blocks` | `StackDiscipline.v:1348` |
-| `stack_peek_restore_needs_no_settle` | `StackDiscipline.v:1405` |
-| `stack_reentry_at_lifo_place` | `StackDiscipline.v:1444` |
-| `stack_reissue_keeps_ord` | `StackDiscipline.v:1576` |
-| `stack_settle_terminates` | `StackDiscipline.v:1959` |
-| `stack_settle_keeps_unspent_records` | `StackDiscipline.v:2151` |
-| `stack_plan_permutation_invariant` | `StackDiscipline.v:2493` |
-| `stack_without_settle_breaks_inv` | `StackDiscipline.v:2571` |
-| `settle_trace_covered` | `StackDiscipline.v:2902` |
+| `stack_head_is_max_ord` | `StackDiscipline.v:564` |
+| `stack_produce_preserves_inv` | `StackDiscipline.v:1051` |
+| `stack_consume_preserves_inv` | `StackDiscipline.v:1057` |
+| `stack_lifo` | `StackDiscipline.v:1263` |
+| `stack_head_blocks` | `StackDiscipline.v:1356` |
+| `stack_peek_restore_needs_no_settle` | `StackDiscipline.v:1413` |
+| `stack_reentry_at_lifo_place` | `StackDiscipline.v:1452` |
+| `stack_reissue_keeps_ord` | `StackDiscipline.v:1584` |
+| `stack_settle_terminates` | `StackDiscipline.v:1967` |
+| `stack_settle_keeps_unspent_records` | `StackDiscipline.v:2159` |
+| `stack_plan_permutation_invariant` | `StackDiscipline.v:2501` |
+| `stack_without_settle_breaks_inv` | `StackDiscipline.v:2579` |
 
 Four headlines take the premise $`0 < \mathit{cap}`$, because `open_plan` opens no plan at a cap of 0, and `FIRE_ROUND_CAP` is 64.
 `stack_settle_terminates` bounds the whole transaction: a produce, a consume, a settle job and both re-entries each make at most `FIRE_ROUND_CAP` fires.
@@ -2637,10 +2683,10 @@ It reaches 41 plan-open re-issues and 2,058 cap stops of a settle.
 | `StackPerPhaseCountUnsafe.cfg` | each phase of a transaction starts a count of its own | `TxnFiresBounded` |
 | `StackPlanOpensAtCapUnsafe.cfg` | a plan opens at the cap with no check | `TxnFiresBounded` |
 
-`rholang/tests/reified_stack.rs` holds 26 tests and 8 properties. The property `prop_stack_txn_fires_bounded_at_the_cap` reaches each cap stop.
+`rholang/tests/reified_stack.rs` holds 24 tests and 7 properties. The property `prop_stack_txn_fires_bounded_at_the_cap` reaches each cap stop.
 It covers the settle job at the cap, the settle before a plan at the cap, and the plan that opens at the cap.
 It checks every transaction against the bound.
-The 20 Rocq negative controls fail inside their expected lemmas. Three of them change the count of a transaction, and each fails in `stack_settle_terminates`.
+The 18 Rocq negative controls fail inside their expected lemmas. Three of them change the count of a transaction, and each fails in `stack_settle_terminates`.
 
 ### 12.11 The merge of the P5 families
 
@@ -2672,22 +2718,22 @@ The four new Rocq negative controls fail inside their expected declarations.
 
 At the end of wave W2, `rholang/tests/reified_merge_p5.rs` held 8 tests and 5 properties.
 The tests compute the merge as `dag_merger.rs` does, and each race test also strips the counter events, after which the branches merge.
-Two `new` blocks inside `use` of one Array or Vector space race on the allocator `A(sid)` (`rholang/tests/reified_merge_p5.rs:822-883`).
-The tests of items 18 and 19 of the consensus checklist are at `rholang/tests/reified_merge_p5.rs:1053-1192`.
-The test of item 18 for the joins of P5c is at `rholang/tests/reified_merge_p5.rs:2044-2127`.
+Two `new` blocks inside `use` of one Array or Vector space race on the allocator `A(sid)` (`rholang/tests/reified_merge_p5.rs:916-977`).
+The tests of items 18 and 19 of the consensus checklist are at `rholang/tests/reified_merge_p5.rs:1147-1328`.
+The test of item 18 for the joins of P5c is at `rholang/tests/reified_merge_p5.rs:2197-2282`.
 
 Wave W3 extends these checks to the set, the priority queue and the joins, and it adds 8 tests and 2 properties.
-So `reified_merge_p5.rs` now holds 16 tests and 7 properties.
+So `reified_merge_p5.rs` then held 16 tests and 7 properties.
 A set has no counter, so its merges follow the HEAD checks of its records.
-Writes to one set merge, and the merged view is the view of each serial order (F25, `rholang/tests/reified_merge_p5.rs:1749-1788`).
-Two branches that each retire one stored member of a set race in check #1 on the produce of that member (F24, `rholang/tests/reified_merge_p5.rs:1790-1828`).
+Writes to one set merge, and the merged view is the view of each serial order (F25, `rholang/tests/reified_merge_p5.rs:1895-1934`).
+Two branches that each retire one stored member of a set race in check #1 on the produce of that member (F24, `rholang/tests/reified_merge_p5.rs:1936-1974`).
 
-Two dequeues of one priority queue race on its counter and on the head record that both take (`rholang/tests/reified_merge_p5.rs:1832-1873`).
-A peek of a priority queue races with a send and with a dequeue on the counter alone (`rholang/tests/reified_merge_p5.rs:1875-1904`).
+Two dequeues of one priority queue race on its counter and on the head record that both take (`rholang/tests/reified_merge_p5.rs:1978-2019`).
+A peek of a priority queue races with a send and with a dequeue on the counter alone (`rholang/tests/reified_merge_p5.rs:2021-2050`).
 The merge index counts no consume of a peek COMM, so without the counter events each of these pairs merges.
-A join races on the counter of each of its collections, and it merges with operations on other collections (`rholang/tests/reified_merge_p5.rs:1916-1966`).
-A bag join has no counter, and it meets a send on one of its collections as a potential COMM in check #2 (`rholang/tests/reified_merge_p5.rs:1968-1996`).
-The properties `prop_set_retirements_race` and `prop_unordered_set_writes_commute` run 16 cases each (`rholang/tests/reified_merge_p5.rs:2131-2203`).
+A join races on the counter of each of its collections, and it merges with operations on other collections (`rholang/tests/reified_merge_p5.rs:2062-2119`).
+A bag join has no counter, and it meets a send on one of its collections as a potential COMM in check #2 (`rholang/tests/reified_merge_p5.rs:2121-2149`).
+The properties `prop_set_retirements_race` and `prop_unordered_set_writes_commute` run 16 cases each (`rholang/tests/reified_merge_p5.rs:2286-2358`).
 
 Phase 2 of the PathMap engine adds headline 15, `pathmap_token_race`, to `CounterConflict.v` (R129).
 Two deploys from one pre-state that each run a PathMap step that bumps the token race in check #1 on $`S(\mathit{sid})`$.
@@ -2695,11 +2741,12 @@ A step bumps the token when its discipline is ordered, or when its transaction c
 The predicate `pstep_changes` of the model is the `changed` rule of the engine, with the class retire of a set added.
 Its two new negative controls fail inside `exec_pmap_consumes_token` and `store_changes`.
 
-The test `space_collection_conflicts_pathmap_token_race` checks that two writes to disjoint paths of one bag space race on the token (`rholang/tests/reified_merge_p5.rs:2267-2308`).
+The test `space_collection_conflicts_pathmap_token_race` checks that two writes to disjoint paths of one bag space race on the token (`rholang/tests/reified_merge_p5.rs:2422-2463`).
 A bag branch that only peeks bumps no token, so it merges with a write, and a peek of a queue races with a write.
-The property `prop_pathmap_token_race` generates pairs of sends and peeks on the bag and the queue (`rholang/tests/reified_merge_p5.rs:2349-2409`).
+The property `prop_pathmap_token_race` generates pairs of sends and peeks on the bag and the queue (`rholang/tests/reified_merge_p5.rs:2504-2564`).
 Two branches race exactly when both bump the token, and the same logs without the token events merge.
-So `reified_merge_p5.rs` now holds 17 tests and 8 properties.
+So `reified_merge_p5.rs` then held 17 tests and 8 properties.
+Today it holds 19 tests and 10 properties.
 
 ### 12.12 Determinism and the pattern-enforcement matrix
 
@@ -2709,32 +2756,40 @@ At the end of wave W2, `rholang/tests/reified_determinism.rs` held 6 tests and 3
 
 **Canonical iteration.**
 The hot store puts each new entry at the front of its list.
-A checkpoint sorts each list by its encoded bytes (`rspace++/src/rspace/serializers/serializers.rs:18-26`), and the next reads load it in that order (`rspace++/src/rspace/rspace/ispace_impl.rs:60-95`).
-The tests build one entry set in three list orders (`rholang/tests/reified_determinism.rs:528-559`, `671-730`).
+A checkpoint sorts each list by its encoded bytes (`rspace++/src/rspace/serializers/serializers.rs:18-26`), and the next reads load it in that order (`rspace++/src/rspace/rspace/ispace_impl.rs:53-88`).
+The tests build one entry set in three list orders (`rholang/tests/reified_determinism.rs:528-559`, `676-730`).
 The orders are the order of the agent operations, a reverse order through raw host operations, and the order of the history.
 
 One probe script gives the same results, events, legacy charges and root in the three orders.
-Each test also runs one Rholang program in two fresh runtimes and compares the root, the event log and the cost (`rholang/tests/reified_determinism.rs:1053-1067`).
+The racing runtimes are the three tokio runtimes of `RACING_WORKERS`: a current-thread runtime and two runtimes with 2 and 8 worker threads (`rholang/tests/support/props.rs:73-93`, [decision 111](decision-register.md#decision-111)).
+Each test also runs one Rholang program in fresh runtimes, three runs on each racing runtime.
+Each run certifies its deploys, pays phlo and reaches an allowed outcome (`rholang/tests/reified_determinism.rs:1315-1336`, [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111)).
+
+Changed by [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111): racing evaluation orders the events of a run by arrival, so the test compares no two runs.
+Before, each test ran the program in two fresh runtimes and compared the root, the event log and the cost.
 
 **Host work and the list order.**
-A head scan of a queue, a stack or a cell does the same work in every list order (`rholang/src/rust/interpreter/spaces/generic.rs:1001-1017`).
+A head scan of a queue, a stack or a cell does the same work in every list order (`rholang/src/rust/interpreter/spaces/generic.rs:2310-2325`).
 So the host work of these disciplines does not depend on the list order.
 
-The DR-75 order of a bag charges each comparison of its heapsort (`rspace++/src/rspace/space_store_handle.rs:432-460`, `shared/src/rust/fallible_sort.rs:3-33`).
+The DR-75 order of a bag charges each comparison of its heapsort (`rspace++/src/rspace/space_store_handle.rs:940-978`, `shared/src/rust/fallible_sort.rs:3-33`).
 The number of comparisons depends on the list order, so the host work of a bag selection depends on it too.
 The `MeteredOrder` of the cost-accounted-rho branch charges in the same way, so this follows [decision 40](decision-register.md#decision-40).
 The list order is a function of the pre-state root and the event sequence, so play and replay charge the same.
 The headlines Q62 and Q63 of section [11.10](#1110-metering-of-decision-42) state the permutation invariance of the head scans, not of the DR-75 order.
 
+Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so a selection charges no scan and no comparison now.
+The two paragraphs above record wave W2.
+
 **Serialization failure.**
 An agent serializes candidates only to order a tie.
-A bag uses the DR-75 tie digest (`rspace++/src/rspace/candidate_order.rs:122-135`, `rspace++/src/rspace/space_store_handle.rs:473-478`).
-A queue, a stack or a cell uses the tie-break encode of two entries with one order (`rholang/src/rust/interpreter/spaces/disciplines/queue.rs:88-132`, `rholang/src/rust/interpreter/spaces/disciplines/stack.rs:233-277`).
+A bag uses the DR-75 tie digest (`rspace++/src/rspace/candidate_order.rs:132-193`, `rspace++/src/rspace/space_store_handle.rs:991-996`).
+A queue, a stack or a cell uses the tie-break encode of two entries with one order (`rholang/src/rust/interpreter/spaces/disciplines/queue.rs:88-132`, `rholang/src/rust/interpreter/spaces/disciplines/stack.rs:300-344`).
 The agent never stores two entries with one order, so the ordered tests store such entries with raw host operations.
 
 The injection is a host-work cut ([decision 42](decision-register.md#decision-42)).
 A budget that ends exactly at the first read of the step makes the selection fail with `HostWorkRejected` before it stages anything.
-The rows, the legacy charges, the events and the root stay unchanged (`rholang/tests/reified_determinism.rs:1784-1974`).
+The rows, the legacy charges, the events and the root stay unchanged (`assert_cut_on_play`, `assert_cut_on_replay_and_reset`).
 The tests check this on a play space, on a rigged replay space and after a checkpoint reset.
 
 The search for the exact cut compares two runs that differ only in the payload length of the tie.
@@ -2746,15 +2801,19 @@ The first limit at which the two runs differ is
 U^{*} = \min \{\, L \mid (r_1(L), u_1(L)) \neq (r_2(L), u_2(L)) \,\}
 ```
 
-The cut is $`U^{*}`$ less the scanned bytes of the reservations from the first read of the step to the payload read (`rholang/tests/reified_determinism.rs:1668-1729`).
+The cut is $`U^{*}`$ less the scanned bytes of the reservations from the first read of the step to the payload read (`find_cut`).
 The rejection alone is not monotone in $`L`$, because a byte vector is encoded one byte at a time.
 So the search compares the usages too.
 
+Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so no host-work cut can inject the failure.
+Merge 1 removed the injection tests `assert_cut_on_play` and `assert_cut_on_replay_and_reset` and the search `find_cut`.
+The tests `space_candidate_tie_bag`, `space_candidate_tie_ordered`, `space_candidate_tie_set` and `space_candidate_tie_priority` check the tie-break itself (`rholang/tests/reified_determinism.rs:1918-1985`).
+
 **The pattern-enforcement matrix (N3).**
-For each wired row, a pattern for 42 never receives 43 in either order (`rholang/tests/reified_pattern_enforcement.rs:342-390`).
+For each wired row, a pattern for 42 never receives 43 in either order (`rholang/tests/reified_pattern_enforcement.rs:353-401`).
 A pattern for 42 receives 42 on a fresh name.
-The unsupported pairs fail at every layer: the URN, the registration, the constructor, the agent and a Rholang deploy (`rholang/tests/reified_pattern_enforcement.rs:685-876`).
-The qualifiers `temp` and `seq` give `QualifierUnavailable` until P7 (F17), and for an Array family this error comes before `MissingParam` (`rholang/tests/reified_pattern_enforcement.rs:887-948`).
+The unsupported pairs fail at every layer: the URN, the registration, the constructor, the agent and a Rholang deploy (`rholang/tests/reified_pattern_enforcement.rs:714-924`).
+The qualifiers `temp` and `seq` give `QualifierUnavailable` until P7 (F17), and for an Array family this error comes before `MissingParam` (`rholang/tests/reified_pattern_enforcement.rs:928-1004`, disabled by decision 90).
 
 *Table 78. The pattern-enforcement matrix after the joins of wave W3.*
 
@@ -2772,78 +2831,80 @@ Only the HashSet families then have no factory.
 
 **Wave W3.**
 The joins batch extends both suites to the 18 wired families and to the joins.
-`reified_determinism.rs` adds 7 tests (`rholang/tests/reified_determinism.rs:1127-1183`, `1213-1298`, `2041-2100`).
+`reified_determinism.rs` adds 7 tests (`rholang/tests/reified_determinism.rs:1469-1474`, `1487-1490`, `1525-1528`, `1537-1540`, `1621-1697`).
 They check the canonical iteration of set views, of the priority-queue order, of the Array and Vector rows and of join groups.
 They also inject the serialization failure into the set and the priority queue, and `prop_candidate_serialize_failure_cut_is_exact` now covers both.
 
-`reified_pattern_enforcement.rs` adds 12 rows (`rholang/tests/reified_pattern_enforcement.rs:420-492`).
+Changed by [decision 89](decision-register.md#decision-89): merge 1 removed the two injection tests and `prop_candidate_serialize_failure_cut_is_exact`.
+The tests `space_candidate_tie_set` and `space_candidate_tie_priority` check the tie-break of the set and of the priority queue instead.
+
+`reified_pattern_enforcement.rs` adds 12 rows (`rholang/tests/reified_pattern_enforcement.rs:431-503`).
 They are the set and the priority queue of `hashmap`, and the bag, stack, set, cell and priority queue of `array` and `vector`.
-Three join rows check that `for (@42 <- a & @y <- b)` never receives the record 43 of `a`, in both orders (`rholang/tests/reified_pattern_enforcement.rs:525-611`).
+Three join rows check that `for (@42 <- a & @y <- b)` never receives the record 43 of `a`, in both orders (`rholang/tests/reified_pattern_enforcement.rs:536-622`).
 The rows use the queue, the bag and the set of `hashmap`, and the records and the join waiter stay.
 A join for 42 on two fresh names receives 42.
-Now `reified_determinism.rs` holds 13 tests and 3 properties, and `reified_pattern_enforcement.rs` holds 23 tests and 1 property.
+At that step, `reified_determinism.rs` held 13 tests and 3 properties, and `reified_pattern_enforcement.rs` held 23 tests and 1 property.
 
 **Phase 2 of the PathMap engine.**
-`reified_pattern_enforcement.rs` adds the six rows `pattern_enforcement_pathmap_*` (`rholang/tests/reified_pattern_enforcement.rs:1145-1225`).
+`reified_pattern_enforcement.rs` adds the six rows `pattern_enforcement_pathmap_*` (`rholang/tests/reified_pattern_enforcement.rs:1200-1280`).
 A name of a PathMap space is the path of one element, so its record stays on the data channel of that path.
 The waiter for 42 stays on the index channel of the name, and no COMM touches these channels or the root index channel $`I(\varepsilon)`$.
 The token orders every operation of the space, so the orders of a counted discipline run across the two names.
-Now `reified_pattern_enforcement.rs` holds 29 tests and 1 property.
+At that step, `reified_pattern_enforcement.rs` held 29 tests and 1 property.
+
+Today `reified_pattern_enforcement.rs` holds 35 tests and 1 property, and `reified_determinism.rs` holds 13 tests and 2 properties.
 
 ### 12.13 The set
 
-`SetDiscipline.v` proves the 8 headlines of Table 79 with no axiom, and its 16 negative controls fail inside their expected lemmas.
+`SetDiscipline.v` proves the 7 headlines of Table 79 with no axiom, and its 15 negative controls fail inside their expected lemmas.
 
 *Table 79. The headlines of the set.*
 
 | Headline | Location | Property test |
 |---|---|---|
-| `set_key_injective` | `SetDiscipline.v:297` | `prop_set_key_injective` |
-| `set_view_dedups_equal_pars` | `SetDiscipline.v:704` | `prop_set_view_dedups_equal_pars` |
-| `set_consume_retires_class` | `SetDiscipline.v:792` | `prop_set_consume_retires_class` |
-| `set_retire_comm_lines_up` | `SetDiscipline.v:872` | `prop_set_retire_comm_lines_up` |
-| `set_produce_fire_retires_stored_class` | `SetDiscipline.v:1151` | `prop_set_produce_fire_retires_stored_class` |
-| `set_peek_restores_representative_only` | `SetDiscipline.v:1205` | `prop_set_peek_restores_representative_only` |
-| `set_membership_full_compare_on_equal_hash` | `SetDiscipline.v:1274` | `prop_set_membership_full_compare_on_equal_hash` |
-| `set_key_trace_covered` | `SetDiscipline.v:1389` | `prop_set_key_trace_covered` |
+| `set_key_injective` | `SetDiscipline.v:303` | `prop_set_key_injective` |
+| `set_view_dedups_equal_pars` | `SetDiscipline.v:710` | `prop_set_view_dedups_equal_pars` |
+| `set_consume_retires_class` | `SetDiscipline.v:798` | `prop_set_consume_retires_class` |
+| `set_retire_comm_lines_up` | `SetDiscipline.v:878` | `prop_set_retire_comm_lines_up` |
+| `set_produce_fire_retires_stored_class` | `SetDiscipline.v:1157` | `prop_set_produce_fire_retires_stored_class` |
+| `set_peek_restores_representative_only` | `SetDiscipline.v:1211` | `prop_set_peek_restores_representative_only` |
+| `set_membership_full_compare_on_equal_hash` | `SetDiscipline.v:1280` | `prop_set_membership_full_compare_on_equal_hash` |
 
-`rholang/tests/reified_set.rs` holds 21 tests and 10 properties, and `set.rs` holds 6 unit tests.
-The property `prop_set_class_retired_any_schedule` checks the TLA+ invariant `SetClassRetired` (V6), and `prop_set_legacy_charges_equal_host` compares the legacy charges with `ChargingRSpace`.
-A host differential runs each generated program on the host where the host can express it, and 62 of 64 programs compare fully.
+`rholang/tests/reified_set.rs` holds 20 tests and 9 properties, and `set.rs` holds 5 unit tests.
+The property `prop_set_class_retired_any_schedule` checks the TLA+ invariant `SetClassRetired` (V6), and `prop_set_observer_calls_equal_host` compares the observer calls with the host program.
+V6 runs each program `CASE_RUNS` times, because play picks at random (rule CR-1 of [decision 102](decision-register.md#decision-102)).
+The host program follows each pick of the agent, so every generated program compares with its host program.
 
 The membership test of the driver compares each candidate key with the class key once, so the driver keeps no ordered map of classes.
-A metered job stores only a record whose key exists under its metering.
-The test `space_set_discipline_failed_canonicalization_rejects_before_staging` shows a metered send of a payload without a key that fails before it stages anything.
 
 ### 12.14 The priority queue
 
-`PriorityQueue.v` proves 20 headlines, and `RecordEnvelope.v` adds the 2 slot headlines of the priority queue (Table 80).
-The 35 negative controls of `PriorityQueue.v` and the 5 new controls of `RecordEnvelope.v` fail inside their expected lemmas.
+`PriorityQueue.v` proves 19 headlines, and `RecordEnvelope.v` adds the 2 slot headlines of the priority queue (Table 80).
+The 33 negative controls of `PriorityQueue.v` and the 5 new controls of `RecordEnvelope.v` fail inside their expected lemmas.
 
 *Table 80. The headlines of the priority queue.*
 
 | Headline | Location | Property test |
 |---|---|---|
-| `pq_level_order` | `PriorityQueue.v:863` | `prop_pq_level_order` |
-| `pq_unprioritized_lowest` | `PriorityQueue.v:887` | `prop_pq_level_order` |
-| `pq_produce_preserves_inv` | `PriorityQueue.v:1390` | `prop_pq_no_pending_match_any_schedule` |
-| `pq_consume_preserves_inv` | `PriorityQueue.v:1404` | `prop_pq_no_pending_match_any_schedule` |
-| `pq_settle_oldest_first` | `PriorityQueue.v:1899` | `prop_pq_oldest_first_any_schedule` |
-| `pq_restricted_waiter_in_level_queue` | `PriorityQueue.v:1921` | `prop_pq_fifo_order_any_schedule` |
-| `pq_unrestricted_first_matching_level` | `PriorityQueue.v:1943` | `prop_pq_fifo_order_any_schedule` |
-| `pq_fifo_within_level` | `PriorityQueue.v:2151` | `prop_pq_fifo_order_any_schedule` |
-| `pq_head_blocks_within_level` | `PriorityQueue.v:2324` | `prop_pq_fifo_order_any_schedule` |
-| `pq_peek_restores_head` | `PriorityQueue.v:2486` | `prop_pq_no_pending_match_any_schedule` |
-| `pq_reissue_takes_level_fifo_place` | `PriorityQueue.v:2673` | `prop_pq_reissue_keeps_ord_any_schedule` |
-| `pq_reentered_waiter_keeps_seniority` | `PriorityQueue.v:2716` | `prop_pq_reissue_keeps_ord_any_schedule` |
-| `pq_settle_keeps_unspent_records` | `PriorityQueue.v:2864` | `prop_pq_fifo_order_any_schedule` |
-| `pq_settle_terminates` | `PriorityQueue.v:3181` | `prop_pq_settle_bounded_any_schedule` |
-| `pq_plan_permutation_invariant` | `PriorityQueue.v:3655` | `prop_pq_plan_permutation_invariant` |
-| `pq_priority_domain` | `PriorityQueue.v:3730` | `prop_pq_priority_domain` |
-| `pq_no_level_storage` | `PriorityQueue.v:3903` | `prop_pq_no_level_storage` |
-| `pq_without_settle_breaks_inv` | `PriorityQueue.v:4002` | `prop_pq_no_pending_match_any_schedule` |
-| `pq_settle_order_matters` | `PriorityQueue.v:4081` | `prop_pq_oldest_first_any_schedule` |
-| `level_scan_trace_covered` | `PriorityQueue.v:4550` | `prop_pq_reservation_cut_rejects_without_effect` |
+| `pq_level_order` | `PriorityQueue.v:868` | `prop_pq_level_order` |
+| `pq_unprioritized_lowest` | `PriorityQueue.v:892` | `prop_pq_level_order` |
+| `pq_produce_preserves_inv` | `PriorityQueue.v:1395` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_consume_preserves_inv` | `PriorityQueue.v:1409` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_settle_oldest_first` | `PriorityQueue.v:1904` | `prop_pq_oldest_first_any_schedule` |
+| `pq_restricted_waiter_in_level_queue` | `PriorityQueue.v:1926` | `prop_pq_fifo_order_any_schedule` |
+| `pq_unrestricted_first_matching_level` | `PriorityQueue.v:1948` | `prop_pq_fifo_order_any_schedule` |
+| `pq_fifo_within_level` | `PriorityQueue.v:2156` | `prop_pq_fifo_order_any_schedule` |
+| `pq_head_blocks_within_level` | `PriorityQueue.v:2329` | `prop_pq_fifo_order_any_schedule` |
+| `pq_peek_restores_head` | `PriorityQueue.v:2491` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_reissue_takes_level_fifo_place` | `PriorityQueue.v:2678` | `prop_pq_reissue_keeps_ord_any_schedule` |
+| `pq_reentered_waiter_keeps_seniority` | `PriorityQueue.v:2721` | `prop_pq_reissue_keeps_ord_any_schedule` |
+| `pq_settle_keeps_unspent_records` | `PriorityQueue.v:2869` | `prop_pq_fifo_order_any_schedule` |
+| `pq_settle_terminates` | `PriorityQueue.v:3186` | `prop_pq_settle_bounded_any_schedule` |
+| `pq_plan_permutation_invariant` | `PriorityQueue.v:3660` | `prop_pq_plan_permutation_invariant` |
+| `pq_priority_domain` | `PriorityQueue.v:3735` | `prop_pq_priority_domain` |
+| `pq_no_level_storage` | `PriorityQueue.v:3908` | `prop_pq_no_level_storage` |
+| `pq_without_settle_breaks_inv` | `PriorityQueue.v:4007` | `prop_pq_no_pending_match_any_schedule` |
+| `pq_settle_order_matters` | `PriorityQueue.v:4086` | `prop_pq_oldest_first_any_schedule` |
 | `datum_priority_slot_roundtrip` | `RecordEnvelope.v:1506` | `prop_pq_record_slots_roundtrip` |
 | `continuation_policy_slot_roundtrip` | `RecordEnvelope.v:1542` | `prop_pq_record_slots_roundtrip` |
 
@@ -2863,37 +2924,40 @@ The 35 negative controls of `PriorityQueue.v` and the 5 new controls of `RecordE
 `PqReentryAtHeadUnsafe.cfg` uses a narrow universe with 7 operations, because the shortest violating trace has 7 rounds.
 Each complement run holds the other invariants.
 
-`rholang/tests/reified_priority_queue.rs` holds 28 tests and 12 properties, and `priority_queue.rs` and `record.rs` hold 15 unit tests of the priority queue.
+`rholang/tests/reified_priority_queue.rs` holds 27 tests and 11 properties, and `priority_queue.rs` and `record.rs` hold 16 unit tests of the priority queue.
 The property `prop_pq_txn_fires_bounded_at_the_cap` reaches 54 settle jobs at the cap and 96 transactions with `FIRE_ROUND_CAP` fires.
 
 ### 12.15 The joins of one space
 
-`JoinCascade.v` proves 17 of the 19 headlines of Table 82 with no axiom, and its 23 negative controls fail inside their expected lemmas.
+`JoinCascade.v` proves 17 of the 19 headlines of Table 82 with no axiom, and its 27 negative controls fail inside their expected lemmas.
 `RecordEnvelope.v` proves `continuation_v2_roundtrip`, and `CounterConflict.v` proves `join_ops_race_on_every_counter`.
 
 *Table 82. The headlines of the joins.*
 
 | Headline | Location | Property test |
 |---|---|---|
-| `join_search_is_head_greedy` | `JoinCascade.v:1468` | `prop_join_search_is_head_greedy` |
-| `join_produce_search_agrees_with_head` | `JoinCascade.v:1871` | `prop_join_produce_search_agrees_with_head` |
-| `join_incoming_binds_once` | `JoinCascade.v:1146` | `prop_join_incoming_binds_once` |
-| `join_fires_heads_only` | `JoinCascade.v:3210` | `prop_join_fires_heads_only` |
-| `join_repeated_channel_distinct_records` | `JoinCascade.v:1244` | `prop_join_repeated_channel_distinct_records` |
-| `join_set_bind_retires_class` | `JoinCascade.v:2973` | `prop_join_set_bind_retires_class` |
-| `cascade_terminates` | `JoinCascade.v:4497` | `prop_cascade_terminates_any_schedule` |
-| `join_txn_fires_bounded` | `JoinCascade.v:4642` | `prop_join_txn_fires_bounded_at_the_cap` |
-| `cascade_restores_inv` | `JoinCascade.v:7230` | `prop_cascade_restores_inv_any_schedule` |
-| `cascade_order_independent` | `JoinCascade.v:3144` | `prop_cascade_order_independent` |
-| `lift_reoffer_equals_direct_comm` | `JoinCascade.v:3576` | `prop_lift_reoffer_equals_direct_comm` |
-| `cascade_bumps_touched_counters` | `JoinCascade.v:4056` | `prop_cascade_bumps_touched_counters` |
-| `bind_permutation_restores_order` | `JoinCascade.v:2148` | `prop_bind_permutation_restores_order` |
-| `plan_then_lock_stable` | `JoinCascade.v:5723` | `prop_plan_then_lock_covers_every_staged_channel` |
-| `join_reissue_keeps_bind_ords` | `JoinCascade.v:4130` | `prop_join_reissue_keeps_bind_ords` |
-| `peek_join_restores_stored_candidates` | `JoinCascade.v:5156` | `prop_peek_join_restores_stored_candidates` |
-| `greedy_join_can_miss_assignment` | `JoinCascade.v:1345` | `prop_greedy_join_limit` |
+| `join_search_is_head_greedy` | `JoinCascade.v:1662` | `prop_join_search_is_head_greedy` |
+| `join_produce_search_agrees_with_head` | `JoinCascade.v:2065` | `prop_join_produce_search_agrees_with_head` |
+| `join_incoming_binds_once` | `JoinCascade.v:1340` | `prop_join_incoming_held` |
+| `join_fires_heads_only` | `JoinCascade.v:3404` | `prop_join_fires_heads_only` |
+| `join_repeated_channel_distinct_records` | `JoinCascade.v:1438` | `prop_join_nonpersistent_record_binds_once` |
+| `join_set_bind_retires_class` | `JoinCascade.v:3167` | `prop_join_set_bind_retires_class` |
+| `cascade_terminates` | `JoinCascade.v:4691` | `prop_cascade_terminates_any_schedule` |
+| `join_txn_fires_bounded` | `JoinCascade.v:4836` | `prop_join_txn_fires_bounded_at_the_cap` |
+| `cascade_restores_inv` | `JoinCascade.v:7424` | `prop_cascade_restores_inv_any_schedule` |
+| `cascade_order_independent` | `JoinCascade.v:3338` | `prop_cascade_order_independent` |
+| `lift_reoffer_equals_direct_comm` | `JoinCascade.v:3770` | `prop_lift_reoffer_equals_direct_comm` |
+| `cascade_bumps_touched_counters` | `JoinCascade.v:4250` | `prop_cascade_bumps_touched_counters` |
+| `bind_permutation_restores_order` | `JoinCascade.v:2342` | `prop_bind_permutation_restores_order` |
+| `plan_then_lock_stable` | `JoinCascade.v:5917` | `prop_plan_then_lock_covers_every_staged_channel` |
+| `join_reissue_keeps_bind_ords` | `JoinCascade.v:4324` | `prop_join_reissue_keeps_bind_ords` |
+| `peek_join_restores_stored_candidates` | `JoinCascade.v:5350` | `prop_peek_join_restores_stored_candidates` |
+| `greedy_join_can_miss_assignment` | `JoinCascade.v:1539` | `prop_greedy_join_limit` |
 | `continuation_v2_roundtrip` | `RecordEnvelope.v:1734` | `prop_continuation_v2_roundtrip` |
 | `join_ops_race_on_every_counter` | `CounterConflict.v:1947` | `prop_join_ops_race_on_every_counter` |
+
+`join_produce_search_agrees_with_head` is a theorem of the search before [decision 118](decision-register.md#decision-118).
+The GREEDY part of `prop_join_produce_search_agrees_with_head` runs for a non-persistent x only, and the allowed set checks a persistent x.
 
 The cascade invariant (CI) has one argument for every discipline that cascades: the head-only disciplines (decision 11) and the set (decision 50).
 CI says that every fireable waiter has a dirty collection.
@@ -2913,7 +2977,9 @@ OFFER stores a record only when no waiter of its collection fires, and RECEIVE p
 So INV_scan holds at every end (the bag clause of `cascade_restores_inv`).
 
 The monotonicity of plan 3.6 fails for a set (finding F-JF-1).
-A class sits at the place of its first member, and the class moves when that member leaves while a persistent member stays.
+In the old search of the model, a class sits at the place of its first member.
+The class moves when that member leaves while a persistent member stays.
+In the code, a class has no place of its own, because the window of a set is every record ([decision 102](decision-register.md#decision-102)).
 `set_join_class_shift_breaks_inv_scan` computes a transaction of the set without a cascade: it starts with INV_scan and ends without it (`~ INV_scan`).
 Decision 50 makes joined set collections cascade, and the same lemma computes that RUN-JOIN then ends with INV_head.
 
@@ -2924,7 +2990,7 @@ A peek fire sends the element in flight again, also when it is persistent (DV-3,
 A stop that owes nothing re-issues its resume only (DV-5).
 The element of the operation never stays in the pending second sends of a settle job (A1).
 
-`JoinCascade.tla` checks `QuiescentNoPendingMatch`, `JoinFiresHeadsOnly`, `DistinctRecordsPerBind`, `IncomingBoundOnce`, `CascadeMeasureDecreases`, `TxnFiresBounded`, `NoRecordLost`, `ReissueKeepsBindOrds` and `TouchedCountersBumped` on the queue, the stack, the bag and the set (Table 83).
+`JoinCascade.tla` checks `QuiescentNoPendingMatch`, `JoinFiresHeadsOnly`, `NonPersistentBoundOnce`, `IncomingHeld`, `CascadeMeasureDecreases`, `TxnFiresBounded`, `NoRecordLost`, `ReissueKeepsBindOrds` and `TouchedCountersBumped` on the queue, the stack, the bag and the set (Table 83).
 
 *Table 83. The safe configurations of the join model.*
 
@@ -2944,8 +3010,8 @@ Every configuration uses the payloads a and b, a cap of 2 fires, and persistent 
 | `NoLiftUnsafe.cfg` | the drain has no cascade | `QuiescentNoPendingMatch` |
 | `NoSetCascadeUnsafe.cfg` | the set has no cascade (decision 50 reverted) | `QuiescentNoPendingMatch` |
 | `PlainRestoreUnsafe.cfg` | a second send is stored plainly | `QuiescentNoPendingMatch` |
-| `StoredRecordTwiceUnsafe.cfg` | the search ignores its claims | `DistinctRecordsPerBind` |
-| `IncomingTwiceUnsafe.cfg` | the incoming record binds at every matching position | `IncomingBoundOnce` |
+| `StoredRecordTwiceUnsafe.cfg` | the search ignores its claims | `NonPersistentBoundOnce` |
+| `IncomingTwiceUnsafe.cfg` | the incoming record binds at every matching position | `IncomingHeld` |
 | `HeadOnIncomingOnlyUnsafe.cfg` | the produce side checks one head only | `JoinFiresHeadsOnly` |
 | `JoinPerPhaseCountUnsafe.cfg` | each phase starts a fire count of its own | `TxnFiresBounded` |
 | `RestoreDroppedUnsafe.cfg` | a peek fire sends nothing again | `NoRecordLost` |
@@ -2957,50 +3023,42 @@ Each complement run holds the other invariants.
 `NoSetCascadeUnsafe.cfg` uses 5 operations, because the class move needs three records, a parked join and a receive.
 
 **The suites.**
-`rholang/tests/reified_joins.rs` holds 34 tests of the join engine.
+`rholang/tests/reified_joins.rs` holds 37 tests of the join engine.
 They cover the search of each discipline, the classes and the retirement of the set, the heads, the cascade and its round cap.
-They also cover the aborts of cross-space joins, merge check 3 for a parked join, replay, restart, the legacy charges and the reservation cut.
-`space_joins_queue_programs_run_as_joins` runs as joins the five programs of the P4 test `space_queue_join_rejected`, which decision 29 disabled (`rholang/tests/reified_joins.rs:2452-2577`).
+They also cover the aborts of cross-space joins, merge check 3 for a parked join, replay and restart.
+`space_joins_queue_programs_run_as_joins` runs as joins the five programs of the P4 test `space_queue_join_rejected`, which decision 29 disabled (`rholang/tests/reified_joins.rs:3626-3762`).
 
-`rholang/tests/reified_join_props.rs` holds 23 properties, the negative control `reference_model_reports_owed_pairs`, and the keyed differential of the store seams.
-The properties are the 19 of Table 82, one each for `NoRecordLost`, `QuiescentNoPendingMatch` and `CascadeMeasureDecreases`, and `prop_join_engine_agrees_with_drivers_without_joins`.
+`rholang/tests/reified_join_props.rs` holds 24 properties and the negative control `reference_model_reports_owed_pairs`.
+The properties are the 19 of Table 82, one each for `NoRecordLost`, `QuiescentNoPendingMatch` and `CascadeMeasureDecreases`, `prop_join_engine_agrees_with_drivers_without_joins`, and `prop_racing_jobs_equal_a_serial_order`.
 Each property runs 64 cases with the fixed P5 seed.
 
 **The store seams.**
-The record methods of `JoinSource` ([design N12.11](design.md#n1211-the-seam-of-a-store)) must leave the keyed engine unchanged, and two tests check this.
-`space_join_engine_reserved_types_keep_their_sizes` pins the sizes of the ten types that the engine reserves by size (`rholang/src/rust/interpreter/spaces/join.rs:5762-5784`).
-`join_seams_keyed_differential` runs 80 programs with the fixed P5 seed over a metered recording host (`rholang/tests/reified_join_props.rs:4622-4687`).
-For each program, it hashes the results, the legacy charges, the phlo, the events, the lock keys, the staged operations and the root.
-It also hashes the host-work usage at every begin, staged operation and commit.
-
-The golden `test-vectors/reified-join-seams-v1.json` holds these digests at the commit `930b1d64c`, before the seams.
-The corpus covers the six disciplines with 2,341 staged operations.
-Joins occur in 60 programs, peeks in 51 and persistent operations in 42.
-Four programs reach the fire cap, and eight refuse a second cell record.
+The record methods of `JoinSource` ([design N12.11](design.md#n1211-the-seam-of-a-store)) must leave the keyed engine unchanged, and the oracle properties of `rholang/tests/reified_join_props.rs` guard this.
+[Decision 125](decision-register.md#decision-125) retired the differential `join_seams_keyed_differential`, because its golden `test-vectors/reified-join-seams-v1.json` and its stored logs predate decision 118.
+Its replay half needed the legacy replay mode, which step D retired.
 
 ### 12.16 The PathMap engine
 
 Phase 1 of wave W3 adds the PathMap store, its markers and its delivery plans ([design N13](design.md#n13-wave-w3-of-p5-the-pathmap-engine), [PathMap delivery](pathmap-prefix-delivery.md)).
-`PathMapPrefix.v` proves the 11 headlines of Table 85 in addition to the 6 headlines of section [12.7](#127-the-pathmap-layer), with no axiom.
-Its 37 new negative controls fail inside their expected lemmas, and the 17 controls of wave W2 still fail inside theirs.
+`PathMapPrefix.v` proves the 10 headlines of Table 85 in addition to the 6 headlines of section [12.7](#127-the-pathmap-layer), with no axiom.
+Its 35 new negative controls fail inside their expected lemmas, and the 17 controls of wave W2 still fail inside theirs.
 
 *Table 85. The headlines of the PathMap engine (Phase 1).*
 
 | Id | Headline | Location | Property test |
 |---|---|---|---|
-| R97 | `marker_record_roundtrip` | `PathMapPrefix.v:1350` | `prop_marker_record_roundtrip` |
-| R98 | `vehicle_carries_payload` | `PathMapPrefix.v:1382` | `prop_vehicle_carries_payload` |
-| R99 | `path_element_rules` | `PathMapPrefix.v:1455` | `prop_path_element_rules` |
-| R100 | `delivery_vehicle_single_channel` | `PathMapPrefix.v:1911` | `prop_pathmap_delivery_is_single_channel` |
-| R101 | `prefix_contact_anchored` | `PathMapPrefix.v:1948` | `prop_candidates_cover_the_prefix_in_key_order` |
-| R102 | `peek_restores_delivered_marker` | `PathMapPrefix.v:2010` | `prop_marker_invariant_preserved`, `prop_waiter_prefixes_are_most_specific_first` |
-| R103 | `no_match_remains` | `PathMapPrefix.v:2380` | `prop_candidates_cover_the_prefix_in_key_order`, `prop_waiter_prefixes_are_most_specific_first`, `prop_pathmap_no_match_remains_any_schedule` |
-| R104 | `marker_invariant_preserved` | `PathMapPrefix.v:2560` | `prop_marker_invariant_preserved` |
-| R105 | `heads_no_match` | `PathMapPrefix.v:3038` | `prop_pathmap_head_cascade_leaves_no_fireable_head` |
-| R106 | `token_ord_reentry` | `PathMapPrefix.v:3126` | `prop_pathmap_token_orders_reenter_at_their_place` |
-| R107 | `prefix_scan_trace_covered` | `PathMapPrefix.v:3268` | `prop_pathmap_reservation_cut_rejects_without_effect` |
+| R97 | `marker_record_roundtrip` | `PathMapPrefix.v:1356` | `prop_marker_record_roundtrip` |
+| R98 | `vehicle_carries_payload` | `PathMapPrefix.v:1388` | `prop_vehicle_carries_payload` |
+| R99 | `path_element_rules` | `PathMapPrefix.v:1461` | `prop_path_element_rules` |
+| R100 | `delivery_vehicle_single_channel` | `PathMapPrefix.v:1917` | `prop_pathmap_delivery_is_single_channel` |
+| R101 | `prefix_contact_anchored` | `PathMapPrefix.v:1954` | `prop_candidates_cover_the_prefix_in_key_order` |
+| R102 | `peek_restores_delivered_marker` | `PathMapPrefix.v:2016` | `prop_marker_invariant_preserved`, `prop_waiter_prefixes_are_most_specific_first` |
+| R103 | `no_match_remains` | `PathMapPrefix.v:2386` | `prop_candidates_cover_the_prefix_in_key_order`, `prop_waiter_prefixes_are_most_specific_first`, `prop_pathmap_no_match_remains_any_schedule` |
+| R104 | `marker_invariant_preserved` | `PathMapPrefix.v:2566` | `prop_marker_invariant_preserved` |
+| R105 | `heads_no_match` | `PathMapPrefix.v:3044` | `prop_pathmap_head_cascade_leaves_no_fireable_head` |
+| R106 | `token_ord_reentry` | `PathMapPrefix.v:3132` | `prop_pathmap_token_orders_reenter_at_their_place` |
 
-The integration suite `rholang/tests/reified_pathmap.rs` of Phase 2 holds the five properties of Table 85 that Phase 1 left pending, and `prop_pathmap_merge_detects_prefix_contact` of V25.
+The integration suite `rholang/tests/reified_pathmap.rs` of Phase 2 holds the four properties of Table 85 that Phase 1 left pending, and `prop_pathmap_merge_detects_prefix_contact` of V25.
 Deterministic witness tests cover these headlines too, for example `a_removal_retires_the_record_and_every_other_marker` and `head_orders_take_the_heads_of_a_path`.
 
 `PathMapPrefix.tla` runs the bag discipline on prefixes, with the second send of Rule E and a fork into two branches that merge under check #2.
@@ -3027,18 +3085,18 @@ Each complement run holds the other invariants.
 A run with three operations and a fork after every receive passed 63 million states before it was stopped.
 So the merge configuration forks after two operations.
 
-The modules `markers.rs`, `delivery.rs` and `outer/pathmap.rs` hold 27 unit tests, 7 of them properties.
+The modules `markers.rs`, `delivery.rs` and `outer/pathmap.rs` hold 25 unit tests, 7 of them properties.
 The test `pathmap_segment_codec_matches_epm1_vectors` checks the channel ids of the store against the EPM1 transcription vectors.
 
 **Phase 2.** The prefix source `spaces/pathmap/join.rs` runs every PathMap operation on the join engine ([design N13](design.md#n13-wave-w3-of-p5-the-pathmap-engine)).
 It also runs the joins over prefixes of wave W4, and five unit tests in the module check its keys and depths.
 
-Phase 2 adds no headline to `PathMapPrefix.v`, whose 17 headlines keep their lines, and its 54 negative controls still fail inside their lemmas.
+Phase 2 adds no headline to `PathMapPrefix.v`, whose 16 headlines keep their lines, and its 52 negative controls still fail inside their lemmas.
 An addendum of the module traces each method of the prefix source to its definitions.
 It also records the marker authority and the restore of FINISH.
 `PathMapPrefix.tla` does not change, because it models no fire cap and the engine adds no modeled step.
 
-`rholang/tests/reified_pathmap.rs` holds 33 tests and 6 properties.
+`rholang/tests/reified_pathmap.rs` holds 37 tests and 5 properties.
 Section [11.4](pathmap-prefix-delivery.md#114-integration-tests-and-properties) of the PathMap delivery describes the tests, and its Table 6a lists the properties.
 The tests drive the six PathMap families through the agent and through Rholang programs.
 They cover the FIPS example, the unit rule, the most specific waiter, the markers, the vehicle, the merge contact, replay, restart and the legacy charges.
@@ -3067,23 +3125,23 @@ Step 10 is necessary because `cargo check` computes no layout of an async state 
 
 | Suite | Tests | Section |
 |---|---|---|
-| `reified_queue_parity` | 7 | [12.1](#121-the-queue-parity-golden) |
+| `reified_queue_parity` | 6 | [12.1](#121-the-queue-parity-golden) |
 | `reified_p5_harness` | 2 | [12.2](#122-the-engine-spine-s1) |
-| `reified_engine_props` | 20 | [12.3](#123-the-engine-models) |
-| `reified_bag` | 31 | [12.4](#124-the-bag-and-the-scan-driver) |
-| `reified_cell` | 21 | [12.5](#125-the-cell) |
-| `reified_array_vector` | 40 | [12.6](#126-the-array-and-vector-stores-and-the-allocator) |
-| `reified_families` | 16 | [12.8](#128-the-families) |
+| `reified_engine_props` | 19 | [12.3](#123-the-engine-models) |
+| `reified_bag` | 29 | [12.4](#124-the-bag-and-the-scan-driver) |
+| `reified_cell` | 19 | [12.5](#125-the-cell) |
+| `reified_array_vector` | 36 | [12.6](#126-the-array-and-vector-stores-and-the-allocator) |
+| `reified_families` | 17 | [12.8](#128-the-families) |
 | `reified_hooks_p5` | 10 | [12.9](#129-the-receive-queries-and-the-allocation-jobs) |
-| `reified_stack` | 34 | [12.10](#1210-the-stack-and-the-fire-count-of-a-transaction) |
-| `reified_merge_p5` | 25 | [12.11](#1211-the-merge-of-the-p5-families) |
-| `reified_determinism` | 16 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
-| `reified_pattern_enforcement` | 30 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
-| `reified_set` | 31 | [12.13](#1213-the-set) |
-| `reified_priority_queue` | 40 | [12.14](#1214-the-priority-queue) |
-| `reified_joins` | 34 | [12.15](#1215-the-joins-of-one-space) |
+| `reified_stack` | 31 | [12.10](#1210-the-stack-and-the-fire-count-of-a-transaction) |
+| `reified_merge_p5` | 29 | [12.11](#1211-the-merge-of-the-p5-families) |
+| `reified_determinism` | 15 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
+| `reified_pattern_enforcement` | 36 | [12.12](#1212-determinism-and-the-pattern-enforcement-matrix) |
+| `reified_set` | 29 | [12.13](#1213-the-set) |
+| `reified_priority_queue` | 38 | [12.14](#1214-the-priority-queue) |
+| `reified_joins` | 37 | [12.15](#1215-the-joins-of-one-space) |
 | `reified_join_props` | 25 | [12.15](#1215-the-joins-of-one-space) |
-| `reified_pathmap` | 39 | [12.16](#1216-the-pathmap-engine) |
+| `reified_pathmap` | 42 | [12.16](#1216-the-pathmap-engine) |
 
 The unit tests of the PathMap layer and of the PathMap engine (sections [12.7](#127-the-pathmap-layer) and [12.16](#1216-the-pathmap-engine)) run in `cargo test -p rholang --lib`.
 
@@ -3101,9 +3159,9 @@ The checks of this section establish five properties:
 
 1. Native replay over the journal of native play reproduces play: the observer calls, the effects, the status, and one row for each operation (H24, T8).
 2. A recorded denial gives the failure of play, with the operations before it applied (H25).
-3. A tampered or forged row fails closed with no effect, and no operation waits forever for it (H26, T8, `NoDeadlock`).
-4. A view load charges the same on a cache hit and on a miss (H27).
-5. The transactions of one space run in one conflict group in operation order (`NoBlockedReadiness`).
+3. A tampered or forged row fails closed with no effect (H26, T8). Disabled by [decision 90](decision-register.md#decision-90) (DR-132): `NoDeadlock`. The invariant `NoHang` of the `txn` scenarios of `NativeReplayStall.tla` checks that no wait stays undetected. When no task can act, replay holds a stall verdict or a pending declaration.
+4. Disabled by [decision 89](decision-register.md#decision-89) (DR-131): H27, because no view load is metered.
+5. Disabled by [decision 90](decision-register.md#decision-90) (DR-132): `NoBlockedReadiness`, because the scheduler and its conflict groups are gone. Under [decision 92](decision-register.md#decision-92), the rows of one space form one chain, so replay runs the transactions of that space in play order. `SpaceReplayOrder.tla` checks this order with `NoStall`, `NoFailClosed`, `Agreement` and `ExactRows`.
 
 ### 13.2 Rocq models
 
@@ -3111,19 +3169,19 @@ The checks of this section establish five properties:
 Native play and native replay share that function, because native replay runs the contract of play.
 The section `NativeReplay` defines native play, the outcome fit, and native replay.
 Native replay has six steps: the row, the footprint, the fit, the introduction, the candidate with the COMM, and then the effects of play.
-The section `ViewCharges` defines a view load over a cache and a history, with the meter `accept_all` of the native history reader.
+Disabled by [decision 89](decision-register.md#decision-89) (DR-131): the section `ViewCharges` defined a view load over a cache and a history, with the meter `accept_all`. The section stays in `EventCorrelation.v` as a comment.
 
 *Table 89. The Rocq headlines of decision 47.*
 
 | Id | Headline | Statement |
 |---|---|---|
-| H24 | `native_replay_reproduces_play` (`EventCorrelation.v:8997`) | Over the rows of native play, native replay makes the calls, the effects and the status of play. Play records one row for each operation that it runs. |
-| H25 | `native_replay_denial_keeps_prefix` (`EventCorrelation.v:9043`) | When play runs out of phlo at operation k, native replay ends with OutOfPhlogistons, the calls of play, and the store of the first k operations. |
-| H26 | `native_replay_fails_closed` (`EventCorrelation.v:9088`) | No ready row, a forged footprint, an outcome that does not fit, and another candidate each end before any effect. Another candidate also leaves its COMM unobserved. |
-| H27 | `view_charge_cache_independent` (`EventCorrelation.v:9195`) | With a coherent cache, a view load returns the history value and charges its key and its value only. |
+| H24 | `native_replay_reproduces_play` (`EventCorrelation.v:9000`) | Over the rows of native play, native replay makes the calls, the effects and the status of play. Play records one row for each operation that it runs. |
+| H25 | `native_replay_denial_keeps_prefix` (`EventCorrelation.v:9046`) | When play runs out of phlo at operation k, native replay ends with OutOfPhlogistons, the calls of play, and the store of the first k operations. |
+| H26 | `native_replay_fails_closed` (`EventCorrelation.v:9091`) | No ready row, a forged footprint, an outcome that does not fit, and another candidate each end before any effect. Another candidate also leaves its COMM unobserved. |
+| H27 | `view_charge_cache_independent` | Disabled by [decision 89](decision-register.md#decision-89) (DR-131): no view load is metered, so the headline is a comment in `EventCorrelation.v`. |
 
-The lemma `native_denial_premise_satisfiable` (`EventCorrelation.v:9272`) shows a run that satisfies the premise of H25, so H25 is not vacuous.
-`EventCorrelation.v` keeps 21 closed headlines, and the gate now expects 246 closed headlines in total.
+The lemma `native_denial_premise_satisfiable` (`EventCorrelation.v:9279`) shows a run that satisfies the premise of H25, so H25 is not vacuous.
+`EventCorrelation.v` kept 21 closed headlines at that step, and the gate then expected 246 closed headlines in total.
 
 ### 13.3 TLA+ model NativeReplay.tla
 
@@ -3138,15 +3196,19 @@ Its journal is honest, or it has one tampered well-formed row.
 | Configuration | Specification | Invariants | Result |
 |---|---|---|---|
 | `MC_NativeReplay_Outcome.cfg` | `OutcomeSpec` | `NativeReplayOutcomeEqual` (T8) | Holds, 12,630 distinct states |
-| `MC_NativeReplay_Schedule.cfg` | `ScheduleSpec` without the native key | `NoBlockedReadiness`, `NoDeadlock` | Hold, 1,741 distinct states |
-| `MC_NativeReplay_Schedule_NativeKey.cfg` | `ScheduleSpec` with the native key | `NoBlockedReadiness`, `NoDeadlock` | Hold, 283 distinct states |
+| `MC_NativeReplay_Schedule.cfg` | `ScheduleSpec` without the native key | `NoBlockedReadiness`, `NoDeadlock` | Disabled by decision 90 (DR-132). The last run held, 1,741 distinct states. |
+| `MC_NativeReplay_Schedule_NativeKey.cfg` | `ScheduleSpec` with the native key | `NoBlockedReadiness`, `NoDeadlock` | Disabled by decision 90 (DR-132). The last run held, 283 distinct states. |
 | `TamperedOutcomeUnsafe.cfg` | `OutcomeSpec` | `NativeReplayOutcomeEqual` | Refuted |
-| `NoSpaceKeyUnsafe.cfg` | `ScheduleSpec` | `NoBlockedReadiness` | Refuted |
-| `WaitUnderLocksUnsafe.cfg` | `ScheduleSpec` | `NoDeadlock` | Refuted |
-| `NoInvalidateUnsafe.cfg` | `ScheduleSpec` | `NoDeadlock` | Refuted |
+| `NoSpaceKeyUnsafe.cfg` | `ScheduleSpec` | `NoBlockedReadiness` | Disabled by decision 90 (DR-132). The last run refuted the invariant. |
+| `WaitUnderLocksUnsafe.cfg` | `ScheduleSpec` | `NoDeadlock` | Disabled by decision 90 (DR-132). The last run refuted the invariant. |
+| `NoInvalidateUnsafe.cfg` | `ScheduleSpec` | `NoDeadlock` | Disabled by decision 90 (DR-132). The last run refuted the invariant. |
 
-The safe scheduling configuration has no native key, so `NoBlockedReadiness` rests on the key [2]||sid of [I-11](decision-register.md#i-11) alone.
-The key [2, 0] of native execution is a second guarantee and not a premise, as design v2 states.
+Changed by [decision 90](decision-register.md#decision-90): DR-132 removed the deterministic scheduler that `ScheduleSpec` models, so its configurations and controls are commented out.
+The rows of `ScheduleSpec` above record their last runs.
+The gate now checks `OutcomeSpec`, and the `txn` scenarios of `formal/tlaplus/cost_accounted_rho/NativeReplayStall.tla` check the readiness wait of a space transaction.
+
+Before [decision 90](decision-register.md#decision-90), the safe scheduling configuration had no native key, so `NoBlockedReadiness` rested on the key [2]||sid of [I-11](decision-register.md#i-11) alone.
+The key [2, 0] of native execution was a second guarantee and not a premise, as design v2 stated.
 
 ### 13.4 Negative controls
 
@@ -3157,15 +3219,15 @@ The key [2, 0] of native execution is a second guarantee and not a premise, as d
 | `ec-native-searches-again` | Rocq mutant | The backend fires against any recorded candidate, as a search of the candidates again would. | `native_replay_fails_closed` |
 | `ec-native-ignores-denial` | Rocq mutant | The backend applies an operation whose row records a denial. | `native_replay_reproduces_play` |
 | `ec-native-effect-before-prepare` | Rocq mutant | The backend changes the store before it checks the candidate. | `native_replay_fails_closed` |
-| `ec-view-charges-on-miss-only` | Rocq mutant | A view load charges its value on a miss only. | `view_charge_cache_independent` |
+| `ec-view-charges-on-miss-only` | Rocq mutant | Disabled by [decision 89](decision-register.md#decision-89) (DR-131): no view load is metered. | None |
 | `TamperedOutcomeUnsafe` | TLC | Replay skips the outcome and candidate checks. | `NativeReplayOutcomeEqual` |
-| `NoSpaceKeyUnsafe` | TLC | Space intents lose [2]\|\|sid and [2, 0]. | `NoBlockedReadiness` |
-| `WaitUnderLocksUnsafe` | TLC | A space transaction waits for a row while it holds its stripes. | `NoDeadlock` |
-| `NoInvalidateUnsafe` | TLC | A failed space row does not close the epoch. | `NoDeadlock` |
-| The epoch-closure control | Rust | The closure of `apply_op` is disabled. | `space_native_forged_footprints_never_hang` |
+| `NoSpaceKeyUnsafe` | TLC | Disabled by decision 90 (DR-132). Space intents lost [2]\|\|sid and [2, 0]. | None |
+| `WaitUnderLocksUnsafe` | TLC | Disabled by decision 90 (DR-132). A space transaction waited for a row while it held its stripes. | None |
+| `NoInvalidateUnsafe` | TLC | Disabled by decision 90 (DR-132). The epoch closure retired with [decision 124](decision-register.md#decision-124). | None |
 
 The four Rocq mutants pass the gate, which now runs 361 negative checks.
-With the closure disabled, the Rust control fails with "native replay hangs: space row 29, host row 54" (`target/verification/reified-rspaces/d47/step4/negative-control-no-invalidate.log`).
+Of the TLC controls of this table, `TamperedOutcomeUnsafe` still runs, and the `txn` scenarios of `NativeReplayStall.tla` have controls of their own.
+The Rust control of the epoch closure retired with the closure. With the closure disabled, that control failed with "native replay hangs: space row 29, host row 54" (`target/verification/reified-rspaces/d47/step4/negative-control-no-invalidate.log`).
 
 ### 13.5 Property-based tests
 
@@ -3178,13 +3240,11 @@ A plan is a list of transactions of one to three sends and receives over three c
 
 | Property | Covers | What it checks |
 |---|---|---|
-| `prop_native_space_replay_reproduces_play` | H24, T8 | Native replay commits the receipts, the store and the produce counters of play, uses one row for each operation, and keeps the epoch open. |
-| `prop_native_space_replay_denial_keeps_prefix` | H25, `NoDeadlock` | A recorded denial at one operation fails the commit with OutOfPhlogistons, applies the operations before it, and keeps the epoch open. |
-| `prop_native_space_replay_fails_closed` | H26, T8, `NoDeadlock` | A misfit outcome, another candidate, or a row that is not ready fails the commit closed with the prefix applied, and closes the epoch. |
-| `prop_view_charge_cache_independent` | H27 | Cold play, cold native replay and warm play reserve the same view charges in the same order. |
-| `prop_space_key_keeps_one_space_in_one_group` | `NoBlockedReadiness` | The key [2]\|\|sid puts the intents of each space in one group in operation order, and the native key makes one group. |
+| `prop_native_space_replay_reproduces_play` | H24, T8 | Native replay commits the receipts, the store and the produce counters of play, and uses one row for each operation. |
+| `prop_native_space_replay_denial_keeps_prefix` | H25 | A recorded denial at one operation fails the commit with OutOfPhlogistons, and applies the operations before it. |
+| `prop_native_space_replay_fails_closed` | H26, T8 | A misfit outcome, another candidate, or a row that is not ready fails the commit closed with the prefix applied. The failure leaves the epoch open, and a waiter of its row parks counted. |
 
-The first four properties are in `native_session/space.rs`, and the last is in `reified/schedule.rs`.
+The three properties are in `native_session/space.rs`.
 The witness tests of the map are the deterministic tests of sections 13.6 and 13.7.
 
 ### 13.6 The native certification suite
@@ -3198,17 +3258,60 @@ It then runs the journal check, the trace binding, the native replay environment
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_native_replay_equal_{hashmap,pathmap,array,vector}` | `reified_native_spaces.rs:125-134` | Each of the 24 families plays natively without error and delivers its results. Native replay reproduces the errors, a complete journal, the usage, the evidence and the root. |
-| `space_native_journal_rows_per_operation` | `reified_native_spaces.rs:245` | One row for each produce and consume of the log, one COMM record for each COMM, and sub-order paths numbered from 0 in each transaction. |
-| `space_native_handle_calls_after_factory` | `reified_native_spaces.rs:254` | The factory parks the handle first, and each handle call follows the previous operation on the handle. |
-| `space_native_persistent_retry_rows` | `reified_native_spaces.rs:323` | A persistent element offered again in flight is a retry of a space row, and native replay consumes the retry. |
-| `space_native_denial_replay` | `reified_native_spaces.rs:395-467` | Out of phlo at each charged attempt of the largest space transaction, found by bisection on the limit, play and native replay agree. |
-| `space_native_scope_reset_after_restore` | `reified_native_spaces.rs:482` | A second evaluation after a restore reproduces play. |
-| `space_native_forged_predecessor_fails_closed` | `reified_native_spaces.rs:525` | The journal check rejects a forged predecessor, and a matching forged footprint fails closed at the footprint check. |
-| `space_native_forged_footprints_never_hang` | `reified_native_spaces.rs:621` | Every forgery of a space row on a later host row ends within 60 s and is rejected. |
+| `space_native_replay_equal_{hashmap,pathmap,array,vector}` | `reified_native_spaces.rs:167-176` | Each of the 24 families plays natively without error and delivers its results. Native replay reproduces the errors, a complete journal, the usage, the evidence and the root. |
+| `space_native_journal_rows_per_operation` | `reified_native_spaces.rs:337` | One row for each produce and consume of the log and one COMM record for each COMM. Changed by [decision 92](decision-register.md#decision-92) (DR-132): a space row has no sub-order segment, and the rows of one space form one chain of predecessors in play order. |
+| `space_native_handle_calls_after_factory` | `reified_native_spaces.rs:355` | The factory parks the handle first, and each handle call follows the previous operation on the handle. |
+| `space_native_persistent_retry_rows` | `reified_native_spaces.rs:427` | A persistent element offered again in flight is a retry of a space row, and native replay consumes the retry. |
+| `space_native_denial_replay` | `reified_native_spaces.rs:403-479` | Out of phlo at each charged attempt of the largest space transaction, found by bisection on the limit, play and native replay agree. |
+| `space_native_scope_reset_after_restore` | `reified_native_spaces.rs:935` | A second evaluation after a restore reproduces play. |
+| `space_native_forged_predecessor_fails_closed` | `reified_native_spaces.rs:971` | The journal check rejects a forged predecessor, and a matching forged footprint fails closed at the footprint check. |
+| `space_native_forged_footprints_never_hang` | `reified_native_spaces.rs:625` | Every forgery of a space row on a later host row ends within 60 s and is rejected. |
 
-The unit tests of the backend add `native_space_replay_view_charges_equal_play` (`native_session/space.rs:1750`) and `native_space_replay_rejects_another_valid_candidate` (`native_session/space.rs:1793`).
-The scheduler adds `space_native_single_conflict_group` (`reified/schedule.rs:724`) and `space_native_space_key_groups` (`reified/schedule.rs:743`).
+The unit tests of the backend add `native_space_replay_rejects_another_valid_candidate` (`native_session/space.rs:2489`).
+Disabled by [decision 90](decision-register.md#decision-90) (DR-132): the scheduler and its tests `space_native_single_conflict_group` and `space_native_space_key_groups` are gone.
+
+**The random picks suite.**
+Play picks at random among equal candidates ([decision 102](decision-register.md#decision-102)), and each pick reaches native replay as a recorded row.
+The suite shows that play picks each candidate, that replay follows the record of its own run, and that a forged record fails closed.
+Each test of `reified_native_random_picks.rs` plays Rholang deploys natively on the racing runtimes with 0, 2 and 8 workers ([decision 111](decision-register.md#decision-111)).
+
+A pick test makes 200 runs on each runtime.
+A candidate is missing from every run with a chance of at most $`3 \cdot (2/3)^{200}`$, about $`2 \cdot 10^{-35}`$.
+An agreement, rollback or park test makes 64 runs on each runtime.
+An outcome with a chance of $`1/2`$ is missing with a chance of $`2^{-64}`$.
+The agreement property plays 512 cases over 13 families on each runtime.
+It misses a pick of a two-candidate family with a chance of about $`4.7 \cdot 10^{-11}`$ on one runtime, and of about $`1.4 \cdot 10^{-10}`$ over the three runtimes.
+
+*Table 93a. The tests of the random picks suite ([decision 102](decision-register.md#decision-102)).*
+
+| Test | Location | What it checks |
+|---|---|---|
+| `space_bag_play_picks_each_of_three_records` | `reified_native_random_picks.rs:504` | A receive on a bag binds each of three equal records over the runs. |
+| `space_bag_play_picks_each_of_three_waiters` | `reified_native_random_picks.rs:511` | A send on a bag fires each of three equal waiters over the runs. |
+| `space_set_play_picks_each_of_three_classes` | `reified_native_random_picks.rs:518` | A receive on a set binds each of three classes over the runs. |
+| `space_join_window_play_picks_each_of_three_records` | `reified_native_random_picks.rs:525` | A join binds each of the three equal records of its window over the runs. |
+| `space_vectordb_play_picks_each_of_three_best_ties` | `reified_native_random_picks.rs:535` | A ranked receive on a VectorDB binds each of the three records with the best score. No run binds the record with a worse score. |
+| `space_vectordb_plain_read_picks_each_of_three_records` | `reified_native_random_picks.rs:542` | A receive with no query on a VectorDB binds each of three records over the runs. |
+| `space_bag_play_does_not_follow_the_canonical_order` | `reified_native_random_picks.rs:551` | At least one run binds a record that is not the first record of DR-75. |
+| `space_join_on_one_collection_twice_replays_its_own_record` | `reified_native_random_picks.rs:571` | A join that names one collection twice binds the two first records of DR-75 in every run, and the third record stays. |
+| `space_guarded_receive_park_replays_under_either_pick` | `reified_native_random_picks.rs:609` | A guard admits one of two records, so the receive fires or parks by its pick. Replay parks a `Stored` row without a search. |
+| `prop_space_random_play_agrees_with_native_replay` | `reified_native_random_picks.rs:750` | Each case certifies through its own native replay. The phlo, the byte observations, the authority events and the root of play and replay are equal. A random family shows two or more outcomes, and every other family shows exactly one. |
+| `space_vetoed_bag_join_on_a_repeated_collection_restores_every_datum` | `reified_native_random_picks.rs:770` | The guard of a join on one collection refuses every tuple. The send still fires another join with both records, so a refused tuple leaves every record visible. |
+| `space_guarded_join_park_with_a_theory_replays` | `reified_native_random_picks.rs:804` | A theory counts as a veto for a join. The join fires or parks by its pick, and replay parks a `Stored` row without a search. |
+| `set_cascade_fires_the_guarded_receive_that_a_vetoed_pick_parked` | `reified_native_random_picks.rs:838` | A pick that fails its guard parks a receive. A take by a second receive then fires the parked receive through the set cascade, in one transaction. The test adds a join that never fires, because the one-bind route has no cascade. |
+| `racing_space_play_agrees_with_native_replay` | `native_runtime/tests/random_candidate_order.rs:873` | Each space family plays once and replays twice, with equal phlo, equal byte observations, an equal root and an idle progress word. |
+| `forged_stored_row_on_an_unguarded_send_fails_closed` | `reified_native_owner_rows.rs:8226` | A forger edits the row of a firing send to `Stored` and removes its COMM records. The waiter has no guard and no theory, so replay fails closed. |
+| `space_seq_concurrent_after_a_pick_restages_in_dr75_order` | `spaces/generic.rs:12220` | After a pick, `SeqConcurrent` restages its records in the order of DR-75. |
+| `space_r_a_resets_the_pathmap_source_state` | `spaces/pathmap/join.rs:5327` | A restage after a failed staging clears the paths, the root flag, the owed second sends and the change flag of the PathMap source. |
+
+Only the tests of the crate can read the progress word of native replay, so the racing property is in the crate.
+The last two tests are unit tests, because no deterministic Rholang program reaches a restage in those stores.
+Four claims of the suite had tests before it, and all four tests are in `reified_native_owner_rows.rs`:
+
+- A forged space row outside the allowed set fails closed in `forged_ranked_name_outside_the_allowed_set_fails_closed` and `forged_matched_row_that_its_guard_refuses_fails_closed`.
+- `cascade_r_a_canonical_restage_replays` covers the guarded VectorDB join at capacity.
+- `stored_send_row_skips_a_vetoing_join_waiter` covers the guarded send to a waiter with two binds.
+- `space_r_a_restages_the_anchor_first_of_a_stop_reissue` covers the re-issue after a Stop.
 
 ### 13.7 The forged-journal probe and the epoch closure
 
@@ -3220,7 +3323,10 @@ The forged space row failed closed, but its ticket only returned the row to the 
 
 Commit `c6cb371ba` adds the [epoch closure](glossary.md#epoch-closure): `NativeBackend::apply_op` closes the epoch when a staged operation fails, except after a published denial.
 Every waiting operation then wakes and fails, and the certification fails closed.
-The test `space_native_forged_footprints_never_hang` now ends every forgery, and the control `NoInvalidateUnsafe` of `NativeReplay.tla` shows the hang of the code before the fix.
+The test `space_native_forged_footprints_never_hang` now ends every forgery.
+The control `NoInvalidateUnsafe` of `NativeReplay.tla` showed the hang of the code before the fix, and [decision 90](decision-register.md#decision-90) disabled it.
+
+*Retired by [decision 124](decision-register.md#decision-124): no failure closes the epoch now. A waiter of a failed row parks as a counted waiter of the base stall rule.*
 
 The probe also forged host rows on later host rows: 66 of 111 replays ended and 45 hung, with no space row involved.
 That lost wake-up is in the host path of native replay, outside this campaign, and the [findings](findings/native-execution-cost-accounting.md#6-f-47-4-a-failed-host-operation-leaves-its-waiters-waiting) record it as F-47-4.
@@ -3228,8 +3334,8 @@ That lost wake-up is in the host path of native replay, outside this campaign, a
 ### 13.8 Measured facts
 
 - Native execution stamps the cost authority of the deploy into the data of each produce. So operation identities, the order of [decision 41](decision-register.md#decision-41) for bag and set candidates, and the root differ between native and legacy play. The suite therefore compares native play with native replay only.
-- Native replay reserves about 1.2 MB of `VerificationBytes` for each budget attempt, after about 36 MB for the environment. The v6 limit bounds a certified deploy near 190 attempts ([M-47-1](findings/native-execution-cost-accounting.md#7-m-47-1-verification-bytes-of-native-replay)).
-- A certification has one host-work budget, and a restore does not refund it. So `space_native_scope_reset_after_restore` uses a smaller program, because two evaluations of a family program exceed the limit.
+- [Decision 89](decision-register.md#decision-89) removed host-work metering. Before it, native replay reserved about 1.2 MB of `VerificationBytes` for each budget attempt, after about 36 MB for the environment. The v6 limit bounded a certified deploy near 190 attempts ([M-47-1](findings/native-execution-cost-accounting.md#7-m-47-1-verification-bytes-of-native-replay)).
+- Before that decision, a certification had one host-work budget, and a restore did not refund it. So `space_native_scope_reset_after_restore` keeps a smaller program, because two evaluations of a family program exceeded the limit.
 
 ### 13.9 Running the decision-47 checks
 
@@ -3307,7 +3413,7 @@ Part 5 of the module discharges every hypothesis with the canonical rationals `Q
 | S19 | `squared_forms_embed_Z_Qc` (`Similarity.v:1454`) | S11 holds for the embedding of the integers into the rationals. |
 | S20 | `selection_Qc` (`Similarity.v:1480`) | S13 and S14 hold for rational scores. |
 
-The module has 20 closed headlines, and the gate now expects 266 closed headlines in total.
+The module has 20 closed headlines, and the gate then expected 266 closed headlines in total.
 Rocq has no model of IEEE-754 binary64, so the rounding to $`\mathrm{RN}_{53}`$ is verified by the tests and the legs of sections 14.4 and 14.6.
 
 ### 14.3 The Z3 cross-witnesses
@@ -3422,17 +3528,17 @@ List mode binds one value: the list of the payload values of the first $`m`$ rec
 L(Q, R) = (e_1, \dots, e_m), \qquad m = \min\bigl(k, \lvert E(Q, R) \rvert\bigr), \qquad e_1 \prec e_2 \prec \dots \prec e_m
 ```
 
-`eligible` (`vectordb.rs:881-952`) computes $`E(Q, R)`$ with the exact scores of section 14.
-`ranked` (`vectordb.rs:1003-1029`) sorts it with `tensor::exact::rank`, and `list_selection` (`vectordb.rs:1068-1117`) builds $`L(Q, R)`$.
+`eligible` (`vectordb.rs:1028-1129`) computes $`E(Q, R)`$ with the exact scores of section 14.
+`ranked` (`vectordb.rs:1297-1322`) sorts it with `tensor::exact::rank`, and `list_selection` (`vectordb.rs:1369-1429`) builds $`L(Q, R)`$.
 
 ### 15.2 LM-b: the offer to a list waiter and the list cascade
 
 A list waiter $`W`$ parks with its query when its list is empty, or when its pattern or its guard refuses the list.
 OFFER-VDB fires $`W`$ with an incoming record $`x`$ when $`x \in L(W, R \cup \{x\})`$, and the pattern and the guard admit that list.
-The fire is one COMM over `[D]` with $`x`$ (`list_offer`, `vectordb.rs:1123-1142`).
-Each other member of the list that is not persistent leaves through a `K_retire` COMM (`retire_members`, `vectordb.rs:1151-1194`).
+The fire is one COMM over `[D]` with $`x`$ (`list_offer`, `vectordb.rs:1441-1463`).
+Each other member of the list that is not persistent leaves through a `K_retire` COMM (`retire_members`, `vectordb.rs:1477-1525`).
 A removal can also make a parked list waiter fireable (CE-2 of the arbitration).
-So after each removal, LIST-CASCADE lifts the first member of the list of the first such waiter and offers it again (`run_tail`, `vectordb.rs:1791-1826`).
+So after each removal, LIST-CASCADE lifts the first member of the list of the first such waiter and offers it again (`run_tail`, `vectordb.rs:3478-3526`).
 
 A single-mode waiter needs no cascade.
 The eligibility of a record does not depend on the other records, so a removal never exposes a single-mode waiter without a guard.
@@ -3442,16 +3548,16 @@ The eligibility of a record does not depend on the other records, so a removal n
 A peek fire removes each member that is not persistent, and the same transaction sends each one again in delivery order ([decision 45](decision-register.md#decision-45)).
 The driver runs the owed second sends first and the cascade second, as the DRAIN-AND-CASCADE of the join engine does.
 At the round cap, the transaction stops ([decision 49](decision-register.md#decision-49)).
-It re-issues one `SettleOp` whose cascade state holds the owed second sends and the re-issue of the operation (`conclude`, `vectordb.rs:1832-1858`).
+It re-issues one `SettleOp` whose cascade state holds the owed second sends and the re-issue of the operation (`conclude`, `vectordb.rs:3700-3736`).
 A settle with a cascade state always runs in the join engine, which applies the same rules.
 A second send keeps its record bytes, so it keeps its embedding and its id.
 
 ### 15.4 The join engine
 
 `JoinWindow::Similarity` is the window shape of the VectorDB discipline.
-Each position on a VectorDB collection sees its own eligible records in its own selection order (`similarity_bind`, `join.rs:3403-3471`).
-The engine has its own list paths: OFFER-LIST (`join.rs:3883-3943`), RECEIVE-LIST (`join.rs:4218-4327`) and the list cascade (`join.rs:4433-4468`, `4510-4600`).
-A join with a list-mode bind fails with `ListModeInJoin` before any staging (`join.rs:464`).
+Each position on a VectorDB collection sees its own eligible records in its own selection order (`similarity_bind`, `join.rs:5378-5483`).
+The engine has its own list paths: OFFER-LIST (`join.rs:6121-6191`), RECEIVE-LIST (`join.rs:7196-7427`) and the list cascade (`join.rs:7845-7905`, `8021-8175`).
+A join with a list-mode bind fails with `ListModeInJoin` before any staging (`join.rs:447`).
 A PathMap space has no VectorDB family, so the PathMap source fails closed on the similarity window.
 
 ### 15.5 Tests
@@ -3464,14 +3570,13 @@ A PathMap space has no VectorDB family, so the PathMap source fails closed on th
 | `space_vectordb_scores_are_the_correctly_rounded_exact_scores` | `scores` delivers $`\mathrm{RN}_{53}`$ of the exact score of cosine, dot, euclidean and manhattan. |
 | `space_vectordb_bounds_select_the_eligible_records` | A threshold and a radius bound $`E`$, and a parked waiter decodes after its commit. |
 | `space_vectordb_fixed_point_and_rational_thresholds` | A fixed-point threshold and a rational threshold are exact. |
-| `space_vectordb_list_mode_delivers_one_list_in_selection_order` | A list is one value in one COMM over `[D; m]`. |
-| `space_vectordb_reads_without_a_vector_follow_the_canonical_order` | A query without a vector reads the records in the canonical order. |
+| `space_vectordb_list_mode_delivers_one_list_in_selection_order` | A list is one value. One COMM over `[D]` binds the first member, and one `K_retire` COMM over `[D]` retires each other non-persistent member (rule CR-13). |
+| `space_vectordb_lists_without_a_vector_keep_the_canonical_order` | Without a query vector, `k` lists the first records in the canonical order of DR-75. A plain receive binds one record whose payload its pattern binds. |
 | `space_vectordb_payload_is_the_vector_by_default` | A send of one numeric list uses it as its embedding, and `embedding` overrides it. |
 | `space_vectordb_ids_keep_only_the_listed_records` | `ids` keeps only the records with the listed source hashes. |
 | `space_vectordb_binary_metrics_read_binary_vectors_only` | Hamming and jaccard read binary vectors only, and jaccard of two empty supports has no score. |
 | `space_vectordb_errors_have_their_codes` | Each malformed send and query fails with its code, and nothing commits. |
 | `space_vectordb_capacity_bounds_records_not_waiters` | `capacity` bounds the records and not the waiters. |
-| `space_vectordb_reservation_cut_rejects_without_effect` | One unit less of host work in any charged dimension rejects the operation with no effect ([decision 42](decision-register.md#decision-42)). |
 | `space_vectordb_peek_restores_records_with_their_embedding` | Rule E sends each peeked record again with its embedding. |
 | `space_vectordb_list_peek_restores_carry_at_the_cap` | The second sends that the round cap leaves are carried by one settle job. |
 | `space_vectordb_ce1_list_waiter_fires_with_the_incoming_datum` | CE-1, in the driver and in the engine. |
@@ -3481,7 +3586,7 @@ A PathMap space has no VectorDB family, so the PathMap source fails closed on th
 | `space_vectordb_join_binds_each_position_by_its_query` | Each bind of a join sees the records of its own query. |
 | `space_vectordb_join_waiter_fires_on_an_eligible_send` | A join waiter fires only on a send that its query makes eligible. |
 | `space_vectordb_list_mode_in_a_join_fails` | A join with a list-mode bind fails with `ListModeInJoin`. |
-| `space_vectordb_replay_equal` | Replay stages the transactions of play, and the roots are equal. |
+| `space_native_vectordb_replay_equal` (in `rholang/tests/reified_native_spaces.rs`) | Native replay reproduces the play of each query shape, with the errors, the phlo and the root of play. |
 | `space_vectordb_source_programs_select_by_similarity` | Rholang programs pass the whole stack: the factory params, `embedding`, a list with scores, a parked waiter, and the `config` reply. |
 | `space_vectordb_source_errors_have_their_codes` | A program fails with the code of each send, query, join and factory error, and leaves no space data. |
 
@@ -3496,10 +3601,8 @@ It also checks the required params `capacity` and `dimensions`, the value rules 
 
 | Property | Statement |
 |---|---|
-| `prop_vectordb_driver_and_engine_agree` | The driver and the engine fire the same continuations with the same values, and they leave the same records and waiters. |
 | `prop_vectordb_no_pending_match` | After each operation of a program without guards, a fresh receive with the pattern and the query of each parked waiter does not fire. |
 | `prop_vectordb_list_is_ordered_and_complete` | A list holds $`\min(k, \lvert E \rvert)`$ values, and its delivered scores follow the selection order. |
-| `prop_vectordb_replay_equal` | Replay of each program gives the outcomes of play, pairs every COMM and reaches the root of play. |
 
 Each property runs 64 cases with the fixed seed of the P5 runner and keeps no failure file.
 Step 8b maps these properties to the headlines of `VectorDbDiscipline.v`, the Rocq model of the discipline (section [22](#22-phase-p6-step-8b-the-model-of-the-vectordb-discipline-and-its-properties)).
@@ -3540,9 +3643,9 @@ To run the checks of steps 3 and 4, do these steps from the repository root:
 
 Step 5 of the P6 design certifies the VectorDB shapes in native execution, as proposer self-certification and validator replay do ([decision 47](decision-register.md#decision-47)).
 The tests extend the native certification suite of section [13.6](#136-the-native-certification-suite) and use its harness at the v6 limits of the offered funded protocol.
-Each VectorDB plan stages only through `Cx` and reserves each step on the meter of its job.
-So native play and native replay make the same reservations and the same rows.
-This section records the tests, the host work that they measured, and what the measurements mean for the family.
+Each VectorDB plan stages only through `Cx`.
+So native play and native replay make the same rows.
+This section records the tests, the host work that they measured before [decision 89](decision-register.md#decision-89), and what the measurements meant for the family.
 
 ### 16.1 Tests
 
@@ -3550,23 +3653,26 @@ This section records the tests, the host work that they measured, and what the m
 
 | Test | What it checks |
 |---|---|
-| `space_native_vectordb_replay_equal` | Both VectorDB families play three programs natively at the v6 limits, and native replay reproduces each play. The programs cover single mode, a peek, a threshold, a radius, the list modes, a join with queries, a persistent receive and the two paths of LM-b. |
-| `space_native_vectordb_cascade_carries_at_the_cap` | At the v6 limits, play rejects the round-cap program for host work and records no evidence. With 32 times the v6 limits, the receive stops at the round cap, its settle job carries the other fires, and native replay reproduces the play. |
+| `space_native_vectordb_replay_equal` | Every query shape of both VectorDB families plays natively at the v6 limits, on each runtime of `RACING_WORKERS`, and native replay reproduces each play. Two chains of deploys, the list chain and the LM-b chain, fix the orders that the claims on the shape of a fire need. |
+| `space_native_vectordb_cascade_carries_at_the_cap` | The round-cap program runs as a chain of three deploys on each runtime of `RACING_WORKERS`. The receive stops at the round cap, its settle job carries the other fires, every document delivers, and native replay reproduces each deploy. |
 | `space_native_vectordb_errors_reproduce` | `CapacityExceeded` and `DimensionMismatch` abort the deploy in native play, and native replay reproduces the failure. |
-| `space_native_vectordb_denial_replay` | Out of phlo at each charged budget attempt of the largest transaction of LM-b, play and native replay agree. |
+| `space_native_vectordb_denial_replay` | LM-b runs as a chain of three deploys. Out of phlo at each charged budget attempt of a space row of the removals, native play and native replay agree. |
 
 A source program reaches a shape only within the syntax contract.
 Only a linear bind takes a query (`syntax-contract.md`), so a peek and a persistent receive read the canonical order of their collection.
-The list receive of two runs after the sends of its collection, so it fires in one COMM over `[D; 2]`.
+The list receive of two runs after the sends of its collection, so it fires in two COMMs over `[D]` ([decision 101](decision-register.md#decision-101)).
 The two lists of LM-b fire through an offer, so no COMM of that program consumes one channel twice.
-The harness gains `native_play_with` and `certify_with`, which take the host-work budget of play and of replay.
+The harness plays with `native_play` and `NativeChain::play`, and it certifies with `certify`, which takes the phlo limit of replay.
 
 ### 16.2 Host work of the VectorDB shapes
+
+Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so `shared/src/rust/clone_backing.rs` is gone.
+This section records the last measurements of host work.
 
 The first run of the round-cap program failed: native play rejected it with `HostWorkRejected`.
 A probe then played the program at several sizes with a host-work budget that has no limit, and it read the usage of each dimension.
 The probe programs draw only the name `a` from the space.
-`VerificationBytes` dominates. `SearchStateBytes` reaches 0.49 of its limit at 32 waiters and 1.85 at 70, and every other dimension stays below 0.10.
+`VerificationBytes` dominated. `SearchStateBytes` reached 0.49 of its limit at 32 waiters and 1.85 at 70, and every other dimension stayed below 0.10.
 
 *Table 102. The `VerificationBytes` of native play of the round-cap program by its size, against the v6 limit of 268,435,456 bytes.*
 
@@ -3579,12 +3685,12 @@ The probe programs draw only the name `a` from the space.
 | 64 | 3,757,681,570 | 14.00 |
 | 70 | 4,431,927,764 | 16.51 |
 
-The growth is quadratic in the size of the collection.
-Each operation loads all records or all waiters of its collection, and the number of operations grows with the collection.
+The growth was quadratic in the size of the collection.
+Each operation loaded all records or all waiters of its collection, and the number of operations grew with the collection.
 
 A second probe sampled the stack of every 16th reservation of `VerificationBytes` for 16 parked list waiters over 17 records (Table 103).
 
-*Table 103. The sources of the `VerificationBytes` that the space meter reserves for 16 parked list waiters over 17 records.*
+*Table 103. The sources of the `VerificationBytes` that the space meter reserved for 16 parked list waiters over 17 records.*
 
 | Source | Share |
 |---|---|
@@ -3594,11 +3700,11 @@ A second probe sampled the stack of every 16th reservation of `VerificationBytes
 | The decode of the vector of each record in `eligible` | 7.7% |
 | The other reservations | 15.6% |
 
-Each reservation follows the walk model of `shared/src/rust/clone_backing.rs`, which the campaign adopts from the cost-accounting branch ([decision 40](decision-register.md#decision-40)).
-A walk charges every node of a value and every entry of its work list, so it charges much more than the encoded bytes.
-One walk of the config map charges 175,565 bytes, and the bincode of the map has 2,003 bytes.
-The decode of the config makes five walks, because `SpaceConfig::from_par` reads the map, copies its fields, encodes the config again and compares the two maps.
-So one decode charges 1,228,955 bytes, once for each operation of a collection.
+Each reservation followed the walk model of `shared/src/rust/clone_backing.rs`, which the campaign adopted from the cost-accounting branch ([decision 40](decision-register.md#decision-40)).
+A walk charged every node of a value and every entry of its work list, so it charged much more than the encoded bytes.
+One walk of the config map charged 175,565 bytes, and the bincode of the map had 2,003 bytes.
+The decode of the config made five walks, because `SpaceConfig::from_par` read the map, copied its fields, encoded the config again and compared the two maps.
+So one decode charged 1,228,955 bytes, once for each operation of a collection.
 
 *Table 104. Native play and native replay of the step-5 programs, as fractions of the v6 limit of `VerificationBytes`.*
 
@@ -3609,16 +3715,18 @@ So one decode charges 1,228,955 bytes, once for each operation of a collection.
 | The two paths of LM-b | 74 | 0.27 | 0.68 |
 | The round-cap program of the probe | 655 | 16.51 | 18.66 |
 
-Native replay charges more than native play: 2.2 to 2.6 times for the three small programs, and 1.13 times for the round-cap program.
-The replay environment reserves about 36 MB before its evaluation and about 1.2 MB for each budget attempt ([M-47-1](findings/native-execution-cost-accounting.md#7-m-47-1-verification-bytes-of-native-replay)).
-So the suite runs the VectorDB shapes as two deploys, and each one fits the v6 limits in play and in replay.
+Native replay charged more than native play: 2.2 to 2.6 times for the three small programs, and 1.13 times for the round-cap program.
+The replay environment reserved about 36 MB before its evaluation and about 1.2 MB for each budget attempt ([M-47-1](findings/native-execution-cost-accounting.md#7-m-47-1-verification-bytes-of-native-replay)).
+So the suite ran the VectorDB shapes as two deploys, and each one fit the v6 limits in play and in replay.
 
 ### 16.3 Consequences
 
-- At the v6 limits, a natively certified deploy holds only a small VectorDB collection. In play, 8 records and 8 list waiters use 0.54 of the limit, and 16 of each exceed it.
-- The round-cap shape needs about 19 times the v6 limit of `VerificationBytes` in replay. The suite certifies its carry with 32 times the v6 limits, and it certifies the rejection at the v6 limits.
-- A host-work rejection is a platform failure. Native play records no evidence, so the proposer refuses the offer and no block includes it.
-- The walk model and the v6 limits belong to the owner of cost accounting, and this campaign changes neither (M-3). The tracker adds these measurements to M-47-1 for that owner.
+Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so these consequences held only before that removal.
+
+- At the v6 limits, a natively certified deploy held only a small VectorDB collection. In play, 8 records and 8 list waiters used 0.54 of the limit, and 16 of each exceeded it.
+- The round-cap shape needed about 19 times the v6 limit of `VerificationBytes` in replay. The suite certified its carry with 32 times the v6 limits, and it certified the rejection at the v6 limits.
+- A host-work rejection was a platform failure. Native play recorded no evidence, so the proposer refused the offer and no block included it.
+- The walk model and the v6 limits belonged to the owner of cost accounting, and this campaign changed neither (M-3). The tracker added these measurements to M-47-1 for that owner.
 
 ### 16.4 Running the step-5 checks
 
@@ -3676,16 +3784,19 @@ A float leaves as the `GDouble` of $`\mathrm{RN}_{53}`$ of the exact value, and 
 
 ### 17.2 Host work
 
-The process builds its meter from the host-work budget of the deploy, which the reduction context holds, as `submit_space` reads it.
-Each step reserves its work before it runs:
+Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so the process reserves nothing, and `submit_space` and `reserve_integer_encode` are gone.
+This section records the last state before that removal.
+
+The process built its meter from the host-work budget of the deploy, which the reduction context held, as `submit_space` read it.
+Each step reserved its work before it ran:
 
 - the comparison of the method name and the kind test of each element
 - the decodes and each exact operation
 - each rounding, and the encode of each number and of each list.
 
-The encode of an integer reserves $`\ell(x) + 1`$ operations, $`8\ell(x)`$ scanned bytes and $`8\ell(x) + 1`$ backing bytes (`reserve_integer_encode`).
-The process touches no space, so it runs without an `Intent::Space`.
-Its work is a pure function of its arguments, so native play and native replay reserve the same amounts.
+The encode of an integer reserved $`\ell(x) + 1`$ operations, $`8\ell(x)`$ scanned bytes and $`8\ell(x) + 1`$ backing bytes (`reserve_integer_encode`).
+The process touched no space, so it ran without an `Intent::Space`.
+Its work was a pure function of its arguments, so native play and native replay reserved the same amounts.
 
 ### 17.3 Tests
 
@@ -3693,8 +3804,7 @@ Its work is a pure function of its arguments, so native play and native replay r
 
 | Test | Location | What it checks |
 |---|---|---|
-| `vector_ops_keep_the_widest_kind` and six more unit tests | `tensor/ops.rs` | The kinds, the widening to `GBigInt`, the exact sums, the correct roots, every reply code, the reply shape, and the reservations with a rejection one unit below. |
-| `space_system_ops_vector_ops_reserve_on_the_deploy_budget` | `reified/system_processes.rs` | The process reserves on the budget of the reduction context, and one unit less rejects the call with no reply. |
+| `vector_ops_keep_the_widest_kind` and five more unit tests | `tensor/ops.rs` | The kinds, the widening to `GBigInt`, the exact sums, the correct roots, every reply code and the reply shape. |
 | `p6_processes_have_the_table_values` | `reified/system_channels.rs` | The channel, the arity and the body reference, and the ops that pack their arguments: `0x00` to `0x20` and `0x23`. |
 | `vector_ops_source_programs_compute_each_operation` | `rholang/tests/reified_vector_ops.rs` | Each operation replies its value to a Rholang program. |
 | `vector_ops_keep_the_widest_kind_in_source` | the same | Big integers, big rationals, fixed points, booleans, floats and `f32` values give their widest kind. |
@@ -3736,10 +3846,11 @@ A failure of the library tests then stopped cargo before the suite, so the count
 | `no-dimension-check` | Two vectors of different lengths pass. | 3 |
 | `vector-not-packed` | The reducer does not pack a call, so it never meets the process. | 6 |
 | `reply-without-ok` | The reply is the bare value. | 6 |
-| `process-unmetered` | The process ignores the host-work budget of the deploy. | 1 (the process test) |
+| `process-unmetered` | The process ignores the host-work budget of the deploy. Retired by [decision 89](decision-register.md#decision-89), because the process has no host-work budget now. | 1 (the process test) |
 
-Native replay cannot see `process-unmetered`, because play and replay then both reserve nothing and still agree.
-Only the process test, which reads the budget of the reduction context, kills it.
+Native replay could not see `process-unmetered`, because play and replay then both reserved nothing and still agreed.
+Only the process test, which read the budget of the reduction context, killed it.
+*Changed by [decision 89](decision-register.md#decision-89): the harness keeps the entry of `process-unmetered` as a comment and runs 7 mutants.*
 
 ### 17.5 Running the step-6 checks
 
@@ -3761,6 +3872,9 @@ Both run in native execution, and native replay produces the recorded replies (p
 The campaign targets only the latest execution model, so every test of this step runs native play and native replay certification (plan decision 69).
 The `config` reply of a mirrored space also names its mirror.
 
+Changed by [decision 113](decision-register.md#decision-113): only a build with the feature `chromadb` registers `embed` and `ann`, so their tests need that feature (`P6_PROCESSES`, `rholang/src/rust/interpreter/reified/system_channels.rs:488-493`).
+The VectorDB space type and its `config` reply stay in every build.
+
 ### 18.1 Calls and replies
 
 A program calls `embed!?(text)` or `embed!?([text…])`.
@@ -3774,8 +3888,24 @@ The reply is `[true, ids, distances, watermark]`.
 `distances` is a list of `GFloat32` values, nearest first, and `watermark` is an `Int`.
 The ids are hints: only `ids=` turns them into a decision, and the order of the exact engine decides ([decision 58](decision-register.md#decision-58)).
 
+Changed by [decision 114](decision-register.md#decision-114): the reply is `[true, ids, distances]`, with no watermark (`ann_answer`, `rholang/src/rust/interpreter/reified/system_processes.rs:826-880`).
+Nothing repairs the mirror, so no value of the reply tells how current the mirror is.
+
 A failure replies `[false, code, detail]`, with a fixed detail that never repeats an argument.
 A call with params aborts with `ParamsUnsupported` (I-8), and a persistent call aborts with `PersistentOpCall` (A21), because `is_call_op` now covers `0x00` to `0x25`.
+
+Changed by [decision 105](decision-register.md#decision-105): a failure replies `[false, code, message]` with a base code of DR-114 (`native_failure_reply`, `rholang/src/rust/interpreter/system_processes.rs:722-728`).
+The message is `<process>: <text>`, where `<process>` is `vectordb_embed` or `vectordb_ann`.
+The text is one of four fixed texts, so the message never repeats an argument:
+
+- `invalid argument`
+- `external service failed`
+- `external output is not plain data`
+- `external output exceeds the record room`
+
+Changed by [decision 106](decision-register.md#decision-106): the send check lets a persistent send to `embed` or `ann` pass (`check_persistent_send`, `rholang/src/rust/interpreter/reified/system_channels.rs:152-170`).
+In native execution, the call then fails at its fire with `SystemProcessShapeError`, by rule P2 of DR-114 (`rholang/src/rust/interpreter/reduce.rs:1306-1322`).
+`is_call_op` still covers `0x00` to `0x25`, and A21 still aborts a persistent send to each other call op.
 
 *Table 110. The reply codes of `embed` and `ann` (`reified/vectordb_services.rs`).*
 
@@ -3790,6 +3920,13 @@ A call with params aborts with `ParamsUnsupported` (I-8), and a persistent call 
 | `MirrorUnavailable` | `ann` | The node has no mirror, or the mirror does not answer. |
 | `DimensionMismatch` | `ann` | The query vector, or the embedding of a text query, has other dimensions than the space. |
 | `InvalidOption` | `ann` | The options are not a map with the one key `k`, an `Int` in $`[1, \mathit{capacity}]`$. |
+
+Changed by [decision 105](decision-register.md#decision-105): the replies use the base codes of DR-114 (`rholang/src/rust/interpreter/system_processes.rs:675-680`), not the codes of Table 110.
+
+- `EXT_BAD_ARG` replaces `BadArgument`, `EmbeddingRateLimited`, `NotAVectorDbSpace`, `MirrorDisabled` and `InvalidOption`. It also replaces `DimensionMismatch` for a query vector.
+- `EXT_FAILED` replaces `EmbeddingUnavailable`, `NonFiniteEmbedding` and `MirrorUnavailable`. It also replaces `DimensionMismatch` for the embedding of a text query.
+- `EXT_FAILED` is also the reply to a success that is not plain data (`native_played_reply`, `rholang/src/rust/interpreter/system_processes.rs:736-758`).
+- `EXT_OUTPUT_TOO_LARGE` is new. A success that does not fit the record room of the deploy becomes this failure.
 
 The quota of `embed` is local to the node, because the CPU time of the model has no price.
 It refuses a larger call before the model runs, and the refusal is recorded like any other reply.
@@ -3808,6 +3945,13 @@ They are not consensus state: a play output is recorded, and replay never asks a
 | without the `chromadb` feature | unavailable: `EmbeddingUnavailable` | unavailable: `MirrorUnavailable` |
 | with the `chromadb` feature (`node_services`) | `SbertEmbedder`: the SBERT model `all-MiniLM-L6-v2` of 384 dimensions, loaded on its first call and run on a blocking thread | `ChromaMirror`: the ChromaDB server of `CHROMA_ENDPOINT`, `CHROMA_TENANT` and `CHROMA_DATABASE`, one database for each node |
 
+Changed by [decision 113](decision-register.md#decision-113): a build without the feature `chromadb` registers no `embed` and no `ann`.
+Its publications drop their batches, because the unavailable services have no writer (`VectorDbServices::unavailable`, `rholang/src/rust/interpreter/reified/vectordb_services.rs:618-625`).
+
+Changed by [decision 109](decision-register.md#decision-109): a validator installs `node_services()`, and an observer installs the unavailable services (`node/src/rust/runtime/setup.rs:1058-1061`).
+So on an observer of a `chromadb` build, a call of `embed` or `ann` that passes its checks replies `EXT_FAILED` ([decision 105](decision-register.md#decision-105)).
+A node whose environment names no valid endpoint gets the unavailable mirror and no writer (`rholang/src/rust/interpreter/reified/vectordb_services.rs:759-780`).
+
 The names of the mirror are pure functions of consensus values:
 
 - The collection of a space is `rrs-` and the lowercase hex of the first 16 bytes of its space id (`collection_name`).
@@ -3820,19 +3964,29 @@ The names of the mirror are pure functions of consensus values:
 A collection that the server does not hold yet answers no neighbours and the watermark 0.
 A neighbour whose id is not 32 bytes long cannot name a record, so the reply drops it.
 
+Retired by [decision 114](decision-register.md#decision-114): nothing repairs the mirror, so a collection has no metadata key `watermark` (`rholang/src/rust/interpreter/reified/vectordb_services.rs:737-739`).
+A collection that the server does not hold yet answers no neighbours, and the reply has no watermark.
+
 The `config` reply of a space with a mirror holds one more entry, `"mirror"`.
 Its value is the map `{"backend": b, "collection": "rrs-…"}`, where `b` is the value of the factory param `mirror`.
 The stored config record does not change.
 
 ### 18.3 Recording and replay
 
-The dispatcher records the whole reply of a call on its produce event, and replay hands the process the recorded output (`interpreter/dispatch.rs:75-91`).
+The dispatcher records the whole reply of a call on its produce event, and replay hands the process the recorded output (`interpreter/dispatch.rs:114-160`).
 Every failure is a reply, so it is recorded too.
-An error of a recorded process would mark its produce failed, and replay could not reproduce it (`interpreter/reduce.rs:709-711`).
+An error of a recorded process would mark its produce failed, and replay could not reproduce it (`interpreter/reduce.rs:1153-1169`).
+
+Changed by [decision 89](decision-register.md#decision-89) and [decision 90](decision-register.md#decision-90): native execution records the processes of its own set, which holds `embed` and `ann` by name (`is_native_recorded_op`, `rholang/src/rust/interpreter/system_processes.rs:622-646`).
+In native execution, an error of a recorded process ends the evaluation, and no produce is marked failed (`rholang/src/rust/interpreter/dispatch.rs:132-146`).
+A reply whose produce fails keeps its record, so replay meets the same denial (gap G-A of DR-114, `rholang/src/rust/interpreter/reduce.rs:1135-1151`).
 
 `embed` reads no consensus state.
 In play it checks the shape of its argument and the quota, and then asks the embedder.
 In replay it produces the recorded reply at once.
+
+Changed by [decision 116](decision-register.md#decision-116): replay delivers the record through the base helper `native_replayed_reply` (`rholang/src/rust/interpreter/system_processes.rs:763-781`).
+The helper rejects an empty record, and a record that is not plain data, with `BugFoundError`.
 
 `ann` reads consensus state before it asks a service (plan decision 67).
 Play and replay both make its checks, in this order:
@@ -3848,6 +4002,11 @@ So play and replay must both make the checks.
 Replay then produces the recorded reply and never asks a service.
 Only play asks the services: it embeds a text query, and it asks the mirror for the neighbours and the watermark.
 
+Changed by [decision 104](decision-register.md#decision-104): only play makes the checks of `ann` (`rholang/src/rust/interpreter/reified/system_processes.rs:619-676`).
+The reason for the checks in replay lapsed with [decision 89](decision-register.md#decision-89): nothing reserves host work, and the config read writes no journal row.
+Replay makes no check, asks no service and delivers the record, so the certification stays complete (`prop_vectordb_services_replay_reproduces_the_recorded_outputs`).
+A failed check replies `EXT_BAD_ARG` ([decision 105](decision-register.md#decision-105)), and the mirror answers no watermark ([decision 114](decision-register.md#decision-114)).
+
 Design v3 had replay return the recorded output first.
 With that rule, native replay of an `ann` call fails with "native replay has incomplete operations", because the journal of play holds the config read.
 A budgeted evaluation outside native execution showed the host-work side: play reserved 1,815,346 `VerificationBytes` more than replay for one call.
@@ -3857,14 +4016,24 @@ The factory call, the `gensym` and the evidence of a deploy add about 7.9 M in p
 So one deploy holds about a dozen `ann` calls before native replay exceeds the limit of 268,435,456, while play stays far below it.
 This play and replay asymmetry belongs to the cost-accounting owner (measurement M-47-1).
 
+Changed by [decision 89](decision-register.md#decision-89): DR-131 of the base removed the host-work meter, so no `ann` call reserves `VerificationBytes` now.
+The measurements above and the limit 268,435,456 belong to the meter before the merge of `4c58a925f`.
+The failure "native replay has incomplete operations" cannot occur now, because the config read writes no journal row.
+
 A failure of the config job is not a reply: it fails the deploy, as for `getSpaceAgent`, and so does a host-work rejection.
 When a deploy runs out of phlo, the produce of the reply fails.
 The deploy then fails with `ProduceFailureWithOutput`, and the event log marks the produce of the call failed, as for the other recorded processes.
 
 Native replay cannot yet certify such a play.
-It refuses to dispatch a call whose recorded produce is marked failed (`interpreter/reduce.rs:709-711`), so the journaled reply attempt of play stays unconsumed.
+It refuses to dispatch a call whose recorded produce is marked failed (`interpreter/reduce.rs:1292-1294`), so the journaled reply attempt of play stays unconsumed.
 The record-and-replay mechanism of external service calls, which the cost-accounting owner implements, covers this case (plan decision 68, task 10904).
 When it merges, `embed` and `ann` move to it, and the out-of-phlo test certifies the rejection by native replay.
+
+Changed by [decision 89](decision-register.md#decision-89): the mechanism merged as DR-114, and `embed` and `ann` use it.
+When a deploy runs out of phlo, the deploy fails with `OutOfPhlogistonsError`, and no produce is marked failed.
+The produce event of the call keeps its record, so native replay meets the same denial (gap G-A, `rholang/src/rust/interpreter/reduce.rs:1135-1151`).
+`vectordb_embed_out_of_phlo_rejects_output` certifies the denial by native replay with another embedder.
+A failure of the config read other than a dangling handle still fails the deploy, and no host-work rejection exists now.
 
 ### 18.4 The Rocq models
 
@@ -3880,6 +4049,11 @@ The two ops extend the op table and the range of the ops that take calls, so thr
 
 The Rocq gate passes with `PASS=109 FAIL=0 SKIP=0`, 266 closed headlines and 367 negative checks.
 The new mutant fails inside `persistent_op_call_aborts`, as expected.
+
+Changed by [decision 106](decision-register.md#decision-106): `SpaceFactory.v` adds `is_recorded_op`, which holds for `embed_op` and `ann_op`, and the send check lets a recorded op pass.
+Headline 7 now states `PersistentOpCall` for the ops 33 to 35 and 48 to 50, and `SendOk` for the recorded ops 36 and 37.
+A new conjunct states that a persistent send to a call op that is not recorded never gives `SendOk`.
+The mutant `sf-recorded-op-aborts` of Table 39 replaces `sf-ann-not-a-call-op`.
 
 ### 18.5 Tests
 
@@ -3914,6 +4088,15 @@ So the tests of one binary never share a backend.
 The backends of the `chromadb` feature compile with `cargo check -p rholang --features chromadb`.
 The sandbox runs only the fake backends.
 
+Merge 2 of `feature/cost-accounted-rho` (`702496775`) makes these changes to Table 112:
+
+- Changed by [decision 105](decision-register.md#decision-105): the tests check the base codes `EXT_BAD_ARG` and `EXT_FAILED` and their messages.
+- Changed by [decision 89](decision-register.md#decision-89): `vectordb_embed_out_of_phlo_rejects_output` checks that the deploy fails with `OutOfPhlogistonsError`, and that no produce is marked failed. Native replay with another embedder certifies the denial.
+- Changed by [decision 106](decision-register.md#decision-106): `vectordb_embed_and_ann_reject_params_and_persistent_sends` checks that `!!` fails at its fire with `SystemProcessShapeError`. `persistent_sends_abort_on_every_call_op_and_every_handle` checks that `!!` on `0x24` and `0x25` passes the send check.
+- Changed by [decision 113](decision-register.md#decision-113): `p6_processes_have_the_table_values` and `P6_PROCESS_PINS` have one form for each build. The tests of `embed` and `ann` compile only with `--features chromadb`.
+- Added by [decision 89](decision-register.md#decision-89): `vectordb_record_room_bounds_embed_replies` and `vectordb_record_room_bounds_ann_replies` check `EXT_OUTPUT_TOO_LARGE`. `vectordb_replay_rejects_a_call_without_its_record` checks that native replay rejects a call without its record.
+- Added by [decision 104](decision-register.md#decision-104) and [decision 116](decision-register.md#decision-116): the unit test `vectordb_replay_delivers_the_record_without_a_check` delivers a record with no check of the call. It rejects an empty record and each forged record of the base review with `BugFoundError`.
+
 ### 18.6 Negative controls
 
 The harness `scripts/verify-reified/vectordb-services-mutants.py` applies each mutant and restores the source files after it.
@@ -3940,6 +4123,15 @@ A systemd time limit bounds each run, and a run that reaches it counts as a hang
 All 12 mutants fail tests, and the harness restores the files.
 No mutant hangs, because each certification of the suite has its own time limit.
 
+Merge 2 makes these changes to the harness:
+
+- Retired by [decision 104](decision-register.md#decision-104): `ann-checks-only-in-play` states the rule now, so it is a comment. Its replacement `ann-replay-checks` makes replay check the call again, so a replay without a host fails.
+- Changed by [decision 104](decision-register.md#decision-104) and [decision 116](decision-register.md#decision-116): `embed-replay-recomputes` and `ann-replay-recomputes` make replay ask the service, although the record is present.
+- Changed by [decision 90](decision-register.md#decision-90): `embed-not-recorded` and `ann-not-recorded` take the process out of `is_recorded_process`, the set that native execution reads.
+- Changed by [decision 113](decision-register.md#decision-113): the harness runs with `--features chromadb`, and it stops when `LIBTORCH` is not set.
+
+Table 136a of section 24.5 gives the run of the 12 services mutants after these changes.
+
 ### 18.7 Running the step-7a checks
 
 To run the checks of step 7a, do these steps from the repository root:
@@ -3949,12 +4141,23 @@ To run the checks of step 7a, do these steps from the repository root:
 3. Run `scripts/check-reified-rspaces-proofs.sh`, which must report `FAIL=0`.
 4. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
 
+Changed by [decision 113](decision-register.md#decision-113): step 1 needs `--features chromadb`.
+Since [decision 90](decision-register.md#decision-90), that feature builds rust-bert, which needs libtorch 2.4.0.
+Before step 1, set `LIBTORCH` to the directory of libtorch, and set `BZIP2_NO_PKG_CONFIG` to `1`.
+Then add `$LIBTORCH/lib` to `LD_LIBRARY_PATH`.
+The harness of step 2 gives its runs the same environment.
+
 ## 19. Phase P6, step 7b: the mirror journal and its publication
 
 Step 7b makes each node keep a ChromaDB mirror of each VectorDB space that has the factory param `mirror` (design v3 4.9, [decision 58](decision-register.md#decision-58)).
 The mirror is a hint index for `ann`: it never decides a COMM, and nothing in consensus reads it.
 A deploy publishes its writes to the mirror only when its final result has no errors (M1, plan decision 66).
 Every test of this step runs native play and native replay certification (plan decision 69).
+
+Changed by [decision 98](decision-register.md#decision-98): no journal collects the writes of a deploy now.
+In play, each commit publishes the net writes of its transaction, whatever the final result of the deploy.
+
+Changed by [decision 114](decision-register.md#decision-114): nothing repairs the mirror, so the reconciler of section 20 is retired.
 
 ### 19.1 The net writes of a transaction
 
@@ -4014,6 +4217,15 @@ The writes are idempotent, so the mirror ends in the same state.
 When other batches come between the two publications, the mirror can hold a removed record for a short time.
 The ids of `ann` are only hints, and `ids=` selects no record that consensus state does not hold (Section 18.1).
 
+Retired by [decision 98](decision-register.md#decision-98): the runtime holds no mirror journal.
+The journal, the two settle lines of Table 115 and the journal clear of `begin_evaluation_scope` are comments now.
+Native replay publishes nothing, so a node never publishes a batch twice.
+
+Changed by [decision 98](decision-register.md#decision-98): `ReifiedRuntime::run_op` publishes the batch of a commit in play, before it releases the stripes (`rholang/src/rust/interpreter/reified/runtime.rs:355-425`).
+So two commits on one record id publish in commit order.
+A failed deploy, an exploratory deploy and the play of a block that consensus does not keep publish their commits too.
+Replay, reporting and native replay publish nothing, and a mirror write gives no reply, so nothing is recorded (DR-114 T7).
+
 ### 19.3 The mirror writer
 
 `MirrorWriter` in `reified/vectordb_services.rs` applies the batches of a node to its mirror.
@@ -4027,11 +4239,19 @@ The reconciler of step 7c repairs the dirty collections.
 `flush` waits until the task has finished each batch that the queue took, for tests and for shutdown.
 The unavailable services of a node have no writer, so their publication drops the batches.
 
+Changed by [decision 114](decision-register.md#decision-114): a publication drops a batch that finds the queue full.
+The writer drops a batch that still fails after its attempts.
+The writer keeps no dirty marks, and nothing repairs a dropped batch (`MirrorWriter`, `rholang/src/rust/interpreter/reified/vectordb_services.rs:487-605`).
+A batch that fails in an attempt can leave a part of its writes in the mirror.
+
 The ChromaDB backend makes a collection only when the server does not hold it.
 So an existing collection keeps its metadata, the watermark of the reconciler included.
 A record carries the metadata keys `channel` and `persistent`.
 A delete in a collection that the server does not hold succeeds, because that collection holds no record.
 The sandbox compiles these calls with `cargo check -p rholang --features chromadb`, and the live leg of step 7c runs them against a ChromaDB server.
+
+Changed by [decision 114](decision-register.md#decision-114): the metadata of a collection holds no watermark, and no batch registers channels (`rholang/src/rust/interpreter/reified/vectordb_services.rs:1065-1066`).
+The live test `chroma_live_mirror_calls` runs the calls of the backend.
 
 *Table 116. The distance of a mirror collection (`MirrorMetric`, the `hnsw:space` of ChromaDB).*
 
@@ -4080,6 +4300,18 @@ The peek fires only after the store has committed, so the journal holds the upse
 At one unit of `VerificationBytes` below the usage of the control, the host-work check rejects the deploy after its last operation.
 The evaluation then returns `Err(HostWorkRejected)`, and the test support plays it with `native_play_result`.
 
+Changed by [decision 98](decision-register.md#decision-98) and [decision 114](decision-register.md#decision-114): seven tests of Table 117 checked the journal or the dirty marks, so new tests replace them.
+
+- `mirror_batch_of_writes_keeps_the_record_id_order` replaces `mirror_journal_keeps_the_last_write_of_each_record`. It checks the batch of one commit.
+- `mirror_publishes_the_commits_of_a_failed_deploy` replaces `mirror_journal_drops_failed_deploy`. A space error and an out-of-phlo deploy each publish the upsert of their committed store.
+- `mirror_exploratory_evaluation_publishes_its_commits` replaces `mirror_exploratory_evaluation_publishes_nothing`. A dry run publishes the commit of its store, and the mirror keeps the record after the revert.
+- `mirror_publishes_each_commit_of_a_deploy_in_order` replaces `mirror_journal_keeps_the_last_write_of_a_deploy`. The upsert of a record and the delete of a later transaction reach the mirror in commit order.
+- `mirror_replay_publishes_nothing` replaces `mirror_replay_publishes_its_own_journal`.
+- `mirror_writer_drops_a_failed_batch` and `mirror_writer_drops_a_batch_that_finds_the_queue_full` replace the two tests of the dirty marks.
+
+`mirror_publishes_a_successful_deploy`, `mirror_never_blocks_deploy` and `mirror_writer_retries_a_failed_batch` stay, and they check no dirty mark.
+[Decision 89](decision-register.md#decision-89) removed the host-work rejection, so no test makes it.
+
 The fake mirror of the tests (`rholang/tests/support/backends.rs`) keeps the records of each collection and a log of the write calls.
 A stalled fake mirror holds its writes until the test releases them, and a down fake mirror refuses them.
 
@@ -4125,6 +4357,19 @@ All 23 mutants fail tests, and the harness restores the files.
 - `new-then-removed-deletes`: no transaction of the native suite stores a new record and removes it again.
 - `non-finite-mirrored`: no record of the native suite has an element outside the `f32` range.
 
+Retired by [decision 98](decision-register.md#decision-98): `publish-with-errors`, `publish-on-err`, `no-play-settle`, `no-replay-settle`, `begin-scope-keeps-journal`, `journal-not-appended` and `journal-first-write-wins`.
+Each of them changes the journal or its settle, which are comments now.
+Retired by [decision 114](decision-register.md#decision-114): `failed-batch-not-dirty` and `full-queue-not-dirty`, because the writer keeps no dirty marks.
+The harness keeps each retired mutant as a comment with its note.
+
+Added by [decision 98](decision-register.md#decision-98): three mutants revert the new rules of the publication.
+
+- `replay-publishes`: replay, reporting and native replay publish the commits of a play (W13).
+- `commit-not-published`: a commit of a play publishes nothing (W14).
+- `batch-drops-deletes`: the batch of a commit drops its deletes (W9).
+
+Table 136a of section 24.5 gives the run of these three mutants with the other mirror mutants.
+
 ### 19.6 Running the step-7b checks
 
 To run the checks of step 7b, do these steps from the repository root:
@@ -4141,6 +4386,11 @@ Step 7c adds the reconciler of the mirror ([decision 58](decision-register.md#de
 On each finalized block, it repairs the channels that the journal of the node registered to the state of that block.
 It reads Casper state only through read-only calls, and it writes only the ChromaDB mirror of the node (plan decision 70).
 The step also pins the ChromaDB image, passes its environment to the nodes, and adds the live leg against a real server.
+
+Retired by [decision 114](decision-register.md#decision-114): the mirror follows the oracle mode of File I/O, so nothing repairs it.
+The reconciler, the channel registry, the watermark and the dirty marks are comments now.
+The file `rholang/src/rust/interpreter/reified/mirror_reconciler.rs` stays, and its module line is a comment, so nothing of it compiles ([decision 120](decision-register.md#decision-120)).
+The docker pin, the environment of the nodes and the live leg stay.
 
 ### 20.1 The channel registry
 
@@ -4209,11 +4459,19 @@ The second closure gives a runtime at a root through `RuntimeManager::spawn_runt
 `spawn` installs `node_services()`, and it starts the reconciler only when the services have a mirror writer.
 A node without the `chromadb` feature, or without a ChromaDB endpoint, starts no task.
 
+Retired by [decision 114](decision-register.md#decision-114): `setup.rs` keeps the spawn call as a comment, so no node starts a reconciler.
+
+Changed by [decision 109](decision-register.md#decision-109): a validator installs `node_services()`, and an observer installs the unavailable services (`node/src/rust/runtime/setup.rs:1058-1061`).
+So only a validator of a `chromadb` build with a ChromaDB endpoint has a mirror writer.
+
 `docker/shard.yml` pins the server image by digest (server version 1.0.0).
 Each node gets `CHROMA_ENDPOINT` (`http://chroma-db:8000`) and its own `CHROMA_DATABASE`, so nodes never write each other's mirror.
 The environment of the node anchor became a map, because Compose merges the environment of a service with the anchor only in that form.
 The resolved configuration differs from the base only by these entries and by the pinned image.
 `ChromaMirror` creates the database of the node once, before its first call that reads or writes it.
+
+Changed by [decision 109](decision-register.md#decision-109): the readonly node of `docker/shard.yml` has no `CHROMA_DATABASE`, because an observer has no mirror.
+Its environment entries stay in the file as a comment.
 
 ### 20.4 Facts of the pinned server
 
@@ -4262,6 +4520,12 @@ It spawns a runtime over the history of the chain and resets it to a root, as th
 The live suite compiles only with the `chromadb` feature, and it fails when `CHROMA_ENDPOINT` is not set.
 `scripts/verify-reified/chroma-live.sh` starts a disposable server of the pinned image, gives each run a new database, and keeps the model cache under `target/`.
 
+Retired by [decision 114](decision-register.md#decision-114): the six tests of `mirror_reconciler.rs` do not compile, because its module line is a comment.
+The three registry and dirty-mark tests of `vectordb_services.rs` are comments with notes.
+The four reconciler tests of the suite and `ChainState` of `rholang/tests/support/native.rs` are comments too.
+`chroma_live_publish` replaces `chroma_live_publish_and_reconcile`: a native deploy publishes its records to the server through the writer.
+The live leg runs `chroma_live_mirror_calls`, `chroma_live_publish` and `chroma_live_sbert_embedder`.
+
 ### 20.6 Negative controls
 
 The harness `scripts/verify-reified/mirror-mutants.py` now holds the mutants of steps 7b and 7c.
@@ -4288,6 +4552,10 @@ All 34 mutants fail tests, the 23 mutants of step 7b among them, and the harness
 The ChromaDB backend runs only in the live leg, so no mutant of the harness changes it.
 Table 136 of section 24.5 gives the run of step 8d, with the properties of that step.
 
+Retired by [decision 114](decision-register.md#decision-114): the 11 mutants of Table 122 change the channel registry or the reconciler, which are comments now.
+The harness keeps them as comments with a note.
+Table 136a of section 24.5 gives the run of the 17 mirror mutants that remain.
+
 ### 20.7 Running the step-7c checks
 
 To run the checks of step 7c, do these steps from the repository root:
@@ -4297,6 +4565,9 @@ To run the checks of step 7c, do these steps from the repository root:
 3. Run `bash scripts/verify-reified/chroma-live.sh` on a host with Docker.
 4. Run `cargo check -p node --features rholang/chromadb`.
 5. Run `python3 scripts/verify-reified/check-footprint.py --policy p6` and `check-complete.py --phase p6`.
+
+Changed by [decision 114](decision-register.md#decision-114): step 1 runs no test of the reconciler, and step 3 runs the three live tests of section 20.5.
+Since [decision 90](decision-register.md#decision-90), steps 3 and 4 need the libtorch environment of section 18.7.
 
 
 ## 21. Phase P6, step 8a: the factory model, the VectorDB merges and the f64 mutant
@@ -4452,10 +4723,9 @@ The model map `formal/reified-rspaces-model-map-p6.json` maps 16 Rust items of t
 
 | Property | Headlines | What it checks |
 |---|---|---|
-| `prop_vectordb_driver_and_engine_agree` | S21 | The driver and the join engine fire the same continuations with the same values, and they leave the same records and waiters. |
-| `prop_vectordb_no_pending_match` | S22, S23 | After each operation of a program without guards, a fresh receive with the pattern and the query of each parked waiter does not fire. |
+| `prop_vectordb_no_pending_match` | S21, S22, S23 | After each operation of a program without guards, a fresh receive with the pattern and the query of each parked waiter does not fire. |
 | `prop_vectordb_list_is_ordered_and_complete` | S15 | A list holds $`\min(k, \lvert E \rvert)`$ values, and its delivered scores follow the selection order. |
-| `prop_vectordb_replay_equal` | S26 | Replay of each program gives the outcomes of play, pairs every COMM and reaches the root of play. |
+| `space_native_vectordb_replay_equal` | S26 | Native replay reproduces the play of each query shape, with the errors, the phlo and the root of play. |
 | `prop_vectordb_transactions_are_bounded` | S24 | Each transaction fires at most $`c`$ times. A flood of $`n \le 150`$ records or waiters drains in $`n`$ fires and $`\lfloor n / c \rfloor`$ stops at the round cap. |
 | `prop_vectordb_records_are_conserved` | S25 | The last COMM that names a record that left the collection has no peeks. No record leaves when every receive peeks. |
 
@@ -4521,7 +4791,7 @@ The witness test `space_vectordb_cascade_peek_restores_the_lifted_member` fails 
 | `vdb-offer-never-fires` | Rocq mutant | OFFER-VDB fires no parked waiter. | `first_offer_none` |
 | `cap-allows-one-more` | Rust mutant | A transaction fires $`c + 1`$ times before it stops. | `prop_vectordb_transactions_are_bounded` and 1 example test |
 | `driver-lift-not-owed` | Rust mutant | A cascade fire of a peek in the driver owes no second send for its lifted member. | `prop_vectordb_records_are_conserved` and the witness `space_vectordb_cascade_peek_restores_the_lifted_member` |
-| `engine-rule-e-dropped` | Rust mutant | A peek fire of the engine sends no record again. | `prop_vectordb_records_are_conserved` and `prop_vectordb_driver_and_engine_agree` |
+| `engine-rule-e-dropped` | Rust mutant | A peek fire of the engine sends no record again. | `prop_vectordb_records_are_conserved` and `prop_vectordb_driver_and_engine_agree` (retired by [decision 90](decision-register.md#decision-90)) |
 
 The plan named a control that drops the claims of the join search.
 Without claims, the search of one bind is `find`, and `find` fails on a filtered list when it fails on the list.
@@ -4670,10 +4940,21 @@ Replay runs on another node, with a mirror in any state.
 It uses the recorded answer of `ann`, and it makes the checks of `ann` as play does (decision 67).
 The header of the module names the Rust code of each action, with 18 line ranges that `check-model-map.py` validates.
 
+Merge 2 makes these changes to the model:
+
+- Changed by [decision 98](decision-register.md#decision-98): a play publishes the batch of each commit, whatever the final result of its deploy, and no replay publishes. The journal, its settle and its clear are retired.
+- Changed by [decision 98](decision-register.md#decision-98): an exploratory evaluation plays on the services of the node, as the dry run of the base does. So it publishes too.
+- Changed by [decision 104](decision-register.md#decision-104): replay delivers the recorded answer of `ann`, and it makes no check against consensus state.
+- Changed by [decision 114](decision-register.md#decision-114): a full queue drops the batch, and so does a batch that fails after its attempts. Finalization, the reconciler pass and the watermark are retired.
+- The actions are now `Deploy`, `Explore`, `Apply` and `Replay`. The header names the code by function only, and the model map of P6 gives the lines of its 11 mirror items.
+
 A deploy of the model is one transaction.
 In the code, the journal keeps the last write of each record of a deploy.
 So a record that one transaction stores and a later transaction removes leaves a delete.
 That delete names an id that the mirror does not hold, and ChromaDB accepts it with no effect.
+
+Changed by [decision 98](decision-register.md#decision-98): no journal joins the writes of two transactions now, because each commit publishes its own batch.
+So one commit of the code is one deploy of the model, and the batches of a deploy keep the commit order.
 
 *Table 131. The invariants of `ChromaMirror.tla`.*
 
@@ -4687,6 +4968,19 @@ That delete names an id that the mirror does not hold, and ChromaDB accepts it w
 | W10 | `PublishNeverWaits` | A publication never waits for the writer. |
 | W11 | `ReconciledEqualsFinalizedView` | After a reconciler pass that finishes, the mirror holds the finalized view on every registered channel. |
 | W12 | `WatermarkHonest` | The watermark of a collection never passes the block of the last pass that finished. |
+
+Retired by [decision 104](decision-register.md#decision-104): W7, because replay makes no check of `ann`.
+Retired by [decision 98](decision-register.md#decision-98): W8, because a failed deploy publishes its commits.
+Retired by [decision 114](decision-register.md#decision-114): W11 and W12, because nothing repairs the mirror.
+Changed by [decision 98](decision-register.md#decision-98): W9 states the batch of one commit of a play.
+Added by [decision 98](decision-register.md#decision-98): the two invariants of Table 131a.
+
+*Table 131a. The invariants that merge 2 adds to `ChromaMirror.tla`.*
+
+| Id | Invariant | Statement |
+|---|---|---|
+| W13 | `ReplayNeverPublishes` | Replay, reporting and native replay publish nothing, as no replay of the base calls a service (DR-114). |
+| W14 | `OnePublicationPerCommit` | A commit of a play publishes its net writes at most once, at the commit, whatever the final result of its deploy. |
 
 ### 24.2 Configuration and negative controls
 
@@ -4709,6 +5003,28 @@ A queue of one batch is full after one publication, so the configuration reaches
 | `WatermarkAfterFailureUnsafe` | A failed pass sets the watermark. | W12 |
 
 Each control refutes exactly its invariant, and the complement run without that invariant finds no violation.
+
+Changed by [decision 98](decision-register.md#decision-98), [decision 104](decision-register.md#decision-104) and [decision 114](decision-register.md#decision-114): merge 2 changes the model, so TLC checked it again with the same bounds.
+TLC 2.19 ran with 2 workers and a heap limit of 2 GB, with `Ids = {1, 2}`, `MaxDeploys = 3`, `MaxEvents = 8` and `QCap = 1`.
+The safe configuration has 382,810 distinct states to the depth 9, and no invariant fails.
+Before merge 2, the model of decision 98 alone had 4,492,438 distinct states.
+
+*Table 132a. The Unsafe controls of `ChromaMirror.tla` after merge 2.*
+
+| Control | Rule it reverts | Refutes | Violation | Complement run |
+|---|---|---|---|---|
+| `MirrorWriteInTxnUnsafe` | The deploy writes the mirror inside its transaction, and a failed write aborts the deploy. | W5 | 41 states, depth 3 | 488,176 states, no violation |
+| `UnrecordedAdvisoryUnsafe` | Replay asks its own mirror. | W6 | 423 states, depth 4 | 488,954 states, no violation |
+| `RuleEUpsertUnsafe` | A peek upserts the record that it stored again. | W9 | 411 states, depth 4 | 477,960 states, no violation |
+| `BlockingPublishUnsafe` | A full queue makes the publication wait. | W10 | 24 states, depth 3 | 636,972 states, no violation |
+| `ReplayPublishesUnsafe` | The retired settle of native replay publishes the writes of the replayed deploy. | W13 | 444 states, depth 4 | 515,050 states, no violation |
+| `SettleAlsoPublishesUnsafe` | The retired settle of M1 publishes the writes of a deploy without errors a second time. | W14 | 21 states, depth 3 | 382,810 states, no violation |
+
+Each complement run reaches the depth 9.
+The complement run of `SettleAlsoPublishesUnsafe` has as many states as the safe run.
+With a queue of one batch, the second publication finds the queue full and is dropped, so only the flag of W14 differs.
+Merge 2 retires `AnnChecksOnlyInPlayUnsafe` (decision 104), `PublishFailedDeployUnsafe` and `BeginScopeKeepsJournalUnsafe` (decision 98), and `OrphansKeptUnsafe` and `WatermarkAfterFailureUnsafe` (decision 114).
+Their configuration files stay, with every line a comment.
 
 ### 24.3 The replies of `rho:lang:vector`
 
@@ -4762,6 +5078,16 @@ The suite properties run in the latest execution model: native play and native r
 The four in-module properties run 64 cases with a fixed seed of their own.
 The invariant map also names seven example tests of the suite as witnesses of W5, W6 and W8 to W12.
 
+Merge 2 retires four properties of Table 134, and it adds one property:
+
+- Retired by [decision 98](decision-register.md#decision-98): `prop_mirror_journal_keeps_the_last_write`, because no journal exists. `prop_mirror_tracks_the_writes_of_every_play` replaces `prop_mirror_tracks_the_published_deploys`, and it covers W9, W13 and W14.
+- Retired by [decision 114](decision-register.md#decision-114): `prop_mirror_reconciler_watermarks_follow_finished_repairs` and `prop_mirror_reconcile_repairs_the_finalized_view`, because nothing repairs the mirror.
+- Changed by [decision 114](decision-register.md#decision-114): `prop_mirror_writer_applies_the_accepted_batches` checks that the writer drops each batch that the queue refuses, and each batch that fails after its attempts.
+- Changed by [decision 104](decision-register.md#decision-104): `prop_vectordb_services_replay_reproduces_the_recorded_outputs` covers W5 and W6, and replay makes no check of an `ann` call.
+
+The invariant map now names seven witness tests of the suite for W5, W6, W9, W10, W13 and W14.
+They are `mirror_never_blocks_deploy`, `vectordb_ann_replay_equal`, `mirror_publishes_the_commits_of_a_failed_deploy`, `mirror_exploratory_evaluation_publishes_its_commits`, `mirror_rule_e_coalesces`, `mirror_publishes_each_commit_of_a_deploy_in_order` and `mirror_replay_publishes_nothing`.
+
 Four hypotheses of the first versions failed, and each one is recorded here with its cause.
 
 1. The capture of a removed record without an embedding was expected to write nothing. It writes a delete, because the capture does not read the removed datum. The mirror never holds such a record, so the delete has no effect. The property now applies the rule of embeddings to upserts only.
@@ -4772,6 +5098,11 @@ Four hypotheses of the first versions failed, and each one is recorded here with
 The fourth result does not contradict decision 67.
 The checks of an `ann` call are journaled native operations, so replay must make each check of play, or the certification finds an incomplete journal.
 `prop_vectordb_services_replay_reproduces_the_recorded_outputs` checks that completeness, and it does not compare the totals.
+
+Changed by [decision 98](decision-register.md#decision-98): the property of hypotheses 2 and 3 is retired.
+Its replacement, `prop_mirror_tracks_the_writes_of_every_play`, follows the commits of every play, the failed and the exploratory deploys included.
+Changed by [decision 89](decision-register.md#decision-89): hypothesis 4 measured the host-work meter, which DR-131 of the base removed.
+Changed by [decision 104](decision-register.md#decision-104): replay makes no check of an `ann` call, because the config read writes no journal row.
 
 ### 24.5 Negative controls
 
@@ -4838,6 +5169,55 @@ All 34 mirror mutants and all 12 services mutants fail tests, and both harnesses
 In 30 runs, a new property of step 8d is among the failing tests.
 Tables 118 and 122 record the runs of steps 7b and 7c, before these properties existed.
 
+Added by the merge of `feature/cost-accounted-rho` at `702496775`: Table 136a gives the run of 2026-10-28, after [decisions 98](decision-register.md#decision-98) and 104 to 116.
+The run used steps 4 and 5 of section 24.6, with the libtorch environment of section 18.7.
+
+*Table 136a. The run of the mirror and services mutants after the decisions of the oracle mode (decisions 98 and 104 to 116).*
+
+| Harness | Mutant | Tests that fail | Properties that fail |
+|---|---|---|---|
+| mirror | `replay-publishes` | 2 | `prop_mirror_tracks_the_writes_of_every_play` |
+| mirror | `commit-not-published` | 9 | `prop_mirror_tracks_the_writes_of_every_play` |
+| mirror | `batch-drops-deletes` | 5 | `prop_mirror_tracks_the_writes_of_every_play` |
+| mirror | `rule-e-upserts` | 7 | `prop_mirror_capture_net_writes_are_the_change`, `prop_mirror_tracks_the_writes_of_every_play` |
+| mirror | `new-then-removed-deletes` | 2 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `persistent-removed` | 3 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `incoming-removed` | 3 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `foreign-channel-removed` | 2 | `prop_mirror_capture_net_writes_are_the_change` |
+| mirror | `non-finite-mirrored` | 1 | none |
+| mirror | `document-dropped` | 2 | none |
+| mirror | `persistence-dropped` | 2 | none |
+| mirror | `capture-without-mirror-param` | 2 | none |
+| mirror | `dot-as-cosine` | 2 | none |
+| mirror | `capture-index-shifted` | 8 | `prop_mirror_tracks_the_writes_of_every_play` |
+| mirror | `writer-no-retry` | 4 | none |
+| mirror | `collection-not-ensured` | 13 | `prop_mirror_writer_applies_the_accepted_batches`, `prop_mirror_tracks_the_writes_of_every_play` |
+| mirror | `deletes-skipped` | 9 | `prop_mirror_writer_applies_the_accepted_batches`, `prop_mirror_tracks_the_writes_of_every_play` |
+| services | `embed-not-recorded` | 7 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `ann-not-recorded` | 6 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `embed-replay-recomputes` | 6 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `ann-replay-recomputes` | 6 | `prop_vectordb_services_replay_reproduces_the_recorded_outputs` |
+| services | `ann-replay-checks` | 1 | none |
+| services | `quota-dropped` | 1 | none |
+| services | `non-finite-accepted` | 1 | none |
+| services | `mirror-check-dropped` | 1 | none |
+| services | `k-unbounded` | 1 | none |
+| services | `channel-digest-of-the-space` | 1 | none |
+| services | `malformed-id-kept` | 1 | none |
+| services | `config-entry-dropped` | 2 | none |
+
+All 17 mirror mutants and all 12 services mutants fail tests, and both harnesses restore the files.
+The checksums of the seven mutated source files equal the checksums of a copy that was taken before the run.
+In 15 runs, a property test is among the failing tests.
+
+The mutant set changed from Table 136 in these ways:
+
+- Retired by [decision 98](decision-register.md#decision-98): the seven mutants of the journal and its settle. They are `publish-with-errors`, `publish-on-err`, `no-play-settle`, `no-replay-settle`, `begin-scope-keeps-journal`, `journal-not-appended` and `journal-first-write-wins`.
+- Retired by [decision 114](decision-register.md#decision-114): the 13 mutants of the dirty marks, the channel registry and the reconciler. They are `failed-batch-not-dirty`, `full-queue-not-dirty`, `registry-not-written`, `capture-channels-dropped`, `orphans-kept`, `missing-not-added`, `watermark-not-advanced`, `watermark-decreases`, `current-collection-repaired`, `dirty-ignored`, `dirty-not-remarked`, `dirty-not-prepared` and `events-ignored`.
+- Added by [decision 98](decision-register.md#decision-98): three mutants revert the new rules of the publication. `replay-publishes` lets a replay publish (W13). `commit-not-published` drops the batch of a commit (W14). `batch-drops-deletes` drops the deletes of a batch (W9).
+- Retired by [decision 104](decision-register.md#decision-104): `ann-checks-only-in-play`. Its replacement `ann-replay-checks` makes replay check the call again (section 18.6).
+- The harnesses keep each retired mutant as a comment with a note.
+
 ### 24.6 Running the step-8d checks
 
 To run the checks of step 8d, do these steps from the repository root:
@@ -4849,6 +5229,9 @@ To run the checks of step 8d, do these steps from the repository root:
 5. Run `python3 scripts/verify-reified/vectordb-services-mutants.py`, which must report `FAIL=0`.
 6. Run `python3 scripts/verify-reified/check-invariant-map.py --phase P6`.
 7. Run `python3 scripts/verify-reified/check-model-map.py --map formal/reified-rspaces-model-map-p6.json`.
+
+Changed by [decision 113](decision-register.md#decision-113): step 3 needs `--features chromadb`, else it compiles no test of `embed` and `ann`.
+That feature needs the libtorch environment of section 18.7, and the harness of step 5 sets the same environment.
 
 ## 25. Phase P6, step 8e: the documents of the VectorDB family
 
@@ -4949,7 +5332,7 @@ Only a release build finds the layout-depth error of P5 W5, because `cargo check
 The three failures of `casper` are the failures of the base `4d67b5ccc`, which holds no Reified code.
 They have the tests, the panic sites and the values of the run of the base in P5 W5 (`target/verification/reified-rspaces/p5/w5-dry/base-casper3.log`):
 
-- `offered_gateway_call_draws_funded_private_purses_across_validators` fails at `casper/tests/api/offered_gateway_slot_api_test.rs:147` with `NoNewDeploys`.
+- `offered_gateway_call_draws_funded_private_purses_across_validators` fails at `casper/tests/api/offered_gateway_slot_api_test.rs:148` with `NoNewDeploys`.
 - `replay_should_match_in_case_of_user_execution_error` fails at `casper/tests/util/rholang/interpreter_util_test.rs:2014`, with 236,560 of 300,000 phlo.
 - `compute_state_should_capture_rholang_parsing_errors_and_charge_for_parsing` fails at `casper/tests/util/rholang/runtime_manager_test.rs:780`.
 
@@ -4998,10 +5381,10 @@ The freeze of [decision 35](decision-register.md#decision-35) binds each criteri
 | `rrs-spaces-port-core-vector-discipline` | Native values, top-k ties, peek, rebuild and restart | New: `space_vector_discipline_restart_keeps_values_ties_and_order`. |
 | `rrs-spaces-determinism-native-vectors` | Parse, store, query and protobuf round trip of valid and invalid vectors | New: `space_native_vectors_every_kind_enters_exactly`. The invalid vectors: `space_vectordb_errors_have_their_codes`. |
 | `rrs-spaces-determinism-similarity-topk` | Results against the reference math, stable in every process | New: `space_similarity_topk_reference_cases_through_the_space`. Also `tensor_numeric_reference_vectors_agree`. |
-| `rrs-spaces-determinism-collision-ties` | A forced hash collision, orders, duplicates, restart and replay | New: `space_hash_collision_tie_duplicates_are_interchangeable` and `space_hash_collision_tie_forced_equal_source_hashes_select_one_value`. Also `canonical_data_order_is_the_order_of_play`. |
-| `rrs-rspace-interface-list-random-state` | Zero, one and two members, and replay | New: `rspace_list_random_state_zero_one_and_two_members` and `rspace_list_random_state_replay_reproduces_the_merged_states`. |
+| `rrs-spaces-determinism-collision-ties` | A forced hash collision, orders, duplicates, restart and replay | New: `space_hash_collision_tie_duplicates_are_interchangeable` and `space_hash_collision_tie_forced_equal_source_hashes_select_one_value`. Also `canonical_data_order_is_the_canonical_candidate_order`. |
+| `rrs-rspace-interface-list-random-state` | Zero, one and two members, and replay | New: `rspace_list_random_state_zero_one_and_two_members`. |
 | `rrs-normalizers-native-vector` | `normalizer_native_vector` | New: the three tests `normalizer_native_vector_*`. |
-| `rrs-reducer-query-costs` | Boundary and overflow tests of the charges | New: the three tests `reducer_query_costs_*` of `tensor/costs.rs` and `reducer_query_costs_of_a_query_follow_its_records_and_dimensions`. Decision 40 replaces the precharge by `n`, `d` and `k` with a reservation before each step. |
+| `rrs-reducer-query-costs` | Boundary and overflow tests of the charges | Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so `tensor/costs.rs` and the tests of this leaf are gone. |
 | `rrs-vdb-exact-numeric-core` | `prop_squared_form_matches_reference`, `prop_tl_permutation_invariant` | The properties of Table 97, the NaN tests, and the mutant `dot-f64-accumulation` (Table 124). |
 | `rrs-tl-correct-rounding` | `tensor/cr.rs` and the suite `tl_cr_` | P6 needs only the square root: `sqrt_to_f64`, S28 and the 15 square-root cases. The other functions follow tensor logic to P12 (decision 65). |
 | `rrs-system-processes-vector-ops` | `vector_ops_` and N8 | The 14 tests `vector_ops_*` and the reference vectors. |
@@ -5018,21 +5401,18 @@ The freeze of [decision 35](decision-register.md#decision-35) binds each criteri
 | `space_native_vectors_every_kind_enters_exactly` | `reified_vectordb.rs` | Five kinds of the values 3 and 4 tie with bitwise equal scores in the canonical order. Each payload keeps the kind and the order of its elements, `-0` scores as `+0`, a string is no vector, and each record round-trips through its prost bytes. |
 | `space_similarity_topk_reference_cases_through_the_space` | `reified_vectordb.rs` | The 143 metric cases of the reference vectors through a space: 136 delivered scores bit for bit, 5 undefined scores, `ZeroQueryVector`, `ValueOutOfRange`, 118 bounds in range (43 select, 75 do not), and 24 bounds out of range with `InvalidParam`. |
 | `space_vector_discipline_restart_keeps_values_ties_and_order` | `reified_vectordb.rs` | After a peek, two rigs select from their hot stores in two orders of the sends, and a third rig selects after a checkpoint and a reset. All three select the same records, ties included, and reach the same root. The history keeps each value and embedding. |
-| `space_hash_collision_tie_duplicates_are_interchangeable` | `reified_vectordb.rs` | Two byte-identical sends and a tied record, in three orders: the same value, COMM and roots, the same selection after a restart, equal host work on the records of the history, and replay equal to play. |
+| `space_hash_collision_tie_duplicates_are_interchangeable` | `reified_vectordb.rs` | Two byte-identical sends and a tied record, in three orders. Play picks among the tied records at random (rule CR-1 of [decision 102](decision-register.md#decision-102)). A selected value gives one fire, one COMM and one root, in every order of the sends and in both views, and over the runs the take selects each tied value. |
 | `space_hash_collision_tie_forced_equal_source_hashes_select_one_value` | `reified_vectordb.rs` | Records with one forced source hash: every order of the view selects one value through the canonical order and the ranks. |
 | `rspace_list_random_state_zero_one_and_two_members` | `reified_vectordb.rs` | No member parks with no datum. One member keeps its random state. Two members merge in delivery order, also when a send completes a parked list. |
-| `rspace_list_random_state_replay_reproduces_the_merged_states` | `reified_vectordb.rs` | Replay reproduces the outcomes of play with their random states, pairs every COMM and reaches the root of play. |
-| `reducer_query_costs_of_a_query_follow_its_records_and_dimensions` | `reified_vectordb.rs` | A query reserves equal amounts for equal inputs, and more for more records or more dimensions. |
-| `reducer_query_costs_follow_the_table_of_the_module`, `reducer_query_costs_accept_at_the_limit_and_reject_below_it`, `reducer_query_costs_reject_amounts_that_overflow` | `tensor/costs.rs` | Each step reserves the amounts of the table of the module. A limit equal to an amount accepts, one unit lower rejects, and an amount that overflows a `usize` rejects with no reservation. |
 | `normalizer_native_vector_keeps_the_kind_and_order_of_each_element`, `normalizer_native_vector_in_params_and_queries_keeps_its_elements`, `normalizer_native_vector_parses_no_string_and_rejects_malformed_floats` | `reified_syntax_normalize.rs` | A source vector of eight numeric literals keeps the arm and the order of each element in a send, in the param `embedding` and in a query. A string stays a string, and `f128`, `f256` and an `f32` out of range fail in the normalizer. |
 
-The duplicates test compares the host work of the history views only.
+Until [decision 89](decision-register.md#decision-89) removed host work, the duplicates test compared the host work of the history views only.
 The history keeps the records of a channel in the order of their bytes (`rspace++/src/rspace/serializers/serializers.rs:18-26`).
 So every order of the sends gives one view of the history.
 
-On the hot store, the sort of DR-75 reserves each comparison that it makes.
-So the work of a query can depend on the order of the view.
-Play and replay of one state see one view, so their work is equal.
+On the hot store, the sort of DR-75 reserved each comparison that it made.
+So the work of a query could depend on the order of the view.
+Play and replay of one state saw one view, so their work was equal.
 So the equal costs that the leaf asks for hold on the history, and [decision 40](decision-register.md#decision-40) settles the charge on the hot store.
 
 *Table 143. The negative controls of the tests of step 8f.*
@@ -5043,7 +5423,7 @@ So the equal costs that the leaf asks for hold on the history, and [decision 40]
 | `list-merge-reversed` | A longer list merges the random states of its members in reverse delivery order. | `rspace_list_random_state_zero_one_and_two_members` |
 | `cosine-threshold-strict` | A non-negative cosine passes a non-negative threshold only when it is greater. | `space_similarity_topk_reference_cases_through_the_space`, `space_vectordb_capacity_bounds_records_not_waiters` |
 | `fixed-point-scale-off-by-one` | A fixed-point number divides by one more power of ten than its scale. | `space_native_vectors_every_kind_enters_exactly`, `space_vectordb_fixed_point_and_rational_thresholds` |
-| `canonical-order-is-the-view-order` | The canonical order of DR-75 is the order of the view. | `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value`, `space_native_vectors_every_kind_enters_exactly`, `space_vector_discipline_restart_keeps_values_ties_and_order`, `space_vectordb_list_peek_restores_carry_at_the_cap`, `space_vectordb_reads_without_a_vector_follow_the_canonical_order` |
+| `canonical-order-is-the-view-order` | The canonical order of DR-75 is the order of the view. | `space_hash_collision_tie_duplicates_are_interchangeable`, `space_hash_collision_tie_forced_equal_source_hashes_select_one_value`, `space_native_vectors_every_kind_enters_exactly`, `space_vector_discipline_restart_keeps_values_ties_and_order`, `space_vectordb_list_peek_restores_carry_at_the_cap`, `space_vectordb_lists_without_a_vector_keep_the_canonical_order` (the test was `space_vectordb_reads_without_a_vector_follow_the_canonical_order` before [decision 102](decision-register.md#decision-102)) |
 
 The five controls are mutants of `scripts/verify-reified/vectordb-mutants.py`, which now holds 14 mutants.
 On the tree of the step, 14 of 14 mutants fail tests, and the harness restores the files.
@@ -5130,23 +5510,30 @@ The registry holds the ephemeral spaces that the current root evaluation created
 `SpaceEnv::begin` records each lock key with an ephemeral KIND before the transaction opens (VR-2).
 The factory job records a new `temp` space after its commit and before its reply, so each holder of the handle comes after the record.
 
-`ReducerCore::begin_root_evaluation` starts a root evaluation only when no reduction context exists (VR-3, `rholang/src/rust/interpreter/reified/reducer_hooks.rs:202-208`).
-A root call clears the registry, the mirror journal and the parent tracker.
+`ReducerCore::begin_root_evaluation` starts a root evaluation only when no dispatch scope of an evaluation runs (VR-3, `rholang/src/rust/interpreter/reified/reducer_hooks.rs:255-261`).
+A root call clears the registry and the parent tracker.
 A nested call clears nothing and sweeps nothing.
-The three root entries of `reduce.rs` call `end_root_evaluation` after the evaluation, on the `Ok` and the `Err` path (VR-4, VR-8).
-These entries are `inj`, `inj_with_observation` and `inj_with_host_work` (`rholang/src/rust/interpreter/reduce.rs:459-463, 465-499, 501-512`).
+`inj_with_observation` calls `end_root_evaluation_observed` after the drain of the evaluation, on the `Ok` and the `Err` path (VR-4, VR-8).
+`inj` runs through `inj_with_observation`, so both root entries sweep (`rholang/src/rust/interpreter/reduce.rs:912-914, 924-1011`).
+
+Changed by [decision 90](decision-register.md#decision-90): `begin_root_evaluation` reads the dispatch scope of the base, which `inj_with_observation` opens after the call.
+Before, it read the reduction context of the deterministic scheduler, and the three root entries called `end_root_evaluation`.
+The commit `75de2dc39` of the base removed the third root entry, `inj_with_host_work`, with the host-work meter ([decision 89](decision-register.md#decision-89)).
+Changed by [decision 98](decision-register.md#decision-98): the runtime holds no mirror journal, so a root call clears none (`begin_evaluation_scope`, `rholang/src/rust/interpreter/reified/runtime.rs:119-136`).
 
 `ReifiedRuntime::sweep_volatile` returns at once when the registry holds no channel, so ordinary execution does not change (VR-5).
-Otherwise it takes the boundary guard of the reduction coordinator and calls `SpaceTxnHost::sweep_volatile` on the locked channels (VR-6).
-The code is at `rholang/src/rust/interpreter/reified/runtime.rs:176-194`.
+Otherwise it calls `SpaceTxnHost::sweep_volatile` on the locked channels (VR-6).
+The code is at `rholang/src/rust/interpreter/reified/runtime.rs:201-217`.
+
+Changed by [decision 90](decision-register.md#decision-90): the sweep takes no boundary guard, because the scheduler and its reduction coordinator are gone (DR-132).
+The drain of `inj_with_observation` gives the same exclusion.
 A sweep failure becomes `BugFoundError` with the failure class `Platform` (VR-8).
 Volatile ids are unique to one deploy (I-19), so the pre-state and the post-state of a deploy hold none (VR-10).
 A swept key becomes a delete of an absent key, which leaves the root unchanged (headline H15).
 
 Reporting replay evaluates each deploy through `inj_with_observation` (`rholang/src/rust/interpreter/interpreter.rs:231`).
 Casper builds a report only for legacy deploys (`casper/src/rust/reporting_casper.rs:85-89`).
-The reducer test `reified_sweep_runs_at_each_entry_point_of_the_reporting_replay` replays each root entry on a `ReportingRspace` host with the log of a play.
-On the `Ok` and the `Err` path, the replay gives the result of the play, consumes the log and leaves no volatile channel.
+The test `reified_sweep_runs_at_each_entry_point_native` (`rholang/tests/reified_temp_seq.rs:533`) checks that native play, native replay and the exploratory dry run sweep a `temp` space.
 
 ### 27.3 Dangling ids
 
@@ -5177,7 +5564,7 @@ The message names the id in lowercase hexadecimal, for example `reified:Dangling
 |---|---|---|---|
 | P7-1 | `sweep_complete` (`VolatileSweep.v:1714`) | The lock keys of each transaction of a root evaluation hold the channels that it stages. Then the book holds each staged volatile channel, and the sweep of the book leaves no record, join entry or waiting continuation on them. | `prop_sweep_complete` |
 | P7-2 | `dead_ephemeral_dangling` (`VolatileSweep.v:1759`) | The spaces of two deploys are disjoint (I-19). So a space of another deploy is never live, and the live check passes exactly the spaces that the evaluation created. | `prop_dead_ephemeral_dangling` |
-| Q50 | `qualifier_matrix` (`SpaceFactory.v:383`) | Gate 3 accepts `default` and `temp`, and it refuses `seq` until step 2. HashSet takes only `seq`. | `reducer_qualifier_matrix` |
+| Q50 | `qualifier_matrix` (`SpaceFactory.v:438`) | Gate 3 accepts `default` and `temp`, and it refuses `seq` until step 2. HashSet takes only `seq`. | `reducer_qualifier_matrix` |
 
 The lemma `book_holds_staged` (`VolatileSweep.v:1700`) carries the coverage premise of readiness review S2 to the book.
 The two new theorems close under the global context, and `rocqchk` reports no axiom.
@@ -5195,18 +5582,20 @@ The two new theorems close under the global context, and `rocqchk` reports no ax
 | `space_temp_many_volatile_keys_export` | The same | A deploy with forty volatile collections certifies, and the native export meters the swept keys (VR-10). |
 | `reified_ephemeral_dangling_next_deploy` | The same | A handle and a name of an ended `temp` space fail at each entry point of DG-1 in a later deploy. Each error names the space id. |
 | `reified_ephemeral_dangling_charge_is_fixed` | The same | The failing deploy costs the same phlo, whatever the dead space held (DG-4). |
-| `reified_ephemeral_cost_charged` | The same | A `temp` program pays phlo, and it emits the events of the same program with `default` (QT-3). |
-| `reified_sweep_runs_at_each_entry_point_native` | The same | Native play, native replay and `RhoRuntime::inj` sweep. |
+| `reified_ephemeral_cost_charged` | The same | On each racing runtime, a `temp` program and the same program with `default` each certify, pay phlo and deliver an allowed label set. In each play, the log has as many COMM events as the journal has COMM records. So `temp` operations emit and pay as durable operations do (QT-3, [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111)). |
+| `reified_sweep_runs_at_each_entry_point_native` | The same | Native play, native replay and the exploratory dry run sweep. |
 | `reducer_qualifier_matrix` | The same | The factories accept `default` and `temp` on each family with a schema. They refuse `seq`, and `temp` with `mirror`. |
 | `reified_handle_qualifier_method_temp_seq` | The same | The handle method `qualifier` of a `temp` space replies `"temp"`. Step 2 extends the test to `seq` and renames it from `reified_handle_qualifier_method_temp`. |
 | `reified_fips_example_temp_pathmap` | The same | The example code of the FIPS with a `temp` PathMap space runs and certifies. The agents equal the FIPS aliases, and the handles name the same spaces inside and outside the `new` block. |
 | `prop_sweep_complete` | The same | P7-1: generated `temp` programs of each family with extra records and waiters leave no volatile channel, and native replay reproduces them. |
 | `reified_volatile_sweep_skips_ordinary_channels` | `rholang/tests/reified_volatile_sweep.rs` | Checklist item 20: a deploy with a `temp` space reaches the root of the same deploy without the space. The `default` control reaches another root. |
-| `reified_sweep_runs_at_each_entry_point_of_the_reducer` | `rholang/src/rust/interpreter/reified/reducer_hooks.rs` | `inj`, `inj_with_observation` and `inj_with_host_work` sweep on the `Ok` and the `Err` path. |
-| `reified_sweep_runs_at_each_entry_point_of_the_reporting_replay` | The same | A replay runtime over a `ReportingRspace` host replays each root entry with the log of a play. It gives the result of the play, consumes the log and sweeps, on both paths. |
+| `reified_sweep_runs_at_each_entry_point_of_the_reducer` | `rholang/src/rust/interpreter/reified/reducer_hooks.rs` | `inj` and `inj_with_observation` sweep on the `Ok` and the `Err` path. |
 | `reified_sweep_root_predicate_excludes_nested_calls` | The same | A call inside a reduction is not a root, so it neither clears nor sweeps (VR-3). |
 | `prop_dead_ephemeral_dangling` | `rholang/src/rust/interpreter/reified/runtime.rs` | P7-2: a space that this evaluation did not create fails with its space id, and a created space passes. |
 | `mirror_temp_never_mirrored` | `rholang/tests/reified_vectordb_chroma.rs` | The obligation of P6: `temp` with `mirror` fails with `InvalidParam`. |
+
+Changed by [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111): racing evaluation varies the event counts of two plays, so each play of `reified_ephemeral_cost_charged` certifies on its own.
+Before, a `temp` program emitted as many produce, consume and COMM events as the same program with `default`.
 
 Seven earlier suites changed with the rules.
 The P4, P5 and P6 tests of a dangling id now expect the space id in the error and in the reply of `getSpaceAgent` (DG-3).
@@ -5285,15 +5674,19 @@ Legacy execution refuses the qualifier `seq`, because the rules need the job ord
 
 ### 28.1 The qualifier gate
 
-`FactoryConstructor::validate_in` runs the gates of a factory call in an execution model (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:93-178`).
+`FactoryConstructor::validate_in` runs the gates of a factory call in an execution model (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:115-213`).
 Gate 3 accepts every qualifier in native execution and refuses `seq` in legacy execution with `QualifierUnavailable` (QT-5).
 The factory process takes the model from the budget of its runtime (`ReifiedRuntime::execution`).
 `FactoryConstructor::validate` is the native form, which every new deploy uses ([decision 69](decision-register.md#decision-69)).
 
+Changed by [decision 90](decision-register.md#decision-90) (C6, step D): spaces run only in native execution, so gate 3 reads no execution model.
+`FactoryConstructor::validate` runs the gates (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:115-213`), and `validate_in`, `Execution`, `ReifiedRuntime::execution` and `QualifierUnavailable` stay commented out.
+The factory process calls `ReifiedRuntime::ensure_available` before the gates, so a call outside native execution fails with `RuntimeUnavailable` (`rholang/src/rust/interpreter/reified/factory.rs:76-129`).
+
 ### 28.2 The send rule
 
-`check_send` scans the data of a send for seq names (`rholang/src/rust/interpreter/reified/seq.rs:77-101`).
-`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:590-595`).
+`check_send` scans the data of a send for seq names (`rholang/src/rust/interpreter/reified/seq.rs:107-126`).
+`route_send` calls it after the checks of A21 and DG-1, before any mutation, and only while the evaluation holds a seq space (`rholang/src/rust/interpreter/reified/reducer_hooks.rs:778-783`).
 The scan walks a work list and destructures every field of every type of the `Par` tree, the cost signatures included.
 So a new field of the protobuf schema is a compile error until the scan handles it.
 
@@ -5304,7 +5697,7 @@ A name of another seq space in that argument is still sent, and so is the messag
 
 ### 28.3 The claims
 
-`SeqClaims` holds the claims of one program job on one seq space (`rholang/src/rust/interpreter/spaces/ephemeral.rs:220-289`).
+`SeqClaims` holds the claims of one program job on one seq space (`rholang/src/rust/interpreter/spaces/ephemeral.rs:235-393`).
 The book of the root evaluation stores one claim for each used channel: the participant path of its last use.
 A job claims a channel when the channel has no claim or its claim is a prefix of the participant path of the job.
 Otherwise the deploy aborts with `SeqConcurrent`, and the error names the space id.
@@ -5332,12 +5725,12 @@ So the item "the step-2 read as a use" of the test list of design v3, section 10
 | Id | Model | Statement | Property test |
 |---|---|---|---|
 | V3 | `seq_name_iff` (`Namespace.v:1150`) | A name is a seq name exactly when its space is a live ephemeral space that is not exempt. A handle and a name of a durable space are never seq names. | `prop_seq_scan_finds_every_seq_name` |
-| V4 | `SeqExclusive` (`SpaceCoordination.tla`) | For each channel of a seq space, the admitted uses form one prefix chain of participant paths. | `prop_seq_claim_chain` |
+| V4 | `SeqCausalChain` (`SpaceCoordination.tla`) | For each channel of a seq space, each admitted use happened before the next one ([decision 91](decision-register.md#decision-91)). | `prop_seq_claim_causal_chain` |
 | V5 | `SeqNotSent` (`SpaceCoordination.tla`) | No delivered message holds a seq name. | `prop_seq_scan_finds_every_seq_name` |
-| V6 | `QualifierSupport` (`SpaceCoordination.tla`) | Gate 3 creates a HashSet space only with `seq`, and a seq space only in native execution. | `prop_seq_qualifier_support` |
+| V6 | `QualifierSupport` (`SpaceCoordination.tla`) | The factory creates a HashSet space only with `seq`, and a seq space only in native execution. Changed by decision 90 (C6, step D): the runtime check refuses every factory call outside native execution before gate 1. | `prop_seq_qualifier_support` |
 | V7 | `UseBalance` (`SpaceCoordination.tla`) | The use context of each participant is its lexical context. | `prop_use_context_is_lexical` |
-| V8 | `ClaimTracksLastUse` (`SpaceCoordination.tla`) | The claim of a channel is its last admitted use. | `prop_seq_claim_chain` |
-| Q50 | `qualifier_matrix` (`SpaceFactory.v:383`) | Restated with the execution model: native execution accepts every supported qualifier, and legacy execution refuses `seq`. | `prop_qualifier_matrix` |
+| V8 | `ClaimTracksLastUse` (`SpaceCoordination.tla`) | The claim of a channel is its last admitted use. | `prop_seq_claim_causal_chain` |
+| Q50 | `qualifier_matrix` (`SpaceFactory.v:438`) | Restated with the execution model: native execution accepts every supported qualifier, and legacy execution refuses `seq`. Changed by decision 90 (C6, step D): restated without the execution model. Gate 3 accepts exactly the qualifiers that the store takes. | `prop_qualifier_matrix` |
 
 `SpaceCoordination.tla` models participants that split, and one seq space with the channels `x` and `y`.
 It also models the check and the commit of each use, sends with the scan, factory calls and use blocks.
@@ -5352,17 +5745,18 @@ Each of its four Unsafe configurations refutes exactly one invariant, and withou
 |---|---|---|
 | `reducer_seq_payload` | `rholang/tests/reified_seq.rs` | A seq name in data, in a quoted process, in a bundle, in a list, in a map, in the message of a handle call or as a return name aborts with `SeqSent`. The rejected send produces nothing. A handle may be sent, and a sync `produce` runs. |
 | `reducer_seq_atomic_guard` | The same | Concurrent uses of one channel abort with `SeqConcurrent` on a queue, a bag, a PathMap queue and a forged channel of `use S`. A chain of sync uses, parallel uses of two channels, parallel reads and allocations, and a join of two chained channels run. A re-issue at the round cap is no use. |
-| `prop_seq_claim_chain` | The same | V4 and V8 through `SeqClaims`, for generated uses, participants and failures. |
+| `prop_seq_claim_causal_chain` | The same | V4 and V8 through `SeqClaims`, for generated uses, causal histories and failures. |
 | `prop_seq_scan_finds_every_seq_name` | The same | V3 and V5 through `check_send`, for generated data trees. |
-| `prop_seq_qualifier_support` | The same | V6 through `FactoryConstructor::validate_in`, for every family, qualifier and execution model. |
+| `prop_seq_qualifier_support` | The same | V6 through `FactoryConstructor::validate`, for every family and qualifier. Changed by decision 90 (C6, step D): the property draws no execution model. |
 | `prop_use_context_is_lexical` | The same | V7 end to end: each forged send lands in the space of its innermost `use` block, in native execution. |
-| `reducer_qualifier_matrix` | `rholang/tests/reified_temp_seq.rs` | Native execution accepts `seq` on every family with a schema, and legacy execution refuses it before the params. |
+| `reducer_qualifier_matrix` | `rholang/tests/reified_temp_seq.rs` | The factories accept `seq` on every family with a schema. Changed by decision 90 (C6, step D): the legacy refusal of `seq` is retired. |
 | `reified_handle_qualifier_method_temp_seq` | The same | The handle method `qualifier` replies `"temp"` and `"seq"`. Step 2 renamed it from `reified_handle_qualifier_method_temp`. |
 | `seq_claims_*` (3 tests) | `rholang/src/rust/interpreter/spaces/ephemeral.rs` | The claims open only for program jobs on seq spaces, admit exactly the descendants of the last use, store nothing for a failed job, and claim only user channels of their space. |
-| `reified_seq_scan_*` (4 tests) | `rholang/src/rust/interpreter/reified/seq.rs` | The scan finds a seq name at every place, passes other ids, exempts exactly the two shapes, and reserves each node before it reads it. |
+| `reified_seq_scan_*` (3 tests) | `rholang/src/rust/interpreter/reified/seq.rs` | The scan finds a seq name at every place, passes other ids, and exempts exactly the two shapes. |
 
 The legacy suites keep their refusal of `seq`, with the new message "the seq qualifier needs native execution".
 `mirror_temp_never_mirrored` now expects `InvalidParam` for `seq` with `mirror`, as for `temp` (gate 9).
+Changed by [decision 90](decision-register.md#decision-90) (C6, step D): every suite runs native deploys, so no suite refuses `seq`.
 
 ### 28.6 Negative controls
 
@@ -5372,22 +5766,28 @@ The legacy suites keep their refusal of `seq`, with the new message "the seq qua
 |---|---|---|---|
 | `ns-seq-name-any-durability` | Rocq mutant | A name of a durable space counts as a seq name. | `seq_name_iff` |
 | `ns-seq-name-no-exemption` | Rocq mutant | The channel argument of the own `produce` is scanned too. | `seq_name_iff` |
-| `sf-temp-unavailable-qt5` | Rocq mutant | Gate 3 still refuses `temp`. | `qualifier_matrix` |
-| `sf-seq-legacy-available` | Rocq mutant | Gate 3 accepts `seq` in legacy execution. | `qualifier_matrix` |
-| `sf-seq-native-unavailable` | Rocq mutant | Gate 3 refuses `seq` in native execution too. | `qualifier_matrix` |
+| `sf-temp-unavailable-qt5` | Rocq mutant | Gate 3 still refuses `temp`. Retired by decision 90 (C6, step D). | `qualifier_matrix` |
+| `sf-seq-legacy-available` | Rocq mutant | Gate 3 accepts `seq` in legacy execution. Retired by decision 90 (C6, step D). | `qualifier_matrix` |
+| `sf-seq-native-unavailable` | Rocq mutant | Gate 3 refuses `seq` in native execution too. Retired by decision 90 (C6, step D). | `qualifier_matrix` |
+| `sf-temp-refused-c6` | Rocq mutant | Gate 3 refuses `temp` on a store that takes it. Added by decision 90 (C6, step D). | `qualifier_matrix` |
+| `sf-seq-refused-c6` | Rocq mutant | Gate 3 refuses `seq` on a store that takes it. Added by decision 90 (C6, step D). | `qualifier_matrix` |
 | `SeqGuardToctouUnsafe.cfg` | TLA+ Unsafe | Two jobs check one claim before either commits. | `SeqExclusive` (7,863 states, complement 15,269) |
 | `SeqScanSkippedUnsafe.cfg` | TLA+ Unsafe | `route_send` does not scan. | `SeqNotSent` (20 states, complement 21,457) |
-| `QualifierSupportUnsafe.cfg` | TLA+ Unsafe | Gate 3 accepts `seq` in legacy execution. | `QualifierSupport` (26 states, complement 20,730) |
+| `QualifierSupportUnsafe.cfg` | TLA+ Unsafe | A factory creates a seq space outside native execution. | `QualifierSupport` (26 states, complement 20,730) |
 | `UseBalanceUnsafe.cfg` | TLA+ Unsafe | The use context leaks into the rest of the process. | `UseBalance` (5 states, complement 13,541) |
 | A re-issue counted as a use | Rust mutant | The re-issue branch runs with `OpOrigin::Program`. | `reducer_seq_atomic_guard` |
 | A scanned forwarder hop | Rust mutant | The forwarder hop is scanned. | `reducer_seq_payload` |
 
 The two Rocq mutants of step 1 on gate 3 are commented out, because their anchors no longer exist.
 The three controls of gate 3 restate them.
+Changed by [decision 90](decision-register.md#decision-90) (C6, step D): the three controls of gate 3 are commented out, because gate 3 reads no execution model.
+`sf-temp-refused-c6` and `sf-seq-refused-c6` restate them, and `sf-p7-theory-after-params` takes a new anchor.
 The two Rust mutants ran by hand.
 The mutant harness of design v3, section 11, comes with the full gate set of step 6.
 
 ### 28.7 Measurements
+
+*[Decision 89](decision-register.md#decision-89) removed host-work metering. The `VerificationBytes` figures of this section are historical.*
 
 The trace of the round cap stores 65 records on one queue and then fires a persistent receive 65 times.
 Table 155 gives its `VerificationBytes` usage in play, which exceeds the v6 limit of $`2^{28} = 268{,}435{,}456`$ with every qualifier.
@@ -5402,7 +5802,7 @@ Table 155 gives its `VerificationBytes` usage in play, which exceeds the v6 limi
 
 The claims of the seq space cost about 0.17 percent of the work of the trace.
 The queue work of the 65 records and fires causes the rest.
-So the trace runs with a host-work budget of $`2^{40}`$ units in each dimension.
+So the trace ran with a host-work budget of $`2^{40}`$ units in each dimension.
 A chain of 65 nested sync calls also overflows the stack of the parser, so the trace makes its calls in a loop contract.
 
 ### 28.8 Results
@@ -5438,26 +5838,28 @@ A HashSet space is the default space restricted to empty messages, and every Has
 
 ### 29.1 The store and its hooks
 
-`HashSetOuter` takes the key, the data and counter channels and the names of `gensym` from the HashMap store (`rholang/src/rust/interpreter/spaces/outer/hashset.rs:38-76`).
+`HashSetOuter` takes the key, the data and counter channels and the names of `gensym` from the HashMap store (`rholang/src/rust/interpreter/spaces/outer/hashset.rs:38-78`).
 So it keeps the rules HM-1 to HM-4, and it adds two checks before any staging.
 `check_payload` accepts exactly the empty payload (HS-2), and `check_patterns` accepts exactly the empty pattern list with no binder and no remainder (HS-3).
-Each check reserves one operation on the meter of the job before it reads.
+*Changed by [decision 89](decision-register.md#decision-89): each check reserved one operation on the meter of the job before it read. The meter is gone.*
 
-The checks are two hooks of `OuterStore` with defaults that accept everything (`rholang/src/rust/interpreter/spaces/generic.rs:198-212`).
-The driver calls them after the key check and before the params (`rholang/src/rust/interpreter/spaces/generic.rs:2586-2591`).
-The join engine calls them for a send, for a receive and for each bind of a join (`rholang/src/rust/interpreter/spaces/join.rs:412-471`).
+The checks are two hooks of `OuterStore` with defaults that accept everything (`rholang/src/rust/interpreter/spaces/generic.rs:783-801`).
+The driver calls them after the key check and before the params (`rholang/src/rust/interpreter/spaces/generic.rs:5519-5524`).
+The join engine calls them for a send, for a receive and for each bind of a join (`rholang/src/rust/interpreter/spaces/join.rs:401-454`).
 The PathMap engine calls the same hooks, which accept everything in a PathMap store, so its checks stay the checks of the keyed engine.
 
 ### 29.2 The families
 
-The six HashSet families come last in `Family::WIRED`, so the dispatch of every earlier family keeps its reserved comparisons (`rholang/src/rust/interpreter/spaces/families.rs:258-291`).
+The six HashSet families come last in `Family::WIRED`, so the dispatch of every earlier family keeps its reserved comparisons (`rholang/src/rust/interpreter/spaces/families.rs:486-519`).
 Each family has the constructor schema of its discipline, a factory row and a system channel $`[\mathtt{0xE0}, 26 + i]`$ with the body reference $`226 + i`$.
-The runtime installs the six factories after the processes of P6, so every earlier definition keeps its place (`rholang/src/rust/interpreter/reified/system_processes.rs:101-172`).
+The runtime installs the six factories after the processes of P6, so every earlier definition keeps its place (`rholang/src/rust/interpreter/reified/system_processes.rs:129-220`).
 
 Gate 3 refuses `default` and `temp` on a HashSet factory with `BadConstructorArgument`, and legacy execution refuses `seq` with `QualifierUnavailable`.
 So the suites that run in legacy execution create no HashSet space.
 In `reified_families.rs`, each HashSet factory of a legacy deploy fails closed with `QualifierUnavailable`, and the constructor checks give a HashSet family the qualifier `seq`.
 `reified_pattern_enforcement.rs` restates its unsupported pairs: the HashSet families are registered, and they refuse only their other qualifiers.
+Changed by [decision 90](decision-register.md#decision-90) (C6, step D): the suites run native deploys, where a HashSet factory creates a seq space.
+`reified_families.rs` skips the HashSet families, because its deploys name `default`, and `reified_hashset.rs` creates their spaces.
 
 ### 29.3 Formal models
 
@@ -5466,7 +5868,7 @@ In `reified_families.rs`, each HashSet factory of a legacy deploy fails closed w
 | Id | Model | Statement | Property test |
 |---|---|---|---|
 | V9 | `hashset_unit_rules` (`HashMapStore.v:378`) | The payload check accepts exactly the empty payload, and the pattern check accepts exactly the empty pattern list with no binder and no remainder. An empty pattern list matches exactly the empty payload. A rejected send or receive stages nothing, so every record of a HashSet store is a unit. | `prop_hashset_unit_rules` |
-| R18 | `registered_families_complete` (`SpaceFactory.v:1444`) | Restated with the six rows of P7: a family is registered exactly when it has a row and a dispatch arm, and the definitions end with the HashSet factories. | `prop_registered_families_complete` |
+| R18 | `registered_families_complete` (`SpaceFactory.v:1571`) | Restated with the six rows of P7: a family is registered exactly when it has a row and a dispatch arm, and the definitions end with the HashSet factories. | `prop_registered_families_complete` |
 
 The model of the HashSet store is a section of `HashMapStore.v`, because the store shares the keys and the channels of the HashMap store.
 A record is its payload, and the match of one pattern and the absorption of a remainder are section variables, as the spatial matcher is.
@@ -5490,8 +5892,8 @@ A record is its payload, and the match of one pattern and the absorption of a re
 | `reified_hashset_absent_unit_waits` | The same | A receive of an absent unit waits for the rest of the deploy, so a process never observes that a unit is absent. |
 | `prop_hashset_unit_rules` | The same | V9 end to end, for generated families, numbers of adds and last operations. |
 | `space_engine_hashset_families_take_units_only` | `rholang/src/rust/interpreter/spaces/generic.rs` | A rejected send or receive logs no event and stores nothing, and the queue, the stack, the bag, the set and the cell order identical units by the `ord` of their envelopes. |
-| `space_hashset_*` (4 tests) | `rholang/src/rust/interpreter/spaces/outer/hashset.rs` | The store shares the keys, channels and names of the HashMap store, and each check accepts exactly its unit form and reserves one operation. |
-| `reified_factory_hashset_takes_only_seq_in_native_execution` | `rholang/src/rust/interpreter/spaces/factory/constructor.rs` | Gate 3 for the six families in both execution models, and the params of their disciplines. |
+| `space_hashset_*` (3 tests) | `rholang/src/rust/interpreter/spaces/outer/hashset.rs` | The store shares the keys, channels and names of the HashMap store, and each check accepts exactly its unit form. |
+| `reified_factory_hashset_takes_only_seq_in_native_execution` | `rholang/src/rust/interpreter/spaces/factory/constructor.rs` | Gate 3 for the six families, and the params of their disciplines. Changed by decision 90 (C6, step D): before, gate 3 in both execution models. |
 | `p7_system_channels_have_the_table_values` | `rholang/src/rust/interpreter/reified/system_channels.rs` | The six factory channels, their body references and their order. |
 
 The families, factory, qualifier and N3 suites of earlier phases now see the six HashSet families, and section 29.2 gives their adaptations.
@@ -5572,14 +5974,15 @@ The [theory seam](theory-seam.md) explains the design, and [F1r3lang integration
 
 ### 30.1 The seam and its sites
 
-The module `spaces/theory` holds the verdicts, the trait `SpaceTheory`, the resolution and the admission of a send (`rholang/src/rust/interpreter/spaces/theory/mod.rs:104-168`).
-The builtins decide by shape for one reserved unit (`rholang/src/rust/interpreter/spaces/theory/builtin.rs:159-219`).
-Gate 4 of the factory accepts a builtin name without arguments (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:205-216`).
+The module `spaces/theory` holds the verdicts, the trait `SpaceTheory`, the resolution and the admission of a send (`rholang/src/rust/interpreter/spaces/theory/mod.rs:101-163`).
+The builtins decide by shape, for one work unit of the limit profile of the theory (`rholang/src/rust/interpreter/spaces/theory/builtin.rs:159-219`).
+Gate 4 of the factory accepts a builtin name without arguments (`rholang/src/rust/interpreter/spaces/factory/constructor.rs:240-251`).
 
-`Admission::of` resolves the theory of the config and admits the values of a send, after the gates of the send and before any staging (`rholang/src/rust/interpreter/spaces/generic.rs:2183-2201`).
+`Admission::of` resolves the theory of the config and admits the values of a send, after the gates of the send and before any staging (`rholang/src/rust/interpreter/spaces/generic.rs:4972-5065`).
 The driver and the join engine call it, and both check the leases before the commit with `check_leases`.
-After the guard, `Cx::theory_admits` checks each stored datum of a match (`rholang/src/rust/interpreter/spaces/generic.rs:982-997`).
+After the guard, `Cx::theory_admits` checks each stored datum of a match (`rholang/src/rust/interpreter/spaces/generic.rs:2274-2293`).
 Every user-match site names its stored data: the head driver, the scan, the stack, the priority queue, VectorDB, and the join engine through `JoinSource::stored_payload`.
+A check takes no lease. The fire of a match takes one lease for each stored datum that the check proved (`Cx::lease_stored`).
 
 ### 30.2 The identity bytes
 
@@ -5596,8 +5999,8 @@ Many family programs with `free Nat()` then exceeded the replay limit of $`2^{28
 | One `GByteArray` of 64 bytes | 1,613 | 974,645 |
 | One `GString` of 48 characters | 1,598 | 974,435 |
 
-A send costs exactly one read more with a theory, and a send with a receive costs two reads more.
-So the cost of the read explains the whole difference, and the checks themselves reserve one operation and no bytes.
+A send cost exactly one read more with a theory, and a send with a receive cost two reads more.
+So the cost of the read explained the whole difference, and the checks themselves reserved one operation and no bytes, before [decision 89](decision-register.md#decision-89).
 The user chose one `GByteArray` of the canonical bytes ([decision 74](decision-register.md#decision-74)).
 The test `theory_config_slot_is_one_compact_par` pins the form of the slot and bounds the read to a tenth more than without a theory.
 
@@ -5613,8 +6016,8 @@ The test `theory_config_slot_is_one_compact_par` pins the form of the slot and b
 | V13 | `resolve_identity_deterministic` (`TheoryAdmission.v:587`) | Exactly the structural builtins resolve, with any limit profile, and every identity of the factory resolves to its kind. | `prop_resolve_identity_deterministic` |
 | V14 | `replay_preserves_theory_admission` (`TheoryAdmission.v:851`) | Replay of the persisted bytes admits or refuses each send as play does, at the same index and with the same units. | `prop_replay_preserves_theory_admission` |
 | V15 | `identity_bytes_roundtrip` (`TheoryAdmission.v:822`) | The decoder of the identity bytes inverts the encoder and accepts only its image, and the encoder is injective. | `prop_theory_identity_bytes_roundtrip` |
-| V16 | `theory_refusal_is_guard_refusal` (`Match.v:795`) | A theory refusal at a match is a guard refusal, a refused first match parks, a theory that proves every datum changes nothing, and a datum in flight is never checked. | `prop_theory_refusal_is_guard_refusal` |
-| V17 | `theory_gate_validated` (`SpaceFactory.v:2525`) | Gate 4 passes the builtins without arguments and refuses the rest, after gate 3 and before the params gates. | `prop_theory_gate` |
+| V16 | `theory_refusal_is_guard_refusal` (`Match.v:797`) | A theory refusal at a match is a guard refusal, a refused first match parks, a theory that proves every datum changes nothing, and a datum in flight is never checked. | `prop_theory_refusal_is_guard_refusal` |
+| V17 | `theory_gate_validated` (`SpaceFactory.v:2727`) | Gate 4 passes the builtins without arguments and refuses the rest, after gate 3 and before the params gates. | `prop_theory_gate` |
 
 `TheoryAdmission.v` is standalone and axiom-free.
 Its codec takes the fixed-width big-endian codecs and the decoder of an argument as section variables with their round trips.
@@ -5627,8 +6030,8 @@ The example `nat_identity_roundtrip` computes the bytes of the identity of `Nat`
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_theory_admission` | `rholang/tests/reified_theory.rs` | On the 24 family programs of the native suites, `free Nat()` delivers what no theory delivers, and `free String()` refuses the first send with `TheoryRefuted`. |
-| `space_theory_admission_vectordb` | The same | On the two VectorDB families, `free Any()` delivers the lists of no theory, and `free Nat()` refuses a vector. |
+| `space_theory_admission` | `rholang/tests/reified_theory.rs` | On each racing runtime and on the 24 family programs of the native suites, the plays with `free Nat()` and with no theory certify and deliver an allowed label set. `free String()` refuses the first send with `TheoryRefuted`. |
+| `space_theory_admission_vectordb` | The same | On each racing runtime and on the two VectorDB families, the plays with `free Any()` and with no theory certify and deliver one list and one near vector. `free Nat()` refuses a vector. |
 | `theory_nat_accepts_bigint_nonneg` | The same | `Nat` admits `GInt` values of at least 0 and non-negative `GBigInt` values through routed sends and handle calls, and `Int` admits the negative ones too. |
 | `theory_nat_rejects_minus1_string_par` | The same | `Nat` refuses ten other shapes through a routed send, a persistent send and the handle `produce`, at the index of the first refused value. |
 | `theory_identity_persisted_no_handle` | The same | The `config` reply shows the identity map, two spaces with one theory show equal identities, and the identity holds no name. |
@@ -5636,9 +6039,12 @@ The example `nat_identity_roundtrip` computes the bytes of the identity of `Nat`
 | `space_guard_match` | The same | A guard that admits fires on each collection, a join and a prefix receive, and the same receive with a refusing guard parks. |
 | `prop_theory_*`, `prop_resolve_identity_deterministic`, `prop_replay_preserves_theory_admission` | The same | V10 to V15 and V17. |
 | `theory_undetermined_budget0_aborts`, `theory_refuted_value_aborts_before_staging`, `theory_nested_commit_guard`, `space_guard_match_refusal_is_a_guard_refusal`, `theory_unavailable_fails_each_config_read`, `theory_config_slot_is_one_compact_par` | `rholang/src/rust/interpreter/spaces/theory/tests.rs` | The test checkers of TH-10 through whole space operations: a starved profile, a refused value, two leases, a refusal at a match, an identity without a checker, and the slot form. |
-| `theory_admission_reserves_one_unit_per_checked_value`, `theory_match_reserves_one_unit_per_stored_datum`, `theory_admission_precedes_any_staging`, `prop_theory_refusal_is_guard_refusal` | `rholang/src/rust/interpreter/spaces/generic.rs` | The units of TH-8, the place of the admission before any staging, and V16. |
+| `theory_admission_checks_each_value_in_order`, `theory_match_checks_each_stored_datum`, `theory_admission_precedes_any_staging`, `prop_theory_refusal_is_guard_refusal` | `rholang/src/rust/interpreter/spaces/generic.rs` | The order of the checks of TH-5, the check of each stored datum of TH-6, the place of the admission before any staging, and V16. |
 | `reified_factory_theory_gate` | `rholang/src/rust/interpreter/spaces/factory/constructor.rs` | Gate 4 on every builtin, with arguments and with other names. |
 | `theory_identity_bytes_roundtrip_and_reject_every_other_input` | `rholang/src/rust/interpreter/spaces/theory/identity.rs` | The byte codec on every builtin, with arguments, with extreme limits, and against every cut, a trailing byte, a string that is not UTF-8, a count beyond the input, and an argument in another prost form. |
+
+Changed by [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111): the deliveries of a family program race, so each admission play certifies on its own.
+Before, `free Nat()` and `free Any()` delivered exactly what the space without a theory delivered.
 
 The P4 suites that pinned the old gate now expect the rules of P7.
 `reified_factory.rs` restates the gate rows and keeps the old rows as comments, and `reified_p4_props.rs` tests the config codec with a theory slot.
@@ -5665,12 +6071,15 @@ The P4 suites that pinned the old gate now expect the rules of P7.
 | `check_match` in `bind` | Rust dry run | The theory checks in `Cx::bind`. | Three tests: `theory_match_reserves_one_unit_per_stored_datum`, `space_guard_match_refusal_is_a_guard_refusal`, `theory_nested_commit_guard` |
 
 Step 6 adds the two Rust dry runs to `scripts/verify-reified/p7-mutants.py`.
+*Changed by [decision 89](decision-register.md#decision-89): the merge renamed `theory_match_reserves_one_unit_per_stored_datum` to `theory_match_checks_each_stored_datum`, and the mutant of the first dry run is retired (Table 173).*
 
 ### 30.6 Measurements of the native suite
 
-The replay of a deploy builds a native replay environment, so replay costs more host work than play.
+*[Decision 89](decision-register.md#decision-89) removed host-work metering. The figures of this section are historical.*
+
+The replay of a deploy builds a native replay environment, so replay cost more host work than play.
 Take a bag program with six sequential handle calls and no theory.
-Its replay already uses 229,758,726 of the 268,435,456 `VerificationBytes` of the v6 limit.
+Its replay used 229,758,726 of the 268,435,456 `VerificationBytes` of the v6 limit.
 So `theory_nat_accepts_bigint_nonneg` runs its handle variant in deploys of three calls, and each deploy certifies at the v6 limits.
 
 ### 30.7 Citations
@@ -5725,15 +6134,26 @@ The rules hold by the design of the earlier phases, and step 5 tests them across
 |---|---|---|
 | RH-1 | No Reified state outlives an evaluation, so each operation reads `C(sid)` and its records through the metered view. The first touch after a restart reads the keys and values of a warm touch and pays the same. | `space_lazy_attach`, `space_attach_warm_cold_cost_equal`, `prop_attach_warm_cold_cost_equal`, `space_restart_rehydrate_three_processes` |
 | RH-2 | No derived state exists to fork or to clear, and the [volatile registry](glossary.md#volatile-registry) lives for one evaluation. A reset restores the state of its root. | `space_checkpoint_reset` |
-| RH-3 | The rule of decision 47 stays: a view load is charged by its key and its value, the same on a hit and a miss. | `space_attach_cost`, `reducer_attach_costs` |
+| RH-3 | Retired by [decision 89](decision-register.md#decision-89): no view load is metered. | None |
 | RH-4 | A cold and a warm attach have equal cost vectors, and the tests pin two of them. | `space_attach_cost`, `reducer_attach_costs` |
 
 Rule QF-2 of the [specification](specification.md#41-default) now states the result for a restart.
-The invariant map binds the property test `prop_attach_warm_cold_cost_equal` to the headline `view_charge_cache_independent` (`EventCorrelation.v:9195`) as V18 of phase P7.
+The invariant map lists the property test `prop_attach_warm_cold_cost_equal` as a witness of phase P7 with no model.
+[Decision 89](decision-register.md#decision-89) and [decision 96](decision-register.md#decision-96) retired the headline H27 of the cost of a view load, and no successor headline binds the test.
+The test still checks rehydration on the running node (RH-1 and RH-4).
 
 A cost vector is the set of values that the tests compare for one play.
-It holds the phlo usage of native play and its budget recording: the usage, the attempts and the journal rows.
-It also holds the authority events, the byte observations, and the host work of the play in each of the 16 dimensions.
+It holds the phlo usage of native play and its budget recording: the usage, the budget attempts and the number of journal rows (`CostVector`).
+A warm play and a cold play compare the phlo usage, the budget usage and the attempts.
+The two plays compare the attempts in any order, because racing evaluation orders them by arrival ([decision 93](decision-register.md#decision-93)).
+Two plays log the same events in any order when they log the same distinct events.
+Each COMM also occurs the same number of times in both logs (`unordered_log`, `rholang/tests/support/native.rs:1016-1027`).
+
+Changed by [decision 93](decision-register.md#decision-93) and [decision 89](decision-register.md#decision-89): a cost vector also held the journal rows, the authority events and the byte observations.
+It also held the host work of the play in each of the 16 dimensions.
+Racing evaluation orders these three parts by arrival, so a warm play and a cold play do not compare them.
+The certification of each play still checks them against its replay (`rholang/tests/support/native.rs:1282-1326`).
+DR-131 of the base removed the host work ([decision 89](decision-register.md#decision-89)).
 
 ### 31.2 The harness
 
@@ -5754,7 +6174,7 @@ The families are a queue, a set, a priority queue, a VectorDB space and a PathMa
 ### 31.3 The residue check reads every map of the hot store
 
 The residue check of step 1 read the rows of `get_hot_changes`.
-`HotStore::to_map` makes a row only for a channel that holds data (`rspace++/src/rspace/hot_store.rs:1191-1220`).
+`HotStore::to_map` makes a row only for a channel that holds data (`rspace++/src/rspace/hot_store.rs:920-949`).
 So a volatile channel with waiting continuations alone, or with join entries alone, never reached the check.
 The test `reified_factory_ephemeral_staging` showed the gap: the channel `H(sid)` of a default space holds only the handle continuation, and the check did not see it.
 
@@ -5782,18 +6202,32 @@ So the sweep also leaves no waiter and no join entry, which the old check could 
 
 | Test | Location | What it checks |
 |---|---|---|
-| `space_lazy_attach` | `rholang/tests/reified_rehydrate.rs` | A restarted runtime holds no space channel before its first operation. Block 2 of each stored family gives on it the outcome and the cost vector of the warm runtime. |
-| `space_checkpoint_reset` | The same | For each stored family, a reset to the root of block 1 restores the records, waiters and counters of the channels of block 2. Block 2 then reaches its root and cost vector again, and a restarted runtime reads the state of block 1. |
-| `space_attach_cost` | The same | A handle call `config` and a send on a stored queue have the pinned cost vectors of Table 170, warm and cold. The accounting observer receives the cost of each COMM. |
-| `space_attach_warm_cold_cost_equal` | The same | For each of the 24 families, block 2 over the state of the family program gives equal outcomes and cost vectors, warm and cold. |
-| `prop_attach_warm_cold_cost_equal` | The same | The same equality for generated families, stored records and block-2 operations (16 cases). |
+| `space_lazy_attach` | `rholang/tests/reified_rehydrate.rs` | On each racing runtime, a restarted runtime holds no space channel before its first operation. Block 2 of each stored family certifies on it and delivers `config`, `take` and `fired`. When the warm and the cold play log the same events in any order, they have the same outcome and cost vector. |
+| `space_checkpoint_reset` | The same | On each racing runtime and for each stored family, a reset to the root of block 1 restores the records, waiters and counters of the channels of block 2, and a restarted runtime reads the state of block 1. Block 2 certifies again after the reset. When both plays of block 2 log the same events in any order, they have the same outcome and cost vector. |
+| `space_attach_cost` | The same | A handle call `config` and a send on a stored queue have the pinned phlo usage of Table 170, warm and cold. The accounting observer receives the cost of each COMM. |
+| `space_attach_warm_cold_cost_equal` | The same | On each racing runtime, block 2 of each of the 24 families delivers the same labels warm and cold. When both plays log the same events in any order, they have the same outcome and cost vector. |
+| `prop_attach_warm_cold_cost_equal` | The same | The same conditional equality for generated families, stored records and block-2 operations, on each racing runtime (16 cases). |
 | `reducer_attach_costs` | The same | Each DG-2 entry of a missing durable space has one cost vector for two space ids, on a fresh runtime and on a runtime with other spaces. The handle calls `config` and `gensym` through a stored handle cost the same, warm and cold. |
 | `reified_handle_persisted_restart_replay` | The same | A stored handle serves three calls on a restarted runtime through the stored handle continuation, and native replay reproduces the play. |
 | `reducer_dangling_handle` | The same | Every row of DG-1 and DG-2 fails with its code and names the space id. `getSpaceAgent` replies `DanglingHandle` with the space id, and `ann` replies `NotAVectorDbSpace`. |
-| `reducer_space_costs` | The same | Native play of parallel space work on two spaces gives equal outcomes and cost vectors on a current-thread and on a multi-thread tokio runtime. |
+| `reducer_space_costs` | The same | Three runs on each racing runtime. Each native play of parallel space work on two spaces certifies and delivers an allowed outcome. Two plays with the same events in any order have the same outcome and cost vector. |
 | `reified_factory_ephemeral_staging` | The same | The factory stages the config, the space counter and the handle under the KIND of the qualifier. Only a default space leaves channels after its deploy. |
 | `reified_factory_theory_argument` | The same | After a restart, the first operation resolves the stored theory: a `Nat` value is admitted, a string fails with `TheoryRefuted`, and `config` shows the identity. A `temp` space stages its theory too. |
-| `space_restart_rehydrate_three_processes` | `rholang/tests/reified_restart_rehydrate.rs` | The harness of three processes. The warm run of the parent gives the roots, cost vectors, evidence bytes and event logs of the children. |
+| `space_restart_rehydrate_three_processes` | `rholang/tests/reified_restart_rehydrate.rs` | The harness of three processes. On each racing runtime, the parent certifies every record of the three children from the empty root. |
+
+Changed by [decision 105](decision-register.md#decision-105) and [decision 113](decision-register.md#decision-113): in `reducer_dangling_handle`, `ann` replies `EXT_BAD_ARG` with the message `vectordb_ann: invalid argument`.
+Only a `chromadb` build runs the two `ann` calls of the test.
+
+Changed by [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111): racing evaluation orders the events of a play by arrival.
+So the tests compare two plays only when both log the same events in any order.
+Before, each warm and cold pair gave equal outcomes and cost vectors, and so did the two runtimes of `reducer_space_costs`.
+The parent compared the records of the children with its own warm run.
+
+`space_lazy_attach`, `space_checkpoint_reset` and `space_attach_warm_cold_cost_equal` assert that at least one family compares on each racing runtime (`rholang/tests/reified_rehydrate.rs:394-402`, `447-455`, `648-656`).
+`prop_attach_warm_cold_cost_equal` asserts that at least one case compares (`rholang/tests/reified_rehydrate.rs:805-842`).
+`reducer_space_costs` and the restart harness check each run on its own.
+
+Changed by [decision 89](decision-register.md#decision-89): `space_attach_cost` pins the phlo usage alone, because DR-131 of the base removed host work.
 
 The P4 test `reified_handle_persisted_restart_replay` of `reified_queue_restart.rs` stays as it is, because it runs in legacy execution ([decision 69](decision-register.md#decision-69)).
 The test of the same name in `reified_rehydrate.rs` runs in native execution.
@@ -5805,30 +6239,23 @@ The parent keeps the standard output of each child, so no test-harness line of a
 The child `create` plays block 1 and checkpoints to R1.
 The child `touch` opens the store at R1, so each space attaches lazily from the trie, and it plays block 2 to R2.
 The child `replay` certifies each deploy of block 2 from its pre-state through the evidence bytes and the event log, as a validator does.
+The role of a child names its step and its racing runtime, for example `touch-8` ([decision 111](decision-register.md#decision-111)).
+On each racing runtime, the parent then certifies every record of the three children from the empty root, in its own process ([decision 93](decision-register.md#decision-93)).
 
 ### 31.5 Measurements
 
-*Table 170. The pinned cost vectors of `space_attach_cost` (a stored queue without a theory), warm and cold.*
+*Table 170. The pinned phlo usage of `space_attach_cost` (a stored queue without a theory), warm and cold.*
 
 | Value | Handle call `config` | Send `a!(4)` |
 |---|---|---|
-| Phlo usage | 13,594 | 7,909 |
-| `StructuralItems` | 1 | 1 |
-| `StructuralBytes` | 1,414 | 848 |
-| `ReductionSteps` | 9 | 4 |
-| `ReductionTermBytes` | 1,391 | 459 |
-| `PrimitiveCalls` | 15 | 2 |
-| `PrimitiveInputBytes` | 685 | 4 |
-| `SubstitutionBindings` | 39 | 14 |
-| `SubstitutionBytes` | 1,220 | 285 |
-| `AuthorityNodes` | 34 | 20 |
-| `AuthorityDepth` | 28 | 16 |
-| `SearchCandidates` | 0 | 0 |
-| `SearchStateBytes` | 522,199 | 472,265 |
-| `WitnessFields` | 0 | 0 |
-| `WitnessBytes` | 0 | 0 |
-| `VerificationOperations` | 182,890 | 148,895 |
-| `VerificationBytes` | 3,969,620 | 4,226,954 |
+| Phlo usage | 13,628 | 7,929 |
+
+Changed by [decision 90](decision-register.md#decision-90) (step E): the merge with `feature/cost-accounted-rho` at `702496775` changes the phlo of both programs.
+The build measures 13,628 and 7,929 phlo, warm and cold, in eight of eight runs.
+Before, the programs used 13,594 and 7,909 phlo.
+
+Retired by [decision 89](decision-register.md#decision-89): the table also pinned the host work of both programs in the 16 dimensions, from `StructuralItems` to `VerificationBytes`.
+DR-131 of the base removed host work, so the test pins the phlo usage alone.
 
 A system process can reply to a name of a missing space through the routing of R7.
 That reply reports the space error inside the RSpace error of its routed produce, for example `RSpaceError(InterpreterError("Reduce error: reified:DanglingName: …"))`.
@@ -5914,21 +6341,26 @@ A mutant may change several places, when its rule has several places in the code
 
 | Mutant | Rule | What it changes | Tests that fail |
 |---|---|---|---|
-| `sweep-skipped-at-one-entry` | VR-4 | `inj_with_host_work` does not sweep. | `reified_sweep_runs_at_each_entry_point_of_the_reducer` |
-| `sweep-skipped-on-err` | VR-8 | A root evaluation that fails does not sweep. | `reified_sweep_runs_at_each_entry_point_of_the_reducer`, `reified_sweep_runs_at_each_entry_point_of_the_reporting_replay`, `space_temp_failed_deploy_reverts` |
+| `sweep-skipped-at-one-entry` | VR-4 | `inj_with_observation` does not sweep. Changed by [decision 89](decision-register.md#decision-89): the removal of host work removed the entry `inj_with_host_work`, the place of this mutant before. | `reified_sweep_runs_at_each_entry_point_of_the_reducer` |
+| `sweep-skipped-on-err` | VR-8 | A root evaluation that fails does not sweep. | `reified_sweep_runs_at_each_entry_point_of_the_reducer`, `space_temp_failed_deploy_reverts` |
 | `reset-not-guarded` | VR-3 | A nested call also resets the volatile registry. | `reified_sweep_root_predicate_excludes_nested_calls` |
 | `dangling-check-removed` | DG-1 | The registry check passes every ephemeral id, in two places. | `reified_ephemeral_dangling_next_deploy`, `reducer_dangling_handle` |
 | `forwarder-hop-scanned` | SQ-2 (A1) | The scan of seq names reads the forwarder hop to `HANDLE_OP`. | `reified_seq_scan_exempts_the_forwarder_hop_and_the_own_channel_argument`, `reducer_seq_payload` |
 | `reissue-counted-as-use` | SQ-3 (A3) | An internal job claims channels. | `seq_claims_apply_only_to_program_jobs_on_seq_spaces`, `reducer_seq_atomic_guard` |
-| `claim-before-success` | SQ-4 | A claim holds as soon as the job makes it. | `prop_seq_claim_chain` |
+| `claim-before-success` | SQ-4 | A claim holds as soon as the job makes it. Changed by [decision 91](decision-register.md#decision-91): the causal property replaces the path property `prop_seq_claim_chain`. | `prop_seq_claim_causal_chain` |
 | `check-match-in-bind` | TH-6 | The theory checks a datum in the spatial match, before the guard, and not after it, in two places. | `space_guard_match_refusal_is_a_guard_refusal` |
-| `admission-after-the-bump` | TH-5 | The refusal of a send surfaces after the counter bump, in two places. | `theory_admission_precedes_any_staging` |
+| `admission-after-the-bump` | TH-5 | The refusal of a send surfaces after the counter bump, in two places. Retired by [decision 89](decision-register.md#decision-89), because an aborted transaction discards its staged work and no host-work bound remains, so the mutant has no observable effect. | `theory_admission_precedes_any_staging` |
 | `hashset-payload-check-off` | HS-2 | A HashSet collection takes a send with a payload. | `reified_hashset_payload_not_empty`, `pattern_enforcement_hashset_rows` |
-| `seq-allowed-in-legacy` | QT-5 | Legacy execution accepts the qualifier `seq`. | Four tests of the factory gates, and `reducer_qualifier_matrix` |
+| `seq-allowed-in-legacy` | QT-5 | Legacy execution accepts the qualifier `seq`. Retired by decision 90 (C6, step D), because no execution model refuses `seq`. | Four tests of the factory gates, and `reducer_qualifier_matrix` |
+| `runtime-check-after-the-gates` | QF-11 | The factory process checks the runtime after the gates of the constructor. Added by decision 90 (C6, step D). | `reified_factory_rejects_bad_constructor_before_any_effect` |
 
 The harness reports `PASS=11 FAIL=0 restored=True`: each mutant fails at least one of its tests, and every source file is restored.
 Step 4 ran the two theory mutants as dry runs and did not keep their texts.
-The harness rebuilds them from the code. Its version of `check-match-in-bind` fails one test, and the dry run of step 4 failed three.
+The harness rebuilds `check-match-in-bind` from the code. Its version fails one test, and the dry run of step 4 failed three.
+
+Changed by [decision 90](decision-register.md#decision-90) (C6, step D): `seq-allowed-in-legacy` is retired, and `runtime-check-after-the-gates` is added.
+The count `PASS=11` above is the result of P7, before this change.
+[Decision 89](decision-register.md#decision-89) retires `admission-after-the-bump`, so the harness now runs 10 mutants.
 
 ### 32.4 The documents
 
@@ -6036,15 +6468,15 @@ The phase has six steps:
 
 | Id | Headline | Statement | Property tests |
 |---|---|---|---|
-| A1 | `agent_ref_requires_write_flag` (`SpaceRefs.v:1146`) | A use block enters the context of an agent only when the reference has a call channel under the bundle rule of `eval_send` (AG-4). | `prop_agent_ref_requires_write_flag` |
-| A2 | `r7_agent_reply_bundle_exact` (`SpaceRefs.v:898`) | The R7 backend calls the agent for exactly the bundle with both flags around an agent-tagged tuple (R7A-1). | `prop_r7_agent_reply_bundle_exact` |
+| A1 | `agent_ref_requires_write_flag` (`SpaceRefs.v:1286`) | A use block enters the context of an agent only when the reference has a call channel under the bundle rule of `eval_send` (AG-4). | `prop_agent_ref_requires_write_flag` |
+| A2 | `r7_agent_reply_bundle_exact` (`SpaceRefs.v:999`) | The R7 backend calls the agent for exactly the bundle with both flags around an agent-tagged tuple (R7A-1). | `prop_r7_agent_reply_bundle_exact` |
 | A3 | `offsets_partition` (`AgentTranslation.v:226`) | The binder ranges of the binds partition the binder positions of the receive (TR-3). | `prop_offsets_partition` |
 | A4 | `env_keys_disjoint_union` (`AgentTranslation.v:324`) | The env keys of the binds are disjoint, and their union is the key set of the body pattern (MO-3, TR-6). | `prop_env_keys_disjoint_union` |
 | A5 | `body_equivalence` (`AgentTranslation.v:401`) | The body receive binds the values that the native receive binds, in binder order (TR-6). | `prop_body_equivalence` |
 | A6 | `guard_fold_sound` (`AgentTranslation.v:596`) | A guard over one bind goes to that matcher, and the join fires exactly when the native guarded join fires (TR-4). | `prop_guard_placement`, `prop_guard_fold_sound` |
 | A7 | `matcher_sound_complete` (`AgentTranslation.v:650`) | A matcher replies exactly on a spatial match with a passing guard (MO-3). | `prop_matcher_sound_complete` |
 | A8 | `matcher_state_roundtrip` (`AgentTranslation.v:783`) | The codec of a matcher state is exact (TR-5, MO-2). | `prop_matcher_state_roundtrip` |
-| A9 | `tag_untag_id` (`SpaceRefs.v:947`) | An agent-minted name unbundles to its tuple, which routes to its agent with its raw channel under every context (TN-3). | `prop_tag_untag_id` |
+| A9 | `tag_untag_id` (`SpaceRefs.v:1055`) | An agent-minted name unbundles to its tuple, which routes to its agent with its raw channel under every context (TN-3). | `prop_tag_untag_id` |
 | A10 | `resume_binds_innermost` (`AgentTranslation.v:914`) | The resume term of a translated `new` binds every binder in its order (TN-3). | `prop_resume_binds_innermost` |
 | A11 | `RoutingIsolation` (`AgentSpaces.tla`) | Under every context, the names of a space route to that space, and no call of an agent carries a name of another space. | `prop_routes_follow_the_owner_of_the_channel` |
 | A12 | `SystemChannelsDefault` (`AgentSpaces.tla`) | Under every context, system channels, default objects and unforgeable names route to the default space. | `prop_routes_follow_the_owner_of_the_channel` |
@@ -6098,7 +6530,7 @@ The model has no Apalache configuration, because this dossier claims no inductiv
 | `at-matcher-skips-guard` | `AgentTranslation.v` | The matcher replies the env without the guard check (MO-3). | `matcher_sound_complete` |
 | `at-decoder-not-strict` | `AgentTranslation.v` | The decoder of a matcher state accepts bytes that are not the encoding of the state (MO-2). | `matcher_state_roundtrip` |
 | `at-body-binds-wrong-key` | `AgentTranslation.v` | The body binds the binder g to the value at the key g + 1 (TR-6). | `body_equivalence` |
-| `sr-query-agent-drops-query` | `SpaceRefs.v` | A receive with a query on a user agent is translated and drops the query (TR-2). | `query_source_routes_inner_channel` |
+| `sr-query-agent-drops-query` | `SpaceRefs.v` | A receive with a query on a user agent is translated and drops the query (TR-2). | `query_bind_routes_its_channel` |
 | `at-resume-order-reversed` | `AgentTranslation.v` | The agent binder of rank i reads `BoundVar(i)` instead of `BoundVar(m - 1 - i)` (TN-3). | `targets_from_eval`, `resume_binds_innermost` |
 | `sr-minted-name-write-only` | `SpaceRefs.v` | An agent-minted name is a bundle without the read flag (TN-3). | `tag_untag_id` |
 
@@ -6117,7 +6549,7 @@ The conformance kit has its own control: a faulty agent that the kit rejects at 
 | The library tests of `reified/user_agent.rs` | 13 | The matcher state codec, the matcher process and its metering, the sink, and the call of a send. |
 | The P8 library tests of `reified/reducer_hooks.rs` | 12 | The calls of a send, a receive and a `new`, the joins and mixes, the guard placement, the arrows, and the fail-closed cases. |
 
-Every native test plays at the v6 host-work limits and certifies through its committed evidence, as proposer self-certification and validator replay do.
+Every native test plays at the offered funded v6 limits and certifies through its committed evidence, as proposer self-certification and validator replay do.
 
 ### 33.5 The reference agent and the conformance kit
 
@@ -6155,8 +6587,8 @@ A pattern of 30 nested lists aborts with `AgentPatternTooDeep`, and a pattern of
 In the debug profile, a tokio worker overflows its stack at 36 nested lists for a native receive.
 For an agent receive, it overflows at 40. This limit is older than P8.
 
-**The replay cost of an agent.** Native replay charges much more host work than native play for programs with stored contracts ([decision 79](decision-register.md#decision-79)).
-One call of a small stored contract costs 1.0 M VerificationBytes in play and 62.6 M in replay, and the v6 limit is 268.4 M.
+**The replay cost of an agent.** Before [decision 89](decision-register.md#decision-89) removed host-work metering, native replay charged much more host work than native play for programs with stored contracts ([decision 79](decision-register.md#decision-79)).
+One call of a small stored contract cost 1.0 M VerificationBytes in play and 62.6 M in replay, and the v6 limit was 268.4 M.
 The reference agent makes few calls for each operation, so every step of the kit certifies at the v6 limits.
 
 A persistent consume that drains two stored messages in one deploy needs 282.1 M in replay.
@@ -6342,7 +6774,7 @@ The 256-case property of the settlement tests ran in the release suite, because 
 The step has three findings:
 
 1. The script `check-tlc-source-binding.sh` fails in this tree before the new block, because `formal/tlaplus/uptime` is absent since the base `4d67b5ccc`. The new cursor block, run alone, finds 13 configurations with 13 distinct identities. The rest of the script belongs to its owner ([decision 70](decision-register.md#decision-70)).
-2. The record DR-119 cited `interpreter_util.rs:1871-1882`, the lines of the branch. In this tree the same lines are `interpreter_util.rs:1855-1866`, and the record now cites them.
+2. The record DR-119 cited `interpreter_util.rs:1950-1961`, the lines of the branch. In this tree the same lines are `interpreter_util.rs:1934-1945`, and the record now cites them.
 3. The audit `check-source-line-refs.sh` now checks 134 cited lines, not 132. The two new citations are in the record DR-119, and both match their source. The closure policy expects 134.
 
 *Correction (P9 step 2).* The gate set of step 0 did not run the rholang suite.
@@ -6397,7 +6829,7 @@ Then it takes one record, sends a new record and fires the waiter.
 |---|---|---|
 | R1, second part | Node 0 proposes block A with the queue creation of payer 0. Node 1 accepts A. Node 1 and then node 0 try a touch deploy of payer 0. | Node 1 proposes nothing (`NoNewDeploys`). Node 0 proposes block B on A, and node 1 accepts B. |
 | R2 | Node 0 proposes A. Node 1 proposes an empty block from genesis. Node 2 merges both, and node 0 then proposes a touch block. | The main parent of the merge block is the empty block. The merge rejects no deploy, and every node accepts the merge block and the touch block. |
-| R6 | A space row of the journal of A gains a channel of a later host row. The predecessors are derived again, and the block is signed again. | Node 1 rejects the block in about 2 seconds, with "native replay epoch is closed". Both nodes then accept the original block. |
+| R6 | A space row of the journal of A gains a channel of a later host row. The predecessors are derived again, and the block is signed again. | Node 1 rejects the block in about 2 seconds, with "native replay has incomplete operations" or "native replay stalled". Both nodes then accept the original block. |
 | R7 | After A, payer 2 offers four deploys to node 0. | A deploy that uses only its own records, and a send beside the stored record of payer 0, each get a block. A peek or a take of a record of payer 0 is quarantined. |
 | R8a | Two payers with distinct cursor buckets each create a space in sibling blocks from genesis. Node 2 merges the siblings. | The merge rejects no deploy, and every node accepts the merge block. |
 | R8b | As R8a, with one payer for both siblings. | The merge rejects one sibling. Node 0 then rejects the merge block. |
@@ -6405,8 +6837,8 @@ Then it takes one record, sends a new record and fires the waiter.
 The probes show three facts of Casper.
 [Decision 82](decision-register.md#decision-82) adapts N4 to them, and no Casper file changes.
 
-1. The leader rule. While a parent branch holds unfinalized user deploys, only the sender of the newest such block includes offered deploys (`block_creator.rs:2254-2299, 2674-2714, 3067-3072`). Another proposer takes a fallback that counts only legacy deploys (`block_creator.rs:2338-2405`). So node 1 proposes nothing in R1.
-2. The funding rule. A deploy that peeks or takes a record that another payer funded has no feasible signed assignment (`family_selection.rs:218`). The proposer quarantines it, as R7 shows.
+1. The leader rule. While a parent branch holds unfinalized user deploys, only the sender of the newest such block includes offered deploys (`block_creator.rs:2759-2804, 3368-3417, 3913-3918`). Another proposer takes a fallback that counts only legacy deploys (`block_creator.rs:2941-3023`). So node 1 proposes nothing in R1.
+2. The funding rule. A deploy that peeks or takes a record that another payer funded has no feasible signed assignment (`family_selection.rs:343`). The proposer quarantines it, as R7 shows.
 3. Gap G6. The siblings of one payer conflict on its cost cursor, and the merge rejects one of them. The node that owns the rejected copy's block then fails with "offered-funded recovery requires an envelope buffer" (`interpreter_util.rs:2156`). DR-116 of feature/cost-accounted-rho closes this gap after the base.
 
 #### 34.2.3 The shared support
@@ -6418,7 +6850,7 @@ The suite `reified_merge_p5` passes 29 tests before and after the move.
 The step adds two parts that step 2 uses first:
 
 - `support/coverage.rs` checks the merge-level event coverage of one deploy (design v2, amendment A4).
-- `support/native.rs` gives each native play its pre-state root and the hashed keys of its hot-store snapshot. It also holds the helper `run_twice_assert_canonical_equal` of N9.
+- `support/native.rs` gives each native play its pre-state root and the hashed keys of its hot-store snapshot. It held the helper `run_twice_assert_canonical_equal` of N9, which [decision 93](decision-register.md#decision-93) retires. It now holds `unordered_log`, the events of a log without their arrival order.
 
 #### 34.2.4 The inventory of the legacy tests
 
@@ -6462,11 +6894,11 @@ A `gensym` call before or after such a `new` passes.
 The mechanism has three parts:
 
 1. `eval_send` stamps an empty process authority with the cost region of the deploy signature (`rholang/src/rust/interpreter/reduce.rs:1274-1283`).
-2. A root term and the body of a fired continuation evaluate with an empty authority (`reduce.rs:268, 340`). So the authority of a process at its `new` is usually empty.
+2. A root term and the body of a fired continuation evaluate with an empty authority (`reduce.rs:637`). So the authority of a process at its `new` is usually empty.
 3. The job of a `new` took that authority as it was. So its consume and its new allocator record had no cost authority. A second job then made a COMM with an empty merged authority, which is not billable (`accounting/observation_construction.rs:113-118`).
 
 The handle method `gensym` was correct, because it takes the authority of its call, which `eval_send` stamped.
-The fix is in Reified code only: `ReducerCore::call_authority` derives the authority of a job as `eval_send` derives the authority of a send (`reified/reducer_hooks.rs:1147-1161`).
+The fix is in Reified code only: `ReducerCore::call_authority` derives the authority of a job as `eval_send` derives the authority of a send (`reified/reducer_hooks.rs:1417-1431`).
 Rule AL-8 of the specification states the rule.
 The regression test `space_native_allocations_keep_an_authority` runs on an Array and a Vector space.
 It plays two deploys with one `new` each, and one deploy with two nested `new`s.
@@ -6486,12 +6918,14 @@ Each program forwards each delivery to the public channel `rrs-native-out`, so t
 |---|---|---|
 | `n1_parked_wake_across_deploys_replay_equal` | Deploy 1 parks a waiter on a native bag space and a stored consume on the reference agent. Deploy 2 sends a value that matches neither, and deploy 3 wakes both. Each deploy certifies from its own pre-state. | Pass |
 | `n1_failed_deploy_reverts_replay_equal` | A deploy commits a queue write through the handle, and then aborts with `CellOccupied`. Native replay reproduces the failure and the root of play. The block continues from the pre-state, as Casper settles a user failure (`settlement_root`), and the next deploy sees the pre-state. | Pass |
-| `n1_k_comm_replay_equal` | A same-space join, a set retirement over $`[D; n]`$ and a VectorDB list delivery each log a COMM with two produces, and native replay reproduces each play. | Pass |
+| `n1_k_comm_replay_equal` | A same-space join logs a COMM with more than one produce. A set retirement and a VectorDB list delivery over $`[D]`$ each log two COMMs with one produce each. Native replay reproduces each play. | Pass |
 | `n1_trace_binding_rejects_swapped_events` | Negative control: the log of the join program with two adjacent distinct events swapped fails the trace binding. The log of play passes it. | Pass |
 | `n1_trace_binding_rejects_permuted_comm` | Negative control: the log of the join program with the produce list of its COMM reversed fails the trace binding. | Pass |
-| `n9_run_twice_assert_canonical_equal` | Two fresh native runtimes give the same roots, outputs, event logs, evidence bytes, phlo and host work for the 24 family programs on one chain, and for the six deploys of the conformance kit of the reference agent. | Pass |
+| `n9_run_twice_assert_canonical_equal` | The test makes three runs on each racing runtime. Each run plays the 24 family programs on one chain and the six deploys of the conformance kit of the reference agent on another. Each deploy logs events and certifies from its own pre-state. Each family program delivers an allowed label set, and the kit delivers its outputs in order ([decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111)). | Pass |
 
-N9 compares host work only play against play, because native replay charges more host work than play ([decision 79](decision-register.md#decision-79)).
+Changed by [decision 93](decision-register.md#decision-93): racing evaluation gives each run its own logs, roots and costs, so N9 certifies each run and compares no two runs.
+Before, two fresh native runtimes gave the same roots, outputs, event logs, evidence bytes, phlo and host work.
+N9 compared host work only play against play ([decision 79](decision-register.md#decision-79)).
 
 *Table 193. The other rows of N1 and their existing tests.*
 
@@ -6529,9 +6963,14 @@ It does not reproduce Casper's rejection choice, dedup or edges between the depl
 In every row, each branch succeeds and delivers its values.
 Its log touches the counter, the token or the allocator of its row, or no counter for an unordered family.
 Its merge index holds its space events, and no mergeable channel of a deploy is a Reified channel (item 19 of the consensus checklist).
+
 For a conflict-free row, block 3 runs on the merged root in a restarted runtime, and native replay reproduces it.
-Block 3 on the root of a serial order gives the same root, phlo and host work.
+Block 3 on the root of a serial order certifies and delivers the same labels.
+It gives the same root and phlo when it logs the events of block 3 on the merged root, in any order ([decision 93](decision-register.md#decision-93)).
 For a conflict row, block 3 runs on the root of the left branch, and native replay reproduces it.
+
+Changed by [decision 93](decision-register.md#decision-93) and [decision 89](decision-register.md#decision-89): block 3 races on both roots.
+Before, block 3 on the root of a serial order gave the same root, phlo and host work.
 
 Two test errors of the first run were corrected without a code change.
 A persistent waiter takes no query in source text, so the VectorDB seed parks its persistent waiter without a query ([specification VD-3](specification.md#39-vectordb)).
@@ -6596,16 +7035,19 @@ The event logs, the evidence bytes, the phlo and the roots were equal.
 
 The mechanism has three parts:
 
-1. The SQ-2 check of a send reads the seq spaces of the book (`rholang/src/rust/interpreter/reified/runtime.rs:234-239`). It charges host work only when the set is not empty (`reified/seq.rs:77-101`).
+1. The SQ-2 check of a send read the seq spaces of the book (`rholang/src/rust/interpreter/reified/runtime.rs:299-304`). It charged host work only when the set was not empty (`reified/seq.rs:77-101`).
 2. Before the fix, the factory recorded a new seq space in its reduction participant, after the creation job.
 3. Other participants of the same scheduling window read the book at the same time ([design N6](design.md#n6-scheduling)). So a send of that window was checked or not by timing.
 
 The `SeqSent` verdict never varied, because a holder of a seq name follows the reply of the factory, and the reply follows the record.
 P7 design v3 (VR-2) already put the record in the creation job, and the fix restores that place.
-The finish closure of `GenericSpace::prepare_create` records an ephemeral space as the last step of the job (`spaces/generic.rs:2948-2949, 3019-3022`).
-The scheduler runs no participant during a job, and each read of the book happens in a registered participant before its first dispatch.
-So all reads of one scheduling window see one book, in native play and in native replay, which runs under the same scheduler.
+The finish closure of `GenericSpace::prepare_create` records an ephemeral space as the last step of the job (`spaces/generic.rs:6078-6079, 6207-6210`).
+The scheduler ran no participant during a job, and each read of the book happened in a registered participant before its first dispatch.
+So all reads of one scheduling window saw one book, in native play and in native replay, which ran under the same scheduler.
 The factory keeps its reply after the job, so VR-2 still holds.
+
+Changed by [decision 90](decision-register.md#decision-90) (DR-132): racing evaluation has no scheduling windows.
+A send whose data can hold a seq name follows the creation of its space, because the name comes from the reply of the creation.
 
 *Table 197. The tests of the fix.*
 
@@ -6614,6 +7056,8 @@ The factory keeps its reply after the job, so VR-2 still holds.
 | `prepare_create_records_ephemeral_spaces_after_commit` (`spaces/generic.rs`) | The book holds a seq or a temp space after the commit of its creation job, and not before. A durable space, a second creation and a config that names another space record nothing. | Fails: no record after the commit | Pass |
 | `prop_seq_gate_constant_per_window` (`reified/runtime.rs`, 32 cases) | Two to four participants share one frontier with the creation job of a seq space, with generated sleeps. Every read before the frontier sees no seq space, and every read after it sees the new space. | Fails at the first case | Pass |
 | `seq_scan_charge_is_schedule_independent` (`rholang/tests/reified_seq.rs`) | The touch of the probe beside a seq creation, and beside a seq creation with one `gensym`, 24 runs each on a fresh chain. Native replay certifies each run. Play gives one host-work vector for each shape. | Fails: 19, 4 and 1 runs, and 19 and 5 runs | Pass, and in five more runs of the test |
+
+*Changed by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work. The test is now `seq_scan_is_schedule_independent`, and native replay certifies each run.*
 
 *Table 198. The calibration of the test, before the fix (24 runs of each shape).*
 
@@ -6641,7 +7085,8 @@ The new Unsafe control `RecordInWindowUnsafe` records the seq space in a window 
 TLC refutes exactly `ScanViewPerWindow` (2,358 distinct states, depth 5: a creation, a send, the record and a send).
 Without that invariant, the control violates no other invariant (10,123 distinct states).
 The four older controls still refute exactly their own invariants, and each passes its complement.
-The invariant map maps `ScanViewPerWindow` (P7, V19) to `prop_seq_gate_constant_per_window`, with the two other tests as witnesses.
+Retired by [decision 90](decision-register.md#decision-90) (DR-132): `ScanViewPerWindow`, with the scheduling windows, and no entry of the invariant map replaces it.
+The test `prepare_create_records_ephemeral_spaces_after_commit` still checks that the creation job records an ephemeral space after its commit.
 
 The second half of the first direction of decision 83 would run the check inside the ordered execution of each produce.
 It adds no determinism to the fix, and the user kept it as the pgmcp follow-up `rrs-fu-sq2-scan-in-ordered-produce`.
@@ -6661,16 +7106,19 @@ It adds no determinism to the fix, and the user kept it as the pgmcp follow-up `
 | The 40 checkers of the campaign, and the document lint | 40 passed |
 | I-14: the two empty-state-hash tests of `runtime_spec.rs` in release | 2 passed |
 
-#### 34.4.2 N2: the same records in every process
+#### 34.4.2 N2: another process certifies each record
 
-N2 checks that a deploy gives the same result in every process (design v2, amendment A14).
-The test `n2_cross_process_post_state_equal` (`rholang/tests/reified_cross_process.rs`) starts its own binary twice, as the children `n2-a` and `n2-b`.
-Each child plays the deploy set in a fresh process over an in-memory store, and the parent plays the set twice in its own process.
+N2 checks that another process accepts the result of each deploy (design v2, amendment A14).
+The test `n2_cross_process_post_state_equal` (`rholang/tests/reified_cross_process.rs`) starts its own binary once for each racing runtime, as the children `n2-0`, `n2-2` and `n2-8` ([decision 111](decision-register.md#decision-111)).
+Each child plays the deploy set in a fresh process over an in-memory store, and it writes one record for each deploy.
 
-Each run writes one record for each deploy.
 A record holds the roots of the pre-state and the post-state, the outputs and the event log.
-It also holds the evidence bytes, the phlo and the host work of play.
-All four runs give equal records for each deploy.
+It also holds the evidence bytes and the phlo of play.
+The parent certifies each record from the empty root in its own process ([decision 93](decision-register.md#decision-93)).
+
+Changed by [decision 93](decision-register.md#decision-93), [decision 111](decision-register.md#decision-111) and [decision 89](decision-register.md#decision-89): racing evaluation gives two runs other records, so the parent certifies the records of each child.
+Before, the children `n2-a` and `n2-b` and two runs of the parent gave equal records for each deploy.
+A record also held the host work of play, which DR-131 of the base removed.
 
 *Table 200. The deploy set of N2.*
 
@@ -6683,9 +7131,12 @@ All four runs give equal records for each deploy.
 | The conformance kit of the reference agent | 6 |
 | Total | 62 |
 
-The children run the same test function as the parent, so they have the tokio worker count of the parent.
-The session charge of native execution depends on that count (finding F-47-2), so a child with another count would give other host work.
+The role of a child names its racing runtime, so each racing runtime has its own child ([decision 111](decision-register.md#decision-111)).
 The parent keeps the standard output of each child, so no test-harness line of a child reaches the output of the parent (`rholang/tests/support/process.rs`).
+
+Changed by [decision 111](decision-register.md#decision-111) and [decision 89](decision-register.md#decision-89): before, the children ran the test function of the parent, with its tokio worker count.
+The old text gave finding F-47-2 as the reason, but that finding concerns the thread count of the machine, not the tokio workers.
+DR-131 of the base removed the session charge of F-47-2 with the other host work.
 
 #### 34.4.3 The replay of spaces across blocks
 
@@ -6693,8 +7144,11 @@ The test `space_cross_block_replay` plays three blocks in a child `propose` over
 A second child `validate` opens the store in another process, and it certifies each deploy once from its pre-state (amendment A16).
 The certification runs the journal check, the trace binding, native replay, the completeness check and the export.
 It must reach the post-state root of play with the phlo of play.
-The parent plays the blocks in its own process, and it compares every record of the child `propose` with its own.
+On each racing runtime, the parent certifies every record of the child `propose` from the empty root in its own process.
 It also checks the deliveries of each family and of the agent.
+
+Changed by [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111): before, the parent played the blocks in its own process.
+It compared every record of the child `propose` with its own.
 
 *Table 201. The blocks of the replay across blocks.*
 
@@ -6736,6 +7190,8 @@ R4 measures each test alone in that profile, with one test thread.
 | `n2_cross_process_post_state_equal` | 62 in each of 4 runs | 102.9 s | 136,400 KB |
 | `space_cross_block_replay` | 86 played twice, and certified once | 51.8 s | 87,640 KB |
 
+Changed by [decision 93](decision-register.md#decision-93) and [decision 111](decision-register.md#decision-111): Table 203 gives the measurements of step 3, before the tests ran on the racing runtimes.
+
 The memory column is the peak resident set that `/usr/bin/time -v` reports for the test process.
 Both tests use less than 2 % of the time limit of RF9, so the suites keep the deploy counts of design v2.
 In the release profile, the two tests take 6.9 seconds together.
@@ -6776,8 +7232,11 @@ It also holds VectorDB records and an agent space.
 | Negative control | The whole export validates as one page. The same page with one changed byte in a data item fails the validation. |
 | Import | The importer of a fresh LMDB store takes the history items, the data items and the root R1, and the store resets to R1. |
 | State | Each space channel that block 1 touched holds the same records and the same waiting continuations on both stores. |
-| Block 2 | Block 2 of section 34.4.3 and the touches of the stored families play on both stores, from R1. Each deploy gives the same record on both stores: the roots, the outputs, the event log, the evidence bytes, the phlo and the host work of play. |
-| Replay | Native replay certifies each deploy of block 2 from its pre-state on the imported store. |
+| Block 2 | Block 2 of section 34.4.3 and the touches of the stored families play on both stores, from R1, on each racing runtime. |
+| Replay | Native replay certifies each deploy of block 2 of both stores from its pre-state on the imported store. |
+
+Changed by [decision 93](decision-register.md#decision-93), [decision 111](decision-register.md#decision-111) and [decision 89](decision-register.md#decision-89): the imported store certifies the records of both stores, because racing evaluation gives them other records.
+Before, each deploy of block 2 gave the same record on both stores, with the host work of play.
 
 The shared blocks of the P9 suites moved from `reified_cross_process.rs` to `rholang/tests/support/blocks.rs`, so the replay across blocks and the LFS test use the same deploys.
 
@@ -6828,7 +7287,7 @@ So the merge rows use one payer for each space block: two searched payers whose 
 | `n4_space_chain_propose_validate` | Node 0 proposes ten blocks: the creations of a queue, a set, a priority queue, a VectorDB space and a PathMap space, each with records and a waiter, and then a touch of each space. Node 1 validates each block, and the two nodes hold equal settlement receipts. At the last block, both nodes read the same deliveries of each family: the config of the handle, a take and a fired waiter. | Pass |
 | `n4_space_merge_with_empty_sibling` | Node 0 proposes two space blocks of the two payers, and node 1 proposes an empty block from genesis. Node 2 merges them. The empty block is the main parent of the merge block, the merge rejects no deploy, and every node validates the merge block. Node 0 then touches the queue of its branch on the merge, every node validates that block, and the touch delivers the config, a take and a fired waiter. | Pass |
 | `n4_concurrent_space_blocks_agree` | The two payers create their own spaces in sibling blocks over genesis. Every node validates both siblings and the merge block, and the merge rejects no deploy. | Pass |
-| `n4_tampered_space_block_rejected` | A space block with a changed post-state hash, and the same block with a channel added to the footprint of a space row of its operation journal, are each signed again. Node 1 rejects the first with "offered block replay post-state differs from commitment" and the second with "native replay epoch is closed". Its DAG does not hold either block, and its DAG heads do not change. Both nodes then accept the untampered block. | Pass |
+| `n4_tampered_space_block_rejected` | A space block with a changed post-state hash, and the same block with a channel added to the footprint of a space row of its operation journal, are each signed again. Node 1 rejects the first with "offered block replay post-state differs from commitment" and the second with "native replay has incomplete operations" or "native replay stalled". Its DAG does not hold either block, and its DAG heads do not change. Both nodes then accept the untampered block. | Pass |
 
 *Amended by [decision 84](decision-register.md#decision-84) (section 34.10).* The revert of DR-119 disables `n4_concurrent_space_blocks_agree`.
 The merge row takes two labeled payers, and no bucket search chooses them.
@@ -6861,19 +7320,19 @@ The production types use `tokio::sync` and `std::sync`, so each test is a shadow
 A shadow model restates one protocol with loom types, and it keeps each step that orders a shared write.
 
 The models claim no race in native execution.
-There, every intent carries the footprint key `[2, 0]` (`deterministic_reduction.rs:1049-1051`).
-So all intents of a frontier fall into one conflict component, and the component runs them one at a time, in order (`:1004-1011`).
-The models assume less: the footprint `[2]‖sid` of a space job, under which the jobs of two spaces run at the same time.
+Before [decision 90](decision-register.md#decision-90) (DR-132) removed the scheduler, every intent carried the footprint key `[2, 0]`.
+So all intents of a frontier fell into one conflict component, and the component ran them one at a time, in order.
+The models assumed less: the footprint `[2]‖sid` of a space job, under which the jobs of two spaces ran at the same time.
 The routing, ord and dispatch models also let the operations on one space run at the same time.
 
 *Table 209. The loom models of N7.*
 
 | Test | Protocol | Properties |
 |---|---|---|
-| `loom_space_routing` | Two jobs of one space, a job of a second space and a host produce take the stripes of their channels. A job takes its stripes in phase A and then in phase B, each set sorted and deduplicated (`striped_locks.rs:41-82`). A host produce takes the stripe of its channel in phase A and the stripes of its joins in phase B (`rspace/locks.rs:33-57`). | No deadlock. No two jobs update one space at the same time. Each space holds the updates of its own jobs only. |
-| `loom_seq_guard` | The jobs of a `seq` space check their claim on a channel under the stripe of the space (`ephemeral.rs:251-284`). The commit releases the stripe, and then the job stores its claim (`generic.rs:2267-2270`). | Each stored claim descends from the claim that it replaces. One of two sibling lineages uses the channel. A job of another space always commits. |
-| `loom_ord_assignment` | Two enqueues and a dequeue of one queue each read the counter, write the next value and commit in one transaction under the stripes of the collection (`counter.rs:165-245`). | Each operation gets a different `ord`. The records stay in commit order, and the dequeue takes the first committed record. |
-| `loom_handle_dispatch` | Calls are sends on the handle channel `H(sid)`, which a persistent receive serves. A fire on a stored call removes the call in its COMM, and then the body and the re-issued receive run at the same time (`ops_consume.rs:124-143`, `reduce.rs:848-913`). | Each call has one reply, on its own return channel. The receive waits at the end, and no call stays stored. |
+| `loom_space_routing` | Two jobs of one space, a job of a second space and a host produce take the stripes of their channels. A job takes its stripes in phase A and then in phase B, each set sorted and deduplicated (`striped_locks.rs:41-82`). A host produce takes the stripe of its channel in phase A and the stripes of its joins in phase B (`rspace/locks.rs:33-66`). | No deadlock. No two jobs update one space at the same time. Each space holds the updates of its own jobs only. |
+| `loom_seq_guard` | The jobs of a `seq` space check their claim on a channel under the stripe of the space (`ephemeral.rs:436-486`). The model keeps the check and the store together with the footprint of the space. *Changed by [decision 90](decision-register.md#decision-90): before, the commit released the stripe, and then the job stored its claim. The store now runs in the finish of the job, under the stripes of the commit (`generic.rs:5199-5205`).* | Each stored claim descends from the claim that it replaces. One of two sibling lineages uses the channel. A job of another space always commits. |
+| `loom_ord_assignment` | Two enqueues and a dequeue of one queue each read the counter, write the next value and commit in one transaction under the stripes of the collection (`counter.rs:168-278`). | Each operation gets a different `ord`. The records stay in commit order, and the dequeue takes the first committed record. |
+| `loom_handle_dispatch` | Calls are sends on the handle channel `H(sid)`, which a persistent receive serves. A fire on a stored call removes the call in its COMM, and then the body and the re-issued receive run at the same time (`ops_consume.rs:254-291`, `reduce.rs:1469-1538`). | Each call has one reply, on its own return channel. The receive waits at the end, and no call stays stored. |
 
 Each property has a negative control: the same model with one protocol step changed.
 Loom finds an interleaving that fails with the named message, and the control expects that message (`#[should_panic]`).
@@ -6889,7 +7348,7 @@ Loom finds an interleaving that fails with the named message, and the control ex
 | `loom_handle_dispatch_removal_outside_the_comm_dispatches_twice` | The body removes the stored call, not the COMM. | "a call is dispatched twice" |
 
 The seq model shows why the jobs of a `seq` space need their footprint.
-A job checks its claims under the stripes of its space, and its commit releases the stripes (`space_store_handle.rs:918-919`).
+A job checks its claims under the stripes of its space, and its commit releases the stripes (`space_store_handle.rs:1378-1379`).
 The job stores its claims only after the commit, in the finish closure.
 So the stripes alone do not keep the check and the store together.
 The footprint `[2]‖sid` keeps them together, because a conflict component runs each job to completion before the next one starts.
@@ -7049,7 +7508,7 @@ The full gate set of P9 then runs on the commit of this step.
 
 #### 34.9.1 Channel coverage: H28
 
-H10, `coverage_total` (`EventCorrelation.v:6096`), is a coverage of records: each effect of a commit has the event of its own record.
+H10, `coverage_total` (`EventCorrelation.v:6099`), is a coverage of records: each effect of a commit has the event of its own record.
 A merge needs a coverage of channels.
 `StateChange::new` reads only the leaves of the channels that the events of a deploy name (`rspace++/src/rspace/merger/state_change.rs:150-299`).
 These are the data leaf of the channel of each affected Produce, and the continuation and join leaves of the channels of each affected Consume.
@@ -7094,7 +7553,7 @@ The decoded rows then map each removed record to the channel of its source.
 Three new lemmas show that a fire removes only records that its store holds (`space_pf_loop_removed`, `space_cf_loop_removed`), and only joins of the fired group (`space_pf_loop_join_chan`).
 
 H28 is a necessary condition of a correct merge, not a sufficient condition.
-The merger reads only the affected events of a log (`produces_affected` and `consumes_affected`, `rspace++/src/rspace/merger/merging_logic.rs:526-637`).
+The merger reads only the affected events of a log (`produces_affected` and `consumes_affected`, `rspace++/src/rspace/merger/merging_logic.rs:562-673`).
 The merge-level check of amendment A4 tests the rest (section 34.3.4).
 It merges the log of each deploy over the pre-state of the deploy, and it requires the post-state root of the deploy.
 
@@ -7127,24 +7586,24 @@ The hash premise of H29 has two parts:
 
 Here $`\equiv`$ is `store_eq`, the equality of two stores up to the order of each data list.
 $`\approx`$ is an equivalence of roots, which is equality for the Blake2b256 roots of production.
-The proof applies `replay_sim_gen` (`EventCorrelation.v:7710`), the general form of H23, once for each block.
+The proof applies `replay_sim_gen` (`EventCorrelation.v:7713`), the general form of H23, once for each block.
 The second application starts from the reset of the root of the replayed store $`S_1'`$.
 By the first application and the second part of the premise, $`\mathrm{reset}(\mathrm{root}(S_1')) \equiv S_1`$.
 
 H30 states the same trace for native play and native replay, and each block has its own history of observer calls.
 Its premise is $`\forall s.\; \mathrm{reset}(\mathrm{root}(s)) = s`$, and its proof applies H24 once for each block.
 Three lemmas show that the premises of H28 to H30 can hold, so no headline is vacuous.
-They are `coverage_commit_premises_satisfiable` (`EventCorrelation.v:9283`), `two_block_hash_premise_satisfiable` (`EventCorrelation.v:9297`) and `two_block_native_hash_premise_satisfiable` (`EventCorrelation.v:9312`).
+They are `coverage_commit_premises_satisfiable` (`EventCorrelation.v:9290`), `two_block_hash_premise_satisfiable` (`EventCorrelation.v:9304`) and `two_block_native_hash_premise_satisfiable` (`EventCorrelation.v:9319`).
 
 *Table 218. The Rocq headlines of step 8.*
 
 | Id | Headline | Statement |
 |---|---|---|
-| H28 | `coverage_commit` (`EventCorrelation.v:8085`) | With the premises of Table 217, the index of the log of each commit covers the effects of the commit. |
-| H29 | `two_block_replay_preserves_roots` (`EventCorrelation.v:8224`) | With the hash premise, two blocks of reset and replay give the events, the statuses, the stores and the roots of play. |
-| H30 | `two_block_native_replay_preserves_roots` (`EventCorrelation.v:9126`) | With the reset premise, two blocks of native replay give the calls, the stores, the roots and the statuses of native play. |
+| H28 | `coverage_commit` (`EventCorrelation.v:8088`) | With the premises of Table 217, the index of the log of each commit covers the effects of the commit. |
+| H29 | `two_block_replay_preserves_roots` (`EventCorrelation.v:8227`) | With the hash premise, two blocks of reset and replay give the events, the statuses, the stores and the roots of play. |
+| H30 | `two_block_native_replay_preserves_roots` (`EventCorrelation.v:9129`) | With the reset premise, two blocks of native replay give the calls, the stores, the roots and the statuses of native play. |
 
-`EventCorrelation.v` now has 24 closed headlines, and the gate expects 300 closed headlines in total.
+`EventCorrelation.v` then had 24 closed headlines, and the gate expected 300 closed headlines in total.
 The new text moved 57 line citations of `EventCorrelation.v` in four documents, and each citation moved with the line that it cites.
 
 #### 34.9.3 Negative controls
@@ -7153,7 +7612,7 @@ The new text moved 57 line citations of `EventCorrelation.v` in four documents, 
 
 | Control | Kind | What it changes | Must fail in |
 |---|---|---|---|
-| `ec-store-drops-produce-event` | Rocq mutant | The commit of a stored produce, in play and in replay, logs no Produce event. A counter write is such a produce, so this is the lost event of a meta write. | `coh_produce_store` (`EventCorrelation.v:4197`), the store case of H10 and H28 |
+| `ec-store-drops-produce-event` | Rocq mutant | The commit of a stored produce, in play and in replay, logs no Produce event. A counter write is such a produce, so this is the lost event of a meta write. | `coh_produce_store` (`EventCorrelation.v:4200`), the store case of H10 and H28 |
 | `ec-store-logs-mismatched-produce-event` | Rocq mutant | The commit of a stored produce logs the Produce of another record of the same channel, with the other persistence flag. | `coh_produce_store` |
 | `ec-coverage-without-continuation-rows` | Rocq mutant | H28 loses the decoded-row premise of continuations. | `coverage_commit` |
 | `ec-two-block-stale-reset` | Rocq mutant | The validator replays block 2 from the root before block 1. | `two_block_replay_preserves_roots` |
@@ -7171,17 +7630,13 @@ Proptest shrinks the failure to two blocks of one send each, on one channel.
 
 #### 34.9.4 The maps and the property of H29
 
-The property `prop_space_txn_two_block_replay_preserves_roots` (`rspace++/tests/reified_space_store_handle_props.rs`) runs H29 on the substrate.
-It runs 64 cases with the fixed seed of the file.
-Its generator makes 2 to 8 transaction groups, normalizes them as one sequence, and splits them into two blocks of at least one group each.
-Play commits block 1, checkpoints, commits block 2 and checkpoints again.
-Replay rigs the start root with the log of block 1, and it checks the receipts and the root of block 1.
-Then it rigs its own root with the log of block 2, and it checks the receipts and the root of block 2.
+The test `space_native_vectordb_replay_equal` plays deploys in order on one chain and certifies each through its own native replay from its parent root.
 
-The first version of the property planned both blocks in one run, and the replay of block 2 failed with `NotInView`.
+The first version of `prop_space_txn_two_block_replay_preserves_roots` planned both blocks in one run, and the replay of block 2 failed with `NotInView`.
 A checkpoint resets the hot store to the history, and that can change the order of the records of a channel.
 So a planned candidate position of block 2 named another record.
-The plans of block 2 now come from scratch spaces that also checkpoint after block 1.
+The plans of block 2 then came from scratch spaces that also checkpointed after block 1.
+*Retired by [decision 90](decision-register.md#decision-90) (C6, step D): the property `prop_space_txn_two_block_replay_preserves_roots` drove the rigged replay mode, which retires ([decision 125](decision-register.md#decision-125)). The test `space_native_vectordb_replay_equal` certifies deploys in order through native replay.*
 
 The property of H10, `prop_event_coverage_holds_for_generated_commits`, now also checks the conclusion of H28 on each commit.
 For each changed data leaf, a Produce of the log or of a COMM has the hash of the channel of the leaf.
@@ -7213,7 +7668,7 @@ The glossary entry [event coverage](glossary.md#event-coverage) cites H28.
 Figure V2 shows the two process harnesses of P9.
 Figure V3 shows the blocks of the N4 merge with an empty sibling (section 34.6).
 
-![Sequence diagram of the process harnesses of P9. N2: the parent process starts the test binary again with a role variable, as the children n2-a and n2-b, one child at a time; each child plays the 62 deploys of N2 natively over an in-memory store at the v6 limits and writes one record for each deploy; the parent plays the same deploys twice in its own process, reads the records of both children, and the four runs give equal records. The replay across blocks: the parent starts the child propose, which opens the LMDB store, plays blocks 1, 2 and 3 natively with 30, 28 and 28 deploys at the v6 limits, writes the post-state of each deploy to the store, and writes one record for each deploy; the parent starts the child validate, which reads the records of propose, opens the store at the pre-state root of the first deploy, and for each of the 86 deploys, once, decodes the evidence, checks the journal, binds the trace to the event log, runs native replay from the pre-state with the completeness check and the export, and reaches the post-state root and the phlo of play; the parent reads the records of propose, checks that each deploy starts at the post-state root of the deploy before it, plays the three blocks again over an in-memory store in its own process, and finds equal records and the deliveries of each family and of the agent. A record holds the pre-state and post-state roots, the outputs, the event log, the evidence bytes, the phlo and the host work of play, and a child prints no test output to the parent.](diagrams/34-p9-process-harnesses.svg)
+![Sequence diagram of the process harnesses of P9. N2: on each racing runtime, the parent process starts the test binary again with a role variable, as the child n2-0, n2-2 or n2-8. The child plays the 62 deploys of N2 natively over an in-memory store at the v6 limits and writes one record for each deploy. The parent reads the records of the child and certifies each record from the empty root in its own process. The replay across blocks, on each racing runtime: the parent starts the child propose, which opens the LMDB store, plays blocks 1, 2 and 3 natively with 30, 28 and 28 deploys at the v6 limits, writes the post-state of each deploy to the store and writes one record for each deploy. The parent starts the child validate, which reads the records of propose and opens the store at the pre-state root of the first deploy. For each of the 86 deploys, once, it decodes the evidence, checks the journal, binds the trace to the event log, runs native replay from the pre-state with the completeness check and the export, and reaches the post-state root and the phlo of play. The parent reads the records of propose, checks that each deploy starts at the post-state root of the deploy before it, certifies each record from the empty root in its own process, and checks the deliveries of each family and of the agent. A record holds the pre-state and post-state roots, the outputs, the event log, the evidence bytes and the phlo of play. A child prints no test output to the parent.](diagrams/34-p9-process-harnesses.svg)
 
 *Figure V2. Source: [diagrams/34-p9-process-harnesses.puml](diagrams/34-p9-process-harnesses.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
@@ -7241,7 +7696,7 @@ Figure V3 shows the blocks of the N4 merge with an empty sibling (section 34.6).
 ### 34.10 The revert of the DR-119 backport
 
 [Decision 84](decision-register.md#decision-84) reverts step 0.
-The backport changed `SystemVault.rho`, which is a genesis contract (`standard_deploys.rs:195`), and Reified RSpaces do not need it.
+The backport changed `SystemVault.rho`, which is a genesis contract (`standard_deploys.rs:206`), and Reified RSpaces do not need it.
 The backport was the main session's recommendation, and the recommendation did not state the change of genesis.
 The revert is one new commit, and no commit is rewritten.
 
@@ -7534,8 +7989,8 @@ Tables 231 to 234 give the disposition of each.
 
 | Legacy laws | Successor |
 |---|---|
-| `Phlogiston.v`: the laws of the second budget (charges succeed and fail, decrease the budget, log, accumulate, refund, and keep the budget non-negative, 21 laws) | Retired with the second gas system (defect D12). One charging path remains (M-3). A space transaction makes the observer calls of the equivalent host program: `EventCorrelation.v` H1 `commit_trace_eq_host`, `LegacyCharges.v` `legacy_rebracket_eq_host` and `legacy_replay_stops_with_play`, and H27 for native execution |
-| `Phlogiston.v`: `produce_cost_bounded`, `consume_cost_bounded`, `install_cost_bounded` | `AgentReadCoverage.v` `operation_trace_covered`, `reservations_precede_commit` and `cut_rejects_before_commit`: every read is reserved on the budget before it happens |
+| `Phlogiston.v`: the laws of the second budget (charges succeed and fail, decrease the budget, log, accumulate, refund, and keep the budget non-negative, 21 laws) | Retired with the second gas system (defect D12). One charging path remains (M-3). A space transaction makes the observer calls of the equivalent host program: `EventCorrelation.v` H1 `commit_trace_eq_host`. [Decision 90](decision-register.md#decision-90) removed `LegacyCharges.v`, and [decision 89](decision-register.md#decision-89) disabled H27 |
+| `Phlogiston.v`: `produce_cost_bounded`, `consume_cost_bounded`, `install_cost_bounded` | Retired by [decision 96](decision-register.md#decision-96) (decision 89): no read is reserved, and `AgentReadCoverage.v` is gone |
 | `Registry/Invariants.v`: one owner for each channel, the registration and the removal of a space, the owner of a new channel, the default space (8 laws) | Retired with the registry (defect D12). An id names its space: `Namespace.v` `handle_id_injective`, `storage_id_injective` and `name_id_routes_to_sid`, and `SpaceRefs.v` `route_total_deterministic`, `route_rules` and `ordinary_channels_route_default` |
 | `Registry/Invariants.v`: the push and the pop of a use block | `SpaceRefs.v` `use_wrapper_restores_ctx`: the use context is lexical |
 | `Registry/Invariants.v`: `cross_space_join_forbidden` | The invariant `JoinSameSpace` of `AgentSpaces.tla` |
@@ -7548,7 +8003,8 @@ The prefix-atomic commit of [decision 19](decision-register.md#decision-19) (D6)
 
 #### 35.2.4 The proof manifest and the model inventory
 
-The proofs gate now expects 308 closed headlines: the 300 of P9 and the 8 of `Checkpoint.v`.
+The proofs gate then expected 308 closed headlines: the 300 of P9 and the 8 of `Checkpoint.v`.
+Today it expects 293.
 Every headline is in the sections of its module, and Table 229 lists the new ones.
 The TLA gate checks 128 configurations.
 Four of them had no row in this dossier, and Table 235 adds them, with the results of the gate set of P9.
@@ -7691,11 +8147,11 @@ Table 240 gives the example of each code of the agent API, or the reason that a 
 | `PersistentSendOnAgentSpace` | `agent-space-rejects-a-persistent-send` |
 | `ParamsUnsupportedOnAgentSpace` | `agent-space-rejects-params` |
 | `ParamsUnsupported` | `system-op-rejects-params` |
-| `Malformed` | `factory-rejects-a-forged-params-tuple` |
+| `Malformed` | None as an example. The test `reified_hook_errors_are_typed` builds the term by hand. |
 | `PositionalParamsUnsupported` | `factory-rejects-a-positional-param` |
 | `FamilyUnavailable` | None. Each factory URN that a program can name runs a wired family, and a URN without a family has no binding. |
 | `BadConstructorArgument` | `factory-rejects-a-bad-argument` |
-| `QualifierUnavailable` | None. Only legacy execution reaches the code ([decision 73](decision-register.md#decision-73)), and the examples run natively ([decision 69](decision-register.md#decision-69)). |
+| `QualifierUnavailable` | None. Retired by [decision 90](decision-register.md#decision-90) (C6, step D) with its code. Before, only legacy execution reached the code ([decision 73](decision-register.md#decision-73)). |
 | `UnknownTheory` | `factory-rejects-an-unknown-theory` |
 | `UnknownParam` | `factory-rejects-an-unknown-param`, and on sends `queue-rejects-a-send-param` and `set-rejects-a-send-param` |
 | `TheoryUnavailable` | None. The factory accepts only the theories that this build checks, so only a hand-built config reaches the code. |
@@ -7715,9 +8171,8 @@ Table 240 gives the example of each code of the agent API, or the reason that a 
 | `Inconsistent` | None. Only a record that is not well formed reaches the code, and a program cannot write a record of a space. |
 | `CounterOverflow` | None. A counter reaches its greatest value only after about $`2^{63}`$ operations on one collection. |
 
-Design v2 named `Malformed` as an abort that only a hand-built term reaches.
-A program can take a marker out of its own quoted code, as [decision 18](decision-register.md#decision-18) states, and build a tuple that the normalizer never writes.
-So `factory-rejects-a-forged-params-tuple` reaches `Malformed` from source text, and the code has an example.
+[Decision 112](decision-register.md#decision-112) makes a params section a field, so a program cannot build a forged form, and only a hand-built term reaches `Malformed`.
+The example `factory-rejects-a-forged-params-tuple` now shows that a former marker tuple grants nothing.
 Step S5 names, in `agent-api.md`, the test that reaches each code without an example.
 
 #### 35.3.5 The invalid rows of the syntax corpus
@@ -7777,6 +8232,11 @@ Table 242 summarizes the record lines of the gate run.
 A deploy that aborts before its first RSpace operation records the phlo 0, because consensus phlo comes only from the observed RSpace operations (M-3).
 Two runs of the harness gave identical record lines.
 
+Changed by [decision 90](decision-register.md#decision-90) and [decision 93](decision-register.md#decision-93): the merge with `feature/cost-accounted-rho` at `702496775` changes the phlo and the roots of the record lines.
+Racing evaluation can also give two runs other record lines.
+Each run certifies its deploys and reaches the expected values of each example.
+Tables 242 and 243 keep the values of the gate run of step S2.
+
 *Table 242. The record lines of the examples.*
 
 | Example | Deploys | Outcome | Phlo of each deploy | Root (first 12 hex digits) |
@@ -7824,7 +8284,7 @@ Two runs of the harness gave identical record lines.
 | `factory-rejects-an-unknown-theory` | 1 | `UnknownTheory` | 2155 | `52827ba4791d` |
 | `factory-rejects-an-unknown-param` | 1 | `UnknownParam` | 2187 | `c820cc99fe10` |
 | `factory-rejects-a-positional-param` | 1 | `PositionalParamsUnsupported` | 711 | `dc1b0eb83b36` |
-| `factory-rejects-a-forged-params-tuple` | 1 | `Malformed` | 3015 | `0e5751c026e5` |
+| `factory-rejects-a-forged-params-tuple` | 1 | `("no marker tuple")` on `rrs.example.forged-params` | 3700 | `979dfa7c32fe` |
 | `factory-rejects-a-persistent-call` | 1 | `PersistentFactoryCall` | 0 | `0e5751c026e5` |
 | `system-op-rejects-a-persistent-call` | 1 | `PersistentOpCall` | 0 | `0e5751c026e5` |
 | `system-op-rejects-params` | 1 | `ParamsUnsupported` | 0 | `0e5751c026e5` |
@@ -7940,8 +8400,12 @@ A change of a root fails the test, and the specification must then record the ne
 
 | Test | File | Pinned roots |
 |---|---|---|
-| `determinism_replay_trace_root_is_pinned` | `rholang/tests/reified_examples_execute.rs` | The post-state root `36cf8734…` of `queue-fifo`, which the record line of the example also shows |
+| `determinism_replay_trace_root_is_pinned` | `rholang/tests/reified_examples_execute.rs` | The post-state root `22da5dff…` of `queue-fifo`, which the record line of the example also shows |
 | `space_determinism_merge_trace_roots_are_pinned` | `rholang/tests/reified_cross_block_merge.rs` | R1, the roots of the two branches, and the merged root, which equals the root of both serial orders |
+
+Changed by [decision 90](decision-register.md#decision-90) (step E): the merge with `feature/cost-accounted-rho` at `702496775` changes the pinned roots of both tests.
+Tables 13 and 14 of the [specification](specification.md) record the new roots.
+Before, the post-state root of `queue-fifo` was `36cf8734…`.
 
 `syntax-contract.md` states its final scope, and each of its six grammar forms shows one row of the invalid corpus with its error.
 Its section on the meaning at run time no longer names the phase of each construct.
@@ -7961,7 +8425,7 @@ The stale row of Table 137 in section 25 now states that step S5 completed chapt
 Part 4 completes `design.md`:
 
 - The introduction and the list of the native-spaces section name all twenty parts, and part N9 gives the current limits of native spaces.
-- Part N9 corrects one stale limit. Native execution carries the host-work budget of protocol version 6 in play and in replay, so each charge binds there.
+- Part N9 corrected one stale limit. Native execution then carried the host-work budget of protocol version 6 in play and in replay, so each charge bound there. [Decision 89](decision-register.md#decision-89) removed that budget later.
 - Parts N17 to N19 describe the code of P7, P8 and P9, with a citation of each function that they name.
 - Part N20 gives the commit point, the result of a failure, the diagram and the checks of each transition of space state.
 
@@ -8007,13 +8471,20 @@ The expected values are the values that the rules of section 3 of the specificat
 
 | Example | Values | Phlo | Root (first 12 hex digits) |
 |---|---|---|---|
-| `queue-peeks-and-persistence` | `["peeked", "A"]`, `["taken", "A"]`, `["drained", "A"]`, `["drained", "B"]` | 66863 | `60517ea43f75` |
-| `stack-peeks-and-persistence` | `["peeked", "B"]`, `["taken", "B"]`, `["drained", "B"]`, `["drained", "A"]` | 66965 | `c15cd95903c8` |
-| `set-peeks-and-persistence` | `["peeked", "a"]`, `["taken", "a"]`, `["left", "p"]`, `["again", "p"]` | 53229 | `2d1281649df9` |
-| `cell-peeks-and-persistence` | `["peeked", 1]`, `["taken", 1]`, `["persistent", 2]`, `["again", 2]` | 69018 | `0dc82eed72e6` |
-| `bag-peeks-and-persistence` | `["peeked", 5]`, `["first", 5]`, `["second", 5]`, `["persistent", 7]`, `["again", 7]` | 55772 | `3a7f05881ef2` |
-| `priority-queue-peeks-and-persistence` | `["peeked", "urgent"]`, `["taken", "urgent"]`, and `["drained", "x"]` twice | 68147 | `044f5552a631` |
-| `vectordb-peeks-and-persistence` | `["peeked", [1, 0]]`, `["first", [1, 0]]`, `["second", [1, 0]]`, `["persistent", [0, 1]]`, `["again", [0, 1]]` | 59546 | `d7b4bf6e04cb` |
+| `queue-peeks-and-persistence` | `["peeked", "A"]`, `["taken", "A"]`, `["drained", "A"]`, `["drained", "B"]` | 59543 | `85a8d13c0ba5` |
+| `stack-peeks-and-persistence` | `["peeked", "B"]`, `["taken", "B"]`, `["drained", "B"]`, `["drained", "A"]` | 59645 | `8cbdb38065be` |
+| `set-peeks-and-persistence` | `["peeked", "a"]`, `["taken", "a"]`, `["left", "p"]`, `["again", "p"]` | 51969 | varies |
+| `cell-peeks-and-persistence` | `["peeked", 1]`, `["taken", 1]`, `["persistent", 2]`, `["again", 2]` | 58991 | varies |
+| `bag-peeks-and-persistence` | `["peeked", 5]`, `["first", 5]`, `["second", 5]`, `["persistent", 7]`, `["again", 7]` | 55614 | varies |
+| `priority-queue-peeks-and-persistence` | `["peeked", "urgent"]`, `["taken", "urgent"]`, and `["drained", "x"]` twice | 60208 | `651f5b40afa5` |
+| `vectordb-peeks-and-persistence` | `["peeked", [1, 0]]`, `["first", [1, 0]]`, `["second", [1, 0]]`, `["persistent", [0, 1]]`, `["again", [0, 1]]` | 58552 | varies |
+
+*The phlo and root columns come from one run of the example harness on the merged tree.
+They replace the values of commit `d13e13d89`.
+Since [decision 111](decision-register.md#decision-111), the harness runs each example once on each racing runtime.
+A root of `varies` means that the racing runtimes gave different roots for that example.
+The phlo of each example was equal on all racing runtimes.
+Table 251 records the gates of part 8, which ran on one runtime.*
 
 The first drafts of two examples put a query on a peek and on a persistent receive, and the parser refused both.
 The grammar and the syntax contract allow a query only on a linear bind.

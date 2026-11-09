@@ -135,11 +135,23 @@ impl CliqueOracle {
         map.insert(key, value);
     }
 
-    /// weight map of main parent (fallbacks to message itself if no parents)
-    /// TODO - why not use local weight map but seek for parent?
-    /// P.S. This is related to the fact that we create latest message for newly bonded validator
-    /// equal to message where bonding deploy has been submitted. So stake from validator that did not create anything is
-    /// put behind this message. So here is one more place where this logic makes things more complex.
+    /// The committee that certifies `target_msg`: the bonds the target carries.
+    /// `floor::floor_committee` on the target's floor is the single source for
+    /// that field on both sides — the proposer PACKAGES it (`block_creator`) and
+    /// the validator CHECKS it (`Validate::bonds_cache_from_floor`) — so it is a
+    /// pure function of that floor and identical for siblings sharing one. The
+    /// main parent's bonds are not: a block whose floor has advanced past a
+    /// bonding deploy carries an electorate its parent does not, and each side of
+    /// a fork would certify under its own.
+    ///
+    /// Genesis and no-parent blocks read their own weight map, matching the
+    /// previous fallback behaviour.
+    ///
+    /// A validator bonded but not yet heard from does not inflate the result:
+    /// its latest-message slot is seeded with the genesis hash, and
+    /// `participating_weight_map` drops a genesis-slot validator that genesis
+    /// neither sent nor bonded. Its stake joins the committee once it has
+    /// actually produced a message.
     pub async fn get_corresponding_weight_map(
         target_msg: &M,
         dag: &KeyValueDagRepresentation,
@@ -207,12 +219,8 @@ impl CliqueOracle {
         meter.step(WorkKind::Oracle)?;
         meter.allocate(64, 128)?;
         let meta = dag.lookup_unsafe_metered(meter, target_msg)?;
-        let weights = match meta.parents.first() {
-            Some(parent) => dag.lookup_unsafe_metered(meter, parent)?.weight_map,
-            None => meta.weight_map,
-        };
         let mut result = HashMap::new();
-        for (validator, weight) in weights {
+        for (validator, weight) in meta.weight_map {
             meter.step(WorkKind::Oracle)?;
             result.insert(validator, weight);
         }
@@ -326,7 +334,8 @@ impl CliqueOracle {
                 );
                 value
             };
-            let target_height = dag.lookup_unsafe_metered(meter, target_msg)?.block_number;
+            meter.lookup()?;
+            let target_height = dag.block_number_unsafe(target_msg)?;
             let mut last_yield = Instant::now();
             let mut idx: usize = 0;
             while let Some(hash) = current {
@@ -372,7 +381,8 @@ impl CliqueOracle {
                     if let Some(cached) = run_cache.ancestor_cache.get(&ancestor_key) {
                         *cached
                     } else {
-                        let visited_height = dag.lookup_unsafe_metered(meter, &hash)?.block_number;
+                        meter.lookup()?;
+                        let visited_height = dag.block_number_unsafe(&hash)?;
                         let value = if visited_height < target_height {
                             dag.is_in_main_chain_metered(meter, &hash, target_msg)?
                         } else {

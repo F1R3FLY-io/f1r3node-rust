@@ -14,8 +14,8 @@
 
 #![allow(dead_code)]
 
-use casper::rust::util::construct_deploy;
-
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
 use super::harness::SlashingTestHarness;
 use super::integration_helpers::{
     canonical_validator_order, equivocate_block, production_snapshot_at,
@@ -24,6 +24,7 @@ use super::observer::SlashingObserver;
 use super::oracle_adapter::RocqOracleAdapter;
 use super::production_adapter::SlashingProductionAdapter;
 use super::types::{BlockMeta, Status};
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 

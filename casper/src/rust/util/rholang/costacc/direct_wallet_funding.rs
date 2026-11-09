@@ -3,7 +3,8 @@ use std::num::NonZeroUsize;
 
 use crypto::rust::signatures::signed::{Cosigned, CosignedError, ToMessage};
 use models::rhoapi::cost_signature::Value;
-use models::rhoapi::g_unforgeable::UnfInstance;
+// Changed by G3 (DR-135): `single_private_name` reads the unforgeable.
+// use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{CostSignature, Par};
 use models::rust::phlo_intent::{
     PhloConversionCompositionV2, PhloFundingIntentError, PhloFundingIntentLimits,
@@ -19,9 +20,15 @@ use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChan
 use thiserror::Error;
 
 use super::offered_grants::VerifiedOfferedGrantSources;
-use super::vault_payer::{vault_payer, VaultPayer, VaultPayerError};
+// Changed by G3 (DR-135): the private-name test is shared with `vault_payer`.
+// use super::vault_payer::{vault_payer, VaultPayer, VaultPayerError};
+use super::vault_payer::{single_private_name, vault_payer, VaultPayer, VaultPayerError};
 
 mod snapshot;
+// Added by DR-134 (DR-65 item 5, option B): the settlement capacity of a batch
+// member, capped by its later holds.
+#[cfg(test)]
+pub(crate) use snapshot::capped_capacity;
 pub use snapshot::{DirectWalletSnapshot, DirectWalletSnapshotError, DirectWalletSource};
 
 mod binding;
@@ -39,7 +46,6 @@ pub use settlement::{
 };
 
 mod execution;
-pub(crate) use execution::CertifiedOfferedDraft;
 pub use execution::{
     gate_offered_candidate, InsufficientCause, NativeAttemptSettlementInput,
     NativeAttemptSettlementLimits, NativeCapturedSettlement, NativeFundedAttempt,
@@ -50,6 +56,8 @@ pub use execution::{
     OfferedEstimateKind, OfferedGate, OfferedGateInput, OfferedGateRejection,
     PendingReplayedNativeSettlement, ReplayedNativeFundedUser,
 };
+// Added by DR-134 (DR-65, gap G2): the offered batch of a play request.
+pub(crate) use execution::{offered_envelopes, CertifiedOfferedDraft};
 
 #[derive(Clone, Copy, Debug)]
 pub struct DirectWalletFundingLimits {
@@ -199,24 +207,36 @@ fn private_name_payer(
         let Ok(par) = Par::decode(*bytes) else {
             continue;
         };
+        // Changed by G3 (DR-135): the structural test is the shared
+        // `single_private_name` (R2). The wire checks stay here.
+        // if par.encode_to_vec().as_slice() != *bytes
+        //     || !par.sends.is_empty()
+        //     || !par.receives.is_empty()
+        //     || !par.news.is_empty()
+        //     || !par.exprs.is_empty()
+        //     || !par.matches.is_empty()
+        //     || par.unforgeables.len() != 1
+        //     || !par.bundles.is_empty()
+        //     || !par.connectives.is_empty()
+        //     || !par.conditionals.is_empty()
+        //     || !par.locally_free.is_empty()
+        //     || par.connective_used
+        //     || !par.cost_signed_terms.is_empty()
+        //     || !par.cost_stacks.is_empty()
+        //     || !matches!(
+        //         par.unforgeables[0].unf_instance.as_ref(),
+        //         Some(UnfInstance::GPrivateBody(private)) if private.id.len() == 32
+        //     )
+        // {
+        //     continue;
+        // }
+        let Some(private) = single_private_name(&par) else {
+            continue;
+        };
         if par.encode_to_vec().as_slice() != *bytes
-            || !par.sends.is_empty()
-            || !par.receives.is_empty()
-            || !par.news.is_empty()
-            || !par.exprs.is_empty()
-            || !par.matches.is_empty()
-            || par.unforgeables.len() != 1
-            || !par.bundles.is_empty()
-            || !par.connectives.is_empty()
-            || !par.conditionals.is_empty()
             || !par.locally_free.is_empty()
             || par.connective_used
-            || !par.cost_signed_terms.is_empty()
-            || !par.cost_stacks.is_empty()
-            || !matches!(
-                par.unforgeables[0].unf_instance.as_ref(),
-                Some(UnfInstance::GPrivateBody(private)) if private.id.len() == 32
-            )
+            || private.id.len() != 32
         {
             continue;
         }

@@ -1,6 +1,7 @@
 ' 57 The VerificationBytes of one receive against the records of its
 ' collection, for each discipline, with the host-work limit of protocol
-' version 6.
+' version 6. Decision 89 retired that limit. The chart keeps the measurement
+' before decision 89, and the next timed run replaces it.
 '
 ' Source of Figure 2 of ../performance.md (section 3.3). The measured points
 ' are the receive_from_n cases of test-vectors/reified-bench-contract-v1.json
@@ -12,7 +13,7 @@
 '     priority queue: 993 records
 '     VectorDB: 433 records
 ' The queue and the stack have one line, because their lines differ by less
-' than 0.1 %. The host program reserves 0.36 million at every size, so
+' than 0.1 %. The host program reserved 0.36 million at every size, so
 ' the chart does not draw it apart from the axis. The numbers come from the
 ' contract, so a new contract needs a new source and a new rendering.
 '
@@ -23,10 +24,10 @@
 !include ../../../casper/theory/diagrams/palette.iuml
 !include concept-colors.iuml
 $ca_base_skin()
-title The VerificationBytes of one receive against the records of its collection
+title The VerificationBytes of one receive against the records of its collection (before decision 89)
 h-axis "records of the collection" 0 --> 1400 spacing 200
 v-axis "millions of VerificationBytes" 0 --> 300 spacing 50 grid
-line "v6 limit" [(0, 268.44), (1400, 268.44)] $ca_neutral
+line "v6 limit (retired)" [(0, 268.44), (1400, 268.44)] $ca_neutral
 line "bag" [(0, 3.06), (1267, 268.44)] $ca_instantiate
 line "set" [(0, 3.13), (907, 268.44)] $ca_debit
 line "queue and stack" [(0, 5.18), (1136, 268.44)] $ca_credit

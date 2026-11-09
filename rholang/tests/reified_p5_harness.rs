@@ -24,7 +24,11 @@ use support::session::{with_space, Session};
 
 /// The session creates a space with its factory, and the deploys of a session reach it through
 /// the family agent: the records take the orders of the counter, and a receive takes the head.
-#[tokio::test]
+// Changed by decision 93: Rholang and the node are concurrent, so the session runs on a
+// multi-thread runtime, as racing evaluation runs a deploy. Each deploy has one operation, so the
+// checks hold in every interleaving. The legacy attribute follows.
+// #[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn harness_session_runs_a_queue_space_under_the_family_agent() {
     let mut session = Session::new().await;
     let space = session

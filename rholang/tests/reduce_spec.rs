@@ -433,6 +433,7 @@ async fn eval_of_bundle_should_evaluate_contents_of_bundle() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])),
         write_flag: false,
         read_flag: false,
@@ -473,6 +474,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
             remainder: None,
             free_count: 0,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -513,6 +515,7 @@ async fn eval_of_bundle_should_throw_an_error_if_names_are_used_against_their_po
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -548,6 +551,7 @@ async fn eval_of_send_should_place_something_in_the_tuplespace() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -588,6 +592,7 @@ async fn eval_of_par_with_129_sends_should_not_overflow_random_split() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         })
         .collect();
     let par = Par::default().with_sends(sends);
@@ -617,6 +622,7 @@ async fn eval_of_send_should_verify_that_bundle_is_writeable_before_sending_on_b
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -651,6 +657,7 @@ async fn eval_of_single_channel_receive_should_place_something_in_the_tuplespace
             remainder: None,
             free_count: 0,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -712,6 +719,7 @@ async fn eval_of_single_channel_receive_should_verify_that_bundle_is_readable_if
             remainder: None,
             free_count: 0,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -763,6 +771,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -776,6 +785,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
             remainder: None,
             free_count: 3,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -783,6 +793,7 @@ async fn eval_of_send_pipe_receive_should_meet_in_the_tuple_space_and_proceed() 
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])),
         persistent: false,
         peek: false,
@@ -849,6 +860,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -862,6 +874,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
             remainder: None,
             free_count: 3,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(result_channel.clone()),
@@ -869,6 +882,7 @@ async fn eval_of_send_pipe_receive_with_peek_should_meet_in_the_tuple_space_and_
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])),
         persistent: false,
         peek: true,
@@ -955,6 +969,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -971,6 +986,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
             remainder: None,
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(result_channel.clone()),
@@ -978,6 +994,7 @@ async fn eval_of_send_pipe_receive_when_whole_list_is_bound_to_list_remainder_sh
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])),
         persistent: false,
         peek: false,
@@ -1043,6 +1060,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1056,6 +1074,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
             remainder: None,
             free_count: 3,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -1063,6 +1082,7 @@ async fn eval_of_send_on_seven_plus_eight_pipe_receive_on_fifteen_should_meet_in
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])),
         persistent: false,
         peek: false,
@@ -1125,6 +1145,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             remainder: None,
             free_count: 0,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -1141,6 +1162,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1150,6 +1172,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             remainder: None,
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(new_boundvar_par(0, Vec::new(), false)),
         persistent: false,
@@ -1221,6 +1244,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
             remainder: None,
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(new_boundvar_par(0, Vec::new(), false)),
         persistent: false,
@@ -1236,6 +1260,7 @@ async fn eval_of_send_of_receive_pipe_receive_should_meet_in_the_tuple_space_and
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     assert!(reducer.eval(par_param, &env, base_rand).await.is_ok());
 
@@ -1271,6 +1296,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: true,
+        params: None,
     }]);
     pattern.connective_used = true;
 
@@ -1283,6 +1309,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
         persistent: false,
         locally_free: vec![0b00000011],
         connective_used: false,
+        params: None,
     }]);
 
     let match_term = Par::default().with_matches(vec![Match {
@@ -1298,6 +1325,7 @@ async fn simple_match_should_capture_and_add_to_the_environment() {
                 persistent: false,
                 locally_free: vec![0b00000011],
                 connective_used: false,
+                params: None,
             }])),
             free_count: 2,
             guard: None,
@@ -1354,6 +1382,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let send2 = Par::default().with_sends(vec![Send {
@@ -1366,6 +1395,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1380,6 +1410,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
                 remainder: None,
                 free_count: 3,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -1391,6 +1422,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
                 remainder: None,
                 free_count: 3,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         body: Some(Par::default().with_sends(vec![Send {
@@ -1399,6 +1431,7 @@ async fn eval_of_send_pipe_send_pipe_receive_join_should_meet_in_tuplespace_and_
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])),
         persistent: false,
         peek: false,
@@ -1491,6 +1524,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -1500,6 +1534,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
             remainder: Some(new_freevar_var(0)),
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default().with_sends(vec![Send {
             chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -1507,6 +1542,7 @@ async fn eval_of_send_with_remainder_receive_should_capture_the_remainder() {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])),
         persistent: false,
         peek: false,
@@ -1593,6 +1629,7 @@ async fn eval_of_nth_method_should_pick_out_the_nth_item_from_a_list() {
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        params: None,
                     }]),
                     new_gint_par(9, Vec::new(), false),
                     new_gint_par(10, Vec::new(), false),
@@ -1692,6 +1729,7 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                 persistent: false,
                 locally_free: vec![0],
                 connective_used: false,
+                params: None,
             },
             Send {
                 chan: Some(new_gstring_par("result1".to_string(), Vec::new(), false)),
@@ -1699,11 +1737,13 @@ async fn eval_of_new_should_use_deterministic_names_and_provide_urn_based_resour
                 persistent: false,
                 locally_free: vec![1],
                 connective_used: false,
+                params: None,
             },
         ])),
         uri: vec!["rho:test:foo".to_string()],
         injections: BTreeMap::new(),
         locally_free: vec![0b00000011],
+        space_types: Vec::new(),
     }]);
 
     let cost = CostAccounting::empty_cost();
@@ -1791,6 +1831,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        params: None,
                     }]),
                     new_gint_par(9, Vec::new(), false),
                     new_gint_par(10, Vec::new(), false),
@@ -1813,6 +1854,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env = Env::new();
@@ -1830,6 +1872,7 @@ async fn eval_of_nth_method_in_send_position_should_change_what_is_sent() {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                params: None,
             }])],
             split_rand,
         ),
@@ -1880,6 +1923,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
             remainder: None,
             free_count: 0,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -1905,6 +1949,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_return_that_process_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -1939,6 +1984,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
         uri: Vec::new(),
         injections: BTreeMap::new(),
         locally_free: vec![0],
+        space_types: Vec::new(),
     }]);
     let sub_proc = Par::default().with_news(vec![New {
         bind_count: 1,
@@ -1950,6 +1996,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
         uri: Vec::new(),
         injections: BTreeMap::new(),
         locally_free: vec![],
+        space_types: Vec::new(),
     }]);
 
     let serialized_process = sub_proc.encode_to_vec();
@@ -1967,6 +2014,7 @@ async fn eval_of_to_byte_array_method_on_any_process_should_substitute_before_se
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let mut env: Env<Par> = Env::new();
@@ -2018,6 +2066,7 @@ async fn eval_of_to_string_method_on_deploy_id_return_that_id_serialized() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2096,6 +2145,7 @@ async fn eval_of_hex_to_bytes_should_transform_encoded_string_to_byte_array_not_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2144,6 +2194,7 @@ async fn eval_of_bytes_to_hex_should_transform_byte_array_to_hex_string_not_the_
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2187,6 +2238,7 @@ async fn eval_of_to_utf8_bytes_should_transform_string_to_utf8_byte_array_not_th
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -2291,6 +2343,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    params: None,
                 }])
                 .with_receives(vec![Receive {
                     binds: vec![ReceiveBind {
@@ -2301,6 +2354,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                         remainder: None,
                         free_count: 0,
                         cost_signature: None,
+                        query_spec: None,
                     }],
                     body: Some(Par::default().with_sends(vec![Send {
                         chan: Some(new_gstring_par("result".to_string(), Vec::new(), false)),
@@ -2308,6 +2362,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        params: None,
                     }])),
                     persistent: false,
                     peek: false,
@@ -2320,6 +2375,7 @@ async fn variable_references_should_be_substituted_before_being_used() {
         uri: Vec::new(),
         injections: BTreeMap::new(),
         locally_free: vec![],
+        space_types: Vec::new(),
     }]);
 
     let env = Env::new();
@@ -2366,6 +2422,7 @@ async fn variable_references_should_be_substituted_before_being_used_in_a_match(
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    params: None,
                 }])),
                 free_count: 0,
                 guard: None,
@@ -2376,6 +2433,7 @@ async fn variable_references_should_be_substituted_before_being_used_in_a_match(
         uri: Vec::new(),
         injections: BTreeMap::new(),
         locally_free: vec![],
+        space_types: Vec::new(),
     }]);
 
     let env = Env::new();
@@ -2414,6 +2472,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])
         .with_receives(vec![Receive {
             binds: vec![ReceiveBind {
@@ -2422,6 +2481,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(Par::default().with_matches(vec![Match {
                 target: Some(new_gint_par(10, Vec::new(), false)),
@@ -2435,6 +2495,7 @@ async fn variable_references_should_reference_a_variable_that_comes_from_a_match
                         persistent: false,
                         locally_free: Vec::new(),
                         connective_used: false,
+                        params: None,
                     }])),
                     free_count: 0,
                     guard: None,
@@ -4710,6 +4771,7 @@ async fn term_split_size_max_should_be_evaluated_for_max_size() {
         uri: vec![],
         injections: BTreeMap::new(),
         locally_free: vec![],
+        space_types: Vec::new(),
     };
     let news = vec![p; i16::MAX as usize];
     let proc = Par::default().with_news(news);
@@ -4731,6 +4793,7 @@ async fn term_split_size_max_should_limited_to_max_value() {
         uri: vec![],
         injections: BTreeMap::new(),
         locally_free: vec![],
+        space_types: Vec::new(),
     };
     let news = vec![p; i16::MAX as usize + 1];
     let proc = Par::default().with_news(news);
@@ -4782,6 +4845,7 @@ async fn receive_with_true_guard_should_consume_message() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -4791,6 +4855,7 @@ async fn receive_with_true_guard_should_consume_message() {
             remainder: None,
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -4829,6 +4894,7 @@ async fn receive_with_false_guard_should_leave_data_and_continuation() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -4838,6 +4904,7 @@ async fn receive_with_false_guard_should_leave_data_and_continuation() {
             remainder: None,
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -4880,6 +4947,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
             remainder: None,
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(Par::default()),
         persistent: false,
@@ -4896,6 +4964,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let send_pos = Par::default().with_sends(vec![Send {
@@ -4904,6 +4973,7 @@ async fn receive_with_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let env: Env<Par> = Env::new();
@@ -5006,6 +5076,7 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5013,6 +5084,7 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5023,6 +5095,7 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
@@ -5030,6 +5103,7 @@ async fn cross_bind_guard_should_commit_when_combined_predicate_holds() {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         body: Some(Par::default()),
@@ -5079,6 +5153,7 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5086,6 +5161,7 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5096,6 +5172,7 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
@@ -5103,6 +5180,7 @@ async fn cross_bind_guard_should_leave_data_when_combined_predicate_fails() {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         body: Some(Par::default()),
@@ -5159,6 +5237,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
@@ -5166,6 +5245,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         body: Some(Par::default()),
@@ -5190,6 +5270,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     let send_b_small = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5197,6 +5278,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     reducer
         .eval(send_a_small, &env, rand().split_byte(1))
@@ -5233,6 +5315,7 @@ async fn cross_bind_guard_filters_among_multiple_messages() {
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     reducer
         .eval(send_b_big, &env, rand().split_byte(3))
@@ -5275,6 +5358,7 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5282,6 +5366,7 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5292,6 +5377,7 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
@@ -5299,6 +5385,7 @@ async fn cross_bind_guard_non_commutative_fires_with_correct_index_assignment() 
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         body: Some(Par::default()),
@@ -5350,6 +5437,7 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
     let send_b = Par::default().with_sends(vec![Send {
         chan: Some(chan_b.clone()),
@@ -5357,6 +5445,7 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
         persistent: false,
         locally_free: Vec::new(),
         connective_used: false,
+        params: None,
     }]);
 
     let receive = Par::default().with_receives(vec![Receive {
@@ -5367,6 +5456,7 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![new_freevar_par(0, Vec::new())],
@@ -5374,6 +5464,7 @@ async fn cross_bind_guard_non_commutative_does_not_fire_when_data_violates_per_b
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         body: Some(Par::default()),

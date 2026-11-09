@@ -7,7 +7,11 @@
 //! The suite adds `peek_restore_reoffer_retires_class`, `members_in_canonical_order`,
 //! `legacy_charges_equal_host`, `persistent_reissue_keeps_identity` and
 //! `deep_term_is_a_member`. Decision 89 adds `persistent_twin_peek_binds_the_canonical_record`
-//! and `persistent_twin_retire_binds_the_member`.
+//! and `persistent_twin_retire_binds_the_member`. Decision 90 (decision 69) retires
+//! `legacy_charges_equal_host` with Option P, and `observer_calls_equal_host` keeps its host
+//! differential over the observer calls.
+//! Decision 102 renames `persistent_twin_peek_binds_the_canonical_record` to
+//! `persistent_twin_peek_binds_the_pick`.
 //!
 //! The property tests check the headlines of `SetDiscipline.v` and the invariant V6 of
 //! `GenericRSpace.tla` on the agent:
@@ -22,21 +26,53 @@
 //! | `set_peek_restores_representative_only` | `prop_set_peek_restores_representative_only` |
 //! | `set_membership_full_compare_on_equal_hash` | `prop_set_membership_full_compare_on_equal_hash` |
 //! | V6 `SetClassRetired` | `prop_set_class_retired_any_schedule` |
-//! | Option P (decision 45) | `prop_set_legacy_charges_equal_host` |
+//! | Host differential (decision 90, decision 69) | `prop_set_observer_calls_equal_host` |
 //!
-//! The host differential runs the equivalent host program on a real `ChargingRSpace`. The
-//! program makes the host call of each staged operation of the agent. It also makes the calls
-//! of the reducer after a fire: the re-produce of a persistent send, the re-consume of a
-//! persistent receive, and `produce_peeks`. A class fire is the host consume over `[D; n]`. A
-//! K_retire is the host consume of the retire continuation over `[D]`. The host matcher matches
-//! the payload of a record without its envelope, as the agent does. No host program chooses a
-//! class, so the test pins the host matcher to the records that the set semantics binds. The
-//! charges of each call are then the charges of `ChargingRSpace` for that call. Host play picks
-//! at random among candidates since DR-129. So before each host call, the program also pins
-//! the matcher to the choice of the canonical order of decision 41 on the host records. A send
-//! fires only the first waiter that takes its record, and a parked receive meets only the
-//! record that the agent meets. A pin names a record by its bytes only. So the program makes a
-//! consume again until it binds records with the canonical persist flags (decision 89).
+//! Play picks at random among the candidates of each search (decision 102, rule CR-1). A receive
+//! that does not peek binds over `[D]` the first member in DR-75 order of the class of its pick.
+//! One K_retire over `[D]` then retires each other stored member that is not persistent (decision
+//! 101, rule CR-13). A test of a pick runs [`PICK_RUNS`] times on fresh rigs. Its assertions hold
+//! under every pick, and a coverage set checks that each allowed pick occurs. A test that needs
+//! one pick tries fresh rigs until the pick occurs ([`parked_by_a_refused_pick`]). The model of V6
+//! and the host differential follow the picks of the agent.
+//!
+//! The host differential runs the equivalent host program on an in-memory RSpace whose
+//! accounting observer records its calls (decision 90, decision 69). The program makes the host
+//! call of each staged operation of the agent. It also makes the calls of the reducer after a
+//! fire: the re-produce of a persistent send, the re-consume of a persistent receive, and
+//! `produce_peeks`. A fire of a receive is the host consume over `[D]` of the record that the
+//! agent binds. A K_retire is the host consume of the retire continuation over `[D]`. The host
+//! matcher matches the payload of a record without its envelope, as the agent does. Host play
+//! picks at random among candidates since DR-129. So before each host call, the program pins the
+//! host to the pick of the agent. It reads the pick from the receipt of the same operation of the
+//! agent, which is its observer calls (plan v2 section 5). The COMM of a send names the waiter
+//! that the send fires. The COMM of a receive names the record that the receive binds. Without a
+//! COMM, the program checks that the plans allow the store or the park. The agent and the program
+//! then make the same observer calls with the same arguments, and so the same COMMs, with the
+//! same fires and the same stores. A pin names a record by its bytes only. So the program makes a
+//! consume again until it binds a record with the persist flag of the agent (decision 89). Before
+//! decision 90 the differential compared the legacy charges of `ChargingRSpace` (Option P,
+//! decision 45), which DR-134 deleted with the legacy meter.
+
+// Changed by decision 101 (rule CR-13) and decision 102 (rule CR-1, plan v2 section 5): the text
+// before of the paragraph of the host differential in the module doc above.
+// The host differential runs the equivalent host program on an in-memory RSpace whose
+// accounting observer records its calls (decision 90, decision 69). The program makes the host
+// call of each staged operation of the agent. It also makes the calls of the reducer after a
+// fire: the re-produce of a persistent send, the re-consume of a persistent receive, and
+// `produce_peeks`. A class fire is the host consume over `[D; n]`. A K_retire is the host
+// consume of the retire continuation over `[D]`. The host matcher matches the payload of a
+// record without its envelope, as the agent does. No host program chooses a class, so the test
+// pins the host matcher to the records that the set semantics binds. The agent and the program
+// then make the same observer calls with the same arguments, and so the same COMMs, with the
+// same fires and the same stores. Before decision 90 the differential compared the legacy
+// charges of `ChargingRSpace` (Option P, decision 45), which DR-134 deleted with the legacy
+// meter. Host play picks
+// at random among candidates since DR-129. So before each host call, the program also pins
+// the matcher to the choice of the canonical order of decision 41 on the host records. A send
+// fires only the first waiter that takes its record, and a parked receive meets only the
+// record that the agent meets. A pin names a record by its bytes only. So the program makes a
+// consume again until it binds records with the canonical persist flags (decision 89).
 
 #[path = "support/mod.rs"]
 mod support;
@@ -61,15 +97,24 @@ use models::rust::utils::new_gbool_par;
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
+// Changed by decision 124 (plan v2 C7.6, decision 99): the expected retire rows take the
+// machinery seal. The text before:
+// use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
+use rholang::rust::interpreter::accounting::authority::{
+    system_residue_authority_with_caller, AuthorityByteEventKind,
+};
 use rholang::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
-use rholang::rust::interpreter::accounting::costs::Cost;
+// Changed by decision 90 (decision 69): the host differential compares observer calls, not the
+// legacy charges of a budget (DR-134 deleted the legacy meter).
+// use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
-use rholang::rust::interpreter::rho_runtime::RhoISpace;
+// Changed by decision 90 (decision 69): the host of a program is a plain RSpace, because
+// `ChargingRSpace` is deleted with the legacy meter (DR-134).
+// use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome, SpaceReissue,
 };
@@ -83,7 +128,9 @@ use rholang::rust::interpreter::spaces::namespace::{
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
+// Changed by decision 90 (decision 69): `ChargingRSpace` is deleted with the legacy meter
+// (DR-134).
+// use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
@@ -94,15 +141,33 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::space_store_handle::canonical_data_order;
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
+// Changed by decision 102 (rule CR-1): a parked rig keeps its replay space.
+// use support::agent::{
+//     any, body_name, budget, config_of, counter, counter_channel, create, creation, data_channel,
+//     env_over, exactly, fired, int, play, play_and_replay, receive_on, run, send_on,
+//     space_counter_channel, string, ParRSpace,
+// };
+// Changed by decision 90 (C6, step D): the rigged replay modes retire, so this file no longer uses
+// `play_and_replay`. The text before:
+// ```
+// use support::agent::{
+//     any, body_name, budget, config_of, counter, counter_channel, create, creation, data_channel,
+//     env_over, exactly, fired, int, play, play_and_replay, receive_on, run, send_on,
+//     space_counter_channel, string, ParRSpace,
+// };
+// ```
 use support::agent::{
     any, body_name, budget, config_of, counter, counter_channel, create, creation, data_channel,
-    env_over, exactly, fired, int, play, play_and_replay, receive_on, run, send_on,
-    space_counter_channel, string, ParRSpace,
+    env_over, exactly, fired, int, play, receive_on, run, send_on, space_counter_channel, string,
+    ParRSpace,
 };
 use support::legacy::{
     drawn_consume, host_consume, host_produce, open_waiter, set_waiter, waiter_choice, ParResult,
     WaiterPin, WaiterSlot, TWIN_RUNS,
 };
+// Changed by decision 92: the host differential removes the footprint group of the space.
+// Changed by decision 102 (plan v2 section 5): the host program reads the receipts of the agent.
+use support::observed::{observe, observed, operations, without_footprint, Call, Recorder};
 use support::props::{check, pure_config, tokio_runtime};
 
 // ─── The rig ─────────────────────────────────────────────────────────────────────────────
@@ -116,8 +181,11 @@ const SPACE: NativeSpace = NativeSpace {
     durability: Durability::Durable,
 };
 
-/// The phlo of a legacy differential: far above every program of the suite.
-const LEGACY_PHLO: i64 = 1_000_000_000_000;
+// Changed by decision 90 (decision 69): the host differential compares observer calls, so it has
+// no legacy budget (DR-134 deleted the legacy meter).
+//
+// /// The phlo of a legacy differential: far above every program of the suite.
+// const LEGACY_PHLO: i64 = 1_000_000_000_000;
 
 /// The family `hashmap:set`.
 fn set_family() -> SpaceFactoryUrn {
@@ -492,6 +560,10 @@ fn region(byte: u8) -> CostAuthority {
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![byte])),
             }),
+            // Added by decision 90 (DR-135): an unpriced region, as outside native
+            // execution.
+            price: 0,
+            caller: None,
         }],
     }
 }
@@ -517,14 +589,44 @@ fn registered(budget: &RuntimeBudget, event: &Event) -> Option<CostAuthority> {
 
 /// The consume of K_retire of the stored record `member` after a fire of the element `element`,
 /// a datum record. Its retire continuation has the source hash of the member as its body. It
-/// has the random state of the element under `RandomPurpose::Retire` and the cost authority of
-/// the element.
+// Changed by decision 124 (plan v2 C7.6, decision 99): the machinery seal. The text before:
+// ```
+// /// has the random state of the element under `RandomPurpose::Retire` and the cost authority of
+// /// the element.
+// ```
+/// has the random state of the element under `RandomPurpose::Retire` and the machinery seal of
+/// the cost authority of the element.
 fn retire_consume(element: &ListParWithRandom, member: &Blake2b256Hash) -> Consume {
     let random = RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&element.random_state));
     Consume::create(
         &vec![data()],
         &vec![retire_pattern()],
-        &retire_continuation(member, &random, element.cost_authority.clone()),
+        // Changed by decision 124 (plan v2 C7.6, decision 99): the machinery seal. The text before:
+        // &retire_continuation(member, &random, element.cost_authority.clone()),
+        &retire_continuation(
+            member,
+            &random,
+            element.cost_authority.as_ref().map(|authority| {
+                system_residue_authority_with_caller(authority, &budget().deploy_id(), None)
+                    .expect("the machinery seal builds")
+            }),
+        ),
+        false,
+    )
+}
+
+/// Added by decision 101 (rule CR-13): the consume of K_retire of the stored record `member`
+/// after the fire of the receive `receive`, which does not peek. Its retire continuation has the
+/// source hash of the member as its body. It has the random state of the body of the receive
+/// under `RandomPurpose::Retire` and the stamped authority of the receive (`class_of` in
+/// `disciplines/scan.rs`).
+fn receive_retire_consume(receive: &ConsumeOp, member: &Blake2b256Hash) -> Consume {
+    let random =
+        RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&receive.body.random_state));
+    Consume::create(
+        &vec![data()],
+        &vec![retire_pattern()],
+        &retire_continuation(member, &random, record::cost_authority(&receive.authority)),
         false,
     )
 }
@@ -549,6 +651,66 @@ async fn canonical_records(
         .into_iter()
         .map(|index| records[index].clone())
         .collect()
+}
+
+// ─── Random picks (decision 102, rule CR-1) ───────────────────────────────────────────────
+
+/// Added by decision 102 (rule CR-1): the runs of a play test of a random pick, each on a fresh
+/// rig. A pick of two candidates keeps one order in all runs with probability 2^-63.
+const PICK_RUNS: usize = 64;
+
+/// Added by decision 102 (rule CR-1, decision 37): the fresh rigs that
+/// [`parked_by_a_refused_pick`] tries. Each try of [`class_setup`] parks with probability 1/6 or
+/// more, because it stores at most six records and the guard refuses at least one of them. Each
+/// try of an example parks with probability 1/4 or more. So no try parks with probability
+/// (5/6)^128, about 7·10^-11, or less.
+const PARK_TRIES: usize = 128;
+
+/// Added by decision 102 (rule CR-1): a rig over a play space that stores records and holds a
+/// guarded receive as a waiter ([`parked_by_a_refused_pick`]). It keeps the rig and the outcomes
+/// of the sends and of the receive, in order. The event log of the play space holds every event
+/// after the creation of the space.
+struct Parked {
+    rig: Rig,
+    outcomes: Vec<SpaceOutcome>,
+}
+
+/// Added by decision 102 (rule CR-1, decision 37): a fresh rig that stores `stored` and holds the
+/// guarded receive `waiter` as a waiter. Play picks the record of a receive at random and checks
+/// the guard once, on the class of the pick. So the receive parks when its pick meets a record
+/// that the guard refuses, and it fires otherwise. A fire is the other allowed outcome, and the
+/// next try starts on a fresh rig. The function is `parked_by_a_refused_pick` of
+/// `disciplines/scan.rs`, but the event log stays. So a checkpoint of a caller holds the sends
+/// and the park.
+async fn parked_by_a_refused_pick(stored: &[ProduceOp], waiter: &ConsumeOp) -> Parked {
+    for _ in 0..PARK_TRIES {
+        let budget = budget();
+        let play = play().await;
+        let rig = Rig::over(play, &budget).await;
+        rig.host
+            .create_checkpoint()
+            .await
+            .expect("a checkpoint after the creation");
+        let mut outcomes = Vec::with_capacity(stored.len() + 1);
+        for send in stored {
+            outcomes.push(rig.send(send.clone()).await);
+        }
+        let outcome = rig.receive(waiter.clone()).await;
+        match outcome.fires.len() {
+            0 => {
+                assert_eq!(
+                    rig.waiters().await,
+                    vec![body_name(&parked_body(waiter))],
+                    "the receive parks"
+                );
+                outcomes.push(outcome);
+                return Parked { rig, outcomes };
+            }
+            1 => continue,
+            _ => panic!("a receive fires once or parks: {:?}", outcome.fires),
+        }
+    }
+    panic!("no try of {PARK_TRIES} picks a record that the guard refuses");
 }
 
 // ─── The model (SetDiscipline.v) ──────────────────────────────────────────────────────────
@@ -682,16 +844,56 @@ struct Predicted {
     fires: Vec<(String, Vec<Par>)>,
     retired: usize,
     classes: BTreeSet<i64>,
+    // Added by decision 101 (rule CR-13): the K_retire COMMs of the fires of sends and of second
+    // sends. `retired` also counts the K_retire COMMs of receives.
+    offer_retired: usize,
 }
 
+/// Added by decision 102 (rule CR-1): one fire of the agent as the model reads it: the body name
+/// of the fired continuation and the source hash of the record that the fire binds.
+#[derive(Clone, Debug)]
+struct AgentFire {
+    name: String,
+    hash: Blake2b256Hash,
+}
+
+/// Added by decision 102 (rule CR-1): the fires of the agent in `outcome`, in staging order. A
+/// fire of a set binds one record (decision 101, rule CR-13). Its source hash is the hash of the
+/// produce of the record that the fire removed or bound, with the persist flag of the result.
+fn agent_fires(outcome: &SpaceOutcome) -> Result<Vec<AgentFire>, TestCaseError> {
+    let mut fires = Vec::with_capacity(outcome.fires.len());
+    for fire in &outcome.fires {
+        let [result] = fire.results.as_slice() else {
+            return Err(failure(format!("a set fire binds one record: {fire:?}")));
+        };
+        fires.push(AgentFire {
+            name: body_name(&fire.continuation),
+            hash: Produce::create(&data(), &result.removed_datum, result.persistent).hash,
+        });
+    }
+    Ok(fires)
+}
+
+/// Added by decision 102 (rule CR-1): the fires of the agent that the model has not met yet.
+type Picks<'a> = std::iter::Peekable<std::slice::Iter<'a, AgentFire>>;
+
 /// The executable model of a set collection: the plans of `SetDiscipline.v` over values. The
-/// class of a value is the value, because every generated payload is one number. The candidates
-/// of each side are visited by source hash (decision 41). A consume checks the guard once on
-/// its first spatial match (decision 37). It binds the whole class unless it peeks (F3). A
-/// produce skips a waiter whose guard refuses. A fire of a waiter that does not peek retires the
-/// stored non-persistent members of the class of the datum (decision 37). A peek of a
-/// non-persistent record removes it and offers it again (decision 45, Rule E). The generators
-/// never make a divergent pair.
+/// class of a value is the value, because every generated payload is one number. Play picks at
+/// random (decision 102, rule CR-1). So the model follows the agent: it reads each choice of the
+/// agent from its fires ([`AgentFire`]), checks that the plans allow the choice, and applies it.
+/// A consume checks the guard once, on the class of its pick (decision 37), and it parks when the
+/// guard refuses. A consume that does not peek binds the first member of the class in DR-75
+/// order, and K_retire retires the other non-persistent members (decision 101, rule CR-13). A
+/// produce fires a waiter whose pattern binds the datum and whose guard admits it. The datum is
+/// stored only when no waiter does. A fire of a waiter that does not peek retires the stored
+/// non-persistent members of the class of the datum (decision 37). A peek of a non-persistent
+/// record removes it and offers it again (decision 45, Rule E). The generators never make a
+/// divergent pair.
+///
+/// Changed by decision 102 (rule CR-1) and decision 101 (rule CR-13). The text before: "The
+/// candidates of each side are visited by source hash (decision 41). A consume checks the guard
+/// once on its first spatial match (decision 37). It binds the whole class unless it peeks (F3).
+/// A produce skips a waiter whose guard refuses."
 #[derive(Clone, Debug, Default)]
 struct SetModel {
     records: Vec<ModelRecord>,
@@ -699,16 +901,173 @@ struct SetModel {
 }
 
 impl SetModel {
-    /// Applies `op` and returns what it does.
-    fn apply(&mut self, op: &SetOp) -> Predicted {
+    // Changed by decision 102 (rule CR-1) and decision 101 (rule CR-13): the model follows the
+    // picks of the agent, and a receive retires the other members of its class with K_retire.
+    // `canonical` is retired. The methods before:
+    // /// Applies `op` and returns what it does.
+    // fn apply(&mut self, op: &SetOp) -> Predicted {
+    //     let mut out = Predicted::default();
+    //     match (op, op.space_op()) {
+    //         (
+    //             SetOp::Send {
+    //                 value, persistent, ..
+    //             },
+    //             SpaceOp::Produce(send),
+    //         ) => self.offer(*value, *persistent, record_hash(&send), &mut out),
+    //         (
+    //             SetOp::Receive {
+    //                 pat,
+    //                 guard,
+    //                 persistent,
+    //                 peek,
+    //                 ..
+    //             },
+    //             SpaceOp::Consume(receive),
+    //         ) => {
+    //             let waiter = ModelWaiter {
+    //                 name: body_name(&parked_body(&receive)),
+    //                 pat: *pat,
+    //                 guard: *guard,
+    //                 persist: *persistent,
+    //                 peek: *peek,
+    //                 hash: waiter_hash(&receive),
+    //             };
+    //             self.receive(waiter, &mut out)
+    //         }
+    //         _ => panic!("an operation and its space operation disagree"),
+    //     }
+    //     out
+    // }
+    //
+    // Retired by decision 102 (rule CR-1): the model reads each pick from the fires of the agent.
+    // /// The indices of `hashes` in canonical order. Equal hashes are byte-identical entries, so
+    // /// their order does not matter.
+    // fn canonical(hashes: impl Iterator<Item = Blake2b256Hash>) -> Vec<usize> {
+    //     let mut indexed: Vec<(Blake2b256Hash, usize)> = hashes
+    //         .enumerate()
+    //         .map(|(index, hash)| (hash, index))
+    //         .collect();
+    //     indexed.sort();
+    //     indexed.into_iter().map(|(_, index)| index).collect()
+    // }
+    //
+    // /// RETIRE-CLASS of `value`: removes the stored non-persistent members of the class.
+    // fn retire_class(&mut self, value: i64, out: &mut Predicted) {
+    //     let before = self.records.len();
+    //     self.records
+    //         .retain(|record| record.value != value || record.persist);
+    //     out.retired += before - self.records.len();
+    // }
+    //
+    // /// OFFER-SCAN: the datum fires the first waiter in canonical order that it fits and whose
+    // /// guard admits it. It fires again while it is not spent, and it is stored when no waiter
+    // /// takes it. A fire of a waiter that does not peek retires the class of the datum.
+    // fn offer(&mut self, value: i64, persist: bool, hash: Blake2b256Hash, out: &mut Predicted) {
+    //     loop {
+    //         let order = Self::canonical(self.waiters.iter().map(|waiter| waiter.hash.clone()));
+    //         let found = order.into_iter().find(|index| {
+    //             let waiter = &self.waiters[*index];
+    //             waiter.pat.fits(value) && waiter.guard.admits(value)
+    //         });
+    //         let Some(index) = found else {
+    //             self.records.push(ModelRecord {
+    //                 value,
+    //                 persist,
+    //                 hash,
+    //             });
+    //             return;
+    //         };
+    //         let waiter = self.waiters[index].clone();
+    //         out.fires
+    //             .push((waiter.name.clone(), waiter.pat.bound(value)));
+    //         if !waiter.persist {
+    //             self.waiters.remove(index);
+    //         }
+    //         if !waiter.peek {
+    //             out.classes.insert(value);
+    //             self.retire_class(value, out);
+    //         }
+    //         let spent = !persist && !waiter.peek;
+    //         assert!(
+    //             spent || !waiter.persist,
+    //             "the generators never make a divergent pair"
+    //         );
+    //         if spent {
+    //             return;
+    //         }
+    //     }
+    // }
+    //
+    // /// RECEIVE-SCAN: the first record in canonical order that the pattern fits, and the guard
+    // /// checked once on it. A refusal parks the receive. A receive that does not peek takes the
+    // /// whole class, and a peeked record is offered again.
+    // fn receive(&mut self, waiter: ModelWaiter, out: &mut Predicted) {
+    //     loop {
+    //         let order = Self::canonical(self.records.iter().map(|record| record.hash.clone()));
+    //         let found = order
+    //             .into_iter()
+    //             .find(|index| waiter.pat.fits(self.records[*index].value));
+    //         let admitted = found.filter(|index| waiter.guard.admits(self.records[*index].value));
+    //         let Some(index) = admitted else {
+    //             if !self.waiters.iter().any(|parked| parked.hash == waiter.hash) {
+    //                 self.waiters.push(waiter);
+    //             }
+    //             return;
+    //         };
+    //         let record = self.records[index].clone();
+    //         out.fires
+    //             .push((waiter.name.clone(), waiter.pat.bound(record.value)));
+    //         let class_stays = match waiter.peek {
+    //             true => {
+    //                 if !record.persist {
+    //                     self.records.remove(index);
+    //                 }
+    //                 record.persist
+    //             }
+    //             false => {
+    //                 out.classes.insert(record.value);
+    //                 let stays = self
+    //                     .records
+    //                     .iter()
+    //                     .any(|member| member.value == record.value && member.persist);
+    //                 self.records
+    //                     .retain(|member| member.value != record.value || member.persist);
+    //                 stays
+    //             }
+    //         };
+    //         if waiter.peek && !record.persist {
+    //             self.offer(record.value, false, record.hash.clone(), out);
+    //         }
+    //         let spent = !waiter.persist;
+    //         assert!(
+    //             spent || !(waiter.peek || class_stays),
+    //             "the generators never make a divergent pair"
+    //         );
+    //         if spent {
+    //             return;
+    //         }
+    //     }
+    // }
+
+    /// Applies `op` with the choices that the agent made in its fires `fires`, and returns what
+    /// the operation does. It fails when the plans do not allow a choice of the agent, or when
+    /// the agent makes a fire that the plans do not make.
+    fn apply(&mut self, op: &SetOp, fires: &[AgentFire]) -> Result<Predicted, TestCaseError> {
         let mut out = Predicted::default();
+        let mut picks = fires.iter().peekable();
         match (op, op.space_op()) {
             (
                 SetOp::Send {
                     value, persistent, ..
                 },
                 SpaceOp::Produce(send),
-            ) => self.offer(*value, *persistent, record_hash(&send), &mut out),
+            ) => self.offer(
+                *value,
+                *persistent,
+                record_hash(&send),
+                &mut picks,
+                &mut out,
+            )?,
             (
                 SetOp::Receive {
                     pat,
@@ -727,51 +1086,67 @@ impl SetModel {
                     peek: *peek,
                     hash: waiter_hash(&receive),
                 };
-                self.receive(waiter, &mut out)
+                self.receive(waiter, &mut picks, &mut out)?
             }
             _ => panic!("an operation and its space operation disagree"),
         }
-        out
+        prop_assert!(
+            picks.next().is_none(),
+            "the agent makes a fire that the plans do not make"
+        );
+        Ok(out)
     }
 
-    /// The indices of `hashes` in canonical order. Equal hashes are byte-identical entries, so
-    /// their order does not matter.
-    fn canonical(hashes: impl Iterator<Item = Blake2b256Hash>) -> Vec<usize> {
-        let mut indexed: Vec<(Blake2b256Hash, usize)> = hashes
-            .enumerate()
-            .map(|(index, hash)| (hash, index))
-            .collect();
-        indexed.sort();
-        indexed.into_iter().map(|(_, index)| index).collect()
-    }
-
-    /// RETIRE-CLASS of `value`: removes the stored non-persistent members of the class.
-    fn retire_class(&mut self, value: i64, out: &mut Predicted) {
+    /// RETIRE-CLASS of `value`: removes the stored non-persistent members of the class and
+    /// returns their count.
+    fn retire_class(&mut self, value: i64) -> usize {
         let before = self.records.len();
         self.records
             .retain(|record| record.value != value || record.persist);
-        out.retired += before - self.records.len();
+        before - self.records.len()
     }
 
-    /// OFFER-SCAN: the datum fires the first waiter in canonical order that it fits and whose
-    /// guard admits it. It fires again while it is not spent, and it is stored when no waiter
-    /// takes it. A fire of a waiter that does not peek retires the class of the datum.
-    fn offer(&mut self, value: i64, persist: bool, hash: Blake2b256Hash, out: &mut Predicted) {
+    /// OFFER-SCAN: while a waiter fits the datum and its guard admits it, the next fire of the
+    /// agent must fire such a waiter with the datum. The datum fires again while it is not spent,
+    /// and it is stored when no waiter takes it. A fire of a waiter that does not peek retires
+    /// the class of the datum.
+    fn offer(
+        &mut self,
+        value: i64,
+        persist: bool,
+        hash: Blake2b256Hash,
+        fires: &mut Picks<'_>,
+        out: &mut Predicted,
+    ) -> Result<(), TestCaseError> {
         loop {
-            let order = Self::canonical(self.waiters.iter().map(|waiter| waiter.hash.clone()));
-            let found = order.into_iter().find(|index| {
-                let waiter = &self.waiters[*index];
-                waiter.pat.fits(value) && waiter.guard.admits(value)
-            });
-            let Some(index) = found else {
+            let admitting = self
+                .waiters
+                .iter()
+                .any(|waiter| waiter.pat.fits(value) && waiter.guard.admits(value));
+            if !admitting {
                 self.records.push(ModelRecord {
                     value,
                     persist,
                     hash,
                 });
-                return;
-            };
+                return Ok(());
+            }
+            let fire = fires
+                .next()
+                .ok_or_else(|| failure(format!("a waiter takes {value}, so the datum fires")))?;
+            prop_assert_eq!(&fire.hash, &hash, "the fire binds the datum");
+            let index = self
+                .waiters
+                .iter()
+                .position(|waiter| waiter.name == fire.name)
+                .ok_or_else(|| failure(format!("the fired waiter {} waits", fire.name)))?;
             let waiter = self.waiters[index].clone();
+            prop_assert!(
+                waiter.pat.fits(value) && waiter.guard.admits(value),
+                "the fired waiter {} takes {}",
+                waiter.name,
+                value
+            );
             out.fires
                 .push((waiter.name.clone(), waiter.pat.bound(value)));
             if !waiter.persist {
@@ -779,66 +1154,105 @@ impl SetModel {
             }
             if !waiter.peek {
                 out.classes.insert(value);
-                self.retire_class(value, out);
+                let retired = self.retire_class(value);
+                out.retired += retired;
+                out.offer_retired += retired;
             }
             let spent = !persist && !waiter.peek;
-            assert!(
+            prop_assert!(
                 spent || !waiter.persist,
                 "the generators never make a divergent pair"
             );
             if spent {
-                return;
+                return Ok(());
             }
         }
     }
 
-    /// RECEIVE-SCAN: the first record in canonical order that the pattern fits, and the guard
-    /// checked once on it. A refusal parks the receive. A receive that does not peek takes the
-    /// whole class, and a peeked record is offered again.
-    fn receive(&mut self, waiter: ModelWaiter, out: &mut Predicted) {
+    /// RECEIVE-SCAN: the next fire of the agent is the fire of the receive when it names the
+    /// receive. Its record fits the pattern, and the guard admits it. A receive that does not
+    /// peek binds the first member of its class in DR-75 order, and K_retire retires the other
+    /// non-persistent members (decision 101, rule CR-13). A peeked non-persistent record is
+    /// removed and offered again (Rule E). Without its fire the receive parks. The plans allow a
+    /// park when no record fits or a record that fits is refused. The pick can meet such a
+    /// record, and the guard is checked once (decision 37).
+    fn receive(
+        &mut self,
+        waiter: ModelWaiter,
+        fires: &mut Picks<'_>,
+        out: &mut Predicted,
+    ) -> Result<(), TestCaseError> {
         loop {
-            let order = Self::canonical(self.records.iter().map(|record| record.hash.clone()));
-            let found = order
-                .into_iter()
-                .find(|index| waiter.pat.fits(self.records[*index].value));
-            let admitted = found.filter(|index| waiter.guard.admits(self.records[*index].value));
-            let Some(index) = admitted else {
+            let Some(fire) = fires.next_if(|fire| fire.name == waiter.name) else {
+                let fitting: Vec<i64> = self
+                    .records
+                    .iter()
+                    .map(|record| record.value)
+                    .filter(|value| waiter.pat.fits(*value))
+                    .collect();
+                prop_assert!(
+                    fitting.is_empty() || fitting.iter().any(|value| !waiter.guard.admits(*value)),
+                    "{} parks, so no record fits or a record that fits is refused",
+                    waiter.name
+                );
                 if !self.waiters.iter().any(|parked| parked.hash == waiter.hash) {
                     self.waiters.push(waiter);
                 }
-                return;
+                return Ok(());
             };
+            let index = self
+                .records
+                .iter()
+                .position(|record| record.hash == fire.hash)
+                .ok_or_else(|| failure(format!("{} binds a stored record", waiter.name)))?;
             let record = self.records[index].clone();
+            prop_assert!(
+                waiter.pat.fits(record.value) && waiter.guard.admits(record.value),
+                "{} binds a record that fits and is admitted",
+                waiter.name
+            );
             out.fires
                 .push((waiter.name.clone(), waiter.pat.bound(record.value)));
             let class_stays = match waiter.peek {
                 true => {
                     if !record.persist {
                         self.records.remove(index);
+                        self.offer(record.value, false, record.hash.clone(), fires, out)?;
                     }
-                    record.persist
+                    true
                 }
                 false => {
+                    let first = self
+                        .records
+                        .iter()
+                        .filter(|member| member.value == record.value)
+                        .map(|member| member.hash.clone())
+                        .min();
+                    prop_assert_eq!(
+                        Some(record.hash.clone()),
+                        first,
+                        "{} binds the first member of its class in DR-75 order",
+                        waiter.name
+                    );
                     out.classes.insert(record.value);
                     let stays = self
                         .records
                         .iter()
                         .any(|member| member.value == record.value && member.persist);
-                    self.records
-                        .retain(|member| member.value != record.value || member.persist);
+                    if !record.persist {
+                        self.records.remove(index);
+                    }
+                    out.retired += self.retire_class(record.value);
                     stays
                 }
             };
-            if waiter.peek && !record.persist {
-                self.offer(record.value, false, record.hash.clone(), out);
-            }
             let spent = !waiter.persist;
-            assert!(
-                spent || !(waiter.peek || class_stays),
+            prop_assert!(
+                spent || !class_stays,
                 "the generators never make a divergent pair"
             );
             if spent {
-                return;
+                return Ok(());
             }
         }
     }
@@ -954,9 +1368,12 @@ fn arb_program(max: usize) -> BoxedStrategy<Vec<SetOp>> {
 }
 
 /// A program that builds the scenarios of decision 37 and of Rule E. It stores records with
-/// classes of several members. Guarded waiters meet a refused record first and park. Then come
-/// more sends, peeks that remove a record and send it again, and receives that take whole
+/// classes of several members. Guarded waiters park when their pick meets a refused record. Then
+/// come more sends, peeks that remove a record and send it again, and receives that take whole
 /// classes. A later send or a second send fires a parked waiter and retires its class.
+///
+/// Changed by decision 102 (rule CR-1). The text before: "Guarded waiters meet a refused record
+/// first and park."
 fn arb_class_program() -> BoxedStrategy<Vec<SetOp>> {
     (
         vec((0i64..3, 0u64..4), 2..7),
@@ -1033,14 +1450,19 @@ type Pin = Arc<Mutex<Option<Vec<ListParWithRandom>>>>;
 
 /// The matcher of the host program: the Rholang matcher over the payload of a datum record
 /// without its envelope, as the space agent matches (`spaces/matching.rs`). While a pin is set,
-/// it binds only the pinned records. So a class fire and a K_retire bind the records that the
-/// set semantics chooses. The guard of a parked continuation lies outside the envelope, so the
-/// guard check needs no change.
+/// it binds only the pinned records. So a fire and a K_retire bind the records that the agent
+/// binds (plan v2 section 5). The guard of a parked continuation lies outside the envelope, so
+/// the guard check needs no change.
+///
+/// Changed by decision 102 (plan v2 section 5). The text before: "So a class fire and a
+/// K_retire bind the records that the set semantics chooses."
 #[derive(Clone)]
 struct PinnedMatcher {
     pin: Pin,
     // Added by decision 89 (DR-129): host play picks a waiter at random, so a produce fires only
     // the waiter of the canonical choice.
+    // Changed by decision 102 (plan v2 section 5): a produce fires only the waiter that the COMM
+    // of the agent fires.
     waiter: WaiterSlot,
 }
 
@@ -1091,13 +1513,32 @@ impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for PinnedMatcher
 //     ChargingRSpace::charging_rspace(host, budget.clone())
 // }
 
-/// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedMatcher`] of `pin` and
-/// `waiter`, which charges `budget`.
-async fn pinned_host(
-    budget: &RuntimeBudget,
-    pin: &Pin,
-    waiter: &WaiterSlot,
-) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+// Changed by decision 90 (decision 69): the host records its observer calls, because
+// `ChargingRSpace` is deleted with the legacy meter (DR-134).
+//
+// /// A `ChargingRSpace` over a fresh in-memory space with the [`PinnedMatcher`] of `pin` and
+// /// `waiter`, which charges `budget`.
+// async fn pinned_host(
+//     budget: &RuntimeBudget,
+//     pin: &Pin,
+//     waiter: &WaiterSlot,
+// ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+//     let mut stores = InMemoryStoreManager::new();
+//     let space = ParRSpace::create(
+//         stores.r_space_stores().await.expect("in-memory stores"),
+//         Arc::new(Box::new(PinnedMatcher {
+//             pin: pin.clone(),
+//             waiter: waiter.clone(),
+//         })),
+//     )
+//     .expect("an in-memory space");
+//     let host: RhoISpace = Arc::new(Box::new(space));
+//     ChargingRSpace::charging_rspace(host, budget.clone())
+// }
+
+/// A fresh in-memory space with the [`PinnedMatcher`] of `pin` and `waiter`, whose accounting
+/// observer is `recorder`.
+async fn pinned_host(recorder: &Arc<Recorder>, pin: &Pin, waiter: &WaiterSlot) -> ParRSpace {
     let mut stores = InMemoryStoreManager::new();
     let space = ParRSpace::create(
         stores.r_space_stores().await.expect("in-memory stores"),
@@ -1107,13 +1548,101 @@ async fn pinned_host(
         })),
     )
     .expect("an in-memory space");
-    let host: RhoISpace = Arc::new(Box::new(space));
-    ChargingRSpace::charging_rspace(host, budget.clone())
+    observe(&space, recorder);
+    space
 }
 
 /// Sets the pin to `records`, or clears it.
 fn set_pin(pin: &Pin, records: Option<Vec<ListParWithRandom>>) {
     *pin.lock().expect("the pin lock") = records;
+}
+
+/// Added by decision 102 (plan v2 section 5): what [`compare_with_host`] compared besides the
+/// observer calls, the fires and the stores.
+#[derive(Debug, Default)]
+struct Compared {
+    /// The K_retire consumes after the fires of receives that do not peek (rule CR-13).
+    receive_retires: usize,
+    /// The persist flag of the record that each fire of a receive binds, in order.
+    receive_binds: Vec<bool>,
+}
+
+/// Added by decision 102 (plan v2 section 5): the operations of the agent that the host program
+/// has not met yet, each with its observer calls from its start to its finish ([`operations`]).
+type Receipts<'a> = std::slice::Iter<'a, Vec<Call>>;
+
+/// Added by decision 102 (plan v2 section 5): the receipt of the next operation of the agent.
+fn next_receipt<'a>(receipts: &mut Receipts<'a>) -> Result<&'a [Call], TestCaseError> {
+    receipts
+        .next()
+        .map(Vec::as_slice)
+        .ok_or_else(|| failure("the host program makes more operations than the agent"))
+}
+
+/// Added by decision 102 (plan v2 section 5): the waiter that the COMM of the operation `receipt`
+/// of the agent fires, as a waiter pin. It is `WaiterPin::Nothing` when the operation makes no
+/// COMM, because the produce stores its record.
+fn receipt_waiter(receipt: &[Call]) -> WaiterPin {
+    receipt
+        .iter()
+        .find_map(|call| match call {
+            Call::Comm { continuation, .. } => {
+                Some(WaiterPin::Only(Box::new(continuation.clone())))
+            }
+            _ => None,
+        })
+        .unwrap_or(WaiterPin::Nothing)
+}
+
+/// Added by decision 102 (plan v2 section 5): the stored record and its persist flag that the
+/// COMM of the operation `receipt` of the agent binds. It is `None` when the operation makes no
+/// COMM. A COMM of a set binds one record (rule CR-13), and play names it as a participant.
+fn receipt_datum(receipt: &[Call]) -> Result<Option<(ListParWithRandom, bool)>, TestCaseError> {
+    match receipt
+        .iter()
+        .find(|call| matches!(call, Call::Comm { .. }))
+    {
+        None => Ok(None),
+        Some(Call::Comm {
+            participants: Some(participants),
+            ..
+        }) => match participants.as_slice() {
+            [participant] => Ok(Some((participant.stored.clone(), participant.persistent))),
+            other => Err(failure(format!("a set COMM binds one record: {other:?}"))),
+        },
+        Some(other) => Err(failure(format!(
+            "play names the participants of a COMM: {other:?}"
+        ))),
+    }
+}
+
+/// Added by decision 102 (plan v2 section 5): the stored records of `host` that the pattern of
+/// `receive` binds and whose bound values its guard refuses. The receive of the agent parked, so
+/// its pick met such a record or no record binds its pattern (decision 37). The function fails
+/// when records bind and the guard refuses none of them.
+async fn refused_records(
+    host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+    receive: &ConsumeOp,
+) -> Result<Vec<ListParWithRandom>, TestCaseError> {
+    let records = host.get_data(&data()).await;
+    let mut refused = Vec::with_capacity(records.len());
+    let mut bound = 0;
+    for stored in &records {
+        let payload = record::unwrap_datum(&stored.a)
+            .expect("a datum record")
+            .datum;
+        if let Some(matched) = Matcher.get(&receive.pattern, &payload) {
+            bound += 1;
+            if !Matcher.check_commit(&parked(receive), std::slice::from_ref(&matched)) {
+                refused.push(stored.a.clone());
+            }
+        }
+    }
+    prop_assert!(
+        bound == 0 || !refused.is_empty(),
+        "the receive of the agent parks, so no record binds its pattern or its guard refuses one"
+    );
+    Ok(refused)
 }
 
 /// One call of a host program.
@@ -1128,8 +1657,10 @@ enum HostCall {
 }
 
 /// The fire of a host call as `fired` reports a fire of the agent: the body name and the values
-/// that the first result binds. A class fire dispatches the result of its representative only,
-/// and every member of a class binds the same values.
+/// that the first result binds. A fire of a set binds one record (decision 101, rule CR-13).
+///
+/// Changed by decision 101 (rule CR-13). The text before: "A class fire dispatches the result of
+/// its representative only, and every member of a class binds the same values."
 fn host_fire(continuation: &TaggedContinuation, results: &[ParResult]) -> (String, Vec<Par>) {
     let original = record::unwrap_continuation(continuation).expect("a continuation record");
     (
@@ -1141,44 +1672,102 @@ fn host_fire(continuation: &TaggedContinuation, results: &[ParResult]) -> (Strin
     )
 }
 
-/// The host program of RETIRE-CLASS after a fire of the element `element`. It makes one host
-/// consume of the retire continuation over `[D]` for each stored non-persistent member of the
-/// class, in canonical order. Each consume is pinned to its member. It returns the legacy log
-/// entries of the consumes, in order.
+// Changed by decision 102 (plan v2 section 5) and decision 101 (rule CR-13): the retire reads the
+// receipts of the agent and takes the class, the random state and the authority of its fire. The
+// function before:
+// /// The host program of RETIRE-CLASS after a fire of the element `element`. It makes one host
+// /// consume of the retire continuation over `[D]` for each stored non-persistent member of the
+// /// class, in canonical order. Each consume is pinned to its member. It returns the legacy log
+// /// entries of the consumes, in order.
+// async fn host_retire(
+//     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+//     budget: &RuntimeBudget,
+//     pin: &Pin,
+//     element: &ListParWithRandom,
+// ) -> Result<Vec<Cost>, TestCaseError> {
+//     let key = key_of_record(element);
+//     let random = RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&element.random_state));
+//     let members: Vec<Datum<ListParWithRandom>> = canonical_records(host)
+//         .await
+//         .into_iter()
+//         .filter(|stored| !stored.persist && key_of_record(&stored.a) == key)
+//         .collect();
+//     let mut entries = Vec::new();
+//     for member in members {
+//         set_pin(pin, Some(vec![member.a.clone()]));
+//         let continuation =
+//             retire_continuation(&member.source.hash, &random, element.cost_authority.clone());
+//         // Changed by decision 89 (DR-129): a persistent record with the bytes of the member can
+//         // take the retire, so the consume is drawn until it binds a non-persistent record.
+//         // let run = host_consume(
+//         //     host,
+//         //     budget,
+//         //     vec![data()],
+//         //     vec![retire_pattern()],
+//         //     continuation,
+//         //     false,
+//         //     false,
+//         // )
+//         // .await;
+//         let run = drawn_consume(host, &[false], || {
+//             host_consume(
+//                 host,
+//                 budget,
+//                 vec![data()],
+//                 vec![retire_pattern()],
+//                 continuation.clone(),
+//                 false,
+//                 false,
+//             )
+//         })
+//         .await
+//         .map_err(TestCaseError::fail)?;
+//         set_pin(pin, None);
+//         prop_assert!(run.fired.is_some(), "the host retire binds its member");
+//         entries.extend(run.entries);
+//     }
+//     Ok(entries)
+// }
+
+/// The host program of RETIRE-CLASS of the class `key` after a fire. It makes one host consume of
+/// the retire continuation over `[D]` for each stored non-persistent member of the class, in
+/// DR-75 order, with the random state `random` and the cost authority `authority`. A fire of a
+/// send or of a second send retires with the random state and the cost authority of its datum. A
+/// fire of a receive retires with the random state of its body and its stamped authority
+/// (decision 101, rule CR-13). Each consume takes the next receipt of `receipts`, which must bind
+/// the same member, and it is pinned to its member. The function returns the observer calls of
+/// the consumes that it keeps, in order, from the recorder `recorder` of the host (decision 90,
+/// decision 69).
 async fn host_retire(
     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-    budget: &RuntimeBudget,
+    recorder: &Recorder,
     pin: &Pin,
-    element: &ListParWithRandom,
-) -> Result<Vec<Cost>, TestCaseError> {
-    let key = key_of_record(element);
-    let random = RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&element.random_state));
+    receipts: &mut Receipts<'_>,
+    key: &[u8],
+    random: &Blake2b512Random,
+    authority: Option<CostAuthority>,
+) -> Result<Vec<Call>, TestCaseError> {
     let members: Vec<Datum<ListParWithRandom>> = canonical_records(host)
         .await
         .into_iter()
-        .filter(|stored| !stored.persist && key_of_record(&stored.a) == key)
+        .filter(|stored| !stored.persist && key_of_record(&stored.a).as_slice() == key)
         .collect();
-    let mut entries = Vec::new();
+    let mut observed_calls = Vec::new();
     for member in members {
+        let receipt = next_receipt(receipts)?;
+        prop_assert_eq!(
+            receipt_datum(receipt)?,
+            Some((member.a.clone(), false)),
+            "the K_retire of the agent binds the next member in DR-75 order"
+        );
         set_pin(pin, Some(vec![member.a.clone()]));
-        let continuation =
-            retire_continuation(&member.source.hash, &random, element.cost_authority.clone());
-        // Changed by decision 89 (DR-129): a persistent record with the bytes of the member can
-        // take the retire, so the consume is drawn until it binds a non-persistent record.
-        // let run = host_consume(
-        //     host,
-        //     budget,
-        //     vec![data()],
-        //     vec![retire_pattern()],
-        //     continuation,
-        //     false,
-        //     false,
-        // )
-        // .await;
+        let continuation = retire_continuation(&member.source.hash, random, authority.clone());
+        // A persistent record with the bytes of the member can take the retire, so the consume is
+        // drawn until it binds a non-persistent record (decision 89).
         let run = drawn_consume(host, &[false], || {
             host_consume(
                 host,
-                budget,
+                recorder,
                 vec![data()],
                 vec![retire_pattern()],
                 continuation.clone(),
@@ -1190,106 +1779,268 @@ async fn host_retire(
         .map_err(TestCaseError::fail)?;
         set_pin(pin, None);
         prop_assert!(run.fired.is_some(), "the host retire binds its member");
-        entries.extend(run.entries);
+        observed_calls.extend(run.calls);
     }
-    Ok(entries)
+    Ok(observed_calls)
 }
 
-/// What a receive does on the host records under the set semantics.
-enum HostClass {
-    // Changed by decision 89 (DR-129): host play picks at random among the records that the
-    // pattern binds, so a parked receive is pinned to the record that the agent meets.
-    // /// The receive parks: no record binds its pattern, or its guard refuses the first one.
-    // Park,
-    /// The receive parks: no record binds its pattern (`None`), or its guard refuses the first
-    /// one, which is the record of the pin.
-    Park(Option<ListParWithRandom>),
-    // Changed by decision 89 (DR-129): a fire names its stored records, so the host program can
-    // check the persist flag of each bound record.
-    // /// The receive fires over these records. The first is the first record in canonical order
-    // /// that the pattern binds and the guard admits. The other members of its class follow in
-    // /// canonical order, unless the receive peeks.
-    // Fire(Vec<ListParWithRandom>),
-    /// The receive fires over these stored records. The first is the first record in canonical
-    /// order that the pattern binds and the guard admits. The other members of its class follow
-    /// in canonical order, unless the receive peeks.
-    Fire(Vec<Datum<ListParWithRandom>>),
-    /// No host consume binds these members. The host binds a persistent record again for each
-    /// later occurrence of its channel, because a persistent record stays a candidate. So a
-    /// host consume over `[D; n]` binds the members of the agent only in one case. At most one
-    /// member is persistent, and it comes last in canonical order.
-    Inexpressible,
-}
+// Retired by decision 102 (plan v2 section 5) and decision 101 (rule CR-13): the host program
+// takes the record of a fire from the receipt of the agent, and every fire is one bind over [D].
+// So no fire is inexpressible.
+// /// What a receive does on the host records under the set semantics.
+// enum HostClass {
+//     // Changed by decision 89 (DR-129): host play picks at random among the records that the
+//     // pattern binds, so a parked receive is pinned to the record that the agent meets.
+//     // /// The receive parks: no record binds its pattern, or its guard refuses the first one.
+//     // Park,
+//     /// The receive parks: no record binds its pattern (`None`), or its guard refuses the first
+//     /// one, which is the record of the pin.
+//     Park(Option<ListParWithRandom>),
+//     // Changed by decision 89 (DR-129): a fire names its stored records, so the host program can
+//     // check the persist flag of each bound record.
+//     // /// The receive fires over these records. The first is the first record in canonical order
+//     // /// that the pattern binds and the guard admits. The other members of its class follow in
+//     // /// canonical order, unless the receive peeks.
+//     // Fire(Vec<ListParWithRandom>),
+//     /// The receive fires over these stored records. The first is the first record in canonical
+//     /// order that the pattern binds and the guard admits. The other members of its class follow
+//     /// in canonical order, unless the receive peeks.
+//     Fire(Vec<Datum<ListParWithRandom>>),
+//     /// No host consume binds these members. The host binds a persistent record again for each
+//     /// later occurrence of its channel, because a persistent record stays a candidate. So a
+//     /// host consume over `[D; n]` binds the members of the agent only in one case. At most one
+//     /// member is persistent, and it comes last in canonical order.
+//     Inexpressible,
+// }
+//
+// /// The class fire of `receive` on the host records (see [`HostClass`]).
+// async fn host_class(
+//     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+//     receive: &ConsumeOp,
+// ) -> HostClass {
+//     let records = canonical_records(host).await;
+//     let Some((first, matched)) = records.iter().find_map(|stored| {
+//         let payload = record::unwrap_datum(&stored.a)
+//             .expect("a datum record")
+//             .datum;
+//         Matcher
+//             .get(&receive.pattern, &payload)
+//             .map(|matched| (stored.clone(), matched))
+//     }) else {
+//         // Changed by decision 89 (DR-129): see `HostClass::Park`.
+//         // return HostClass::Park;
+//         return HostClass::Park(None);
+//     };
+//     if !Matcher.check_commit(&parked(receive), std::slice::from_ref(&matched)) {
+//         // Changed by decision 89 (DR-129): see `HostClass::Park`.
+//         // return HostClass::Park;
+//         return HostClass::Park(Some(first.a));
+//     }
+//     if receive.peek {
+//         // Changed by decision 89 (DR-129): see `HostClass::Fire`.
+//         // return HostClass::Fire(vec![first.a]);
+//         return HostClass::Fire(vec![first]);
+//     }
+//     let key = key_of_record(&first.a);
+//     let members: Vec<Datum<ListParWithRandom>> = records
+//         .into_iter()
+//         .filter(|stored| key_of_record(&stored.a) == key)
+//         .collect();
+//     let persistent: Vec<usize> = members
+//         .iter()
+//         .enumerate()
+//         .filter(|(_, member)| member.persist)
+//         .map(|(index, _)| index)
+//         .collect();
+//     // Changed by decision 89 (DR-129): see `HostClass::Fire`.
+//     // match persistent.as_slice() {
+//     //     [] => HostClass::Fire(members.into_iter().map(|member| member.a).collect()),
+//     //     [index] if *index + 1 == members.len() => {
+//     //         HostClass::Fire(members.into_iter().map(|member| member.a).collect())
+//     //     }
+//     //     _ => HostClass::Inexpressible,
+//     // }
+//     match persistent.as_slice() {
+//         [] => HostClass::Fire(members),
+//         [index] if *index + 1 == members.len() => HostClass::Fire(members),
+//         _ => HostClass::Inexpressible,
+//     }
+// }
 
-/// The class fire of `receive` on the host records (see [`HostClass`]).
-async fn host_class(
-    host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-    receive: &ConsumeOp,
-) -> HostClass {
-    let records = canonical_records(host).await;
-    let Some((first, matched)) = records.iter().find_map(|stored| {
-        let payload = record::unwrap_datum(&stored.a)
-            .expect("a datum record")
-            .datum;
-        Matcher
-            .get(&receive.pattern, &payload)
-            .map(|matched| (stored.clone(), matched))
-    }) else {
-        // Changed by decision 89 (DR-129): see `HostClass::Park`.
-        // return HostClass::Park;
-        return HostClass::Park(None);
-    };
-    if !Matcher.check_commit(&parked(receive), std::slice::from_ref(&matched)) {
-        // Changed by decision 89 (DR-129): see `HostClass::Park`.
-        // return HostClass::Park;
-        return HostClass::Park(Some(first.a));
-    }
-    if receive.peek {
-        // Changed by decision 89 (DR-129): see `HostClass::Fire`.
-        // return HostClass::Fire(vec![first.a]);
-        return HostClass::Fire(vec![first]);
-    }
-    let key = key_of_record(&first.a);
-    let members: Vec<Datum<ListParWithRandom>> = records
-        .into_iter()
-        .filter(|stored| key_of_record(&stored.a) == key)
-        .collect();
-    let persistent: Vec<usize> = members
-        .iter()
-        .enumerate()
-        .filter(|(_, member)| member.persist)
-        .map(|(index, _)| index)
-        .collect();
-    // Changed by decision 89 (DR-129): see `HostClass::Fire`.
-    // match persistent.as_slice() {
-    //     [] => HostClass::Fire(members.into_iter().map(|member| member.a).collect()),
-    //     [index] if *index + 1 == members.len() => {
-    //         HostClass::Fire(members.into_iter().map(|member| member.a).collect())
-    //     }
-    //     _ => HostClass::Inexpressible,
-    // }
-    match persistent.as_slice() {
-        [] => HostClass::Fire(members),
-        [index] if *index + 1 == members.len() => HostClass::Fire(members),
-        _ => HostClass::Inexpressible,
-    }
-}
+// Changed by decision 102 (plan v2 section 5) and decision 101 (rule CR-13): the program follows
+// the receipts of the agent, and a fire of a receive is one bind over [D] with K_retire. The
+// function before:
+// /// Runs the host program of `op` on `host`: the host call of each staged operation of the set
+// /// semantics, then the calls of the reducer after each fire. A class fire is a consume over
+// /// `[D; n]`. The K_retire consumes of its class follow a fire of a waiter that does not peek. A
+// /// persistent send produces again, and a persistent receive consumes again. A fire of a peek
+// /// sends each removed non-persistent record again (`produce_peeks`). Each call is pinned first
+// /// to the canonical choice on the host records (decision 89, DR-129). The program returns the
+// /// legacy log entries of the calls and the fires, in order. It returns `None` when a class
+// /// fire has no host consume ([`HostClass`]).
+// async fn host_program(
+//     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+//     budget: &RuntimeBudget,
+//     pin: &Pin,
+//     waiter: &WaiterSlot,
+//     op: &SpaceOp,
+// ) -> Result<Option<(Vec<Cost>, Vec<(String, Vec<Par>)>)>, TestCaseError> {
+//     let mut calls = VecDeque::from([match op {
+//         SpaceOp::Produce(send) => HostCall::Send {
+//             record: record::wrap_datum(0, &send.data),
+//             persist: send.persistent,
+//         },
+//         SpaceOp::Consume(receive) => HostCall::Receive(Box::new(receive.clone())),
+//         SpaceOp::Settle(_) => panic!("a set issues no settle"),
+//         SpaceOp::Join(_) => panic!("the set programs of this suite issue no join"),
+//     }]);
+//     let mut entries = Vec::new();
+//     let mut fires = Vec::new();
+//     while let Some(call) = calls.pop_front() {
+//         let (again, reproduced) = match call {
+//             HostCall::Send { record, persist } => {
+//                 set_pin(pin, None);
+//                 // Added by decision 89 (DR-129): the produce fires the waiter of the canonical
+//                 // choice.
+//                 let choice = waiter_choice(host, &data(), &record).await;
+//                 set_waiter(waiter, choice);
+//                 let run = host_produce(host, budget, data(), record.clone(), persist).await;
+//                 set_waiter(waiter, WaiterPin::Any);
+//                 entries.extend(run.entries);
+//                 let mut again = None;
+//                 if let Some((continuation, results)) = &run.fired {
+//                     fires.push(host_fire(&continuation.continuation, results));
+//                     if !continuation.peek {
+//                         // Changed by decision 89 (DR-129): the retire returns its entries.
+//                         // host_retire(host, budget, pin, &record).await?;
+//                         entries.extend(host_retire(host, budget, pin, &record).await?);
+//                     }
+//                     if persist {
+//                         again = Some(HostCall::Send { record, persist });
+//                     }
+//                 }
+//                 (again, run.reproduced)
+//             }
+//             HostCall::Receive(receive) => match host_class(host, &receive).await {
+//                 HostClass::Inexpressible => return Ok(None),
+//                 // Changed by decision 89 (DR-129): the parked receive meets the record of the
+//                 // agent.
+//                 // HostClass::Park => {
+//                 //     set_pin(pin, None);
+//                 HostClass::Park(first) => {
+//                     set_pin(pin, Some(first.into_iter().collect()));
+//                     let run = host_consume(
+//                         host,
+//                         budget,
+//                         vec![data()],
+//                         vec![receive.pattern.clone()],
+//                         parked(&receive),
+//                         receive.persistent,
+//                         receive.peek,
+//                     )
+//                     .await;
+//                     set_pin(pin, None);
+//                     prop_assert!(run.fired.is_none(), "the host receive parks");
+//                     entries.extend(run.entries);
+//                     (None, Vec::new())
+//                 }
+//                 HostClass::Fire(class) => {
+//                     let width = class.len();
+//                     // Changed by decision 89 (DR-129): the class fire is drawn until it binds
+//                     // the persist flags of the class.
+//                     // set_pin(pin, Some(class));
+//                     // let run = host_consume(
+//                     //     host,
+//                     //     budget,
+//                     //     vec![data(); width],
+//                     //     vec![receive.pattern.clone(); width],
+//                     //     parked(&receive),
+//                     //     receive.persistent,
+//                     //     receive.peek,
+//                     // )
+//                     // .await;
+//                     let expected: Vec<bool> = class.iter().map(|member| member.persist).collect();
+//                     set_pin(
+//                         pin,
+//                         Some(class.into_iter().map(|member| member.a).collect()),
+//                     );
+//                     let run = drawn_consume(host, &expected, || {
+//                         host_consume(
+//                             host,
+//                             budget,
+//                             vec![data(); width],
+//                             vec![receive.pattern.clone(); width],
+//                             parked(&receive),
+//                             receive.persistent,
+//                             receive.peek,
+//                         )
+//                     })
+//                     .await
+//                     .map_err(TestCaseError::fail)?;
+//                     set_pin(pin, None);
+//                     let Some((continuation, results)) = &run.fired else {
+//                         return Err(TestCaseError::fail("the host class fire binds its class"));
+//                     };
+//                     fires.push(host_fire(&continuation.continuation, results));
+//                     entries.extend(run.entries);
+//                     let again = match receive.persistent {
+//                         true => Some(HostCall::Receive(receive)),
+//                         false => None,
+//                     };
+//                     (again, run.reproduced)
+//                 }
+//             },
+//         };
+//         let mut next: Vec<HostCall> = reproduced
+//             .into_iter()
+//             .map(|(_, record)| HostCall::Send {
+//                 record,
+//                 persist: false,
+//             })
+//             .collect();
+//         next.extend(again);
+//         for call in next.into_iter().rev() {
+//             calls.push_front(call);
+//         }
+//     }
+//     // Changed by decision 89 (DR-129): the program returns the entries of the calls that it
+//     // keeps, because a reverted draw leaves its charges in the log of the budget.
+//     // Ok(Some(fires))
+//     Ok(Some((entries, fires)))
+// }
 
-/// Runs the host program of `op` on `host`: the host call of each staged operation of the set
-/// semantics, then the calls of the reducer after each fire. A class fire is a consume over
-/// `[D; n]`. The K_retire consumes of its class follow a fire of a waiter that does not peek. A
-/// persistent send produces again, and a persistent receive consumes again. A fire of a peek
-/// sends each removed non-persistent record again (`produce_peeks`). Each call is pinned first
-/// to the canonical choice on the host records (decision 89, DR-129). The program returns the
-/// legacy log entries of the calls and the fires, in order. It returns `None` when a class
-/// fire has no host consume ([`HostClass`]).
+/// Runs the host program of `op` on `host`: the host call of each staged operation of the agent,
+/// then the calls of the reducer after each fire. A fire of a receive is a consume over `[D]` of
+/// the record that the agent binds. The K_retire consumes of its class follow unless it peeks
+/// (decision 101, rule CR-13). The K_retire consumes of the class of a datum follow a fire of a
+/// waiter that does not peek. A persistent send produces again, and a persistent receive consumes
+/// again. A fire of a peek sends each removed non-persistent record again (`produce_peeks`).
+///
+/// Each call takes the next receipt of `receipts`: the observer calls of the same operation of
+/// the agent ([`operations`]). The program pins the call to the pick that the receipt names (plan
+/// v2 section 5). It also checks that the plans allow each pick:
+///
+/// - A send that fires nothing meets no waiter that binds its record and admits it.
+/// - A receive that parks meets no record, or a record that its guard refuses.
+/// - A fire of a receive that does not peek binds the first member of its class in DR-75 order.
+///
+/// The program returns the observer calls of the calls that it keeps, from the recorder
+/// `recorder` of the host, and the fires, in order (decision 90, decision 69). It adds the
+/// K_retire consumes of receives and the persist flags of the bound records to `compared`.
+///
+/// Changed by decision 102 (plan v2 section 5) and decision 101 (rule CR-13). The text before:
+/// "A class fire is a consume over `[D; n]`. ... Each call is pinned first to the canonical
+/// choice on the host records (decision 89, DR-129). ... It returns `None` when a class fire has
+/// no host consume (`HostClass`)."
 async fn host_program(
     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-    budget: &RuntimeBudget,
+    recorder: &Recorder,
     pin: &Pin,
     waiter: &WaiterSlot,
     op: &SpaceOp,
-) -> Result<Option<(Vec<Cost>, Vec<(String, Vec<Par>)>)>, TestCaseError> {
+    receipts: &mut Receipts<'_>,
+    compared: &mut Compared,
+) -> Result<(Vec<Call>, Vec<(String, Vec<Par>)>), TestCaseError> {
     let mut calls = VecDeque::from([match op {
         SpaceOp::Produce(send) => HostCall::Send {
             record: record::wrap_datum(0, &send.data),
@@ -1299,26 +2050,44 @@ async fn host_program(
         SpaceOp::Settle(_) => panic!("a set issues no settle"),
         SpaceOp::Join(_) => panic!("the set programs of this suite issue no join"),
     }]);
-    let mut entries = Vec::new();
+    let mut observed_calls = Vec::new();
     let mut fires = Vec::new();
     while let Some(call) = calls.pop_front() {
+        let receipt = next_receipt(receipts)?;
         let (again, reproduced) = match call {
             HostCall::Send { record, persist } => {
+                // The produce fires the waiter that the COMM of the agent fires, or no waiter.
+                let choice = receipt_waiter(receipt);
+                if choice == WaiterPin::Nothing {
+                    prop_assert_eq!(
+                        waiter_choice(host, &data(), &record).await,
+                        WaiterPin::Nothing,
+                        "the agent stores the record, so no waiter binds it and admits it"
+                    );
+                }
                 set_pin(pin, None);
-                // Added by decision 89 (DR-129): the produce fires the waiter of the canonical
-                // choice.
-                let choice = waiter_choice(host, &data(), &record).await;
                 set_waiter(waiter, choice);
-                let run = host_produce(host, budget, data(), record.clone(), persist).await;
+                let run = host_produce(host, recorder, data(), record.clone(), persist).await;
                 set_waiter(waiter, WaiterPin::Any);
-                entries.extend(run.entries);
+                observed_calls.extend(run.calls);
                 let mut again = None;
                 if let Some((continuation, results)) = &run.fired {
                     fires.push(host_fire(&continuation.continuation, results));
                     if !continuation.peek {
-                        // Changed by decision 89 (DR-129): the retire returns its entries.
-                        // host_retire(host, budget, pin, &record).await?;
-                        entries.extend(host_retire(host, budget, pin, &record).await?);
+                        let random = RandomPurpose::Retire
+                            .derive(&Blake2b512Random::from_bytes(&record.random_state));
+                        observed_calls.extend(
+                            host_retire(
+                                host,
+                                recorder,
+                                pin,
+                                receipts,
+                                &key_of_record(&record),
+                                &random,
+                                record.cost_authority.clone(),
+                            )
+                            .await?,
+                        );
                     }
                     if persist {
                         again = Some(HostCall::Send { record, persist });
@@ -1326,17 +2095,15 @@ async fn host_program(
                 }
                 (again, run.reproduced)
             }
-            HostCall::Receive(receive) => match host_class(host, &receive).await {
-                HostClass::Inexpressible => return Ok(None),
-                // Changed by decision 89 (DR-129): the parked receive meets the record of the
-                // agent.
-                // HostClass::Park => {
-                //     set_pin(pin, None);
-                HostClass::Park(first) => {
-                    set_pin(pin, Some(first.into_iter().collect()));
+            HostCall::Receive(receive) => match receipt_datum(receipt)? {
+                None => {
+                    // The receive of the agent parks. The host receive meets only records that
+                    // its guard refuses.
+                    let refused = refused_records(host, &receive).await?;
+                    set_pin(pin, Some(refused));
                     let run = host_consume(
                         host,
-                        budget,
+                        recorder,
                         vec![data()],
                         vec![receive.pattern.clone()],
                         parked(&receive),
@@ -1346,35 +2113,30 @@ async fn host_program(
                     .await;
                     set_pin(pin, None);
                     prop_assert!(run.fired.is_none(), "the host receive parks");
-                    entries.extend(run.entries);
+                    observed_calls.extend(run.calls);
                     (None, Vec::new())
                 }
-                HostClass::Fire(class) => {
-                    let width = class.len();
-                    // Changed by decision 89 (DR-129): the class fire is drawn until it binds
-                    // the persist flags of the class.
-                    // set_pin(pin, Some(class));
-                    // let run = host_consume(
-                    //     host,
-                    //     budget,
-                    //     vec![data(); width],
-                    //     vec![receive.pattern.clone(); width],
-                    //     parked(&receive),
-                    //     receive.persistent,
-                    //     receive.peek,
-                    // )
-                    // .await;
-                    let expected: Vec<bool> = class.iter().map(|member| member.persist).collect();
-                    set_pin(
-                        pin,
-                        Some(class.into_iter().map(|member| member.a).collect()),
-                    );
-                    let run = drawn_consume(host, &expected, || {
+                Some((bound, persistent)) => {
+                    let key = key_of_record(&bound);
+                    if !receive.peek {
+                        let first = canonical_records(host)
+                            .await
+                            .into_iter()
+                            .find(|stored| key_of_record(&stored.a) == key)
+                            .map(|stored| (stored.a, stored.persist));
+                        prop_assert_eq!(
+                            first,
+                            Some((bound.clone(), persistent)),
+                            "the fire binds the first member of its class in DR-75 order"
+                        );
+                    }
+                    set_pin(pin, Some(vec![bound]));
+                    let run = drawn_consume(host, &[persistent], || {
                         host_consume(
                             host,
-                            budget,
-                            vec![data(); width],
-                            vec![receive.pattern.clone(); width],
+                            recorder,
+                            vec![data()],
+                            vec![receive.pattern.clone()],
                             parked(&receive),
                             receive.persistent,
                             receive.peek,
@@ -1384,10 +2146,27 @@ async fn host_program(
                     .map_err(TestCaseError::fail)?;
                     set_pin(pin, None);
                     let Some((continuation, results)) = &run.fired else {
-                        return Err(TestCaseError::fail("the host class fire binds its class"));
+                        return Err(failure("the host fire binds the record of the agent"));
                     };
                     fires.push(host_fire(&continuation.continuation, results));
-                    entries.extend(run.entries);
+                    observed_calls.extend(run.calls);
+                    compared.receive_binds.push(persistent);
+                    if !receive.peek {
+                        let random = RandomPurpose::Retire
+                            .derive(&Blake2b512Random::from_bytes(&receive.body.random_state));
+                        let retired = host_retire(
+                            host,
+                            recorder,
+                            pin,
+                            receipts,
+                            &key,
+                            &random,
+                            record::cost_authority(&receive.authority),
+                        )
+                        .await?;
+                        compared.receive_retires += operations(&retired).len();
+                        observed_calls.extend(retired);
+                    }
                     let again = match receive.persistent {
                         true => Some(HostCall::Receive(receive)),
                         false => None,
@@ -1408,10 +2187,7 @@ async fn host_program(
             calls.push_front(call);
         }
     }
-    // Changed by decision 89 (DR-129): the program returns the entries of the calls that it
-    // keeps, because a reverted draw leaves its charges in the log of the budget.
-    // Ok(Some(fires))
-    Ok(Some((entries, fires)))
+    Ok((observed_calls, fires))
 }
 
 /// The records and the waiting continuations on the data channel of `space`, each as its
@@ -1437,29 +2213,56 @@ async fn store_bytes(
 }
 
 /// Compares the agent and the host program of the operations `ops`, operation by operation:
-/// the new legacy log entries (value and label), the fires, and at the end the stores. Each side
-/// runs inside the legacy scope of its own budget. It returns `false` when it stops at a class
-/// fire that no host consume makes ([`HostClass::Inexpressible`]). It returns `true` when it
-/// compares every operation. The host program pins each call to the canonical choice (decision
-/// 89, DR-129), so the comparison stays exact.
-async fn compare_with_host(ops: &[SpaceOp]) -> Result<bool, TestCaseError> {
-    let agent_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs set agent"));
-    let _agent_scope = agent_budget.enter_legacy_scope();
-    let rig = Rig::with_budget(&agent_budget).await;
-    let host_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs set host"));
-    let _host_scope = host_budget.enter_legacy_scope();
+/// the observer calls with their arguments, the fires, and at the end the stores (decision 90,
+/// decision 69). Each side records the observer calls of its own host RSpace. The observer calls
+/// carry the COMMs, so the two sides make the same COMMs. The host program pins each call to the
+/// pick of the agent, which it reads from the receipt of the same operation of the agent (plan v2
+/// section 5). So the comparison stays exact under every pick. It compares every operation and
+/// returns what it compared ([`Compared`]). Each row of the space names the footprint group of
+/// decision 92, which the host program does not have. So the comparison removes that group from
+/// the calls of the agent (`without_footprint`).
+///
+/// Changed by decision 102 (plan v2 section 5) and decision 101 (rule CR-13). The text before:
+/// "It returns `false` when it stops at a class fire that no host consume makes
+/// (`HostClass::Inexpressible`). It returns `true` when it compares every operation. The host
+/// program pins each call to the canonical choice (decision 89, DR-129), so the comparison stays
+/// exact."
+// Changed by decision 102 (plan v2 section 5): the comparison returns what it compared.
+// async fn compare_with_host(ops: &[SpaceOp]) -> Result<bool, TestCaseError> {
+async fn compare_with_host(ops: &[SpaceOp]) -> Result<Compared, TestCaseError> {
+    // Changed by decision 90 (decision 69): each side records the observer calls of its host
+    // RSpace, because DR-134 deleted the legacy meter and its scopes.
+    // let agent_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs set agent"));
+    // let _agent_scope = agent_budget.enter_legacy_scope();
+    // let rig = Rig::with_budget(&agent_budget).await;
+    // let host_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs set host"));
+    // let _host_scope = host_budget.enter_legacy_scope();
+    let rig = Rig::new().await;
+    let agent_recorder = observed(&rig.host);
+    let host_recorder = Recorder::new();
     let pin: Pin = Arc::new(Mutex::new(None));
     // Changed by decision 89 (DR-129): the matcher of the host also holds the waiter pin.
     // let host = pinned_host(&host_budget, &pin).await;
     let waiter = open_waiter();
-    let host = pinned_host(&host_budget, &pin, &waiter).await;
+    // Changed by decision 90 (decision 69): the host records its observer calls.
+    // let host = pinned_host(&host_budget, &pin, &waiter).await;
+    let host = pinned_host(&host_recorder, &pin, &waiter).await;
+    // Added by decision 102 (plan v2 section 5).
+    let mut compared = Compared::default();
     for (index, op) in ops.iter().enumerate() {
-        let agent_before = agent_budget.get_log().len();
+        // let agent_before = agent_budget.get_log().len();
+        let agent_before = agent_recorder.count();
         let outcome = rig
             .run(op.clone())
             .await
             .map_err(|error| TestCaseError::fail(format!("operation {index} fails: {error}")))?;
-        let agent_entries = agent_budget.get_log()[agent_before..].to_vec();
+        // let agent_entries = agent_budget.get_log()[agent_before..].to_vec();
+        // Changed by decision 92: each row of the space names the footprint group, which the
+        // host program does not have.
+        let agent_calls = without_footprint(
+            &agent_recorder.since(agent_before),
+            &space_counter_channel(SPACE),
+        );
         // Changed by decision 89 (DR-129): a reverted draw leaves its charges in the log of the
         // budget, so the host program returns the entries of the calls that it keeps.
         // let host_before = host_budget.get_log().len();
@@ -1467,16 +2270,54 @@ async fn compare_with_host(ops: &[SpaceOp]) -> Result<bool, TestCaseError> {
         //     return Ok(false);
         // };
         // let host_entries = host_budget.get_log()[host_before..].to_vec();
-        let Some((host_entries, host_fires)) =
-            host_program(&host, &host_budget, &pin, &waiter, op).await?
-        else {
-            return Ok(false);
-        };
-        prop_assert!(!agent_entries.is_empty(), "operation {} charges", index);
+        // Changed by decision 90 (decision 69): the program returns the observer calls of the
+        // calls that it keeps.
+        // let Some((host_entries, host_fires)) =
+        //     host_program(&host, &host_budget, &pin, &waiter, op).await?
+        // else {
+        //     return Ok(false);
+        // };
+        // prop_assert!(!agent_entries.is_empty(), "operation {} charges", index);
+        // prop_assert_eq!(
+        //     &agent_entries,
+        //     &host_entries,
+        //     "the legacy charges of operation {}: {:?}",
+        //     index,
+        //     op
+        // );
+        // Changed by decision 102 (plan v2 section 5): the host program follows the receipts of
+        // the agent, and every fire has its host call.
+        // let Some((host_entries, host_fires)) =
+        //     host_program(&host, &host_budget, &pin, &waiter, op).await?
+        // else {
+        //     return Ok(false);
+        // };
+        let receipts = operations(&agent_calls);
+        let mut unread = receipts.iter();
+        let (host_calls, host_fires) = host_program(
+            &host,
+            &host_recorder,
+            &pin,
+            &waiter,
+            op,
+            &mut unread,
+            &mut compared,
+        )
+        .await?;
+        prop_assert!(
+            unread.next().is_none(),
+            "the host program makes every operation of the agent: {:?}",
+            op
+        );
+        prop_assert!(
+            !agent_calls.is_empty(),
+            "operation {} makes observer calls",
+            index
+        );
         prop_assert_eq!(
-            &agent_entries,
-            &host_entries,
-            "the legacy charges of operation {}: {:?}",
+            &agent_calls,
+            &host_calls,
+            "the observer calls of operation {}: {:?}",
             index,
             op
         );
@@ -1489,7 +2330,9 @@ async fn compare_with_host(ops: &[SpaceOp]) -> Result<bool, TestCaseError> {
         prop_assert_eq!(&outcome.reissue, &None, "operation {} re-issues", index);
     }
     prop_assert_eq!(store_bytes(&rig.host).await, store_bytes(&host).await);
-    Ok(true)
+    // Changed by decision 102 (plan v2 section 5): the comparison returns what it compared.
+    // Ok(true)
+    Ok(compared)
 }
 
 // ─── Example tests ────────────────────────────────────────────────────────────────────────
@@ -1538,219 +2381,447 @@ async fn space_set_discipline_duplicates_stay_distinct_records() {
 }
 
 /// The view of a set holds one representative for each class (F7, decision 41). Receives of any
-/// value drain the set class by class. Each fire dispatches the first member of its class in
-/// canonical order, and a third receive parks.
+/// value drain the set class by class. Each receive picks a class at random, and its fire binds
+/// the first member of that class in DR-75 order (decision 101, rule CR-13). A third receive
+/// parks. Over the runs the first receive takes each class (decision 102, rule CR-1).
+///
+/// Changed by decision 102 (rule CR-1). The text before: "Each fire dispatches the first member
+/// of its class in canonical order, and a third receive parks."
 #[tokio::test]
 async fn space_set_discipline_view_dedups_equal_pars() {
-    let rig = Rig::new().await;
-    for (value, salt) in [(1, 1), (1, 2), (2, 1), (2, 2), (2, 3)] {
-        rig.send(salted(value, salt, false)).await;
-    }
-    let mut drained = Vec::new();
-    for name in ["a", "b"] {
-        let first = canonical_records(&rig.host).await[0].a.clone();
-        let outcome = rig.receive(receiving(name, any())).await;
-        assert_eq!(outcome.fires.len(), 1);
-        assert_eq!(
-            removed(&outcome, 0),
-            first,
-            "the representative is the first record in canonical order"
-        );
-        let value = record_value(&first);
-        assert!(
-            rig.values()
-                .await
+    let mut first_classes = BTreeSet::new();
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::new().await;
+        for (value, salt) in [(1, 1), (1, 2), (2, 1), (2, 2), (2, 3)] {
+            rig.send(salted(value, salt, false)).await;
+        }
+        // Changed by decision 102 (rule CR-1): the two fires are known, so the vector is
+        // preallocated.
+        // let mut drained = Vec::new();
+        let mut drained = Vec::with_capacity(2);
+        for name in ["a", "b"] {
+            // Changed by decision 102 (rule CR-1): the receive picks its class at random, so the
+            // test finds the first member of the class of its pick.
+            // let first = canonical_records(&rig.host).await[0].a.clone();
+            let before = canonical_records(&rig.host).await;
+            let outcome = rig.receive(receiving(name, any())).await;
+            assert_eq!(outcome.fires.len(), 1);
+            // assert_eq!(
+            //     removed(&outcome, 0),
+            //     first,
+            //     "the representative is the first record in canonical order"
+            // );
+            // let value = record_value(&first);
+            let bound = removed(&outcome, 0);
+            let value = record_value(&bound);
+            let first = before
                 .iter()
-                .all(|(stored, _)| *stored != value),
-            "the class of {value} leaves the set"
-        );
-        drained.push(value);
+                .find(|stored| record_value(&stored.a) == value)
+                .expect("the class of the pick is stored");
+            assert_eq!(
+                bound, first.a,
+                "the fire binds the first member of its class in DR-75 order"
+            );
+            assert!(
+                rig.values()
+                    .await
+                    .iter()
+                    .all(|(stored, _)| *stored != value),
+                "the class of {value} leaves the set"
+            );
+            drained.push(value);
+        }
+        first_classes.insert(drained[0]);
+        drained.sort();
+        assert_eq!(drained, vec![1, 2], "one fire for each class");
+        assert!(rig.receive(receiving("c", any())).await.fires.is_empty());
+        assert_eq!(rig.waiters().await, vec!["c".to_string()]);
     }
-    drained.sort();
-    assert_eq!(drained, vec![1, 2], "one fire for each class");
-    assert!(rig.receive(receiving("c", any())).await.fires.is_empty());
-    assert_eq!(rig.waiters().await, vec!["c".to_string()]);
+    assert_eq!(
+        first_classes,
+        BTreeSet::from([1, 2]),
+        "over the runs the first receive takes each class"
+    );
 }
 
-/// A receive that does not peek fires one consume over `[D; n]` with every equal record, and the
-/// outcome dispatches one result (F3, F8, F20).
+/// A receive that does not peek fires one consume over `[D]` with the first equal record in DR-75
+/// order, under every pick. One K_retire consume over `[D]` then retires each other equal record.
+/// The outcome dispatches one result (F3, F8, F20).
+///
+/// Changed by decision 101 (rule CR-13) and decision 102 (rule CR-1). The text before: "A receive
+/// that does not peek fires one consume over `[D; n]` with every equal record, and the outcome
+/// dispatches one result (F3, F8, F20)."
 #[tokio::test]
 async fn space_set_discipline_consume_retires_all_equal_records() {
-    let rig = Rig::new().await;
-    for salt in 1..=3 {
-        rig.send(salted(4, salt, false)).await;
+    let fours: Vec<ProduceOp> = (1..=3).map(|salt| salted(4, salt, false)).collect();
+    let mut members = fours.clone();
+    members.sort_by_key(record_hash);
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::new().await;
+        // Changed by decision 101 (rule CR-13): the test keeps the sends of 4 to find the first 4
+        // in DR-75 order.
+        // for salt in 1..=3 {
+        //     rig.send(salted(4, salt, false)).await;
+        // }
+        for four in &fours {
+            rig.send(four.clone()).await;
+        }
+        rig.send(salted(5, 1, false)).await;
+        rig.log().await;
+        let outcome = rig.receive(receiving("k", exactly(4))).await;
+        assert_eq!(fired(&outcome), vec![delivery("k", &[])]);
+        assert_eq!(outcome.fires[0].results.len(), 1, "one dispatched result");
+        assert_eq!(
+            removed(&outcome, 0),
+            record::wrap_datum(0, &members[0].data),
+            "the fire binds the first 4 in DR-75 order"
+        );
+        // Changed by decision 101 (rule CR-13): the fire binds one record over [D], and one
+        // K_retire over [D] retires each other 4.
+        // assert_eq!(labels(&rig.log().await), vec![
+        //     "consume D,D,D",
+        //     "comm D,D,D"
+        // ]);
+        assert_eq!(labels(&rig.log().await), vec![
+            "consume D",
+            "comm D",
+            "consume D",
+            "comm D",
+            "consume D",
+            "comm D"
+        ]);
+        assert_eq!(rig.values().await, vec![(5, false)]);
     }
-    rig.send(salted(5, 1, false)).await;
-    rig.log().await;
-    let outcome = rig.receive(receiving("k", exactly(4))).await;
-    assert_eq!(fired(&outcome), vec![delivery("k", &[])]);
-    assert_eq!(outcome.fires[0].results.len(), 1, "one dispatched result");
-    assert_eq!(labels(&rig.log().await), vec![
-        "consume D,D,D",
-        "comm D,D,D"
-    ]);
-    assert_eq!(rig.values().await, vec![(5, false)]);
 }
 
-/// The COMM of a class fire lists the produce of every member, the representative first (F9).
-/// Its consume lists the data channel once for each member, with no peek.
+/// The COMMs of a class fire list every member, the first member in DR-75 order first (F9). The
+/// fire binds that member, and one K_retire binds each other member (decision 101, rule CR-13).
+/// Each consume lists the data channel once, with no peek.
+///
+/// Changed by decision 101 (rule CR-13). The text before: "The COMM of a class fire lists the
+/// produce of every member, the representative first (F9). Its consume lists the data channel
+/// once for each member, with no peek."
 #[tokio::test]
 async fn space_set_discipline_retire_comm_lists_every_member() {
-    let rig = Rig::new().await;
     let members = ordered_sends(&[(3, false), (3, false), (3, false)]);
-    for member in &members {
-        rig.send(member.clone()).await;
-    }
-    rig.send(salted(9, 1, false)).await;
-    rig.log().await;
     let receive = receiving("k", exactly(3));
-    rig.receive(receive.clone()).await;
-    let log = rig.log().await;
-    let [comm] = comms(&log).try_into().expect("one COMM");
-    let listed: Vec<Blake2b256Hash> = comm
-        .produces
+    let expected: Vec<Vec<Blake2b256Hash>> = members
         .iter()
-        .map(|produce| produce.hash.clone())
+        .map(|member| vec![record_hash(member)])
         .collect();
-    let expected: Vec<Blake2b256Hash> = members.iter().map(record_hash).collect();
-    assert_eq!(listed, expected, "every member, in canonical order");
-    assert!(comm.peeks.is_empty());
-    let data_hash = stable_hash_provider::hash(&data());
-    assert_eq!(comm.consume.channel_hashes, vec![data_hash; 3]);
-    assert_eq!(
-        comm.consume,
-        Consume::create(
-            &vec![data(); 3],
-            &vec![receive.pattern.clone(); 3],
-            &parked(&receive),
-            false
-        ),
-        "the consume of the class fire over [D; 3]"
+    let mut expected_consumes = Vec::with_capacity(members.len());
+    expected_consumes.push(Consume::create(
+        &vec![data()],
+        &vec![receive.pattern.clone()],
+        &parked(&receive),
+        false,
+    ));
+    expected_consumes.extend(
+        members[1..]
+            .iter()
+            .map(|member| receive_retire_consume(&receive, &record_hash(member))),
     );
-    assert_eq!(rig.values().await, vec![(9, false)]);
+    let data_hash = stable_hash_provider::hash(&data());
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::new().await;
+        for member in &members {
+            rig.send(member.clone()).await;
+        }
+        rig.send(salted(9, 1, false)).await;
+        rig.log().await;
+        rig.receive(receive.clone()).await;
+        let log = rig.log().await;
+        // Changed by decision 101 (rule CR-13): the fire and each K_retire make one COMM over [D].
+        // let [comm] = comms(&log).try_into().expect("one COMM");
+        // let listed: Vec<Blake2b256Hash> = comm
+        //     .produces
+        //     .iter()
+        //     .map(|produce| produce.hash.clone())
+        //     .collect();
+        // let expected: Vec<Blake2b256Hash> = members.iter().map(record_hash).collect();
+        // assert_eq!(listed, expected, "every member, in canonical order");
+        // assert!(comm.peeks.is_empty());
+        // assert_eq!(comm.consume.channel_hashes, vec![data_hash; 3]);
+        // assert_eq!(
+        //     comm.consume,
+        //     Consume::create(
+        //         &vec![data(); 3],
+        //         &vec![receive.pattern.clone(); 3],
+        //         &parked(&receive),
+        //         false
+        //     ),
+        //     "the consume of the class fire over [D; 3]"
+        // );
+        let log_comms = comms(&log);
+        let listed: Vec<Vec<Blake2b256Hash>> = log_comms
+            .iter()
+            .map(|comm| {
+                comm.produces
+                    .iter()
+                    .map(|produce| produce.hash.clone())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            listed, expected,
+            "every member, the first in DR-75 order first"
+        );
+        for comm in &log_comms {
+            assert!(comm.peeks.is_empty());
+            assert_eq!(comm.consume.channel_hashes, vec![data_hash.clone()]);
+        }
+        assert_eq!(
+            log_comms
+                .iter()
+                .map(|comm| comm.consume.clone())
+                .collect::<Vec<Consume>>(),
+            expected_consumes,
+            "the fire over [D], then the K_retire consumes of the receive"
+        );
+        assert_eq!(rig.values().await, vec![(9, false)]);
+    }
 }
 
-/// A peek binds the representative alone. Its fire removes the record, as the host COMM does,
-/// and the same operation sends the record again with its identity and its own authority. No
-/// K_retire runs, and the other members of the class stay (decision 45, Rule E).
+/// A peek binds its pick alone. Its fire removes the record, as the host COMM does, and the same
+/// operation sends the record again with its identity and its own authority. No K_retire runs,
+/// and the other members of the class stay (decision 45, Rule E). Play picks at random (decision
+/// 102, rule CR-1), so over the runs the peek binds each member.
+///
+/// Changed by decision 102 (rule CR-1). The text before: "A peek binds the representative alone."
 #[tokio::test]
 async fn space_set_discipline_peek_restores_representative() {
-    let budget = budget();
-    let _scope = budget.enter_comm_accounting_scope();
-    let rig = Rig::with_budget(&budget).await;
-    let mut representative = salted(7, 1, false);
-    representative.authority = region(2);
-    representative.data.cost_authority = Some(region(2));
-    let other = (2..)
-        .map(|salt| salted(7, salt, false))
-        .find(|other| record_hash(&representative) < record_hash(other))
-        .expect("a salt that orders the other member after the representative");
-    let members = [representative, other];
-    for member in &members {
-        rig.send(member.clone()).await;
+    // Changed by decision 102 (rule CR-1): the peek binds either member, so the members need no
+    // order, and each has its own authority.
+    // let mut representative = salted(7, 1, false);
+    // representative.authority = region(2);
+    // representative.data.cost_authority = Some(region(2));
+    // let other = (2..)
+    //     .map(|salt| salted(7, salt, false))
+    //     .find(|other| record_hash(&representative) < record_hash(other))
+    //     .expect("a salt that orders the other member after the representative");
+    // let members = [representative, other];
+    let mut first = salted(7, 1, false);
+    first.authority = region(2);
+    first.data.cost_authority = Some(region(2));
+    let mut second = salted(7, 2, false);
+    second.authority = region(3);
+    second.data.cost_authority = Some(region(3));
+    let members = [first, second];
+    let mut peeked = BTreeSet::new();
+    for _ in 0..PICK_RUNS {
+        let budget = budget();
+        let _scope = budget.enter_comm_accounting_scope();
+        let rig = Rig::with_budget(&budget).await;
+        for member in &members {
+            rig.send(member.clone()).await;
+        }
+        rig.log().await;
+        let peek = ConsumeOp {
+            introduction_authority: region(4),
+            ..peeking(receiving("p", any()))
+        };
+        let outcome = rig.receive(peek).await;
+        assert_eq!(fired(&outcome), vec![delivery("p", &[7])]);
+        // Changed by decision 102 (rule CR-1): the peek binds its pick, either member.
+        // assert_eq!(
+        //     removed(&outcome, 0),
+        //     record::wrap_datum(0, &members[0].data),
+        //     "the representative"
+        // );
+        let picked = removed(&outcome, 0);
+        let member = members
+            .iter()
+            .find(|member| record::wrap_datum(0, &member.data) == picked)
+            .expect("the peek binds a member");
+        assert_eq!(outcome.reissue, None);
+        let log = rig.log().await;
+        assert_eq!(labels(&log), vec!["consume D", "comm D peek", "produce D"]);
+        // Changed by decision 102 (rule CR-1): the second send has the identity and the authority
+        // of the pick.
+        // assert_eq!(
+        //     produces(&log)[0].hash,
+        //     record_hash(&members[0]),
+        //     "the second send has the identity of the representative"
+        // );
+        // assert_eq!(
+        //     registered(&budget, &log[2]),
+        //     Some(region(2)),
+        //     "the second send registers the authority of the record"
+        // );
+        assert_eq!(
+            produces(&log)[0].hash,
+            record_hash(member),
+            "the second send has the identity of the pick"
+        );
+        assert_eq!(
+            registered(&budget, &log[2]),
+            member.data.cost_authority,
+            "the second send registers the authority of the record"
+        );
+        assert_eq!(registered(&budget, &log[0]), Some(region(4)));
+        assert_eq!(rig.values().await, vec![(7, false), (7, false)]);
+        peeked.insert(record_hash(member));
     }
-    rig.log().await;
-    let peek = ConsumeOp {
-        introduction_authority: region(4),
-        ..peeking(receiving("p", any()))
-    };
-    let outcome = rig.receive(peek).await;
-    assert_eq!(fired(&outcome), vec![delivery("p", &[7])]);
     assert_eq!(
-        removed(&outcome, 0),
-        record::wrap_datum(0, &members[0].data),
-        "the representative"
+        peeked,
+        members.iter().map(record_hash).collect::<BTreeSet<_>>(),
+        "over the runs the peek binds each member"
     );
-    assert_eq!(outcome.reissue, None);
-    let log = rig.log().await;
-    assert_eq!(labels(&log), vec!["consume D", "comm D peek", "produce D"]);
-    assert_eq!(
-        produces(&log)[0].hash,
-        record_hash(&members[0]),
-        "the second send has the identity of the representative"
-    );
-    assert_eq!(
-        registered(&budget, &log[2]),
-        Some(region(2)),
-        "the second send registers the authority of the record"
-    );
-    assert_eq!(registered(&budget, &log[0]), Some(region(4)));
-    assert_eq!(rig.values().await, vec![(7, false), (7, false)]);
 }
 
-/// The second send of a peeked representative is offered to the waiters first. When it fires a
-/// guarded waiter that does not peek, that fire retires the rest of the class with K_retire
-/// (decision 37, decision 45).
+/// The second send of a peeked record is offered to the waiters first. When it fires a guarded
+/// waiter that does not peek, that fire retires the rest of the class with K_retire (decision 37,
+/// decision 45). Play picks at random (decision 102, rule CR-1). So the test starts on a rig
+/// where the pick of the waiter met the 1 ([`parked_by_a_refused_pick`]). Over the runs the peek
+/// binds each 2.
+///
+/// Changed by decision 102 (rule CR-1). The text before: "The second send of a peeked
+/// representative is offered to the waiters first."
 #[tokio::test]
 async fn space_set_discipline_peek_restore_reoffer_retires_class() {
-    let rig = Rig::new().await;
+    // Changed by decision 102 (rule CR-1): the waiter parks on a fresh rig where its pick meets 1.
+    // let rig = Rig::new().await;
     let sends = ordered_sends(&[(1, false), (2, false), (2, false)]);
-    for send in &sends {
-        rig.send(send.clone()).await;
+    // for send in &sends {
+    //     rig.send(send.clone()).await;
+    // }
+    // rig.receive(guarded(receiving("w", any()), equals(2))).await;
+    // assert_eq!(
+    //     rig.waiters().await,
+    //     vec!["w".to_string()],
+    //     "w meets 1 first"
+    // );
+    let waiter = guarded(receiving("w", any()), equals(2));
+    let mut peeked = BTreeSet::new();
+    for _ in 0..PICK_RUNS {
+        let Parked { rig, .. } = parked_by_a_refused_pick(&sends, &waiter).await;
+        rig.log().await;
+        let outcome = rig.receive(peeking(receiving("p", exactly(2)))).await;
+        assert_eq!(fired(&outcome), vec![
+            delivery("p", &[]),
+            delivery("w", &[2])
+        ]);
+        assert_eq!(outcome.reissue, None);
+        let picked = removed(&outcome, 0);
+        let (pick, other) = match picked == record::wrap_datum(0, &sends[1].data) {
+            true => (&sends[1], &sends[2]),
+            false => (&sends[2], &sends[1]),
+        };
+        assert_eq!(
+            picked,
+            record::wrap_datum(0, &pick.data),
+            "the peek binds a 2"
+        );
+        let log = rig.log().await;
+        assert_eq!(labels(&log), vec![
+            "consume D",
+            "comm D peek",
+            "produce D",
+            "comm D",
+            "consume D",
+            "comm D"
+        ]);
+        assert_eq!(
+            produces(&log)[0].hash,
+            record_hash(pick),
+            "the second send has the identity of the pick"
+        );
+        // Changed by decision 102 (rule CR-1): the peek binds either 2, so the second send of its
+        // pick retires the other 2.
+        // assert_eq!(
+        //     consumes(&log)[1],
+        //     retire_consume(
+        //         &record::wrap_datum(0, &sends[1].data),
+        //         &record_hash(&sends[2])
+        //     ),
+        //     "the second send of the first 2 retires the second 2"
+        // );
+        assert_eq!(
+            consumes(&log)[1],
+            retire_consume(&record::wrap_datum(0, &pick.data), &record_hash(other)),
+            "the second send of the peeked 2 retires the other 2"
+        );
+        assert_eq!(rig.values().await, vec![(1, false)]);
+        assert!(rig.waiters().await.is_empty());
+        peeked.insert(record_hash(pick));
     }
-    rig.receive(guarded(receiving("w", any()), equals(2))).await;
     assert_eq!(
-        rig.waiters().await,
-        vec!["w".to_string()],
-        "w meets 1 first"
+        peeked,
+        BTreeSet::from([record_hash(&sends[1]), record_hash(&sends[2])]),
+        "over the runs the peek binds each 2"
     );
-    rig.log().await;
-    let outcome = rig.receive(peeking(receiving("p", exactly(2)))).await;
-    assert_eq!(fired(&outcome), vec![
-        delivery("p", &[]),
-        delivery("w", &[2])
-    ]);
-    assert_eq!(outcome.reissue, None);
-    let log = rig.log().await;
-    assert_eq!(labels(&log), vec![
-        "consume D",
-        "comm D peek",
-        "produce D",
-        "comm D",
-        "consume D",
-        "comm D"
-    ]);
-    assert_eq!(
-        consumes(&log)[1],
-        retire_consume(
-            &record::wrap_datum(0, &sends[1].data),
-            &record_hash(&sends[2])
-        ),
-        "the second send of the first 2 retires the second 2"
-    );
-    assert_eq!(rig.values().await, vec![(1, false)]);
-    assert!(rig.waiters().await.is_empty());
 }
 
-/// The members of a class bind in canonical order, whatever the insertion order (decision 41).
-/// The K_retire COMMs of a class follow the canonical order too.
+/// The members of a class bind in DR-75 order, whatever the insertion order (decision 41). The
+/// fire binds the first member, and the K_retire COMMs of a class follow the DR-75 order. This is
+/// true for the K_retire of a receive (decision 101, rule CR-13) and of a send.
+///
+/// Changed by decision 101 (rule CR-13) and decision 102 (rule CR-1). The text before: "The
+/// members of a class bind in canonical order, whatever the insertion order (decision 41). The
+/// K_retire COMMs of a class follow the canonical order too."
 #[tokio::test]
 async fn space_set_discipline_members_in_canonical_order() {
-    let rig = Rig::new().await;
     let members = ordered_sends(&[(3, false), (3, false), (3, false)]);
-    for member in members.iter().rev() {
-        rig.send(member.clone()).await;
-    }
-    rig.log().await;
-    let outcome = rig.receive(receiving("k", exactly(3))).await;
-    assert_eq!(
-        removed(&outcome, 0),
-        record::wrap_datum(0, &members[0].data)
-    );
-    let [comm] = comms(&rig.log().await).try_into().expect("one COMM");
-    let listed: Vec<Blake2b256Hash> = comm
-        .produces
+    let receive = receiving("k", exactly(3));
+    let expected_retires: Vec<Consume> = members[1..]
         .iter()
-        .map(|produce| produce.hash.clone())
+        .map(|member| receive_retire_consume(&receive, &record_hash(member)))
         .collect();
-    assert_eq!(listed, members.iter().map(record_hash).collect::<Vec<_>>());
-
-    let rig = Rig::new().await;
-    let stored = ordered_sends(&[(1, false), (3, false), (3, false), (3, false)]);
-    for send in stored.iter().rev() {
-        rig.send(send.clone()).await;
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::new().await;
+        for member in members.iter().rev() {
+            rig.send(member.clone()).await;
+        }
+        rig.log().await;
+        // Changed by decision 101 (rule CR-13): the receive is kept for its K_retire consumes.
+        // let outcome = rig.receive(receiving("k", exactly(3))).await;
+        let outcome = rig.receive(receive.clone()).await;
+        assert_eq!(
+            removed(&outcome, 0),
+            record::wrap_datum(0, &members[0].data)
+        );
+        let log = rig.log().await;
+        // Changed by decision 101 (rule CR-13): the fire and each K_retire make one COMM.
+        // let [comm] = comms(&rig.log().await).try_into().expect("one COMM");
+        // let listed: Vec<Blake2b256Hash> = comm
+        //     .produces
+        //     .iter()
+        //     .map(|produce| produce.hash.clone())
+        //     .collect();
+        // assert_eq!(listed, members.iter().map(record_hash).collect::<Vec<_>>());
+        let listed: Vec<Vec<Blake2b256Hash>> = comms(&log)
+            .iter()
+            .map(|comm| {
+                comm.produces
+                    .iter()
+                    .map(|produce| produce.hash.clone())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            members
+                .iter()
+                .map(|member| vec![record_hash(member)])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            consumes(&log)[1..].to_vec(),
+            expected_retires,
+            "the K_retire consumes of the receive, in DR-75 order"
+        );
     }
-    rig.receive(guarded(receiving("w", any()), equals(3))).await;
+
+    // Changed by decision 102 (rule CR-1): the waiter parks on a fresh rig where its pick meets 1.
+    // let rig = Rig::new().await;
+    let stored = ordered_sends(&[(1, false), (3, false), (3, false), (3, false)]);
+    // for send in stored.iter().rev() {
+    //     rig.send(send.clone()).await;
+    // }
+    // rig.receive(guarded(receiving("w", any()), equals(3))).await;
+    let reversed: Vec<ProduceOp> = stored.iter().rev().cloned().collect();
+    let Parked { rig, .. } =
+        parked_by_a_refused_pick(&reversed, &guarded(receiving("w", any()), equals(3))).await;
     rig.log().await;
     let incoming = salted(3, 1_000, false);
     rig.send(incoming.clone()).await;
@@ -1768,23 +2839,58 @@ async fn space_set_discipline_members_in_canonical_order() {
     assert_eq!(rig.values().await, vec![(1, false)]);
 }
 
-/// A class with a persistent member stays in the set. The class fire binds the persistent member
-/// with the others and keeps it, and a later receive finds the class again.
+/// A class with a persistent member stays in the set. The fire binds the first member in DR-75
+/// order, the persistent 6, under every pick, and keeps it. The K_retire of the receive retires
+/// the other 6, and a later receive finds the class again (CR-9, decision 101 rule CR-13).
+///
+/// Changed by decision 101 (rule CR-13) and decision 102 (rule CR-1). The text before: "The class
+/// fire binds the persistent member with the others and keeps it, and a later receive finds the
+/// class again."
 #[tokio::test]
 async fn space_set_discipline_persistent_member_keeps_class() {
-    let rig = Rig::new().await;
-    for send in ordered_sends(&[(6, true), (6, false)]) {
-        rig.send(send).await;
+    // Changed by decision 101 (rule CR-13): the test keeps the sends and the receive to check the
+    // bound record and the K_retire of the receive.
+    // for send in ordered_sends(&[(6, true), (6, false)]) {
+    //     rig.send(send).await;
+    // }
+    let sends = ordered_sends(&[(6, true), (6, false)]);
+    let receive = receiving("a", exactly(6));
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::new().await;
+        for send in &sends {
+            rig.send(send.clone()).await;
+        }
+        rig.log().await;
+        // let outcome = rig.receive(receiving("a", exactly(6))).await;
+        let outcome = rig.receive(receive.clone()).await;
+        assert_eq!(fired(&outcome), vec![delivery("a", &[])]);
+        assert_eq!(
+            removed(&outcome, 0),
+            record::wrap_datum(0, &sends[0].data),
+            "the fire binds the persistent 6, the first in DR-75 order"
+        );
+        assert!(outcome.fires[0].results[0].persistent);
+        let log = rig.log().await;
+        // Changed by decision 101 (rule CR-13): the fire binds one record over [D], and the
+        // K_retire of the receive retires the other 6.
+        // assert_eq!(labels(&rig.log().await), vec!["consume D,D", "comm D,D"]);
+        assert_eq!(labels(&log), vec![
+            "consume D",
+            "comm D",
+            "consume D",
+            "comm D"
+        ]);
+        assert_eq!(
+            consumes(&log)[1],
+            receive_retire_consume(&receive, &record_hash(&sends[1])),
+            "the K_retire of the receive retires the other 6"
+        );
+        assert_eq!(rig.values().await, vec![(6, true)]);
+        let outcome = rig.receive(receiving("b", exactly(6))).await;
+        assert_eq!(fired(&outcome), vec![delivery("b", &[])]);
+        assert!(outcome.fires[0].results[0].persistent);
+        assert_eq!(rig.values().await, vec![(6, true)], "the class stays");
     }
-    rig.log().await;
-    let outcome = rig.receive(receiving("a", exactly(6))).await;
-    assert_eq!(fired(&outcome), vec![delivery("a", &[])]);
-    assert_eq!(labels(&rig.log().await), vec!["consume D,D", "comm D,D"]);
-    assert_eq!(rig.values().await, vec![(6, true)]);
-    let outcome = rig.receive(receiving("b", exactly(6))).await;
-    assert_eq!(fired(&outcome), vec![delivery("b", &[])]);
-    assert!(outcome.fires[0].results[0].persistent);
-    assert_eq!(rig.values().await, vec![(6, true)], "the class stays");
 }
 
 /// A class fire touches its own class only: the other classes keep every member.
@@ -1805,11 +2911,17 @@ async fn space_set_discipline_distinct_classes_unaffected() {
 }
 
 /// The class key depends on the payload only (F5). Two records of one value with other random
-/// states and other cost authorities are one class, and a receive takes both. The cost stack
-/// lies outside the payload too, so it does not change the key. The host matcher binds no datum
-/// that carries a cost stack. Only a funding-channel datum of the cost-accounting branch carries
-/// one, and no space send does. So a class fire whose member carries a cost stack fails closed
-/// with `Inconsistent` and stages nothing.
+/// states and other cost authorities are one class. A receive binds one of them and retires the
+/// other (decision 101, rule CR-13). The cost stack lies outside the payload too, so it does not
+/// change the key. The host matcher binds no datum that carries a cost stack. Only a
+/// funding-channel datum of the cost-accounting branch carries one, and no space send does. So a
+/// receive whose class holds a member with a cost stack fails closed with `Inconsistent` and
+/// stages nothing. This is true when the stacked member is the first member, which the fire must
+/// bind. It is also true when the stacked member comes later, so that a K_retire must bind it.
+///
+/// Changed by decision 101 (rule CR-13). The text before: "..., and a receive takes both. ... So a
+/// class fire whose member carries a cost stack fails closed with `Inconsistent` and stages
+/// nothing."
 #[tokio::test]
 async fn space_set_discipline_key_ignores_random_state_and_authority() {
     let rig = Rig::new().await;
@@ -1825,44 +2937,106 @@ async fn space_set_discipline_key_ignores_random_state_and_authority() {
     rig.send(second).await;
     rig.log().await;
     rig.receive(receiving("k", exactly(9))).await;
-    assert_eq!(labels(&rig.log().await), vec!["consume D,D", "comm D,D"]);
+    // Changed by decision 101 (rule CR-13): the fire binds one record of 9, and a K_retire retires
+    // the other.
+    // assert_eq!(labels(&rig.log().await), vec!["consume D,D", "comm D,D"]);
+    assert_eq!(labels(&rig.log().await), vec![
+        "consume D",
+        "comm D",
+        "consume D",
+        "comm D"
+    ]);
     assert!(rig.values().await.is_empty(), "one class leaves at once");
 
-    let rig = Rig::new().await;
+    // Changed by decision 101 (rule CR-13): the stacked member fails the fire when it comes first
+    // in DR-75 order, and it fails the K_retire of the receive when it comes later. So the test
+    // checks both orders.
+    // let rig = Rig::new().await;
+    // let plain = salted(4, 1, false);
+    // let stacked = (2..)
+    //     .map(|salt| {
+    //         let mut stacked = salted(4, salt, false);
+    //         stacked.data.cost_stack = Some(CostStack {
+    //             cells: vec![CostSignature {
+    //                 value: Some(CostSignatureValue::Ground(vec![7])),
+    //             }],
+    //         });
+    //         stacked
+    //     })
+    //     .find(|stacked| record_hash(&plain) < record_hash(stacked))
+    //     .expect("a salt that orders the stacked record after the plain one");
+    // assert_eq!(
+    //     record::unwrap_datum(&record::wrap_datum(0, &stacked.data))
+    //         .expect("a record")
+    //         .datum
+    //         .pars,
+    //     plain.data.pars,
+    //     "the cost stack lies outside the payload, so the key is the key of 4"
+    // );
+    // rig.send(plain).await;
+    // rig.send(stacked).await;
+    // rig.log().await;
+    // let before = store_bytes(&rig.host).await;
+    // assert_eq!(
+    //     rig.run(SpaceOp::Consume(receiving("k", exactly(4)))).await,
+    //     Err(SpaceError::Inconsistent(
+    //         "a member of a class does not bind the pattern of its representative"
+    //     )),
+    //     "the member with the cost stack does not bind, so the class fire fails closed"
+    // );
+    // assert!(rig.log().await.is_empty(), "nothing is staged");
+    // assert_eq!(store_bytes(&rig.host).await, before);
     let plain = salted(4, 1, false);
-    let stacked = (2..)
-        .map(|salt| {
-            let mut stacked = salted(4, salt, false);
-            stacked.data.cost_stack = Some(CostStack {
-                cells: vec![CostSignature {
-                    value: Some(CostSignatureValue::Ground(vec![7])),
-                }],
-            });
-            stacked
-        })
+    let stacked_of = |salt: u64| {
+        let mut stacked = salted(4, salt, false);
+        stacked.data.cost_stack = Some(CostStack {
+            cells: vec![CostSignature {
+                value: Some(CostSignatureValue::Ground(vec![7])),
+            }],
+        });
+        stacked
+    };
+    let after = (2..)
+        .map(stacked_of)
         .find(|stacked| record_hash(&plain) < record_hash(stacked))
         .expect("a salt that orders the stacked record after the plain one");
+    let first = (2..)
+        .map(stacked_of)
+        .find(|stacked| record_hash(stacked) < record_hash(&plain))
+        .expect("a salt that orders the stacked record before the plain one");
     assert_eq!(
-        record::unwrap_datum(&record::wrap_datum(0, &stacked.data))
+        record::unwrap_datum(&record::wrap_datum(0, &after.data))
             .expect("a record")
             .datum
             .pars,
         plain.data.pars,
         "the cost stack lies outside the payload, so the key is the key of 4"
     );
-    rig.send(plain).await;
-    rig.send(stacked).await;
-    rig.log().await;
-    let before = store_bytes(&rig.host).await;
-    assert_eq!(
-        rig.run(SpaceOp::Consume(receiving("k", exactly(4)))).await,
-        Err(SpaceError::Inconsistent(
-            "a member of a class does not bind the pattern of its representative"
-        )),
-        "the member with the cost stack does not bind, so the class fire fails closed"
-    );
-    assert!(rig.log().await.is_empty(), "nothing is staged");
-    assert_eq!(store_bytes(&rig.host).await, before);
+    for (stacked, error, why) in [
+        (
+            after,
+            "a retired member does not bind the retire pattern",
+            "the K_retire of the stacked member does not bind",
+        ),
+        (
+            first,
+            "a member of a class does not bind the pattern of its representative",
+            "the stacked first member does not bind",
+        ),
+    ] {
+        let rig = Rig::new().await;
+        rig.send(plain.clone()).await;
+        rig.send(stacked).await;
+        rig.log().await;
+        let before = store_bytes(&rig.host).await;
+        assert_eq!(
+            rig.run(SpaceOp::Consume(receiving("k", exactly(4)))).await,
+            Err(SpaceError::Inconsistent(error)),
+            "{why}, so the class fire fails closed"
+        );
+        assert!(rig.log().await.is_empty(), "nothing is staged");
+        assert_eq!(store_bytes(&rig.host).await, before);
+    }
 }
 
 /// The key frames the count of the elements and the length of each element (F5, F6). So
@@ -1915,7 +3089,15 @@ async fn space_set_discipline_key_length_prefix_no_collision() {
     }
     rig.log().await;
     rig.receive(receiving("k", literal(pair.clone()))).await;
-    assert_eq!(labels(&rig.log().await), vec!["consume D,D", "comm D,D"]);
+    // Changed by decision 101 (rule CR-13): the fire binds one record of (1, 2), and a K_retire
+    // retires the other.
+    // assert_eq!(labels(&rig.log().await), vec!["consume D,D", "comm D,D"]);
+    assert_eq!(labels(&rig.log().await), vec![
+        "consume D",
+        "comm D",
+        "consume D",
+        "comm D"
+    ]);
     let mut left: Vec<Vec<Par>> = rig
         .records()
         .await
@@ -2010,39 +3192,59 @@ async fn deep_term_member() {
 }
 
 /// The case of readiness review S3 (decision 37). A guarded waiter parks while a stored member
-/// passes its guard, because the guard is checked once on its first spatial match. A later send
-/// of an equal member fires the waiter with the incoming member. K_retire then retires the stored
-/// member, so the class leaves the set. Replay stages the same events.
+/// passes its guard, because the guard is checked once, on the class of its pick. A later send of
+/// an equal member fires the waiter with the incoming member. K_retire then retires the stored
+// Changed by decision 90 (C6, step D): the replay half retires with the rigged replay modes. The
+// text before:
+// /// member, so the class leaves the set. Replay stages the same events.
+/// member, so the class leaves the set.
+///
+/// Changed by decision 102 (rule CR-1): play picks at random, so the test starts on a rig where
+/// the pick of the waiter met the 1 ([`parked_by_a_refused_pick`]). The text before: "...because
+/// the guard is checked once on its first spatial match."
 #[tokio::test]
 async fn space_set_discipline_guarded_waiter_then_equal_send_retires_class() {
-    let (play, replay) = play_and_replay().await;
-    let budget = budget();
-    let rig = Rig::over(play.clone(), &budget).await;
-    let start = play.create_checkpoint().await.expect("a checkpoint").root;
+    // Changed by decision 102 (rule CR-1): the parked rig gives the play space, the replay space,
+    // the budget and the start root.
+    // let (play, replay) = play_and_replay().await;
+    // let budget = budget();
+    // let rig = Rig::over(play.clone(), &budget).await;
+    // let start = play.create_checkpoint().await.expect("a checkpoint").root;
+    let waiter = guarded(receiving("w", any()), equals(2));
     let stored = ordered_sends(&[(1, false), (2, false)]);
     let incoming = salted(2, 1_000, false);
     let script = vec![
         SpaceOp::Produce(stored[0].clone()),
         SpaceOp::Produce(stored[1].clone()),
-        SpaceOp::Consume(guarded(receiving("w", any()), equals(2))),
+        // Changed by decision 102 (rule CR-1): the receive of the script is the parked waiter.
+        // SpaceOp::Consume(guarded(receiving("w", any()), equals(2))),
+        SpaceOp::Consume(waiter.clone()),
         SpaceOp::Produce(incoming.clone()),
     ];
-    assert!(
-        record_hash(&stored[0]) < record_hash(&stored[1]),
-        "the class {{1}} precedes the class {{2}}"
-    );
-    let mut outcomes = Vec::with_capacity(script.len());
-    for op in &script {
-        outcomes.push(rig.run(op.clone()).await.expect("the script plays"));
-    }
-    assert!(
-        outcomes[2].fires.is_empty(),
-        "the guard refuses its first match 1"
-    );
+    // Changed by decision 102 (rule CR-1): the order of the classes no longer decides the park.
+    // assert!(
+    //     record_hash(&stored[0]) < record_hash(&stored[1]),
+    //     "the class {{1}} precedes the class {{2}}"
+    // );
+    // Changed by decision 102 (rule CR-1): the waiter parks on a fresh rig where its pick meets 1.
+    // let mut outcomes = Vec::with_capacity(script.len());
+    // for op in &script {
+    //     outcomes.push(rig.run(op.clone()).await.expect("the script plays"));
+    // }
+    let Parked { rig, mut outcomes } = parked_by_a_refused_pick(&stored, &waiter).await;
+    outcomes.push(rig.run(script[3].clone()).await.expect("the script plays"));
+    // Changed by decision 102 (rule CR-1): the guard refuses the pick of the waiter.
+    // assert!(
+    //     outcomes[2].fires.is_empty(),
+    //     "the guard refuses its first match 1"
+    // );
+    assert!(outcomes[2].fires.is_empty(), "the guard refuses its pick 1");
     assert_eq!(fired(&outcomes[3]), vec![delivery("w", &[2])]);
     assert_eq!(rig.values().await, vec![(1, false)]);
     assert!(rig.waiters().await.is_empty());
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+    // Changed by decision 102 (rule CR-1): the play space is the host of the parked rig.
+    // let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+    let Checkpoint { log, .. } = rig.host.create_checkpoint().await.expect("a checkpoint");
     let last = &log[log.len() - 4..];
     assert_eq!(labels(last), vec![
         "produce D",
@@ -2067,44 +3269,61 @@ async fn space_set_discipline_guarded_waiter_then_equal_send_retires_class() {
         vec![record_hash(&stored[1])],
         "the retire binds the stored 2"
     );
-    replay
-        .rig_and_reset(start, log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_env = env_over(replay.clone(), &budget);
-    let mut replayed = Vec::with_capacity(script.len());
-    for op in script {
-        replayed.push(
-            run(&Set::default(), &replay_env, op)
-                .await
-                .expect("the script replays"),
-        );
-    }
-    assert_eq!(replayed, outcomes);
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
-    );
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). Native replay: the family matrix
+    // `space_native_replay_equal_{hashmap,pathmap,array,vector}`. Its negative controls:
+    // `space_native_forged_predecessor_fails_closed`,
+    // `native_space_replay_rejects_a_tampered_candidate`,
+    // `native_space_replay_rejects_an_outcome_that_does_not_fit`. The text before:
+    // ```
+    // replay
+    //     .rig_and_reset(start, log)
+    //     .await
+    //     .expect("the replay rigs the play log");
+    // let replay_env = env_over(replay.clone(), &budget);
+    // let mut replayed = Vec::with_capacity(script.len());
+    // for op in script {
+    //     replayed.push(
+    //         run(&Set::default(), &replay_env, op)
+    //             .await
+    //             .expect("the script replays"),
+    //     );
+    // }
+    // assert_eq!(replayed, outcomes);
+    // replay
+    //     .check_replay_data()
+    //     .await
+    //     .expect("every recorded COMM is paired");
+    // assert_eq!(
+    //     replay.create_checkpoint().await.expect("a checkpoint").root,
+    //     root
+    // );
+    // ```
 }
 
 /// The shape of RETIRE-CLASS: one K_retire consume over `[D]` for each stored non-persistent
 /// member, in canonical order. Each retire has the retire pattern and the source hash of its
 /// member as its body. It has the random state of the element under `RandomPurpose::Retire`, the
-/// cost authority of the element and no peek. Its COMM binds its member. A persistent member
-/// stays, and the retires are not dispatched.
+// Changed by decision 124 (plan v2 C7.6, decision 99): the machinery seal. The text before:
+// ```
+// /// cost authority of the element and no peek. Its COMM binds its member. A persistent member
+// /// stays, and the retires are not dispatched.
+// ```
+/// machinery seal of the cost authority of the element and no peek. Its COMM binds its member. A
+/// persistent member stays, and the retires are not dispatched.
 #[tokio::test]
 async fn space_set_discipline_produce_fire_retire_events_shape() {
-    let rig = Rig::new().await;
+    // Changed by decision 102 (rule CR-1): the rig comes from the park below.
+    // let rig = Rig::new().await;
     let stored = ordered_sends(&[(1, false), (2, false), (2, false), (2, true)]);
-    for send in &stored {
-        rig.send(send.clone()).await;
-    }
-    rig.receive(guarded(receiving("w", any()), equals(2))).await;
-    assert_eq!(rig.waiters().await, vec!["w".to_string()]);
+    // Changed by decision 102 (rule CR-1): the waiter parks on a fresh rig where its pick meets 1.
+    let Parked { rig, .. } =
+        parked_by_a_refused_pick(&stored, &guarded(receiving("w", any()), equals(2))).await;
+    // for send in &stored {
+    //     rig.send(send.clone()).await;
+    // }
+    // rig.receive(guarded(receiving("w", any()), equals(2))).await;
+    // assert_eq!(rig.waiters().await, vec!["w".to_string()]);
     rig.log().await;
     let mut incoming = salted(2, 1_000, false);
     incoming.authority = region(9);
@@ -2141,335 +3360,452 @@ async fn space_set_discipline_produce_fire_retire_events_shape() {
     let continuation = retire_continuation(
         &record_hash(&stored[1]),
         &RandomPurpose::Retire.derive(&Blake2b512Random::from_bytes(&incoming.data.random_state)),
-        Some(region(9)),
+        // Changed by decision 124 (plan v2 C7.6, decision 99): the machinery seal. The text before:
+        // Some(region(9)),
+        Some(
+            system_residue_authority_with_caller(&region(9), &rig.env.budget.deploy_id(), None)
+                .expect("the machinery seal builds"),
+        ),
     );
-    assert_eq!(continuation.cost_authority, Some(region(9)));
+    // Changed by decision 124 (plan v2 C7.6, decision 99): the machinery seal. The text before:
+    // assert_eq!(continuation.cost_authority, Some(region(9)));
+    assert_eq!(
+        continuation.cost_authority,
+        Some(
+            system_residue_authority_with_caller(&region(9), &rig.env.budget.deploy_id(), None)
+                .expect("the machinery seal builds")
+        )
+    );
     assert_eq!(continuation.guard, None);
     assert_eq!(rig.values().await, vec![(1, false), (2, true)]);
 }
 
 /// Waiters are equal only when they are byte-identical (F14). Two receives with one pattern and
 /// two random states park two waiters. A byte-identical receive parks nothing new. A send fires
-/// one of them, the first in canonical order.
+/// one of them. Play picks the waiter at random (decision 102, rule CR-1), so over the runs the
+/// send fires each.
+///
+/// Changed by decision 102 (rule CR-1). The text before: "A send fires one of them, the first in
+/// canonical order."
 #[tokio::test]
 async fn space_set_discipline_equal_receives_stay_two_waiters() {
-    let rig = Rig::new().await;
     let receives = ordered_receives(vec![receiving("w", any()), receiving("w", any())]);
     assert_eq!(receives[0].pattern, receives[1].pattern);
     assert_ne!(waiter_hash(&receives[0]), waiter_hash(&receives[1]));
-    rig.receive(receives[1].clone()).await;
-    rig.receive(receives[0].clone()).await;
-    assert_eq!(rig.waiters().await, vec!["w".to_string(), "w".to_string()]);
-    rig.receive(receives[0].clone()).await;
+    let waiters: BTreeSet<Blake2b256Hash> = receives.iter().map(waiter_hash).collect();
+    let mut fired_waiters = BTreeSet::new();
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::new().await;
+        rig.receive(receives[1].clone()).await;
+        rig.receive(receives[0].clone()).await;
+        assert_eq!(rig.waiters().await, vec!["w".to_string(), "w".to_string()]);
+        rig.receive(receives[0].clone()).await;
+        assert_eq!(
+            rig.waiters().await,
+            vec!["w".to_string(), "w".to_string()],
+            "a byte-identical park adds nothing"
+        );
+        rig.log().await;
+        rig.send(salted(1, 1, false)).await;
+        let log = rig.log().await;
+        let [comm] = comms(&log).try_into().expect("one COMM");
+        // Changed by decision 102 (rule CR-1): the send fires its pick, one of the two waiters.
+        // assert_eq!(
+        //     comm.consume.hash,
+        //     waiter_hash(&receives[0]),
+        //     "the first waiter in canonical order fires"
+        // );
+        assert!(
+            waiters.contains(&comm.consume.hash),
+            "the send fires one of the two waiters"
+        );
+        assert_eq!(rig.waiters().await, vec!["w".to_string()]);
+        fired_waiters.insert(comm.consume.hash.clone());
+    }
     assert_eq!(
-        rig.waiters().await,
-        vec!["w".to_string(), "w".to_string()],
-        "a byte-identical park adds nothing"
+        fired_waiters, waiters,
+        "over the runs the send fires each waiter"
     );
-    rig.log().await;
-    rig.send(salted(1, 1, false)).await;
-    let log = rig.log().await;
-    let [comm] = comms(&log).try_into().expect("one COMM");
-    assert_eq!(
-        comm.consume.hash,
-        waiter_hash(&receives[0]),
-        "the first waiter in canonical order fires"
-    );
-    assert_eq!(rig.waiters().await, vec!["w".to_string()]);
 }
 
 /// After a checkpoint and a reset, the store holds the records in the order of the history. The
 /// agent makes the same class fire and reaches the same root.
+///
+/// Added by decision 102 (rule CR-1): the receives take the class of 1. The fire binds the first
+/// 1 in DR-75 order under every pick (rule CR-13). A receive of any value picks its class at
+/// random, so after the reset its fire can take another class.
 #[tokio::test]
 async fn space_set_discipline_checkpoint_restart() {
-    let rig = Rig::new().await;
-    for (value, salt) in [(1, 1), (2, 1), (1, 2), (3, 1), (1, 3)] {
-        rig.send(salted(value, salt, false)).await;
-    }
-    let start = rig
-        .host
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint")
-        .root;
-    let first = rig.receive(receiving("a", any())).await;
-    let first_removed = removed(&first, 0);
-    let after = rig
-        .host
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint")
-        .root;
-    rig.host
-        .reset(&start)
-        .await
-        .expect("the reset to the start");
-    assert_eq!(rig.values().await.len(), 5);
-    let again = rig.receive(receiving("a", any())).await;
-    assert_eq!(fired(&again), fired(&first));
-    assert_eq!(
-        removed(&again, 0),
-        first_removed,
-        "the choice does not depend on the list order"
-    );
-    assert_eq!(
-        rig.host
+    let first_one = (1..=3)
+        .map(|salt| salted(1, salt, false))
+        .min_by_key(record_hash)
+        .expect("three sends of 1");
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::new().await;
+        for (value, salt) in [(1, 1), (2, 1), (1, 2), (3, 1), (1, 3)] {
+            rig.send(salted(value, salt, false)).await;
+        }
+        let start = rig
+            .host
             .create_checkpoint()
             .await
             .expect("a checkpoint")
-            .root,
-        after
-    );
-}
-
-/// The script of the replay test. It stores equal records and parks a guarded waiter. A peek
-/// follows, whose second send fires the waiter and retires the class. A class fire takes two
-/// byte-identical records, and a peek stores its record again. Then come parks, a persistent send
-/// that fires and is stored, and a persistent receive that drains a class and parks. A divergent
-/// pair ends the script. The records follow each other in canonical order, so every operation
-/// makes a known number of fires ([`REPLAY_FIRES`]).
-fn replay_script() -> Vec<SpaceOp> {
-    let sends = ordered_sends(&[(1, false), (2, false), (2, false), (5, false)]);
-    vec![
-        SpaceOp::Produce(sends[0].clone()),
-        SpaceOp::Produce(sends[1].clone()),
-        SpaceOp::Produce(sends[2].clone()),
-        SpaceOp::Produce(sends[3].clone()),
-        SpaceOp::Produce(sends[3].clone()),
-        SpaceOp::Consume(guarded(receiving("g", any()), equals(2))),
-        SpaceOp::Consume(peeking(receiving("p", exactly(2)))),
-        SpaceOp::Consume(receiving("a", exactly(5))),
-        SpaceOp::Consume(peeking(receiving("q", any()))),
-        SpaceOp::Consume(receiving("t", exactly(7))),
-        SpaceOp::Consume(guarded(receiving("refuses", any()), refusing())),
-        SpaceOp::Produce(salted(7, 1, true)),
-        SpaceOp::Consume(persisting(receiving("drain", exactly(1)))),
-        SpaceOp::Produce(salted(1, 9, true)),
-    ]
-}
-
-/// The fires of each operation of [`replay_script`]. The guarded waiter parks on 1. The peek of
-/// the first 2 and its second send fire `p` and `g` and retire the second 2. `a` takes the class
-/// of the two 5s, and `q` peeks 1 and stores it again. The persistent 7 fires `t` and is stored.
-/// The drain takes 1 and parks, and the last persistent 1 fires the drain as a divergent pair.
-const REPLAY_FIRES: [usize; 14] = [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 0, 1, 1, 1];
-
-/// Runs the replay script on `rig`.
-async fn run_replay_script(rig: &Rig) -> Result<Vec<SpaceOutcome>, SpaceError> {
-    let mut outcomes = Vec::new();
-    for op in replay_script() {
-        outcomes.push(rig.run(op).await?);
-    }
-    Ok(outcomes)
-}
-
-/// Replay stages the transactions of play: equal outcomes, every recorded COMM paired (the class
-/// fires and the K_retire COMMs included), and the root of play. A replay without the log
-/// diverges.
-#[tokio::test]
-async fn space_set_discipline_replay_equal() {
-    let (play, replay) = play_and_replay().await;
-    let budget = budget();
-    let play_rig = Rig::over(play.clone(), &budget).await;
-    let start = play
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let played = run_replay_script(&play_rig)
-        .await
-        .expect("the script plays");
-    assert_eq!(
-        played
-            .iter()
-            .map(|outcome| outcome.fires.len())
-            .collect::<Vec<usize>>(),
-        REPLAY_FIRES.to_vec()
-    );
-    assert_eq!(
-        played
-            .last()
-            .and_then(|outcome| outcome.reissue.as_ref())
-            .map(|reissue| reissue.cause),
-        Some(ReissueCause::DivergentPair)
-    );
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-    assert!(
-        log.iter().any(|event| matches!(
-            event,
-            Event::Comm(comm) if comm.consume.channel_hashes.len() == 2
-        )),
-        "the log holds the class fire over [D; 2]"
-    );
-    replay
-        .rig_and_reset(start.clone(), log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_rig = Rig {
-        host: play.clone(),
-        env: env_over(replay.clone(), &budget),
-    };
-    let replayed = run_replay_script(&replay_rig)
-        .await
-        .expect("the script replays");
-    assert_eq!(replayed, played);
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
-    );
-    replay
-        .rig_and_reset(start, Vec::new())
-        .await
-        .expect("the replay rigs an empty log");
-    replay_rig
-        .run(replay_script().remove(0))
-        .await
-        .expect("a store makes no COMM, so it replays without the log");
-    match replay_rig
-        .run(SpaceOp::Consume(receiving("x", any())))
-        .await
-    {
-        Err(error @ SpaceError::ReplayDivergence(_)) => {
-            assert_eq!(error.code(), "ReplayDivergence")
-        }
-        other => panic!("negative control: a log without the COMMs diverges: {other:?}"),
+            .root;
+        // Changed by decision 102 (rule CR-1): a receive of any value picks its class at random,
+        // so the receives take the class of 1.
+        // let first = rig.receive(receiving("a", any())).await;
+        let first = rig.receive(receiving("a", exactly(1))).await;
+        let first_removed = removed(&first, 0);
+        assert_eq!(
+            first_removed,
+            record::wrap_datum(0, &first_one.data),
+            "the fire binds the first 1 in DR-75 order"
+        );
+        let after = rig
+            .host
+            .create_checkpoint()
+            .await
+            .expect("a checkpoint")
+            .root;
+        rig.host
+            .reset(&start)
+            .await
+            .expect("the reset to the start");
+        assert_eq!(rig.values().await.len(), 5);
+        // Changed by decision 102 (rule CR-1): the receive takes the class of 1 again.
+        // let again = rig.receive(receiving("a", any())).await;
+        let again = rig.receive(receiving("a", exactly(1))).await;
+        assert_eq!(fired(&again), fired(&first));
+        assert_eq!(
+            removed(&again, 0),
+            first_removed,
+            "the choice does not depend on the list order"
+        );
+        assert_eq!(
+            rig.host
+                .create_checkpoint()
+                .await
+                .expect("a checkpoint")
+                .root,
+            after
+        );
     }
 }
 
-/// A replay whose log lacks a COMM of a set operation rejects the operation with
-/// `ReplayDivergence`. A class fire is the first staged operation of its receive. So the rejected
-/// receive applies nothing, and the replay state stays the state of its start. A K_retire
-/// follows the fire of its send, so the rejected send keeps that prefix (D6). The revert of the
-/// soft checkpoint of the deploy restores the start state.
-#[tokio::test]
-async fn space_set_discipline_rejected_replay_root_unchanged() {
-    let (play, replay) = play_and_replay().await;
-    let budget = budget();
-    let play_rig = Rig::over(play.clone(), &budget).await;
-    let stored = ordered_sends(&[(1, false), (2, false), (2, false), (3, false)]);
-    for send in &stored {
-        play_rig.send(send.clone()).await;
-    }
-    play_rig
-        .receive(guarded(receiving("w", any()), equals(3)))
-        .await;
-    assert_eq!(
-        play_rig.waiters().await,
-        vec!["w".to_string()],
-        "w meets 1 first"
-    );
-    let start = play.create_checkpoint().await.expect("a checkpoint").root;
-    let class_receive = receiving("k", exactly(2));
-    let class_fire = play_rig.receive(class_receive.clone()).await;
-    assert_eq!(class_fire.fires.len(), 1);
-    let incoming = salted(3, 77, false);
-    let retiring = play_rig.send(incoming.clone()).await;
-    assert_eq!(fired(&retiring), vec![delivery("w", &[3])]);
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-    let class_consume = Consume::create(
-        &vec![data(); 2],
-        &vec![class_receive.pattern.clone(); 2],
-        &parked(&class_receive),
-        false,
-    );
-    let retire = retire_consume(
-        &record::wrap_datum(0, &incoming.data),
-        &record_hash(&stored[3]),
-    );
-    let without = |dropped: &Consume| -> Vec<Event> {
-        log.iter()
-            .filter(|event| !matches!(event, Event::Comm(comm) if comm.consume == *dropped))
-            .cloned()
-            .collect()
-    };
-    assert_eq!(without(&class_consume).len() + 1, log.len());
-    assert_eq!(without(&retire).len() + 1, log.len());
-    let replay_rig = Rig {
-        host: play.clone(),
-        env: env_over(replay.clone(), &budget),
-    };
+// Retired by decision 90 (C6, step D): `space_set_discipline_replay_equal`,
+// `space_set_discipline_rejected_replay_root_unchanged` and their replay script ran through the
+// rigged replay modes, which retire (decision 125). Native replay: the family matrix
+// `space_native_replay_equal_{hashmap,pathmap,array,vector}`. Its negative controls:
+// `space_native_forged_predecessor_fails_closed`,
+// `native_space_replay_rejects_a_tampered_candidate`,
+// `native_space_replay_rejects_an_outcome_that_does_not_fit`. The text before:
+// ```
+// /// The script of the replay test. It stores equal records and parks a guarded waiter. A peek
+// /// follows, whose second send fires the waiter and retires the class. A class fire takes two
+// /// byte-identical records, and a peek stores its record again. Then come parks, a persistent send
+// /// that fires and is stored, and a persistent receive that drains a class and parks. A divergent
+// /// pair ends the script. The records follow each other in canonical order, so every operation
+// /// makes a known number of fires ([`REPLAY_FIRES`]).
+// fn replay_script() -> Vec<SpaceOp> {
+//     let sends = ordered_sends(&[(1, false), (2, false), (2, false), (5, false)]);
+//     vec![
+//         SpaceOp::Produce(sends[0].clone()),
+//         SpaceOp::Produce(sends[1].clone()),
+//         SpaceOp::Produce(sends[2].clone()),
+//         SpaceOp::Produce(sends[3].clone()),
+//         SpaceOp::Produce(sends[3].clone()),
+//         SpaceOp::Consume(guarded(receiving("g", any()), equals(2))),
+//         SpaceOp::Consume(peeking(receiving("p", exactly(2)))),
+//         SpaceOp::Consume(receiving("a", exactly(5))),
+//         SpaceOp::Consume(peeking(receiving("q", any()))),
+//         SpaceOp::Consume(receiving("t", exactly(7))),
+//         SpaceOp::Consume(guarded(receiving("refuses", any()), refusing())),
+//         SpaceOp::Produce(salted(7, 1, true)),
+//         SpaceOp::Consume(persisting(receiving("drain", exactly(1)))),
+//         SpaceOp::Produce(salted(1, 9, true)),
+//     ]
+// }
+//
+// /// The fires of each operation of [`replay_script`]. The guarded waiter parks on 1. The peek of
+// /// the first 2 and its second send fire `p` and `g` and retire the second 2. `a` takes the class
+// /// of the two 5s, and `q` peeks 1 and stores it again. The persistent 7 fires `t` and is stored.
+// /// The drain takes 1 and parks, and the last persistent 1 fires the drain as a divergent pair.
+// const REPLAY_FIRES: [usize; 14] = [0, 0, 0, 0, 0, 0, 2, 1, 1, 0, 0, 1, 1, 1];
+//
+// /// Runs the replay script on `rig`.
+// async fn run_replay_script(rig: &Rig) -> Result<Vec<SpaceOutcome>, SpaceError> {
+//     let mut outcomes = Vec::new();
+//     for op in replay_script() {
+//         outcomes.push(rig.run(op).await?);
+//     }
+//     Ok(outcomes)
+// }
+//
+// /// Replay stages the transactions of play: equal outcomes, every recorded COMM paired (the class
+// /// fires and the K_retire COMMs included), and the root of play. A replay without the log
+// /// diverges.
+// #[tokio::test]
+// async fn space_set_discipline_replay_equal() {
+//     let (play, replay) = play_and_replay().await;
+//     let budget = budget();
+//     let play_rig = Rig::over(play.clone(), &budget).await;
+//     let start = play
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint after the creation")
+//         .root;
+//     let played = run_replay_script(&play_rig)
+//         .await
+//         .expect("the script plays");
+//     assert_eq!(
+//         played
+//             .iter()
+//             .map(|outcome| outcome.fires.len())
+//             .collect::<Vec<usize>>(),
+//         REPLAY_FIRES.to_vec()
+//     );
+//     assert_eq!(
+//         played
+//             .last()
+//             .and_then(|outcome| outcome.reissue.as_ref())
+//             .map(|reissue| reissue.cause),
+//         Some(ReissueCause::DivergentPair)
+//     );
+//     let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+//     assert!(
+//         log.iter().any(|event| matches!(
+//             event,
+//             Event::Comm(comm) if comm.consume.channel_hashes.len() == 2
+//         )),
+//         "the log holds the class fire over [D; 2]"
+//     );
+//     replay
+//         .rig_and_reset(start.clone(), log)
+//         .await
+//         .expect("the replay rigs the play log");
+//     let replay_rig = Rig {
+//         host: play.clone(),
+//         env: env_over(replay.clone(), &budget),
+//     };
+//     let replayed = run_replay_script(&replay_rig)
+//         .await
+//         .expect("the script replays");
+//     assert_eq!(replayed, played);
+//     replay
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired");
+//     assert_eq!(
+//         replay.create_checkpoint().await.expect("a checkpoint").root,
+//         root
+//     );
+//     replay
+//         .rig_and_reset(start, Vec::new())
+//         .await
+//         .expect("the replay rigs an empty log");
+//     replay_rig
+//         .run(replay_script().remove(0))
+//         .await
+//         .expect("a store makes no COMM, so it replays without the log");
+//     match replay_rig
+//         .run(SpaceOp::Consume(receiving("x", any())))
+//         .await
+//     {
+//         Err(error @ SpaceError::ReplayDivergence(_)) => {
+//             assert_eq!(error.code(), "ReplayDivergence")
+//         }
+//         other => panic!("negative control: a log without the COMMs diverges: {other:?}"),
+//     }
+// }
+//
+// /// A replay whose log lacks a COMM of a set operation rejects the operation with
+// /// `ReplayDivergence`. A class fire is the first staged operation of its receive. So the rejected
+// /// receive applies nothing, and the replay state stays the state of its start. A K_retire
+// /// follows the fire of its send, so the rejected send keeps that prefix (D6). The revert of the
+// /// soft checkpoint of the deploy restores the start state.
+// #[tokio::test]
+// async fn space_set_discipline_rejected_replay_root_unchanged() {
+//     let (play, replay) = play_and_replay().await;
+//     let budget = budget();
+//     let play_rig = Rig::over(play.clone(), &budget).await;
+//     let stored = ordered_sends(&[(1, false), (2, false), (2, false), (3, false)]);
+//     for send in &stored {
+//         play_rig.send(send.clone()).await;
+//     }
+//     play_rig
+//         .receive(guarded(receiving("w", any()), equals(3)))
+//         .await;
+//     assert_eq!(
+//         play_rig.waiters().await,
+//         vec!["w".to_string()],
+//         "w meets 1 first"
+//     );
+//     let start = play.create_checkpoint().await.expect("a checkpoint").root;
+//     let class_receive = receiving("k", exactly(2));
+//     let class_fire = play_rig.receive(class_receive.clone()).await;
+//     assert_eq!(class_fire.fires.len(), 1);
+//     let incoming = salted(3, 77, false);
+//     let retiring = play_rig.send(incoming.clone()).await;
+//     assert_eq!(fired(&retiring), vec![delivery("w", &[3])]);
+//     let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+//     let class_consume = Consume::create(
+//         &vec![data(); 2],
+//         &vec![class_receive.pattern.clone(); 2],
+//         &parked(&class_receive),
+//         false,
+//     );
+//     let retire = retire_consume(
+//         &record::wrap_datum(0, &incoming.data),
+//         &record_hash(&stored[3]),
+//     );
+//     let without = |dropped: &Consume| -> Vec<Event> {
+//         log.iter()
+//             .filter(|event| !matches!(event, Event::Comm(comm) if comm.consume == *dropped))
+//             .cloned()
+//             .collect()
+//     };
+//     assert_eq!(without(&class_consume).len() + 1, log.len());
+//     assert_eq!(without(&retire).len() + 1, log.len());
+//     let replay_rig = Rig {
+//         host: play.clone(),
+//         env: env_over(replay.clone(), &budget),
+//     };
+//
+//     replay
+//         .rig_and_reset(start.clone(), without(&class_consume))
+//         .await
+//         .expect("the replay rigs the log without the class COMM");
+//     let before = store_bytes(&replay).await;
+//     match replay_rig
+//         .run(SpaceOp::Consume(class_receive.clone()))
+//         .await
+//     {
+//         Err(SpaceError::ReplayDivergence(_)) => {}
+//         other => panic!("the class fire diverges: {other:?}"),
+//     }
+//     assert_eq!(
+//         store_bytes(&replay).await,
+//         before,
+//         "the rejected receive applies nothing"
+//     );
+//     assert_eq!(
+//         replay.get_root().await,
+//         start,
+//         "the root stays the start root"
+//     );
+//
+//     replay
+//         .rig_and_reset(start.clone(), without(&retire))
+//         .await
+//         .expect("the replay rigs the log without the K_retire COMM");
+//     replay_rig
+//         .run(SpaceOp::Consume(class_receive.clone()))
+//         .await
+//         .expect("the class fire replays");
+//     let soft = replay.create_soft_checkpoint().await;
+//     let before = store_bytes(&replay).await;
+//     match replay_rig.run(SpaceOp::Produce(incoming.clone())).await {
+//         Err(SpaceError::ReplayDivergence(_)) => {}
+//         other => panic!("the K_retire diverges: {other:?}"),
+//     }
+//     assert_ne!(
+//         store_bytes(&replay).await,
+//         before,
+//         "the paired fire of the waiter stays applied (D6)"
+//     );
+//     replay
+//         .revert_to_soft_checkpoint(soft)
+//         .await
+//         .expect("the revert of the deploy");
+//     assert_eq!(
+//         store_bytes(&replay).await,
+//         before,
+//         "the revert restores the state"
+//     );
+//
+//     replay
+//         .rig_and_reset(start, log)
+//         .await
+//         .expect("the replay rigs the full log");
+//     for op in [SpaceOp::Consume(class_receive), SpaceOp::Produce(incoming)] {
+//         replay_rig.run(op).await.expect("the full log replays");
+//     }
+//     replay
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired");
+//     assert_eq!(
+//         replay.create_checkpoint().await.expect("a checkpoint").root,
+//         root
+//     );
+// }
+// ```
 
-    replay
-        .rig_and_reset(start.clone(), without(&class_consume))
-        .await
-        .expect("the replay rigs the log without the class COMM");
-    let before = store_bytes(&replay).await;
-    match replay_rig
-        .run(SpaceOp::Consume(class_receive.clone()))
-        .await
-    {
-        Err(SpaceError::ReplayDivergence(_)) => {}
-        other => panic!("the class fire diverges: {other:?}"),
-    }
-    assert_eq!(
-        store_bytes(&replay).await,
-        before,
-        "the rejected receive applies nothing"
-    );
-    assert_eq!(
-        replay.get_root().await,
-        start,
-        "the root stays the start root"
-    );
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+// Its host differential continues in `space_set_discipline_observer_calls_equal_host`.
+//
+// /// In a legacy deploy, each set operation pays what `ChargingRSpace` charges for its host
+// /// program, entry by entry (decision 45, Option P and Rule E). This includes the class fires over
+// /// `[D; n]`, the K_retire consumes, and the second send of each peek with its fires.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_set_discipline_legacy_charges_equal_host() {
+//     let sends = ordered_sends(&[(1, false), (2, false), (2, false), (8, false), (8, false)]);
+//     // The persistent 6 follows the other 6 in canonical order, so a host consume over [D; 2]
+//     // binds both (see `HostClass`).
+//     let sixes = ordered_sends(&[(6, false), (6, true)]);
+//     // No persistent receive meets a persistent record, so the host program ends.
+//     let ops = vec![
+//         SpaceOp::Produce(sends[0].clone()),
+//         SpaceOp::Produce(sends[3].clone()),
+//         SpaceOp::Produce(sends[4].clone()),
+//         SpaceOp::Consume(guarded(receiving("g8", any()), equals(8))),
+//         SpaceOp::Produce(salted(8, 7, false)),
+//         SpaceOp::Produce(sends[1].clone()),
+//         SpaceOp::Produce(sends[2].clone()),
+//         SpaceOp::Consume(guarded(receiving("g", any()), equals(2))),
+//         SpaceOp::Consume(peeking(receiving("p", exactly(2)))),
+//         SpaceOp::Produce(salted(4, 1, false)),
+//         SpaceOp::Produce(salted(4, 2, false)),
+//         SpaceOp::Produce(salted(4, 3, false)),
+//         SpaceOp::Consume(receiving("w", exactly(4))),
+//         SpaceOp::Consume(peeking(receiving("q", any()))),
+//         SpaceOp::Consume(receiving("r", exactly(6))),
+//         SpaceOp::Produce(sixes[1].clone()),
+//         SpaceOp::Produce(sixes[0].clone()),
+//         SpaceOp::Consume(receiving("s", exactly(6))),
+//         SpaceOp::Produce(salted(5, 1, false)),
+//         SpaceOp::Consume(persisting(receiving("drain", exactly(5)))),
+//         SpaceOp::Produce(salted(5, 2, false)),
+//         SpaceOp::Consume(guarded(receiving("refuses", any()), refusing())),
+//         SpaceOp::Produce(salted(7, 1, false)),
+//     ];
+//     assert!(
+//         compare_with_host(&ops)
+//             .await
+//             .unwrap_or_else(|failure| panic!("{failure}")),
+//         "every operation has its host program"
+//     );
+// }
 
-    replay
-        .rig_and_reset(start.clone(), without(&retire))
-        .await
-        .expect("the replay rigs the log without the K_retire COMM");
-    replay_rig
-        .run(SpaceOp::Consume(class_receive.clone()))
-        .await
-        .expect("the class fire replays");
-    let soft = replay.create_soft_checkpoint().await;
-    let before = store_bytes(&replay).await;
-    match replay_rig.run(SpaceOp::Produce(incoming.clone())).await {
-        Err(SpaceError::ReplayDivergence(_)) => {}
-        other => panic!("the K_retire diverges: {other:?}"),
-    }
-    assert_ne!(
-        store_bytes(&replay).await,
-        before,
-        "the paired fire of the waiter stays applied (D6)"
-    );
-    replay
-        .revert_to_soft_checkpoint(soft)
-        .await
-        .expect("the revert of the deploy");
-    assert_eq!(
-        store_bytes(&replay).await,
-        before,
-        "the revert restores the state"
-    );
-
-    replay
-        .rig_and_reset(start, log)
-        .await
-        .expect("the replay rigs the full log");
-    for op in [SpaceOp::Consume(class_receive), SpaceOp::Produce(incoming)] {
-        replay_rig.run(op).await.expect("the full log replays");
-    }
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
-    );
-}
-
-/// In a legacy deploy, each set operation pays what `ChargingRSpace` charges for its host
-/// program, entry by entry (decision 45, Option P and Rule E). This includes the class fires over
-/// `[D; n]`, the K_retire consumes, and the second send of each peek with its fires.
+/// Added by decision 90 (decision 69): the host differential of the retired
+/// `space_set_discipline_legacy_charges_equal_host`. Each set operation makes the observer calls
+/// of its host program, call by call and with the same arguments (Rule E). This includes the
+/// fires of receives over `[D]`, the K_retire consumes of receives and of sends, and the second
+/// send of each peek with its fires. The host program follows each pick of the agent (plan v2
+/// section 5). The receive of the three 4s retires two of them under every pick. The fires and
+/// the stores are equal too.
+///
+/// Changed by decision 101 (rule CR-13) and decision 102 (plan v2 section 5). The text before:
+/// "This includes the class fires over `[D; n]`, the K_retire consumes, ..."
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_set_discipline_legacy_charges_equal_host() {
+async fn space_set_discipline_observer_calls_equal_host() {
     let sends = ordered_sends(&[(1, false), (2, false), (2, false), (8, false), (8, false)]);
-    // The persistent 6 follows the other 6 in canonical order, so a host consume over [D; 2]
-    // binds both (see `HostClass`).
+    // Changed by decision 101 (rule CR-13): the fire of a receive binds one record, and no host
+    // consume binds a class.
+    // // The persistent 6 follows the other 6 in canonical order, so a host consume over [D; 2]
+    // // binds both (see `HostClass`).
+    // The non-persistent 6 comes first in DR-75 order, so the fire of `s` binds it, and the
+    // persistent 6 keeps the class (CR-9).
     let sixes = ordered_sends(&[(6, false), (6, true)]);
     // No persistent receive meets a persistent record, so the host program ends.
     let ops = vec![
@@ -2497,22 +3833,39 @@ async fn space_set_discipline_legacy_charges_equal_host() {
         SpaceOp::Consume(guarded(receiving("refuses", any()), refusing())),
         SpaceOp::Produce(salted(7, 1, false)),
     ];
-    assert!(
-        compare_with_host(&ops)
+    // Changed by decision 102 (plan v2 section 5): the comparison returns what it compared, and
+    // the test runs it PICK_RUNS times, because play picks at random.
+    // assert!(
+    //     compare_with_host(&ops)
+    //         .await
+    //         .unwrap_or_else(|failure| panic!("{failure}")),
+    //     "every operation has its host program"
+    // );
+    for _ in 0..PICK_RUNS {
+        let compared = compare_with_host(&ops)
             .await
-            .unwrap_or_else(|failure| panic!("{failure}")),
-        "every operation has its host program"
-    );
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        assert!(
+            compared.receive_retires >= 2,
+            "the receive of the three 4s retires two of them"
+        );
+    }
 }
 
-/// A persistent record and a non-persistent record with equal bytes are two members of one
-/// class with two source hashes. A peek binds the first of them in canonical order (decision 41).
-/// The pin of the host program names a record only by its bytes, and host play picks between
-/// the two at random (DR-129). So the program makes its consume again until it binds the
-/// record with the canonical persist flag (decision 89). The test runs the program `TWIN_RUNS`
-/// times.
+// Changed by decision 102 (rule CR-1): the peek binds its random pick, so the name changes. The
+// name before: `space_set_discipline_persistent_twin_peek_binds_the_canonical_record`.
+/// A persistent record and a non-persistent record with equal bytes are two members of one class
+/// with two source hashes. A peek binds its pick, one of them at random (decision 102, rule CR-1).
+/// The pin of the host program names a record only by its bytes, and host play picks between the
+/// two at random (DR-129). So the program makes its consume again until it binds the record with
+/// the persist flag of the pick of the agent (decision 89). The test runs the program
+/// [`PICK_RUNS`] times. Over the runs the peek binds each of the two records.
+///
+/// Changed by decision 102 (rule CR-1). The text before: "A peek binds the first of them in
+/// canonical order (decision 41). ... until it binds the record with the canonical persist flag
+/// (decision 89). The test runs the program `TWIN_RUNS` times."
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_set_discipline_persistent_twin_peek_binds_the_canonical_record() {
+async fn space_set_discipline_persistent_twin_peek_binds_the_pick() {
     let twin = salted(1, 0, true);
     let member = salted(1, 0, false);
     assert_eq!(twin.data, member.data, "the two members have equal bytes");
@@ -2521,34 +3874,63 @@ async fn space_set_discipline_persistent_twin_peek_binds_the_canonical_record() 
         SpaceOp::Produce(member),
         SpaceOp::Consume(peeking(receiving("p", exactly(1)))),
     ];
-    for _ in 0..TWIN_RUNS {
-        assert!(
-            compare_with_host(&ops)
-                .await
-                .unwrap_or_else(|failure| panic!("{failure}")),
-            "every operation has its host program"
-        );
+    let mut flags = BTreeSet::new();
+    // Changed by decision 102 (rule CR-1): the test runs the program PICK_RUNS times and collects
+    // the persist flag of each pick.
+    // for _ in 0..TWIN_RUNS {
+    //     assert!(
+    //         compare_with_host(&ops)
+    //             .await
+    //             .unwrap_or_else(|failure| panic!("{failure}")),
+    //         "every operation has its host program"
+    //     );
+    // }
+    for _ in 0..PICK_RUNS {
+        let compared = compare_with_host(&ops)
+            .await
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        flags.extend(compared.receive_binds);
     }
+    assert_eq!(
+        flags,
+        BTreeSet::from([false, true]),
+        "over the runs the peek binds each of the two records"
+    );
 }
 
-/// A send fires a guarded waiter, and K_retire retires the stored non-persistent member of its
-/// class (decision 37). A persistent twin of the member has the bytes of the member, so the pin
-/// of the retire admits both. The host program makes the retire again until it binds the
-/// non-persistent member, and the persistent twin stays (decision 89). The first record comes
-/// before the class in canonical order, so the waiter parks on it. The test runs the program
+/// A send or a receive fires a guarded waiter, and K_retire retires the stored non-persistent
+/// member of the class (decision 37, decision 101 rule CR-13). A persistent twin of the member has
+/// the bytes of the member, so the pin of the retire admits both. The host program makes the
+/// retire again until it binds the non-persistent member, and the persistent twin stays (decision
+/// 89). The twin comes first in DR-75 order. So when the pick of the waiter meets the class, the
+/// fire binds the twin, and the K_retire of the receive retires the member. When the pick meets
+/// the 1, the waiter parks, and the later send retires the member. The test runs the program
 /// `TWIN_RUNS` times.
+///
+/// Changed by decision 102 (rule CR-1) and decision 101 (rule CR-13). The text before: "A send
+/// fires a guarded waiter, and K_retire retires the stored non-persistent member of its class
+/// (decision 37). ... The first record comes before the class in canonical order, so the waiter
+/// parks on it."
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_set_discipline_persistent_twin_retire_binds_the_member() {
-    let member = salted(2, 1, false);
-    let twin = salted(2, 1, true);
+    // Changed by decision 102 (rule CR-1) and decision 101 (rule CR-13): the twin comes first in
+    // DR-75 order, so a fire of the waiter binds the twin, and the K_retire of the receive retires
+    // the member. The waiter picks at random, so the first record needs no order.
+    // let member = salted(2, 1, false);
+    // let twin = salted(2, 1, true);
+    let (member, twin) = (1..)
+        .map(|salt| (salted(2, salt, false), salted(2, salt, true)))
+        .find(|(member, twin)| record_hash(twin) < record_hash(member))
+        .expect("a salt that orders the twin before the member");
     assert_eq!(twin.data, member.data, "the two members have equal bytes");
-    let first = (1..)
-        .map(|salt| salted(1, salt, false))
-        .find(|candidate| {
-            record_hash(candidate) < record_hash(&member)
-                && record_hash(candidate) < record_hash(&twin)
-        })
-        .expect("a record before the class {2}");
+    // let first = (1..)
+    //     .map(|salt| salted(1, salt, false))
+    //     .find(|candidate| {
+    //         record_hash(candidate) < record_hash(&member)
+    //             && record_hash(candidate) < record_hash(&twin)
+    //     })
+    //     .expect("a record before the class {2}");
+    let first = salted(1, 1, false);
     let ops = vec![
         SpaceOp::Produce(first),
         SpaceOp::Produce(member),
@@ -2557,12 +3939,17 @@ async fn space_set_discipline_persistent_twin_retire_binds_the_member() {
         SpaceOp::Produce(salted(2, 1_000, false)),
     ];
     for _ in 0..TWIN_RUNS {
-        assert!(
-            compare_with_host(&ops)
-                .await
-                .unwrap_or_else(|failure| panic!("{failure}")),
-            "every operation has its host program"
-        );
+        // Changed by decision 102 (plan v2 section 5): the comparison returns what it compared,
+        // and every operation has its host program.
+        // assert!(
+        //     compare_with_host(&ops)
+        //         .await
+        //         .unwrap_or_else(|failure| panic!("{failure}")),
+        //     "every operation has its host program"
+        // );
+        compare_with_host(&ops)
+            .await
+            .unwrap_or_else(|failure| panic!("{failure}"));
     }
 }
 
@@ -2807,9 +4194,13 @@ fn arb_records(max: usize) -> BoxedStrategy<Vec<(i64, u64)>> {
 }
 
 /// F7 `set_view_dedups_equal_pars`: receives of any value drain the set class by class. Each
-/// fire dispatches the first record in canonical order, the representative of its class, and
-/// removes the whole class. The fires are one for each class, and the drain is the same for
-/// every insertion order (decision 41).
+/// receive picks a class at random. Its fire binds the first member of the class in DR-75 order,
+/// and the class leaves at once (decision 101, rule CR-13). The fires are one for each class. The
+/// set of the bound members is the same for every insertion order (decision 41).
+///
+/// Changed by decision 102 (rule CR-1). The text before: "Each fire dispatches the first record
+/// in canonical order, the representative of its class, and removes the whole class. The fires
+/// are one for each class, and the drain is the same for every insertion order (decision 41)."
 #[test]
 fn prop_set_view_dedups_equal_pars() {
     let strategy = arb_records(7)
@@ -2830,17 +4221,38 @@ async fn view_case(
         for (value, salt) in order {
             rig.send(salted(*value, *salt, false)).await;
         }
-        let mut drained = Vec::new();
+        // Changed by decision 102 (rule CR-1): each receive picks its class at random, so the drain
+        // is compared as a set of bound members.
+        // let mut drained = Vec::new();
+        let mut drained = BTreeSet::new();
         for index in 0.. {
-            let first = canonical_records(&rig.host).await.first().cloned();
+            // Changed by decision 102 (rule CR-1): the test finds the first member of the class of
+            // the pick.
+            // let first = canonical_records(&rig.host).await.first().cloned();
+            let before = canonical_records(&rig.host).await;
             let outcome = rig.receive(receiving(&format!("r{index}"), any())).await;
-            let Some(first) = first else {
+            // let Some(first) = first else {
+            //     prop_assert!(outcome.fires.is_empty(), "an empty set parks the receive");
+            //     break;
+            // };
+            if before.is_empty() {
                 prop_assert!(outcome.fires.is_empty(), "an empty set parks the receive");
                 break;
-            };
+            }
             prop_assert_eq!(outcome.fires.len(), 1);
-            prop_assert_eq!(&removed(&outcome, 0), &first.a, "the representative fires");
-            let value = record_value(&first.a);
+            // prop_assert_eq!(&removed(&outcome, 0), &first.a, "the representative fires");
+            // let value = record_value(&first.a);
+            let bound = removed(&outcome, 0);
+            let value = record_value(&bound);
+            let first = before
+                .iter()
+                .find(|stored| record_value(&stored.a) == value)
+                .ok_or_else(|| failure(format!("the class of {value} is stored")))?;
+            prop_assert_eq!(
+                &bound,
+                &first.a,
+                "the fire binds the first member of its class in DR-75 order"
+            );
             prop_assert!(
                 rig.values()
                     .await
@@ -2848,7 +4260,8 @@ async fn view_case(
                     .all(|(stored, _)| *stored != value),
                 "the class leaves at once"
             );
-            drained.push(first.source.hash);
+            // drained.push(first.source.hash);
+            drained.insert(first.source.hash.clone());
         }
         prop_assert_eq!(drained.len(), classes.len(), "one fire for each class");
         drains.push(drained);
@@ -2861,10 +4274,25 @@ async fn view_case(
     Ok(())
 }
 
-/// F8 `set_consume_retires_class`: a receive that does not peek takes the first record in
-/// canonical order that its pattern binds, and it checks its guard once. Its COMM binds every
-/// member of the class in canonical order, the representative first. The fire removes every
-/// non-persistent member and keeps the persistent members and the other classes.
+/// Added by decision 102 (rule CR-1): the runs of each case of
+/// [`prop_set_consume_retires_class`], of [`prop_set_class_retired_any_schedule`] and of
+/// [`prop_set_observer_calls_equal_host`], each on a fresh rig. Play picks at random, so a case
+/// with a class of two or more members meets such a class in more of its runs. The F8 property
+/// counts a case once when some run hits. The V6 property and the observer property add up the
+/// hits of all runs.
+const CASE_RUNS: usize = 4;
+
+/// F8 `set_consume_retires_class`: a receive that does not peek picks at random a record that its
+/// pattern binds. It checks its guard once, on the class of its pick, and a refusal parks it. Its
+/// fire binds the first member of the class in DR-75 order. One K_retire then binds each other
+/// non-persistent member in DR-75 order (decision 101, rule CR-13). The fire and the retires
+/// remove every non-persistent member and keep the persistent members and the other classes.
+/// Each case runs [`CASE_RUNS`] times.
+///
+/// Changed by decision 102 (rule CR-1) and decision 101 (rule CR-13). The text before: "a receive
+/// that does not peek takes the first record in canonical order that its pattern binds, and it
+/// checks its guard once. Its COMM binds every member of the class in canonical order, the
+/// representative first."
 #[test]
 fn prop_set_consume_retires_class() {
     let classes = Hits::new();
@@ -2885,70 +4313,194 @@ async fn consume_case(
     guard: Guard,
     classes: &Hits,
 ) -> Result<(), TestCaseError> {
-    let rig = Rig::new().await;
-    for (value, salt, persistent) in &records {
-        rig.send(salted(*value, *salt, *persistent)).await;
-    }
-    let before = canonical_records(&rig.host).await;
-    let values_before = rig.values().await;
-    rig.log().await;
-    let outcome = rig
-        .receive(ConsumeOp {
-            guard: guard.par(),
-            ..receiving("k", pat.pattern())
-        })
-        .await;
-    let log = rig.log().await;
-    let first = before
-        .iter()
-        .find(|stored| pat.fits(record_value(&stored.a)));
-    match first {
-        Some(representative) if guard.admits(record_value(&representative.a)) => {
-            let value = record_value(&representative.a);
-            let members: Vec<&Datum<ListParWithRandom>> = before
-                .iter()
-                .filter(|stored| record_value(&stored.a) == value)
-                .collect();
-            if members.len() >= 2 {
-                classes.hit();
+    // Changed by decision 102 (rule CR-1) and decision 101 (rule CR-13): the receive picks at
+    // random, its fire binds the first member of the class of its pick, and one K_retire binds
+    // each other non-persistent member. Each case runs CASE_RUNS times. The body before:
+    // let rig = Rig::new().await;
+    // for (value, salt, persistent) in &records {
+    //     rig.send(salted(*value, *salt, *persistent)).await;
+    // }
+    // let before = canonical_records(&rig.host).await;
+    // let values_before = rig.values().await;
+    // rig.log().await;
+    // let outcome = rig
+    //     .receive(ConsumeOp {
+    //         guard: guard.par(),
+    //         ..receiving("k", pat.pattern())
+    //     })
+    //     .await;
+    // let log = rig.log().await;
+    // let first = before
+    //     .iter()
+    //     .find(|stored| pat.fits(record_value(&stored.a)));
+    // match first {
+    //     Some(representative) if guard.admits(record_value(&representative.a)) => {
+    //         let value = record_value(&representative.a);
+    //         let members: Vec<&Datum<ListParWithRandom>> = before
+    //             .iter()
+    //             .filter(|stored| record_value(&stored.a) == value)
+    //             .collect();
+    //         if members.len() >= 2 {
+    //             classes.hit();
+    //         }
+    //         prop_assert_eq!(&removed(&outcome, 0), &representative.a);
+    //         let [comm] = <[COMM; 1]>::try_from(comms(&log))
+    //             .map_err(|comms| failure(format!("one COMM: {comms:?}")))?;
+    //         let listed: Vec<Blake2b256Hash> = comm
+    //             .produces
+    //             .iter()
+    //             .map(|produce| produce.hash.clone())
+    //             .collect();
+    //         let expected: Vec<Blake2b256Hash> = members
+    //             .iter()
+    //             .map(|member| member.source.hash.clone())
+    //             .collect();
+    //         prop_assert_eq!(listed, expected, "every member, in canonical order");
+    //         let mut expected_values: Vec<(i64, bool)> = values_before
+    //             .iter()
+    //             .filter(|(stored, persistent)| *stored != value || *persistent)
+    //             .cloned()
+    //             .collect();
+    //         expected_values.sort();
+    //         prop_assert_eq!(rig.values().await, expected_values);
+    //         prop_assert!(rig.waiters().await.is_empty());
+    //     }
+    //     _ => {
+    //         prop_assert!(
+    //             outcome.fires.is_empty(),
+    //             "no match, or the guard refuses it"
+    //         );
+    //         prop_assert_eq!(rig.values().await, values_before);
+    //         prop_assert_eq!(rig.waiters().await, vec!["k".to_string()]);
+    //     }
+    // }
+    // Ok(())
+    let receive = ConsumeOp {
+        guard: guard.par(),
+        ..receiving("k", pat.pattern())
+    };
+    let fire_consume = Consume::create(
+        &vec![data()],
+        &vec![receive.pattern.clone()],
+        &parked(&receive),
+        false,
+    );
+    let mut hit = false;
+    for _ in 0..CASE_RUNS {
+        let rig = Rig::new().await;
+        for (value, salt, persistent) in &records {
+            rig.send(salted(*value, *salt, *persistent)).await;
+        }
+        let before = canonical_records(&rig.host).await;
+        let values_before = rig.values().await;
+        rig.log().await;
+        let outcome = rig.receive(receive.clone()).await;
+        let log = rig.log().await;
+        let fitting: Vec<i64> = before
+            .iter()
+            .map(|stored| record_value(&stored.a))
+            .filter(|value| pat.fits(*value))
+            .collect();
+        match outcome.fires.as_slice() {
+            [] => {
+                prop_assert!(
+                    fitting.is_empty() || fitting.iter().any(|value| !guard.admits(*value)),
+                    "the receive parks, so no record fits or its pick meets a refused record"
+                );
+                prop_assert_eq!(rig.values().await, values_before);
+                prop_assert_eq!(rig.waiters().await, vec!["k".to_string()]);
             }
-            prop_assert_eq!(&removed(&outcome, 0), &representative.a);
-            let [comm] = <[COMM; 1]>::try_from(comms(&log))
-                .map_err(|comms| failure(format!("one COMM: {comms:?}")))?;
-            let listed: Vec<Blake2b256Hash> = comm
-                .produces
-                .iter()
-                .map(|produce| produce.hash.clone())
-                .collect();
-            let expected: Vec<Blake2b256Hash> = members
-                .iter()
-                .map(|member| member.source.hash.clone())
-                .collect();
-            prop_assert_eq!(listed, expected, "every member, in canonical order");
-            let mut expected_values: Vec<(i64, bool)> = values_before
-                .iter()
-                .filter(|(stored, persistent)| *stored != value || *persistent)
-                .cloned()
-                .collect();
-            expected_values.sort();
-            prop_assert_eq!(rig.values().await, expected_values);
-            prop_assert!(rig.waiters().await.is_empty());
+            [_] => {
+                let bound = removed(&outcome, 0);
+                let value = record_value(&bound);
+                prop_assert!(
+                    pat.fits(value) && guard.admits(value),
+                    "the fire binds a record that fits and is admitted"
+                );
+                let members: Vec<&Datum<ListParWithRandom>> = before
+                    .iter()
+                    .filter(|stored| record_value(&stored.a) == value)
+                    .collect();
+                let [first, others @ ..] = members.as_slice() else {
+                    return Err(failure(format!("the class of {value} is stored")));
+                };
+                prop_assert_eq!(
+                    &bound,
+                    &first.a,
+                    "the fire binds the first member of its class in DR-75 order"
+                );
+                hit |= !others.is_empty();
+                let retired: Vec<Blake2b256Hash> = others
+                    .iter()
+                    .filter(|member| !member.persist)
+                    .map(|member| member.source.hash.clone())
+                    .collect();
+                let listed: Vec<Vec<Blake2b256Hash>> = comms(&log)
+                    .iter()
+                    .map(|comm| {
+                        comm.produces
+                            .iter()
+                            .map(|produce| produce.hash.clone())
+                            .collect()
+                    })
+                    .collect();
+                let mut expected = Vec::with_capacity(1 + retired.len());
+                expected.push(vec![first.source.hash.clone()]);
+                expected.extend(retired.iter().map(|hash| vec![hash.clone()]));
+                prop_assert_eq!(
+                    listed,
+                    expected,
+                    "the fire binds the first member, and one K_retire binds each other member"
+                );
+                let mut expected_consumes = Vec::with_capacity(1 + retired.len());
+                expected_consumes.push(fire_consume.clone());
+                expected_consumes.extend(
+                    retired
+                        .iter()
+                        .map(|hash| receive_retire_consume(&receive, hash)),
+                );
+                prop_assert_eq!(consumes(&log), expected_consumes);
+                let mut expected_values: Vec<(i64, bool)> = values_before
+                    .iter()
+                    .filter(|(stored, persistent)| *stored != value || *persistent)
+                    .cloned()
+                    .collect();
+                expected_values.sort();
+                prop_assert_eq!(rig.values().await, expected_values);
+                prop_assert!(rig.waiters().await.is_empty());
+            }
+            fires => return Err(failure(format!("a receive fires once or parks: {fires:?}"))),
         }
-        _ => {
-            prop_assert!(
-                outcome.fires.is_empty(),
-                "no match, or the guard refuses it"
-            );
-            prop_assert_eq!(rig.values().await, values_before);
-            prop_assert_eq!(rig.waiters().await, vec!["k".to_string()]);
-        }
+    }
+    if hit {
+        classes.hit();
     }
     Ok(())
+}
+
+/// Added by decision 101 (rule CR-13): the K_retire consumes that the fire of the receive `op` can
+/// stage, one for each stored non-persistent member. Each has the random state of the body of the
+/// receive and its stamped authority. Another operation stages none.
+fn receive_retire_hashes(
+    op: &SpaceOp,
+    before: &[Datum<ListParWithRandom>],
+) -> BTreeSet<Blake2b256Hash> {
+    match op {
+        SpaceOp::Consume(receive) => before
+            .iter()
+            .filter(|stored| !stored.persist)
+            .map(|member| receive_retire_consume(receive, &member.source.hash).hash)
+            .collect(),
+        _ => BTreeSet::new(),
+    }
 }
 
 /// The K_retire consumes that an operation can stage. An element that can fire is the datum of a
 /// send or a stored record that a peek sends again. For each such element and each stored
 /// non-persistent member, the result holds the consume of the retire continuation.
+///
+/// Added by decision 101 (rule CR-13): it also holds the K_retire consumes of the fire of a
+/// receive ([`receive_retire_hashes`]).
 fn possible_retires(op: &SpaceOp, before: &[Datum<ListParWithRandom>]) -> BTreeSet<Blake2b256Hash> {
     let mut elements: Vec<ListParWithRandom> =
         before.iter().map(|stored| stored.a.clone()).collect();
@@ -2961,28 +4513,41 @@ fn possible_retires(op: &SpaceOp, before: &[Datum<ListParWithRandom>]) -> BTreeS
             retires.insert(retire_consume(element, &member.source.hash).hash);
         }
     }
+    // Added by decision 101 (rule CR-13): the K_retire consumes of the fire of a receive.
+    retires.extend(receive_retire_hashes(op, before));
     retires
 }
 
-/// F9 `set_retire_comm_lines_up`: over generated programs, every COMM of a set lines up one
-/// channel with each bound record. Its group is the data channel repeated. A record is never
-/// bound more often than it is stored. Every K_retire binds one stored non-persistent member.
-/// The outcome dispatches one result for each fire and none for a retire.
+/// F9 `set_retire_comm_lines_up`: over generated programs, every COMM of a set binds one record
+/// over `[D]`. A fire binds the first member of the class of its pick, and a K_retire binds each
+/// other member (decision 101, rule CR-13). A record is never bound more often than it is stored.
+/// Every K_retire binds one stored non-persistent member, after the fire of a send, of a second
+/// send or of a receive. The outcome dispatches one result for each fire and none for a retire.
+///
+/// Changed by decision 101 (rule CR-13). The text before: "every COMM of a set lines up one
+/// channel with each bound record. Its group is the data channel repeated."
 #[test]
 fn prop_set_retire_comm_lines_up() {
-    let groups = Hits::new();
+    // Changed by decision 101 (rule CR-13): every COMM of a set binds one record, so no COMM has
+    // a group of two or more. The test counts the K_retire consumes of receives instead.
+    // let groups = Hits::new();
     let retires = Hits::new();
+    let receive_retires = Hits::new();
     check(pure_config(), arb_any_program(), |program| {
-        tokio_runtime().block_on(lines_up_case(program, &groups, &retires))
+        // tokio_runtime().block_on(lines_up_case(program, &groups, &retires))
+        tokio_runtime().block_on(lines_up_case(program, &retires, &receive_retires))
     });
-    groups.assert_at_least(16, "a class fire over [D; n] with n of two or more");
+    // groups.assert_at_least(16, "a class fire over [D; n] with n of two or more");
+    receive_retires.assert_at_least(16, "a K_retire after the fire of a receive");
     retires.assert_at_least(8, "a K_retire");
 }
 
 async fn lines_up_case(
     program: Vec<SetOp>,
-    groups: &Hits,
+    // Changed by decision 101 (rule CR-13): the case counts the K_retire consumes of receives.
+    // groups: &Hits,
     retire_hits: &Hits,
+    receive_retire_hits: &Hits,
 ) -> Result<(), TestCaseError> {
     let rig = Rig::new().await;
     let data_hash = stable_hash_provider::hash(&data());
@@ -2990,6 +4555,8 @@ async fn lines_up_case(
         let space_op = op.space_op();
         let before = rig.records().await;
         let retires = possible_retires(&space_op, &before);
+        // Added by decision 101 (rule CR-13).
+        let of_receive = receive_retire_hashes(&space_op, &before);
         let outcome = rig
             .run(space_op.clone())
             .await
@@ -3002,20 +4569,26 @@ async fn lines_up_case(
         let mut dispatched = 0;
         for comm in comms(&log) {
             let width = comm.consume.channel_hashes.len();
-            prop_assert!(width >= 1);
+            // Changed by decision 101 (rule CR-13): a fire and a K_retire each bind one record.
+            // prop_assert!(width >= 1);
+            prop_assert_eq!(width, 1, "a set COMM binds one record");
             prop_assert_eq!(width, comm.produces.len(), "one record for each channel");
             prop_assert!(comm
                 .consume
                 .channel_hashes
                 .iter()
                 .all(|hash| *hash == data_hash));
-            if width >= 2 {
-                groups.hit();
-            }
+            // Changed by decision 101 (rule CR-13): no COMM of a set has a group of two or more.
+            // if width >= 2 {
+            //     groups.hit();
+            // }
             match retires.contains(&comm.consume.hash) {
                 true => {
                     retire_hit_check(&comm, &before)?;
                     retire_hits.hit();
+                    if of_receive.contains(&comm.consume.hash) {
+                        receive_retire_hits.hit();
+                    }
                 }
                 false => dispatched += 1,
             }
@@ -3084,21 +4657,63 @@ fn arb_class_setup() -> BoxedStrategy<ClassSetup> {
 }
 
 /// Stores the records of `setup`, parks a guarded waiter `x == v` for a target value `v`, and
-/// parks the extra guarded waiters. The target is a stored value other than the value of the
-/// first record in canonical order. So its waiter meets a refused record first and parks
-/// (decision 37). It returns the rig, all the waiters (the target first) and the target value.
-/// When every stored record has one value, the target is a value that no record has.
+/// parks the extra guarded waiters whose values are not the target. The target is a stored value
+/// other than the value of the first record in DR-75 order. So the guard refuses at least one
+/// record. The waiter of the target parks on a fresh rig where its pick meets a refused record
+/// ([`parked_by_a_refused_pick`], decision 37). An extra waiter picks at random too. It parks, or
+/// it takes a class other than the target class. The function returns the rig, all the waiters
+/// (the target first) and the target value. When every stored record has one value, the target
+/// is a value that no record has.
+///
+/// Changed by decision 102 (rule CR-1). The text before: "...and parks the extra guarded
+/// waiters. The target is a stored value other than the value of the first record in canonical
+/// order. So its waiter meets a refused record first and parks (decision 37)."
 async fn class_setup(setup: &ClassSetup) -> (Rig, Waiters, i64) {
-    let rig = Rig::new().await;
-    for (value, salt, persistent) in &setup.records {
-        rig.send(salted(*value, *salt, *persistent)).await;
-    }
-    let first = record_value(&canonical_records(&rig.host).await[0].a);
-    let others: Vec<i64> = rig
-        .values()
-        .await
-        .into_iter()
-        .map(|(value, _)| value)
+    // Changed by decision 102 (rule CR-1): the waiter of the target parks on a fresh rig where its
+    // pick meets a refused record, and no extra waiter has the target value. The body before:
+    // let rig = Rig::new().await;
+    // for (value, salt, persistent) in &setup.records {
+    //     rig.send(salted(*value, *salt, *persistent)).await;
+    // }
+    // let first = record_value(&canonical_records(&rig.host).await[0].a);
+    // let others: Vec<i64> = rig
+    //     .values()
+    //     .await
+    //     .into_iter()
+    //     .map(|(value, _)| value)
+    //     .filter(|value| *value != first)
+    //     .collect::<BTreeSet<i64>>()
+    //     .into_iter()
+    //     .collect();
+    // let target = match others.as_slice() {
+    //     [] => first + 10,
+    //     values => values[setup.target % values.len()],
+    // };
+    // let mut waiters = Vec::with_capacity(1 + setup.extra.len());
+    // waiters.push((target, setup.target_peeks));
+    // waiters.extend(setup.extra.iter().copied());
+    // for (index, (value, peek)) in waiters.iter().enumerate() {
+    //     rig.receive(ConsumeOp {
+    //         peek: *peek,
+    //         ..guarded(receiving(&format!("g{index}"), any()), equals(*value))
+    //     })
+    //     .await;
+    // }
+    // rig.log().await;
+    // (rig, waiters, target)
+    let sends: Vec<ProduceOp> = setup
+        .records
+        .iter()
+        .map(|(value, salt, persistent)| salted(*value, *salt, *persistent))
+        .collect();
+    let first = sends
+        .iter()
+        .min_by_key(|send| record_hash(send))
+        .map(|send| value_of(&send.data.pars))
+        .expect("a setup stores two records or more");
+    let others: Vec<i64> = sends
+        .iter()
+        .map(|send| value_of(&send.data.pars))
         .filter(|value| *value != first)
         .collect::<BTreeSet<i64>>()
         .into_iter()
@@ -3107,15 +4722,25 @@ async fn class_setup(setup: &ClassSetup) -> (Rig, Waiters, i64) {
         [] => first + 10,
         values => values[setup.target % values.len()],
     };
+    let guarded_waiter = |index: usize, value: i64, peek: bool| ConsumeOp {
+        peek,
+        ..guarded(receiving(&format!("g{index}"), any()), equals(value))
+    };
+    let Parked { rig, .. } =
+        parked_by_a_refused_pick(&sends, &guarded_waiter(0, target, setup.target_peeks)).await;
     let mut waiters = Vec::with_capacity(1 + setup.extra.len());
     waiters.push((target, setup.target_peeks));
-    waiters.extend(setup.extra.iter().copied());
-    for (index, (value, peek)) in waiters.iter().enumerate() {
-        rig.receive(ConsumeOp {
-            peek: *peek,
-            ..guarded(receiving(&format!("g{index}"), any()), equals(*value))
-        })
-        .await;
+    // An extra waiter of the target value could take the target class before the send of the
+    // target, because its pick is random too.
+    waiters.extend(
+        setup
+            .extra
+            .iter()
+            .copied()
+            .filter(|(value, _)| *value != target),
+    );
+    for (index, (value, peek)) in waiters.iter().enumerate().skip(1) {
+        rig.receive(guarded_waiter(index, *value, *peek)).await;
     }
     rig.log().await;
     (rig, waiters, target)
@@ -3213,21 +4838,46 @@ async fn produce_retire_case(
     Ok(())
 }
 
-/// `set_peek_restores_representative_only` (Rule E): a peek binds the representative alone,
-/// the first record in canonical order that its pattern binds. A non-persistent representative
-/// is sent again right after the fire, with its identity. Without a later fire the records stay
-/// as they were. A K_retire appears only after a fire of the second send on a waiter that does
-/// not peek. Then the class keeps its persistent members only.
+/// Added by decision 102 (rule CR-1): what the peek of
+/// [`prop_set_peek_restores_representative_only`] peeks. `Target` peeks the target class of the
+/// setup, and `Pattern` peeks a generated pattern. `Unwaited` sends a 3 first and peeks it. No
+/// record and no waiter of the setup has the value 3, so the second send stores the record again.
+#[derive(Clone, Copy, Debug)]
+enum PeekOf {
+    Target,
+    Unwaited,
+    Pattern(Pat),
+}
+
+/// `set_peek_restores_representative_only` (Rule E): a peek binds its pick alone, a random record
+/// that its pattern binds (decision 102, rule CR-1). A non-persistent pick is sent again right
+/// after the fire, with its identity. Without a later fire the records stay as they were. A
+/// K_retire appears only after a fire of the second send on a waiter that does not peek. Then the
+/// class keeps its persistent members only. A case peeks the target class, a generated pattern,
+/// or a 3 that it sends first and that no waiter takes ([`PeekOf`]).
+///
+/// Changed by decision 102 (rule CR-1). The text before: "a peek binds the representative alone,
+/// the first record in canonical order that its pattern binds."
 #[test]
 fn prop_set_peek_restores_representative_only() {
     let reoffers = Hits::new();
     let restored = Hits::new();
+    // Changed by decision 102 (rule CR-1): a case also peeks a 3 that no waiter takes, so the
+    // second send stores the record again.
+    // let strategy = (arb_class_setup(), prop_oneof![
+    //     2 => Just(None),
+    //     1 => arb_pat().prop_map(Some),
+    // ]);
+    // check(pure_config(), strategy, |(setup, pat)| {
+    //     tokio_runtime().block_on(peek_case(setup, pat, &reoffers, &restored))
+    // });
     let strategy = (arb_class_setup(), prop_oneof![
-        2 => Just(None),
-        1 => arb_pat().prop_map(Some),
+        3 => Just(PeekOf::Target),
+        1 => Just(PeekOf::Unwaited),
+        1 => arb_pat().prop_map(PeekOf::Pattern),
     ]);
-    check(pure_config(), strategy, |(setup, pat)| {
-        tokio_runtime().block_on(peek_case(setup, pat, &reoffers, &restored))
+    check(pure_config(), strategy, |(setup, peek_of)| {
+        tokio_runtime().block_on(peek_case(setup, peek_of, &reoffers, &restored))
     });
     reoffers.assert_at_least(
         16,
@@ -3238,24 +4888,62 @@ fn prop_set_peek_restores_representative_only() {
 
 async fn peek_case(
     setup: ClassSetup,
-    pat: Option<Pat>,
+    // Changed by decision 102 (rule CR-1): the case names what the peek peeks.
+    // pat: Option<Pat>,
+    peek_of: PeekOf,
     reoffers: &Hits,
     restored: &Hits,
 ) -> Result<(), TestCaseError> {
     let (rig, waiters, target) = class_setup(&setup).await;
-    let pat = pat.unwrap_or(Pat::Lit(target));
+    // Changed by decision 102 (rule CR-1): the peek takes the target class, a 3 that no waiter
+    // takes, or a generated pattern.
+    // let pat = pat.unwrap_or(Pat::Lit(target));
+    let pat = match peek_of {
+        PeekOf::Target => Pat::Lit(target),
+        PeekOf::Unwaited => {
+            rig.send(salted(3, 1, false)).await;
+            rig.log().await;
+            Pat::Lit(3)
+        }
+        PeekOf::Pattern(pat) => pat,
+    };
     let before = canonical_records(&rig.host).await;
     let values_before = rig.values().await;
     let outcome = rig.receive(peeking(receiving("p", pat.pattern()))).await;
     let log = rig.log().await;
-    let Some(representative) = before
-        .iter()
-        .find(|stored| pat.fits(record_value(&stored.a)))
-    else {
-        prop_assert!(outcome.fires.is_empty());
+    // Changed by decision 102 (rule CR-1): the peek binds its pick, a random record that its
+    // pattern binds, so the case reads the pick from the fire.
+    // let Some(representative) = before
+    //     .iter()
+    //     .find(|stored| pat.fits(record_value(&stored.a)))
+    // else {
+    //     prop_assert!(outcome.fires.is_empty());
+    //     prop_assert_eq!(rig.values().await, values_before);
+    //     return Ok(());
+    // };
+    // prop_assert_eq!(&removed(&outcome, 0), &representative.a);
+    let Some(fire) = outcome.fires.first() else {
+        prop_assert!(
+            before
+                .iter()
+                .all(|stored| !pat.fits(record_value(&stored.a))),
+            "a peek without a guard parks only when no record fits"
+        );
         prop_assert_eq!(rig.values().await, values_before);
         return Ok(());
     };
+    let [result] = fire.results.as_slice() else {
+        return Err(failure(format!("the peek binds one record: {fire:?}")));
+    };
+    let hash = Produce::create(&data(), &result.removed_datum, result.persistent).hash;
+    let representative = before
+        .iter()
+        .find(|stored| stored.source.hash == hash)
+        .ok_or_else(|| failure("the peek binds a stored record"))?;
+    prop_assert!(
+        pat.fits(record_value(&representative.a)),
+        "the peek binds a record that fits"
+    );
     prop_assert_eq!(&removed(&outcome, 0), &representative.a);
     let Some(Event::Comm(peek_comm)) = log.get(1) else {
         return Err(failure(format!(
@@ -3336,9 +5024,14 @@ async fn peek_case(
 }
 
 /// `set_membership_full_compare_on_equal_hash` (DR-90): two keys are one class exactly when
-/// they are equal, and the hashes of their keys are equal exactly then. A class fire binds exactly
-/// the records whose sorted payloads equal the sorted payload of the representative, also when
-/// their expressions come in other orders.
+/// they are equal, and the hashes of their keys are equal exactly then. The fire of a receive and
+/// its K_retire COMMs bind exactly the records whose sorted payloads equal the sorted payload of
+/// the bound record. This is true also when their expressions come in other orders (decision 101,
+/// rule CR-13). The receive picks its class at random (decision 102, rule CR-1).
+///
+/// Changed by decision 101 (rule CR-13) and decision 102 (rule CR-1). The text before: "A class
+/// fire binds exactly the records whose sorted payloads equal the sorted payload of the
+/// representative, also when their expressions come in other orders."
 #[test]
 fn prop_set_membership_full_compare_on_equal_hash() {
     let permuted = Hits::new();
@@ -3386,36 +5079,81 @@ async fn membership_case(
     let before = canonical_records(&rig.host).await;
     rig.log().await;
     let outcome = rig.receive(receiving("k", any())).await;
-    let representative = &before[0];
-    prop_assert_eq!(&removed(&outcome, 0), &representative.a);
-    let representative_key = key_of_record(&representative.a);
+    // Changed by decision 102 (rule CR-1) and decision 101 (rule CR-13): the receive picks its
+    // class at random, and its fire binds the first member of that class in DR-75 order.
+    // let representative = &before[0];
+    // prop_assert_eq!(&removed(&outcome, 0), &representative.a);
+    // let representative_key = key_of_record(&representative.a);
+    let bound = removed(&outcome, 0);
+    let bound_key = key_of_record(&bound);
+    let first = before
+        .iter()
+        .find(|stored| key_of_record(&stored.a) == bound_key)
+        .ok_or_else(|| failure("the fire binds a stored record"))?;
+    prop_assert_eq!(
+        &bound,
+        &first.a,
+        "the fire binds the first member of its class in DR-75 order"
+    );
     let members: Vec<Blake2b256Hash> = before
         .iter()
-        .filter(|stored| key_of_record(&stored.a) == representative_key)
+        // .filter(|stored| key_of_record(&stored.a) == representative_key)
+        .filter(|stored| key_of_record(&stored.a) == bound_key)
         .map(|stored| stored.source.hash.clone())
         .collect();
-    let [comm] = <[COMM; 1]>::try_from(comms(&rig.log().await))
-        .map_err(|comms| failure(format!("one COMM: {comms:?}")))?;
+    // Changed by decision 101 (rule CR-13): the fire and each K_retire make one COMM.
+    // let [comm] = <[COMM; 1]>::try_from(comms(&rig.log().await))
+    //     .map_err(|comms| failure(format!("one COMM: {comms:?}")))?;
+    // prop_assert_eq!(
+    //     comm.produces
+    //         .iter()
+    //         .map(|produce| produce.hash.clone())
+    //         .collect::<Vec<_>>(),
+    //     members
+    // );
+    let listed: Vec<Vec<Blake2b256Hash>> = comms(&rig.log().await)
+        .iter()
+        .map(|comm| {
+            comm.produces
+                .iter()
+                .map(|produce| produce.hash.clone())
+                .collect()
+        })
+        .collect();
     prop_assert_eq!(
-        comm.produces
-            .iter()
-            .map(|produce| produce.hash.clone())
-            .collect::<Vec<_>>(),
+        listed,
         members
+            .into_iter()
+            .map(|hash| vec![hash])
+            .collect::<Vec<_>>(),
+        "the fire and the K_retire COMMs bind each member once, in DR-75 order"
     );
     Ok(())
 }
 
 /// V6 `SetClassRetired` of `GenericRSpace.tla`: over generated programs, the agent makes the
-/// fires of the model and keeps its records and waiters. After every operation, no
-/// non-persistent record remains of a class that a fire without a peek took or retired. Every
-/// COMM that the outcome does not dispatch is a K_retire of the model.
+/// fires of the model and keeps its records and waiters. The model follows the picks of the
+/// agent, and it checks that the plans allow each pick (decision 102, rule CR-1). Play picks at
+/// random, so each program runs [`CASE_RUNS`] times, each on a fresh rig, and the hits of all
+/// runs add up (decision 102, rule CR-1). The runs are independent. A sum of four runs below 6
+/// needs two runs with at most one hit each. In 41 runs of the 64 cases on one build, no run gave
+/// fewer than 4 hits. After every operation, no non-persistent record remains of a class that a
+/// fire without a peek took or retired. Every COMM that the outcome does not dispatch is a
+/// K_retire of the model.
 #[test]
 fn prop_set_class_retired_any_schedule() {
     let large = Hits::new();
     let produced = Hits::new();
     check(pure_config(), arb_any_program(), |program| {
-        tokio_runtime().block_on(class_retired_case(program, &large, &produced))
+        // Changed by decision 102 (rule CR-1): play picks at random, so each program runs
+        // CASE_RUNS times, each on a fresh rig, and the hits of all runs add up. The line before:
+        // tokio_runtime().block_on(class_retired_case(program, &large, &produced))
+        tokio_runtime().block_on(async {
+            for _ in 0..CASE_RUNS {
+                class_retired_case(program.clone(), &large, &produced).await?;
+            }
+            Ok(())
+        })
     });
     large.assert_at_least(16, "a class of two or more members leaves at once");
     // The dedicated property of F10 carries most of the evidence of produce-side retires.
@@ -3434,11 +5172,15 @@ async fn class_retired_case(
     let mut model = SetModel::default();
     for (index, op) in program.iter().enumerate() {
         let values_before = rig.values().await;
-        let predicted = model.apply(op);
+        // Changed by decision 102 (rule CR-1): the model reads the picks from the fires of the
+        // agent, so it applies the operation after the agent.
+        // let predicted = model.apply(op);
         let outcome = rig
             .run(op.space_op())
             .await
             .map_err(|error| failure(format!("operation {index} fails: {error}")))?;
+        // Changed by decision 102 (rule CR-1): the model follows the picks of the agent.
+        let predicted = model.apply(op, &agent_fires(&outcome)?)?;
         let log = rig.log().await;
         prop_assert_eq!(
             fired(&outcome),
@@ -3478,26 +5220,62 @@ async fn class_retired_case(
                 large.hit();
             }
         }
-        if predicted.retired > 0 {
+        // Changed by decision 101 (rule CR-13): a receive retires too, so the hit counts the
+        // retires of the fires of sends and of second sends.
+        // if predicted.retired > 0 {
+        if predicted.offer_retired > 0 {
             produced.hit();
         }
     }
     Ok(())
 }
 
-/// Option P (decision 45): over generated programs, in a legacy deploy, each set operation
-/// stages the operations of its host program and pays its charges. This includes the class
-/// fires, the K_retire consumes, and the second sends of peeks with their fires. The stores end
-/// equal.
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+// Its host differential continues in `prop_set_observer_calls_equal_host`.
+//
+// /// Option P (decision 45): over generated programs, in a legacy deploy, each set operation
+// /// stages the operations of its host program and pays its charges. This includes the class
+// /// fires, the K_retire consumes, and the second sends of peeks with their fires. The stores end
+// /// equal.
+// #[test]
+// fn prop_set_legacy_charges_equal_host() {
+//     let compared = Hits::new();
+//     check(pure_config(), arb_any_program(), |program| {
+//         let ops: Vec<SpaceOp> = program.iter().map(SetOp::space_op).collect();
+//         if tokio_runtime().block_on(compare_with_host(&ops))? {
+//             compared.hit();
+//         }
+//         Ok(())
+//     });
+//     compared.assert_at_least(48, "a program whose every operation has its host program");
+// }
+
+/// Added by decision 90 (decision 69): the host differential of the retired
+/// `prop_set_legacy_charges_equal_host`. Over generated programs, each set operation makes the
+/// observer calls of its host program. This includes the fires of receives over `[D]`, the
+/// K_retire consumes of receives and of sends, and the second sends of peeks with their fires.
+/// The host program follows each pick of the agent, so every program has its host program. The
+/// fires and the stores are equal too.
+///
+/// Play picks at random, so each program runs [`CASE_RUNS`] times, and the hits of all runs add
+/// up (decision 102, rule CR-1). The runs are independent. A sum of four runs below 16 needs a
+/// run with at most 3 hits. In 20 runs of the 64 cases on one build, no run gave fewer than 19.
 #[test]
-fn prop_set_legacy_charges_equal_host() {
-    let compared = Hits::new();
+fn prop_set_observer_calls_equal_host() {
+    let receive_retires = Hits::new();
     check(pure_config(), arb_any_program(), |program| {
         let ops: Vec<SpaceOp> = program.iter().map(SetOp::space_op).collect();
-        if tokio_runtime().block_on(compare_with_host(&ops))? {
-            compared.hit();
-        }
-        Ok(())
+        tokio_runtime().block_on(async {
+            for _ in 0..CASE_RUNS {
+                if compare_with_host(&ops).await?.receive_retires > 0 {
+                    receive_retires.hit();
+                }
+            }
+            Ok(())
+        })
     });
-    compared.assert_at_least(48, "a program whose every operation has its host program");
+    receive_retires.assert_at_least(
+        16,
+        "a program whose differential compares a K_retire of a receive",
+    );
 }

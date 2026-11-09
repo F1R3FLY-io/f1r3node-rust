@@ -1,0 +1,77 @@
+// fileio_membrane.rho — Phase 10 canonical example
+//
+// Demonstrates the FIP §Ocap patterns > Membranes and revocation
+// idiom.  A File cap is wrapped in a forwarder that consults a
+// mutable "revoked" flag.  Handing out `bundle+{*membraneCh}` gives a
+// subordinate the method surface but not the revocation switch.
+//
+// Sequence:
+//   1. Open a bundled File.
+//   2. Wrap it with a membrane forwarder specialized to `tell()`.
+//      The membrane peeks the `revoked` flag on every call; while
+//      false, it forwards the tell to the underlying File; when
+//      true, it returns FSERR_REVOKED.
+//   3. Call `tell()` through the membrane — receives a real reply.
+//   4. Flip `revoked` to true (the revocation switch, kept private).
+//   5. Call `tell()` again — receives `[false, "FSERR_REVOKED", _]`.
+//
+// Simplification vs. FIP §Ocap patterns pseudocode:  the FIP shows a
+// generic `contract membraneFile(returnCh, @method, ...@args) = { ...
+// underlyingFile!(returnCh, method, ...args) }`.  Rholang's grammar
+// (rholang_mercury.cf) only accepts `...` remainders inside COLLECTION
+// destructures (list / set / map), not as splats in send positions
+// — so a real membrane implementation either (a) fixes the underlying
+// method surface it wraps (this example — a nullary `tell`) or (b)
+// dispatches over a switch of specific arities.  Both preserve the
+// revocation-switch invariant; only the ergonomics change.
+//
+// Prerequisite: node must publish a bundled File named "target".
+//
+// Companion regression: casper/tests/genesis/contracts/
+// fileio_examples_spec.rs :: fileio_membrane_revokes_forwarder.
+
+new
+  rl(`rho:registry:lookup`),
+  stdout(`rho:io:stdout`),
+  fsCh,
+  revoked,
+  tellMembrane
+in {
+  rl!(`rho:id:zphjgsfy13h1k85isc8rtwtgt3t9zzt5pjd5ihykfmyapfc4wt3x5h`, *fsCh) |
+  for(@(_, fs) <- fsCh) {
+    for(@[true, underlyingFile] <- @fs!?("openFile", "target", {"mode": "r"})) {
+      revoked!(false) |
+      contract tellMembrane(returnCh) = {
+        for (@r <<- revoked) {
+          match r {
+            true => returnCh!([false, "FSERR_REVOKED", "capability revoked"])
+            false => {
+              for (@reply <- @underlyingFile!?("tell")) {
+                returnCh!(reply)
+              }
+            }
+          }
+        }
+      } |
+      // Pre-revoke call.
+      new r1Ch in {
+        tellMembrane!(*r1Ch) |
+        for(@r1 <- r1Ch) {
+          stdout!(("pre-revoke tell reply", r1)) |
+          // Consume `false`, publish `true` — the revocation switch.
+          for(@_ <- revoked) {
+            revoked!(true) |
+            // Post-revoke call.
+            new r2Ch in {
+              tellMembrane!(*r2Ch) |
+              for(@r2 <- r2Ch) {
+                stdout!(("post-revoke tell reply", r2))
+                // Expected: [false, "FSERR_REVOKED", "capability revoked"]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

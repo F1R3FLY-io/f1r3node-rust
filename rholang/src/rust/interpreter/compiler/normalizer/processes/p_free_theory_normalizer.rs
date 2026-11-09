@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
-use models::rust::reified::builders::{efree, push_process_expr};
+// Changed by decision 112: the theory reference is an Expr field. The text before:
+// use models::rust::reified::builders::{efree, push_process_expr};
+use models::rust::reified::builders::{efree, push_free};
 use rholang_parser::ast::{AnnProc, Id};
 use rholang_parser::RholangParser;
 
@@ -13,8 +15,13 @@ use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{
 };
 use crate::rust::interpreter::errors::InterpreterError;
 
-/// Normalizes `free name(args)` to the value `(FREE, "name", [args…])`, an expression of
-/// `Par.exprs`. The arguments are processes in the current scope, in source order. The theory
+// Changed by decision 112: the theory reference is an Expr field. The text before:
+// ```
+// /// Normalizes `free name(args)` to the value `(FREE, "name", [args…])`, an expression of
+// /// `Par.exprs`. The arguments are processes in the current scope, in source order. The theory
+// ```
+/// Normalizes `free name(args)` to the expression `EFree { theory, args }`, the arm `EFreeBody`
+/// of `Par.exprs`. The arguments are processes in the current scope, in source order. The theory
 /// name must be a name that the parser accepts in this position (plan decision 27).
 pub fn normalize_p_free_theory<'ast>(
     name: &Id<'ast>,
@@ -27,7 +34,9 @@ pub fn normalize_p_free_theory<'ast>(
         normalize_procs(args, &input.bound_map_chain, input.free_map, env, parser)?;
     let theory = efree(name.name, args).map_err(reified_syntax_error)?;
     Ok(ProcVisitOutputs {
-        par: push_process_expr(input.par, theory),
+        // Changed by decision 112: the theory reference is an Expr field. The text before:
+        // par: push_process_expr(input.par, theory),
+        par: push_free(input.par, theory),
         free_map,
     })
 }

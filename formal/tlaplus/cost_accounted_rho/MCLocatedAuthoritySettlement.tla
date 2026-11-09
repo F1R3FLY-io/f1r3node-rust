@@ -212,4 +212,10 @@ DeployOrderDef ==
 
 ReplayOrderDef == <<authorize, continue, later, wholeJoin, splitJoin, combinedJoin>>
 
+\* Added by G3 (DR-135): this scenario has no owner purse. The owner
+\* scenario is MCLocatedAuthoritySettlementOwner.tla.
+NoOwnerPursesDef == {}
+
+NoOwnerBudgetDef == [purse \in PursesDef |-> 0]
+
 =============================================================================

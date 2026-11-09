@@ -2,7 +2,7 @@
   "schema": "reified-rspaces-model-map/2",
   "phase": "P7",
   "title": "P7: the ephemeral spaces of one deploy (design v3 W1 and W2), the Seq rules (W3) and the HashSet store (W4): the book of a root evaluation, the sweep at each root entry, the dangling ids of ended deploys, the claims and the send rule of seq spaces, the qualifier gate, and the unit rules of a HashSet collection, and the theory seam (W5): the builtin theories, the admission of a send, the theory at a match, the identity of a theory and its bytes (decision 74), and gate 4.",
-  "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4, 5, 6 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json.",
+  "design": "P7 design v3 (.reified-rspaces-work/p7/design-v3.md), sections 3, 4, 5, 6 and 9. The headline ids are the ids of the P7 phase of formal/reified-rspaces-invariant-map.json. Decision 90 (C6, step D) retires Execution, FactoryConstructor::validate_in and ReifiedRuntime::execution, and their items name FactoryConstructor::validate and ReifiedRuntime::ensure_available.",
   "code_base": "The items are in the P7 commits of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
@@ -39,9 +39,9 @@
     },
     "V4": {
       "kind": "tla",
-      "name": "SeqExclusive",
+      "name": "SeqCausalChain",
       "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
-      "statement": "For each channel of a seq space, the admitted uses form one prefix chain of participant paths: every admitted use descends from the previous one (design v3 SQ-3, SQ-4, decision 73)."
+      "statement": "For each channel of a seq space, each admitted use happened before the next one (design v3 SQ-3, SQ-4, decision 91)."
     },
     "V5": {
       "kind": "tla",
@@ -53,7 +53,7 @@
       "kind": "tla",
       "name": "QualifierSupport",
       "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
-      "statement": "Gate 3 creates a HashSet space only with seq, and a seq space only in native execution (design v3 QT-4, QT-5)."
+      "statement": "The factory creates a HashSet space only with seq, and a seq space only in native execution (design v3 QT-4, decision 90, C6)."
     },
     "V7": {
       "kind": "tla",
@@ -120,12 +120,6 @@
       "name": "theory_gate_validated",
       "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
       "statement": "Gate 4 passes no theory and the builtin names without arguments; a builtin with arguments fails with BadConstructorArgument, another name with UnknownTheory and the least builtin within two edits; gate 4 runs after gate 3 and before the params gates (design v3 TH-4)."
-    },
-    "V19": {
-      "kind": "tla",
-      "name": "ScanViewPerWindow",
-      "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
-      "statement": "Every send of one scheduling window reads one book of seq spaces: the creation job records a seq space after its commit, and the scheduler runs no participant during a job, so the charge of the SQ-2 scan is a function of the deploy (decision 83, design v3 VR-2)."
     }
   },
   "items": [
@@ -314,12 +308,10 @@
         "check_live"
       ],
       "tla": [
-        "Create",
-        "ScanViewPerWindow"
+        "Create"
       ],
       "covers": [
-        "V2",
-        "V19"
+        "V2"
       ]
     },
     {
@@ -590,30 +582,13 @@
       ]
     },
     {
-      "item": "Execution",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
-      "kind": "struct",
-      "name": "Execution",
-      "role": "The execution model of a factory call (QT-5).",
-      "rocq": [
-        "execution"
-      ],
-      "tla": [
-        "Gate3"
-      ],
-      "covers": [
-        "V6"
-      ]
-    },
-    {
-      "item": "FactoryConstructor::validate_in",
+      "item": "FactoryConstructor::validate",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
       "scope": "FactoryConstructor",
       "kind": "fn",
-      "name": "validate_in",
-      "role": "Gate 3 in the execution model of the deploy: legacy execution refuses seq (QT-5).",
+      "name": "validate",
+      "role": "Gate 3: the family takes the qualifier (QT-4). Spaces run only in native execution (decision 90, C6).",
       "rocq": [
         "validate_qualifier"
       ],
@@ -626,16 +601,14 @@
       ]
     },
     {
-      "item": "ReifiedRuntime::execution",
+      "item": "ReifiedRuntime::ensure_available",
       "required": true,
       "file": "rholang/src/rust/interpreter/reified/runtime.rs",
       "scope": "ReifiedRuntime",
       "kind": "fn",
-      "name": "execution",
-      "role": "The execution model of the deploy that the runtime evaluates.",
-      "rocq": [
-        "execution"
-      ],
+      "name": "ensure_available",
+      "role": "Refuses every factory call outside native execution before the gates (decision 90, C6).",
+      "rocq": [],
       "tla": [
         "Gate3"
       ],
@@ -1074,12 +1047,12 @@
       ]
     },
     {
-      "item": "SpaceConfig::from_par_metered",
+      "item": "SpaceConfig::from_par_with_theory",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/types/config.rs",
       "scope": "SpaceConfig",
       "kind": "fn",
-      "name": "from_par_metered",
+      "name": "from_par_with_theory",
       "role": "TH-7: each config read decodes the identity bytes and resolves them.",
       "rocq": [
         "replay_send",

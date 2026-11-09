@@ -3,8 +3,13 @@
 //! A space matches with the injected matcher of its host (`SpaceStoreHandle::matcher`): the
 //! same `Match` implementation that host play and replay use, never a hard-wired one. It calls
 //! `get` and `check_commit`, as the host does. Matching meters nothing: a space operation meters
+// Changed by decision 94: a job awaits the stripes of phase B after `begin`. The text before:
+// ```
+// //! only its COMMs and the bytes that it stores (DR-131). Matching is synchronous, so a space
+// //! job never awaits between `begin` and `commit`.
+// ```
 //! only its COMMs and the bytes that it stores (DR-131). Matching is synchronous, so a space job
-//! never awaits between `begin` and `commit`.
+//! awaits between `begin` and `commit` only to take the stripes of phase B.
 //!
 //! A datum is matched without its envelope (`record::unwrap_datum`), with its random state,
 //! its cost authority and its cost stack. The rholang matcher refuses a datum with a cost stack,
@@ -76,6 +81,24 @@ impl SpaceMatcher {
             false => None,
         }
     }
+
+    /// Added by decision 102 (plan v4 C4.1): [`may_veto`] with the matcher of the job.
+    pub fn may_veto(&self, continuation: &TaggedContinuation, theory: bool) -> bool {
+        may_veto(&**self.matcher, continuation, theory)
+    }
+}
+
+/// Added by decision 102 (plan v4 C4.1, rules CR-7 and R15): true when the commit of
+/// `continuation` may refuse a match. The matcher can veto its guard (DR-129 E3-a,
+/// `Match::commit_may_veto`), or the space has a theory (`theory`), whose check can refuse any
+/// stored datum (P7, TH-6). The pick helpers of a space and the row search of each discipline
+/// share this one rule.
+pub fn may_veto(
+    matcher: &dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>,
+    continuation: &TaggedContinuation,
+    theory: bool,
+) -> bool {
+    theory || matcher.commit_may_veto(continuation)
 }
 
 #[cfg(test)]
@@ -230,5 +253,43 @@ mod tests {
         };
         assert_eq!(matcher.bind(&any(), &stacked), None);
         assert_eq!(Matcher.get(&any(), &stacked), None);
+    }
+
+    /// Added by decision 102 (plan v4 C4.1, rules CR-7 and R15): the commit of a continuation
+    /// may veto when its guard can veto or when the space has a theory. Without a theory the
+    /// rule is `commit_may_veto` of the matcher of the host (DR-129 E3-a). With a theory every
+    /// continuation may veto.
+    #[tokio::test]
+    async fn space_matching_may_veto_follows_the_guard_and_the_theory() {
+        let env = env().await;
+        let matcher = SpaceMatcher::new(&env);
+        let cases = [
+            (continuation(None), false),
+            (continuation(Some(Par::default())), false),
+            (
+                continuation(Some(new_gbool_par(true, Vec::new(), false))),
+                true,
+            ),
+            (
+                continuation(Some(new_gbool_par(false, Vec::new(), false))),
+                true,
+            ),
+        ];
+        for (continuation, vetoes) in &cases {
+            assert_eq!(
+                matcher.may_veto(continuation, false),
+                *vetoes,
+                "{continuation:?}"
+            );
+            assert_eq!(
+                Matcher.commit_may_veto(continuation),
+                *vetoes,
+                "{continuation:?}"
+            );
+            assert!(
+                matcher.may_veto(continuation, true),
+                "a theory may refuse: {continuation:?}"
+            );
+        }
     }
 }

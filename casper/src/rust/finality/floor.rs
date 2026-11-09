@@ -2337,13 +2337,15 @@ mod frontier_determinism_tests {
         assert!(state_contains(&dag, &store, &at(&t, 3), &at(&e, 0), &mut memo).unwrap());
     }
 
-    /// R-COMM: the certifying committee is `bonds_of(floor(B))`. The oracle
-    /// reads it from the target's MAIN PARENT, so a bonding deploy landing on
-    /// one side of a fork gives the branches different electorates and each
-    /// clears the threshold alone.
+    /// R-COMM: the certifying committee is `bonds_of(floor(B))`, and the bonds a
+    /// block carries ARE that set — `Validate::bonds_cache_from_floor` rejects any
+    /// other. The oracle must therefore read the target's own committee: a block
+    /// whose floor has advanced past a bonding deploy and its pre-bond main parent
+    /// carry different electorates, so certifying against the parent's lets each
+    /// side of a fork clear the threshold under a committee no validity rule
+    /// checked.
     #[tokio::test]
-    #[ignore = "red on dev pending #459 (committee read from the main parent)"]
-    async fn sibling_branches_are_certified_under_one_committee() {
+    async fn the_certifying_committee_is_the_target_s_own_bonds() {
         let v = val();
         let joiner = Bytes::from(vec![0x07u8; 65]);
         let (floor, pre, plain, bonded, above) = (h(0), h(1), h(2), h(3), h(4));
@@ -2368,9 +2370,6 @@ mod frontier_determinism_tests {
                 (&joiner, 400),
             ]),
         ]);
-        dag.put_cached_floor(plain.clone(), floor.clone()).unwrap();
-        dag.put_cached_floor(above.clone(), floor.clone()).unwrap();
-
         let committee_of = |target: &Bytes| {
             let target = target.clone();
             let dag = &dag;
@@ -2380,22 +2379,123 @@ mod frontier_determinism_tests {
                     .expect("committee")
             }
         };
-        let on_plain: i64 = committee_of(&plain).await.values().sum();
-        let on_above: i64 = committee_of(&above).await.values().sum();
-        let at_floor: i64 = dag
-            .lookup(&floor)
-            .unwrap()
-            .expect("floor metadata")
-            .weight_map
-            .values()
-            .sum();
+        let own_bonds_of = |target: &Bytes| {
+            dag.lookup(target)
+                .unwrap()
+                .expect("metadata")
+                .weight_map
+                .into_iter()
+                .collect::<HashMap<_, _>>()
+        };
 
+        // `bonded`'s floor has advanced past the bond its parent predates, so
+        // the two carry different committees and the read is discriminating.
+        assert_ne!(own_bonds_of(&bonded), own_bonds_of(&pre));
         assert_eq!(
-            (on_plain, on_above),
-            (at_floor, at_floor),
-            "two blocks sharing a floor must be certified under that floor's \
-             committee; judging each branch under its own bonds lets both sides \
-             of a fork finalize independently"
+            committee_of(&bonded).await,
+            own_bonds_of(&bonded),
+            "the certifying committee must be the target's own bonds, which \
+             bonds_cache_from_floor pins to its floor; reading the parent's \
+             judges the block under a committee no validity rule checked"
+        );
+        assert_eq!(committee_of(&plain).await, own_bonds_of(&plain));
+        assert_eq!(committee_of(&floor).await, own_bonds_of(&floor));
+    }
+
+    /// The TODO deleted from `get_corresponding_weight_map` justified the
+    /// main-parent read by claiming a newly bonded validator's latest message is
+    /// pinned to the block carrying its bonding deploy, so stake that never spoke
+    /// rode in behind that parent-linked map. This node does not seed the slot that
+    /// way: the sentinel is the GENESIS hash, and `participating_weight_map` drops a
+    /// genesis-slot validator that genesis neither sent nor bonded. Reading the
+    /// target's own bonds therefore admits the bond to the committee without
+    /// admitting un-testified stake to the certifying weight.
+    ///
+    /// The asserted quantity is `ft_witnessed`'s own denominator: it sums
+    /// `participating_weight_map` into `total_stake` before any agreement work
+    /// (`clique_oracle.rs`, `ft_witnessed_exact`). Pinning the participating total
+    /// pins what fault tolerance is computed over, without a full FT fixture.
+    #[tokio::test]
+    async fn a_bonded_joiner_that_has_not_spoken_stays_out_of_the_certifying_weight() {
+        let v = val();
+        let joiner = Bytes::from(vec![0x07u8; 65]);
+        let (floor, pre, plain, bonded) = (h(0), h(1), h(2), h(3));
+
+        let weighted = |hash: &Bytes, parents: Vec<Bytes>, num: i64, bonds: &[(&Bytes, i64)]| {
+            let mut meta = md(hash.clone(), parents, num, &v);
+            meta.weight_map = bonds
+                .iter()
+                .map(|(validator, stake)| ((*validator).clone(), *stake))
+                .collect();
+            meta
+        };
+
+        // `floor` is the height-zero block, so it serves as the genesis the
+        // newly-bonded sentinel points at. The bond lands on one sibling only.
+        let dag = build_dag(vec![
+            weighted(&floor, vec![], 0, &[(&v, 100)]),
+            weighted(&pre, vec![floor.clone()], 1, &[(&v, 100)]),
+            weighted(&plain, vec![pre.clone()], 2, &[(&v, 100)]),
+            weighted(&bonded, vec![pre.clone()], 2, &[(&v, 100), (&joiner, 400)]),
+        ]);
+
+        let bonded_committee = CliqueOracle::get_corresponding_weight_map(&bonded, &dag)
+            .await
+            .expect("committee");
+        assert_eq!(
+            bonded_committee.get(&joiner),
+            Some(&400),
+            "the bond belongs to the target's own committee"
+        );
+
+        // Bonded, never heard from: the slot carries the genesis hash.
+        let mut unheard: BTreeMap<Bytes, Bytes> = BTreeMap::new();
+        unheard.insert(v.clone(), bonded.clone());
+        unheard.insert(joiner.clone(), floor.clone());
+
+        let participating =
+            CliqueOracle::participating_weight_map(bonded_committee.clone(), &dag, &unheard)
+                .expect("participating");
+        assert!(
+            !participating.contains_key(&joiner),
+            "a genesis-slot validator that genesis neither sent nor bonded must not \
+             participate; counting it would let stake that never testified into the \
+             threshold the oracle measures against"
+        );
+        assert_eq!(
+            participating.values().sum::<i64>(),
+            100,
+            "the certifying weight is the stake that has actually spoken"
+        );
+
+        // The sibling without the bond is judged over the same participating stake,
+        // so the bond does not hand one branch of the fork a larger electorate
+        // before the joiner speaks.
+        let plain_committee = CliqueOracle::get_corresponding_weight_map(&plain, &dag)
+            .await
+            .expect("committee");
+        assert!(!plain_committee.contains_key(&joiner));
+        let plain_participating =
+            CliqueOracle::participating_weight_map(plain_committee, &dag, &unheard)
+                .expect("participating");
+        assert_eq!(
+            plain_participating.values().sum::<i64>(),
+            participating.values().sum::<i64>(),
+            "both siblings certify over the same participating stake until the \
+             joiner produces a message"
+        );
+
+        // Once the joiner has produced a message its slot leaves genesis and the
+        // stake counts.
+        let mut heard = unheard.clone();
+        heard.insert(joiner.clone(), bonded.clone());
+        let after = CliqueOracle::participating_weight_map(bonded_committee, &dag, &heard)
+            .expect("participating");
+        assert_eq!(after.get(&joiner), Some(&400));
+        assert_eq!(
+            after.values().sum::<i64>(),
+            500,
+            "the joiner's stake joins the certifying weight once it has spoken"
         );
     }
 
@@ -3227,8 +3327,16 @@ mod frontier_determinism_tests {
         }];
 
         let mut blocks = vec![
-            md_wm(floor_block.clone(), vec![], 9, &vb, committee),
-            md_wm(target.clone(), vec![floor_block.clone()], 10, &va, vec![]),
+            md_wm(floor_block.clone(), vec![], 9, &vb, committee.clone()),
+            // Every block carries the committee of its own floor, which
+            // `bonds_cache_from_floor` pins — the target included.
+            md_wm(
+                target.clone(),
+                vec![floor_block.clone()],
+                10,
+                &va,
+                committee,
+            ),
             la_meta,
             lb_meta,
         ];

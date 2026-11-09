@@ -3,20 +3,27 @@
 '
 ' Source of Figure N16.3 in ../design.md (section N16). The figure restates
 ' embed, embed_reply, embed_texts and produce_recorded of
-' rholang/src/rust/interpreter/reified/system_processes.rs, the quota and
-' the reply codes of rholang/src/rust/interpreter/reified/vectordb_services.rs,
-' and the recorded processes of non_deterministic_ops() in
-' rholang/src/rust/interpreter/system_processes.rs (decisions 52, 57, 58 and
-' 68). It adds no new fact.
+' rholang/src/rust/interpreter/reified/system_processes.rs, the quota of
+' rholang/src/rust/interpreter/reified/vectordb_services.rs, and
+' native_failure_reply, native_played_reply, native_replayed_reply and
+' is_native_recorded_op of rholang/src/rust/interpreter/system_processes.rs
+' (decisions 52, 57, 104, 105, 113 and 116). It adds no new fact.
+'
+' Changed by decisions 104, 105 and 116: a failure replies a base code of
+' DR-114, play records a success through native_played_reply, and replay
+' delivers the record through native_replayed_reply. Before, a failure
+' replied a Reified code, and the dispatcher recorded the reply of a process
+' of non_deterministic_ops().
 '
 ' Reading order:
 '   1. Play on the proposer: the process checks the shape and the quota of
 '      the texts, asks the embedder of the node, and replies.
-'   2. The dispatcher records the whole reply on the produce event of the
+'   2. native_played_reply keeps a success that is plain data and fits the
+'      record room. Play records the whole reply on the produce event of the
 '      reply, a failure reply included.
 '   3. The program sends a record with embedding=, so the vector is
 '      consensus state from then on.
-'   4. Replay on another node produces the recorded reply and asks no
+'   4. Replay on another node checks the record, delivers it, and asks no
 '      embedder, so the two nodes compute the same state.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
@@ -38,7 +45,7 @@ skinparam sequence {
 skinparam NoteBorderColor $rrs_relation
 skinparam LegendBorderColor $rrs_relation
 skinparam LegendBackgroundColor $ca_note_grey
-title Recorded embeddings: rho:vectordb:embed (decisions 57 and 68)
+title Recorded embeddings: rho:vectordb:embed (decisions 57, 104, 105 and 116)
 autonumber
 
 participant "Program\n(a deploy)" as PROG $rrs_host
@@ -49,16 +56,16 @@ participant "VectorDB space\n(consensus state)" as SPACE $rrs_storage
 
 == Play on the proposer ==
 PROG -> EMBED : embed!(ret, "a text")  or  embed!(ret, [text...])
-EMBED -> EMBED : check the shape: one text, or a list of texts\n(else the reply [false, "BadArgument", ...])
-EMBED -> EMBED : check the quota: at most 64 texts and 64 KiB\n(else the reply [false, "EmbeddingRateLimited", ...])
+EMBED -> EMBED : check the shape: one text, or a list of texts\ncheck the quota: at most 64 texts and 64 KiB\n(else [false, "EXT_BAD_ARG", "vectordb_embed: invalid argument"])
 EMBED -> MODEL : embed(texts)
-MODEL --> EMBED : one vector of f32 values for each text
+MODEL --> EMBED : one finite vector of f32 values for each text\n(else [false, "EXT_FAILED", "vectordb_embed: external service failed"])
+EMBED -> EMBED : native_played_reply: a success that is plain data\nand fits the record room of the deploy\n(else EXT_FAILED or EXT_OUTPUT_TOO_LARGE)
 EMBED -> LOG : produce the reply on ret\n[true, vector, model], or [true, [vector...], model]
 note right of LOG
-  The dispatcher records the whole reply,
-  a reply [false, code, detail] included,
-  because the process is a recorded process
-  (non_deterministic_ops()).
+  Play records the whole reply,
+  a failure reply [false, code, message]
+  included. A persistent send to embed
+  fails at the fire (rule P2 of DR-114).
 end note
 LOG --> PROG : the reply
 PROG -> SPACE : docs!(text; embedding=vector)
@@ -66,6 +73,7 @@ SPACE -> SPACE : OFFER-VDB the record with its embedding:\nit fires a waiter, or
 
 == Replay on another node ==
 PROG -> EMBED : the same call, in replay
+EMBED -> EMBED : native_replayed_reply: an empty record,\nor a record that is not plain data,\nfails the replay with BugFoundError
 EMBED -> LOG : produce the recorded reply on ret
 note over MODEL
   Replay asks no embedder. Two nodes with

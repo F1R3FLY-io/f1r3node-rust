@@ -1,0 +1,53 @@
+{
+ "approval": {
+  "accepted_by": "jltatbeach",
+  "posted_at": "2026-10-21T20:42:25Z",
+  "record": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/811#issuecomment-6326106207",
+  "comment_body_sha256": "ab45289978da2d80b5427e02e935e30ca2e848b1a165a2d4223dd466f12d78b6",
+  "comment_body_sha256_method": "sha256 of the body bytes that the GitHub API returns for the comment",
+  "revision": "c3a9a0a282bb635e580ac93e8d559b916e4e7077",
+  "tested_commit": "ba666491aeafbfdf52576a1fa624fb82821974b6"
+ },
+ "review": {
+  "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-02/report.json",
+  "sha256": "9ae48961ebd5a6386bbef55de35d3bf15d7913552c9cb2cdbe21c454fbffaae5"
+ },
+ "previous_acceptance": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": {
+   "ref": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json",
+   "sha256": "982fc077d124845f51132e013284af25a846e84fca7f3ff0a783a99699434756"
+  }
+ },
+ "accepted_scope": {
+  "commits": [
+   "ba666491a"
+  ],
+  "change": "Three assertions of the fixture that could not fail under set -e are explicit checks that fail with a message.",
+  "in_force": "The acceptance casper-soak-writer-stop-acceptance-20261021-01 stays in force for the driver, host_control.rs, and the ownership guarantee with its limitation.",
+  "excluded": "Node correctness, the profile claims, and a live soak result."
+ },
+ "claim_digests": {
+  "docs/claims/casper-soak-harness.md": "d195ca6afe951e6806ccd9724a63bc5171374d3e0809196827661e2cb70bc855"
+ },
+ "claim_digests_note": "The claim document adds the sentence of the second acceptance of 2026-10-21 to the text that acceptance 01 records at 6488e5e5.",
+ "claim_discharge": "discharged",
+ "claim_ids": [
+  "CLAIM-CASPER-SOAK-001"
+ ],
+ "node_execution": false,
+ "phase": "pre_pr216_merge",
+ "schema_version": 1,
+ "scope": "bounded-harness-segment-writer-stop",
+ "soak": "pending",
+ "source_digests": {
+  "scripts/bench/test-run-merge-recovery-soak.sh": "3ff8305f3323e950c9a474b57dd24936de10461d6a5b6318cf129aef6ee953ba"
+ },
+ "status": "accepted-change",
+ "tiers": {
+  "binding": "passed",
+  "construction": "not-applicable",
+  "refutation": "bounded-safety-pass"
+ },
+ "verified_at": "2026-10-21",
+ "waiver": null
+}

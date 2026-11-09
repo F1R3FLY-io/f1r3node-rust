@@ -27,11 +27,13 @@
 // whether the file is present + readable, so missing / permission
 // errors go through the normal FSERR channel.
 //
-// # Shape-A gated resolver deferred
+// # Shape-A root gating
 //
-// Same as fs_exists — uses the ungated `resolve_or_identity`
-// from slice 4.12.  Shape-A `resolve_or_identity_gated_for_consensus`
-// lands later.
+// Same posture as fs_exists: Consensus-mode calls on unregistered
+// `/@bundle/<X>` roots refuse upfront via
+// `resolve_or_identity_gated_for_consensus`.  Oracular calls pass
+// through to identity.  See fs_exists module header for the
+// HandlerReply-ok wrapping rationale.
 //
 // # WAL state-read journaling (Wave 6 scope)
 //
@@ -53,7 +55,7 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, spawn_blocking_par, FsHandler, FsHandlerEntry, HandlerFamily,
     HandlerReply, JournalPath, SyscallCtx, FS_HANDLERS,
 };
-use crate::rust::interpreter::io::path::descend::safe_descend_verified;
+use crate::rust::interpreter::io::path::descend::safe_descend_or_root_self;
 use crate::rust::interpreter::io::path::{
     fstatat_meta, io_msg_scrub, leaf_of, quarantine_err_reply,
 };
@@ -122,17 +124,40 @@ impl FsHandler for FsStatHandler {
             // Leaf name extracted BEFORE moving `args.rel` into the
             // closure — `leaf_of` is a lexical string op (no
             // filesystem touch), so this is cheap + keeps the
-            // closure's capture set smaller.
-            let leaf_name = leaf_of(&args.rel);
-            // Ungated resolver — Shape-A gated variant deferred
-            // (see module header).
+            // closure's capture set smaller.  For root-self
+            // dispatch (`rel == ""` / `"."` / `"./"` /
+            // self-collapsing `a/..`), `leaf_of` returns the raw
+            // `rel` which can be `""` or `"."` / `".."`.  Normalize
+            // all root-self spellings to `"."` so the operator-
+            // visible `name` field in the stat record is a stable
+            // POSIX self-reference regardless of which spelling
+            // the Rholang call site used.
+            let leaf_name = {
+                let raw = leaf_of(&args.rel);
+                if raw.is_empty() || raw == "." || raw == ".." {
+                    ".".to_string()
+                } else {
+                    raw
+                }
+            };
+            // Shape-A gating: Consensus-mode call on an unregistered
+            // `/@bundle/<X>` short-circuits with FSERR_UNSUPPORTED.
+            // Wrapped in HandlerReply::ok to match this handler's
+            // "always ok, Par carries error semantics" discipline.
             let logical = PathBuf::from(&args.root);
-            let (on_disk_root, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&logical);
+            let (on_disk_root, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&logical, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::ok(err(c, m)),
+            };
             let rel = args.rel;
             let cmode = args.cmode;
             let par = spawn_blocking_par(move || -> Par {
-                let parent = match safe_descend_verified(&on_disk_root, &rel, expected_root_id) {
+                let parent = match safe_descend_or_root_self(&on_disk_root, &rel, expected_root_id)
+                {
                     Ok(p) => p,
                     Err(qe) => {
                         let (code, msg) = quarantine_err_reply(&qe);

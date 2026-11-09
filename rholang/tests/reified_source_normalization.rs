@@ -10,7 +10,10 @@ use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
 use serde_json::{Map, Value};
 
-const CORPUS_PATH: &str = "test-vectors/ordinary-source-normalization-v1.json";
+// Changed by decision 112: the fields change the vector of this tree, and decision 120 keeps v1
+// frozen as evidence for the masked comparison (ruling 6). The text before:
+// const CORPUS_PATH: &str = "test-vectors/ordinary-source-normalization-v1.json";
+const CORPUS_PATH: &str = "test-vectors/ordinary-source-normalization-v2.json";
 const CAPTURE_ENV: &str = "RRS_CAPTURE_SOURCES_OUT";
 const CAPTURE_REVISION_ENV: &str = "RRS_CAPTURE_REVISION";
 const COMPILE_STACK_BYTES: usize = 256 * 1024 * 1024;
@@ -22,8 +25,14 @@ const TEMPLATE_VALUES: [(&str, &str); 3] = [
     ("resourcePolicyGetter", ""),
 ];
 const DEFAULT_TEMPLATE_VALUE: &str = "0";
-const FLOAT_CORPUS_PATH: &str = "test-vectors/ordinary-float-forms-v1.json";
-const FLOAT_CORPUS_NAME: &str = "ordinary_float_forms_v1";
+// Changed by decision 112: the float vector takes its v2 file and name, and decision 120 keeps
+// v1 frozen as evidence for the masked comparison (ruling 6). The text before:
+// ```
+// const FLOAT_CORPUS_PATH: &str = "test-vectors/ordinary-float-forms-v1.json";
+// const FLOAT_CORPUS_NAME: &str = "ordinary_float_forms_v1";
+// ```
+const FLOAT_CORPUS_PATH: &str = "test-vectors/ordinary-float-forms-v2.json";
+const FLOAT_CORPUS_NAME: &str = "ordinary_float_forms_v2";
 const FLOAT_CAPTURE_ENV: &str = "RRS_CAPTURE_FLOATS_OUT";
 const CAPTURE_COMMAND_ENV: &str = "RRS_CAPTURE_COMMAND";
 const PARSER_PACKAGE: &str = "rholang-parser";
@@ -185,7 +194,9 @@ fn capture(root: &Path, out_dir: &Path) {
     let mut corpus = Map::with_capacity(5);
     corpus.insert(
         "name".to_string(),
-        Value::from("ordinary_source_normalization_v1"),
+        // Changed by decision 112: the capture writes the v2 vector. The text before:
+        // Value::from("ordinary_source_normalization_v1"),
+        Value::from("ordinary_source_normalization_v2"),
     );
     corpus.insert(
         "captured_at_revision".to_string(),
@@ -216,7 +227,9 @@ fn capture(root: &Path, out_dir: &Path) {
     fs::create_dir_all(out_dir).expect("create the capture directory");
     let rendered = serde_json::to_string_pretty(&Value::Object(corpus)).expect("render the corpus");
     fs::write(
-        out_dir.join("ordinary-source-normalization-v1.json"),
+        // Changed by decision 112: the capture writes the v2 vector. The text before:
+        // out_dir.join("ordinary-source-normalization-v1.json"),
+        out_dir.join("ordinary-source-normalization-v2.json"),
         format!("{rendered}\n"),
     )
     .expect("write the captured corpus");
@@ -372,6 +385,16 @@ fn locked_parser_source(root: &Path) -> (String, String) {
     }
 }
 
+fn capture_parser_source(root: &Path) -> (String, String) {
+    match (
+        std::env::var("RRS_CAPTURE_PARSER_SOURCE"),
+        std::env::var("RRS_CAPTURE_PARSER_REVISION"),
+    ) {
+        (Ok(source), Ok(revision)) => (source, revision),
+        _ => locked_parser_source(root),
+    }
+}
+
 fn capture_float_forms(root: &Path, out_dir: &Path) {
     let target = root.join("target");
     let canonical_target = target.canonicalize().unwrap_or_else(|_| target.clone());
@@ -386,7 +409,10 @@ fn capture_float_forms(root: &Path, out_dir: &Path) {
         target.display(),
         out_dir.display()
     );
-    let (parser_source, parser_revision) = locked_parser_source(root);
+    // Changed by ruling L-2a of decision 112: the local `[patch]` of this tree gives no git source
+    // in `Cargo.lock`, so a capture may name the parser through the environment. The text before:
+    // let (parser_source, parser_revision) = locked_parser_source(root);
+    let (parser_source, parser_revision) = capture_parser_source(root);
     let forms: Vec<Value> = FLOAT_FORMS
         .iter()
         .map(|(name, source)| {

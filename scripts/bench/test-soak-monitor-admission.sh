@@ -9,6 +9,7 @@ if [[ "${1:-}" == --inside ]]; then
     mkdir -p evidence bin harness tmp runner node/docker
     trap 'printf "ERROR: The monitor admission fixture failed before its behavioral verdict.\n" >&2; exit 2' ERR
     printf '{"services":{"writer":{"image":"fixture-unused"}}}\n' >node/docker/shard.yml
+    printf 'services: {}\n' >node/docker/ci-ports.shard.yml
     cat >bin/df <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

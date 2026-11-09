@@ -34,7 +34,7 @@ Each staged space operation now pays the [legacy charges](../glossary.md#legacy-
 
 The runtime wraps the host RSpace twice: in `DeterministicRSpace`, and then in `ChargingRSpace` (`rholang/src/rust/interpreter/rho_runtime.rs:2010-2013`).
 The reducer calls the outer wrapper, so every host operation pays its legacy charges.
-The space runtime takes the concrete RSpace before these wrappers (`rholang/src/rust/interpreter/rho_runtime.rs:1991`), as decision 19 requires.
+The space runtime takes the concrete RSpace before these wrappers (`rholang/src/rust/interpreter/rho_runtime.rs:2661`), as decision 19 requires.
 So the commit of a space transaction reaches the host store directly, and no legacy charge runs.
 
 The test `space_queue_legacy_replay_equal` measures the gap on the deploy `a!(1) | a!(2) | b!(3)`, which sends to two queue names.
@@ -62,7 +62,7 @@ The pre-charge of an operation runs in its callback `before_observe`, before its
 Its post-charges run in the callback of the next operation, and the post-charges of the last operation run after the commit.
 So the legacy log of a space job is the log of its host program.
 A charge that runs out of phlo stops the job where the host program stops.
-Table N10.1 of the [design](../design.md#n10-legacy-charges) gives the charges of each staged shape.
+Table N10.1 of the [design](../design.md#n10-legacy-charges) gave the charges of each staged shape, and [decision 90](../decision-register.md#decision-90) retired that table with the charges.
 
 ### 5.2 The code
 

@@ -32,8 +32,12 @@
 //! allocator of its row, or no counter for an unordered family, and its merge index holds its
 //! space events. No mergeable channel of a deploy is a Reified channel (item 19 of the consensus
 //! checklist). For a conflict-free row, block 3 runs on the merged root in a restarted runtime,
-//! and native replay reproduces it. Block 3 on the root of a serial order gives the same root and
-//! the same phlo. For a conflict row, block 3 runs on the root of the left
+//! and native replay reproduces it. Block 3 on the root of a serial order certifies and delivers
+//! the same labels. It gives the same root and phlo when it logs the events of block 3 on the
+//! merged root in any order (decision 93). For a conflict row, block 3 runs on the root of the left
+// Changed by decision 93 (decision 111): block 3 races on both roots. The old text follows.
+// //! and native replay reproduces it. Block 3 on the root of a serial order gives the same root and
+// //! the same phlo. For a conflict row, block 3 runs on the root of the left
 //! branch, and native replay reproduces it. Every deploy of every row also passes the coverage
 //! check of A4. The check runs in every build profile, and the test name keeps the word of the
 //! plan.
@@ -59,8 +63,8 @@ use support::family_programs::{
 };
 use support::merge::{index, merged_root, touching, without_channels};
 use support::native::{
-    assert_reproduces, certify, footprint_channels, native_play, NativeChain, Played, AMPLE_LIMIT,
-    OUT,
+    assert_reproduces, certify, footprint_channels, native_play, unordered_log, NativeChain,
+    Played, AMPLE_LIMIT, OUT,
 };
 use support::session::{counter_channel, data_channel, native, space_counter_channel, Injections};
 
@@ -488,8 +492,12 @@ fn check_branch(rig: &Rig, branch: &Played, slot: usize, ordered: bool, label: &
 /// A conflict-free row: the branches `left` and `right` merge with no conflict and no
 /// dependency, and the merged root is the root of both serial orders. Block 3, the program
 /// `block3` over the names, then runs on the merged root in a restarted runtime and delivers the
-/// labels `delivered` in all. Native replay reproduces it, and block 3 on the serial root gives
-/// the same root and phlo.
+/// labels `delivered` in all. Native replay reproduces it. Block 3 on the serial root certifies
+/// and delivers the same labels. It gives the same root and phlo when both plays log the same
+/// events in any order (decision 93).
+// Changed by decision 93 (decision 111): block 3 races on both roots. The old text follows.
+// /// labels `delivered` in all. Native replay reproduces it, and block 3 on the serial root gives
+// /// the same root and phlo.
 async fn assert_merge_row(
     rig: &mut Rig,
     (left_body, right_body): (&str, &str),
@@ -543,14 +551,38 @@ async fn assert_merge_row(
         .play_with(&term, &block3_label, LIMIT, Injections::new())
         .await;
     check_deploy(&on_serial, &block3_label);
-    assert_eq!(
-        on_merge.root, on_serial.root,
-        "{label}: block 3 on the merged root and on the serial root"
+    // Changed by decision 93 (decision 111): block 3 races on both roots, so its root and its
+    // phlo are equal only when both plays log the same events in any order. The old checks
+    // follow.
+    // assert_eq!(
+    //     on_merge.root, on_serial.root,
+    //     "{label}: block 3 on the merged root and on the serial root"
+    // );
+    // assert_eq!(
+    //     on_merge.result.native_phlo_usage, on_serial.result.native_phlo_usage,
+    //     "{label}: the phlo of block 3 on the merged root and on the serial root"
+    // );
+    let certification = certify(&on_serial, &term, LIMIT).await;
+    assert_reproduces(
+        &format!("{block3_label} on the serial root"),
+        &on_serial,
+        &certification,
     );
     assert_eq!(
-        on_merge.result.native_phlo_usage, on_serial.result.native_phlo_usage,
-        "{label}: the phlo of block 3 on the merged root and on the serial root"
+        labels(&on_serial),
+        expect(delivered),
+        "{label}: the deliveries after block 3 on the serial root"
     );
+    if unordered_log(&on_merge.log) == unordered_log(&on_serial.log) {
+        assert_eq!(
+            on_merge.root, on_serial.root,
+            "{label}: block 3 on the merged root and on the serial root"
+        );
+        assert_eq!(
+            on_merge.result.native_phlo_usage, on_serial.result.native_phlo_usage,
+            "{label}: the phlo of block 3 on the merged root and on the serial root"
+        );
+    }
     (left, right)
 }
 
@@ -1017,11 +1049,19 @@ async fn space_cross_block_merge_agent_calls_race_on_its_state() {
 /// reference agent. Peeks are in the family programs and in each deploy that reads a stash.
 /// The roots of the merge trace of the specification (section 11, Determinism): R1, the left
 /// branch, the right branch and the merge.
+// Changed by decision 90 (step E): the merge with `feature/cost-accounted-rho` at `702496775`
+// changes the four roots of the trace. The old values follow.
+// const MERGE_TRACE_ROOTS: [&str; 4] = [
+//     "98c68b5e2deb454a81cded3fec6dfa349081beb6f7f234b2501ec0a97795165f",
+//     "d7cabfa35f3dd880fdcf8705d1c5d3656940c3f96f3e85db472845bda9ec7b12",
+//     "dc94fd62a404c3e956dc4da1afafecedc95289808b1beee2b09d1cc94744a2fa",
+//     "8825f3dd7faa2838e09f01cc305babe2d3580d7c9798944c22673d2189e69bf3",
+// ];
 const MERGE_TRACE_ROOTS: [&str; 4] = [
-    "98c68b5e2deb454a81cded3fec6dfa349081beb6f7f234b2501ec0a97795165f",
-    "d7cabfa35f3dd880fdcf8705d1c5d3656940c3f96f3e85db472845bda9ec7b12",
-    "dc94fd62a404c3e956dc4da1afafecedc95289808b1beee2b09d1cc94744a2fa",
-    "8825f3dd7faa2838e09f01cc305babe2d3580d7c9798944c22673d2189e69bf3",
+    "23f3bef617558e0271677109023fc2eb3d9b8f16cc4270459ab9e88d095d2300",
+    "3b2074213e0ee26f24c049990ebd9c5401e7291029eeb4f464b6356a043bcc01",
+    "4b0df8853f40f33b839884bcaed13ce209f78452d32b2380cf2ddd04ddf24c1d",
+    "c74fc252fbb9692596c7cd0bd9667971b6eca981dccbd31eb02d82f5bd1c5413",
 ];
 
 /// The merge trace of the specification (section 11, Determinism). Block 1 creates a bag space

@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBufferKeyValueStorage;
 use block_storage::rust::dag::block_dag_key_value_storage::BlockDagKeyValueStorage;
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
@@ -21,8 +22,8 @@ use futures::stream::StreamExt;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheResponse, MergeableEntryRequest,
-    MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
+    ApprovedBlock, BlockMessage, CasperMessage, FloorCacheEntry, FloorCacheResponse,
+    MergeableEntryRequest, MergeableEntryResponse, StoreItemsMessage, StoreItemsMessageRequest,
 };
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::Either;
@@ -54,6 +55,7 @@ use crate::rust::metrics_constants::{
     INIT_BLOCK_MESSAGE_QUEUE_PENDING_METRIC, INIT_TUPLE_SPACE_QUEUE_PENDING_METRIC,
 };
 use crate::rust::util::proto_util;
+use crate::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 use crate::rust::validate::Validate;
 use crate::rust::validator_identity::ValidatorIdentity;
@@ -233,12 +235,6 @@ fn receive_shipped_genesis(
         );
         refuse();
         return Ok(false);
-    }
-    if block_dag_storage
-        .get_representation()?
-        .contains(&genesis_block.block_hash)
-    {
-        return Ok(true);
     }
     block_store.put_block_message(&genesis_block)?;
     block_dag_storage.insert(
@@ -424,6 +420,17 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Initializing<
                     .map_err(CasperError::CommError)
             }
             CasperMessage::StoreItemsMessage(store_items_message) => {
+                // Tuple-space restore is bootstrap-only: every StoreItemsMessageRequest goes
+                // out through send_to_bootstrap, and with no bootstrap on_approved_block never
+                // starts a restore. `peer` is the node id the message declares, so this filter
+                // only narrows the input. Chunk validation is what rejects bad data.
+                if self.rp_conf_ask.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping StoreItemsMessage from {}: state chunks are requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 tracing::info!(
                     "Received {} from {}.",
                     store_items_message.clone().pretty(),
@@ -554,11 +561,6 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 "Valid approved block {} received. Restoring approved state.",
                 PrettyPrinter::build_string(CasperMessage::BlockMessage(block.clone()), true)
             );
-
-            initializing.block_dag_storage.insert(
-                block,
-                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
-            )?;
 
             initializing.request_approved_state(approved_block).await?;
 
@@ -925,6 +927,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         // Now populate DAG with the final state (equivalent to evalMap in Scala)
         if let Some(st) = final_state_result {
+            let dag = self.block_dag_storage.get_representation()?;
+            let mut hashes: HashSet<BlockHash> = dag.dag_set.iter().cloned().collect();
+            hashes.extend(st.height_map.values().flatten().cloned());
+            let entries = self.request_floor_cache(approved_block, &hashes).await;
+            self.block_dag_storage.insert(
+                block,
+                block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
+            )?;
             self.populate_dag(
                 approved_block.candidate.block.clone(),
                 st.lower_bound,
@@ -935,7 +945,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             // hash, and a floor entry pointing at a block the DAG does not hold
             // reads back as a missing block rather than as a floor.
             self.seed_floor_caches(approved_block)?;
-            self.request_floor_cache(approved_block).await;
+            let dag = self.block_dag_storage.get_representation()?;
+            match apply_floor_cache_entries(&dag, &hashes, entries) {
+                Ok(written) => tracing::info!(written, "Floor cache applied to restored blocks"),
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "Could not apply the shipped floor cache. Finality will be derived locally."
+                ),
+            }
         } else {
             tracing::warn!(
                 "request_approved_state: block_request_stream returned no final state (None)"
@@ -1044,34 +1061,13 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                     }
                 }
             } else {
-                tracing::info!(
-                    "LFS forward-horizon: skipped (max_parent_depth unlimited or LFB at genesis)"
-                );
+                tracing::info!("LFS forward-horizon: no state roots to import");
             }
         }
 
-        // Replay blocks to populate the mergeable channel cache. Needed for
-        // multi-parent block validation: any block whose mergeable-channel
-        // metadata predates this node's LFS sync must be replayed against the
-        // stored post-state so `RuntimeManager::load_mergeable_channels`
-        // succeeds during validation.
-        //
-        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
-        // routes `MergeableEntryResponse` messages through
-        // `mergeable_message_rx` to populate the cache during sync, which
-        // covers most of the same ground. This explicit replay is the
-        // defensive companion path — it catches any block whose mergeable
-        // entry was missed by the streaming response (e.g. a peer that
-        // didn't ship one), and is a no-op when the cache is already warm.
-        // Bounded by the state floor, not the block floor: the replay executes
-        // blocks, so it must not walk below the history the horizon sync just
-        // imported, and a block below the parent reach is never merged on.
-        self.replay_blocks_for_mergeable_channels(approved_block, min_state_block_number)
-            .await?;
-
         // Transition to Running state
         tracing::info!("request_approved_state: transitioning to Running");
-        self.create_casper_and_transition_to_running(approved_block)
+        self.create_casper_and_transition_to_running(approved_block, min_state_block_number)
             .await?;
         tracing::info!("request_approved_state: transition_to_running completed");
 
@@ -1103,7 +1099,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     ///
     /// Failure degrades to that crawl — alive and alarmed, never a wedge — so
     /// this never fails the restore.
-    async fn request_floor_cache(&self, approved_block: &ApprovedBlock) {
+    async fn request_floor_cache(
+        &self,
+        approved_block: &ApprovedBlock,
+        hashes: &HashSet<BlockHash>,
+    ) -> Vec<FloorCacheEntry> {
         const ATTEMPTS: u32 = 3;
         const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -1111,19 +1111,16 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // derivation terminates locally — the same discriminator guard_deferral
         // and the settled door use. Nothing to ask for.
         if proto_util::block_number(&approved_block.candidate.block) == 0 {
-            return;
+            return Vec::new();
         }
 
-        let result: Result<(), CasperError> = async {
-            let dag = self.block_dag_storage.get_representation()?;
-            let hashes: Vec<BlockHash> = dag.dag_set.iter().cloned().collect();
-            let solicited: HashSet<BlockHash> = hashes.iter().cloned().collect();
+        let result: Result<Vec<FloorCacheEntry>, CasperError> = async {
             let mut rx = self.floor_cache_rx.lock().unwrap().take().ok_or_else(|| {
                 CasperError::RuntimeError("floor-cache receiver not available".to_string())
             })?;
 
             let request = models::rust::casper::protocol::casper_message::FloorCacheRequest {
-                hashes: hashes.clone(),
+                hashes: hashes.iter().cloned().collect(),
             };
             for attempt in 1..=ATTEMPTS {
                 self.transport_layer
@@ -1153,16 +1150,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                             }
                             _ => false,
                         };
-                        let written =
-                            apply_floor_cache_entries(&dag, &solicited, response.entries)?;
                         tracing::info!(
-                            written,
+                            received = response.entries.len(),
                             requested = hashes.len(),
                             genesis_learned = !response.genesis_hash.is_empty(),
                             genesis_landed,
-                            "Floor cache received: restored blocks carry their finality"
+                            "Floor cache received for restored blocks"
                         );
-                        return Ok(());
+                        return Ok(response.entries);
                     }
                     Ok(None) => {
                         return Err(CasperError::RuntimeError(
@@ -1181,13 +1176,14 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         }
         .await;
 
-        if let Err(e) = result {
+        result.unwrap_or_else(|e| {
             tracing::warn!(
                 error = %e,
                 "Proceeding without the shipped floor cache: sibling-branch validation \
                  will re-derive finality gap-by-gap (slow, not wrong)"
             );
-        }
+            Vec::new()
+        })
     }
 
     /// Record the anchor's floor and frontier as this node's own, so the first
@@ -1351,7 +1347,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     /// work to genuinely missing entries instead of full chain depth.
     async fn replay_blocks_for_mergeable_channels(
         &self,
-        approved_block: &ApprovedBlock,
+        adopted: Option<&AdoptedResourcePolicy>,
         min_block_number: i64,
     ) -> Result<(), CasperError> {
         // Bounds the replay so a stuck cold-start produces an explicit error
@@ -1362,7 +1358,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
         match tokio::time::timeout(
             MERGEABLE_CHANNEL_REPLAY_DEADLINE,
-            self.replay_blocks_for_mergeable_channels_inner(approved_block, min_block_number),
+            self.replay_blocks_for_mergeable_channels_inner(adopted, min_block_number),
         )
         .await
         {
@@ -1376,7 +1372,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
 
     async fn replay_blocks_for_mergeable_channels_inner(
         &self,
-        _approved_block: &ApprovedBlock,
+        adopted: Option<&AdoptedResourcePolicy>,
         min_block_number: i64,
     ) -> Result<(), CasperError> {
         tracing::info!("Replaying blocks to populate mergeable channel cache...");
@@ -1422,7 +1418,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
                 // Genesis block - replay from empty state
                 self.replay_genesis_block(&block).await?;
             } else {
-                self.replay_single_block(&block).await?;
+                self.replay_single_block(&block, adopted).await?;
             }
             replayed += 1;
         }
@@ -1492,7 +1488,11 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     }
 
     /// Replay a single block to populate its mergeable channel cache entry.
-    async fn replay_single_block(&self, block: &BlockMessage) -> Result<(), CasperError> {
+    async fn replay_single_block(
+        &self,
+        block: &BlockMessage,
+        adopted: Option<&AdoptedResourcePolicy>,
+    ) -> Result<(), CasperError> {
         let block_hash = &block.block_hash;
         let block_number = proto_util::block_number(block);
         let parents = &block.header.parents_hash_list;
@@ -1536,13 +1536,15 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
         // outer Mutex / lock acquisition is required.
         let result = self
             .runtime_manager
-            .replay_compute_state_envelopes(
+            .replay_compute_state_envelopes_with_policy(
                 &pre_state_hash,
                 deploys,
                 system_deploys,
                 &block_data,
                 Some(invalid_blocks_map),
                 is_genesis,
+                adopted,
+                Some(&block.body.state.post_state_hash),
             )
             .await;
 
@@ -1573,6 +1575,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
     async fn create_casper_and_transition_to_running(
         &self,
         approved_block: &ApprovedBlock,
+        min_state_block_number: i64,
     ) -> Result<(), CasperError> {
         let ab = approved_block.candidate.block.clone();
         let genesis_post_state_hash = ab.body.state.post_state_hash.clone();
@@ -1584,7 +1587,7 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             .estimator
             .lock()
             .unwrap()
-            .take()
+            .clone()
             .ok_or_else(|| CasperError::RuntimeError("Estimator not available".to_string()))?;
 
         // The on-chain fault-tolerance threshold is read and adopted by
@@ -1616,6 +1619,29 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             "create_casper_and_transition_to_running: MultiParentCasper instance created"
         );
 
+        // Replay blocks to populate the mergeable channel cache. Needed for
+        // multi-parent block validation: any block whose mergeable-channel
+        // metadata predates this node's LFS sync must be replayed against the
+        // stored post-state so `RuntimeManager::load_mergeable_channels`
+        // succeeds during validation.
+        //
+        // Merge of dev (EPOCH-004): dev's `lfs_block_requester::stream` now
+        // routes `MergeableEntryResponse` messages through
+        // `mergeable_message_rx` to populate the cache during sync, which
+        // covers most of the same ground. This explicit replay is the
+        // defensive companion path — it catches any block whose mergeable
+        // entry was missed by the streaming response (e.g. a peer that
+        // didn't ship one), and is a no-op when the cache is already warm.
+        // Bounded by the state floor, not the block floor: the replay executes
+        // blocks, so it must not walk below the history the horizon sync just
+        // imported, and a block below the parent reach is never merged on.
+        self.replay_blocks_for_mergeable_channels(
+            casper.adopted_resource_policy.as_ref(),
+            min_state_block_number,
+        )
+        .await?;
+        let _ = self.estimator.lock().unwrap().take();
+
         // **Scala equivalent**: `transitionToRunning[F](...)`
         tracing::info!("create_casper_and_transition_to_running: calling transition_to_running");
 
@@ -1624,6 +1650,104 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Box::pin(async { Ok(()) })
                 as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
         });
+
+        // The spawn_periodic_tick calls below need `Arc<T>`; the
+        // `Initializing` struct stores `T` directly (same shape as
+        // `transition_to_running`'s existing transport-layer
+        // conversion a few lines down).  Build the Arc once and
+        // reuse for both tick spawns.
+        let transport_for_ticks = Arc::new(self.transport_layer.clone());
+
+        // Phase 7b-1: build the snapshot chunk-fetch context if
+        // this node has an `fs_snapshot_writer`.  The joiner-side
+        // path through `Initializing` is where snapshot sync is
+        // actually consequential — this is the engine that
+        // observes a new finalized horizon and needs to fetch
+        // snapshot chunks for state reconstruction.  Returns
+        // `None` on observer / unconfigured deployments.  When
+        // `Some`, spawn the periodic tick loop that drives
+        // outbound snapshot-chunk requests.  The `JoinHandle` is
+        // intentionally dropped — the task lives for the engine's
+        // lifetime.
+        let snapshot_chunk_ctx = {
+            let ctx = crate::rust::engine::snapshot_chunk_sync::build_snapshot_chunk_context(
+                &self.runtime_manager,
+            )
+            .await;
+            if let Some(ref ctx) = ctx {
+                let _tick_handle = crate::rust::engine::snapshot_chunk_sync::spawn_periodic_tick(
+                    Arc::clone(&ctx.sync_driver),
+                    Arc::clone(&transport_for_ticks),
+                    self.rp_conf_ask.clone(),
+                    self.connections_cell.clone(),
+                );
+            }
+            ctx
+        };
+
+        // Phase 7b-2: build the WAL payload-fetch context from
+        // the shared `RuntimeManager.payload_store` slot.  Spawn
+        // the periodic tick loop and attach its stop handle to
+        // the context.  See
+        // [`WalPayloadContext::from_runtime_manager`] for the
+        // production vs. test-harness fallback discipline.
+        let wal_payload_ctx = {
+            let mut ctx = crate::rust::engine::running::WalPayloadContext::from_runtime_manager(
+                &self.runtime_manager,
+            )
+            .await;
+            let tick = crate::rust::engine::wal_payload_sync::spawn_periodic_tick(
+                Arc::clone(&ctx.sync_driver),
+                Arc::clone(&transport_for_ticks),
+                self.rp_conf_ask.clone(),
+                self.connections_cell.clone(),
+            );
+            ctx.tick_stop = Some(tick.stop);
+            // JoinHandle intentionally dropped: the task either
+            // lives for the process lifetime or exits cleanly when
+            // `tick_stop.stop()` fires.
+            drop(tick.join_handle);
+            Some(ctx)
+        };
+
+        // Phase 7b-2 boot wire-in: install a completion sink on
+        // the snapshot chunk driver + spawn the subscriber that
+        // decodes each completed snapshot and drives the WAL
+        // payload fetch + applier (slice 5.130).  Mirror of the
+        // wire-in at `casper_launch`.  Joiner-side significance:
+        // `Initializing` is where snapshot sync is actually
+        // consequential (new finalized horizon → fetch chunks),
+        // so this is the engine the apply subscriber matters
+        // most on.
+        if let (Some(snap_ctx), Some(wal_ctx)) =
+            (snapshot_chunk_ctx.as_ref(), wal_payload_ctx.as_ref())
+        {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                crate::rust::engine::snapshot_chunk_sync::SnapshotCompletion,
+            >();
+            snap_ctx.sync_driver.install_completion_sink(tx);
+            // Share the manager's `RootIdentityRegistry` into the
+            // subscriber via `.clone()` — the two-layer indirection
+            // means Clone shares the outer slot, so any post-spawn
+            // `register(logical, root)` on the manager is visible
+            // through this handle.  `allowed_roots` reads the shared
+            // `RuntimeManager.consensus_static_roots` slot (slice
+            // 5.134) populated at boot by
+            // `node::rust::runtime::setup::register_consensus_bundle_roots`.
+            let registry = self.runtime_manager.root_registry.clone();
+            let allowed_roots = self.runtime_manager.consensus_static_roots().await;
+            let _subscriber_handle =
+                crate::rust::engine::wal_apply_boot::spawn_boot_apply_subscriber(
+                    rx,
+                    Arc::clone(&wal_ctx.sync_driver),
+                    snap_ctx.snapshot_dir.clone(),
+                    registry,
+                    allowed_roots,
+                    Some(Arc::clone(&wal_ctx.payload_lookup)),
+                );
+            // JoinHandle intentionally dropped — subscriber exits
+            // naturally when the completion-sink sender is dropped.
+        }
 
         transition_to_running(
             self.block_processing_queue_tx.clone(),
@@ -1635,6 +1759,8 @@ impl<T: TransportLayer + Send + Sync + Clone> Initializing<T> {
             Arc::new(self.transport_layer.clone()),
             self.rp_conf_ask.clone(),
             self.block_retriever.clone(),
+            snapshot_chunk_ctx,
+            wal_payload_ctx,
             &self.engine_cell,
             &self.event_publisher,
             self.state_items_tx.clone(),
@@ -1827,8 +1953,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
 
     fn validate_tuple_space_items(
         &self,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+        history_items: &[(Blake2b256Hash, Vec<u8>)],
+        data_items: &[(Blake2b256Hash, Vec<u8>)],
         start_path: StatePartPath,
         page_size: i32,
         skip: i32,
@@ -1841,8 +1967,8 @@ impl<T: TransportLayer + Send + Sync> TupleSpaceRequesterOps for TupleSpaceReque
             page_size,
             skip,
             get_from_history,
-        )?;
-        Ok(())
+        )
+        .map_err(|e| CasperError::RuntimeError(e.to_string()))
     }
 }
 
@@ -2217,6 +2343,85 @@ mod tests {
             assert!(
                 block_store2.get(&genesis.block_hash).unwrap().is_none(),
                 "a refused copy leaves no trace in the block store"
+            );
+        });
+    }
+
+    /// An anchor just above genesis puts genesis inside the downloaded window,
+    /// so it reaches the DAG as an ordinary block before the shipped copy
+    /// arrives.
+    #[test]
+    fn genesis_inside_the_restore_window_is_finalized() {
+        use block_storage::rust::dag::block_dag_key_value_storage::{
+            BlockDagKeyValueStorage, InsertMode,
+        };
+        use models::rust::block_implicits::get_random_block;
+        use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut kvm = InMemoryStoreManager::new();
+            let dag_storage = BlockDagKeyValueStorage::new(&mut kvm).await.unwrap();
+            let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm).await.unwrap();
+
+            let mut genesis = get_random_block(
+                Some(0),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![]),
+                Some(vec![]),
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            genesis.block_hash = crate::rust::util::proto_util::hash_block(&genesis);
+
+            let anchor = get_random_block(
+                Some(1),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(vec![genesis.block_hash.clone()]),
+                None,
+                None,
+                None,
+                Some(vec![]),
+                None,
+                None,
+            );
+            dag_storage.insert(&anchor, InsertMode::Approved).unwrap();
+            dag_storage.insert(&genesis, InsertMode::Normal).unwrap();
+            dag_storage
+                .record_genesis_hash(genesis.block_hash.clone())
+                .unwrap();
+
+            let landed = receive_shipped_genesis(
+                &dag_storage,
+                &block_store,
+                &genesis.block_hash.clone(),
+                genesis.clone(),
+            )
+            .expect("receive_shipped_genesis");
+            assert!(landed, "a verified genesis copy must land");
+
+            let dag = dag_storage.get_representation().unwrap();
+            assert!(
+                dag.is_finalized(&genesis.block_hash),
+                "genesis is finalized by definition"
+            );
+            assert_eq!(
+                dag.last_finalized_block(),
+                anchor.block_hash,
+                "landing genesis must not move the LFB off the anchor"
             );
         });
     }

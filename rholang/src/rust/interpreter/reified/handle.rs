@@ -1,7 +1,9 @@
 //! The handle process `HANDLE_OP` (P4 design C.8, body ref 248, A6, A22 and A23).
 //!
 //! The handle continuation of a space forwards each call `this!(ret, method, a…; k=v…)` as
-//! `[0xE0, 0x30]!(this, [ret, method, a…, (PARAMS)?])`. The process takes these steps:
+// Changed by decision 112: the params are the `EParamsBody` value of a call. The text before:
+// //! `[0xE0, 0x30]!(this, [ret, method, a…, (PARAMS)?])`. The process takes these steps:
+//! `[0xE0, 0x30]!(this, [ret, method, a…, (params)?])`. The process takes these steps:
 //!
 //! 1. It accepts the call only when `this` is a bare handle id `E0‖H‖sid` or `E0‖h‖sid` of 34
 //!    bytes (A6). It drops every other call.
@@ -30,8 +32,10 @@
 //! of P4. `produce` runs one collection operation with the random state and the cost authority
 //! of the call (A16). Its named params other than `persistent` go to the agent, which checks
 //! their values (P5b). Its fires, its re-issue and its reply `Nil` are the branches of the
-//! outcome, and the reply is the last branch: a dispatch ends the reduction participant that
-//! makes it, so the participant cannot send the reply after a fire. `consume` accepts only
+// Changed by decision 90 (DR-132): racing evaluation has no participants. The text before:
+// //! outcome, and the reply is the last branch: a dispatch ends the reduction participant that
+// //! makes it, so the participant cannot send the reply after a fire. `consume` accepts only
+//! outcome, and the reply is the last branch. `consume` accepts only
 //! the matchers that the translation of one receive on a user agent built (P8, design v2
 //! HC-1 to HC-3). It runs that receive on the space, as a consume for one pair or as a join,
 //! and its body sends the env map of the receive to the body capability.
@@ -119,14 +123,18 @@ impl HandleMethod {
     }
 }
 
-/// A message that the handle process accepts: `[ret, method, a…, (PARAMS)?]`.
+// Changed by decision 112: the params are the `EParamsBody` value of a call. The text before:
+// /// A message that the handle process accepts: `[ret, method, a…, (PARAMS)?]`.
+/// A message that the handle process accepts: `[ret, method, a…, (params)?]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct HandleMessage {
     /// The reply name.
     pub ret: Par,
     /// The method name.
     pub method: String,
-    /// The arguments after the method name, without the PARAMS tuple.
+    // Changed by decision 112: the params are the `EParamsBody` value of a call. The text before:
+    // /// The arguments after the method name, without the PARAMS tuple.
+    /// The arguments after the method name, without the params value.
     pub args: Vec<Par>,
     /// The params of the call.
     pub params: SendParams,
@@ -137,7 +145,9 @@ pub struct HandleMessage {
 pub enum ParsedMessage {
     /// The message has no reply name or no method name. The process drops it (A23).
     Dropped,
-    /// The message has a reply name and a method name, but its PARAMS tuple is malformed.
+    // Changed by decision 112: the params are the `EParamsBody` value of a call. The text before:
+    // /// The message has a reply name and a method name, but its PARAMS tuple is malformed.
+    /// The message has a reply name and a method name, but its params value is malformed.
     Malformed { ret: Par, method: String },
     /// A message that the process runs.
     Message(HandleMessage),
@@ -245,9 +255,15 @@ impl HandleProcess {
         let Some(space) = handle_of(this) else {
             return Ok(Vec::new());
         };
+        // Changed by decision 90 (DR-132): the config read has no scheduler footprint, so it
+        // takes no cost authority.
+        // let config_map = self
+        //     .runtime
+        //     .read_config(Arc::clone(&self.agent), space, call.cost_authority.clone())
+        //     .await?;
         let config_map = self
             .runtime
-            .read_config(Arc::clone(&self.agent), space, call.cost_authority.clone())
+            .read_config(Arc::clone(&self.agent), space)
             .await?;
         let config = SpaceConfig::from_par(&config_map).map_err(SpaceError::from)?;
         let (ret, effect) = match ParsedMessage::parse(message) {
@@ -273,9 +289,21 @@ impl HandleProcess {
             MethodEffect::Operation(op) => {
                 let reply = vec![Par::default()];
                 let replied = produce(&reply, &ret);
+                // Changed by decision 91: the reply runs after the commit with the causal history
+                // of the operation, uses included, and it reuses the random state of the call.
+                // So it records that history for the call, and the continuation that the reply
+                // fires knows the uses (`CommitUse` of `SpaceCoordination.tla`).
+                // let then: Pin<
+                //     Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + Send>,
+                // > = Box::pin(async move { replied.await.map(|_| DispatchType::Skip) });
+                let runtime = Arc::clone(&self.runtime);
+                let call_random_state = call.random_state.clone();
                 let then: Pin<
                     Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + Send>,
-                > = Box::pin(async move { replied.await.map(|_| DispatchType::Skip) });
+                > = Box::pin(async move {
+                    runtime.record_item_history(&call_random_state);
+                    replied.await.map(|_| DispatchType::Skip)
+                });
                 reducer(&contract.dispatcher)?
                     .space_op(op, Some(then))
                     .await?;
@@ -708,6 +736,7 @@ fn env_forwarder(body_id: &Par, total: u32) -> Result<Par, InterpreterError> {
             persistent: false,
             locally_free: locally_free.clone(),
             connective_used: false,
+            params: None,
         }])
         .with_locally_free(locally_free))
 }
@@ -883,6 +912,7 @@ fn sole_component(par: &Par) -> SoleComponent<'_> {
         connective_used: _,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     let structural = sends.is_empty()
         && receives.is_empty()
@@ -892,6 +922,7 @@ fn sole_component(par: &Par) -> SoleComponent<'_> {
         && connectives.is_empty()
         && conditionals.is_empty()
         && cost_signed_terms.is_empty()
+        && use_blocks.is_empty()
         && cost_stacks.is_empty();
     match (structural, exprs.as_slice(), bundles.as_slice()) {
         (
@@ -1184,6 +1215,7 @@ pub(crate) mod alloc_harness {
 mod tests {
     use models::rhoapi::{BindPattern, Send as SendProcess};
     use models::rust::reified::builders;
+    use models::rust::reified::encoding::encode_params;
     use models::rust::reified::params::SendParam;
     use models::rust::space_factory_urn::SpaceFactoryUrn;
     use models::rust::utils::{new_bundle_par, new_elist_par, new_freevar_par, new_gbool_par};
@@ -1201,13 +1233,35 @@ mod tests {
     use crate::rust::interpreter::spaces::namespace::{NameTail, HANDLE_OP, REIFIED_TAG};
 
     fn params(params: Vec<SendParam>) -> Par {
-        builders::send_params(params)
+        // Changed by decision 112: the builder gives the params message, and a factory reads the
+        // value form. The text before:
+        // ```
+        // builders::send_params(params)
+        //     .expect("valid params")
+        //     .expect("non-empty params")
+        // ```
+        let params = builders::send_params(params)
+            .expect("valid params")
+            .expect("non-empty params");
+        encode_params(&params)
             .expect("valid params")
             .expect("non-empty params")
     }
 
     fn named(key: &str, value: Par) -> Par {
         params(vec![SendParam::Named(key.to_string(), value)])
+    }
+
+    /// A params value whose key is no identifier, so `encode_params` cannot build it.
+    fn params_with_invalid_key() -> Par {
+        Par::default().with_exprs(vec![models::rhoapi::Expr {
+            expr_instance: Some(models::rhoapi::expr::ExprInstance::EParamsBody(
+                SendParams {
+                    positional: Vec::new(),
+                    named: std::collections::BTreeMap::from([("Nil".to_string(), int(1))]),
+                },
+            )),
+        }])
     }
 
     fn this(space: NativeSpace) -> Par { namespace::gprivate(namespace::handle_channel(space)) }
@@ -1277,10 +1331,32 @@ mod tests {
                 "{message:?}"
             );
         }
-        let mut stale = named(PERSISTENT_PARAM, new_gbool_par(true, Vec::new(), false));
-        stale.connective_used = true;
+        // Changed by decision 112: no decoder reads a derived flag, so a flagged params value
+        // parses, and an invalid key is the malformed case. The text before:
+        // ```
+        // let mut stale = named(PERSISTENT_PARAM, new_gbool_par(true, Vec::new(), false));
+        // stale.connective_used = true;
+        // assert_eq!(
+        //     ParsedMessage::parse(&list(vec![ret.clone(), string("produce"), stale])),
+        //     ParsedMessage::Malformed {
+        //         ret: ret.clone(),
+        //         method: "produce".to_string(),
+        //     }
+        // );
+        // ```
+        let mut flagged = named(PERSISTENT_PARAM, new_gbool_par(true, Vec::new(), false));
+        flagged.connective_used = true;
+        assert!(matches!(
+            ParsedMessage::parse(&list(vec![ret.clone(), string("produce"), flagged])),
+            ParsedMessage::Message(HandleMessage { params, .. })
+                if params.named.contains_key(PERSISTENT_PARAM)
+        ));
         assert_eq!(
-            ParsedMessage::parse(&list(vec![ret.clone(), string("produce"), stale])),
+            ParsedMessage::parse(&list(vec![
+                ret.clone(),
+                string("produce"),
+                params_with_invalid_key(),
+            ])),
             ParsedMessage::Malformed {
                 ret: ret.clone(),
                 method: "produce".to_string(),
@@ -1472,7 +1548,10 @@ mod tests {
                 )
                 .await
             {
-                Err(InterpreterError::ReduceError(error)) => {
+                // Changed by the user decision of 2026-10-25 (as DR-128): a dangling handle is a
+                // user failure.
+                // Err(InterpreterError::ReduceError(error)) => {
+                Err(InterpreterError::SpaceUserError(error)) => {
                     assert!(error.starts_with("reified:DanglingHandle: "), "{error}");
                 }
                 other => panic!("a call on a dangling handle returned {other:?}"),
@@ -1649,8 +1728,12 @@ mod tests {
             .expect("the factory creates the space");
         let ch = string("ch");
         let payload = list(vec![int(1)]);
-        let mut stale = named("k", int(1));
-        stale.connective_used = true;
+        // Retired by decision 112: no decoder reads a derived flag, so a flagged value is not
+        // malformed. The text before:
+        // ```
+        // let mut stale = named("k", int(1));
+        // stale.connective_used = true;
+        // ```
         let argument = |method: &str, name: &str| {
             expected_error(SpaceReplyCode::BadArgument, method, vec![(
                 "argument",
@@ -1673,7 +1756,10 @@ mod tests {
                 unknown("config", "k", Par::default()),
             ),
             (
-                vec![string("qualifier"), stale],
+                // Changed by decision 112: an invalid key makes the params malformed. The text
+                // before:
+                // vec![string("qualifier"), stale],
+                vec![string("qualifier"), params_with_invalid_key()],
                 expected_error(SpaceReplyCode::MalformedMessage, "qualifier", Vec::new()),
             ),
             (
@@ -1743,7 +1829,10 @@ mod tests {
         )
         .await
         {
-            Err(InterpreterError::ReduceError(error)) => {
+            // Changed by the user decision of 2026-10-25 (as DR-128): positional params are a
+            // user failure.
+            // Err(InterpreterError::ReduceError(error)) => {
+            Err(InterpreterError::SpaceUserError(error)) => {
                 assert!(
                     error.starts_with("reified:PositionalParamsUnsupported: "),
                     "{error}"
@@ -2304,6 +2393,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }]);
         reduction
             .evaluate(term, b"user")

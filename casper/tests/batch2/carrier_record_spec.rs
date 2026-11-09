@@ -22,8 +22,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::Casper;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
 use casper::rust::util::rholang::interpreter_util;
-use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{
     BlockMessage, Body, F1r3flyState, Header, Justification,
@@ -34,6 +36,8 @@ use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
+use crate::helper::offered_deploy as construct_deploy;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -66,17 +70,23 @@ async fn stage_contest(
 ) -> (
     BlockMessage,
     BlockMessage,
-    Vec<(
-        Bytes,
-        crypto::rust::signatures::signed::Signed<
-            models::rust::casper::protocol::casper_message::DeployData,
-        >,
-    )>,
+    // Changed by DR-134 (DR-66 item 1): the contenders are offered deploys.
+    // Vec<(
+    //     Bytes,
+    //     crypto::rust::signatures::signed::Signed<
+    //         models::rust::casper::protocol::casper_message::DeployData,
+    //     >,
+    // )>,
+    Vec<(Bytes, OfferedDeploy)>,
 ) {
     let seed = construct_deploy::source_deploy_now_full(
         r#"@"race"!("s")"#.to_string(),
         None,
         None,
+        // Changed by DR-134 (gap G3): one key signs the seed and every reader.
+        // Changed by G3 (DR-135): dev's signer returns, and the writer's purse
+        // funds the read.
+        // Some(construct_deploy::DEFAULT_SEC.clone()),
         Some(construct_deploy::DEFAULT_SEC2.clone()),
         Some(0),
         Some(shard_id.to_string()),
@@ -111,6 +121,10 @@ async fn stage_contest(
             r#"for (@v <- @"race") { @"race"!("f") | @"XF"!(v) }"#.to_string(),
             None,
             None,
+            // Changed by DR-134 (gap G3): one key signs the seed and every reader.
+            // Changed by G3 (DR-135): dev's signer returns, and the writer's
+            // purse funds the read.
+            // Some(construct_deploy::DEFAULT_SEC.clone()),
             Some(
                 crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
                     .0
@@ -195,6 +209,8 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         None,
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("merge over the full frontier");
@@ -242,13 +258,28 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
     };
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    //     &mut nodes[2].block_store,
+    //     snapshot.parents.clone(),
+    //     vec![loser_deploy],
+    //     Vec::new(),
+    //     &snapshot,
+    //     &runtime_manager,
+    //     block_data.clone(),
+    let adopted_casper = nodes[2].casper.clone();
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_envelopes(
         &mut nodes[2].block_store,
         snapshot.parents.clone(),
-        vec![loser_deploy],
+        vec![
+            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Envelope(
+                loser_deploy.envelope,
+            ),
+        ],
         Vec::new(),
         &snapshot,
         &runtime_manager,
+        adopted_casper.adopted_resource_policy.as_ref(),
         block_data.clone(),
         HashMap::new(),
         None,
@@ -273,10 +304,14 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
     let fresh_execution = checkpoint
         .deploys
         .iter()
-        .find(|pd| pd.deploy.sig == loser_sig)
+        // Changed by DR-134 (DR-66 item 1): offered deploys carry an identity.
+        // .find(|pd| pd.deploy.sig == loser_sig)
+        .find(|pd| pd.identity_bytes() == loser_sig.as_ref())
         .expect("the loser must execute fresh in this block");
     assert!(
-        !fresh_execution.is_failed,
+        // Changed by DR-134 (DR-66 item 1).
+        // !fresh_execution.is_failed,
+        !fresh_execution.is_failed(),
         "staging precondition: the fresh execution must succeed"
     );
 
@@ -289,7 +324,10 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
             bonds: checkpoint.bonds,
             block_number: next_block_num,
         },
-        deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
+        // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+        // processed user deploys.
+        // deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
+        deploys: checkpoint.deploys,
         rejected_deploys: Vec::new(),
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
@@ -303,7 +341,9 @@ async fn fresh_carry_must_not_excuse_a_dropped_record() {
             .map(|p| p.block_hash.clone())
             .collect(),
         timestamp: now_millis,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis version.
+        // version: 1,
+        version: nodes[2].genesis.header.version,
         extra_bytes: Bytes::new(),
     };
     let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();

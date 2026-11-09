@@ -13,9 +13,7 @@
       "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
       "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
       "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
-      "formal/rocq/reified_rspaces/theories/Encoding.v",
-      "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "formal/rocq/reified_rspaces/theories/LegacyCharges.v"
+      "formal/rocq/reified_rspaces/theories/SyntaxFields.v"
     ],
     "tla": [
       "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
@@ -347,7 +345,7 @@
       "kind": "rocq",
       "name": "persistent_op_call_aborts",
       "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
-      "statement": "A persistent send to an op that takes calls, or to a handle, aborts before the call (A21)."
+      "statement": "A persistent send to an op that takes calls, or to a handle, aborts before the call (A21). A persistent send to a recorded op (embed or ann) passes A21, and base rule P2 fails it at its fire (decision 106)."
     },
     "Q55": {
       "kind": "rocq",
@@ -357,69 +355,21 @@
     },
     "Q56": {
       "kind": "rocq",
-      "name": "refresh_strict_decode_erase",
-      "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
-      "statement": "I-20: after the refresh, the strict decode is the decode of Encoding.v, and it accepts only derived flags."
+      "name": "decode_ignores_flags",
+      "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+      "statement": "I-20: no decoder reads a derived flag of a holder. The decoders read the fields of the new messages, which have no flags, and the two holder paths (the sole expression of a Par and the New of a space annotation) do not read a flag. So a stale flag never rejects a legal construct."
     },
     "Q57": {
       "kind": "rocq",
-      "name": "connective_marker_tuple_recognized",
-      "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
-      "statement": "I-20: a canonical marker tuple with connective_used = true is recognized."
+      "name": "decode_ignores_flags",
+      "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+      "statement": "I-20: no decoder reads a derived flag of a holder. The decoders read the fields of the new messages, which have no flags, and the two holder paths (the sole expression of a Par and the New of a space annotation) do not read a flag. So a stale flag never rejects a legal construct."
     },
     "Q58": {
       "kind": "rocq",
-      "name": "refreshed_decode_commutes_with_subst",
-      "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
-      "statement": "I-20: the refresh makes the strict decode of a substituted tuple commute with substitution."
-    },
-    "Q59": {
-      "kind": "rocq",
-      "name": "operation_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42: every collection operation reserves each read and copy before it makes it (DR-88 prefix coverage), the reads of the outcome after the commit included."
-    },
-    "Q60": {
-      "kind": "rocq",
-      "name": "reservations_precede_commit",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42: the work after the commit reserves nothing."
-    },
-    "Q61": {
-      "kind": "rocq",
-      "name": "cut_rejects_before_commit",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42: a budget below the reservations of an operation is exceeded by a staged reservation, so the operation fails before the commit and has no effect."
-    },
-    "Q62": {
-      "kind": "rocq",
-      "name": "scan_charge_permutation_invariant",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42: the charge of a head scan does not depend on the list order of its side."
-    },
-    "Q63": {
-      "kind": "rocq",
-      "name": "operation_charge_permutation_invariant",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42: the charge of an operation does not depend on the list order of the staged view."
-    },
-    "Q64": {
-      "kind": "rocq",
-      "name": "scan_charge_independent_of_unread_payloads",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42: the payloads of the entries that a scan does not copy do not change its charge."
-    },
-    "Q65": {
-      "kind": "rocq",
-      "name": "p4_scan_covered_only_if_free",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42 (negative control): the P4 scan, which reserved nothing for its own decodes and copies, satisfies prefix coverage only when that work is zero."
-    },
-    "Q66": {
-      "kind": "rocq",
-      "name": "unprepaid_trace_uncovered",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "Decision 42 (negative control): without the prepaid reservations, the reads of the outcome after the commit break prefix coverage."
+      "name": "decode_ignores_flags",
+      "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+      "statement": "I-20: no decoder reads a derived flag of a holder. The decoders read the fields of the new messages, which have no flags, and the two holder paths (the sole expression of a Par and the New of a space annotation) do not read a flag. So a stale flag never rejects a legal construct."
     },
     "Q67": {
       "kind": "rocq",
@@ -564,24 +514,6 @@
       "name": "queue_restore_realizes_plan",
       "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
       "statement": "Decision 45 (Rule E): for a consume, a produce and a re-entry, the staged operations of the code (the plan with the re-store after each peek fire of a non-persistent record) give the records of the logical plan under the substrate effects of Rule E, up to list order."
-    },
-    "Q79": {
-      "kind": "rocq",
-      "name": "legacy_rebracket_eq_host",
-      "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
-      "statement": "Decision 45 (Option P): a space job that stages its operations through the legacy chain makes the legacy log of the host program of the same operations, with the same remaining budget, status and applied operations, for every charge rule, call acceptance and budget. The status names the stop point, and a stop at a pre-charge or a post-charge of operation i applies exactly the operations of the host program."
-    },
-    "Q80": {
-      "kind": "rocq",
-      "name": "legacy_replay_stops_with_play",
-      "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
-      "statement": "Decision 45 (Option P): replay stages the operations of play and pairs each operation whose body play applied (decision 36). Then replay makes the legacy log, the remaining budget, the status and the applied operations of play, and it never diverges."
-    },
-    "U13": {
-      "kind": "tla",
-      "name": "LegacyChargesFollowHost",
-      "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
-      "statement": "Decision 45 (Option P): in a legacy deploy, whenever play has no open transaction, play has the legacy log, the remaining budget and the stop point of the equivalent host program: the same host operations ran, and the deploy failed exactly when the program failed. A completed replay has the legacy state of that program."
     }
   },
   "items": [
@@ -1497,8 +1429,7 @@
         "exec",
         "counter_produce",
         "bump_ord",
-        "bump_next",
-        "stage"
+        "bump_next"
       ],
       "tla": [
         "CounterStep",
@@ -1514,8 +1445,7 @@
         "Q27",
         "Q28",
         "Q35",
-        "U4",
-        "Q79"
+        "U4"
       ]
     },
     {
@@ -1527,8 +1457,7 @@
       "line": 251,
       "role": "Consumes the only counter record. The COMM has no peeks.",
       "rocq": [
-        "exec",
-        "stage"
+        "exec"
       ],
       "tla": [
         "CounterStep"
@@ -1536,8 +1465,7 @@
       "covers": [
         "Q20",
         "Q21",
-        "Q22",
-        "Q79"
+        "Q22"
       ]
     },
     {
@@ -1549,15 +1477,13 @@
       "line": 313,
       "role": "Stores the next counter record, which the next operation consumes.",
       "rocq": [
-        "exec",
-        "stage"
+        "exec"
       ],
       "tla": [
         "CounterStep"
       ],
       "covers": [
-        "Q25",
-        "Q79"
+        "Q25"
       ]
     },
     {
@@ -1595,19 +1521,18 @@
       ]
     },
     {
-      "item": "QueueDiscipline::head_metered",
+      "item": "QueueDiscipline::head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/disciplines/queue.rs",
       "scope": "QueueDiscipline",
       "kind": "fn",
-      "name": "head_metered",
-      "line": 41,
+      "name": "head",
+      "line": 37,
       "role": "The least (ord, bincode bytes), on both sides. Each comparison and each tie-break encode is reserved first (decision 42).",
       "rocq": [
         "head",
         "head_from",
-        "precedes",
-        "scan"
+        "precedes"
       ],
       "tla": [
         "IsHeadR",
@@ -1615,8 +1540,7 @@
       ],
       "covers": [
         "Q29",
-        "Q36",
-        "Q62"
+        "Q36"
       ]
     },
     {
@@ -1651,12 +1575,10 @@
       "role": "A lesser ord, or an equal ord and lesser bytes. The comparison of the orders is reserved first, and a tie encodes each entry at most once.",
       "rocq": [
         "precedes",
-        "precedes_key",
-        "scan"
+        "precedes_key"
       ],
       "covers": [
-        "Q29",
-        "Q62"
+        "Q29"
       ],
       "scope": "Best"
     },
@@ -1670,19 +1592,14 @@
       "line": 840,
       "role": "The head of the waiting continuations.",
       "rocq": [
-        "waiter_head",
-        "scan",
-        "p4_scan"
+        "waiter_head"
       ],
       "tla": [
         "IsHeadW"
       ],
       "covers": [
         "Q29",
-        "Q33",
-        "Q62",
-        "Q64",
-        "Q65"
+        "Q33"
       ]
     },
     {
@@ -1695,19 +1612,14 @@
       "line": 857,
       "role": "The head of the records.",
       "rocq": [
-        "record_head",
-        "scan",
-        "p4_scan"
+        "record_head"
       ],
       "tla": [
         "IsHeadR"
       ],
       "covers": [
         "Q29",
-        "Q33",
-        "Q62",
-        "Q64",
-        "Q65"
+        "Q33"
       ]
     },
     {
@@ -1721,7 +1633,6 @@
       "rocq": [
         "offer",
         "offer_loop",
-        "round_staged",
         "reenter_offer"
       ],
       "tla": [
@@ -1738,7 +1649,6 @@
         "U1",
         "U2",
         "U3",
-        "Q59",
         "Q68",
         "Q70",
         "Q73",
@@ -1764,7 +1674,6 @@
       "rocq": [
         "receive",
         "receive_loop",
-        "round_staged",
         "reenter_receive",
         "code_of",
         "code_ops"
@@ -1782,7 +1691,6 @@
         "U1",
         "U2",
         "U3",
-        "Q59",
         "Q68",
         "Q70",
         "Q73",
@@ -1829,17 +1737,14 @@
       "role": "The head of one side and its ord: the buffer and one envelope decode for each entry are reserved first, and nothing is copied.",
       "rocq": [
         "record_head",
-        "waiter_head",
-        "scan"
+        "waiter_head"
       ],
       "tla": [
         "IsHeadR",
         "IsHeadW"
       ],
       "covers": [
-        "Q29",
-        "Q62",
-        "Q64"
+        "Q29"
       ]
     },
     {
@@ -1963,26 +1868,17 @@
       "rocq": [
         "produce",
         "bumped",
-        "operation_trace",
-        "reenter_produce",
-        "finish"
+        "reenter_produce"
       ],
       "tla": [
         "Produce",
-        "OperationOrd",
-        "ChainTail"
+        "OperationOrd"
       ],
       "covers": [
         "Q30",
         "Q35",
-        "Q59",
-        "Q61",
-        "Q63",
         "Q69",
-        "Q75",
-        "Q79",
-        "Q80",
-        "U13"
+        "Q75"
       ]
     },
     {
@@ -1997,29 +1893,20 @@
       "rocq": [
         "consume",
         "bumped",
-        "operation_trace",
-        "reenter_consume",
-        "finish"
+        "reenter_consume"
       ],
       "tla": [
         "Consume",
         "Exec",
-        "OperationOrd",
-        "ChainTail"
+        "OperationOrd"
       ],
       "covers": [
         "Q28",
         "Q31",
         "Q35",
         "U4",
-        "Q59",
-        "Q61",
-        "Q63",
         "Q69",
-        "Q75",
-        "Q79",
-        "Q80",
-        "U13"
+        "Q75"
       ]
     },
     {
@@ -2034,30 +1921,21 @@
       "rocq": [
         "produce",
         "bumped",
-        "operation_trace",
         "reenter_produce",
-        "finish",
         "consume",
         "reenter_consume"
       ],
       "tla": [
         "Produce",
         "OperationOrd",
-        "ChainTail",
         "Consume",
         "Exec"
       ],
       "covers": [
         "Q30",
         "Q35",
-        "Q59",
-        "Q61",
-        "Q63",
         "Q69",
         "Q75",
-        "Q79",
-        "Q80",
-        "U13",
         "Q28",
         "Q31",
         "U4"
@@ -2105,9 +1983,7 @@
       "role": "SpaceAlreadyExists, then the config, S(sid) = 0 and the handle (one atomic commit).",
       "rocq": [
         "prepare_create",
-        "receipt_ok",
-        "stage",
-        "finish"
+        "receipt_ok"
       ],
       "tla": [
         "Create"
@@ -2115,9 +1991,7 @@
       "covers": [
         "Q55",
         "U5",
-        "U7",
-        "Q79",
-        "Q80"
+        "U7"
       ]
     },
     {
@@ -2398,7 +2272,7 @@
       "role": "The USE wrapper of a stored body.",
       "rocq": [
         "wrap_body",
-        "use_tuple"
+        "use_par"
       ],
       "covers": [
         "Q46"
@@ -2437,19 +2311,17 @@
       ]
     },
     {
-      "item": "ReducerCore::eval_marker",
+      "item": "ReducerCore::eval_use_block",
       "required": true,
       "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
       "scope": "ReducerCore",
       "kind": "fn",
-      "name": "eval_marker",
-      "line": 191,
-      "role": "H2: refresh, strict decode, then USE or NEWSPACE.",
+      "name": "eval_use_block",
+      "line": 349,
+      "role": "H2: decodes the use block of a process, and evaluates it (decision 112). A block without its space or its body fails with Malformed.",
       "rocq": [
         "fire_step",
-        "decode_use",
-        "refresh",
-        "sdecode"
+        "field_decode_encode"
       ],
       "covers": [
         "Q46",
@@ -2502,7 +2374,7 @@
       "rocq": [
         "route",
         "check_persistent_send",
-        "sdecode"
+        "decode_params"
       ],
       "covers": [
         "Q41",
@@ -2609,10 +2481,11 @@
       "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
       "kind": "fn",
       "name": "check_persistent_send",
-      "line": 110,
-      "role": "A21: `!!` aborts on every call op and every handle.",
+      "line": 116,
+      "role": "A21: `!!` aborts on every call op and every handle, but not on a recorded op (embed or ann), which base rule P2 fails at its fire (decision 106).",
       "rocq": [
-        "check_persistent_send"
+        "check_persistent_send",
+        "is_recorded_op"
       ],
       "covers": [
         "Q54"
@@ -3211,146 +3084,6 @@
       ]
     },
     {
-      "item": "Field",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "struct",
-      "name": "Field",
-      "line": 1117,
-      "role": "Value, List, Map, Annotations, NewBody.",
-      "rocq": [
-        "field_flags"
-      ],
-      "covers": [
-        "Q56"
-      ]
-    },
-    {
-      "item": "marker_fields",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "marker_fields",
-      "line": 1131,
-      "role": "The fields of each marker.",
-      "rocq": [
-        "derived_flags"
-      ],
-      "covers": [
-        "Q56"
-      ]
-    },
-    {
-      "item": "derived_flag",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "derived_flag",
-      "line": 1224,
-      "role": "The flag that the encoder derives for a field.",
-      "rocq": [
-        "derived_flags"
-      ],
-      "covers": [
-        "Q56",
-        "Q57"
-      ]
-    },
-    {
-      "item": "refresh_field",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "refresh_field",
-      "line": 1290,
-      "role": "Recompute the derived flags of a field.",
-      "rocq": [
-        "refresh"
-      ],
-      "covers": [
-        "Q56"
-      ]
-    },
-    {
-      "item": "refresh_tuple",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "refresh_tuple",
-      "line": 1361,
-      "role": "Recompute the derived flags of a marker tuple.",
-      "rocq": [
-        "refresh"
-      ],
-      "covers": [
-        "Q56"
-      ]
-    },
-    {
-      "item": "refreshed_tuple",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "refreshed_tuple",
-      "line": 1372,
-      "role": "A current tuple is not copied.",
-      "rocq": [
-        "refresh",
-        "sdecode"
-      ],
-      "covers": [
-        "Q56",
-        "Q58"
-      ]
-    },
-    {
-      "item": "refresh_tuple_par",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "refresh_tuple_par",
-      "line": 1393,
-      "role": "The tuple and its holder Par.",
-      "rocq": [
-        "refresh"
-      ],
-      "covers": [
-        "Q56"
-      ]
-    },
-    {
-      "item": "refreshed_marker_par",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "refreshed_marker_par",
-      "line": 1419,
-      "role": "H4: the QUERY source before it fails closed.",
-      "rocq": [
-        "refresh"
-      ],
-      "covers": [
-        "Q56",
-        "Q58"
-      ]
-    },
-    {
-      "item": "trailing_params",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "trailing_params",
-      "line": 1432,
-      "role": "H3: refresh, then split_trailing_params.",
-      "rocq": [
-        "sdecode"
-      ],
-      "covers": [
-        "Q56",
-        "Q58"
-      ]
-    },
-    {
       "item": "encoding::bits_of",
       "required": true,
       "file": "models/src/rust/reified/encoding.rs",
@@ -3358,271 +3091,9 @@
       "name": "bits_of",
       "line": 394,
       "role": "The disjunction of the children flags.",
-      "rocq": [
-        "derived_flags"
-      ],
+      "rocq": [],
       "covers": [
         "Q57"
-      ]
-    },
-    {
-      "item": "encoding::list_par",
-      "required": true,
-      "file": "models/src/rust/reified/encoding.rs",
-      "kind": "fn",
-      "name": "list_par",
-      "line": 418,
-      "role": "A list Par with the derived flags.",
-      "rocq": [
-        "derived_flags"
-      ],
-      "covers": [
-        "Q57"
-      ]
-    },
-    {
-      "item": "encoding::marker_tuple",
-      "required": true,
-      "file": "models/src/rust/reified/encoding.rs",
-      "kind": "fn",
-      "name": "marker_tuple",
-      "line": 462,
-      "role": "The tuple flag of the encoder.",
-      "rocq": [
-        "derived_flags"
-      ],
-      "covers": [
-        "Q57"
-      ]
-    },
-    {
-      "item": "encoding::tuple_par",
-      "required": true,
-      "file": "models/src/rust/reified/encoding.rs",
-      "kind": "fn",
-      "name": "tuple_par",
-      "line": 475,
-      "role": "The holder Par takes the flag of the tuple.",
-      "rocq": [
-        "derived_flags"
-      ],
-      "covers": [
-        "Q57"
-      ]
-    },
-    {
-      "item": "submit_space",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/schedule.rs",
-      "kind": "fn",
-      "name": "submit_space",
-      "line": 192,
-      "role": "The space job scheduler.",
-      "unmodeled": "The scheduler of the Intent::Space jobs. P1 T5 (TxnLockCoverage) models the lock coverage of their transactions. The P4 models take one operation as one atomic transaction."
-    },
-    {
-      "item": "ScanMeter::charge",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/costs.rs",
-      "scope": "ScanMeter",
-      "kind": "fn",
-      "name": "charge",
-      "line": 75,
-      "role": "Reserves operations, scanned bytes and backing bytes on VerificationOperations, VerificationBytes and SearchStateBytes, the mapping of DR-88.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "ScanMeter::inspect",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/costs.rs",
-      "scope": "ScanMeter",
-      "kind": "fn",
-      "name": "inspect",
-      "line": 98,
-      "role": "Reserves a read walk before the read.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "ScanMeter::copy",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/costs.rs",
-      "scope": "ScanMeter",
-      "kind": "fn",
-      "name": "copy",
-      "line": 124,
-      "role": "Reserves a copy and its cleanup, then copies.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "ScanMeter::buffer",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/costs.rs",
-      "scope": "ScanMeter",
-      "kind": "fn",
-      "name": "buffer",
-      "line": 150,
-      "role": "Reserves a buffer of n slots, then allocates it.",
-      "rocq": [
-        "step",
-        "scan"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "ScanMeter::compare",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/costs.rs",
-      "scope": "ScanMeter",
-      "kind": "fn",
-      "name": "compare",
-      "line": 161,
-      "role": "Reserves one comparison of two orders or of two tie-break encodes.",
-      "rocq": [
-        "scan"
-      ],
-      "covers": [
-        "Q62"
-      ]
-    },
-    {
-      "item": "ScanMeter::moved",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/costs.rs",
-      "scope": "ScanMeter",
-      "kind": "fn",
-      "name": "moved",
-      "line": 192,
-      "role": "Reserves the move of one slot (DR-91).",
-      "rocq": [
-        "round_after_commit"
-      ],
-      "covers": [
-        "Q60"
-      ]
-    },
-    {
-      "item": "ScanMeter::encode",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/costs.rs",
-      "scope": "ScanMeter",
-      "kind": "fn",
-      "name": "encode",
-      "line": 228,
-      "role": "A bincode encode that reserves each write with the writer of the host.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "wrap_datum_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/record.rs",
-      "kind": "fn",
-      "name": "wrap_datum_metered",
-      "line": 628,
-      "role": "The datum record, with its copies reserved first.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "datum_ord_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/record.rs",
-      "kind": "fn",
-      "name": "datum_ord_metered",
-      "line": 651,
-      "role": "The order of a record: a reserved read of the envelope only.",
-      "rocq": [
-        "scan"
-      ],
-      "covers": [
-        "Q64"
-      ]
-    },
-    {
-      "item": "unwrap_datum_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/record.rs",
-      "kind": "fn",
-      "name": "unwrap_datum_metered",
-      "line": 660,
-      "role": "The payload of the head record of a receive, with its copies reserved first.",
-      "rocq": [
-        "round_staged"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "wrap_continuation_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/record.rs",
-      "kind": "fn",
-      "name": "wrap_continuation_metered",
-      "line": 683,
-      "role": "The parked continuation of a receive, built once, with its copies reserved first.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "continuation_ord_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/record.rs",
-      "kind": "fn",
-      "name": "continuation_ord_metered",
-      "line": 738,
-      "role": "The order of a waiter: a reserved read of the spine and the small slots, never of the body.",
-      "rocq": [
-        "scan"
-      ],
-      "covers": [
-        "Q64"
-      ]
-    },
-    {
-      "item": "prepay_continuation_unwrap",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/record.rs",
-      "kind": "fn",
-      "name": "prepay_continuation_unwrap",
-      "line": 750,
-      "role": "Prepays at staging the decode that the outcome makes after the commit.",
-      "rocq": [
-        "round_staged",
-        "prepaid"
-      ],
-      "covers": [
-        "Q59",
-        "Q66"
       ]
     },
     {
@@ -3631,14 +3102,9 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "into_continuation",
-      "line": 773,
+      "line": 640,
       "role": "The outcome decode: it moves the slots out of the receipt and copies nothing.",
-      "rocq": [
-        "round_after_commit"
-      ],
-      "covers": [
-        "Q60"
-      ]
+      "unmodeled": "Decision 96 deleted its only model, AgentReadCoverage.v (Q60), because decision 89 retired the queue metering of decision 42. No live headline models this decode."
     },
     {
       "item": "Introduction::new",
@@ -3647,14 +3113,9 @@
       "scope": "Introduction",
       "kind": "fn",
       "name": "new",
-      "line": 2126,
-      "role": "One introduction for each operation: the authority and the phlo budget, with their copies reserved.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
+      "line": 1602,
+      "role": "One introduction for each operation: the authority and the phlo budget, which the staged operations of the operation share through one pointer.",
+      "unmodeled": "Decision 96 deleted its only model, AgentReadCoverage.v (Q59), because decision 89 retired the queue metering of decision 42. No live headline models this introduction."
     },
     {
       "item": "register_introduction",
@@ -3662,46 +3123,9 @@
       "file": "rholang/src/rust/interpreter/spaces/record.rs",
       "kind": "fn",
       "name": "register_introduction",
-      "line": 2167,
-      "role": "The callback of a staged operation: one reserved copy of a shared pointer.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "CollectionChannels::new_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "scope": "CollectionChannels",
-      "kind": "fn",
-      "name": "new_metered",
-      "line": 575,
-      "role": "The channels of an operation, with their ids reserved first.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "prepay_outcome",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "kind": "fn",
-      "name": "prepay_outcome",
-      "line": 1770,
-      "role": "Prepays the buffer of the fires of the outcome before the commit.",
-      "rocq": [
-        "staged_trace"
-      ],
-      "covers": [
-        "Q59",
-        "Q66"
-      ]
+      "line": 1682,
+      "role": "The callback of a staged operation: it copies one shared pointer and registers the introduction authority at the commit.",
+      "unmodeled": "Decision 96 deleted its only model, AgentReadCoverage.v (Q59), because decision 89 retired the queue metering of decision 42. No live headline models this callback."
     },
     {
       "item": "outcome",
@@ -3709,14 +3133,9 @@
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "kind": "fn",
       "name": "outcome",
-      "line": 1778,
-      "role": "Step 7 after the commit: moves only, prepaid at staging.",
-      "rocq": [
-        "round_after_commit"
-      ],
-      "covers": [
-        "Q60"
-      ]
+      "line": 4138,
+      "role": "Step 7 after the commit: it moves each fired continuation out of its receipt and copies nothing.",
+      "unmodeled": "Decision 96 deleted its only model, AgentReadCoverage.v (Q60), because decision 89 retired the queue metering of decision 42. No live headline models this step."
     },
     {
       "item": "Cx::fire_offer",
@@ -3725,16 +3144,9 @@
       "scope": "Cx",
       "kind": "fn",
       "name": "fire_offer",
-      "line": 1073,
-      "role": "Stages a produce-side fire with reserved copies (Cx::fire_offer_on), and moves the record on the last round.",
-      "rocq": [
-        "round_staged",
-        "stage"
-      ],
-      "covers": [
-        "Q59",
-        "Q79"
-      ]
+      "line": 2734,
+      "role": "Stages a produce-side fire on the data channel of the collection, with the introduction of the operation (Cx::fire_offer_on).",
+      "unmodeled": "Decision 96 deleted its model AgentReadCoverage.v (Q59), because decision 89 retired the queue metering of decision 42. Decision 90 removed Option P with the legacy chain and its model LegacyCharges.v (Q79). No live headline models this fire."
     },
     {
       "item": "Cx::fire_receive",
@@ -3743,16 +3155,9 @@
       "scope": "Cx",
       "kind": "fn",
       "name": "fire_receive",
-      "line": 1124,
-      "role": "Stages a consume-side fire of one record with reserved copies (Cx::fire_receive_group with one bind), and moves the head copy into the candidate.",
-      "rocq": [
-        "round_staged",
-        "stage"
-      ],
-      "covers": [
-        "Q59",
-        "Q79"
-      ]
+      "line": 2818,
+      "role": "Stages a consume-side fire of one record, as a group of one bind (Cx::stage_receive_group). The record is the copy of the plan, so it moves into the candidate.",
+      "unmodeled": "Decision 96 deleted its model AgentReadCoverage.v (Q59), because decision 89 retired the queue metering of decision 42. Decision 90 removed Option P with the legacy chain and its model LegacyCharges.v (Q79). No live headline models this fire."
     },
     {
       "item": "Cx::restore",
@@ -3766,14 +3171,10 @@
       "rocq": [
         "code_of",
         "sub_step",
-        "round_staged",
-        "step",
-        "stage"
+        "step"
       ],
       "covers": [
-        "Q78",
-        "Q59",
-        "Q79"
+        "Q78"
       ]
     },
     {
@@ -3799,46 +3200,9 @@
       "scope": "Introduction",
       "kind": "fn",
       "name": "for_record",
-      "line": 2149,
-      "role": "Decision 45 (Rule E): the introduction of a re-stored record: the budget of the operation and the record's own cost authority, or the empty authority, as produce_peeks registers it. The copies are reserved as in Introduction::new.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "SpaceConfig::from_par_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/types/config.rs",
-      "scope": "SpaceConfig",
-      "kind": "fn",
-      "name": "from_par_metered",
-      "line": 150,
-      "role": "The strict config decode, with its walks reserved first.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
-    },
-    {
-      "item": "SpaceMatcher::metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/matching.rs",
-      "scope": "SpaceMatcher",
-      "kind": "fn",
-      "name": "metered",
-      "line": 44,
-      "role": "The matcher of a job, with the copy of the shared handle reserved.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
+      "line": 1625,
+      "role": "Decision 45 (Rule E): the introduction of a re-stored record: the budget of the operation and the record's own cost authority as this deployment resolves it, or the empty authority, as produce_peeks registers it. Decision 89 (DR-101): residue that this deployment sealed resolves to the region of the payer. Decision 107 (DR-135 R4): that region carries the region price of the running native execution.",
+      "unmodeled": "Decision 96 deleted its only model, AgentReadCoverage.v (Q59), because decision 89 retired the queue metering of decision 42. No live headline models this introduction."
     },
     {
       "item": "only_record",
@@ -3846,14 +3210,9 @@
       "file": "rholang/src/rust/interpreter/spaces/counter.rs",
       "kind": "fn",
       "name": "only_record",
-      "line": 149,
-      "role": "The only counter record of a channel: one reserved copy instead of a copy of the view.",
-      "rocq": [
-        "step"
-      ],
-      "covers": [
-        "Q59"
-      ]
+      "line": 147,
+      "role": "The only counter record of a channel in the staged view, copied, or none. Two records are Inconsistent.",
+      "unmodeled": "Decision 96 deleted its only model, AgentReadCoverage.v (Q59), because decision 89 retired the queue metering of decision 42. No live headline models this read."
     },
     {
       "item": "ReifiedRuntime::host",
@@ -3889,235 +3248,15 @@
       ]
     },
     {
-      "item": "LegacyCharges",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "kind": "struct",
-      "name": "LegacyCharges",
-      "line": 52,
-      "role": "The charges of one staged operation: the pre-charge before its host call and the post-charges of handle_result (pre and post of the model).",
-      "rocq": [
-        "post_charges"
-      ],
-      "covers": [
-        "Q79",
-        "U13"
-      ],
-      "tla": [
-        "PreCharge",
-        "PostList"
-      ]
-    },
-    {
-      "item": "produce_charges",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "kind": "fn",
-      "name": "produce_charges",
-      "line": 59,
-      "role": "The legacy charges of a staged produce: SP(c, d) before the call, then E(1) for a store or the post-charges of a fire (ChargingRSpace::produce and handle_result).",
-      "rocq": [
-        "post_charges"
-      ],
-      "covers": [
-        "Q79",
-        "U13"
-      ],
-      "tla": [
-        "PreCharge",
-        "PostList"
-      ]
-    },
-    {
-      "item": "consume_charges",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "kind": "fn",
-      "name": "consume_charges",
-      "line": 88,
-      "role": "The legacy charges of a staged consume: SC(cs, ps, k) before the call, then E(|cs|) for a park or the post-charges of a fire (ChargingRSpace::consume and handle_result).",
-      "rocq": [
-        "post_charges"
-      ],
-      "covers": [
-        "Q79",
-        "U13"
-      ],
-      "tla": [
-        "PreCharge",
-        "PostList"
-      ]
-    },
-    {
-      "item": "fire_post",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "kind": "fn",
-      "name": "fire_post",
-      "line": 142,
-      "role": "The post-charges of a fire in the order of handle_result: the consume refund, the produce refunds, E(trigger channels) for a trigger that is not persistent, and CE(|channels|). A continuation without a body fails closed.",
-      "rocq": [
-        "post_charges",
-        "label_post"
-      ],
-      "covers": [
-        "Q79",
-        "U13"
-      ],
-      "tla": [
-        "PostList"
-      ]
-    },
-    {
-      "item": "LegacyChain",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "kind": "struct",
-      "name": "LegacyChain",
-      "line": 211,
-      "role": "The chain of one space job: the budget of a metered legacy deploy and the post-charges that the next callback carries.",
-      "rocq": [
-        "chain",
-        "chain_new"
-      ],
-      "covers": [
-        "Q79",
-        "Q80",
-        "U13"
-      ],
-      "tla": [
-        "LegCharge",
-        "ChainTail"
-      ]
-    },
-    {
-      "item": "LegacyChain::new",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "scope": "LegacyChain",
-      "kind": "fn",
-      "name": "new",
-      "line": 220,
-      "role": "An empty chain. It charges only in a metered legacy deploy (is_legacy and not is_unmetered).",
-      "rocq": [
-        "chain_new"
-      ],
-      "covers": [
-        "Q79",
-        "Q80",
-        "U13"
-      ],
-      "tla": [
-        "LegCharge"
-      ]
-    },
-    {
-      "item": "LegacyChain::produce",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "scope": "LegacyChain",
-      "kind": "fn",
-      "name": "produce",
-      "line": 231,
-      "role": "Stages a produce with its legacy callback in before_observe.",
-      "rocq": [
-        "attach",
-        "stage"
-      ],
-      "covers": [
-        "Q79",
-        "Q80",
-        "U13"
-      ],
-      "tla": [
-        "PreCharge",
-        "PostList"
-      ]
-    },
-    {
-      "item": "LegacyChain::consume",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "scope": "LegacyChain",
-      "kind": "fn",
-      "name": "consume",
-      "line": 246,
-      "role": "Stages a consume with its legacy callback in before_observe.",
-      "rocq": [
-        "attach",
-        "stage"
-      ],
-      "covers": [
-        "Q79",
-        "Q80",
-        "U13"
-      ],
-      "tla": [
-        "PreCharge",
-        "PostList"
-      ]
-    },
-    {
-      "item": "LegacyChain::attach",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "scope": "LegacyChain",
-      "kind": "fn",
-      "name": "attach",
-      "line": 262,
-      "role": "The callback of operation i: the carried post-charges of operation i-1, the registration of i, then the pre-charge of i. The chain then carries the post-charges of i.",
-      "rocq": [
-        "attach",
-        "before_observe"
-      ],
-      "covers": [
-        "Q79",
-        "Q80",
-        "U13"
-      ],
-      "tla": [
-        "PreCharge",
-        "PostList",
-        "LegCharge"
-      ]
-    },
-    {
-      "item": "LegacyChain::finish",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-      "scope": "LegacyChain",
-      "kind": "fn",
-      "name": "finish",
-      "line": 283,
-      "role": "The tail: the post-charges of the last operation, after the commit.",
-      "rocq": [
-        "finish",
-        "space_run_in"
-      ],
-      "covers": [
-        "Q79",
-        "Q80",
-        "U13"
-      ],
-      "tla": [
-        "ChainTail"
-      ]
-    },
-    {
       "item": "Cx::store",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
       "scope": "Cx",
       "kind": "fn",
       "name": "store",
-      "line": 980,
-      "role": "Stages the store of a record through the legacy chain (Cx::store_on).",
-      "rocq": [
-        "stage"
-      ],
-      "covers": [
-        "Q79"
-      ]
+      "line": 2501,
+      "role": "Stages the store of a record on the data channel of the collection, with the introduction of the operation (Cx::store_on).",
+      "unmodeled": "Decision 90 removed Option P with the legacy chain and its only model, LegacyCharges.v (Q79). No live headline models this store."
     },
     {
       "item": "Cx::park",
@@ -4126,14 +3265,9 @@
       "scope": "Cx",
       "kind": "fn",
       "name": "park",
-      "line": 1010,
-      "role": "Stages the park of a waiter through the legacy chain (Cx::park_on).",
-      "rocq": [
-        "stage"
-      ],
-      "covers": [
-        "Q79"
-      ]
+      "line": 2565,
+      "role": "Stages the park of the continuation of a receive on the data channel of the collection (Cx::park_on).",
+      "unmodeled": "Decision 90 removed Option P with the legacy chain and its only model, LegacyCharges.v (Q79). No live headline models this park."
     }
   ]
 }

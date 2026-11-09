@@ -167,7 +167,12 @@ impl Hash for CostSignatureCompound {
 
 impl PartialEq for CostSignedTerm {
     fn eq(&self, other: &Self) -> bool {
-        self.body == other.body && self.signature == other.signature
+        // Changed by G3 (DR-135, S3b): the equality also sees the held price,
+        // so a held term never equals a signed term of the surface syntax.
+        // self.body == other.body && self.signature == other.signature
+        self.body == other.body
+            && self.signature == other.signature
+            && self.held_price == other.held_price
     }
 }
 
@@ -175,12 +180,22 @@ impl Hash for CostSignedTerm {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.body.hash(state);
         self.signature.hash(state);
+        // Added by G3 (DR-135, S3b): the hash reads the fields that the
+        // equality reads.
+        self.held_price.hash(state);
     }
 }
 
 impl PartialEq for CostRegion {
     fn eq(&self, other: &Self) -> bool {
-        self.instance_id == other.instance_id && self.signature == other.signature
+        // Changed by G3 (DR-135): the equality also sees the price and the
+        // caller, so an observation with a forged price fails its
+        // authentication (SA1).
+        // self.instance_id == other.instance_id && self.signature == other.signature
+        self.instance_id == other.instance_id
+            && self.signature == other.signature
+            && self.price == other.price
+            && self.caller == other.caller
     }
 }
 
@@ -188,6 +203,25 @@ impl Hash for CostRegion {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.instance_id.hash(state);
         self.signature.hash(state);
+        // Added by G3 (DR-135): the hash reads the fields that the equality
+        // reads (SA1).
+        self.price.hash(state);
+        self.caller.hash(state);
+    }
+}
+
+// Added by G3 (DR-135): the build script removes the derived equality of
+// every rhoapi message, so the caller of a region needs its own (SA1).
+impl PartialEq for CostCaller {
+    fn eq(&self, other: &Self) -> bool {
+        self.signature == other.signature && self.price == other.price
+    }
+}
+
+impl Hash for CostCaller {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.signature.hash(state);
+        self.price.hash(state);
     }
 }
 
@@ -221,6 +255,7 @@ impl PartialEq for Par {
             && self.connective_used == other.connective_used
             && self.cost_signed_terms == other.cost_signed_terms
             && self.cost_stacks == other.cost_stacks
+            && self.use_blocks == other.use_blocks
     }
 }
 
@@ -238,6 +273,18 @@ impl Hash for Par {
         self.connective_used.hash(state);
         self.cost_signed_terms.hash(state);
         self.cost_stacks.hash(state);
+        self.use_blocks.hash(state);
+    }
+}
+
+impl PartialEq for UseBlock {
+    fn eq(&self, other: &Self) -> bool { self.space == other.space && self.body == other.body }
+}
+
+impl Hash for UseBlock {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.space.hash(state);
+        self.body.hash(state);
     }
 }
 
@@ -383,6 +430,7 @@ impl PartialEq for Send {
             && self.data == other.data
             && self.persistent == other.persistent
             && self.connective_used == other.connective_used
+            && self.params == other.params
     }
 }
 
@@ -392,6 +440,20 @@ impl Hash for Send {
         self.data.hash(state);
         self.persistent.hash(state);
         self.connective_used.hash(state);
+        self.params.hash(state);
+    }
+}
+
+impl PartialEq for SendParams {
+    fn eq(&self, other: &Self) -> bool {
+        self.positional == other.positional && self.named == other.named
+    }
+}
+
+impl Hash for SendParams {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.positional.hash(state);
+        self.named.hash(state);
     }
 }
 
@@ -402,6 +464,7 @@ impl PartialEq for ReceiveBind {
             && self.remainder == other.remainder
             && self.free_count == other.free_count
             && self.cost_signature == other.cost_signature
+            && self.query_spec == other.query_spec
     }
 }
 
@@ -412,6 +475,20 @@ impl Hash for ReceiveBind {
         self.remainder.hash(state);
         self.free_count.hash(state);
         self.cost_signature.hash(state);
+        self.query_spec.hash(state);
+    }
+}
+
+impl PartialEq for QuerySpec {
+    fn eq(&self, other: &Self) -> bool {
+        self.payload == other.payload && self.named == other.named
+    }
+}
+
+impl Hash for QuerySpec {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.payload.hash(state);
+        self.named.hash(state);
     }
 }
 
@@ -469,6 +546,7 @@ impl PartialEq for New {
             && self.p == other.p
             && self.uri == other.uri
             && self.injections == other.injections
+            && self.space_types == other.space_types
     }
 }
 
@@ -478,7 +556,16 @@ impl Hash for New {
         self.p.hash(state);
         self.uri.hash(state);
         self.injections.hash(state);
+        self.space_types.hash(state);
     }
+}
+
+impl PartialEq for SpaceAnnotation {
+    fn eq(&self, other: &Self) -> bool { self.space == other.space }
+}
+
+impl Hash for SpaceAnnotation {
+    fn hash<H: Hasher>(&self, state: &mut H) { self.space.hash(state); }
 }
 
 impl PartialEq for MatchCase {
@@ -586,6 +673,8 @@ impl PartialEq for expr::ExprInstance {
             (ExprInstance::GUint16(a), ExprInstance::GUint16(b)) => a == b,
             (ExprInstance::GUint8(a), ExprInstance::GUint8(b)) => a == b,
             (ExprInstance::GFloat32(a), ExprInstance::GFloat32(b)) => a == b,
+            (ExprInstance::EFreeBody(a), ExprInstance::EFreeBody(b)) => a == b,
+            (ExprInstance::EParamsBody(a), ExprInstance::EParamsBody(b)) => a == b,
             _ => false,
         }
     }
@@ -636,6 +725,8 @@ impl Hash for expr::ExprInstance {
             ExprInstance::GUint16(a) => a.hash(state),
             ExprInstance::GUint8(a) => a.hash(state),
             ExprInstance::GFloat32(a) => a.hash(state),
+            ExprInstance::EFreeBody(a) => a.hash(state),
+            ExprInstance::EParamsBody(a) => a.hash(state),
         }
     }
 }
@@ -1003,6 +1094,17 @@ impl Hash for EMinusMinus {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.p1.hash(state);
         self.p2.hash(state);
+    }
+}
+
+impl PartialEq for EFree {
+    fn eq(&self, other: &Self) -> bool { self.theory == other.theory && self.args == other.args }
+}
+
+impl Hash for EFree {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.theory.hash(state);
+        self.args.hash(state);
     }
 }
 

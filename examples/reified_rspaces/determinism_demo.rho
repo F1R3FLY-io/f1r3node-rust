@@ -1,7 +1,7 @@
-// A bag holds three records that match one receive. The space picks the
-// record by the canonical order of decision 41 (the hash of the source of
-// each record), not by the order of execution. So every node, and the replay
-// of the block, takes the same record.
+// A bag holds three records that match one receive. Play picks one of the
+// three records at random (decision 102), and the block records that pick.
+// The replay of the block follows the record of the pick, so the replay
+// takes the same record as play.
 //
 // The sends wait for the reply of the handle method produce, so all three
 // records are stored before the receive runs.

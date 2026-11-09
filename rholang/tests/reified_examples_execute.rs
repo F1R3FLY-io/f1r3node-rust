@@ -1,7 +1,9 @@
 //! The examples of Reified RSpaces (P10 step S2; plan decisions 85 and 86, design v2 section 2.3).
 //!
 //! Each example of `examples/reified_rspaces/` runs here. Every deploy of an example plays
-//! natively at the v6 limits (decision 79), certifies by native replay and reproduces its play.
+// Changed by decision 89: the harness certifies at the phlo limits only. The text before:
+// //! natively at the v6 limits (decision 79), certifies by native replay and reproduces its play.
+//! natively, certifies by native replay and reproduces its play.
 //! Then the values on the result channels of the example must equal its expected values. An
 //! expected value is a Rholang literal, which the compiler normalizes, so the comparison is
 //! between canonical pars. An example that shows an abort runs its last deploy to that abort,
@@ -23,6 +25,7 @@ use rholang::rust::interpreter::pretty_printer::PrettyPrinter;
 use rholang::rust::interpreter::reified::vectordb_services::Neighbour;
 use support::backends::{self, services, EmbedMode, FakeMirror, MirrorCall, MockEmbedder};
 use support::native::{assert_reproduces, certify, NativeChain, AMPLE_LIMIT};
+use support::props::{racing_runtime, RACING_WORKERS};
 use support::session::{error_codes, Injections};
 
 const LIMIT: u64 = AMPLE_LIMIT;
@@ -34,6 +37,11 @@ enum Expect {
     Values(&'static [(&'static str, &'static [&'static str])]),
     /// The error code of the last deploy. Every earlier deploy succeeds.
     Error(&'static str),
+    /// Added by decision 102 (plan v2 pins): the result channel holds exactly one datum, and
+    /// that datum is one of the choices. A datum and a choice are argument lists, written as the
+    /// Rholang literals of the arguments. Play picks a record of a bag at random (rule CR-1), so
+    /// an example that shows a pick names every record that the pick can take.
+    OneOf(&'static str, &'static [&'static str]),
 }
 
 /// The services of an example.
@@ -138,7 +146,9 @@ fn pretty_datums(datums: &[Vec<Par>]) -> String {
 /// post-state root of its last deploy, in hex.
 async fn run(example: &Example) -> (String, String) {
     let embedder = MockEmbedder::new("rrs-examples", 2, 0.5, EmbedMode::Vectors);
-    let first_mirror = FakeMirror::new(Vec::new(), 0);
+    // Changed by decision 114: the mirror answers no watermark.
+    // let first_mirror = FakeMirror::new(Vec::new(), 0);
+    let first_mirror = FakeMirror::new(Vec::new());
     let lock = match example.services {
         Services::None => None,
         Services::Embedder | Services::Mirror { .. } => {
@@ -154,7 +164,8 @@ async fn run(example: &Example) -> (String, String) {
         if let (Services::Mirror { query }, true, Some(lock)) = (&example.services, last, &lock) {
             backends::writer().flush().await;
             let neighbours = published_neighbours(&first_mirror, *query);
-            lock.replace(services(&embedder, &FakeMirror::new(neighbours, 1)));
+            // lock.replace(services(&embedder, &FakeMirror::new(neighbours, 1)));
+            lock.replace(services(&embedder, &FakeMirror::new(neighbours)));
         }
         let played = chain
             .play_with(source, &label, LIMIT, Injections::new())
@@ -196,6 +207,17 @@ async fn run(example: &Example) -> (String, String) {
         }
     } else if let Expect::Error(code) = &example.expect {
         outcome.push(format!("error {code}"));
+    } else if let Expect::OneOf(channel, choices) = &example.expect {
+        let actual = chain.values(channel).await;
+        let allowed = expected(choices);
+        assert!(
+            matches!(actual.as_slice(), [one] if allowed.contains(one)),
+            "{}: the values on {channel}: actual {}, expected one of {}",
+            example.name,
+            pretty_datums(&actual),
+            pretty_datums(&allowed)
+        );
+        outcome.push(format!("{channel} = {}", pretty_datums(&actual)));
     }
     let record = format!(
         "example {}: files {:?}; expected and actual {}; phlo {:?}; root {}",
@@ -532,11 +554,28 @@ const VECTOR_OPS: Example = Example {
         "[[true, [4, 6]], [true, [3, 6]], [true, 11], [true, 5.0], [true, 5.0]]",
     ]),
 };
+/// The example `determinism-demo`: a bag holds three records that match one receive.
+///
+/// Changed by decision 102 (plan v2 pins): play picks one of the three records at random (rule
+/// CR-1), and the block records that pick. The replay of the block follows the record of the
+/// pick, so the replay takes the same record as play. `run` checks the replay of each deploy
+/// with `certify` and `assert_reproduces`. The result channel holds exactly one of the three
+/// records. Each run checks its own pick, so the test has no probabilistic assertion.
 const DETERMINISM_DEMO: Example = Example {
     name: "determinism-demo",
     deploys: &[deploy!("determinism_demo.rho")],
     services: Services::None,
-    expect: values!("rrs.example.determinism" => [r#""green""#]),
+    // Changed by decision 90 (step E): the merge with `feature/cost-accounted-rho` at
+    // `702496775` changes the canonical order of the three records, so the receive takes "blue".
+    // The old value follows.
+    // expect: values!("rrs.example.determinism" => [r#""green""#]),
+    // Changed by decision 102 (plan v2 pins): play picks one of the three records at random, so
+    // the receive takes any of them.
+    expect: Expect::OneOf("rrs.example.determinism", &[
+        r#""red""#,
+        r#""green""#,
+        r#""blue""#,
+    ]),
 };
 const MULTI_SPACE_ISOLATION: Example = Example {
     name: "multi-space-isolation",
@@ -605,7 +644,10 @@ const FACTORY_REJECTS_A_FORGED_PARAMS_TUPLE: Example = Example {
     name: "factory-rejects-a-forged-params-tuple",
     deploys: &[deploy!("factory_rejects_a_forged_params_tuple.rho")],
     services: Services::None,
-    expect: Expect::Error("Malformed"),
+    // Changed by decision 112 (ruling 9): no program can build a params tuple from its quoted code,
+    // so the example reports on a result channel. The text before:
+    // expect: Expect::Error("Malformed"),
+    expect: values!("rrs.example.forged-params" => [r#""no marker tuple""#]),
 };
 const FACTORY_REJECTS_A_PERSISTENT_CALL: Example = Example {
     name: "factory-rejects-a-persistent-call",
@@ -725,13 +767,30 @@ const AGENT_CAPABILITY_REJECTS_A_PERSISTENT_CALL: Example = Example {
 
 /// One test function for each example, and the list `EXAMPLES` of the same examples, so the
 /// list and the test functions cannot differ.
+///
+/// Changed by decision 113: a row can carry attributes, which its test function gets, such as
+/// the `cfg` of an example that needs a chromadb build. `EXAMPLES` keeps every row, so the
+/// directory check covers every example in every build.
+///
+/// Changed by decision 93 (decision 111): each test function runs its example once on each
+/// racing runtime.
 macro_rules! example_tests {
-    ($($test:ident => $example:ident),* $(,)?) => {
+    // ($($test:ident => $example:ident),* $(,)?) => {
+    ($($(#[$attribute:meta])* $test:ident => $example:ident),* $(,)?) => {
         /// Every example of the table, in the order of `MANIFEST.toml`.
         const EXAMPLES: &[&Example] = &[$(&$example),*];
         $(
-            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-            async fn $test() { run(&$example).await; }
+            $(#[$attribute])*
+            // Changed by decision 93 (decision 111): each example runs once on each racing
+            // runtime. The old test function follows.
+            // #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            // async fn $test() { run(&$example).await; }
+            #[test]
+            fn $test() {
+                for workers in RACING_WORKERS {
+                    racing_runtime(workers).block_on(run(&$example));
+                }
+            }
         )*
     };
 }
@@ -797,7 +856,10 @@ example_tests! {
     example_temp_space_ends_with_its_deploy => TEMP_SPACE_ENDS_WITH_ITS_DEPLOY,
     example_fips_example => FIPS_EXAMPLE,
     example_speculative_execution => SPECULATIVE_EXECUTION,
+    // Added by decision 113: only a chromadb build registers `embed` and `ann`.
+    #[cfg(feature = "chromadb")]
     example_vectordb_embed => VECTORDB_EMBED,
+    #[cfg(feature = "chromadb")]
     example_vectordb_mirror => VECTORDB_MIRROR,
     example_agent_hashmap_bag => AGENT_HASHMAP_BAG,
     example_agent_wrapper_forwards_to_native => AGENT_WRAPPER_FORWARDS_TO_NATIVE,
@@ -834,19 +896,36 @@ fn examples_cover_the_directory() {
 }
 
 /// The post-state root of the replay trace of the specification (section 11, Determinism).
-const REPLAY_TRACE_ROOT: &str = "36cf8734055ee8a51bccea4ceeb5f29133f6767f04bafb6dc6aedea3abfcd8c9";
+// Changed by decision 90 (step E): the merge with `feature/cost-accounted-rho` at `702496775`
+// changes the phlo and the root of the trace. The old value follows.
+// const REPLAY_TRACE_ROOT: &str = "36cf8734055ee8a51bccea4ceeb5f29133f6767f04bafb6dc6aedea3abfcd8c9";
+const REPLAY_TRACE_ROOT: &str = "22da5dffb8ee4fe7c82e0b8edf9dd26538301ef968afd04418989c2f63c6925c";
 
 /// The replay trace of the specification (section 11, Determinism): the example `queue-fifo`
-/// plays natively at the v6 limits, native replay reproduces its play, and its post-state root
+// Changed by decision 89: the harness certifies at the phlo limits only. The text before:
+// /// plays natively at the v6 limits, native replay reproduces its play, and its post-state root
+/// plays natively, native replay reproduces its play, and its post-state root
 /// is the recorded root of the specification. A change of the root changes the trace of the
-/// specification too, so the specification must record the new root.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn determinism_replay_trace_root_is_pinned() {
-    let (_, root) = run(&QUEUE_FIFO).await;
-    assert_eq!(
-        root, REPLAY_TRACE_ROOT,
-        "the root of the replay trace of specification section 11"
-    );
+/// specification too, so the specification must record the new root. Each produce of the
+/// example waits for its reply, so the root is the same on each racing runtime (decision 111).
+// Changed by decision 111: the test runs on each racing runtime. The old lines follow.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn determinism_replay_trace_root_is_pinned() {
+//     let (_, root) = run(&QUEUE_FIFO).await;
+//     assert_eq!(
+//         root, REPLAY_TRACE_ROOT,
+//         "the root of the replay trace of specification section 11"
+//     );
+// }
+#[test]
+fn determinism_replay_trace_root_is_pinned() {
+    for workers in RACING_WORKERS {
+        let (_, root) = racing_runtime(workers).block_on(run(&QUEUE_FIFO));
+        assert_eq!(
+            root, REPLAY_TRACE_ROOT,
+            "{workers} workers: the root of the replay trace of specification section 11"
+        );
+    }
 }
 
 /// The negative control of leaf 9760: a changed expected value fails the comparison.

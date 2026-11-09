@@ -331,6 +331,8 @@ fn continuation_entropy(continuation: &TaggedContinuation) -> &[u8] {
     }
 }
 
+// Changed by G3 (DR-135, S5): the authority part of the COMM observation
+// moved, unchanged, into `comm_authority`, which the item test shares.
 fn comm_with_identity(
     comm: &COMM,
     continuation: &TaggedContinuation,
@@ -339,6 +341,77 @@ fn comm_with_identity(
     identity: [u8; 32],
     residue: &authority::ResidueContext,
 ) -> Result<MeasuredCommObservation, RSpaceError> {
+    Ok(MeasuredCommObservation {
+        event_id: identity,
+        authority: comm_authority(
+            continuation,
+            continuation_persistent,
+            data,
+            identity,
+            residue,
+        )?,
+        measurement: byte_accounting::comm_charge(comm, data).map_err(construction_error)?,
+    })
+}
+
+// Changed by G3 (DR-135, S6): the item tests of play and replay share
+// `owner_funding::ItemTest::owner_charge`. It builds the authority first and
+// measures the datum only when an owner region needs it, so this form, which
+// always measures, has no caller. It is kept for reference.
+// /// Added by G3 (DR-135, S5): the observation of a COMM of `continuation`
+// /// with `datum` alone, the item test of an owner-funded match (R5). Its
+// /// identity is zero. Its transfer bytes are those of the datum, and its
+// /// trace bytes those of a COMM with `channel_count` channels. It is exact for
+// /// one pattern and a lower bound for a join, whose trace bytes are equal and
+// /// whose transfer bytes and regions grow.
+// pub(crate) fn item_observation(
+//     continuation: &TaggedContinuation,
+//     continuation_persistent: bool,
+//     channel_count: usize,
+//     datum: &ListParWithRandom,
+//     datum_persistent: bool,
+//     residue: &authority::ResidueContext,
+// ) -> Result<MeasuredCommObservation, RSpaceError> {
+//     let identity = [0; 32];
+//     Ok(MeasuredCommObservation {
+//         event_id: identity,
+//         authority: comm_authority(
+//             continuation,
+//             continuation_persistent,
+//             &[(datum, datum_persistent)],
+//             identity,
+//             residue,
+//         )?,
+//         measurement: item_measurement(channel_count, datum)?,
+//     })
+// }
+
+/// Added by G3 (DR-135, S5): the bytes of the item test of `datum` in a COMM
+/// with `channel_count` channels: the transfer bytes of the datum and the
+/// trace bytes of the COMM.
+pub(crate) fn item_measurement(
+    channel_count: usize,
+    datum: &ListParWithRandom,
+) -> Result<ByteCharge, RSpaceError> {
+    Ok(ByteCharge {
+        introduction_bytes: 0,
+        transfer_bytes: byte_accounting::datum_transfer_bytes(datum).map_err(construction_error)?,
+        trace_bytes: byte_accounting::comm_trace_bytes(channel_count)
+            .map_err(construction_error)?,
+    })
+}
+
+/// Added by G3 (DR-135, S5): the canonical authority of a COMM of
+/// `continuation` with `data` in the deployment of `residue`: the merge of the
+/// resolved seals, with the persistent regions rekeyed to `identity`. The
+/// body moved here unchanged from `comm_with_identity`.
+pub(crate) fn comm_authority(
+    continuation: &TaggedContinuation,
+    continuation_persistent: bool,
+    data: &[(&ListParWithRandom, bool)],
+    identity: [u8; 32],
+    residue: &authority::ResidueContext,
+) -> Result<authority::CanonicalAuthority, RSpaceError> {
     let mut authorities = Vec::<&CostAuthority>::with_capacity(data.len() + 1);
     let mut datum_seals = Vec::<Option<Cow<'_, CostAuthority>>>::with_capacity(data.len());
     // Changed by DR-101: every participant's seal, the incoming one included,
@@ -411,11 +484,13 @@ fn comm_with_identity(
     //     }
     // };
     let merged = authority::merge_canonical(authorities).map_err(construction_error)?;
-    let authority =
-        authority::rekey(merged, &persistent_regions, identity).map_err(construction_error)?;
-    Ok(MeasuredCommObservation {
-        event_id: identity,
-        authority,
-        measurement: byte_accounting::comm_charge(comm, data).map_err(construction_error)?,
-    })
+    // Changed by G3 (DR-135, S5): the observation is built by the callers.
+    // let authority =
+    //     authority::rekey(merged, &persistent_regions, identity).map_err(construction_error)?;
+    // Ok(MeasuredCommObservation {
+    //     event_id: identity,
+    //     authority,
+    //     measurement: byte_accounting::comm_charge(comm, data).map_err(construction_error)?,
+    // })
+    authority::rekey(merged, &persistent_regions, identity).map_err(construction_error)
 }

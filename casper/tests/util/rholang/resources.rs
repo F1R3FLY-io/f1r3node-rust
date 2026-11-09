@@ -13,6 +13,7 @@ use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
 use casper::rust::errors::CasperError;
 use casper::rust::genesis::genesis::Genesis;
 use casper::rust::storage::rnode_key_value_store_manager::rnode_db_mapping;
+use casper::rust::util::rholang::costacc::genesis_resource_policy::AdoptedResourcePolicy;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
 use dashmap::DashSet;
 use lazy_static::lazy_static;
@@ -117,6 +118,37 @@ where
     let (runtime_manager, _history_repo) = mk_runtime_manager_with_history_at(&mut *kvm).await;
 
     Ok(f(runtime_manager, genesis_context, genesis_block).await)
+}
+
+/// Added by DR-134 (DR-66 item 1): the shard configuration under which the
+/// offered test genesis adopts its resource policy. `GenesisBuilder::offered_v6`
+/// builds the genesis with this shard, its header version as the protocol
+/// version and minimum phlo price 1. An offered checkpoint adopts the policy
+/// again under the shard configuration of its snapshot, so a hand-built
+/// snapshot of an offered block uses this configuration too.
+pub fn offered_shard_conf(genesis_block: &BlockMessage) -> CasperShardConf {
+    CasperShardConf {
+        shard_name: genesis_block.shard_id.clone(),
+        casper_version: genesis_block.header.version,
+        min_phlo_price: 1,
+        ..CasperShardConf::new()
+    }
+}
+
+/// Added by DR-134 (DR-66 item 1): the adopted resource policy of the offered
+/// test genesis. Offered compute and replay below the Casper layer take it, as
+/// a `TestNode` takes the policy that its Casper instance adopted at start.
+pub async fn adopted_policy(
+    runtime_manager: &RuntimeManager,
+    genesis_block: &BlockMessage,
+) -> AdoptedResourcePolicy {
+    AdoptedResourcePolicy::load(
+        runtime_manager,
+        genesis_block,
+        &offered_shard_conf(genesis_block),
+    )
+    .await
+    .expect("the offered test genesis adopts its resource policy")
 }
 
 /// LMDB named-DB slot budget for the shared, process-cached test
@@ -414,67 +446,51 @@ pub async fn key_value_deploy_storage_from_dyn(
     block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-    use crypto::rust::signatures::signed::Signed;
-    use models::rust::casper::protocol::casper_message::DeployData;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use shared::rust::ByteString;
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        KeyValueDeployStorage, DEPLOY_STORAGE_DB, DEPLOY_STORAGE_QUARANTINE_DB,
+    };
 
-    let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await.map_err(|e| {
-        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-            "Failed to get deploy_storage store: {:?}",
-            e
-        ))
-    })?;
-    let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-        KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-
-    Ok(KeyValueDeployStorage {
-        store: deploy_storage_db,
-        envelope_store: KeyValueTypedStoreImpl::new(
-            kvm.store("deploy_envelope_storage".to_string()).await?,
-        ),
-        envelope_rejections:
-            block_storage::rust::deploy::key_value_deploy_storage::EnvelopeRejectionLog::default(),
-    })
+    let deploy_storage_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_DB).await?;
+    let quarantine_kv_store = store_from_dyn(kvm, DEPLOY_STORAGE_QUARANTINE_DB).await?;
+    KeyValueDeployStorage::from_stores(
+        deploy_storage_kv_store,
+        quarantine_kv_store,
+        store_from_dyn(kvm, "deploy_envelope_storage").await?,
+    )
 }
 
 pub async fn key_value_rejected_deploy_buffer_from_dyn(
     kvm: &mut dyn KeyValueStoreManager,
 ) -> Result<
-    block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer,
+    block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer,
     shared::rust::store::key_value_store::KvStoreError,
 > {
-    use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
-    use crypto::rust::signatures::signed::Signed;
-    use models::rust::casper::protocol::casper_message::DeployData;
-    use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
-    use shared::rust::ByteString;
+    use block_storage::rust::deploy::key_value_deploy_storage::{
+        KeyValueRejectedDeployBuffer, REJECTED_DEPLOY_BUFFER_DB,
+        REJECTED_DEPLOY_BUFFER_QUARANTINE_DB,
+    };
 
-    let buffer_kv_store = kvm
-        .store("rejected_deploy_buffer".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get rejected_deploy_buffer store: {:?}",
-                e
-            ))
-        })?;
-    let buffer_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-        KeyValueTypedStoreImpl::new(buffer_kv_store);
+    let buffer_kv_store = store_from_dyn(kvm, REJECTED_DEPLOY_BUFFER_DB).await?;
+    let quarantine_kv_store = store_from_dyn(kvm, REJECTED_DEPLOY_BUFFER_QUARANTINE_DB).await?;
+    KeyValueRejectedDeployBuffer::from_stores(
+        buffer_kv_store,
+        quarantine_kv_store,
+        store_from_dyn(kvm, "rejected_envelope_buffer").await?,
+    )
+}
 
-    let envelope_kv_store = kvm
-        .store("rejected_envelope_buffer".to_string())
-        .await
-        .map_err(|e| {
-            shared::rust::store::key_value_store::KvStoreError::IoError(format!(
-                "Failed to get rejected_envelope_buffer store: {:?}",
-                e
-            ))
-        })?;
-    Ok(KeyValueRejectedDeployBuffer {
-        store: buffer_db,
-        envelope_store: KeyValueTypedStoreImpl::new(envelope_kv_store),
+async fn store_from_dyn(
+    kvm: &mut dyn KeyValueStoreManager,
+    name: &str,
+) -> Result<
+    Arc<dyn shared::rust::store::key_value_store::KeyValueStore>,
+    shared::rust::store::key_value_store::KvStoreError,
+> {
+    kvm.store(name.to_string()).await.map_err(|e| {
+        shared::rust::store::key_value_store::KvStoreError::IoError(format!(
+            "Failed to get {} store: {:?}",
+            name, e
+        ))
     })
 }
 

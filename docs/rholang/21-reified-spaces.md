@@ -29,6 +29,7 @@ An example reports its result on a public channel, such as `@"rrs.example.queue"
 - [VectorDB spaces](#vectordb-spaces)
 - [Determinism](#determinism)
 - [When a deploy aborts](#when-a-deploy-aborts)
+- [Kinds and join windows](#kinds-and-join-windows)
 - [Writing your own space](#writing-your-own-space)
 - [The FIPS example](#the-fips-example)
 - [All examples](#all-examples)
@@ -224,7 +225,7 @@ Table 4 states where a channel goes, and Figure 1 shows the full decision of the
 | A name that a `new` made outside every `use` block | The default space |
 | A system channel, such as a factory or `rho:io:stdout` | The default space |
 
-![Routing decision as an activity. The reducer removes the bundle of the channel and classifies it. A sole GPrivate with an id of 1 or 2 bytes is System. A decoded id of KIND C, H, X or B is DefaultObject. A decoded id of KIND D, I, A or S is Storage. A decoded id of KIND N is SpaceName with its native space. Any other sole unforgeable is Unforgeable. A tuple whose head is AGENT_TAG is AgentTagged. Every other channel is Forged. Rule R1 sends System, DefaultObject and Unforgeable to the default space, R2 sends Storage to the default space, R3 sends a space name to the collection key(c) of its own space in every context, R4 sends an agent-tagged name to the user agent: since P8 step 2 a send there becomes the call on the agent. Since P8 step 3 a receive whose binds all route to the agent, with no query, becomes T_recv: one persistent matcher receive for each bind, the body receive, and last the call A'!(sink, "consume", pairs, arrow, bundle+{b}) on the agent. A mix of targets fails with CrossSpaceJoin, and a query fails with QuerySpecUnsupportedOnAgentSpace. R5 sends a forged channel to the collection key(c) of the use context, or to the default space without one. The default route makes the baseline call with identical arguments, and a space route builds the identity on D(sid, k) (R6) and runs one space intent. The R7 backend routes the replies of system processes with the same rules and no use context, and the bundle with both flags of an agent-minted name reaches its agent (R7A).](../rspace/reified-rspaces/diagrams/12-routing-decision.svg)
+![Routing decision as an activity. The reducer removes the bundle of the channel and classifies it. A sole GPrivate with an id of 1 or 2 bytes is System. A decoded id of KIND C, H, X or B is DefaultObject. A decoded id of KIND D, I, A or S is Storage. A decoded id of KIND N is SpaceName with its native space. Any other sole unforgeable is Unforgeable. A tuple whose head is AGENT_TAG is AgentTagged. Every other channel is Forged. Rule R1 sends System, DefaultObject and Unforgeable to the default space, R2 sends Storage to the default space, R3 sends a space name to the collection key(c) of its own space in every context, R4 sends an agent-tagged name to the user agent: since P8 step 2 a send there becomes the call on the agent. Since P8 step 3 a receive whose binds all route to the agent, with no query, becomes T_recv: one persistent matcher receive for each bind, the body receive, and last the call A'!(sink, "consume", pairs, arrow, bundle+{b}) on the agent. A mix of targets fails with CrossSpaceJoin, and a query fails with QuerySpecUnsupportedOnAgentSpace. R5 sends a forged channel to the collection key(c) of the use context, or to the default space without one. The default route makes the baseline call with identical arguments, and a space route builds the identity on D(sid, k) (R6) and runs one space job. The R7 backend routes the replies of system processes with the same rules and no use context, and the bundle with both flags of an agent-minted name reaches its agent (R7A).](../rspace/reified-rspaces/diagrams/12-routing-decision.svg)
 
 *Figure 1. Source: [diagrams/12-routing-decision.puml](../rspace/reified-rspaces/diagrams/12-routing-decision.puml), rendered by [diagrams/render.sh](../rspace/reified-rspaces/diagrams/render.sh).*
 
@@ -240,8 +241,8 @@ The last column says what happens when two parallel blocks both use one collecti
 
 | Inner collection | A receive takes | Equal records | Two parallel blocks |
 |---|---|---|---|
-| `bag` | The first matching record in a fixed canonical order | The collection keeps each one | Merge |
-| `set` | The first matching value, with every stored copy of it | The receives see one value for each class of equal records | Merge |
+| `bag` | A matching record that play picks at random, and the recorded record in replay | The collection keeps each one | Merge |
+| `set` | A matching value that play picks at random, and the recorded value in replay, with every stored copy of it | The receives see one value for each class of equal records | Merge |
 | `queue` | Only the oldest record, the head | The collection keeps each one | Conflict |
 | `stack` | Only the newest record, the head | The collection keeps each one | Conflict |
 | `cell` | The one record | A cell holds at most one record and one waiting receive | Conflict |
@@ -1093,7 +1094,7 @@ The factory takes the params `capacity` and `dimensions`, and it can take `metri
 | `capacity` | Required. The most records of each collection, an `Int` from 1 to 1,000,000. |
 | `dimensions` | Required. The length of every vector of the space, an `Int` from 1 to 4,096. |
 | `metric` | Optional. `cosine` (the default), `dot`, `euclidean`, `manhattan`, `hamming` or `jaccard`. |
-| `mirror` | Optional. `"chroma"` keeps a copy of the records in ChromaDB for advisory queries ([ChromaDB](chromadb.md#reified-chromadb-mirror)). |
+| `mirror` | Optional. `"chroma"` keeps a copy of the records in ChromaDB for advisory queries, on a node built with the feature `chromadb` ([ChromaDB](chromadb.md#reified-chromadb-mirror)). |
 
 ### Storing records and querying them
 
@@ -1173,7 +1174,9 @@ A VectorDB collection keeps equal records apart, and a peek and a persistent rec
 // The factory takes capacity=4, dimensions=2 and metric="euclidean". The
 // deploy stores the vector [1, 0] twice and the persistent record [0, 1].
 // A peek takes no query, because only a linear bind takes a query. So the
-// peek reads the records in their canonical order, and its pattern [1, 0]
+// Changed by decision 102: a read without a query takes the pick order. The text before:
+// // peek reads the records in their canonical order, and its pattern [1, 0]
+// peek reads the records in its pick order, and its pattern [1, 0]
 // binds a record [1, 0], which stays. Two receives with the query [1, 0]
 // take the two equal records. Two receives with the query [0, 1] both take
 // the persistent record.
@@ -1206,7 +1209,7 @@ new vdb(`rho:space:hashmap:vectordb`), out in {
 
 | Key | Meaning |
 |---|---|
-| The query vector | The vector of the query. Without it, the receive reads the records in their canonical order. |
+| The query vector | The vector of the query. Without it, a receive picks a record at random in play, and replay takes the recorded record. A list read keeps the canonical order. |
 | `metric` | The metric of this query, instead of the metric of the space. |
 | `threshold` | The least similarity, from 0 to 1, for `cosine`, `dot` and `jaccard`. |
 | `radius` | The greatest distance, at least 0, for `euclidean`, `manhattan` and `hamming`. |
@@ -1230,17 +1233,20 @@ While it does, every store fails until removals bring the count below `capacity`
 
 The system process `rho:lang:vector` adds, scales and multiplies vectors exactly, and it computes norms and distances.
 [Chapter 10](10-system-channels.md#reified-vectors-and-vectordb-services) describes it, with the processes `rho:vectordb:embed` and `rho:vectordb:ann` of the ChromaDB mirror.
+Only a node built with the feature `chromadb` registers these two processes.
 
 ## Determinism
 
-Every node computes the same result for a deploy, and the replay of a block gives the same result again.
+The replay of a block gives the result of its play on every node.
 A space never picks a record by the timing of threads or by the order of a list in memory.
+A bag, a set, a join window and the ties of a VectorDB collection pick at random in play ([decision 102](../rspace/reified-rspaces/decision-register.md#decision-102)).
+The block records each pick, so replay takes the same record.
 
 ```rholang
-// A bag holds three records that match one receive. The space picks the
-// record by the canonical order of decision 41 (the hash of the source of
-// each record), not by the order of execution. So every node, and the replay
-// of the block, takes the same record.
+// A bag holds three records that match one receive. Play picks one of the
+// three records at random (decision 102), and the block records that pick.
+// The replay of the block follows the record of the pick, so the replay
+// takes the same record as play.
 //
 // The sends wait for the reply of the handle method produce, so all three
 // records are stored before the receive runs.
@@ -1257,9 +1263,10 @@ new factory(`rho:space:hashmap:bag`), out in {
 }
 ```
 
-The receive takes `"green"`, because `"green"` comes first in the canonical order of the three records.
-The canonical order sorts the records by the hash of the send that stored each one ([decision 41](../rspace/reified-rspaces/decision-register.md#decision-41)).
-So every node and every replay take `"green"`.
+The receive takes one of the three records, and play picks it at random.
+The block records the pick, so every node that replays the block takes the same record.
+
+*Changed by [decision 102](../rspace/reified-rspaces/decision-register.md#decision-102): play picks at random. Before, the receive took the first record of the canonical order, `"blue"`.*
 
 A larger example keeps a checkpoint of an account in a cell space, and it rolls back a transfer that would make the balance negative:
 
@@ -1318,10 +1325,30 @@ The [agent API](../rspace/reified-rspaces/agent-api.md#10-aborts) lists every co
 | `DanglingHandle`, `DanglingName` | A handle or a name of a temp or seq space whose deploy has ended |
 | `SeqSent`, `SeqConcurrent` | A name of a seq space as data, or two uses of one channel of a seq space in parallel |
 | `CapacityExceeded`, `DimensionMismatch` | A full VectorDB collection, or a vector with another length than the space |
-| `PersistentFactoryCall`, `PersistentOpCall`, `PersistentHandleCall` | A persistent call `!!` of a factory, a system process or a handle |
+| `PersistentFactoryCall`, `PersistentOpCall`, `PersistentHandleCall` | A persistent call `!!` of a factory, of a system process other than `embed` and `ann`, or of a handle |
+| `SystemProcessShapeError` | A persistent send to `rho:vectordb:embed` or `rho:vectordb:ann`, at its fire, as for every recorded external service |
 
 A protocol error of a handle call does not abort the deploy.
 The call gets a typed reply `("rho:space:error", code, detail)` instead, for example for an unknown method name.
+
+## Kinds and join windows
+
+A kind is a set of families, system processes and external services that the node registers together.
+A new kind adds its families without an edit to the shared space code ([decision 127](../rspace/reified-rspaces/decision-register.md#decision-127) and [decision 128](../rspace/reified-rspaces/decision-register.md#decision-128)).
+A Rust crate registers a kind with one `#[distributed_slice(SPACE_KINDS)]` static of the type `SpaceKind`.
+`Family::new::<S, D>` builds each family from an outer store and a discipline.
+The test `rholang/tests/reified_kind_plugin.rs` registers a kind with a new store, a new discipline, a recorded system process and an installer of its services.
+
+The window of a discipline decides which records a bind of a join can see:
+
+- `Head`: the first entries of the head order, for a queue, a stack and a cell.
+- `Lanes`: for each level, the first records that the lane of the bind sees, for a priority queue.
+- `Scan`: every stored record, for a bag.
+- `Classes`: every stored record, for a set. A bind claims the whole class of the record that it binds.
+- `Similarity`: the records that the query of the bind makes eligible, in its selection order, for VectorDB.
+
+A new kind chooses one of these windows.
+Only a new window type or a new bound type (`JoinWindow`, `SideBound`) edits the shared layer.
 
 ## Writing your own space
 
@@ -1729,7 +1756,7 @@ The forged name `@{*x_1 | *x_2}` routes to `space_1`, because the `use` block of
 | `vectordb-capacity-exceeded` | `vectordb_capacity_exceeded.rho` | A store into a full VectorDB collection aborts with CapacityExceeded. |
 | `vectordb-peeks-and-persistence` | `vectordb_peeks_and_persistence.rho` | A VectorDB collection keeps equal records apart, a peek leaves the record in place, and a persistent record stays. |
 | `vector-ops` | `vector_ops.rho` | The five exact operations of rho:lang:vector. |
-| `determinism-demo` | `determinism_demo.rho` | The canonical order picks one record on every node and in replay. |
+| `determinism-demo` | `determinism_demo.rho` | Play picks one record at random, and the replay of the block takes the same record. |
 | `multi-space-isolation` | `multi_space_isolation.rho` | Forged names in two spaces are two channels. |
 | `cross-space-join` | `cross_space_join.rho` | A join across two spaces aborts with CrossSpaceJoin. |
 | `space-annotations` | `space_annotations.rho` | new x : s creates a name in the space s. |
@@ -1740,7 +1767,7 @@ The forged name `@{*x_1 | *x_2}` routes to `space_1`, because the `use` block of
 | `factory-rejects-a-missing-param` | `factory_rejects_a_missing_param.rho` | A factory call without a required param aborts with MissingParam. |
 | `factory-rejects-an-invalid-param` | `factory_rejects_an_invalid_param.rho` | A factory param with a value outside its range aborts with InvalidParam. |
 | `factory-rejects-a-positional-param` | `factory_rejects_a_positional_param.rho` | A positional param aborts the factory call with PositionalParamsUnsupported. |
-| `factory-rejects-a-forged-params-tuple` | `factory_rejects_a_forged_params_tuple.rho` | A params tuple that a program builds with a marker from its own quoted code, in a form that the normalizer never writes, aborts with Malformed. |
+| `factory-rejects-a-forged-params-tuple` | `factory_rejects_a_forged_params_tuple.rho` | A program quotes a send with params and finds no params tuple in the quoted send, because the params are a field of the send. A former marker tuple grants nothing. |
 | `factory-rejects-a-persistent-call` | `factory_rejects_a_persistent_call.rho` | A persistent send to a factory aborts with PersistentFactoryCall. |
 | `system-op-rejects-a-persistent-call` | `system_op_rejects_a_persistent_call.rho` | A persistent send to assertEqual aborts with PersistentOpCall. |
 | `system-op-rejects-params` | `system_op_rejects_params.rho` | A params section on a call of assertEqual aborts with ParamsUnsupported. |
@@ -1748,8 +1775,8 @@ The forged name `@{*x_1 | *x_2}` routes to `space_1`, because the `use` block of
 | `temp-space-ends-with-its-deploy` | `temp_space_ends_with_its_deploy_1.rho`, `temp_space_ends_with_its_deploy_2.rho` | A temp space ends with its deploy, so a later call aborts with DanglingHandle. |
 | `fips-example` | `fips_example.rho` | The example code of the Reifying RSpaces FIPS with concrete names. |
 | `speculative-execution` | `speculative_execution.rho` | A checkpoint record with commit and rollback in a cell space. |
-| `vectordb-embed` | `vectordb_embed.rho` | The recorded process rho:vectordb:embed, with the fake embedder of the test support. |
-| `vectordb-mirror` | `vectordb_mirror_1.rho`, `vectordb_mirror_2.rho` | The ChromaDB mirror of a VectorDB space: one deploy stores records, and a later deploy asks rho:vectordb:ann and lets the exact engine select. |
+| `vectordb-embed` | `vectordb_embed.rho` | The recorded process rho:vectordb:embed, with the fake embedder of the test support. It runs in a build with the feature chromadb. |
+| `vectordb-mirror` | `vectordb_mirror_1.rho`, `vectordb_mirror_2.rho` | The ChromaDB mirror of a VectorDB space: one deploy stores records, and a later deploy asks rho:vectordb:ann and lets the exact engine select. It runs in a build with the feature chromadb. |
 | `agent-hashmap-bag` | `agent_hashmap_bag.rho` | The reference user agent: an agent of the Agents FIPS whose instances are spaces with HashMap channels and bag collections. |
 | `agent-wrapper-forwards-to-native` | `agent_wrapper_forwards_to_native.rho` | A user agent that forwards gensym, produce and consume to the handle of a native space with the method-call sugar. |
 | `agent-space-rejects-a-persistent-send` | `agent_space_rejects_a_persistent_send.rho` | A persistent send in a use block of a user agent aborts with PersistentSendOnAgentSpace. |

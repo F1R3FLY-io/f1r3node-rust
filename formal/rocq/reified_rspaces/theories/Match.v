@@ -41,35 +41,35 @@
    Traceability: Rocq definition → Rust code
    (paths under rholang/src/rust/interpreter/ unless stated)
    ─────────────────────────────────────────────────────────────────────────
-   matcher, spatial, admits spaces/matching.rs:28-32, 52-63, 65-103
+   matcher, spatial, admits spaces/matching.rs:33-37, 52-63, 70-126
                             (SpaceMatcher: the injected matcher of the
                             host store, env.store.matcher(); bind and
                             admits call get_metered and
                             check_commit_metered, or get and check_commit)
    matches                  spaces/matching.rs:105-120 (SpaceMatcher::matches:
                             bind, then the guard) and spaces/generic.rs:
-                            844-997 (Cx::bind, Cx::admits, Cx::matches)
+                            843-996 (Cx::bind, Cx::admits, Cx::matches)
    first_spatial,           the RECEIVE-SCAN step of A.7: the first record
      scan_receive           of canonical_data_order with a spatial match,
                             then admits once (spaces/disciplines/scan.rs,
                             batch BAG); the order is Cx::canonical_data_order
-                            (spaces/generic.rs:829-834)
+                            (spaces/generic.rs:828-833)
    first_unrefused,         the OFFER-SCAN step of A.7: the first waiter of
      scan_offer_loop,       canonical_waiter_order outside the refused set
      scan_offer             with a spatial match; a refusal joins the
                             refused set (spaces/disciplines/scan.rs, batch
                             BAG); the order is Cx::canonical_waiter_order
-                            (spaces/generic.rs:836-842)
+                            (spaces/generic.rs:835-841)
    head_receive, head_offer the head driver of S1: receive_head and
                             offer_head match the head with Cx::matches
-                            (spaces/generic.rs:1723-1791, 1800-1884)
+                            (spaces/generic.rs:3812-3899, 3908-4020)
    host_consume             the host consume (rspace++/src/rspace/rspace/
                             ops_consume.rs:95-151): extract_data_candidates
                             takes the first datum of the bind that matches
                             spatially, then check_commit runs once, and a
                             refusal parks the continuation
    host_produce             the host produce (rspace++/src/rspace/
-                            space_matcher.rs:155-219, extract_first_match):
+                            space_matcher.rs:505-569, extract_first_match):
                             the waiters in order; a spatial match whose
                             check_commit refuses rolls back and tries the
                             next waiter
@@ -81,17 +81,17 @@
                             "Matches == TRUE"): every pattern matches
                             every payload
    th, admits_th            the theory of the space at a match (P7 step 4,
-                            TH-6): spaces/generic.rs:891-901 (Cx::admits:
+                            TH-6): spaces/generic.rs:890-900 (Cx::admits:
                             the guard, then theory_admits on the stored
                             data) and 982-997 (theory_admits: check_match
                             on each stored datum; a verdict other than
                             Proven refuses)
    scan_receive_th          spaces/disciplines/scan.rs:267-271 (the stored
                             record of RECEIVE-SCAN goes to the theory)
-   scan_offer_th            spaces/disciplines/scan.rs:556 (OFFER-SCAN
+   scan_offer_th            spaces/disciplines/scan.rs:550 (OFFER-SCAN
                             checks no stored datum: the element is in
                             flight)
-   head_receive_th          spaces/generic.rs:958-976 (Cx::matches with
+   head_receive_th          spaces/generic.rs:957-975 (Cx::matches with
                             Held::Stored) and 1832 (receive_head)
    with_stored_theory       the guard that also runs the theory on the
                             chosen record: the claim of design v3 TH-6
@@ -113,7 +113,9 @@
      staged view after the fire, so the choice of one round is the whole
      matching rule. GenericRSpace.v models the rounds.
    - The metering of the matcher calls (decision 42) is not modeled here.
-     AgentReadCoverage.v models it.
+     AgentReadCoverage.v models it. Changed by decision 96 (decision 89,
+     DR-131): AgentReadCoverage.v is deleted with the host-work metering, so
+     no module models the metering of the matcher calls.
 
    ─────────────────────────────────────────────────────────────────────────
    Results (4 headlines, axiom-free)

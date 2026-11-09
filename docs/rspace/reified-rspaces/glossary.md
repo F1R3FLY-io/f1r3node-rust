@@ -348,10 +348,15 @@ In replay, the observer can also return a directive, which asks RSpace to run th
 ### Host work
 
 Host work is node work that protects liveness, such as matching work.
-The repository glossary defines the [host-work unit](../../Glossary.md#host-work-unit) and the [host-work budget](../../Glossary.md#host-work-budget).
+The repository glossary defined the host-work unit and the host-work budget.
 A space job reserves its host work before it does the work ([decision 42](decision-register.md#decision-42)).
 A reservation has three amounts: operations, scanned bytes, and allocated bytes.
 They charge the dimensions VerificationOperations, VerificationBytes, and SearchStateBytes, as on `feature/cost-accounted-rho`.
+
+**Note (decision 89).** The base removed host-work metering (DR-131), so a space job reserves and charges no host work ([decision 89](decision-register.md#decision-89)).
+A space operation meters only its COMMs (compute) and the bytes that it stores (storage).
+The sentences above describe the metering before the merge of `4c58a925f`.
+The base commit `c572ba388` then removed the two entries of the repository glossary, so this entry no longer links them (merge 2, `702496775`).
 
 ### Frontend
 
@@ -436,7 +441,7 @@ The FIPS qualifiers are default, temp, and seq [[FIPS-RRS](#ref-fips-rrs)].
 - A seq space is a temp space with more limits: no process can send its names, and only one sequential process can use them.
 
 In this campaign, temp and seq spaces live for one deploy ([decision I-4](decision-register.md#i-4)).
-A seq space runs only in native execution, because its [seq claims](#seq-claim) need the job order of the deterministic scheduler.
+A seq space runs only in native execution, because every factory call outside native execution aborts with `RuntimeUnavailable` ([decision 90](decision-register.md#decision-90)).
 
 ### Outer store
 
@@ -592,6 +597,9 @@ Each staged operation of a space transaction pays the legacy charges of its equi
 The pre-charge runs in the callback of the operation, and the post-charges run in the callback of the next operation or after the commit.
 *Distinguish from* the charges of the [accounting observer](#accounting-observer), which every deploy makes.
 
+**Note (decision 90).** DR-134 of the base deleted the legacy meter, and [decision 90](decision-register.md#decision-90) retired the legacy charges of Option P.
+The sentences above describe the evaluation before the merge of `702496775`.
+
 ### Internal operation
 
 An internal operation is a system process with a two-byte id from $`[\mathtt{0xE0}, \mathtt{0x30}]`$ to $`[\mathtt{0xE0}, \mathtt{0x32}]`$.
@@ -735,7 +743,7 @@ The [agent API](agent-api.md#7-typed-replies) lists every code and its detail ma
 A matcher is a channel with KIND X that tests one receive pattern for a user agent-backed space ([decision I-15](decision-register.md#i-15)).
 Its id holds the canonical state of the pattern, so the matcher describes itself.
 A persistent single-channel receive on the matcher forwards each test to the internal operation `MATCHER_OP`.
-`MATCHER_OP` runs the same metered matcher as a native receive.
+`MATCHER_OP` runs the same matcher as a native receive.
 
 ### Body channel
 
@@ -783,7 +791,7 @@ A faulty agent is its negative control ([decision 79](decision-register.md#decis
 ### Marker
 
 A marker is a public two-byte unforgeable name under the namespace tag that the node never installs as a channel.
-The syntax markers are `USE`, `NEWSPACE`, `PARAMS`, `QUERY`, and `FREE`, with the indices `0xD0` to `0xD4` ([decision 18](decision-register.md#decision-18)).
+The syntax markers `USE`, `NEWSPACE`, `PARAMS`, `QUERY` and `FREE` carried the marker tuples, and [decision 112](decision-register.md#decision-112) retired them.
 The marker `AGENT_TAG`, with the index `0xFF`, tags the names that a user agent returns.
 
 The figure shows every id layout under the namespace tag, with the markers.
@@ -794,32 +802,28 @@ The figure shows every id layout under the namespace tag, with the markers.
 
 ### Marker tuple
 
-A marker tuple is a tuple expression whose first element is a syntax marker.
-It carries one Reified construct inside the existing fields of a Par ([decision 18](decision-register.md#decision-18)).
-So the encoding needs no new Protocol Buffers field, and ordinary terms keep their bytes and hashes.
+A marker tuple was a tuple expression whose first element is a syntax marker.
+It carried one Reified construct inside the existing fields of a Par ([decision 18](decision-register.md#decision-18)).
+[Decision 112](decision-register.md#decision-112) retired it: each construct now has its own protobuf field, and a tuple with a former marker head is an ordinary tuple.
 
-| Source form | Marker tuple |
+| Source form | Field |
 |---|---|
-| `use s { P }` | `(USE, s, P)` |
-| `new x : s in { P }` | `(NEWSPACE, [annotations], new …)` |
-| `x!(d; k=v)` | the last data element `(PARAMS, [positional], {k: v})` |
-| `for (y <- ch ~ (q; k=v)) { P }` | the receive source `(QUERY, ch, [q], {k: v})` |
-| `free Th()` | the value `(FREE, "Th", [])` |
+| `use s { P }` | `Par.use_blocks` |
+| `new x : s in { P }` | `New.space_types` |
+| `x!(d; k=v)` | `Send.params` |
+| `for (y <- ch ~ (q; k=v)) { P }` | `ReceiveBind.query_spec` |
+| `free Th()` | the expression `EFreeBody` |
 
 ### Recognized position
 
-The recognized position of a marker tuple is the one place where the runtime gives it meaning ([decision 18](decision-register.md#decision-18)).
-`USE` and `NEWSPACE` tuples act in process position.
-A `PARAMS` tuple acts as the last evaluated data element of a send.
-A `QUERY` tuple acts as the evaluated source of a receive bind.
-A `FREE` tuple acts as an argument of a factory call.
+The recognized position of a marker tuple was the one place where the runtime gave it meaning ([decision 18](decision-register.md#decision-18)).
+[Decision 112](decision-register.md#decision-112) gives each construct one carrier field, and the reducer reads it only there.
 
 ### Inert
 
 An inert value has no effect when the runtime evaluates it.
-A marker tuple outside its recognized position is inert data.
-There is one exception.
-A send whose last data element is a `PARAMS` tuple aborts with `ParamsUnsupported` when its channel takes no parameters.
+A field of a construct outside its process position is inert data, and a tuple with a former marker head is ordinary data ([decision 112](decision-register.md#decision-112)).
+A send with the field `Send.params` aborts with `ParamsUnsupported` when its channel takes no parameters.
 
 ### Routing class
 
@@ -846,14 +850,14 @@ The use context of the reducer is the native space that the innermost `use` bloc
 Outside every `use` block, the reducer has no use context.
 A channel of the class `Forged` routes to a collection of the space of the use context. Without a use context, it routes to the default space.
 
-A body that the reducer stores for later evaluation under a use context gets a USE tuple of that context around it. So the context returns when the body runs, as in a lexical closure.
+A body that the reducer stores for later evaluation under a use context gets a use block of that context around it. So the context returns when the body runs, as in a lexical closure.
 The reducer holds the use context in its field `space_ctx`, and it copies the field into parallel branches.
 
 ### Canonical form
 
 The canonical form of a value is the one byte form that the encoder produces for it.
 Equal values have equal canonical forms, so hashes and comparisons do not depend on the source text.
-The existing sorters put marker tuples in canonical order, and the decoders accept only canonical forms ([decision 21](decision-register.md#decision-21)).
+The existing sorters put the fields of a `Par` in canonical order, and the decoders accept only canonical forms ([decision 21](decision-register.md#decision-21)).
 
 ### Record envelope
 
@@ -987,13 +991,17 @@ A split replaces a participant with one child participant for each parallel bran
 
 The reducer of `feature/cost-accounted-rho`, which the campaign merged at `4d67b5ccc`, evaluates a fired body in a detached task.
 So a dispatch splits one child from the participant that makes it, and the child runs the body.
-After the dispatch, that participant makes no operation, so work that follows a space operation runs in a branch of its own ([design N6](design.md#n6-scheduling)).
+After the dispatch, that participant makes no operation, so work that follows a space operation runs in a branch of its own.
+
+**Note (decision 90).** Racing evaluation replaced the deterministic scheduler and its reduction participants ([decision 90](decision-register.md#decision-90)).
+A dispatch now runs as tasks of its scope ([design N6](design.md#n6-scheduling)).
+The sentences above describe the evaluation before the merge of `702496775`.
 
 ### Seq claim
 
-A seq claim is the participant path of the last use of one channel of a seq space ([decision 73](decision-register.md#decision-73)).
+A seq claim is the number of the last use of one channel of a seq space ([decision 73](decision-register.md#decision-73), [decision 91](decision-register.md#decision-91)).
 The book of the root evaluation holds one claim for each used channel.
-An operation may use a channel only when the channel has no claim or the operation descends from its last use, as a [reduction participant](#reduction-participant).
+An operation may use a channel only when the channel has no claim or its last use is in the causal history of the operation.
 Otherwise the deploy aborts with `SeqConcurrent`.
 An operation stores its claims only after its commit succeeded, and internal jobs, such as re-issues and settle jobs, claim nothing.
 
@@ -1008,6 +1016,10 @@ Before the merge, a split appended the two segments $`(k, 1)`$ and $`(c, 0)`$.
 Orders compare by session id first, and then lexicographically by path.
 Play and replay give each operation the same order, and RSpace logs the events of a deploy in groups sorted by order.
 
+**Note (decision 90).** Racing evaluation sets no operation order, and the deterministic scheduler is gone ([decision 90](decision-register.md#decision-90)).
+The type `OperationOrder` now names an operation, and each journal row takes that name (DR-132).
+The sentences above describe the evaluation before the merge of `702496775`.
+
 ### Sub-order
 
 A sub-order is the ordering key of one operation inside a space transaction ([decision 19](decision-register.md#decision-19)).
@@ -1017,12 +1029,18 @@ A scheduler order ends with an operation segment $`(k, 0)`$, and a sub-order end
 A split segment can have the second component 2, so the argument uses the final segment ([Rocq headline H8](verification.md#42-headlines-of-eventcorrelationv)).
 Native phlo recording rejects two operations under one order, so each operation needs its own sub-order.
 
+**Note (decision 90).** The sub-order is unreachable after DR-132 ([decision 90](decision-register.md#decision-90)).
+
 ### Space intent
 
 A space intent is the unit of work that the deterministic scheduler runs for one space operation: `Intent::Space` ([decision I-11](decision-register.md#i-11)).
 Its footprint holds the key $`[2] \mathbin{\Vert} \mathit{sid}`$ of its space. So the scheduler orders the intents of one space, and it runs the intents of other spaces in parallel.
 The scheduler gives the intent the next operation order of its participant, and the transaction of the intent commits under that order.
 The job of a space intent runs in its own task, because the substrate admits one open transaction in each task.
+
+**Note (decision 90).** The deterministic scheduler and `Intent::Space` are gone, and [I-11](decision-register.md#i-11) is retired ([decision 90](decision-register.md#decision-90)).
+A space job now runs inline in the counted task of its caller, as a host operation does.
+The sentences above describe the evaluation before the merge of `702496775`.
 
 ### Evaluation scope
 
@@ -1175,13 +1193,13 @@ It registers the cost authority of the record, as the host reducer's `produce_pe
 
 ### Re-issue
 
-A re-issue runs the rest of a space operation as a new space intent ([decision 34](decision-register.md#decision-34), item A10, and [I-21](decision-register.md#i-21)).
+A re-issue runs the rest of a space operation as a new space job ([decision 34](decision-register.md#decision-34), item A10, and [I-21](decision-register.md#i-21)).
 The fire loop of an operation re-issues in two cases, after it commits the staged prefix of its transaction.
 In the first case, a divergent pair fired: the incoming side survives, and its partner stays in the store. An example is a persistent send `!!` that fires a persistent receive `<=`.
 In the second case, the loop reached `FIRE_ROUND_CAP`, which is 64 fires.
 
 A re-issue repeats the operation as the program issued it.
-So a divergent pair fires once in each new space intent, until the phlo of the deploy runs out.
+So a divergent pair fires once in each new space job, until the phlo of the deploy runs out.
 
 A persistent operation also keeps the `ord` of its first round ([decision 43](decision-register.md#decision-43)).
 So it keeps its record, its identity, and its place in the collection.
@@ -1230,7 +1248,7 @@ The [joining guide](../../node/joining-a-network.md#what-a-joiner-needs) describ
 
 A conservative extension adds new programs and keeps the meaning of every old program.
 The Reified parser is a conservative extension of the baseline parser ([decision 23](decision-register.md#decision-23), [decision 24](decision-register.md#decision-24)).
-Every program that parses at the baseline parses and normalizes to identical bytes with the new parser.
+Every program that parses at the baseline parses and normalizes to identical prost bytes with the new parser ([decision 112](decision-register.md#decision-112)).
 
 ### Headline
 
@@ -1328,8 +1346,10 @@ The order depends on the entry set only.
 
 The list order is the order in which the [hot store](#hot-store) lists the entries of one channel.
 A new entry goes to the front of the list, and a checkpoint sorts the list by the encoded bytes of its entries.
-No choice of a space agent depends on the list order, because the agents use the [canonical order](#canonical-order).
-The host work of a canonical order still depends on the list order, because its sort charges each comparison that it makes.
+No choice of a space agent depends on the list order ([decision 102](decision-register.md#decision-102)).
+An agent uses the [canonical order](#canonical-order) or a pick order that the operation derives from it.
+
+**Note (decision 89).** Before the merge of `4c58a925f`, the host work of a canonical order depended on the list order, because its sort charged each comparison.
 
 ### Capacity
 
@@ -1349,12 +1369,12 @@ Records with equal keys form one class, and a consume of a member retires the cl
 ### Representative
 
 The representative of a class of a set is its first member in [canonical order](#canonical-order).
-A receive binds the representative first, and a peek binds only the representative ([specification ST-4](specification.md#35-set)).
+A fire that does not peek binds the representative ([specification ST-5](specification.md#35-set)), and a peek binds the record of its pick alone ([specification ST-7](specification.md#35-set)).
 
 ### Class fire
 
-A class fire is the consume over $`[D; n]`$ that a receive of a set makes on every stored member of a class ([specification ST-5](specification.md#35-set)).
-It dispatches only the result of the [representative](#representative), and it removes every member that is not persistent.
+A class fire is the consume over $`[D]`$ that a receive of a set makes with the first member of a class ([specification ST-5](specification.md#35-set)).
+`K_retire` retires the other non-persistent members, and the fire dispatches only the result of the [representative](#representative).
 
 ### Constructor schema
 
@@ -1372,7 +1392,8 @@ A transaction makes at most `FIRE_ROUND_CAP` fires. A plan whose transaction is 
 
 ### First admitting waiter
 
-The first admitting waiter of a datum is the first [waiter](#waiter) in [canonical order](#canonical-order) whose pattern binds the datum and whose guard admits it.
+The first admitting waiter of a datum is the first [waiter](#waiter) in pick order whose pattern binds the datum and whose guard admits it.
+Play shuffles the [canonical order](#canonical-order), and replay follows the recorded pick ([decision 102](decision-register.md#decision-102)).
 A send to a bag fires that waiter.
 
 ### Index name
@@ -1460,6 +1481,9 @@ A metered view read loads a part of the [staged view](#staged-view) of a [space 
 It charges the key of the load and the loaded value, the same on a cache hit and on a cache miss ([decision 47](decision-register.md#decision-47)).
 So a warm load and a cold load reserve the same work.
 
+**Note (decision 89).** The merge of `4c58a925f` removes the metered view reads ([decision 89](decision-register.md#decision-89)).
+A space transaction now loads its staged view with plain reads that charge nothing.
+
 ### Journal row
 
 A journal row records one operation of a native deploy: its source, the footprint that it locks, its predecessors and its outcome.
@@ -1471,6 +1495,7 @@ The predecessors of a row are the last earlier rows that touch the channels of i
 Native play runs a [deploy](#deploy) with the native phlo budget of protocol version 6.
 It records one [journal row](#journal-row) for each operation, for host operations and space operations alike.
 A space transaction of native play reads through [metered view reads](#metered-view-read) ([decision 47](decision-register.md#decision-47)).
+*Since [decision 89](decision-register.md#decision-89), these reads are plain reads that charge nothing.*
 
 ### Ticket
 
@@ -1492,9 +1517,10 @@ It fires a staged COMM only against the candidate that its row records ([decisio
 
 ### Epoch closure
 
-The epoch closure marks a native replay session as failed, so every operation that waits for a row wakes and fails.
-The [native backend](#native-backend) closes the epoch when a staged operation fails, except after a published denial.
-Without the closure, an operation could wait forever for the row of a failed operation ([verification §13.7](verification.md#137-the-forged-journal-probe-and-the-epoch-closure)).
+The epoch closure retired with [decision 124](decision-register.md#decision-124).
+Before it, the [native backend](#native-backend) marked a replay session as failed when a staged operation failed, so every waiting operation woke and failed.
+Now a failed operation ends with its own error.
+The stall rule of the base ends the waiters of a forged record (`Incomplete` or `Stalled`).
 
 ### Exact value
 
@@ -1531,9 +1557,10 @@ A record without an embedding is never selected by a query with a vector.
 
 ### Selection order
 
-The selection order puts the better exact score first, and it keeps the [canonical order](#canonical-order) for equal scores.
+The selection order puts the better exact score first.
+Equal scores keep the pick order of the operation in single mode and the [canonical order](#canonical-order) in list mode ([specification VD-4](specification.md#39-vectordb)).
 A higher similarity and a lower distance are better.
-A query without a vector keeps the canonical order.
+A query without a vector takes the pick order of the operation in single mode and the canonical order in list mode.
 
 ### Eligible set
 
@@ -1565,6 +1592,9 @@ The mirror of a [VectorDB collection](#vectordb-collection) is a copy of its rec
 A space has a mirror when its factory call names `mirror = "chroma"`.
 The mirror is local to the node and never enters a state root, so consensus never reads it ([decision 58](decision-register.md#decision-58)).
 
+**Note (decisions 98 and 114).** The mirror is an oracle store, as in the oracle mode of File I/O ([decision 114](decision-register.md#decision-114)).
+Only the plays of the node write it, at each commit, and nothing repairs it ([decision 98](decision-register.md#decision-98)).
+
 ### Net write
 
 The net write of a record in one transaction is the write that the [mirror](#mirror) needs: an upsert, a delete, or nothing.
@@ -1576,20 +1606,34 @@ A peek that stores its record again writes nothing.
 The mirror journal of an evaluation keeps the last [net write](#net-write) of each record of each collection.
 A final result with no errors publishes it to the writer of the node, and any other result drops it (M1, [decision 66](decision-register.md#decision-66)).
 
+**Note (decision 98).** The mirror journal is retired ([decision 98](decision-register.md#decision-98)).
+Each commit of a play publishes the net writes of its transaction at once, whatever the final result of the deploy.
+The sentences above describe the journal before merge 2 (`702496775`).
+
 ### Dirty collection
 
 A dirty collection is a mirror collection that misses writes, because the writer of the node did not apply one of its batches.
 The next repair of the mirror on a finalized block includes it.
+
+**Note (decision 114).** No collection is dirty now, because nothing repairs the mirror ([decision 114](decision-register.md#decision-114)).
+The writer drops a batch that it cannot apply.
+The sentences above describe the rule before merge 2 (`702496775`).
 
 ### Mirror writer
 
 The mirror writer of a node applies the published batches of the [mirror journal](#mirror-journal) to the [mirror](#mirror), in publication order.
 A publication never waits. A batch that finds the queue full, or that fails after three attempts, makes its collection a [dirty collection](#dirty-collection).
 
+**Note (decisions 98 and 114).** The writer applies the batches that the commits of the plays publish ([decision 98](decision-register.md#decision-98)).
+A publication drops a batch that finds the queue full, and the writer drops a batch that fails after three attempts ([decision 114](decision-register.md#decision-114)).
+
 ### Watermark
 
 The watermark of a mirror collection is the last finalized block whose state a repair applied to it.
 It never decreases, and `ann` reports it with its answer.
+
+**Note (decision 114).** The watermark is retired, because nothing repairs the mirror ([decision 114](decision-register.md#decision-114)).
+`ann` reports no watermark.
 
 ### Reconciler
 
@@ -1597,11 +1641,18 @@ The reconciler of a node repairs the [mirror](#mirror) to the finalized state.
 On each finalized block, it repairs each stale or [dirty collection](#dirty-collection).
 The repair sets each registered channel to the records of the finalized state, and then it sets the [watermark](#watermark).
 
+**Note (decision 114).** The reconciler is retired ([decision 114](decision-register.md#decision-114)).
+The mirror is an oracle store, as in the oracle mode of File I/O: nothing repairs it, and nothing external is undone (DR-114).
+The module line of the reconciler is a comment, and its file stays ([decision 120](decision-register.md#decision-120)).
+
 ### Recorded process
 
 A recorded process is a system process whose reply the dispatcher records on the produce event of the reply.
 Replay produces the recorded reply and asks no service, so nodes with different services compute the same state.
 `rho:vectordb:embed` and `rho:vectordb:ann` are recorded processes ([decision 57](decision-register.md#decision-57)).
+
+**Note (decisions 104, 113 and 116).** Replay delivers the record through the base helper `native_replayed_reply`, and it makes no check of the call ([decision 104](decision-register.md#decision-104), [decision 116](decision-register.md#decision-116)).
+Only a `chromadb` build registers `embed` and `ann` ([decision 113](decision-register.md#decision-113)).
 
 ### Advisory query
 

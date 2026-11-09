@@ -113,9 +113,43 @@ impl ReifiedReduceError {
     }
 }
 
+impl ReifiedReduceError {
+    /// True when a term can cause the error by itself (the user decision of 2026-10-25, as
+    /// DR-128). Each code rejects a construct of the user's term, so each one is a user failure.
+    /// The match names every variant, because no variant defaults to a user failure (DR-128).
+    pub fn is_user_failure(&self) -> bool {
+        match self {
+            ReifiedReduceError::Malformed(_)
+            | ReifiedReduceError::ParamsUnsupported
+            | ReifiedReduceError::QuerySpecUnsupported
+            | ReifiedReduceError::PersistentFactoryCall
+            | ReifiedReduceError::PersistentHandleCall
+            | ReifiedReduceError::PersistentOpCall
+            | ReifiedReduceError::PersistentCapabilityCall
+            | ReifiedReduceError::PersistentSendOnAgentSpace
+            | ReifiedReduceError::ParamsUnsupportedOnAgentSpace
+            | ReifiedReduceError::QuerySpecUnsupportedOnAgentSpace
+            | ReifiedReduceError::AgentGuardSpansJoin
+            | ReifiedReduceError::AgentPatternTooDeep
+            | ReifiedReduceError::CrossSpaceJoin
+            | ReifiedReduceError::EmptySpaceRef
+            | ReifiedReduceError::HandleNotWritable
+            | ReifiedReduceError::NotASpaceRef => true,
+        }
+    }
+}
+
 impl From<ReifiedReduceError> for InterpreterError {
     fn from(error: ReifiedReduceError) -> Self {
-        InterpreterError::ReduceError(format!("reified:{}: {}", error.code(), error))
+        // Changed by the user decision of 2026-10-25 (as DR-128): a user failure has its own
+        // interpreter error.
+        // InterpreterError::ReduceError(format!("reified:{}: {}", error.code(), error))
+        match error.is_user_failure() {
+            true => {
+                InterpreterError::SpaceUserError(format!("reified:{}: {}", error.code(), error))
+            }
+            false => InterpreterError::ReduceError(format!("reified:{}: {}", error.code(), error)),
+        }
     }
 }
 
@@ -175,11 +209,21 @@ mod tests {
             SpaceError::QuerySpecUnsupported.code(),
             ReifiedReduceError::QuerySpecUnsupported.code()
         );
+        // Changed by the user decision of 2026-10-25 (as DR-128): every reducer code is a user
+        // failure, so each one aborts with `SpaceUserError`.
+        // for error in errors {
+        //     let code = error.code();
+        //     assert_eq!(
+        //         InterpreterError::from(error.clone()),
+        //         InterpreterError::ReduceError(format!("reified:{code}: {error}"))
+        //     );
+        // }
         for error in errors {
             let code = error.code();
+            assert!(error.is_user_failure(), "{code}");
             assert_eq!(
                 InterpreterError::from(error.clone()),
-                InterpreterError::ReduceError(format!("reified:{code}: {error}"))
+                InterpreterError::SpaceUserError(format!("reified:{code}: {error}"))
             );
         }
     }

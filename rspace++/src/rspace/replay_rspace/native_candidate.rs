@@ -1,5 +1,9 @@
+use std::convert::Infallible;
+
 use super::native_epoch::NativeCandidateIdentity;
 use super::*;
+// Added by decision 123 (plan v4, V3-8): the shared named-record test.
+use crate::rspace::candidate_order::candidate_matches_with;
 use crate::rspace::candidate_order::canonical_candidates;
 
 pub(super) mod selection;
@@ -21,25 +25,50 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    // Changed by decision 123 (plan v4, V3-8): the body moved to the free
+    // `candidate_order::candidate_matches_with`, which the Reified space
+    // transactions also call. The method forwards and maps a counter overflow
+    // to false, as before.
+    // fn candidate_matches(
+    //     &self,
+    //     datum: &Datum<A>,
+    //     expected: &dyn NativeCandidateIdentity,
+    //     incoming: Option<&Produce>,
+    // ) -> bool {
+    //     if !expected.matches_produce(&datum.source) {
+    //         return false;
+    //     }
+    //     if datum.persist {
+    //         return true;
+    //     }
+    //     let count = self.get_produce_count(&datum.source);
+    //     let count = if incoming.is_some_and(|p| p == &datum.source) {
+    //         count.checked_add(1)
+    //     } else {
+    //         Some(count)
+    //     };
+    //     count.is_some_and(|count| {
+    //         expected.repetition(&datum.source) == Some(count)
+    //     })
+    // }
     fn candidate_matches(
         &self,
         datum: &Datum<A>,
         expected: &dyn NativeCandidateIdentity,
         incoming: Option<&Produce>,
     ) -> bool {
-        if !expected.matches_produce(&datum.source) {
-            return false;
+        let matches = candidate_matches_with::<A, Infallible>(
+            datum,
+            incoming.is_some_and(|p| p == &datum.source),
+            |source| expected.matches_produce(source),
+            |source| expected.repetition(source),
+            |source| Ok(self.get_produce_count(source)),
+        );
+        match matches {
+            Ok(Some(matches)) => matches,
+            Ok(None) => false,
+            Err(never) => match never {},
         }
-        if datum.persist {
-            return true;
-        }
-        let count = self.get_produce_count(&datum.source);
-        let count = if incoming.is_some_and(|p| p == &datum.source) {
-            count.checked_add(1)
-        } else {
-            Some(count)
-        };
-        count.is_some_and(|count| expected.repetition(&datum.source) == Some(count))
     }
 
     pub(super) fn prepare_native_consume_candidate(

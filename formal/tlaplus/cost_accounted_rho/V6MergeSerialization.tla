@@ -19,8 +19,8 @@
 (* configuration enables all of them. Each Unsafe configuration disables   *)
 (* one check and must violate the invariant that the check protects.       *)
 (*                                                                         *)
-(* Values are scaled: MAX = 1 and MIN = -1 stand for i64::MAX and          *)
-(* i64::MIN, and every diff and base value lies in -1..1.                  *)
+(* Values are scaled: MAX = 1 and MIN = -1 stand for 2^256 - 1 and         *)
+(* -(2^256 - 1), and every diff and base value lies in -1..1.              *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets
 
@@ -477,7 +477,7 @@ NoOverfill == \A p \in DOMAIN slow : slow[p].overfillFree
 \* The dry run flags exactly the sets on which compose's guard fails.
 OverfillMatchesGuard == \A K \in SUBSET derived.cands : DryRunOverfill(K) = ComposeOverfill(K)
 
-\* No fold of a candidate's parts leaves the i64 range, in any order.
+\* No fold of a candidate's parts leaves the IntegerAdd range, in any order.
 ChainFoldNoOverflow == \A B \in derived.cands : FoldsFit(B)
 
 PurseValid == \A p \in DOMAIN slow : slow[p].purseOK

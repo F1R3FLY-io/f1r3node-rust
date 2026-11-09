@@ -11,8 +11,8 @@
 '   1. PREPARE classifies the operation. An operation that no join reaches
 '      keeps the driver of its collection.
 '   2. The scope closes the collections of the operation under their join
-'      groups, and the transaction locks the whole scope, with at most one
-'      escalation.
+'      groups, and the transaction takes phase B over the whole scope in
+'      one sorted call (decision 94).
 '   3. RUN-JOIN bumps the own collections, settles before the plan when the
 '      discipline cascades, and opens the plan only below the cap.
 '   4. DRAIN-AND-CASCADE offers the owed second sends and fires the exposed
@@ -43,18 +43,22 @@ partition "PREPARE: plan, then lock" {
   read the config once; <<$rrs_substrate>>
   if (CLASSIFY: a JoinOp, a settle job with a cascade,
   or a collection with a join group of other channels?) then (no)
-    :run_with: the driver of one collection
-    (its reservations equal the P4 join check); <<$rrs_agent>>
+    :run_with: the driver of one collection,
+    after phase B over the own keys (decision 94); <<$rrs_agent>>
     stop
   else (yes)
   endif
   :JOIN-SCOPE: check each bind with the store and the discipline
   close the collections under their join groups; <<$rrs_agent>>
-  if (the open transaction covers the scope?) then (no)
-    :drop it, nothing is staged
-    begin once over the lock keys of the scope; <<$rrs_substrate>>
-  else (yes)
-  endif
+  ' Changed by decision 94: the transaction keeps phase A, classifies under it, and takes
+  ' phase B over the whole scope in one call, so it never drops and begins again. The text before:
+  ' if (the open transaction covers the scope?) then (no)
+  '   :drop it, nothing is staged
+  '   begin once over the lock keys of the scope; <<$rrs_substrate>>
+  ' else (yes)
+  ' endif
+  :take phase B in one sorted call, over the own keys
+  and the lock keys of the scope (decision 94); <<$rrs_substrate>>
 }
 partition "RUN-JOIN" {
   :TOUCH each own collection: one bump each (decision 31)

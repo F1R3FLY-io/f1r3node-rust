@@ -1,6 +1,8 @@
 // See See rholang/src/main/scala/coop/rchain/rholang/interpreter/Reduce.scala
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+// Changed by DR-132: the per-call scope of dev queues task handles.
+// use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,37 +32,71 @@ use models::rust::sorted_par_hash_set::SortedParHashSet;
 use models::rust::sorted_par_map::SortedParMap;
 use models::rust::string_ops::StringOps;
 use models::rust::utils::{
-    new_elist_par, new_emap_par, new_gint_expr, new_gint_par, new_gstring_par, union,
+    new_elist_par, new_emap_par, new_gbigint_expr, new_gint_expr, new_gint_par, new_gstring_par,
+    union,
 };
 use prost::Message;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use rspace_plus_plus::rspace::util::unpack_option_with_peek;
 use tokio::sync::RwLock;
+// Added by DR-132: the per-call scope of dev holds task handles.
+use tokio::task::{JoinError, JoinHandle};
 
+// Changed by G3 (DR-135): every region that the reducer creates carries the
+// price of its creating context (R4).
+// use super::accounting::authority::{
+//     cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
+//     sig_to_cost_signature, system_residue_authority, AuthorityError, ResidueContext,
+// };
+// Changed by G3 (DR-135): a system body seals its residue through
+// `residue_seal_of`, which records its caller (A1).
+// use super::accounting::authority::{
+//     cost_signature_to_sig, extend_authority, priced_cost_region, resolve_system_residue,
+//     system_residue_authority, AuthorityError, ResidueContext,
+// };
 use super::accounting::authority::{
-    cost_region, cost_signature_to_sig, extend_authority, resolve_system_residue,
-    sig_to_cost_signature, system_residue_authority, AuthorityError, ResidueContext,
+    cost_signature_to_sig, extend_authority, priced_cost_region, resolve_system_residue,
+    AuthorityError, ResidueContext,
 };
 use super::accounting::byte_accounting::{
     message_field_bytes, par_with_random_bytes, IntroductionMeasurement,
 };
+// Changed by DR-134 (DR-66 item 3): `equality_check_cost_legacy` is deleted with
+// the legacy meter.
 use super::accounting::costs::{
     bigint_comparison_cost, bigint_division_cost, bigint_modulo_cost, bigint_multiplication_cost,
     bigint_negation_cost, bigint_subtraction_cost, bigint_sum_cost, bigrat_comparison_cost,
     bigrat_division_cost, bigrat_multiplication_cost, bigrat_negation_cost,
     bigrat_subtraction_cost, bigrat_sum_cost, boolean_and_cost, boolean_or_cost,
-    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost,
-    equality_check_cost_legacy, list_append_cost, method_call_cost, modulo_cost,
-    multiplication_cost, new_bindings_cost, op_call_cost, receive_eval_cost, send_eval_cost,
-    string_append_cost, subtraction_cost, sum_cost, var_eval_cost,
+    byte_array_append_cost, comparison_cost, division_cost, equality_check_cost, list_append_cost,
+    method_call_cost, modulo_cost, multiplication_cost, new_bindings_cost, op_call_cost,
+    receive_eval_cost, send_eval_cost, string_append_cost, subtraction_cost, sum_cost,
+    var_eval_cost,
 };
+// Added by DR-132: the per-call scope records the failure classes.
+use super::accounting::economic_failure::{
+    classify_errors, EvaluationFailureSummary, FailureRecorder,
+};
+// Added by G3 (DR-135): the context of a fired body (R1, A1).
+// Changed by G3 (DR-135, S3b): the context also holds the held map, and the
+// sends of Rule H record the holder of their datum.
+// use super::accounting::owner_funding::{BodyContext, RegionOwner};
+use super::accounting::owner_funding::{
+    held_term_holder, strip_held_markers, BodyContext, HeldMap, RegionOwner, SendRecord,
+};
+use super::accounting::phlo_execution::PhloFailure;
 use super::accounting::RuntimeBudget;
-use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
+// Changed by DR-132: the per-call scope of dev replaces the deterministic
+// scheduler, which D3-A deletes.
+// use super::deterministic_reduction::{self, DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{DispatchType, RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
-use super::execution_space::ExecutionSpace;
+// Changed by DR-132 (D2-B): the per-call scope counts the tasks of a native
+// replay evaluation.
+// use super::execution_space::ExecutionSpace;
+use super::execution_space::{EvaluationProgress, ExecutionSpace};
 use super::matcher::has_locally_free::HasLocallyFree;
 use super::metering::MeteredMachine;
 use super::metrics_constants::{
@@ -70,15 +106,17 @@ use super::metrics_constants::{
     REDUCER_EVAL_SEND_CALLS_METRIC, REDUCER_EVAL_SEND_TIME_NS_METRIC, RHOLANG_METRICS_SOURCE,
 };
 use super::rho_runtime::RhoISpace;
+use super::rho_type::{bigint_to_bytes, bytes_to_bigint};
 use super::substitute::Substitute;
 use super::unwrap_option_safe;
 use super::util::{
     allocate_new_bindings, evaluation_random, owned_evaluation_terms, GeneratedMessage,
 };
 use crate::rust::interpreter::accounting::costs::{
-    add_cost, bytes_to_hex_cost, diff_cost, hex_to_bytes_cost, interpolate_cost, keys_method_cost,
-    length_method_cost, lookup_cost, match_eval_cost, nth_method_call_cost, remove_cost,
-    size_method_cost, slice_cost, take_cost, to_byte_array_cost, to_list_cost, union_cost,
+    add_cost, bytes_to_hex_cost, concat_bytes_cost, decode_utf8_cost, diff_cost, hex_to_bytes_cost,
+    interpolate_cost, keys_method_cost, length_method_cost, lookup_cost, match_eval_cost,
+    nth_method_call_cost, remove_cost, size_method_cost, slice_cost, take_cost, to_byte_array_cost,
+    to_list_cost, union_cost, valid_utf8_prefix_len_cost,
 };
 use crate::rust::interpreter::matcher::spatial_matcher::SpatialMatcherContext;
 use crate::rust::interpreter::rho_type::RhoTuple2;
@@ -124,6 +162,294 @@ impl<F: Future> Future for StackGrowingFuture<F> {
     }
 }
 
+/// A spawned task handle that aborts the task when the handle is dropped before
+/// the task completes, so cancelling an owner cancels the tasks it spawned.
+struct AbortOnDrop<T>(JoinHandle<T>);
+
+impl<T> Future for AbortOnDrop<T> {
+    type Output = Result<T, JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().0).poll(cx)
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) { self.0.abort(); }
+}
+
+type DispatchHandle = AbortOnDrop<Result<DispatchType, InterpreterError>>;
+
+/// Returns the current deferred-dispatch scope when the dispatch of
+/// `continuation` can be deferred. It cannot for a system-process continuation
+/// (its `DispatchType` updates the produce event) or without a scope (a direct
+/// `eval` call without `inj`); such a dispatch runs inline.
+fn deferral_scope(continuation: &TaggedContinuation) -> Option<Arc<DeferredDispatches>> {
+    match continuation.tagged_cont {
+        Some(TaggedCont::ParBody(_)) => DEFERRED_DISPATCHES.try_with(Arc::clone).ok(),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+struct DeferredState {
+    handles: VecDeque<DispatchHandle>,
+    closed: bool,
+}
+
+/// Added by DR-132 (dev `reduce.rs:146-187`): the deferred tasks of one `inj`
+/// call.
+///
+/// A task registers the handle of every task it defers before the task itself
+/// completes, so when the queue is empty and the drain in `inj` awaits nothing,
+/// no deferred task is still running. After `close`, the queued handles are
+/// dropped (which aborts their tasks) and a late registration aborts at once.
+///
+/// The scope also holds the failure recorder of the call (§3.5 of the DR-132
+/// plan). A reducer clone cannot carry the recorder, because the dispatcher
+/// evaluates each body through the root reducer cell.
+#[derive(Default)]
+struct DeferredDispatches {
+    state: std::sync::Mutex<DeferredState>,
+    failures: FailureRecorder,
+    /// Added by DR-132 (D2-B): the progress of a native replay evaluation,
+    /// which counts every task of the scope for the stall rule.
+    progress: Option<Arc<dyn EvaluationProgress>>,
+}
+
+impl DeferredDispatches {
+    fn lock(&self) -> std::sync::MutexGuard<'_, DeferredState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn push(&self, handle: DispatchHandle) {
+        let mut state = self.lock();
+        if !state.closed {
+            state.handles.push_back(handle);
+        }
+    }
+
+    fn pop(&self) -> Option<DispatchHandle> { self.lock().handles.pop_front() }
+
+    fn close(&self) {
+        // Added by DR-132 (D2-B): the progress word closes before any handle
+        // aborts its task, so the aborts declare no stall.
+        self.close_progress();
+        let handles = {
+            let mut state = self.lock();
+            state.closed = true;
+            std::mem::take(&mut state.handles)
+        };
+        drop(handles);
+    }
+
+    /// Added by DR-132 (D2-B): closes the progress word of a native replay
+    /// evaluation.
+    fn close_progress(&self) {
+        if let Some(progress) = &self.progress {
+            progress.close();
+        }
+    }
+
+    /// Records the failure classes of `errors`, as the session of the
+    /// scheduler did. A classification that cannot allocate counts as a
+    /// platform failure.
+    fn record(&self, errors: &[InterpreterError]) {
+        if errors.is_empty() {
+            return;
+        }
+        let summary = classify_errors(errors)
+            .unwrap_or_else(|_| EvaluationFailureSummary::single(PhloFailure::Platform));
+        self.failures.record(summary);
+    }
+}
+
+struct CloseOnDrop(Arc<DeferredDispatches>);
+
+impl Drop for CloseOnDrop {
+    fn drop(&mut self) { self.0.close(); }
+}
+
+/// Added by DR-132 (D2-B): the live count of one task of a native replay
+/// evaluation. It drops when the future of the task ends: normally, by a
+/// panic or by an abort.
+struct LiveToken(Arc<dyn EvaluationProgress>);
+
+impl Drop for LiveToken {
+    fn drop(&mut self) { self.0.finish(); }
+}
+
+/// Added by DR-132 (D2-B): whether the current task is counted by the
+/// evaluation of the replay `identity`. The root and every task of the
+/// per-call scope are counted.
+pub(crate) fn counted_task(identity: usize) -> bool {
+    DEFERRED_DISPATCHES
+        .try_with(|scope| {
+            scope
+                .progress
+                .as_ref()
+                .is_some_and(|progress| progress.identity() == identity)
+        })
+        .unwrap_or(false)
+}
+
+tokio::task_local! {
+    static DEFERRED_DISPATCHES: Arc<DeferredDispatches>;
+}
+
+/// Spawns a task that inherits the deferred-dispatch scope of the caller, if any.
+/// Every spawn in the evaluator must go through this function: a task without
+/// the scope runs COMM bodies inline and rebuilds the nested-future chain.
+fn spawn_in_dispatch_scope<F>(future: F) -> AbortOnDrop<F::Output>
+where
+    F: Future + std::marker::Send + 'static,
+    F::Output: std::marker::Send + 'static,
+{
+    // Changed by DR-132 (D2-B): a task of a native replay evaluation counts
+    // as live from before its spawn until its future ends. The token is bound
+    // first, so it drops after the future and after any wait inside it.
+    // AbortOnDrop(match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+    //     Ok(scope) => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
+    //     Err(_) => tokio::spawn(future),
+    // })
+    // Added by Reified RSpaces (decision 91): the task starts with a copy of
+    // the causal history of its parent, for the claims of seq spaces.
+    let future = super::reified::seq::inherit(future);
+    AbortOnDrop(match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+        Ok(scope) => match scope.progress.clone() {
+            Some(progress) => {
+                progress.enter();
+                let token = LiveToken(progress);
+                tokio::spawn(DEFERRED_DISPATCHES.scope(scope, async move {
+                    let _live = token;
+                    future.await
+                }))
+            }
+            None => tokio::spawn(DEFERRED_DISPATCHES.scope(scope, future)),
+        },
+        Err(_) => tokio::spawn(future),
+    })
+}
+
+fn join_error(err: JoinError) -> InterpreterError {
+    if err.is_cancelled() {
+        InterpreterError::ReduceError(format!("task cancelled: {}", err))
+    } else {
+        InterpreterError::ReduceError(format!("task panicked: {}", err))
+    }
+}
+
+/// Added by DR-132 (F5): awaits the tasks of `scope` until none is left, and
+/// adds the error of each failed task to `errors`. A task that panicked or
+/// was cancelled adds its join error. Then it records the failure classes of
+/// the whole list into the scope, before an aggregate collapses the list.
+// Changed by DR-132 (D2-B): the drain holds the awaited handle in `InFlight`,
+// so a cancelled drain closes the progress word before the handle aborts its
+// task.
+// async fn drain_dispatch_scope(scope: &DeferredDispatches, errors: &mut Vec<InterpreterError>) {
+//     while let Some(handle) = scope.pop() {
+//         match handle.await {
+//             Ok(Err(err)) => errors.push(err),
+//             Err(join_err) => errors.push(join_error(join_err)),
+//             Ok(Ok(_)) => {}
+//         }
+//     }
+//     scope.record(errors);
+// }
+async fn drain_dispatch_scope(scope: &DeferredDispatches, errors: &mut Vec<InterpreterError>) {
+    while let Some(handle) = scope.pop() {
+        let mut in_flight = InFlight { scope, handle };
+        match (&mut in_flight.handle).await {
+            Ok(Err(err)) => errors.push(err),
+            Err(join_err) => errors.push(join_error(join_err)),
+            Ok(Ok(_)) => {}
+        }
+    }
+    scope.record(errors);
+}
+
+/// Added by DR-132 (D2-B): the handle that the drain awaits. When the drain
+/// is dropped while the task runs, the evaluation is cancelled: the progress
+/// word closes before the handle field aborts the task, so the abort declares
+/// no stall.
+struct InFlight<'a> {
+    scope: &'a DeferredDispatches,
+    handle: DispatchHandle,
+}
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        if !self.handle.0.is_finished() {
+            self.scope.close_progress();
+        }
+    }
+}
+
+/// Added by DR-132 (P13): records the failure classes of `errors` into the
+/// scope of the current call. Without a scope nothing records, as the
+/// scheduler recorded nothing without a session.
+fn record_evaluator_failures(errors: &[InterpreterError]) {
+    let _ = DEFERRED_DISPATCHES.try_with(|scope| scope.record(errors));
+}
+
+/// Added by DR-132 (T6): runs `future` inside a new per-call scope, as
+/// `inj_with_observation` does, and then drains the tasks of the scope. It
+/// returns the result of `future`, the failure classes of the scope and the
+/// errors of the drained tasks.
+// Changed by Reified RSpaces (decision 90): the Reified test harnesses run
+// their futures in this scope, so the helper is visible in the crate.
+// async fn with_dispatch_scope<T>(
+#[cfg(test)]
+pub(crate) async fn with_dispatch_scope<T>(
+    future: impl Future<Output = T>,
+) -> (T, EvaluationFailureSummary, Vec<InterpreterError>) {
+    let scope = Arc::new(DeferredDispatches::default());
+    let _close_on_drop = CloseOnDrop(scope.clone());
+    let result = DEFERRED_DISPATCHES.scope(scope.clone(), future).await;
+    let mut errors = Vec::new();
+    drain_dispatch_scope(&scope, &mut errors).await;
+    (result, scope.failures.snapshot(), errors)
+}
+
+/// Added by DR-132 (D2-B): runs `root` as the root of a counted evaluation of
+/// `progress`, as `inj_with_observation` does, and then drains the tasks that
+/// `spawn_counted` started. It returns the result of the root and the errors
+/// of the drained tasks, or the error of `begin`.
+#[cfg(test)]
+pub(crate) async fn with_counted_evaluation<T>(
+    progress: Arc<dyn EvaluationProgress>,
+    root: impl Future<Output = T>,
+) -> Result<(T, Vec<InterpreterError>), rspace_plus_plus::rspace::errors::RSpaceError> {
+    progress.begin()?;
+    let token = LiveToken(progress.clone());
+    let scope = Arc::new(DeferredDispatches {
+        progress: Some(progress),
+        ..DeferredDispatches::default()
+    });
+    let _close_on_drop = CloseOnDrop(scope.clone());
+    let result = DEFERRED_DISPATCHES.scope(scope.clone(), root).await;
+    drop(token);
+    let mut errors = Vec::new();
+    drain_dispatch_scope(&scope, &mut errors).await;
+    Ok((result, errors))
+}
+
+/// Added by DR-132 (D2-B): spawns `task` as a counted task of the current
+/// evaluation of `with_counted_evaluation`. The handle aborts the task.
+#[cfg(test)]
+pub(crate) fn spawn_counted<F>(task: F) -> tokio::task::AbortHandle
+where F: Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'static {
+    DEFERRED_DISPATCHES.with(|scope| {
+        let handle =
+            spawn_in_dispatch_scope(async move { task.await.map(|()| DispatchType::Skip) });
+        let abort = handle.0.abort_handle();
+        scope.push(handle);
+        abort
+    })
+}
+
 /**
  * Reduce is the interface for evaluating Rholang expressions.
  */
@@ -158,11 +484,37 @@ pub struct ReducerCore {
     pub(crate) single_term_evaluations: Arc<AtomicU64>,
     pub(crate) yielded_single_term_evaluations: Arc<AtomicU64>,
     pub(crate) spawned_eval_tasks: Arc<AtomicU64>,
-    pub(crate) reduction_coordinator: ReductionCoordinator,
+    // Changed by DR-132 (P4): the scheduler and its coordinator are gone
+    // (D3-A).
+    // pub(crate) reduction_coordinator: ReductionCoordinator,
     pub(crate) space_ctx: super::reified::scope::SpaceCtx,
     pub(crate) reified: Arc<super::reified::runtime::ReifiedRuntime>,
     /// DR-101: set while a system body runs, so its residue keeps the system seal.
     pub(crate) residue_seal: bool,
+    /// Added by G3 (DR-135): the owner of a fired owner body. Its unsigned
+    /// surfaces open regions of the owner at the owner's price (R1).
+    pub(crate) owner: Option<RegionOwner>,
+    /// Added by G3 (DR-135): the caller of a system body. Its residue records
+    /// the caller, and a process that it holds runs for the caller (A1).
+    pub(crate) caller: Option<RegionOwner>,
+    /// Added by G3 (DR-135, S3b): the holders of the values that the fired
+    /// body binds, by env position (Rule H, H0 and H3). Empty without a
+    /// binding.
+    pub(crate) held: HeldMap,
+    /// Slice 31: phase-scoped URN visibility.  When `true` (the
+    /// default), `eval_new` refuses to resolve any URN whose
+    /// string starts with `FS_NATIVE_URN_PREFIX`
+    /// (`rho:io:fs:native:1.0.0/`).  Genesis composition needs
+    /// those URNs to bind the raw fs primitives into FsGenesis's
+    /// new-scope; user deploys must not, because that would bypass
+    /// Fs.rho's sandbox / mode-cap / bundle checks.  A yet-to-land
+    /// runtime slice will toggle the flag off before running
+    /// genesis-time deploys and back on afterwards; state-execution
+    /// deploys leave it at the default.
+    ///
+    /// `Arc<AtomicBool>` so the flag is shared with dispatcher /
+    /// system-process closures that clone the reducer.
+    pub filter_fs_native_urns: Arc<std::sync::atomic::AtomicBool>,
 }
 
 type Application = Option<(
@@ -200,15 +552,52 @@ impl ReducerCore {
         self.spawned_eval_tasks.store(0, Ordering::Relaxed);
     }
 
-    /// DR-101: this reducer outside a system body.
-    fn without_residue_seal(&self) -> std::borrow::Cow<'_, Self> {
+    // Changed by G3 (DR-135): the held-process context moved to
+    // `held_process_reducer`, which keeps this DR-101 rule and adds A1.
+    // /// DR-101: this reducer outside a system body.
+    // fn without_residue_seal(&self) -> std::borrow::Cow<'_, Self> {
+    //     if self.residue_seal {
+    //         std::borrow::Cow::Owned(ReducerCore {
+    //             residue_seal: false,
+    //             ..self.clone()
+    //         })
+    //     } else {
+    //         std::borrow::Cow::Borrowed(self)
+    //     }
+    // }
+
+    /// DR-101: the reducer of a process that this reducer holds in a variable.
+    /// A held process keeps its sender's provenance, so it never runs as a
+    /// system body: inside a system body it runs outside the system seal.
+    /// Added by G3 (DR-135, A1): inside a system body it runs for the body's
+    /// caller, as an owner body runs for its owner. Outside a system body the
+    /// reducer stays as it is.
+    // Changed by G3 (DR-135, S3b T1): a caller on a client lane of the
+    // running binding gives no owner, so the running deployment pays, and the
+    // copy starts an empty held map.
+    // fn held_process_reducer(&self) -> std::borrow::Cow<'_, Self> {
+    //     if self.residue_seal {
+    //         std::borrow::Cow::Owned(ReducerCore {
+    //             residue_seal: false,
+    //             owner: self.caller.clone(),
+    //             caller: None,
+    //             ..self.clone()
+    //         })
+    //     } else {
+    //         std::borrow::Cow::Borrowed(self)
+    //     }
+    // }
+    fn held_process_reducer(&self) -> Result<std::borrow::Cow<'_, Self>, InterpreterError> {
         if self.residue_seal {
-            std::borrow::Cow::Owned(ReducerCore {
+            Ok(std::borrow::Cow::Owned(ReducerCore {
                 residue_seal: false,
+                owner: self.residue_owner()?,
+                caller: None,
+                held: HeldMap::default(),
                 ..self.clone()
-            })
+            }))
         } else {
-            std::borrow::Cow::Borrowed(self)
+            Ok(std::borrow::Cow::Borrowed(self))
         }
     }
 
@@ -230,17 +619,22 @@ impl ReducerCore {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
+        // Changed by DR-132 (P5): dev's form. The per-call scope of `inj`
+        // drains the tasks that the evaluation defers.
+        // Box::pin(StackGrowingFuture {
+        //     inner: async move {
+        //         let (result, _, errors) = deterministic_reduction::root_with_observation(
+        //             self.space.clone(),
+        //             self.metering.budget(),
+        //             self.reduction_coordinator.clone(),
+        //             self.eval_inner(par, env, rand, CostAuthority::default()),
+        //         )
+        //         .await;
+        //         self.finish_detached_errors(result, errors)
+        //     },
+        // })
         Box::pin(StackGrowingFuture {
-            inner: async move {
-                let (result, _, errors) = deterministic_reduction::root_with_observation(
-                    self.space.clone(),
-                    self.metering.budget(),
-                    self.reduction_coordinator.clone(),
-                    self.eval_inner(par, env, rand, CostAuthority::default()),
-                )
-                .await;
-                self.finish_detached_errors(result, errors)
-            },
+            inner: self.eval_inner(par, env, rand, CostAuthority::default()),
         })
     }
 
@@ -255,59 +649,121 @@ impl ReducerCore {
             dyn std::future::Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a,
         >,
     > {
+        // Changed by DR-132 (P5): dev's form, as `eval`.
+        // Box::pin(StackGrowingFuture {
+        //     inner: async move {
+        //         let (result, _, errors) = deterministic_reduction::root_with_observation(
+        //             self.space.clone(),
+        //             self.metering.budget(),
+        //             self.reduction_coordinator.clone(),
+        //             self.eval_inner(par, env, rand, authority),
+        //         )
+        //         .await;
+        //         self.finish_detached_errors(result, errors)
+        //     },
+        // })
         Box::pin(StackGrowingFuture {
-            inner: async move {
-                let (result, _, errors) = deterministic_reduction::root_with_observation(
-                    self.space.clone(),
-                    self.metering.budget(),
-                    self.reduction_coordinator.clone(),
-                    self.eval_inner(par, env, rand, authority),
-                )
-                .await;
-                self.finish_detached_errors(result, errors)
-            },
+            inner: self.eval_inner(par, env, rand, authority),
         })
     }
 
+    // Changed by G3 (DR-135): the body runs in its context: the DR-101 system
+    // flag, the owner of an owner body and the caller of a system body (R1,
+    // A1). The reducer is reused only when all three match.
+    // pub(crate) async fn eval_continuation(
+    //     self: &Arc<Self>,
+    //     par: Par,
+    //     env: Env<Par>,
+    //     rand: Blake2b512Random,
+    //     system_body: bool,
+    // ) -> Result<(), InterpreterError> {
+    //     let reducer = if system_body == self.residue_seal {
+    //         self.clone()
+    //     } else {
+    //         Arc::new(ReducerCore {
+    //             residue_seal: system_body,
+    //             ..(**self).clone()
+    //         })
+    //     };
     pub(crate) async fn eval_continuation(
         self: &Arc<Self>,
         par: Par,
         env: Env<Par>,
         rand: Blake2b512Random,
-        system_body: bool,
+        context: BodyContext,
     ) -> Result<(), InterpreterError> {
-        let reducer = if system_body == self.residue_seal {
+        // Changed by G3 (DR-135, S3b): the held map is part of the context.
+        // let reducer = if context.system == self.residue_seal
+        //     && context.owner == self.owner
+        //     && context.caller == self.caller
+        // {
+        //     self.clone()
+        // } else {
+        //     Arc::new(ReducerCore {
+        //         residue_seal: context.system,
+        //         owner: context.owner,
+        //         caller: context.caller,
+        //         ..(**self).clone()
+        //     })
+        // };
+        let reducer = if context.system == self.residue_seal
+            && context.owner == self.owner
+            && context.caller == self.caller
+            && context.held == self.held
+        {
             self.clone()
         } else {
             Arc::new(ReducerCore {
-                residue_seal: system_body,
+                residue_seal: context.system,
+                owner: context.owner,
+                caller: context.caller,
+                held: context.held,
                 ..(**self).clone()
             })
         };
-        if deterministic_reduction::current().is_none() {
-            return reducer.eval(par, &env, rand).await;
+        // Changed by DR-132 (F2): inside the per-call scope of `inj`, the body
+        // runs as a task of the scope, so a chain of bodies never nests. This
+        // covers the bodies that system-process replies fire. Without a scope
+        // the body runs inline, as on dev.
+        // if deterministic_reduction::current().is_none() {
+        //     return reducer.eval(par, &env, rand).await;
+        // }
+        // deterministic_reduction::spawn_detached(async move {
+        //     reducer
+        //         .eval_inner(par, &env, rand, CostAuthority::default())
+        //         .await
+        // });
+        // Ok(())
+        match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+            Ok(scope) => {
+                scope.push(spawn_in_dispatch_scope(async move {
+                    reducer
+                        .eval(par, &env, rand)
+                        .await
+                        .map(|()| DispatchType::DeterministicCall)
+                }));
+                Ok(())
+            }
+            Err(_) => reducer.eval(par, &env, rand).await,
         }
-        deterministic_reduction::spawn_detached(async move {
-            reducer
-                .eval_inner(par, &env, rand, CostAuthority::default())
-                .await
-        });
-        Ok(())
     }
 
-    fn finish_detached_errors(
-        &self,
-        result: Result<(), InterpreterError>,
-        mut errors: Vec<InterpreterError>,
-    ) -> Result<(), InterpreterError> {
-        if errors.is_empty() {
-            return result;
-        }
-        if let Err(error) = result {
-            errors.insert(0, error);
-        }
-        self.aggregate_evaluator_errors(errors).map(|_| ())
-    }
+    // Changed by DR-132 (P7): errors return through the drain of `inj`, and
+    // through the joins of a call without a scope, so no detached error list
+    // remains.
+    // fn finish_detached_errors(
+    //     &self,
+    //     result: Result<(), InterpreterError>,
+    //     mut errors: Vec<InterpreterError>,
+    // ) -> Result<(), InterpreterError> {
+    //     if errors.is_empty() {
+    //         return result;
+    //     }
+    //     if let Err(error) = result {
+    //         errors.insert(0, error);
+    //     }
+    //     self.aggregate_evaluator_errors(errors).map(|_| ())
+    // }
 
     async fn eval_inner(
         &self,
@@ -400,22 +856,71 @@ impl ReducerCore {
 
             self.spawned_eval_tasks
                 .fetch_add(futures.len() as u64, Ordering::Relaxed);
-            let parent_context = deterministic_reduction::current()
-                .expect("parallel evaluation requires a reduction context");
-            let child_contexts = parent_context.split(futures.len());
-            for (fut, child_context) in futures.into_iter().zip(child_contexts) {
-                deterministic_reduction::spawn_detached_in_context(child_context, fut);
+            // Changed by DR-132 (A1, A2): inside the per-call scope of `inj`,
+            // each child runs as a task of the scope and the parent returns at
+            // once, so nested errors never aggregate level by level. Without a
+            // scope the parent awaits every child and aggregates, as on dev
+            // (dev `reduce.rs:425-448`).
+            // let parent_context = deterministic_reduction::current()
+            //     .expect("parallel evaluation requires a reduction context");
+            // let child_contexts = parent_context.split(futures.len());
+            // for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+            //     deterministic_reduction::spawn_detached_in_context(child_context, fut);
+            // }
+            // Ok(())
+            match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+                Ok(scope) => {
+                    for future in futures {
+                        scope.push(spawn_in_dispatch_scope(async move {
+                            future.await.map(|()| DispatchType::Skip)
+                        }));
+                    }
+                    Ok(())
+                }
+                Err(_) => {
+                    let spawn_start = std::time::Instant::now();
+                    let handles: Vec<AbortOnDrop<Result<(), InterpreterError>>> =
+                        futures.into_iter().map(spawn_in_dispatch_scope).collect();
+                    metrics::counter!("reducer.eval_par.spawn_ns", "source" => "rholang")
+                        .increment(spawn_start.elapsed().as_nanos() as u64);
+
+                    let join_start = std::time::Instant::now();
+                    let mut flattened_results: Vec<InterpreterError> = Vec::new();
+                    for handle in handles {
+                        match handle.await {
+                            Ok(Err(err)) => flattened_results.push(err),
+                            Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
+                                format!("task panicked: {}", join_err),
+                            )),
+                            Ok(Ok(())) => {}
+                        }
+                    }
+                    metrics::counter!("reducer.eval_par.join_ns", "source" => "rholang")
+                        .increment(join_start.elapsed().as_nanos() as u64);
+
+                    self.aggregate_evaluator_errors(flattened_results)
+                        .map(|_| ())
+                }
             }
-            Ok(())
         }
     }
 
+    // Changed by DR-132 (P9): dev's `inj` runs through the observed form.
+    // pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
+    //     self.eval(par, &Env::new(), rand).await
+    // }
     pub async fn inj(&self, par: Par, rand: Blake2b512Random) -> Result<(), InterpreterError> {
-        let root = self.begin_root_evaluation();
-        let result = self.eval(par, &Env::new(), rand).await;
-        self.end_root_evaluation(root, result).await
+        self.inj_with_observation(par, rand).await.0
     }
 
+    /// Changed by DR-132 (P10, F5): dev's `inj` (dev `reduce.rs:452-483`) with
+    /// the failure recorder of the per-call scope. The deploy term runs inside
+    /// the scope. Each continuation body, re-issue and parallel child runs as
+    /// a task of the scope. After the root evaluation returns, the drain
+    /// awaits the tasks until none is left. The full error list, with each
+    /// task failure, is recorded before the final aggregate, because that
+    /// aggregate runs outside the scope. If this future is dropped, the scope
+    /// closes and every task of the scope is aborted.
     pub(crate) async fn inj_with_observation(
         &self,
         par: Par,
@@ -424,29 +929,126 @@ impl ReducerCore {
         Result<(), InterpreterError>,
         super::accounting::economic_failure::EvaluationFailureSummary,
     ) {
+        // let env = Env::new();
+        // let (result, summary, errors) = StackGrowingFuture {
+        //     inner: deterministic_reduction::root_with_observation(
+        //         self.space.clone(),
+        //         self.metering.budget(),
+        //         self.reduction_coordinator.clone(),
+        //         async {
+        //             let result = self
+        //                 .eval_inner(par, &env, rand, CostAuthority::default())
+        //                 .await;
+        //             if let Err(error) = &result {
+        //                 deterministic_reduction::record_evaluator_failures(std::slice::from_ref(
+        //                     error,
+        //                 ));
+        //             }
+        //             result
+        //         },
+        //     ),
+        // }
+        // .await;
+        // (self.finish_detached_errors(result, errors), summary)
+        // Changed by DR-132 (D2-B): a native replay evaluation begins its
+        // progress word, and the root counts as live until its evaluation
+        // returns. The root token is declared before `_close_on_drop`, so a
+        // cancel closes the word before the root finishes.
+        // let scope = Arc::new(DeferredDispatches::default());
+        let (progress, root) = match self.space.evaluation_progress() {
+            Some(progress) => match progress.begin() {
+                Ok(()) => (Some(progress.clone()), Some(LiveToken(progress))),
+                Err(err) => {
+                    return (
+                        Err(err.into()),
+                        EvaluationFailureSummary::single(PhloFailure::Platform),
+                    );
+                }
+            },
+            None => (None, None),
+        };
+        let scope = Arc::new(DeferredDispatches {
+            progress,
+            ..DeferredDispatches::default()
+        });
+        let _close_on_drop = CloseOnDrop(scope.clone());
         let env = Env::new();
-        let root = self.begin_root_evaluation();
-        let (result, summary, errors) = StackGrowingFuture {
-            inner: deterministic_reduction::root_with_observation(
-                self.space.clone(),
-                self.metering.budget(),
-                self.reduction_coordinator.clone(),
-                async {
-                    let result = self
-                        .eval_inner(par, &env, rand, CostAuthority::default())
-                        .await;
-                    if let Err(error) = &result {
-                        deterministic_reduction::record_evaluator_failures(std::slice::from_ref(
-                            error,
-                        ));
-                    }
-                    result
-                },
-            ),
+        // Added by Reified RSpaces (decision 90): the root evaluation of the
+        // Reified spaces starts outside every dispatch scope, and its sweep
+        // runs after the drain, when no task of the evaluation runs.
+        let reified_root = self.begin_root_evaluation();
+
+        let mut errors: Vec<InterpreterError> = Vec::new();
+        // Changed by Reified RSpaces (decision 91): the root starts with the
+        // empty causal history of the seq claims.
+        // if let Err(err) = DEFERRED_DISPATCHES
+        //     .scope(scope.clone(), self.eval(par, &env, rand))
+        //     .await
+        if let Err(err) = DEFERRED_DISPATCHES
+            .scope(
+                scope.clone(),
+                super::reified::seq::with_history(
+                    super::reified::seq::SeqHistory::default(),
+                    self.eval(par, &env, rand),
+                ),
+            )
+            .await
+        {
+            errors.push(err);
         }
-        .await;
-        let result = self.finish_detached_errors(result, errors);
-        self.end_root_evaluation_observed(root, result, summary)
+        // Added by DR-132 (D2-B): the root stops counting before the drain,
+        // which runs no operation.
+        drop(root);
+
+        drain_dispatch_scope(&scope, &mut errors).await;
+        let summary = scope.failures.snapshot();
+        // Changed by Reified RSpaces (decision 90): the sweep of the root
+        // evaluation runs after the drain.
+        // (self.aggregate_evaluator_errors(errors).map(|_| ()), summary)
+        let result = self.aggregate_evaluator_errors(errors).map(|_| ());
+        self.end_root_evaluation_observed(reified_root, result, summary)
+            .await
+    }
+
+    /// Spawns the dispatch of a Rholang-body continuation as a task of `scope`
+    /// (from `deferral_scope`). A `ParBody` dispatch always returns
+    /// `DispatchType::DeterministicCall` or an error, so the caller does not need
+    /// its result.
+    fn spawn_deferred_dispatch(
+        &self,
+        scope: Arc<DeferredDispatches>,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) {
+        let reducer = self.clone();
+        let handle = spawn_in_dispatch_scope(async move {
+            reducer
+                .dispatch(continuation, data_list, is_replay, previous_output)
+                .await
+        });
+        scope.push(handle);
+    }
+
+    async fn dispatch_or_defer(
+        &self,
+        continuation: TaggedContinuation,
+        data_list: Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>,
+        is_replay: bool,
+        previous_output: Vec<Par>,
+    ) -> Result<DispatchType, InterpreterError> {
+        if let Some(scope) = deferral_scope(&continuation) {
+            self.spawn_deferred_dispatch(
+                scope,
+                continuation,
+                data_list,
+                is_replay,
+                previous_output,
+            );
+            return Ok(DispatchType::DeterministicCall);
+        }
+        self.dispatch(continuation, data_list, is_replay, previous_output)
             .await
     }
 
@@ -700,6 +1302,7 @@ impl ReducerCore {
 
         match res {
             Some((continuation, data_list, peek)) => {
+                self.register_bitmask_channels(&data_list).await;
                 if persistent {
                     // Added by DR-114 (P2): a recorded external-service call is
                     // one linear request with one reply. A persistent send to
@@ -739,23 +1342,26 @@ impl ReducerCore {
                         >,
                     > = vec![];
 
-                    futures.push(Box::pin(async move {
-                        self_clone1
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay_flag,
-                                previous_output_clone,
-                            )
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send
-                                    + 'static,
-                            >,
-                        >);
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay_flag,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone1
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay_flag,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
 
                     futures.push(Box::pin(async move {
                         self_clone2
@@ -799,22 +1405,38 @@ impl ReducerCore {
                                     + 'static,
                             >,
                         >,
-                    > = vec![Box::pin(async move {
-                        self_clone
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay,
-                                previous_output_clone,
-                            )
-                            .await
-                    })];
+                    > = vec![];
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
                     futures.extend(self.produce_peeks(data_list, 1).await);
 
                     self.run_parallel_dispatches(futures).await
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
@@ -870,23 +1492,26 @@ impl ReducerCore {
                         >,
                     > = vec![];
 
-                    futures.push(Box::pin(async move {
-                        self_clone1
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay_flag,
-                                previous_output_clone,
-                            )
-                            .await
-                    })
-                        as Pin<
-                            Box<
-                                dyn futures::Future<Output = Result<DispatchType, InterpreterError>>
-                                    + std::marker::Send
-                                    + 'static,
-                            >,
-                        >);
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay_flag,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone1
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay_flag,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
 
                     futures.push(Box::pin(async move {
                         self_clone2
@@ -926,22 +1551,38 @@ impl ReducerCore {
                                     + 'static,
                             >,
                         >,
-                    > = vec![Box::pin(async move {
-                        self_clone
-                            .dispatch(
-                                continuation_clone,
-                                data_list_clone,
-                                is_replay,
-                                previous_output_clone,
-                            )
-                            .await
-                    })];
+                    > = vec![];
+                    if let Some(scope) = deferral_scope(&continuation_clone) {
+                        self.spawn_deferred_dispatch(
+                            scope,
+                            continuation_clone,
+                            data_list_clone,
+                            is_replay,
+                            previous_output_clone,
+                        );
+                    } else {
+                        futures.push(Box::pin(async move {
+                            self_clone
+                                .dispatch(
+                                    continuation_clone,
+                                    data_list_clone,
+                                    is_replay,
+                                    previous_output_clone,
+                                )
+                                .await
+                        }));
+                    }
                     futures.extend(self.produce_peeks(data_list, 1).await);
 
                     self.run_parallel_dispatches(futures).await
                 } else {
-                    self.dispatch(continuation, data_list, is_replay, previous_output_as_par)
-                        .await
+                    self.dispatch_or_defer(
+                        continuation,
+                        data_list,
+                        is_replay,
+                        previous_output_as_par,
+                    )
+                    .await
                 }
             }
             None => Ok(DispatchType::Skip),
@@ -1010,11 +1651,19 @@ impl ReducerCore {
                     let introduction_authority = match removed_data.cost_authority.as_ref() {
                         Some(seal) => {
                             let budget = self_clone.metering.budget();
+                            // Changed by G3 (DR-135): the resolved payer region
+                            // carries the region price (R4).
+                            // let context =
+                            //     ResidueContext::new(&budget.signature(), budget.deploy_id())
+                            //         .map_err(|error| {
+                            //             InterpreterError::ReduceError(error.to_string())
+                            //         })?;
                             let context =
                                 ResidueContext::new(&budget.signature(), budget.deploy_id())
                                     .map_err(|error| {
                                         InterpreterError::ReduceError(error.to_string())
-                                    })?;
+                                    })?
+                                    .with_price(budget.region_price());
                             resolve_system_residue(seal, &removed_data.random_state, &context)
                                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
                                 .into_owned()
@@ -1051,15 +1700,44 @@ impl ReducerCore {
             >,
         >,
     ) -> Result<DispatchType, InterpreterError> {
-        let parent_context = deterministic_reduction::current()
-            .expect("parallel dispatch requires a reduction context");
-        let child_contexts = parent_context.split(futures.len());
-        for (fut, child_context) in futures.into_iter().zip(child_contexts) {
-            deterministic_reduction::spawn_detached_in_context(child_context, async move {
-                fut.await.map(|_| ())
-            });
+        // Changed by DR-132 (F3, A1): inside the per-call scope of `inj`, each
+        // future runs as a task of the scope and the caller returns at once, so
+        // no re-issue parks its parent. Without a scope the caller awaits every
+        // future in order and aggregates, as on dev (dev `reduce.rs:763-777`).
+        // let parent_context = deterministic_reduction::current()
+        //     .expect("parallel dispatch requires a reduction context");
+        // let child_contexts = parent_context.split(futures.len());
+        // for (fut, child_context) in futures.into_iter().zip(child_contexts) {
+        //     deterministic_reduction::spawn_detached_in_context(child_context, async move {
+        //         fut.await.map(|_| ())
+        //     });
+        // }
+        // Ok(DispatchType::Skip)
+        match DEFERRED_DISPATCHES.try_with(Arc::clone) {
+            Ok(scope) => {
+                for future in futures {
+                    scope.push(spawn_in_dispatch_scope(future));
+                }
+                Ok(DispatchType::Skip)
+            }
+            Err(_) => {
+                let handles: Vec<AbortOnDrop<Result<DispatchType, InterpreterError>>> =
+                    futures.into_iter().map(spawn_in_dispatch_scope).collect();
+
+                let mut flattened_results: Vec<InterpreterError> = Vec::new();
+                for handle in handles {
+                    match handle.await {
+                        Ok(Err(err)) => flattened_results.push(err),
+                        Err(join_err) => flattened_results.push(InterpreterError::ReduceError(
+                            format!("task panicked: {}", join_err),
+                        )),
+                        Ok(Ok(_)) => {}
+                    }
+                }
+
+                self.aggregate_evaluator_errors(flattened_results)
+            }
         }
-        Ok(DispatchType::Skip)
     }
 
     /* Collect mergeable channels */
@@ -1068,6 +1746,20 @@ impl ReducerCore {
         if let Some(merge_type) = self.is_mergeable_channel(chan) {
             let mut merge_chs_write = self.merge_chs.write().await;
             merge_chs_write.insert(chan.clone(), merge_type);
+        }
+    }
+
+    async fn register_bitmask_channels(
+        &self,
+        data_list: &[(Par, ListParWithRandom, ListParWithRandom, bool)],
+    ) {
+        for (chan, _, _, _) in data_list {
+            if self.is_mergeable_channel(chan) == Some(MergeType::BitmaskOr) {
+                self.merge_chs
+                    .write()
+                    .await
+                    .insert(chan.clone(), MergeType::BitmaskOr);
+            }
         }
     }
 
@@ -1130,7 +1822,9 @@ impl ReducerCore {
         &self,
         errors: Vec<InterpreterError>,
     ) -> Result<DispatchType, InterpreterError> {
-        deterministic_reduction::record_evaluator_failures(&errors);
+        // Changed by DR-132 (P13): the per-call scope records the classes.
+        // deterministic_reduction::record_evaluator_failures(&errors);
+        record_evaluator_failures(&errors);
         match errors.as_slice() {
             // No errors
             [] => Ok(DispatchType::Skip),
@@ -1187,6 +1881,9 @@ impl ReducerCore {
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
         match term {
+            GeneratedMessage::UseBlock(term) => {
+                self.eval_use_block(term, env, rand, authority).await
+            }
             GeneratedMessage::Send(term) => {
                 metrics::counter!(REDUCER_EVAL_SEND_CALLS_METRIC, "source" => RHOLANG_METRICS_SOURCE)
                     .increment(1);
@@ -1235,11 +1932,28 @@ impl ReducerCore {
                 Some(expr_instance) => match expr_instance {
                     // DR-101 (P1 rem:signed-subst): a process held in a variable
                     // keeps its sender's provenance, so it never runs as a system body.
+                    // Changed by G3 (DR-135): both exits take the held-process
+                    // context of `held_process_reducer` (A1).
                     ExprInstance::EVarBody(e) => {
                         let res = self.eval_var(&e.clone().v.unwrap(), env)?;
-                        self.without_residue_seal()
-                            .eval_with_authority(res, env, rand, authority.clone())
-                            .await
+                        // self.without_residue_seal()
+                        // Changed by G3 (DR-135, S3b H1): a value whose holder
+                        // differs from the context signature runs for its
+                        // holder, with an empty authority.
+                        // self.held_process_reducer()
+                        //     .eval_with_authority(res, env, rand, authority.clone())
+                        //     .await
+                        match self.held_switch(self.var_exit_holder(e.v.as_ref(), env))? {
+                            Some(held) => {
+                                held.eval_with_authority(res, env, rand, CostAuthority::default())
+                                    .await
+                            }
+                            None => {
+                                self.held_process_reducer()?
+                                    .eval_with_authority(res, env, rand, authority.clone())
+                                    .await
+                            }
+                        }
                     }
                     ExprInstance::EMethodBody(e) => {
                         let res = self.eval_expr_to_par(
@@ -1248,11 +1962,28 @@ impl ReducerCore {
                             },
                             env,
                         )?;
-                        self.without_residue_seal()
-                            .eval_with_authority(res, env, rand, authority.clone())
-                            .await
+                        // self.without_residue_seal()
+                        // Changed by G3 (DR-135, S3b H1): a method on a held
+                        // target runs for its holder, as a held variable does.
+                        // self.held_process_reducer()
+                        //     .eval_with_authority(res, env, rand, authority.clone())
+                        //     .await
+                        match self.held_switch(self.method_exit_holder(e, env)?)? {
+                            Some(held) => {
+                                held.eval_with_authority(res, env, rand, CostAuthority::default())
+                                    .await
+                            }
+                            None => {
+                                self.held_process_reducer()?
+                                    .eval_with_authority(res, env, rand, authority.clone())
+                                    .await
+                            }
+                        }
                     }
-                    ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,
+                    // Retired by decision 112: no marker tuple is a process. The text before:
+                    // ```
+                    // ExprInstance::ETupleBody(t) => self.eval_marker(t, env, rand, authority).await,
+                    // ```
                     other => Err(InterpreterError::BugFoundError(format!(
                         "Undefined term: {:?}",
                         other
@@ -1287,20 +2018,36 @@ impl ReducerCore {
         self.metering.reserve_primitive(send_eval_cost())?;
         let opens_region =
             authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
-        let authority = if opens_region {
-            let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            let region = cost_region(&signature, &rand.to_bytes(), 0)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            extend_authority(authority, region)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
-        } else {
-            authority.clone()
+        // Changed by G3 (DR-135, S3b H5): the opened region is kept, so that
+        // the send can record the holder of its datum on it.
+        // let authority = if opens_region {
+        //     // Changed by G3 (DR-135): the opened region carries the region
+        //     // price (R4).
+        //     // let signature = sig_to_cost_signature(&self.metering.budget().signature())
+        //     //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        //     // let region = cost_region(&signature, &rand.to_bytes(), 0)
+        //     //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+        //     let region = self.opened_region(&rand.to_bytes(), 0)?;
+        //     extend_authority(authority, region)
+        //         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+        // } else {
+        //     authority.clone()
+        // };
+        let opened = match opens_region {
+            true => Some(self.opened_region(&rand.to_bytes(), 0)?),
+            false => None,
+        };
+        let authority = match opened.as_ref() {
+            Some(region) => extend_authority(authority, region.clone())
+                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?,
+            None => authority.clone(),
         };
         // DR-101: a system body pays through its payer region but stores system residue.
+        // Changed by G3 (DR-135): the residue records the body's caller (A1).
         let seal = if opens_region && self.residue_seal {
-            system_residue_authority(&authority, &self.metering.budget().deploy_id())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            // system_residue_authority(&authority, &self.metering.budget().deploy_id())
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            self.residue_seal_of(&authority)?
         } else {
             authority.clone()
         };
@@ -1331,8 +2078,15 @@ impl ReducerCore {
         //         self.substitute.substitute_and_charge(&evaluated, 0, env)
         //     })
         //     .collect::<Result<Vec<_>, InterpreterError>>()?;
-        let measured_data = send
-            .data
+        // Added by G3 (DR-135, S3b H5): every run strips the held markers of
+        // the data before the evaluation and the measured fold, so no held
+        // term reaches a datum. The strip charges no phlo.
+        let (data, markers) = strip_held_markers(&send.data)?;
+        // Changed by G3 (DR-135, S3b H5): the fold reads the stripped data.
+        // let measured_data = send
+        //     .data
+        //     .iter()
+        let measured_data = data
             .iter()
             .map(|expr| {
                 let evaluated = self.eval_expr(expr, env)?;
@@ -1348,7 +2102,45 @@ impl ReducerCore {
             .into_iter()
             .map(|(par, _)| par)
             .collect::<Vec<_>>();
+        let params = send
+            .params
+            .as_ref()
+            .map(|params| self.evaluated_send_params(params, env))
+            .transpose()?;
+        // Added by G3 (DR-135, S3b H5): the datum records the holder of its
+        // code: an owner body on its opened region, a system body on its
+        // residue.
+        // The params of the send count as data of the send for this rule.
+        let (authority, seal) = match self.held_send_record(
+            &data,
+            &markers,
+            &subst_data,
+            send.params.as_ref().zip(params.as_ref()),
+            env,
+            opens_region,
+        )? {
+            SendRecord::Unchanged => (authority, seal),
+            SendRecord::Caller(caller) => {
+                let mut region = opened.ok_or_else(|| {
+                    InterpreterError::BugFoundError(
+                        "a send records a holder without an opened region".to_string(),
+                    )
+                })?;
+                region.caller = Some(caller);
+                let authority = extend_authority(&CostAuthority::default(), region)
+                    .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+                (authority.clone(), authority)
+            }
+            SendRecord::Residue(caller) => {
+                let seal = self.residue_seal_with(&authority, caller.as_ref())?;
+                (authority, seal)
+            }
+        };
 
+        // Changed by Reified RSpaces (decision 22, decision 32 item A7): the send hook takes the
+        // parameters of the base produce. It routes the send by the routing rules, and the
+        // default space keeps the base produce.
+        // self.produce(
         self.reified_produce(
             unbundled,
             ListParWithRandom {
@@ -1360,6 +2152,7 @@ impl ReducerCore {
             send.persistent,
             authority,
             pars.map(|pars| IntroductionMeasurement::Produce { pars }),
+            params,
         )
         .await?;
         Ok(())
@@ -1387,10 +2180,13 @@ impl ReducerCore {
         let opens_region =
             authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope();
         let introduction_authority = if opens_region {
-            let signature = sig_to_cost_signature(&self.metering.budget().signature())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
-            let region = cost_region(&signature, &entropy, 0)
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            // Changed by G3 (DR-135): the opened region carries the region
+            // price (R4).
+            // let signature = sig_to_cost_signature(&self.metering.budget().signature())
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            // let region = cost_region(&signature, &entropy, 0)
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
+            let region = self.opened_region(&entropy, 0)?;
             extend_authority(authority, region)
                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
         } else {
@@ -1400,8 +2196,10 @@ impl ReducerCore {
             authority.clone()
         } else if opens_region && self.residue_seal {
             // DR-101: a system body pays through its payer region but stores system residue.
-            system_residue_authority(&introduction_authority, &self.metering.budget().deploy_id())
-                .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            // Changed by G3 (DR-135): the residue records the body's caller (A1).
+            // system_residue_authority(&introduction_authority, &self.metering.budget().deploy_id())
+            //     .map_err(|error| InterpreterError::ReduceError(error.to_string()))?
+            self.residue_seal_of(&introduction_authority)?
         } else {
             introduction_authority.clone()
         };
@@ -1418,10 +2216,19 @@ impl ReducerCore {
                                 0,
                                 env,
                             )?;
-                            let region = cost_region(&signature, &entropy, (index + 1) as u32)
-                                .map_err(|error| {
-                                    InterpreterError::ReduceError(error.to_string())
-                                })?;
+                            // Changed by G3 (DR-135): a bind region carries the
+                            // region price (R4).
+                            // let region = cost_region(&signature, &entropy, (index + 1) as u32)
+                            //     .map_err(|error| {
+                            //         InterpreterError::ReduceError(error.to_string())
+                            //     })?;
+                            let region = priced_cost_region(
+                                &signature,
+                                &entropy,
+                                (index + 1) as u32,
+                                self.region_price(),
+                            )
+                            .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
                             extend_authority(&authority, region)
                                 .map_err(|error| InterpreterError::ReduceError(error.to_string()))
                         }
@@ -1451,7 +2258,33 @@ impl ReducerCore {
             _ => (None, None),
         };
 
-        let binds = receive
+        // Changed by decision 112: a bind reads its query from its field, in a parallel vector
+        // (ruling 2). The text before:
+        // ```
+        // let binds = receive
+        //     .binds
+        //     .clone()
+        //     .into_iter()
+        //     .map(|rb| {
+        //         let q = self.unbundle_receive(&rb, env)?;
+        //         let subst_patterns = rb
+        //             .patterns
+        //             .into_iter()
+        //             .map(|pattern| self.substitute.substitute_and_charge(&pattern, 1, env))
+        //             .collect::<Result<Vec<_>, InterpreterError>>()?;
+        //
+        //         Ok((
+        //             BindPattern {
+        //                 patterns: subst_patterns,
+        //                 remainder: rb.remainder,
+        //                 free_count: rb.free_count,
+        //             },
+        //             q,
+        //         ))
+        //     })
+        //     .collect::<Result<Vec<_>, InterpreterError>>()?;
+        // ```
+        let (binds, queries): (Vec<_>, Vec<_>) = receive
             .binds
             .clone()
             .into_iter()
@@ -1462,17 +2295,27 @@ impl ReducerCore {
                     .into_iter()
                     .map(|pattern| self.substitute.substitute_and_charge(&pattern, 1, env))
                     .collect::<Result<Vec<_>, InterpreterError>>()?;
+                let query = rb
+                    .query_spec
+                    .as_ref()
+                    .map(|query| self.evaluated_query(query, env))
+                    .transpose()?;
 
                 Ok((
-                    BindPattern {
-                        patterns: subst_patterns,
-                        remainder: rb.remainder,
-                        free_count: rb.free_count,
-                    },
-                    q,
+                    (
+                        BindPattern {
+                            patterns: subst_patterns,
+                            remainder: rb.remainder,
+                            free_count: rb.free_count,
+                        },
+                        q,
+                    ),
+                    query,
                 ))
             })
-            .collect::<Result<Vec<_>, InterpreterError>>()?;
+            .collect::<Result<Vec<_>, InterpreterError>>()?
+            .into_iter()
+            .unzip();
 
         // TODO: Allow for the environment to be stored with the body in the Tuplespace - OLD
         // Changed by D-F2 (DR-118): the substitution also returns the body's
@@ -1496,8 +2339,22 @@ impl ReducerCore {
         //     introduction_authority,
         // )
         // .await?;
+        // Changed by G3 (DR-135, S3b H2): before the substitution, the held
+        // uses of the body are wrapped in held terms, so the stored body keeps
+        // the holders of the values that it captures.
+        // let (subst_body, body_bytes) = self.substitute.substitute_no_sort_and_measure(
+        //     receive.body.as_ref().unwrap(),
+        //     0,
+        //     &env.shift(receive.bind_count),
+        // )?;
+        let stored_body = receive
+            .body
+            .as_ref()
+            .expect("Receive.body: normalizer post-condition");
+        let wrapped_body =
+            self.wrap_held_uses(stored_body, receive.bind_count, env, &receive_authority)?;
         let (subst_body, body_bytes) = self.substitute.substitute_no_sort_and_measure(
-            receive.body.as_ref().unwrap(),
+            wrapped_body.as_ref().unwrap_or(stored_body),
             0,
             &env.shift(receive.bind_count),
         )?;
@@ -1512,6 +2369,10 @@ impl ReducerCore {
                 guard: guard_bytes,
             });
 
+        // Changed by Reified RSpaces (P4, the `eval_receive` call site of the plan section "Hooks
+        // only in hot files"): the receive hook takes the parameters of the base consume. It
+        // routes the binds by the routing rules, and the default space keeps the base consume.
+        // self.consume(
         self.reified_consume(
             binds,
             body,
@@ -1521,6 +2382,7 @@ impl ReducerCore {
             receive_authority,
             introduction_authority,
             measurement,
+            queries,
         )
         .await?;
         Ok(())
@@ -1626,16 +2488,27 @@ impl ReducerCore {
                                         continue;
                                     }
 
-                                    self.eval_with_authority(
-                                        single_case
-                                            .source
-                                            .clone()
-                                            .expect("MatchCase.source: protobuf no_box invariant"),
-                                        &case_env,
-                                        rand,
-                                        authority.clone(),
-                                    )
-                                    .await?;
+                                    // Changed by G3 (DR-135, S3b H3): a match on
+                                    // one held variable binds the values of the
+                                    // case for the variable's holder.
+                                    // self.eval_with_authority(
+                                    let case_reducer = self.match_case_reducer(
+                                        mat.target.as_ref(),
+                                        env,
+                                        single_case.free_count,
+                                    );
+                                    case_reducer
+                                        .as_ref()
+                                        .unwrap_or(self)
+                                        .eval_with_authority(
+                                            single_case.source.clone().expect(
+                                                "MatchCase.source: protobuf no_box invariant",
+                                            ),
+                                            &case_env,
+                                            rand,
+                                            authority.clone(),
+                                        )
+                                        .await?;
 
                                     return Ok(());
                                 }
@@ -1724,22 +2597,70 @@ impl ReducerCore {
         &self,
         new: &New,
         env: Env<Par>,
+        // Changed by Reified RSpaces (decision 77, P8 step 4): `eval_new` passes the random
+        // state to `reified_new`, which makes the draws. So `eval_new` does not change it.
+        // mut rand: Blake2b512Random,
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
+        // Slice 31: phase-scoped URN visibility.  Reject fs-native
+        // URNs during state-execution deploys so user code cannot
+        // bypass Fs.rho's sandbox by binding the raw primitives.
+        // Genesis composition toggles the flag off (yet-to-land
+        // runtime slice) so FsGenesis can bind `fsRead`/`fsWrite`/...
+        // directly in its outer new-scope.
+        if self
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            for urn in &new.uri {
+                if urn.starts_with(super::io::FS_NATIVE_URN_PREFIX) {
+                    return Err(InterpreterError::TermStructureError(format!(
+                        "urn `{urn}` is not resolvable in this phase; \
+                         rho:io:fs:native:* URNs are reserved for the \
+                         genesis-blessed FsGenesis deploy — user code \
+                         must instead go through the Fs cap published \
+                         at genesis"
+                    )));
+                }
+            }
+        }
+
+        match new.space_types.as_slice() {
+            [] => {}
+            _ => return self.eval_annotated_new(new, &env, rand, authority).await,
+        }
+
         // D3 (DR-9, OD-3): `new` (name allocation) is a non-COMM structural
         // reduction — DIAGNOSTIC only (metered for fidelity, 0 toward the
         // consensus consumed cost). §7.4 re-pins 9→8 precisely because the
         // `new` no longer counts toward the per-COMM consensus cost.
         self.metering
             .reserve_reduction(new_bindings_cost(new.bind_count as i64))?;
+        // Changed by Reified RSpaces (decision 77, P8 step 4): `eval_new` is one hook call. In
+        // the use context of a user agent, the hook translates the `new` into gensym calls
+        // (T_new). Every other `new` draws its names as the base did and evaluates its body.
+        // match allocate_new_bindings(new, &env, &mut rand, &self.urn_map) {
+        //     Ok(env) => {
+        //         self.eval_with_authority(
+        //             unwrap_option_safe(new.p.clone())?,
+        //             &env,
+        //             rand,
+        //             authority.clone(),
+        //         )
+        //         .await
+        //     }
+        //     Err(e) => Err(e),
+        // }
         self.reified_new(new, env, rand, authority).await
     }
 
     fn unbundle_receive(&self, rb: &ReceiveBind, env: &Env<Par>) -> Result<Par, InterpreterError> {
         let eval_src = self.eval_expr(&unwrap_option_safe(rb.source.clone())?, env)?;
         let subst = self.substitute.substitute_and_charge(&eval_src, 0, env)?;
-        reified_hooks::reject_query_source(&subst)?;
+        // Changed by decision 112: H4 checks the query field. The text before:
+        // reified_hooks::reject_query_source(&subst)?;
+        reified_hooks::reject_query_source(rb.query_spec.as_ref())?;
         // Check if we try to read from bundled channel
         let unbndl = match single_bundle(&subst) {
             Some(value) => {
@@ -1782,13 +2703,35 @@ impl ReducerCore {
         rand: Blake2b512Random,
         authority: &CostAuthority,
     ) -> Result<(), InterpreterError> {
+        // Added by G3 (DR-135, S3b H4): a held term runs for its holder with
+        // an empty authority, and opens no region of its own. Without a
+        // binding it runs as the current reducer runs its body. Its signature
+        // and price pass the guard in every run (T13, T14).
+        if let Some(holder) = held_term_holder(term)? {
+            let body = unwrap_option_safe(term.body.clone())?;
+            return match self.metering.budget().owner_binding() {
+                Some(_) => {
+                    self.held_reducer(&holder)?
+                        .eval_with_authority(body, env, rand, CostAuthority::default())
+                        .await
+                }
+                None => {
+                    self.eval_with_authority(body, env, rand, authority.clone())
+                        .await
+                }
+            };
+        }
         let native_error = |error: AuthorityError| InterpreterError::ReduceError(error.to_string());
         let signature = unwrap_option_safe(term.signature.clone())?;
         let signature = self
             .substitute
             .substitute_cost_signature(signature, 0, env)?;
         let authority = {
-            let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+            // Changed by G3 (DR-135): the region of a signed term carries the
+            // price of the context that runs the term (R4).
+            // let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+            let region = priced_cost_region(&signature, &rand.to_bytes(), 0, self.region_price())
+                .map_err(native_error)?;
             extend_authority(authority, region).map_err(native_error)?
         };
         self.eval_with_authority(unwrap_option_safe(term.body.clone())?, env, rand, authority)
@@ -1825,9 +2768,12 @@ impl ReducerCore {
         let signature = cost_signature_to_sig(head).map_err(native_error)?;
         let authority =
             if authority.regions.is_empty() && self.metering.budget().has_comm_accounting_scope() {
-                let payer = self.metering.budget().signature();
-                let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
-                let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+                // Changed by G3 (DR-135): the opened region carries the region
+                // price (R4).
+                // let payer = self.metering.budget().signature();
+                // let signature = sig_to_cost_signature(&payer).map_err(native_error)?;
+                // let region = cost_region(&signature, &rand.to_bytes(), 0).map_err(native_error)?;
+                let region = self.opened_region(&rand.to_bytes(), 0)?;
                 extend_authority(authority, region).map_err(native_error)?
             } else {
                 authority.clone()
@@ -1853,7 +2799,15 @@ impl ReducerCore {
             &authority,
         )?;
         self.produce(channel, datum, false, authority, None).await?;
-        reservation.commit();
+        // Changed by G3 (DR-135, S4, SA5): an owner that cannot pay for the
+        // introduction refuses it, and the produce stores nothing. The stack
+        // transfer is then aborted, so no birth lacks its stack.
+        // reservation.commit();
+        let identity = super::accounting::byte_accounting::produce_introduction_identity(&source);
+        match self.metering.budget().introduction_refused(&identity) {
+            true => drop(reservation),
+            false => reservation.commit(),
+        }
         Ok(())
     }
 
@@ -2814,11 +3768,14 @@ impl ReducerCore {
                     // TODO: build an equality operator that takes in an environment. - OLD
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    let cost = if self.metering.budget().is_legacy() {
-                        equality_check_cost_legacy(&sv1, &sv2)
-                    } else {
-                        equality_check_cost(&sv1, &sv2)
-                    };
+                    // Changed by DR-134 (DR-66 item 3): the legacy equality cost is
+                    // deleted with the legacy meter.
+                    // let cost = if self.metering.budget().is_legacy() {
+                    //     equality_check_cost_legacy(&sv1, &sv2)
+                    // } else {
+                    //     equality_check_cost(&sv1, &sv2)
+                    // };
+                    let cost = equality_check_cost(&sv1, &sv2);
                     self.metering.reserve_primitive(cost)?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
@@ -2836,11 +3793,14 @@ impl ReducerCore {
                     let v2 = self.eval_expr(&p2.clone().unwrap(), env)?;
                     let sv1 = self.substitute.substitute_and_charge(&v1, 0, env)?;
                     let sv2 = self.substitute.substitute_and_charge(&v2, 0, env)?;
-                    let cost = if self.metering.budget().is_legacy() {
-                        equality_check_cost_legacy(&sv1, &sv2)
-                    } else {
-                        equality_check_cost(&sv1, &sv2)
-                    };
+                    // Changed by DR-134 (DR-66 item 3): the legacy equality cost is
+                    // deleted with the legacy meter.
+                    // let cost = if self.metering.budget().is_legacy() {
+                    //     equality_check_cost_legacy(&sv1, &sv2)
+                    // } else {
+                    //     equality_check_cost(&sv1, &sv2)
+                    // };
+                    let cost = equality_check_cost(&sv1, &sv2);
                     self.metering.reserve_primitive(cost)?;
 
                     let result = if par_contains_nan_double(&sv1) || par_contains_nan_double(&sv2) {
@@ -3214,6 +4174,49 @@ impl ReducerCore {
                     })
                 }
 
+                ExprInstance::EFreeBody(free) => {
+                    let args = free
+                        .args
+                        .iter()
+                        .map(|p| {
+                            self.eval_expr(p, env)
+                                .map(|p| self.update_locally_free_par(p))
+                        })
+                        .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::EFreeBody(models::rhoapi::EFree {
+                            theory: free.theory.clone(),
+                            args,
+                        })),
+                    })
+                }
+
+                ExprInstance::EParamsBody(params) => {
+                    let positional = params
+                        .positional
+                        .iter()
+                        .map(|p| {
+                            self.eval_expr(p, env)
+                                .map(|p| self.update_locally_free_par(p))
+                        })
+                        .collect::<Result<Vec<_>, InterpreterError>>()?;
+                    let named = params
+                        .named
+                        .iter()
+                        .map(|(key, p)| {
+                            self.eval_expr(p, env)
+                                .map(|p| (key.clone(), self.update_locally_free_par(p)))
+                        })
+                        .collect::<Result<BTreeMap<_, _>, InterpreterError>>()?;
+
+                    Ok(Expr {
+                        expr_instance: Some(ExprInstance::EParamsBody(
+                            models::rhoapi::SendParams { positional, named },
+                        )),
+                    })
+                }
+
                 ExprInstance::ESetBody(eset) => {
                     let set = ParSetTypeMapper::eset_to_par_set(eset.clone());
                     let evaled_ps = set
@@ -3552,6 +4555,181 @@ impl ReducerCore {
         }
 
         Box::new(BytesToHexMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // concatBytes (on List of ByteArrays) — spec §Native buffer helpers.
+    // Concatenates elements in order.  Empty list → zero-length ByteArray.
+    // Non-List receiver or non-ByteArray element raises MethodNotDefined.
+    // Ported from fileio (Wave 5 PR 5.73).
+    // -------------------------------------------------------------------
+    fn concat_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ConcatBytesMethod<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for ConcatBytesMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("concatBytes"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::EListBody(elist) => {
+                            // Two-pass: total length, then a single allocation.
+                            let mut segments: Vec<Vec<u8>> = Vec::with_capacity(elist.ps.len());
+                            for elem in &elist.ps {
+                                match single_expr(elem) {
+                                    Some(Expr {
+                                        expr_instance: Some(ExprInstance::GByteArray(bytes)),
+                                    }) => segments.push(bytes),
+                                    _ => {
+                                        return Err(InterpreterError::MethodNotDefined {
+                                            method: String::from("concatBytes"),
+                                            other_type: String::from("non-ByteArray element"),
+                                        });
+                                    }
+                                }
+                            }
+                            let total: usize = segments.iter().map(|s| s.len()).sum();
+                            self.outer
+                                .metering
+                                .reserve_incremental_primitive(concat_bytes_cost(total))?;
+                            let mut out = Vec::with_capacity(total);
+                            for s in segments {
+                                out.extend_from_slice(&s);
+                            }
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GByteArray(out)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("concatBytes"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ConcatBytesMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // validUtf8PrefixLen (on ByteArray) — spec §Native buffer helpers.
+    // Total on ByteArray; never raises.  Returns the length of the
+    // longest valid-UTF-8 prefix of the receiver.
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn valid_utf8_prefix_len_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ValidUtf8PrefixLenMethod<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for ValidUtf8PrefixLenMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("validUtf8PrefixLen"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer.metering.reserve_incremental_primitive(
+                                valid_utf8_prefix_len_cost(&bytes),
+                            )?;
+                            let prefix = match std::str::from_utf8(&bytes) {
+                                Ok(_) => bytes.len(),
+                                Err(e) => e.valid_up_to(),
+                            };
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GInt(prefix as i64)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("validUtf8PrefixLen"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(ValidUtf8PrefixLenMethod { outer: self })
+    }
+
+    // -------------------------------------------------------------------
+    // decodeUtf8 (on ByteArray) — spec §Native buffer helpers.  Total on
+    // ByteArray; ill-formed sequences substituted with U+FFFD, per Unicode
+    // §3.9 (matches Rust `String::from_utf8_lossy`).
+    // Ported from fileio (Wave 5 PR 5.89).
+    // -------------------------------------------------------------------
+    fn decode_utf8_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct DecodeUtf8Method<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for DecodeUtf8Method<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                _env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("decodeUtf8"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                match single_expr(&p) {
+                    Some(expr) => match expr.expr_instance.unwrap() {
+                        ExprInstance::GByteArray(bytes) => {
+                            self.outer
+                                .metering
+                                .reserve_incremental_primitive(decode_utf8_cost(&bytes))?;
+                            let decoded = String::from_utf8_lossy(&bytes).into_owned();
+                            Ok(Par::default().with_exprs(vec![Expr {
+                                expr_instance: Some(ExprInstance::GString(decoded)),
+                            }]))
+                        }
+                        other => Err(InterpreterError::MethodNotDefined {
+                            method: String::from("decodeUtf8"),
+                            other_type: get_type(other),
+                        }),
+                    },
+                    None => Err(InterpreterError::ReduceError(String::from(
+                        "Error: Method can only be called on singular expressions.",
+                    ))),
+                }
+            }
+        }
+
+        Box::new(DecodeUtf8Method { outer: self })
     }
 
     fn to_utf8_bytes_method<'a>(&'a self) -> Box<dyn Method + 'a> {
@@ -7077,6 +8255,51 @@ impl ReducerCore {
         Box::new(LengthMethod { outer: self })
     }
 
+    fn to_bigint_method<'a>(&'a self) -> Box<dyn Method + 'a> {
+        struct ToBigIntMethod<'a> {
+            outer: &'a ReducerCore,
+        }
+
+        impl<'a> Method for ToBigIntMethod<'a> {
+            fn apply(
+                &self,
+                p: Par,
+                args: Vec<Par>,
+                env: &Env<Par>,
+            ) -> Result<Par, InterpreterError> {
+                if !args.is_empty() {
+                    return Err(InterpreterError::MethodArgumentNumberMismatch {
+                        method: String::from("toBigInt"),
+                        expected: 0,
+                        actual: args.len(),
+                    });
+                }
+                let base_expr = self.outer.eval_single_expr(&p, env)?;
+                let result = match base_expr.expr_instance {
+                    Some(ExprInstance::GInt(v)) => {
+                        new_gbigint_expr(bigint_to_bytes(&num_bigint::BigInt::from(v)))
+                    }
+                    Some(ExprInstance::GBigInt(bytes)) => new_gbigint_expr(bytes),
+                    Some(other) => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: get_type(other),
+                        })
+                    }
+                    None => {
+                        return Err(InterpreterError::MethodNotDefined {
+                            method: String::from("toBigInt"),
+                            other_type: String::from("None"),
+                        })
+                    }
+                };
+                Ok(Par::default().with_exprs(vec![result]))
+            }
+        }
+
+        Box::new(ToBigIntMethod { outer: self })
+    }
+
     fn slice_method<'a>(&'a self) -> Box<dyn Method + 'a> {
         struct SliceMethod<'a> {
             outer: &'a ReducerCore,
@@ -7598,6 +8821,12 @@ impl ReducerCore {
         table.insert("toByteArray".to_string(), self.to_byte_array_method());
         table.insert("hexToBytes".to_string(), self.hex_to_bytes_method());
         table.insert("bytesToHex".to_string(), self.bytes_to_hex_method());
+        table.insert("concatBytes".to_string(), self.concat_bytes_method());
+        table.insert(
+            "validUtf8PrefixLen".to_string(),
+            self.valid_utf8_prefix_len_method(),
+        );
+        table.insert("decodeUtf8".to_string(), self.decode_utf8_method());
         table.insert("toUtf8Bytes".to_string(), self.to_utf8_bytes_method());
         table.insert("union".to_string(), self.union_method());
         table.insert("diff".to_string(), self.diff_method());
@@ -7650,6 +8879,7 @@ impl ReducerCore {
         table.insert("toSet".to_string(), self.to_set_method());
         table.insert("toMap".to_string(), self.to_map_method());
         table.insert("toString".to_string(), self.to_string_method());
+        table.insert("toBigInt".to_string(), self.to_bigint_method());
         table
     }
 
@@ -7660,6 +8890,7 @@ impl ReducerCore {
             || !p.matches.is_empty()
             || !p.unforgeables.is_empty()
             || !p.bundles.is_empty()
+            || !p.use_blocks.is_empty()
         {
             // Changed by DR-128 (bug 11414): a user failure with the same text.
             // Err(InterpreterError::ReduceError(String::from(
@@ -7689,6 +8920,7 @@ impl ReducerCore {
             || !p.matches.is_empty()
             || !p.exprs.is_empty()
             || !p.bundles.is_empty()
+            || !p.use_blocks.is_empty()
         {
             // Changed by DR-128 (bug 11414): a user failure with the same text.
             // Err(InterpreterError::ReduceError(String::from(
@@ -7715,6 +8947,7 @@ impl ReducerCore {
             && !p.matches.is_empty()
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
+            || !p.use_blocks.is_empty()
         {
             // Changed by DR-128 (bug 11414): a user failure with the same text.
             // Err(InterpreterError::ReduceError(String::from(
@@ -7770,6 +9003,7 @@ impl ReducerCore {
             && !p.matches.is_empty()
             && !p.unforgeables.is_empty()
             && !p.bundles.is_empty()
+            || !p.use_blocks.is_empty()
         {
             // Changed by DR-128 (bug 11414): a user failure with the same text.
             // Err(InterpreterError::ReduceError(String::from(
@@ -7869,6 +9103,16 @@ impl ReducerCore {
                 .collect(),
         );
 
+        locally_free = union(
+            locally_free,
+            par.use_blocks
+                .iter()
+                .flat_map(|block| block.space.iter().chain(block.body.iter()))
+                .fold(Vec::new(), |acc, part| {
+                    union(acc, part.locally_free.clone())
+                }),
+        );
+
         par.locally_free = locally_free;
         par
     }
@@ -7928,18 +9172,27 @@ impl DebruijnInterpreter {
         mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: RuntimeBudget,
     ) -> Arc<Self> {
-        let reduction_coordinator = ReductionCoordinator::default();
-        let space: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
-            space,
-            reduction_coordinator.clone(),
-        )));
+        // Changed by DR-132 (P4): the reducer uses the space directly, as on
+        // dev. The scheduler space and its coordinator are gone (D3-A).
+        // let reduction_coordinator = ReductionCoordinator::default();
+        // let space: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+        //     space,
+        //     reduction_coordinator.clone(),
+        // )));
+        // let core = ReducerCore::new(
+        //     space.clone().into(),
+        //     urn_map,
+        //     merge_chs,
+        //     mergeable_tags,
+        //     cost,
+        //     reduction_coordinator,
+        // );
         let core = ReducerCore::new(
             space.clone().into(),
             urn_map,
             merge_chs,
             mergeable_tags,
             cost,
-            reduction_coordinator,
         );
         Arc::new(Self { space, core })
     }
@@ -7952,7 +9205,8 @@ impl ReducerCore {
         merge_chs: Arc<RwLock<HashMap<Par, MergeType>>>,
         mergeable_tags: Arc<HashMap<Par, MergeType>>,
         cost: RuntimeBudget,
-        reduction_coordinator: ReductionCoordinator,
+        // Changed by DR-132 (P4): no coordinator (D3-A).
+        // reduction_coordinator: ReductionCoordinator,
     ) -> Arc<Self> {
         let reducer_cell = Arc::new(std::sync::OnceLock::new());
         let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -7972,10 +9226,20 @@ impl ReducerCore {
             single_term_evaluations: Arc::new(AtomicU64::new(0)),
             yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
             spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
-            reduction_coordinator,
+            // Changed by DR-132 (P4): no coordinator (D3-A).
+            // reduction_coordinator,
             space_ctx: Default::default(),
             reified: super::reified::runtime::unavailable(),
             residue_seal: false,
+            // Added by G3 (DR-135): the root reducer has no owner and no
+            // caller.
+            owner: None,
+            caller: None,
+            // Added by G3 (DR-135, S3b): nor held values.
+            held: super::accounting::owner_funding::HeldMap::default(),
+            // Default: reject fs native URNs.  Genesis composition
+            // flips the flag off via a yet-to-land runtime slice.
+            filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         });
 
         reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -8017,6 +9281,8 @@ fn get_type(expr_instance: ExprInstance) -> String {
         ExprInstance::EVarBody(_) => String::from("evar"),
         ExprInstance::EListBody(_) => String::from("list"),
         ExprInstance::ETupleBody(_) => String::from("tuple"),
+        ExprInstance::EFreeBody(_) => String::from("free"),
+        ExprInstance::EParamsBody(_) => String::from("params"),
         ExprInstance::ESetBody(_) => String::from("set"),
         ExprInstance::EMapBody(_) => String::from("map"),
         ExprInstance::EPathmapBody(_) => String::from("pathmap"),
@@ -8173,25 +9439,14 @@ fn par_contains_nan_double(par: &Par) -> bool {
             kv.key.as_ref().is_some_and(par_contains_nan_double)
                 || kv.value.as_ref().is_some_and(par_contains_nan_double)
         }),
+        Some(ExprInstance::EFreeBody(free)) => free.args.iter().any(par_contains_nan_double),
+        Some(ExprInstance::EParamsBody(params)) => params
+            .positional
+            .iter()
+            .chain(params.named.values())
+            .any(par_contains_nan_double),
         _ => false,
     })
-}
-
-fn bytes_to_bigint(bytes: &[u8]) -> num_bigint::BigInt {
-    if bytes.is_empty() {
-        num_bigint::BigInt::from(0)
-    } else {
-        num_bigint::BigInt::from_signed_bytes_be(bytes)
-    }
-}
-
-fn bigint_to_bytes(n: &num_bigint::BigInt) -> Vec<u8> {
-    use num_traits::Zero;
-    if n.is_zero() {
-        vec![0]
-    } else {
-        n.to_signed_bytes_be()
-    }
 }
 
 fn make_bigint_expr(bytes: Vec<u8>, _op: &str) -> Result<Expr, InterpreterError> {
@@ -8378,6 +9633,7 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.unforgeables.is_empty()
         || !par.connectives.is_empty()
         || !par.conditionals.is_empty()
+        || !par.use_blocks.is_empty()
         || par.exprs.len() != 1
     {
         return None;
@@ -8398,6 +9654,7 @@ fn describe_par_type(par: &Par) -> String {
         && par.unforgeables.is_empty()
         && par.connectives.is_empty()
         && par.conditionals.is_empty()
+        && par.use_blocks.is_empty()
     {
         match par.exprs[0].expr_instance.as_ref() {
             Some(ExprInstance::GBool(_)) => "Bool".to_string(),
@@ -8501,5 +9758,70 @@ mod is_mergeable_channel_tests {
             merge_type(tuple(vec![other(), bitmask_or_mergeable_tag_name()])).await,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod use_block_predicate_tests {
+    use models::rhoapi::{GPrivate, UseBlock};
+    use models::rust::utils::new_gbool_par;
+    use rspace_plus_plus::rspace::rspace::RSpace;
+
+    use super::*;
+    use crate::rust::interpreter::test_utils::persistent_store_tester::create_test_space;
+
+    /// The process `use s { Nil } | value`: `value` beside a use block.
+    fn with_a_use_block(value: Par) -> Par {
+        Par {
+            use_blocks: vec![UseBlock {
+                space: Some(Par::default()),
+                body: Some(Par::default()),
+            }],
+            ..value
+        }
+    }
+
+    /// The predicates of this file (decision 112): a `Par` that holds a use block is a process,
+    /// so no predicate reads it as a sole expression, a sole name or a sole boolean.
+    #[tokio::test]
+    async fn each_reducer_predicate_treats_a_use_block_as_a_process() {
+        let (_, reducer) =
+            create_test_space::<RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>>()
+                .await;
+        let env = Env::new();
+        let integer = new_gint_par(1, Vec::new(), false);
+        let boolean = new_gbool_par(true, Vec::new(), false);
+        let name = Par::default().with_unforgeables(vec![GUnforgeable {
+            unf_instance: Some(UnfInstance::GPrivateBody(GPrivate { id: vec![1] })),
+        }]);
+        // The controls: the same values without a use block pass every predicate.
+        assert!(reducer.eval_single_expr(&integer, &env).is_ok());
+        assert!(reducer.eval_single_unforgeable(&name).is_ok());
+        assert_eq!(reducer.eval_to_i64(&integer, &env).expect("an integer"), 1);
+        assert!(reducer.eval_to_bool(&boolean, &env).expect("a boolean"));
+        assert_eq!(extract_bool(&boolean), Some(true));
+        assert_eq!(describe_par_type(&boolean), "Bool");
+        // A use block beside the value makes the `Par` a process.
+        let integer = with_a_use_block(integer);
+        let boolean = with_a_use_block(boolean);
+        let name = with_a_use_block(name);
+        assert!(matches!(
+            reducer.eval_single_expr(&integer, &env),
+            Err(InterpreterError::ValueTypeError(_))
+        ));
+        assert!(matches!(
+            reducer.eval_single_unforgeable(&name),
+            Err(InterpreterError::ValueTypeError(_))
+        ));
+        assert!(matches!(
+            reducer.eval_to_i64(&integer, &env),
+            Err(InterpreterError::ValueTypeError(_))
+        ));
+        assert!(matches!(
+            reducer.eval_to_bool(&boolean, &env),
+            Err(InterpreterError::ValueTypeError(_))
+        ));
+        assert_eq!(extract_bool(&boolean), None);
+        assert_eq!(describe_par_type(&boolean), "non-boolean process");
     }
 }

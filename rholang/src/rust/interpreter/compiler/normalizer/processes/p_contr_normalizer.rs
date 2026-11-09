@@ -89,6 +89,7 @@ pub fn normalize_p_contr<'ast>(
             remainder: remainder_result.0.clone(),
             free_count: bound_count as i32,
             cost_signature: None,
+            query_spec: None,
         }],
         body: Some(body_result.par.clone()),
         persistent: true,
@@ -193,6 +194,7 @@ mod tests {
                 remainder: None,
                 free_count: 3,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(2, create_bit_vector(&[2]), false),
@@ -284,6 +286,7 @@ mod tests {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(0, create_bit_vector(&[0]), false),

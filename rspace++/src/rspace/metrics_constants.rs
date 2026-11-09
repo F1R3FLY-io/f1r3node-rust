@@ -25,8 +25,6 @@ pub const HISTORY_CHECKPOINT_HISTORY_LOCK_WAIT_TIME_METRIC: &str =
     "history.checkpoint.history-lock-wait.time";
 pub const HISTORY_CHECKPOINT_HISTORY_PROCESS_TIME_METRIC: &str =
     "history.checkpoint.history-process.time";
-pub const HISTORY_CHECKPOINT_ROOTS_LOCK_WAIT_TIME_METRIC: &str =
-    "history.checkpoint.roots-lock-wait.time";
 pub const HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC: &str = "history.checkpoint.root-commit.time";
 pub const HISTORY_CHECKPOINT_ACTIONS_METRIC: &str = "history.checkpoint.actions";
 pub const HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC: &str = "history.checkpoint.serialized-bytes";
@@ -145,7 +143,6 @@ macro_rules! lock_site_metrics {
 }
 
 lock_site_metrics!(ROOTS_LOCK_RESET_SITE, "roots_repository", "reset");
-lock_site_metrics!(ROOTS_LOCK_CHECKPOINT_SITE, "roots_repository", "checkpoint");
 lock_site_metrics!(ROOTS_LOCK_RECORD_ROOT_SITE, "roots_repository", "record_root");
 lock_site_metrics!(ROOTS_LOCK_CONTAINS_ROOT_SITE, "roots_repository", "contains_root");
 lock_site_metrics!(HISTORY_LOCK_RESET_SITE, "current_history", "reset");

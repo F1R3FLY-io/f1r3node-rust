@@ -90,6 +90,9 @@ fn store_op(
         persist: false,
         outcome: ProduceOutcome::Store,
         before_observe: None,
+        own: false,
+        // Added by decision 123 (plan v4, V3-9): no row search.
+        search: None,
     }
 }
 
@@ -105,6 +108,9 @@ fn park_op(
         peeks: BTreeSet::new(),
         outcome: ConsumeOutcome::Park,
         before_observe: None,
+        own: false,
+        // Added by decision 123 (plan v4, V3-9): no row search.
+        search: None,
     }
 }
 
@@ -214,6 +220,9 @@ fn stage_par(
                     data: vec![bind_candidate(bound, &record, matched, 0)],
                 },
                 before_observe: None,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             })?
         }
     };

@@ -103,7 +103,11 @@ pub fn classify_errors(
             | ArgumentOutOfRange(_)
             | BundlePermissionError(_)
             | ValueTypeError(_)
-            | TermStructureError(_) => (Some(PhloFailure::User), None),
+            | BitmaskBitsCleared { .. }
+            | TermStructureError(_)
+            // Added by Reified RSpaces (user decision of 2026-10-25, as
+            // DR-128): a space error whose cause is in the user's term.
+            | SpaceUserError(_) => (Some(PhloFailure::User), None),
             OutOfPhlogistonsError | RSpaceError(SpaceError::OutOfPhlogistons) => {
                 (Some(PhloFailure::Certificate), None)
             }

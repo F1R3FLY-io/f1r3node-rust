@@ -1,1 +1,0 @@
-../casper/cbc-evidence/formal-tlaplus-casper-soak-MC-CasperSoakHarness-identity-unsafe-cfg.md

@@ -21,6 +21,8 @@ pub fn dismantle_term(par: Par) { dismantle_terms(vec![par]); }
 /// patterns, conditions, connectives, injections and signatures. It is the
 /// one teardown of the crate's accounting walks (review cleanup), and the
 /// funding resolver uses it too.
+/// The list also holds the use blocks, the params of sends, the queries of
+/// binds and the annotations of a `New`.
 pub fn dismantle_terms(pars: Vec<Par>) {
     let mut pars = pars;
     let mut signatures: Vec<CostSignature> = Vec::new();
@@ -29,12 +31,20 @@ pub fn dismantle_terms(pars: Vec<Par>) {
             for mut send in par.sends.drain(..) {
                 pars.extend(send.chan.take());
                 pars.append(&mut send.data);
+                if let Some(params) = send.params.take() {
+                    pars.extend(params.positional);
+                    pars.extend(params.named.into_values());
+                }
             }
             for mut receive in par.receives.drain(..) {
                 for mut bind in receive.binds.drain(..) {
                     pars.append(&mut bind.patterns);
                     pars.extend(bind.source.take());
                     signatures.extend(bind.cost_signature.take());
+                    if let Some(query) = bind.query_spec.take() {
+                        pars.extend(query.payload);
+                        pars.extend(query.named.into_values());
+                    }
                 }
                 pars.extend(receive.body.take());
                 pars.extend(receive.condition.take());
@@ -42,6 +52,11 @@ pub fn dismantle_terms(pars: Vec<Par>) {
             for mut new in par.news.drain(..) {
                 pars.extend(new.p.take());
                 pars.extend(std::mem::take(&mut new.injections).into_values());
+                pars.extend(
+                    new.space_types
+                        .drain(..)
+                        .filter_map(|annotation| annotation.space),
+                );
             }
             for expr in par.exprs.drain(..) {
                 take_expr_pars(expr, &mut pars);
@@ -84,6 +99,10 @@ pub fn dismantle_terms(pars: Vec<Par>) {
             }
             for mut stack in par.cost_stacks.drain(..) {
                 signatures.append(&mut stack.cells);
+            }
+            for block in par.use_blocks.drain(..) {
+                pars.extend(block.space);
+                pars.extend(block.body);
             }
         } else if let Some(signature) = signatures.pop() {
             match signature.value {
@@ -149,6 +168,11 @@ fn take_expr_pars(expr: Expr, pars: &mut Vec<Par>) {
         Some(ExprInstance::EPathmapBody(pathmap)) => pars.extend(pathmap.ps),
         Some(ExprInstance::EZipperBody(zipper)) => {
             pars.extend(zipper.pathmap.into_iter().flat_map(|pathmap| pathmap.ps))
+        }
+        Some(ExprInstance::EFreeBody(free)) => pars.extend(free.args),
+        Some(ExprInstance::EParamsBody(params)) => {
+            pars.extend(params.positional);
+            pars.extend(params.named.into_values());
         }
         Some(
             ExprInstance::GBool(_)

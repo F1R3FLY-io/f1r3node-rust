@@ -1,6 +1,7 @@
 // The per-syscall trait every fs_* handler impl satisfies.  Combined
-// with the generic dispatcher (`dispatch_via_trait<H>`, yet to land
-// in slice 4.7), the trait defines the exact handler contract:
+// with the generic dispatcher
+// [`dispatch_via_trait<H>`](super::dispatch::dispatch_via_trait)
+// (slice 4.7), the trait defines the exact handler contract:
 //
 //   1. [`FsHandler::NAME`] / [`FsHandler::ARITY`] — identity +
 //      wire-format pin.
@@ -40,10 +41,10 @@
 //      the WAL.  Framework calls at four semantic sites discriminated
 //      by [`JournalPath`].
 //
-// # Dispatch order (yet-to-land framework, slice 4.7)
+// # Dispatch order (slice 4.7 framework)
 //
-// For reference — the slice 4.7 `dispatch_via_trait<H>` loop will
-// run these steps in order:
+// For reference — the `dispatch_via_trait<H>` loop runs these
+// steps in order:
 //
 //   Step 1: `is_contract_call.unapply(contract_args)` — framework
 //     shape check.  Rejects with `illegal_argument_error`.
@@ -69,8 +70,14 @@
 // divergence reply shapes + per-entry WAL journaling inside the
 // recursive Consensus walk don't fit the per-step hook contract
 // without adding a one-off `divergence_reply(args, reason)` trait
-// method used by only this handler.  That handler's dispatch
-// stays inline (yet to land in the handlers slices).
+// method used by only this handler.
+//
+// Current state (dev): the real DD-RemoveDirReplyShape handler
+// (`FsProcesses::fs_remove_dir`, ported in slices 5.136–5.141) is
+// registered at the explicit Definition site in
+// `rho_runtime::dispatch_table_creator`.  Slice 5.142 swapped the
+// slice-5.44 stub for the real handler; slice 5.143 deleted the
+// stub.  See `handlers/removedir/handler.rs` for the handler body.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -83,9 +90,10 @@ use crate::rust::interpreter::io::handler_trait::reply::HandlerReply;
 use crate::rust::interpreter::io::handler_trait::syscall_ctx::SyscallCtx;
 use crate::rust::interpreter::io::ConsensusMode;
 
-/// One impl per fs_* syscall.  The yet-to-land dispatcher (slice
-/// 4.7) calls these methods in a fixed order; see the module
-/// docstring for the step-by-step dispatch.
+/// One impl per fs_* syscall.  The dispatcher
+/// [`dispatch_via_trait`](super::dispatch::dispatch_via_trait)
+/// (slice 4.7) calls these methods in a fixed order; see the
+/// module docstring for the step-by-step dispatch.
 pub trait FsHandler {
     /// Human-readable handler name.  Framework passes this to
     /// `illegal_argument_error(NAME)` on shape mismatch, stores it
@@ -112,9 +120,14 @@ pub trait FsHandler {
     /// `const VERIFYING: bool = true;`, the framework silently
     /// treats it as non-verifying → tautological echo on replay →
     /// follower never re-executes → divergence undetectable at the
-    /// fs layer.  Discipline will be enforced by runtime pins in
-    /// the yet-to-land `FS_HANDLERS` registry (slice 4.7); a drop
-    /// in the verifying-count assertion trips the regression.
+    /// fs layer.  Discipline is enforced at the `FS_HANDLERS`
+    /// registry layer by two runtime pins (slices 5.50 + 5.53): a
+    /// whole-slice verifying-count assertion
+    /// (`EXPECTED_VERIFYING_HANDLER_COUNT`) and a per-family
+    /// verifying-count assertion
+    /// (`EXPECTED_PER_FAMILY_VERIFYING_COUNTS`).  A drop in either
+    /// trips the regression at test time rather than at consensus
+    /// time.
     const VERIFYING: bool = false;
 
     /// Parsed content-arg type produced by [`parse_content`](Self::parse_content)
@@ -170,7 +183,7 @@ pub trait FsHandler {
     /// The future's lifetime is bounded by the passed
     /// [`SyscallCtx<'a>`] — the context's borrowed refs are held
     /// alive for the future's duration by the dispatcher's call
-    /// site (yet to land, slice 4.7).
+    /// site (slice 4.7).
     fn dispatch<'a>(
         ctx: SyscallCtx<'a>,
         args: Self::Args,

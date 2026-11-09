@@ -79,8 +79,21 @@ async fn state_hash_after_fixed_rholang_term_execution_should_be_hash_fixed_with
     assert!(r.unwrap().errors.is_empty());
 
     let checkpoint = runtime.create_checkpoint().await;
+    // Updated 2026-04-29 by Phase 9 of where-clauses-and-match-guards
+    // (plan §7.12). The guard moved from BindPattern.condition to
+    // TaggedContinuation.guard, re-encoding the bootstrap registry's
+    // installed continuations and patterns. The "without_hard_fork"
+    // name now refers to the post-fork baseline; further unintended
+    // drift would still be caught.
+    // Changed by G3 (DR-135): stored seals carry the region price, so every
+    // stored region also holds a price and the tag of an absent caller in the
+    // bincode that RSpace hashes, and the root changes (measured on
+    // 2026-10-19).
+    // let expected_hash = Blake2b256Hash::from_hex(
+    //     "b1995ca995a2b700303559675f1a6f07232972285ed0b2657ea1f0e48681f745",
+    // );
     let expected_hash = Blake2b256Hash::from_hex(
-        "b1995ca995a2b700303559675f1a6f07232972285ed0b2657ea1f0e48681f745",
+        "a2a23b5d501c1f9cfca31cf7d9c0b4f9c3d66afb32844f273763733f953f07b1",
     );
 
     assert_eq!(expected_hash, checkpoint.root);

@@ -9,11 +9,12 @@
 '
 ' Reading order:
 '   1. The records of the collection, with the element in flight of an
-'      offer, start in the canonical order of DR-75 (decision 41).
+'      offer, start in the pick order of the operation. A list keeps the
+'      canonical order of DR-75 (decision 41).
 '   2. Each record passes three filters: the ids of the query, a defined
 '      score, and the bound (threshold or radius).
 '   3. A query with a vector ranks the eligible records by the exact score.
-'      Equal scores keep the canonical order.
+'      Equal scores keep the pick order, and a list keeps the canonical order.
 '   4. Single mode fires on the first record whose payload the pattern
 '      binds. List mode binds the first min(k, |E|) records as one list.
 '
@@ -35,11 +36,13 @@ skinparam LegendBackgroundColor $ca_note_grey
 title The selection of a VectorDB query (design v3 4.4)
 
 start
-partition "ORDER: the canonical order first" {
+partition "ORDER: the pick order first" {
   :the records of the channel
   and the element in flight of an offer; <<$rrs_storage>>
-  :sort by the hash of the source produce,
-  then by the full digest (DR-75, decision 41); <<$rrs_agent>>
+  :the canonical order of DR-75: source hash, then full digest.
+  A list keeps it. Any other read takes the pick order: play
+  shuffles the canonical order once for each search, and replay
+  puts the records of the recorded row first; <<$rrs_agent>>
 }
 partition "FILTER: each record in that order" {
   while (a record is left?) is (yes)
@@ -60,10 +63,10 @@ partition "RANK: only for a query with a vector" {
   if (the query has a vector q?) then (yes)
     :stable sort of E by the better exact score
     cosine by squared forms, distances ascending
-    equal scores keep the canonical order; <<$rrs_agent>>
+    equal scores keep the pick order; <<$rrs_agent>>
   else (no)
-    :E keeps the canonical order
-    (a list read of the records); <<$rrs_agent>>
+    :E keeps the pick order
+    (a list keeps the canonical order); <<$rrs_agent>>
   endif
 }
 partition "SELECT" {
@@ -72,7 +75,8 @@ partition "SELECT" {
     the one bind binds the list of their values
     [score, value] for each one with scores=true; <<$rrs_agent>>
     if (L is not empty, the pattern binds L, and the guard admits?\n(the guard is checked once, decision 37)) then (yes)
-      :fire: one COMM over [D; m]; <<$rrs_effect>>
+      :fire: one COMM over [D] with the first member of L,
+      and K_retire for the other non-persistent members; <<$rrs_effect>>
     else (no)
       :park with the query as the policy (LM-b); <<$rrs_storage>>
     endif

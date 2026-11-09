@@ -459,9 +459,16 @@ So the arity of a factory counts the reply channel and that list.
 ## <a id="reified-vectors-and-vectordb-services"></a>Reified RSpaces: vectors and the VectorDB services
 
 The VectorDB family of [Reified RSpaces](21-reified-spaces.md#vectordb-spaces) adds three system processes.
-Each one takes the reply channel first and replies `[true, …]`, or `[false, code, detail]` with a fixed detail text.
+Only a node built with the feature `chromadb` registers `embed` and `ann`, and a node of another build registers `rho:lang:vector` alone.
+Each process takes the reply channel first and replies `[true, …]` or a failure reply with three elements.
+`rho:lang:vector` replies `[false, code, detail]` with a fixed detail text.
+`embed` and `ann` reply `[false, code, message]`, the failure reply of the recorded external services, with fixed text that names the process.
+A reply of `embed` or `ann` that does not fit in the record room of the deploy gives `EXT_OUTPUT_TOO_LARGE`.
+
 So `!?` and `try … catch` read a reply.
-A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call `!!` aborts it with `PersistentOpCall`.
+A call with send params aborts the deploy with `ParamsUnsupported`.
+A persistent call `!!` to `rho:lang:vector` aborts the deploy with `PersistentOpCall`.
+A persistent send to `embed` or `ann` fails at its fire with `SystemProcessShapeError`, as for every recorded external service.
 The [Reified RSpaces specification](../rspace/reified-rspaces/specification.md#9-system-processes-of-the-vectordb-family) states the rules.
 Each code block of this section is the text of an example file, and the examples harness runs each file.
 
@@ -508,7 +515,7 @@ It also takes a list of at most 64 texts with at most 64 KiB of text.
 
 ```rholang
 // rho:vectordb:embed embeds a text with the embedding model of the node. It
-// replies [true, vector, model], or [false, code, detail] for an error. The
+// replies [true, vector, model], or [false, code, message] for an error. The
 // node records the reply, so the replay of the block gives the same reply
 // without a call to the model.
 //
@@ -521,8 +528,8 @@ new embed(`rho:vectordb:embed`) in {
 
 With the model of a node, a vector is a list of 384 `Float32` values.
 With the fake model of the examples harness, the deploy reports `[true, [12.5f32, 13.5f32], "rrs-examples"]`.
-The failure codes are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
-The process is recorded: the node records each reply, and replay produces the recorded reply without a call to the model.
+A bad argument or a text over the quota gives `EXT_BAD_ARG`, and a failure of the model gives `EXT_FAILED`.
+The process is recorded: play records each reply, and replay delivers the recorded reply without a call to the model.
 
 ### `rho:vectordb:ann` (arity 5)
 
@@ -534,7 +541,9 @@ new ann(`rho:vectordb:ann`) in {
   for (m <<- @"my-space") { for (mn <<- @"my-name") {
     for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) {
       match r {
-        [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
+        // Changed by decision 114: the reply is [true, ids, distances], with no watermark.
+        // [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
+        [true, ids, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
         [false, code, _]  => { @"result"!(code) }
       }
     }
@@ -544,9 +553,10 @@ new ann(`rho:vectordb:ann`) in {
 
 This deploy is the second deploy of the mirror example of [ChromaDB Integration](chromadb.md#reified-chromadb-mirror), whose first deploy stores the records.
 The ids of the reply are hints for the query param `ids` of a receive, and the exact engine of the space decides.
-The failure codes are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.
-A text query can also fail with the codes of `embed`.
-Like `embed`, the process is recorded. Replay also makes the checks of the call against consensus state, as play does.
+A failed check of the call gives `EXT_BAD_ARG`, and a failure of the model or of the mirror gives `EXT_FAILED`.
+[ChromaDB Integration](chromadb.md#embeddings-and-advisory-queries) lists the checks.
+Like `embed`, the process is recorded.
+Play makes the checks of the call, and replay delivers the recorded reply without a check of the call.
 
 ## Channel Summary
 

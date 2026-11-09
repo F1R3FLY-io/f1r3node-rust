@@ -13,7 +13,7 @@
 '      test that holds.
 '   3. route maps the class to a route by the rules R1 to R5.
 '   4. A default route makes the baseline call. A space route builds the
-'      identity on the data channel (R6) and runs one space intent. On an
+'      identity on the data channel (R6) and runs one space job. On an
 '      agent route, a send becomes the call A'!(sink, "produce", raw, [d...])
 '      on the agent, which routes again with no use context (P8 step 2). A
 '      receive whose binds all route to one agent becomes the translation
@@ -97,7 +97,7 @@ case (default space)
   with identical arguments; <<$rrs_host>>
 case (native space)
   :R6: the identity uses the data channel <latex>D(\mathit{sid}, k)</latex>
-  one space intent runs the operation; <<$rrs_agent>>
+  one space job runs the operation; <<$rrs_agent>>
 case (user agent)
   if (a send?) then (yes)
     :a send becomes the call <latex>A'</latex>!(sink, "produce", raw, [d…])
@@ -120,7 +120,7 @@ stop
 legend bottom
 **Concept colors**
 |<$rrs_system>     | system class: byte names, op channels, markers |
-|<$rrs_object>     | default-space object (KIND C, H, X, B), and the native space whose agent serves it: one space intent |
+|<$rrs_object>     | default-space object (KIND C, H, X, B), and the native space whose agent serves it: one space job |
 |<$rrs_storage>    | storage channel: KIND D, I, A, S |
 |<$rrs_name>       | name class: space names and agent-tagged names |
 |<$rrs_host>       | default space and ordinary channels, with the baseline call |

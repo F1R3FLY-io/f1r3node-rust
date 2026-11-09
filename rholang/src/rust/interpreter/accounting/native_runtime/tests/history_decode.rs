@@ -64,14 +64,36 @@ fn signature() -> impl Strategy<Value = CostSignature> {
 }
 
 fn authority() -> impl Strategy<Value = Option<CostAuthority>> {
+    // Changed by G3 (DR-135): a stored region also holds a price and an
+    // optional caller, which the cold-store decoder must read (SA3).
+    // prop::option::of(
+    //     prop::collection::vec(
+    //         (prop::collection::vec(any::<u8>(), 0..33), signature()).prop_map(
+    //             |(instance_id, signature)| CostRegion {
+    //                 instance_id,
+    //                 signature: Some(signature),
+    //             },
+    //         ),
+    //         0..3,
+    //     )
+    //     .prop_map(|regions| CostAuthority { regions }),
+    // )
+    let caller = (prop::option::of(signature()), any::<u64>())
+        .prop_map(|(signature, price)| models::rhoapi::CostCaller { signature, price });
     prop::option::of(
         prop::collection::vec(
-            (prop::collection::vec(any::<u8>(), 0..33), signature()).prop_map(
-                |(instance_id, signature)| CostRegion {
+            (
+                prop::collection::vec(any::<u8>(), 0..33),
+                signature(),
+                prop_oneof![Just(0_u64), any::<u64>()],
+                prop::option::of(caller),
+            )
+                .prop_map(|(instance_id, signature, price, caller)| CostRegion {
                     instance_id,
                     signature: Some(signature),
-                },
-            ),
+                    price,
+                    caller,
+                }),
             0..3,
         )
         .prop_map(|regions| CostAuthority { regions }),

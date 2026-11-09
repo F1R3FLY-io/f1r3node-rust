@@ -50,6 +50,11 @@ mod recorder {
         /// the deploy fails on that node, in play and in replay. A producer
         /// with the hook claims a guard failure that other nodes reject.
         ForceGuardFailureHook,
+        /// Added by DR-134 (DR-65 O-13), a test hook of one node: the guard of
+        /// the deploy ignores its later holds on that node, in play and in
+        /// replay. A producer with the hook commits a success that other
+        /// nodes, which count the later holds, reject.
+        IgnoreLaterHoldsHook,
     }
 
     /// Added by G1-6 (DR-124): the path that ran a check before execution.

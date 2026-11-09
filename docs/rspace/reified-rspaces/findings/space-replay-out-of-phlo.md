@@ -84,8 +84,8 @@ Figure F1 shows the three runs side by side.
 ### 4.1 Play
 
 Staging makes no host call.
-The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:3387-3431`).
-For each operation, play makes its charges first and logs its events only after the observer accepts them (`rspace++/src/rspace/rspace/space_play.rs:143-149` and `183-193`).
+The commit runs the staged operations in order (`commit_staged`, `rspace++/src/rspace/space_store_handle.rs:5239-5558`).
+For each operation, play makes its charges first and logs its events only after the observer accepts them (`rspace++/src/rspace/rspace/space_play.rs:302-308` and `492-498`).
 When a charge of operation $`k`$ rejects, the commit stops at operation $`k`$.
 The operations before $`k`$ stay applied and logged (D6), and operation $`k`$ leaves no event.
 
@@ -106,7 +106,7 @@ The defect was only that the check at staging stopped the transaction before tha
 
 ### 4.3 The parity requirement
 
-Casper accepts a replayed deploy only when its failed flag and its cost equal the values of play (`casper/src/rust/rholang/replay_runtime.rs:619-632`):
+Casper accepts a replayed deploy only when its failed flag and its cost equal the values of play (`casper/src/rust/rholang/replay_runtime.rs:556-569`):
 
 ```math
 (\mathit{failed}_r,\ c_r) = (\mathit{failed}_p,\ c_p).
@@ -120,8 +120,8 @@ With the fix, replay makes the charges $`w_a`$ to $`w_k`$ in the same order, and
 
 ## 5. Reach and effect
 
-Every collection operation starts with a counter fire (`rholang/src/rust/interpreter/spaces/counter.rs:249-307`, [decision 31](../decision-register.md#decision-31)).
-Every deploy pays introduction charges: the interpreter enters the COMM accounting scope for each deploy (`rholang/src/rust/interpreter/interpreter.rs:229`), and the introduction charge applies in that scope (`rholang/src/rust/interpreter/accounting/mod.rs:1191-1203`).
+Every collection operation starts with a counter fire (`rholang/src/rust/interpreter/spaces/counter.rs:168-278`, [decision 31](../decision-register.md#decision-31)).
+Every deploy pays introduction charges: the interpreter enters the COMM accounting scope for each deploy (`rholang/src/rust/interpreter/interpreter.rs:199`), and the introduction charge applies in that scope (`rholang/src/rust/interpreter/accounting/mod.rs:903-915`).
 So a plain deploy can run out of phlo inside any space transaction, and no cost-signed syntax is necessary.
 
 Before the fix, any user could make validators reject an honest block that held a space deploy.
@@ -173,23 +173,25 @@ commit_replay(operation)
 
 The fix changes only two substrate files. Casper, the host, and the P4 agents do not change.
 
+*Changed by [decision 90](../decision-register.md#decision-90): the merge of `702496775` removed `TxnCore::verify`, the list `paired` and the field `recorded`. Only the rigged replay modes paired a fire with a recorded COMM. Their text stays in the source as comments, and the first three rows cite those comments.*
+
 | Part | Change | Code |
 |---|---|---|
-| `TxnCore::verify` | It returns `Option<COMM>` and never fails: the recorded COMM of a paired fire, or `None` in play and for an unpaired fire. | `rspace++/src/rspace/space_store_handle.rs:2317-2345` |
-| `TxnCore::stage_produce`, `TxnCore::stage_consume` | The two calls of `verify` no longer pass an error on, and only a paired fire adds its COMM to `paired`. | `rspace++/src/rspace/space_store_handle.rs:2509`, `2520-2522`, `2699`, and `1957-1959` |
-| `StagedFire`, `StagedConsumeFire` | The field `recorded` keeps the result of `verify`. | `rspace++/src/rspace/space_store_handle.rs:2066-2068` and `2097-2099` |
-| `ReplayBackend::produce_fire` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:254-263` |
-| `ReplayBackend::produce_observed` | A failed fire rolls the counter step back, also for an unpaired fire. | `rspace++/src/rspace/replay_rspace/space_replay.rs:209-211` |
-| `ReplayBackend::consume_observed` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:406-415` |
-| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:107-111` and `3387-3394` |
+| `TxnCore::verify` | It returns `Option<COMM>` and never fails: the recorded COMM of a paired fire, or `None` in play and for an unpaired fire. | `rspace++/src/rspace/space_store_handle.rs:3396-3414` |
+| `TxnCore::stage_produce`, `TxnCore::stage_consume` | The two calls of `verify` no longer pass an error on, and only a paired fire adds its COMM to `paired`. | `rspace++/src/rspace/space_store_handle.rs:3732`, `3752-3754`, `3992`, and `3203-3204` |
+| `StagedFire`, `StagedConsumeFire` | The field `recorded` keeps the result of `verify`. | `rspace++/src/rspace/space_store_handle.rs:2465-2467` and `2507-2509` |
+| `ReplayBackend::produce_fire` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:286-295` |
+| `ReplayBackend::produce_observed` | A failed fire rolls the counter step back, also for an unpaired fire. | `rspace++/src/rspace/replay_rspace/space_replay.rs:241-243` |
+| `ReplayBackend::consume_observed` | After the `observe_comm` call, an unpaired fire fails with `ReplayDivergence` before it logs anything. | `rspace++/src/rspace/replay_rspace/space_replay.rs:450-459` |
+| `SpaceTxnError::ReplayDivergence`, `commit_staged` | The documentation states that the commit raises the error after the calls, with the prefix of play. | `rspace++/src/rspace/space_store_handle.rs:122-126` and `5239-5246` |
 
 ### 6.4 The proofs and the models
 
 The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv) records the headlines and the invariants of the fix:
 
-- Headline H4 `verify_sound_complete` (`EventCorrelation.v:6304`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:6240`) stages a fire without its trigger event unpaired.
-- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:6270`) shows that an unpaired fire never commits, and that it emits no event and no effect.
-- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:7848`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
+- Headline H4 `verify_sound_complete` (`EventCorrelation.v:6307`) is restated. Its conjunct 3 `stage_without_trigger_unpaired` (`EventCorrelation.v:6243`) stages a fire without its trigger event unpaired.
+- Its conjunct 6 `unpaired_fire_inert` (`EventCorrelation.v:6273`) shows that an unpaired fire never commits, and that it emits no event and no effect.
+- The new headline H23 `replay_reproduces_play_run` (`EventCorrelation.v:7851`) covers replay with the commit log of play. That replay reproduces the calls, the events, the status, and the store of play.
 - The new invariant T6 `ReplayOutcomeEqual` of `CheckpointReplay.tla` states that validators never reject an honest block. Its replayed deploy ends with the failure and the spending of play.
 - The Unsafe control `StagingDivergenceUnsafe.cfg` restores the rule of decision 19 and refutes exactly T6. The control `AcceptUnpairedUnsafe.cfg` commits an unpaired fire and refutes exactly T1.
 - Three Rocq mutants fail in the expected declarations: `ec-replay-fire-fails-at-staging`, `ec-unpaired-skips-observe-comm`, and `ec-unpaired-fire-commits`.
@@ -198,14 +200,10 @@ The [verification dossier](../verification.md#42-headlines-of-eventcorrelationv)
 
 | Test | Location | What it checks |
 |---|---|---|
-| `prop_space_txn_replay_divergence_typed_at_commit` | `rspace++/tests/reified_space_store_handle_props.rs:2409` | Property 5, renamed (H4, T3): an unpaired fire stages with no host call, and the commit fails at it with `ReplayDivergence` after its calls. |
-| `prop_space_txn_replay_requires_trigger_event` | `rspace++/tests/reified_space_store_handle_props.rs:2475` | Property 16 (H4): without its trigger event, a fire stages unpaired and fails at commit. |
-| `prop_space_txn_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle_props.rs:2483` | Property 25, new (H23, T6): replay rejects the call that play rejected, with the outcome, the calls, and the state of play. |
-| `space_store_handle_replay_divergence_is_typed_at_commit` | `rspace++/tests/reified_space_store_handle.rs:1507` | The integration form of property 5, renamed. |
-| `space_store_handle_replay_reproduces_play_rejection` | `rspace++/tests/reified_space_store_handle.rs:1997` | A sweep over every position of a fallible call (H23, T6). |
-| `space_queue_out_of_phlo_sweep_replays_equal` | `rholang/tests/reified_queue_replay.rs:850` | The control of the fix: a queue deploy at many phlo limits replays to the error codes and the cost of play. |
+| `prop_native_space_replay_fails_closed` | `rspace++/src/rspace/replay_rspace/native_session/space.rs:4113` | An outcome that does not fit, another candidate, or a row that is not ready fails the commit closed (H4, H19). The failed operation has no effect, and the operations before it stay applied. |
+| `prop_native_space_replay_denial_keeps_prefix` | `rspace++/src/rspace/replay_rspace/native_session/space.rs:4066` | A recorded denial at one operation fails the commit with the denial error of the epoch (H23, T6). The operations before it stay applied, as play of the prefix applies them. |
+| `space_queue_out_of_phlo_sweep_replays_equal` | `rholang/tests/reified_queue_replay.rs:1149` | The control of the fix: a queue deploy at many phlo limits replays to the error codes and the cost of play. |
 
-The tests `space_store_handle_replay_cross_channel_comm_pairs_once`, `space_store_handle_replay_requires_produce_trigger_event`, and `space_store_handle_replay_requires_consume_trigger_event` now expect the error at commit.
 The P4 test `space_queue_replay_equal` passes with no change.
 
 ### 6.6 Consequences
@@ -228,15 +226,15 @@ The design pass compared other options:
 ### 7.1 Host replay skips a rejected COMM charge
 
 Host replay has the same mismatch when play rejects a COMM charge.
-It stores the produce, or parks the consume, and it skips the rejected charge (`rspace++/src/rspace/replay_rspace.rs:1214-1219`).
-A COMM is charged only when its cost authority has a non-Unit signature (`rholang/src/rust/interpreter/accounting/mod.rs:1794-1813`).
+It stores the produce, or parks the consume, and it skips the rejected charge (`rspace++/src/rspace/replay_rspace.rs:1112-1117`).
+A COMM is charged only when its cost authority has a non-Unit signature (`rholang/src/rust/interpreter/accounting/mod.rs:1358-1384`).
 So only deploys with cost-signed syntax reach this case.
 The pgmcp finding 9921 records it for the RSpace and cost-accounting owners.
 
 ### 7.2 A log that omits a COMM
 
 Replay follows the log as the schedule of the deploy.
-Host replay stores a datum whose COMM the log omits, and it does not look for a waiting match (`rspace++/src/rspace/replay_rspace.rs:1214-1219`).
+Host replay stores a datum whose COMM the log omits, and it does not look for a waiting match (`rspace++/src/rspace/replay_rspace.rs:1112-1117`).
 Space replay instead fails the deploy with `ReplayDivergence`, at commit since decision 36.
 Casper compares only the failed flag and the cost, so in both cases validators accept a log that omits a COMM.
 At the baseline, a proposer can thus suppress a COMM, and with spaces it can make a space deploy fail.
@@ -256,5 +254,5 @@ The fix closes the first question of the earlier list. Two questions stay open, 
 
 - [Decision register, decision 36](../decision-register.md#decision-36), [decision 19](../decision-register.md#decision-19), and [decision 31](../decision-register.md#decision-31).
 - [Design, section S5.1 (staging)](../design.md#s51-staging), [section S5.2 (commit)](../design.md#s52-commit), [section S5.3 (verify)](../design.md#s53-verify-fr-3), [section S6 (errors)](../design.md#s6-errors), and [section S10 (limits)](../design.md#s10-limits).
-- [Verification dossier](../verification.md): the [headlines of EventCorrelation.v](../verification.md#42-headlines-of-eventcorrelationv), the [invariants of CheckpointReplay.tla](../verification.md#52-checkpointreplaytla), and the [witness tests](../verification.md#73-the-19-witness-tests).
+- [Verification dossier](../verification.md): the [headlines of EventCorrelation.v](../verification.md#42-headlines-of-eventcorrelationv), the [invariants of CheckpointReplay.tla](../verification.md#52-checkpointreplaytla), and the [witness tests](../verification.md#73-the-18-witness-tests).
 - [Glossary entry "Unpaired fire"](../glossary.md#unpaired-fire).

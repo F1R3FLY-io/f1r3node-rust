@@ -163,6 +163,8 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             None,
             None,
             None,
+            // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+            None,
         )
         .await
         .expect("exploratory-style merge (no buffer)");
@@ -204,6 +206,8 @@ async fn bufferless_cache_seed_must_not_shadow_buffer_populate() {
             Some(&nodes[1].rejected_deploy_buffer),
             None,
             Some(&owner),
+            // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+            None,
         )
         .await
         .expect("validate-style merge (buffer attached)");

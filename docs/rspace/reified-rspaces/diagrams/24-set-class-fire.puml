@@ -5,16 +5,17 @@
 ' the class key of spaces/disciplines/set.rs. It adds no new fact.
 '
 ' Reading order:
-'   1. A receive takes the first record in the order of DR-75 that its pattern
-'      binds: the representative of its class. The guard is checked once.
-'   2. A receive that does not peek fires over [D; n] on the whole class and
-'      dispatches only the result of the representative (F3). A peek binds the
-'      representative alone, and RESTORE-SCAN sends it again (Rule E).
-'   3. A send fires the first waiter that binds and admits its datum. After a
-'      fire of a waiter that does not peek, RETIRE-CLASS retires the stored
-'      non-persistent members of the class with K_retire COMMs.
-'   4. A send that stores its datum in a metered job computes its key first,
-'      so a record without a key never enters the set.
+'   1. A receive takes the first record in the pick order of the operation
+'      that its pattern binds. The guard is checked once, on the first member
+'      of its class in DR-75 order.
+'   2. A receive that does not peek fires one consume over [D] with the first
+'      member of the class in DR-75 order and dispatches it. K_retire then
+'      retires the other non-persistent members. A peek binds the record of
+'      its pick alone, and RESTORE-SCAN sends it again (Rule E).
+'   3. A send fires the first waiter in the pick order of the send that binds
+'      and admits its datum. After a fire of a waiter that does not peek,
+'      RETIRE-CLASS retires the stored non-persistent members of the class
+'      with K_retire COMMs.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 24-set-class-fire.puml   Check: ./render.sh --check
@@ -33,23 +34,23 @@ title The set (P5a): a receive takes a class, and a send retires a class
 
 start
 if (the operation?) then (receive)
-  :r ← the first record in the order of DR-75
+  :r ← the first record in the pick order of the receive
   whose payload the pattern binds; <<$rrs_agent>>
   if (a record r was found and the guard admits it?) then (yes)
     if (the receive peeks?) then (yes)
       :fire on [D] with r alone,
       then RESTORE-SCAN sends r again (Rule E); <<$rrs_flow>>
     else (no)
-      :C ← r and every stored member m with key(m) = key(r),
-      one consume over D repeated once for each member of C,
-      the result of r alone dispatched, and the members
-      that are not persistent removed; <<$rrs_effect>>
+      :C ← every stored member of the class of r, in DR-75 order,
+      one consume over [D] with the first member of C, which the
+      outcome dispatches, and one K_retire COMM over [D] for each
+      other non-persistent member of C; <<$rrs_effect>>
     endif
   else (no)
     :park the receive (the guard is checked once); <<$rrs_storage>>
   endif
 else (send)
-  :W ← the first waiter in the order of DR-75
+  :W ← the first waiter in the pick order of the send
   whose pattern binds the datum x and whose guard admits it; <<$rrs_agent>>
   if (a waiter W was found?) then (yes)
     :fire W with x; <<$rrs_effect>>
@@ -59,22 +60,17 @@ else (send)
     else (yes)
     endif
   else (no)
-    if (a metered job cannot compute key(x)?) then (yes)
-      :HostWorkRejected before any staging; <<$rrs_reject>>
-    else (no)
-      :store x; <<$rrs_storage>>
-    endif
+    :store x; <<$rrs_storage>>
   endif
 endif
 stop
 
 legend bottom
 **Concept colors**
-|<$rrs_agent>    | a choice of the plan, in the order of DR-75 |
+|<$rrs_agent>    | a choice of the plan, in the pick order of the operation |
 |<$rrs_effect>   | a staged fire |
 |<$rrs_flow>     | a second send (Rule E) |
 |<$rrs_fail>     | the retire of the other members of a class |
 |<$rrs_storage>  | a stored record or a parked waiter |
-|<$rrs_reject>   | a failure before any staging |
 endlegend
 @enduml

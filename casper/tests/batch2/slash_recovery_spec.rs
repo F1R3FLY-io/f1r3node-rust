@@ -572,6 +572,8 @@ async fn e1c_re_issues_merge_rejected_slash() {
         Some(&nodes[1].rejected_deploy_buffer),
         None,
         None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
+        None,
     )
     .await
     .expect("real merge to seed cache value");
@@ -751,6 +753,8 @@ async fn rejected_slash_recovery_keeps_empty_proposer_alive() {
         &latest_messages,
         Some(&nodes[1].rejected_deploy_buffer),
         None,
+        None,
+        // Added by DR-134 (DR-66): no adopted policy, the behavior before this parameter.
         None,
     )
     .await

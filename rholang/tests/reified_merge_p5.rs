@@ -39,21 +39,26 @@ mod reified_strategies;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+// Disabled by decision 90 (C6): the native session runs no legacy deploy.
+// use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{EList, Expr, ListParWithRandom, Par};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use reified_strategies::{gint, gstring, tuple};
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::Sig;
+// Disabled by decision 90 (C6): the native session runs no legacy deploy.
+// use rholang::rust::interpreter::accounting::costs::Cost;
+// use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::mergeable_tags::non_negative_mergeable_tag_name;
-use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime};
 use rholang::rust::interpreter::spaces::allocator;
 use rholang::rust::interpreter::spaces::namespace::{self, NativeSpace, REIFIED_TAG};
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Disabled by decision 90 (C6): the native session runs no legacy deploy.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::internal::Datum;
@@ -61,14 +66,20 @@ use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     conflict_reason, conflicts, depends, MergeType,
 };
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Disabled by decision 90 (C6): the native session runs no legacy deploy.
+// use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+// use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use support::merge::{touching, without_channels};
 use support::props::{check, runtime_config, tokio_runtime, RUNTIME_CASES};
+// Changed by decision 90 (C6): the node runs on the native session. The legacy import follows.
+// use support::session::{
+//     counter_channel, data_channel, error_codes, native, space_counter_channel, DEPLOY_SIGNATURE,
+//     FUNDING_SIGNATURE, PHLO,
+// };
 use support::session::{
-    counter_channel, data_channel, error_codes, native, space_counter_channel, DEPLOY_SIGNATURE,
-    FUNDING_SIGNATURE, PHLO,
+    counter_channel, data_channel, error_codes, integer_add_tag, native, space_counter_channel,
+    Session,
 };
 
 /// The factory of the bag family.
@@ -157,85 +168,127 @@ impl Deployed {
     fn ok(&self) -> bool { self.result.errors.is_empty() }
 }
 
-/// The execution model of the deploys of a node: the legacy model of the P5 cases, or the
-/// native funded model (protocol v6), which the P6 cases use (decision 69).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Execution {
-    Legacy,
-    Native,
-}
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, native funded
+// execution, so the node runs every deploy through the native session, and native replay
+// certifies each deploy (`support::session`). The legacy model, the node of both models and its
+// deploys follow.
+//
+// /// The execution model of the deploys of a node: the legacy model of the P5 cases, or the
+// /// native funded model (protocol v6), which the P6 cases use (decision 69).
+// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// enum Execution {
+//     Legacy,
+//     Native,
+// }
+//
+// /// A play runtime and the history of one in-memory store, as a validator evaluates a block.
+// struct Node {
+//     play: RhoRuntimeImpl,
+//     history: RhoHistoryRepository,
+//     execution: Execution,
+// }
+//
+// impl Node {
+//     /// A node of the legacy model over a fresh in-memory store, with a funded deploy signature.
+//     async fn new() -> Node { Node::with(Execution::Legacy).await }
+//
+//     /// A node of the model `execution` over a fresh in-memory store, with the funded deploy
+//     /// signature of that model.
+//     async fn with(execution: Execution) -> Node {
+//         let mut manager = InMemoryStoreManager::new();
+//         let stores = manager
+//             .r_space_stores()
+//             .await
+//             .expect("create the in-memory RSpace stores");
+//         let (play, _replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
+//         match execution {
+//             Execution::Legacy => play.cost.set_deploy_signature_funded(
+//                 DEPLOY_SIGNATURE,
+//                 Sig::Ground(FUNDING_SIGNATURE.to_vec()),
+//             ),
+//             Execution::Native => play
+//                 .cost
+//                 .set_deploy_signature_funded(support::native::DEPLOY, support::native::funding()),
+//         }
+//         Node {
+//             play,
+//             history,
+//             execution,
+//         }
+//     }
+//
+//     /// Evaluates one deploy as Casper processes a user deploy. It takes a soft checkpoint,
+//     /// evaluates `source` in the model of the node, takes the event log, and reverts a failed
+//     /// deploy. The label seeds the random state, so one label gives the same deploy in every run.
+//     async fn deploy(&mut self, source: &str, label: &str) -> Deployed {
+//         let fallback = self.play.create_soft_checkpoint().await;
+//         let random = Blake2b512Random::create_from_bytes(label.as_bytes());
+//         let result = match self.execution {
+//             Execution::Legacy => {
+//                 self.play
+//                     .evaluate(
+//                         source,
+//                         Cost::create(PHLO, label.to_owned()),
+//                         HashMap::new(),
+//                         random,
+//                     )
+//                     .await
+//             }
+//             Execution::Native => {
+//                 self.play
+//                     .evaluate_with_native_phlo(
+//                         source,
+//                         HashMap::new(),
+//                         random,
+//                         None,
+//                         support::native::config(support::native::AMPLE_LIMIT),
+//                     )
+//                     .await
+//             }
+//         }
+//         .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+//         let log = self.play.take_event_log().await;
+//         if !result.errors.is_empty() {
+//             self.play.revert_to_soft_checkpoint(fallback).await;
+//         }
+//         Deployed { result, log }
+//     }
 
-/// A play runtime and the history of one in-memory store, as a validator evaluates a block.
+/// A native session and the history of its store, as a validator evaluates a block (decision 90,
+/// C6).
 struct Node {
-    play: RhoRuntimeImpl,
+    session: Session,
     history: RhoHistoryRepository,
-    execution: Execution,
 }
 
 impl Node {
-    /// A node of the legacy model over a fresh in-memory store, with a funded deploy signature.
-    async fn new() -> Node { Node::with(Execution::Legacy).await }
-
-    /// A node of the model `execution` over a fresh in-memory store, with the funded deploy
-    /// signature of that model.
-    async fn with(execution: Execution) -> Node {
-        let mut manager = InMemoryStoreManager::new();
-        let stores = manager
-            .r_space_stores()
-            .await
-            .expect("create the in-memory RSpace stores");
-        let (play, _replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
-        match execution {
-            Execution::Legacy => play.cost.set_deploy_signature_funded(
-                DEPLOY_SIGNATURE,
-                Sig::Ground(FUNDING_SIGNATURE.to_vec()),
-            ),
-            Execution::Native => play
-                .cost
-                .set_deploy_signature_funded(support::native::DEPLOY, support::native::funding()),
-        }
-        Node {
-            play,
-            history,
-            execution,
-        }
+    /// A node over a fresh in-memory store, with a funded deploy signature.
+    async fn new() -> Node {
+        let session = Session::new().await;
+        let history = session.history();
+        Node { session, history }
     }
 
-    /// Evaluates one deploy as Casper processes a user deploy. It takes a soft checkpoint,
-    /// evaluates `source` in the model of the node, takes the event log, and reverts a failed
-    /// deploy. The label seeds the random state, so one label gives the same deploy in every run.
+    /// Plays one deploy as Casper processes a user deploy, and certifies it by native replay
+    /// (`Session::deploy_with`). A failed deploy is reverted. The label seeds the random state,
+    /// so one label gives the same deploy in every run.
     async fn deploy(&mut self, source: &str, label: &str) -> Deployed {
-        let fallback = self.play.create_soft_checkpoint().await;
-        let random = Blake2b512Random::create_from_bytes(label.as_bytes());
-        let result = match self.execution {
-            Execution::Legacy => {
-                self.play
-                    .evaluate(
-                        source,
-                        Cost::create(PHLO, label.to_owned()),
-                        HashMap::new(),
-                        random,
-                    )
-                    .await
-            }
-            Execution::Native => {
-                self.play
-                    .evaluate_with_native_phlo(
-                        source,
-                        HashMap::new(),
-                        random,
-                        None,
-                        support::native::config(support::native::AMPLE_LIMIT),
-                    )
-                    .await
-            }
+        self.deploy_with(source, label, HashMap::new()).await
+    }
+
+    /// `deploy` with the normalizer names `injections`, such as the IntegerAdd tag
+    /// (`support::session::integer_add_tag`).
+    async fn deploy_with(
+        &mut self,
+        source: &str,
+        label: &str,
+        injections: HashMap<String, Par>,
+    ) -> Deployed {
+        let deploy = self.session.deploy_with(source, label, &injections).await;
+        Deployed {
+            result: deploy.result,
+            log: deploy.log,
         }
-        .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
-        let log = self.play.take_event_log().await;
-        if !result.errors.is_empty() {
-            self.play.revert_to_soft_checkpoint(fallback).await;
-        }
-        Deployed { result, log }
     }
 
     /// Evaluates one deploy that must succeed, and returns its event log.
@@ -249,26 +302,38 @@ impl Node {
         deployed.log
     }
 
-    /// Checkpoints the play runtime and returns the root.
-    async fn checkpoint(&mut self) -> Blake2b256Hash { self.play.create_checkpoint().await.root }
+    // Changed by decision 90 (C6): the session checkpoints, resets and reads the runtime. The
+    // legacy methods follow.
+    //
+    // /// Checkpoints the play runtime and returns the root.
+    // async fn checkpoint(&mut self) -> Blake2b256Hash { self.play.create_checkpoint().await.root }
+    //
+    // /// Resets the play runtime to `root`.
+    // async fn reset(&mut self, root: &Blake2b256Hash) {
+    //     self.play
+    //         .reset(root)
+    //         .await
+    //         .expect("reset the play runtime to a checkpoint root");
+    // }
+    //
+    // /// The pars of each datum on the public channel `channel`.
+    // async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
+    //     self.play
+    //         .get_data(&gstring(channel))
+    //         .await
+    //         .into_iter()
+    //         .map(|datum| datum.a.pars)
+    //         .collect()
+    // }
 
-    /// Resets the play runtime to `root`.
-    async fn reset(&mut self, root: &Blake2b256Hash) {
-        self.play
-            .reset(root)
-            .await
-            .expect("reset the play runtime to a checkpoint root");
-    }
+    /// Checkpoints the runtime and returns the root.
+    async fn checkpoint(&mut self) -> Blake2b256Hash { self.session.checkpoint().await }
+
+    /// Resets the runtime to `root`.
+    async fn reset(&mut self, root: &Blake2b256Hash) { self.session.reset(root).await }
 
     /// The pars of each datum on the public channel `channel`.
-    async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
-        self.play
-            .get_data(&gstring(channel))
-            .await
-            .into_iter()
-            .map(|datum| datum.a.pars)
-            .collect()
-    }
+    async fn values(&self, channel: &str) -> Vec<Vec<Par>> { self.session.values(channel).await }
 
     /// The deliveries of the receive bodies on `OUT`, as sorted `(label, value)` pairs.
     async fn deliveries(&self) -> Vec<(String, i64)> {
@@ -338,22 +403,31 @@ struct Rig {
 }
 
 impl Rig {
+    // Changed by decision 90 (C6, decision 69): spaces have one execution model, so one
+    // constructor makes every rig. The constructors of the two models follow.
+    //
+    // /// Creates a space with the factory `urn` and the constructor arguments `ctor`. Then it runs
+    // /// the seed `seed` on the names, if the seed is not empty, and checkpoints the pre-state.
+    // /// The label `label` seeds the random states of the setup and of the seed. The deploys run
+    // /// in the legacy model.
+    // async fn new(urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
+    //     Rig::with(Execution::Legacy, urn, ctor, seed, label).await
+    // }
+    //
+    // /// [`Rig::new`] with the deploys in the native funded model (decision 69).
+    // async fn native(urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
+    //     Rig::with(Execution::Native, urn, ctor, seed, label).await
+    // }
+    //
+    // /// [`Rig::new`] with the deploys in the model `execution`.
+    // async fn with(execution: Execution, urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
+    //     let mut node = Node::with(execution).await;
     /// Creates a space with the factory `urn` and the constructor arguments `ctor`. Then it runs
     /// the seed `seed` on the names, if the seed is not empty, and checkpoints the pre-state.
     /// The label `label` seeds the random states of the setup and of the seed. The deploys run
-    /// in the legacy model.
+    /// in native funded execution (decision 90, C6).
     async fn new(urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
-        Rig::with(Execution::Legacy, urn, ctor, seed, label).await
-    }
-
-    /// [`Rig::new`] with the deploys in the native funded model (decision 69).
-    async fn native(urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
-        Rig::with(Execution::Native, urn, ctor, seed, label).await
-    }
-
-    /// [`Rig::new`] with the deploys in the model `execution`.
-    async fn with(execution: Execution, urn: &str, ctor: &str, seed: &str, label: &str) -> Rig {
-        let mut node = Node::with(execution).await;
+        let mut node = Node::new().await;
         let mut setup_logs = Vec::with_capacity(2);
         setup_logs.push(
             node.run(&setup_program(urn, ctor), &format!("{label}-setup"))
@@ -424,6 +498,30 @@ impl Rig {
         let post = self.node.checkpoint().await;
         let out = self.node.deliveries().await;
         (deployed, post, out)
+    }
+
+    /// Added by decision 93 (decision 111): the root after the record of `branch` replays from
+    /// the root `root`. The body of the branch is `body` and its label is `label`. The replay of
+    /// the second branch of a serial order on the post-state of the first branch gives the state
+    /// of that order, with the interleavings that the branches recorded.
+    async fn replayed(
+        &mut self,
+        root: &Blake2b256Hash,
+        body: &str,
+        label: &str,
+        branch: &Branch,
+    ) -> Blake2b256Hash {
+        self.node
+            .session
+            .replay_from(
+                root,
+                &with_names(body),
+                label,
+                &HashMap::new(),
+                &branch.deployed.result,
+                branch.log(),
+            )
+            .await
     }
 
     /// The merge index of a log over the pre-state.
@@ -1048,8 +1146,14 @@ fn assert_no_join(node: &Node, root: &Blake2b256Hash, logs: &[Vec<Event>], label
 
 /// Consensus checklist item 18 at P5: the bag, cell, stack, set, priority-queue and allocator
 /// operations use no join of two channels (I-16). This includes the `K_lift` of a settle and the
-/// `K_alloc` of an allocation. It also includes the class fire `[D; n]` of a set, which consumes
-/// on `n` copies of one channel. An ordinary host join is the control: the check sees it.
+/// `K_alloc` of an allocation. It also includes the class fire of a set: one bind over `[D]` of
+/// the first member of the class, and one `K_retire` over `[D]` for each other non-persistent
+/// member (decision 101, rule CR-13). No COMM of the class fire consumes on two channels. An
+/// ordinary host join is the control: the check sees it.
+///
+/// Changed by decision 101 (C5.4): a class fire is one bind and `K_retire` COMMs over `[D]`. The
+/// text before: "It also includes the class fire `[D; n]` of a set, which consumes on `n` copies
+/// of one channel."
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_p5_synthesizes_no_join() {
     for program in join_programs() {
@@ -1096,18 +1200,42 @@ async fn reified_p5_synthesizes_no_join() {
                 assert_eq!(allocations, 4, "three gensym calls and one new run K_alloc");
             }
             "set" => {
-                // Step 1 takes the class of 1 with one class fire `[D; 2]`: a consume on two
-                // copies of `D(a)`.
-                let class_fires = steps[1]
+                // Changed by decision 101 (C5.4): the class fire of a set is one bind over `[D]`
+                // and one K_retire over `[D]` for each other non-persistent member (rule CR-13).
+                // The check before:
+                // // Step 1 takes the class of 1 with one class fire `[D; 2]`: a consume on two
+                // // copies of `D(a)`.
+                // let class_fires = steps[1]
+                //     .iter()
+                //     .filter(|event| matches!(
+                //         event,
+                //         Event::Comm(comm) if comm.consume.channel_hashes == vec![rig.data(0), rig.data(0)]
+                //     ))
+                //     .count();
+                // assert_eq!(
+                //     class_fires, 1,
+                //     "the class fire binds both members of the class of 1"
+                // );
+                // Step 1 takes the class of 1: the receive binds one member over `D(a)`, and one
+                // K_retire retires the other member over `D(a)`. Each is a consume and a COMM.
+                let take = &steps[1];
+                let wide_comms = take
                     .iter()
-                    .filter(|event| matches!(
-                        event,
-                        Event::Comm(comm) if comm.consume.channel_hashes == vec![rig.data(0), rig.data(0)]
-                    ))
+                    .filter(|event| {
+                        matches!(
+                            event,
+                            Event::Comm(comm) if comm.consume.channel_hashes.len() > 1
+                        )
+                    })
                     .count();
                 assert_eq!(
-                    class_fires, 1,
-                    "the class fire binds both members of the class of 1"
+                    wide_comms, 0,
+                    "no COMM of the class fire consumes on two channels"
+                );
+                assert_eq!(
+                    (comms_on(take, &rig.data(0)), consumes_on(take, &rig.data(0))),
+                    (2, 2),
+                    "the bind and the K_retire of the class of 1: two COMMs and two consumes on D(a)"
                 );
             }
             _ => {}
@@ -1151,13 +1279,25 @@ async fn reified_p5_namespaced_channels_never_mergeable() {
             true => "@(*tag, 2)!(6) | for (@v <- @(*tag, 2)) { Nil }",
             false => "new n in { n!(6) | for (@v <- n) { Nil } }",
         };
+        // Changed by decision 90 (dev-parity trim 4 of the base): the runtime binds only the
+        // bitmask tag URI, so the deploy injects the IntegerAdd tag through the test URI.
+        // let source = format!(
+        //     "new tag(`rho:system:integerAddMergeableTag`) in {{ {} }}",
+        //     with_names(&format!(
+        //         "@(*tag, 1)!(5) | use space {{ {in_use} }} | a!(1) | for (@x <- a) {{ Nil }} | for (@y <<- b) {{ Nil }}"
+        //     ))
+        // );
+        // let deployed = rig.node.deploy(&source, &label).await;
         let source = format!(
-            "new tag(`rho:system:integerAddMergeableTag`) in {{ {} }}",
+            "new tag(`rho:test:integerAddMergeableTag`) in {{ {} }}",
             with_names(&format!(
                 "@(*tag, 1)!(5) | use space {{ {in_use} }} | a!(1) | for (@x <- a) {{ Nil }} | for (@y <<- b) {{ Nil }}"
             ))
         );
-        let deployed = rig.node.deploy(&source, &label).await;
+        let deployed = rig
+            .node
+            .deploy_with(&source, &label, integer_add_tag())
+            .await;
         assert!(deployed.ok(), "{family}: {:?}", deployed.result.errors);
         let tag = non_negative_mergeable_tag_name();
         let control = tuple(vec![tag.clone(), gint(1)]);
@@ -1722,11 +1862,21 @@ async fn merged_stack_state_is_serial_case(
     }
     if found.is_empty() {
         let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
-        let (_, serial, _) = rig
-            .serial(&[(&first_body, &first_label), (&second_body, &second_label)])
+        // Changed by decision 93 (decision 111): the two operations of a branch on one stack
+        // race, so a fresh serial play can take another interleaving than the branch. Each
+        // serial order replays the records of the branches instead, as each run replays its
+        // own record. The old lines follow.
+        // let (_, serial, _) = rig
+        //     .serial(&[(&first_body, &first_label), (&second_body, &second_label)])
+        //     .await;
+        // let (_, reversed, _) = rig
+        //     .serial(&[(&second_body, &second_label), (&first_body, &first_label)])
+        //     .await;
+        let serial = rig
+            .replayed(&left.post, &second_body, &second_label, &right)
             .await;
-        let (_, reversed, _) = rig
-            .serial(&[(&second_body, &second_label), (&first_body, &first_label)])
+        let reversed = rig
+            .replayed(&right.post, &first_body, &first_label, &left)
             .await;
         prop_assert!(
             merged == serial || merged == reversed,
@@ -1932,7 +2082,8 @@ async fn space_collection_conflicts_join_ops_race_all_counters() {
 }
 
 /// A join over `a` and `b` and operations on `c` merge: the join bumps only the counters of its
-/// own collections. The merged state is the state of each serial order.
+/// own collections. The merged state is the state of each serial order. Each serial order
+/// replays the records of the branches, with the interleavings that they recorded (decision 93).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_collection_conflicts_unrelated_collections_merge() {
     let label = "rrs-p5-merge-join-unrelated";
@@ -1951,12 +2102,18 @@ async fn space_collection_conflicts_unrelated_collections_merge() {
     assert!(!depends(&left_index, &right_index));
     assert!(!depends(&right_index, &left_index));
     let merged = rig.merged(&[(&left, left.log()), (&right, right.log())]);
-    let (_, serial, _) = rig
-        .serial(&[(&join, &left_label), (&other, &right_label)])
-        .await;
-    let (_, reversed, _) = rig
-        .serial(&[(&other, &right_label), (&join, &left_label)])
-        .await;
+    // Changed by decision 93 (decision 111): the send and the receive of the right branch on `c`
+    // race, so a fresh serial play can take another interleaving than the branch. Each serial
+    // order replays the records of the branches instead, as each run replays its own record.
+    // The old lines follow.
+    // let (_, serial, _) = rig
+    //     .serial(&[(&join, &left_label), (&other, &right_label)])
+    //     .await;
+    // let (_, reversed, _) = rig
+    //     .serial(&[(&other, &right_label), (&join, &left_label)])
+    //     .await;
+    let serial = rig.replayed(&left.post, &other, &right_label, &right).await;
+    let reversed = rig.replayed(&right.post, &join, &left_label, &left).await;
     assert_eq!(merged, serial, "the merge is the serial state");
     assert_eq!(merged, reversed, "the merge is the reversed serial state");
 }
@@ -2089,7 +2246,9 @@ async fn reified_p5c_only_user_joins_persist() {
                     if group.len() < 2 {
                         continue;
                     }
-                    let waiters = rig.node.play.get_continuations(group.clone()).await;
+                    // Changed by decision 90 (C6): the session holds the runtime.
+                    // let waiters = rig.node.play.get_continuations(group.clone()).await;
+                    let waiters = rig.node.session.play.get_continuations(group.clone()).await;
                     assert!(
                         !waiters.is_empty(),
                         "{label} step {step}: a join entry has no waiter"
@@ -2421,7 +2580,9 @@ const VECTORDB: &str = "\"default\"; capacity=8, dimensions=2";
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_collection_conflicts_vectordb_writes_merge() {
     let label = "rrs-p6-merge-vectordb";
-    let mut rig = Rig::native(HASHMAP_VECTORDB, VECTORDB, "a!([1.0, 0.0])", label).await;
+    // Changed by decision 90 (C6): one execution model. The legacy line follows.
+    // let mut rig = Rig::native(HASHMAP_VECTORDB, VECTORDB, "a!([1.0, 0.0])", label).await;
+    let mut rig = Rig::new(HASHMAP_VECTORDB, VECTORDB, "a!([1.0, 0.0])", label).await;
     let (left_body, right_body) = ("a!([0.6, 0.8])", "a!([0.0, 1.0])");
     let (left_label, right_label) = (format!("{label}-left"), format!("{label}-right"));
     let left = rig.branch_ok(left_body, &left_label).await;
@@ -2488,7 +2649,9 @@ async fn space_collection_conflicts_vectordb_writes_merge() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_collection_conflicts_vectordb_capacity_soft_bound() {
     let label = "rrs-p6-merge-vectordb-capacity";
-    let mut rig = Rig::native(
+    // Changed by decision 90 (C6): one execution model. The legacy line follows.
+    // let mut rig = Rig::native(
+    let mut rig = Rig::new(
         HASHMAP_VECTORDB,
         "\"default\"; capacity=2, dimensions=2",
         "a!([1.0, 0.0])",
@@ -2592,7 +2755,9 @@ async fn vectordb_writes_commute_case(
     seed_bytes: Vec<u8>,
 ) -> Result<(), TestCaseError> {
     let label = case_label("rrs-p6-prop-vectordb", &seed_bytes);
-    let mut rig = Rig::native(HASHMAP_VECTORDB, VECTORDB, &vectordb_seed(&seeded), &label).await;
+    // Changed by decision 90 (C6): one execution model. The legacy line follows.
+    // let mut rig = Rig::native(HASHMAP_VECTORDB, VECTORDB, &vectordb_seed(&seeded), &label).await;
+    let mut rig = Rig::new(HASHMAP_VECTORDB, VECTORDB, &vectordb_seed(&seeded), &label).await;
     let (first_body, second_body) = (vectordb_seed(&first), vectordb_seed(&second));
     let (first_label, second_label) = (format!("{label}-left"), format!("{label}-right"));
     let left = rig.branch(&first_body, &first_label).await;
@@ -2689,7 +2854,9 @@ async fn vectordb_capacity_case(
             .join(" | ")
     };
     let ctor = format!("\"default\"; capacity={capacity}, dimensions=2");
-    let mut rig = Rig::native(HASHMAP_VECTORDB, &ctor, &stores(seeded, 1), &label).await;
+    // Changed by decision 90 (C6): one execution model. The legacy line follows.
+    // let mut rig = Rig::native(HASHMAP_VECTORDB, &ctor, &stores(seeded, 1), &label).await;
+    let mut rig = Rig::new(HASHMAP_VECTORDB, &ctor, &stores(seeded, 1), &label).await;
     let (first_body, second_body) = (stores(first, 2), stores(second, 3));
     let (first_label, second_label) = (format!("{label}-left"), format!("{label}-right"));
     let left = rig.branch(&first_body, &first_label).await;

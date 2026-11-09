@@ -3,9 +3,7 @@
 use byteorder::{LittleEndian, WriteBytesExt};
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use crypto::rust::public_key::PublicKey;
-use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::BlockHash;
-use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::validator::Validator;
 
 use super::tools::Tools;
@@ -73,14 +71,6 @@ pub fn generate_slash_deploy_random_seed(
         .chain(invalid_block_hash.iter().copied())
         .collect();
     Tools::rng(&seed).split_byte(1)
-}
-
-pub fn generate_pre_charge_deploy_random_seed(deploy: &Signed<DeployData>) -> Blake2b512Random {
-    Tools::rng(&deploy.sig).split_byte(0)
-}
-
-pub fn generate_refund_deploy_random_seed(deploy: &Signed<DeployData>) -> Blake2b512Random {
-    Tools::rng(&deploy.sig).split_byte(1)
 }
 
 #[cfg(test)]

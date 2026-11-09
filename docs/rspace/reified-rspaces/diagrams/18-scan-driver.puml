@@ -8,7 +8,7 @@
 ' Reading order:
 '   1. The plan opens: the settle before it runs, and a full transaction
 '      re-issues the receive before it stages anything (open_plan).
-'   2. The driver visits the records in the canonical order of DR-75 and
+'   2. The driver visits the records in the pick order of the receive and
 '      takes the first record whose payload the pattern binds.
 '   3. The guard is checked once, on that record. A refusal parks the
 '      receive (decision 37).
@@ -38,11 +38,11 @@ if (the transaction made FIRE_ROUND_CAP fires?) then (yes)
   stop
 else (no)
 endif
-while (a record after the tested prefix, in the order of DR-75?) is (yes)
+while (a record is left in the pick order of the receive?) is (yes)
   if (the pattern binds the payload?) then (yes)
     break
   else (no)
-    :next record (one reserved decode); <<$rrs_storage>>
+    :next record (one decode); <<$rrs_storage>>
   endif
 endwhile (no)
 if (a record r was found and the guard admits it?) then (yes)

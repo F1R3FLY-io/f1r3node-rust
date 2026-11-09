@@ -27,7 +27,7 @@ use rholang::rust::interpreter::accounting::native_phlo_rules::{
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -153,6 +153,7 @@ fn funded_offer(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term: COST_TERM.to_owned(),
         language: "rholang".to_owned(),
         time_stamp: 1,
@@ -196,11 +197,21 @@ async fn rooted_balance(
 ) -> u64 {
     let (values, _) = node
         .runtime_manager
-        .play_exploratory_deploy(balance_query_source(address), root, None)
+        .play_exploratory_deploy(
+            balance_query_source(address),
+            root,
+            None,
+            node.adopted_policy(),
+        )
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    u64::try_from(RhoNumber::unapply(&values[0]).unwrap()).unwrap()
+    u64::try_from(
+        RhoBigInt::unapply(&values[0])
+            .or_else(|| RhoNumber::unapply(&values[0]).map(num_bigint::BigInt::from))
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

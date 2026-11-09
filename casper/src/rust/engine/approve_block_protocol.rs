@@ -140,6 +140,7 @@ impl ApproveBlockProtocolFactory {
         native_token_symbol: String,
         native_token_decimals: u32,
         resource_policy: Option<models::rust::phlo_schedule::PhloGenesisPolicy>,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
         runtime_manager: &RuntimeManager,
         last_approved_block: Arc<Mutex<Option<ApprovedBlock>>>,
         event_log: Option<F1r3flyEvents>,
@@ -214,6 +215,8 @@ impl ApproveBlockProtocolFactory {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence: None,
         };
 
         let genesis_block = Genesis::create_genesis_block_with_policy(

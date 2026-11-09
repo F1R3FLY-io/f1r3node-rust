@@ -253,8 +253,8 @@ impl TupleSpaceRequesterOps for MockTupleSpaceRequesterOps {
 
     fn validate_tuple_space_items(
         &self,
-        history_items: Vec<(Blake2b256Hash, Vec<u8>)>,
-        data_items: Vec<(Blake2b256Hash, Vec<u8>)>,
+        history_items: &[(Blake2b256Hash, Vec<u8>)],
+        data_items: &[(Blake2b256Hash, Vec<u8>)],
         start_path: StatePartPath,
         page_size: i32,
         skip: i32,
@@ -262,12 +262,12 @@ impl TupleSpaceRequesterOps for MockTupleSpaceRequesterOps {
     ) -> Result<(), CasperError> {
         // Convert to test format and delegate to MockRSpaceImporter
         let history_bytes: Vec<(Blake2b256Hash, Bytes)> = history_items
-            .into_iter()
-            .map(|(hash, data)| (hash, Bytes::from(data)))
+            .iter()
+            .map(|(hash, data)| (hash.clone(), Bytes::copy_from_slice(data)))
             .collect();
         let data_bytes: Vec<(Blake2b256Hash, Bytes)> = data_items
-            .into_iter()
-            .map(|(hash, data)| (hash, Bytes::from(data)))
+            .iter()
+            .map(|(hash, data)| (hash.clone(), Bytes::copy_from_slice(data)))
             .collect();
 
         // Use the existing mock validation logic
@@ -309,6 +309,9 @@ pub struct ValidationState {
     /// Invalid items that should trigger validation failure
     /// Scala equivalent: val invalidItems = invalidHistory.map(_.map(bv => ByteVector(bv.toByteArray)))
     invalid_items: Vec<(Blake2b256Hash, Bytes)>,
+
+    validation_delay: std::time::Duration,
+    validations: usize,
 }
 
 impl ValidationState {
@@ -316,6 +319,8 @@ impl ValidationState {
         Self {
             should_fail_validation: false,
             invalid_items: Vec::new(),
+            validation_delay: std::time::Duration::ZERO,
+            validations: 0,
         }
     }
 
@@ -359,13 +364,23 @@ impl MockRSpaceImporter {
         _chunk_size: i32,
         _skip: i32,
     ) -> Result<(), CasperError> {
-        let validation_state = self
-            .validation_state
-            .lock()
-            .map_err(|_| CasperError::StreamError("Validation state lock error".to_string()))?;
+        let (should_fail, delay) = {
+            let mut validation_state = self
+                .validation_state
+                .lock()
+                .map_err(|_| CasperError::StreamError("Validation state lock error".to_string()))?;
+            validation_state.validations += 1;
+            (
+                validation_state.should_fail(&history_items),
+                validation_state.validation_delay,
+            )
+        };
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
 
         // Scala equivalent: if (historyItems != invalidItems) ().pure[F] else exceptionInvalidState.raiseError
-        if validation_state.should_fail(&history_items) {
+        if should_fail {
             return Err(CasperError::StreamError(
                 "Fake invalid state received.".to_string(),
             ));
@@ -884,109 +899,67 @@ mod tests {
         .expect("Test should complete successfully");
     }
 
-    /// Tests that the stream stops with error when invalid state chunk is received
-    /// Scala equivalent: "stop if invalid state chunk received"
+    /// Tests that an invalid state chunk is rejected and its path requested again
+    /// (issue #713). The Scala original stopped the whole stream here, which let
+    /// one bad chunk end the approved-state restore.
     #[tokio::test]
-    async fn should_stop_if_invalid_state_chunk_received() {
+    async fn should_request_an_invalid_state_chunk_again() {
         init_logger();
 
         let short_timeout = std::time::Duration::from_millis(100);
         bootstrap_test_no_stream(short_timeout, |mut mock| async move {
-            // Configure mock to fail validation for invalid history items
-            // Scala equivalent: Mock validation setup with predefined invalid items
             {
                 let validation_state = mock.setup();
                 let mut state = validation_state.lock().unwrap();
                 state.set_invalid_items(invalid_history());
             }
 
-            // Process initial request and get initial stream state
-            // Scala equivalent: _ <- stream.take(1).compile.drain
-            let initial_state = mock.next_stream_state().await;
-            assert!(
-                initial_state.is_some(),
-                "Should receive initial stream state"
-            );
-
-            // Drain initial request
-            // Scala equivalent: _ <- sentRequests.take(1).compile.drain
             drain_requests(&mut mock, 1).await?;
 
-            // No other requests should be sent initially
-            // Scala equivalent: _ = sentRequests should notEmit
-            assert_no_requests(&mut mock, 50).await?;
-
-            // Receives store items message with invalid history
-            // Scala equivalent: _ <- receive(StoreItemsMessage(historyPath1, historyPath2, invalidHistory, data1))
-            let invalid_message = StoreItemsMessage {
+            mock.receive(&[StoreItemsMessage {
                 start_path: history_path_1(),
                 last_path: history_path_2(),
                 history_items: invalid_history(),
                 data_items: data_1(),
-            };
-            mock.receive(&[invalid_message]).await?;
+            }])
+            .await?;
 
-            // Try to get stream states after validation error to ensure stream terminates
-            // Scala equivalent: result <- stream.compile.lastOrError.attempt
+            assert_no_saved_history(&mut mock, 50).await?;
+            assert_no_saved_data(&mut mock, 50).await?;
 
-            // The stream should emit one final state showing termination, then stop
-            let final_state = tokio::time::timeout(
-                std::time::Duration::from_millis(200),
-                mock.next_stream_state(),
-            )
-            .await;
+            let reqs = collect_requests(&mut mock, 1).await?;
+            assert_eq!(
+                reqs,
+                vec![mk_request(history_path_1())],
+                "the rejected path is requested again, and its last path is not"
+            );
 
-            // Verify we get the final state indicating termination
-            match final_state {
-                Ok(Some(state)) => {
-                    // Stream emitted final state - verify it shows incomplete processing
-                    tracing::info!("Received final stream state after validation error: finished={}", state.is_finished());
-                    // The state should NOT be finished since validation failed
-                    assert!(!state.is_finished(), "Stream should not be marked as finished after validation error");
+            mock.receive(&[StoreItemsMessage {
+                start_path: history_path_1(),
+                last_path: history_path_2(),
+                history_items: history_1(),
+                data_items: data_1(),
+            }])
+            .await?;
+
+            assert_eq!(
+                collect_saved_history(&mut mock, 1).await?,
+                vec![history_1()]
+            );
+            assert_eq!(collect_saved_data(&mut mock, 1).await?, vec![data_1()]);
+
+            loop {
+                let req = collect_requests(&mut mock, 1).await?.remove(0);
+                if req == mk_request(history_path_2()) {
+                    break;
                 }
-                Ok(None) => {
-                    // Stream terminated immediately - also acceptable
-                    tracing::info!("Stream properly terminated due to validation failure (immediate)");
-                }
-                Err(_) => {
-                    // Timeout occurred - stream stopped processing due to validation error
-                    tracing::info!("Stream stopped processing after validation failure (timeout)");
-                }
+                assert_eq!(
+                    req,
+                    mk_request(history_path_1()),
+                    "unexpected request {:?}",
+                    req
+                );
             }
-
-            // Verify no additional stream states are emitted (stream should be stopped)
-            let additional_state = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                mock.next_stream_state(),
-            )
-            .await;
-
-            // Should timeout or get None - no further processing
-            match additional_state {
-                Ok(None) => {
-                    tracing::info!("Stream properly stopped - no additional states");
-                }
-                Err(_) => {
-                    tracing::info!("Stream properly stopped - timeout on additional states");
-                }
-                Ok(Some(_)) => {
-                    panic!("Stream should have stopped after validation error, but continued emitting states");
-                }
-            }
-
-            // Verify no additional requests were sent after validation failure
-            // The stream should have stopped processing entirely
-            // Note: Channel may be closed due to stream termination, which is expected
-            match assert_no_requests(&mut mock, 50).await {
-                Ok(()) => {
-                    tracing::info!("No additional requests sent after validation failure");
-                }
-                Err(TestError::ChannelClosed) => {
-                    tracing::info!("Request channel closed after stream termination - this is expected");
-                }
-            }
-
-            tracing::info!("Invalid state chunk validation test completed - stream properly failed on invalid state");
 
             Ok(())
         })
@@ -1203,6 +1176,60 @@ mod tests {
                 let final_state = last_state.expect("stream must yield a final state");
                 assert!(!final_state.is_finished());
                 assert!(mock.err_handle.lock().unwrap().is_some());
+                Ok(())
+            },
+        )
+        .await
+        .expect("Test harness should complete");
+    }
+
+    /// A peer that keeps the response queue full of chunks that fail validation
+    /// must not hold off the no-progress deadline: the response branch is
+    /// polled first, so a deadline checked only on the idle timer never fires
+    /// while the queue stays non-empty.
+    #[tokio::test]
+    async fn a_flood_of_invalid_chunks_does_not_hold_off_the_deadline() {
+        init_logger();
+
+        const FLOOD: usize = 1000;
+        create_mock(
+            std::time::Duration::from_millis(5),
+            std::time::Duration::from_millis(50),
+            |mut mock| async move {
+                {
+                    let validation_state = mock.setup();
+                    let mut state = validation_state.lock().unwrap();
+                    state.set_invalid_items(invalid_history());
+                    state.validation_delay = std::time::Duration::from_millis(1);
+                }
+
+                let forged = StoreItemsMessage {
+                    start_path: history_path_1(),
+                    last_path: history_path_2(),
+                    history_items: invalid_history(),
+                    data_items: data_1(),
+                };
+                for _ in 0..FLOOD {
+                    mock.store_items_sender
+                        .try_send(forged.clone())
+                        .expect("the response queue has room for the flood");
+                }
+
+                let mut stream_rx = mock.stream.take().expect("stream receiver present");
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while stream_rx.recv().await.is_some() {}
+                })
+                .await
+                .expect("tuple-space sync must terminate via the progress deadline");
+
+                assert!(mock.err_handle.lock().unwrap().is_some());
+                let validations = mock.setup().lock().unwrap().validations;
+                assert!(
+                    validations < FLOOD,
+                    "the deadline fired only after the whole flood was validated ({} of {})",
+                    validations,
+                    FLOOD
+                );
                 Ok(())
             },
         )

@@ -8,7 +8,9 @@
 #     port (some hosts cannot publish ports). On a host whose bridge network is not reachable,
 #     set CHROMA_ENDPOINT to a running server of the pinned image and set RRS_CHROMA_EXTERNAL=1.
 #   * CHROMA_DATABASE is new for each run, so no run sees the records of an earlier run.
-#   * FASTEMBED_CACHE_DIR and TMPDIR are under target/, never in the source tree or /tmp.
+#   * RUSTBERT_CACHE and TMPDIR are under target/, never in the source tree or /tmp. Changed by
+#     decision 90 (item 3.12): the base embeds with rust-bert in place of fastembed, and
+#     rust-bert reads its model cache from RUSTBERT_CACHE (FASTEMBED_CACHE_DIR before).
 #   * The cargo run is bounded by a systemd user scope, unless RRS_SANDBOX=1.
 # The container is stopped on every exit path.
 #
@@ -35,9 +37,11 @@ curl -sf -m 2 "$CHROMA_ENDPOINT/api/v2/heartbeat" >/dev/null \
 
 export RRS_LIVE_CHROMA=1
 export CHROMA_DATABASE="rrs_live_$$_$(date +%s)"
-export FASTEMBED_CACHE_DIR="$ROOT/target/fastembed-cache"
+# export FASTEMBED_CACHE_DIR="$ROOT/target/fastembed-cache"
+export RUSTBERT_CACHE="$ROOT/target/rustbert-cache"
 export TMPDIR="$ROOT/target/tmp" CARGO_INCREMENTAL=0
-mkdir -p "$FASTEMBED_CACHE_DIR" "$TMPDIR"
+# mkdir -p "$FASTEMBED_CACHE_DIR" "$TMPDIR"
+mkdir -p "$RUSTBERT_CACHE" "$TMPDIR"
 cd "$ROOT"
 COMMAND=(cargo test -p rholang --features chromadb --test reified_vectordb_chroma_live "$@")
 if [[ "${RRS_SANDBOX:-}" != "1" ]]; then

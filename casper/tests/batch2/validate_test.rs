@@ -3256,8 +3256,13 @@ async fn block_version_validation_should_work() {
         let result = Validate::version(&genesis, -1);
         assert!(!result);
 
-        let result = Validate::version(&genesis, 1);
+        // Changed by DR-134 (DR-66 item 1): the test genesis is protocol 6.
+        // let result = Validate::version(&genesis, 1);
+        // assert!(result);
+        let result = Validate::version(&genesis, 6);
         assert!(result);
+        let result = Validate::version(&genesis, 1);
+        assert!(!result);
     })
     .await
 }

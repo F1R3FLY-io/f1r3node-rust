@@ -257,7 +257,7 @@ test = "rholang/tests/reified_examples_execute.rs"
 [[example]]
 name = "determinism-demo"
 file = "determinism_demo.rho"
-description = "The canonical order picks one record on every node and in replay."
+description = "Play picks one record at random, and the replay of the block takes the same record."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
@@ -323,7 +323,10 @@ test = "rholang/tests/reified_examples_execute.rs"
 [[example]]
 name = "factory-rejects-a-forged-params-tuple"
 file = "factory_rejects_a_forged_params_tuple.rho"
-description = "A params tuple that a program builds with a marker from its own quoted code, in a form that the normalizer never writes, aborts with Malformed."
+# Changed by decision 112 (ruling 9): a quoted send holds its params in a field, so no program
+# builds a params tuple from its quoted code. The text before:
+# description = "A params tuple that a program builds with a marker from its own quoted code, in a form that the normalizer never writes, aborts with Malformed."
+description = "A program quotes a send with params and finds no params tuple in the quoted send, because the params are a field of the send. A former marker tuple grants nothing."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
@@ -369,12 +372,16 @@ description = "A checkpoint record with commit and rollback in a cell space."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
+# Added by decision 113: only a build with the feature chromadb registers rho:vectordb:embed,
+# so only that build runs this example.
 name = "vectordb-embed"
 file = "vectordb_embed.rho"
 description = "The recorded process rho:vectordb:embed, with the fake embedder of the test support."
 test = "rholang/tests/reified_examples_execute.rs"
 
 [[example]]
+# Added by decision 113: only a build with the feature chromadb registers rho:vectordb:ann,
+# so only that build runs this example.
 name = "vectordb-mirror"
 files = ["vectordb_mirror_1.rho", "vectordb_mirror_2.rho"]
 description = "The ChromaDB mirror of a VectorDB space: one deploy stores records, and a later deploy asks rho:vectordb:ann and lets the exact engine select."

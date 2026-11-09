@@ -62,16 +62,18 @@ fn signer_key(v: usize) -> PrivateKey {
     // Changed by DR-116 (gap G6): one key signs the cell seed and its writers
     // until gap G3. A deploy that consumes another signer's datum needs that
     // signer's funding (P1 Rule 4). Each writer still runs on its own validator.
-    // match v {
-    //     0 => construct_deploy::DEFAULT_SEC.clone(),
-    //     1 => construct_deploy::DEFAULT_SEC2.clone(),
-    //     2 => crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
-    //         .0
-    //         .clone(),
-    //     _ => panic!("convergence ladder supports up to 3 distinct funded deployer keys"),
-    // }
-    assert!(v < 3, "convergence ladder supports up to 3 writers");
-    construct_deploy::DEFAULT_SEC.clone()
+    // Changed by G3 (DR-135): dev's signers return, and the writer's purse
+    // funds the read.
+    // assert!(v < 3, "convergence ladder supports up to 3 writers");
+    // construct_deploy::DEFAULT_SEC.clone()
+    match v {
+        0 => construct_deploy::DEFAULT_SEC.clone(),
+        1 => construct_deploy::DEFAULT_SEC2.clone(),
+        2 => crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0]
+            .0
+            .clone(),
+        _ => panic!("convergence ladder supports up to 3 distinct funded deployer keys"),
+    }
 }
 
 // Changed by DR-116 (gap G6): the builder returns an offered deploy.
@@ -115,7 +117,7 @@ async fn present_keys(
         );
         if let Ok((res, _)) = node
             .runtime_manager
-            .play_exploratory_deploy(term, state_hash, None)
+            .play_exploratory_deploy(term, state_hash, None, node.adopted_policy())
             .await
         {
             if res.first().and_then(par_to_i64) != Some(-999) {

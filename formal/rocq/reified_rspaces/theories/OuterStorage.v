@@ -82,6 +82,8 @@
      feature/cost-accounted-rho), restated here so that the module is
      standalone: a self-metered step is Reserve u; Read u, and a trace is
      covered when every prefix reads at most what it reserved.
+     Changed by decision 96 (decision 89, DR-131): AgentReadCoverage.v is
+     deleted, and section 8 goes with the host-work metering.
    - The commit applies the staged operations in order (decision 19, D6).
      The outcome after the commit only moves the planned indices out of the
      prepared job, so its trace is empty.
@@ -111,6 +113,9 @@
     8. alloc_trace_covered                 an allocation reserves each read
                                            and copy before it makes it, and
                                            nothing runs after the commit
+                                           Decision 96 (decision 89,
+                                           DR-131) disables this headline
+                                           with the host-work metering.
 
    No Axiom, Parameter, Admitted, admit, Abort or Conjecture. Section
    variables are parameters of the closed theorems. The file imports only
@@ -571,6 +576,8 @@ Section Allocator.
        ConsumeId 0 (job_random 8 0); ProduceId 0 (job_random 8 1)].
   Proof. split; reflexivity. Qed.
 
+  (* Disabled by decision 96 (decision 89, DR-131): alloc_trace_covered goes
+     with the host-work metering. The section stays below as a comment.
   (* ── 8. The metering of an allocation (decision 42) ─────────────────── *)
 
   (* The metering rule of DR-88, restated from AgentReadCoverage.v. *)
@@ -711,6 +718,7 @@ Section Allocator.
     destruct whole as [covered_whole equal]. split; [exact (covered_whole 0) |].
     split; [reflexivity | exact equal].
   Qed.
+  *)
 
 End Allocator.
 
@@ -723,4 +731,7 @@ Print Assumptions allocation_batch_atomic.
 Print Assumptions fixed_array_indices_sequential.
 Print Assumptions allocator_indices_distinct.
 Print Assumptions allocator_identities_unique.
+(* Disabled by decision 96 (decision 89, DR-131): alloc_trace_covered goes
+   with the host-work metering.
 Print Assumptions alloc_trace_covered.
+*)

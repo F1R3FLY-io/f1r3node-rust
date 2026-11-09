@@ -79,6 +79,7 @@ pub struct DeployGrpcServiceV1Impl {
     native_token_name: String,
     native_token_symbol: String,
     native_token_decimals: u32,
+    has_validator_key: bool,
     is_node_read_only: bool,
     engine_cell: EngineCell,
     block_report_api: BlockReportAPI,
@@ -102,6 +103,7 @@ impl DeployGrpcServiceV1Impl {
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        has_validator_key: bool,
         is_node_read_only: bool,
         engine_cell: EngineCell,
         block_report_api: BlockReportAPI,
@@ -123,6 +125,7 @@ impl DeployGrpcServiceV1Impl {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            has_validator_key,
             is_node_read_only,
             engine_cell,
             block_report_api,
@@ -801,18 +804,55 @@ impl DeployService for DeployGrpcServiceV1Impl {
 
         match BlockAPI::list_pending_deploys(&self.engine_cell, deployer).await {
             Ok(snapshot) => {
-                let deploys: Vec<PendingDeployInfo> = snapshot
+                // Changed by DR-134 (DR-66): an entry is a legacy deploy or an
+                // offered envelope, each in its own proto form.
+                // let deploys: Vec<PendingDeployInfo> = snapshot
+                //     .deploys
+                //     .into_iter()
+                //     .map(|(signed, is_rejected)| PendingDeployInfo {
+                //         deploy: Some(
+                //             models::rust::casper::protocol::casper_message::DeployData::to_proto(
+                //                 signed,
+                //             ),
+                //         ),
+                //         is_rejected,
+                //     })
+                //     .collect();
+                let deploys: Result<Vec<PendingDeployInfo>, String> = snapshot
                     .deploys
                     .into_iter()
-                    .map(|(signed, is_rejected)| PendingDeployInfo {
-                        deploy: Some(
-                            models::rust::casper::protocol::casper_message::DeployData::to_proto(
-                                signed,
-                            ),
-                        ),
-                        is_rejected,
+                    .map(|(candidate, is_rejected)| {
+                        let deploy = match candidate {
+                            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Legacy(signed) => {
+                                models::rust::casper::protocol::casper_message::DeployData::to_proto(
+                                    signed,
+                                )
+                            }
+                            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Envelope(envelope) => {
+                                envelope.to_proto()?
+                            }
+                        };
+                        Ok(PendingDeployInfo {
+                            deploy: Some(deploy),
+                            is_rejected,
+                        })
                     })
                     .collect();
+                let deploys = match deploys {
+                    Ok(deploys) => deploys,
+                    Err(error) => {
+                        error!("Deploy service method error get_pending_deploys: {}", error);
+                        return Ok(tonic::Response::new(PendingDeploysResponse {
+                            message: Some(
+                                models::casper::v1::pending_deploys_response::Message::Error(
+                                    ServiceError {
+                                        messages: vec![error],
+                                    },
+                                ),
+                            ),
+                        }));
+                    }
+                };
                 let payload = PendingDeploysResponsePayload {
                     deploys,
                     total_available: snapshot.total_available,
@@ -1079,7 +1119,6 @@ impl DeployService for DeployGrpcServiceV1Impl {
             Err(_) => -1,
         };
 
-        let is_validator = self.trigger_propose_f.is_some();
         let is_ready = self.is_ready.load(Ordering::Relaxed);
         let current_epoch = if self.epoch_length > 0 && lfb_number >= 0 {
             lfb_number / self.epoch_length as i64
@@ -1110,7 +1149,7 @@ impl DeployService for DeployGrpcServiceV1Impl {
             native_token_symbol: self.native_token_symbol.clone(),
             native_token_decimals: self.native_token_decimals,
             last_finalized_block_number: lfb_number,
-            is_validator,
+            is_validator: self.has_validator_key,
             is_read_only: self.is_node_read_only,
             is_ready,
             current_epoch,
@@ -1184,6 +1223,7 @@ mod tests {
             "F1R3".to_string(),
             "F1R3".to_string(),
             8,
+            false,
             true,
             EngineCell::init(),
             BlockReportAPI::new(
@@ -1227,6 +1267,7 @@ mod tests {
             valid_after_block_number: 0,
             shard_id: "root".to_string(),
             expiration_timestamp: None,
+            parameters: Vec::new(),
         };
         let signed =
             crypto::rust::signatures::signed::Signed::create(deploy_data, Box::new(Secp256k1), sk)

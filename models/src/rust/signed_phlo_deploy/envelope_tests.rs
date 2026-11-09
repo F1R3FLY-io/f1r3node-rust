@@ -22,7 +22,7 @@ fn normalizer_context_preserves_each_authenticated_envelope_identity() {
 
     for (format, proto) in variants() {
         let envelope = DeployEnvelope::from_proto(proto.clone(), envelope_limits()).unwrap();
-        let env = normalizer_env_from_envelope(&envelope);
+        let env = normalizer_env_from_envelope(&envelope).unwrap();
         let id = &env["rho:system:deployId"].unforgeables[0].unf_instance;
         assert!(
             matches!(id, Some(UnfInstance::GDeployIdBody(id)) if id.sig == envelope.identity().as_bytes())
@@ -32,7 +32,7 @@ fn normalizer_context_preserves_each_authenticated_envelope_identity() {
             DeployEnvelopeFormat::Legacy | DeployEnvelopeFormat::BodyV61 => {
                 assert_eq!(
                     env,
-                    normalizer_env_from_cosigned_deploy(envelope.body_envelope().unwrap())
+                    normalizer_env_from_cosigned_deploy(envelope.body_envelope().unwrap()).unwrap()
                 );
             }
             DeployEnvelopeFormat::Funded | DeployEnvelopeFormat::OfferedFunded => {
@@ -43,7 +43,7 @@ fn normalizer_context_preserves_each_authenticated_envelope_identity() {
         }
         let roundtrip =
             DeployEnvelope::from_proto(envelope.to_proto().unwrap(), envelope_limits()).unwrap();
-        assert_eq!(env, normalizer_env_from_envelope(&roundtrip));
+        assert_eq!(env, normalizer_env_from_envelope(&roundtrip).unwrap());
         assert_eq!(envelope.to_proto().unwrap(), proto);
     }
 }
@@ -63,7 +63,7 @@ fn funded_normalizer_context_separates_signers_from_policy_members() {
             envelope_limits(),
         )
         .unwrap();
-        let env = normalizer_env_from_envelope(&envelope);
+        let env = normalizer_env_from_envelope(&envelope).unwrap();
         for (name, expected) in [
             ("rho:system:signers", count.div_ceil(2)),
             ("rho:system:policyMembers", count),
@@ -100,8 +100,8 @@ proptest! {
         };
         let first = make(limit, price);
         let second = if change_limit { make(limit ^ 1, price) } else { make(limit, price ^ 1) };
-        let mut first_env = normalizer_env_from_envelope(&first);
-        let mut second_env = normalizer_env_from_envelope(&second);
+        let mut first_env = normalizer_env_from_envelope(&first).unwrap();
+        let mut second_env = normalizer_env_from_envelope(&second).unwrap();
         prop_assert_ne!(first_env.remove("rho:system:deployId"), second_env.remove("rho:system:deployId"));
         prop_assert_ne!(first_env.remove("rho:rchain:deployId"), second_env.remove("rho:rchain:deployId"));
         prop_assert_eq!(first_env, second_env);
@@ -229,7 +229,7 @@ fn legacy_wire_primary_survives_canonical_signer_reordering() {
     let checked = DeployEnvelope::from_proto(proto.clone(), envelope_limits()).unwrap();
     assert_eq!(checked.primary().sig, proto.sig);
     assert_ne!(checked.primary().sig, checked.signers()[0].sig);
-    let env = crate::rust::normalizer_env::normalizer_env_from_envelope(&checked);
+    let env = crate::rust::normalizer_env::normalizer_env_from_envelope(&checked).unwrap();
     assert!(matches!(
         &env["rho:system:deployId"].unforgeables[0].unf_instance,
         Some(crate::rhoapi::g_unforgeable::UnfInstance::GDeployIdBody(id)) if id.sig == proto.sig.as_ref()
@@ -452,5 +452,41 @@ proptest! {
         proto.authorization_v61.as_mut().unwrap().format_version = version;
         prop_assert_eq!(DeployEnvelope::from_proto(proto,envelope_limits()).is_ok(), version == 0x60003);
         prop_assert_eq!(DeployEnvelopeFormat::from_authorization_version(Some(version)).is_ok(), matches!(version,0x60001..=0x60003));
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn offered_parameters_are_authenticated_and_reach_the_normalizer(value in any::<i64>()) {
+        use crate::rust::deploy_parameters::{DeployParameter, RholangValue};
+        use crate::rust::normalizer_env::normalizer_env_from_envelope;
+        let make = |value| {
+            let mut data = body();
+            data.parameters = vec![DeployParameter {
+                name: "input".into(),
+                value: RholangValue::Int(value),
+            }];
+            let signed = Cosigned::create_single_envelope(
+                OfferedFundedDeploy::new(data, funding(10, 3, 30), 10, 2, limits()).unwrap(),
+                Box::new(Secp256k1),
+                PrivateKey::from_bytes(&[1; 32]),
+            ).unwrap();
+            DeployEnvelope::from_proto(OfferedFundedDeploy::to_proto(&signed).unwrap(), envelope_limits()).unwrap()
+        };
+        let envelope = make(value);
+        let changed = make(value ^ 1);
+        prop_assert_ne!(envelope.identity(), changed.identity());
+        let proto = envelope.to_proto().unwrap();
+        let restored = DeployEnvelope::from_proto(proto.clone(), envelope_limits()).unwrap();
+        prop_assert_eq!(restored.identity(), envelope.identity());
+        prop_assert_eq!(&restored.body().parameters, &envelope.body().parameters);
+        let env = normalizer_env_from_envelope(&restored).unwrap();
+        prop_assert_eq!(env["rho:deploy:param:input"].exprs[0].expr_instance.as_ref(),
+            Some(&crate::rhoapi::expr::ExprInstance::GInt(value)));
+        let mut tampered = proto;
+        tampered.parameters = changed.to_proto().unwrap().parameters;
+        prop_assert!(DeployEnvelope::from_proto(tampered, envelope_limits()).is_err());
     }
 }

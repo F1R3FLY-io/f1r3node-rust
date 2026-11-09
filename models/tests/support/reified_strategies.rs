@@ -14,15 +14,34 @@ use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::var::VarInstance;
+// Changed by decision 112: a query is a field of a bind, so a strategy builds a receive.
+// The text before:
+// ```
+// use models::rhoapi::{
+//     Connective, EList, ETuple, EVar, Expr, GPrivate, GUnforgeable, New, Par, Send, Var,
+// };
+// ```
 use models::rhoapi::{
-    Connective, EList, ETuple, EVar, Expr, GPrivate, GUnforgeable, New, Par, Send, Var,
+    Connective, EList, ETuple, EVar, Expr, GPrivate, GUnforgeable, New, Par, Receive, ReceiveBind,
+    Send, Var,
 };
 use models::rust::par_map::ParMap;
 use models::rust::par_map_type_mapper::ParMapTypeMapper;
-use models::rust::reified::builders::push_process_expr;
+// Changed by decision 112: the use block and the annotated `new` are protobuf fields.
+// The text before:
+// use models::rust::reified::builders::push_process_expr;
+use models::rust::reified::builders::{new_space, push_use_block, use_block};
+// Changed by decision 112: `encode` and `encode_query` retire with the marker tuples.
+// The text before:
+// ```
+// use models::rust::reified::encoding::{
+//     encode, encode_free, encode_params, encode_query, FreeTheory, Marker, NewSpace, QuerySpec,
+//     ReifiedConstruct, SendParams, UseBlock,
+// };
+// ```
 use models::rust::reified::encoding::{
-    encode, encode_free, encode_params, encode_query, FreeTheory, Marker, NewSpace, QuerySpec,
-    ReifiedConstruct, SendParams, UseBlock,
+    encode_free, encode_params, FreeTheory, Marker, NewSpace, QuerySpec, ReifiedConstruct,
+    SendParams, UseBlock,
 };
 use models::rust::reified::validation::{is_param_key, is_theory_name};
 use models::rust::rholang::implicits::concatenate_pars;
@@ -157,6 +176,7 @@ pub fn send(chan: Par, data: Vec<Par>) -> Par {
             persistent: false,
             locally_free: locally_free.clone(),
             connective_used,
+            params: None,
         }],
         locally_free,
         connective_used,
@@ -254,6 +274,7 @@ pub fn new_term(plain: usize, uris: Vec<String>, body: Par) -> New {
         uri: uris,
         injections: BTreeMap::new(),
         locally_free,
+        space_types: Vec::new(),
     }
 }
 
@@ -302,15 +323,25 @@ pub fn arb_send_params(values: BoxedStrategy<Par>) -> BoxedStrategy<SendParams> 
 }
 
 pub fn arb_query_spec(values: BoxedStrategy<Par>) -> BoxedStrategy<QuerySpec> {
-    (values.clone(), vec(values.clone(), 0..3), arb_named(values))
-        .prop_filter("a query with a payload or params", |(_, payload, named)| {
+    // Changed by decision 112: the channel of a query is the source of its bind, so a query
+    // holds only the payload and the named params. The text before:
+    // ```
+    // (values.clone(), vec(values.clone(), 0..3), arb_named(values))
+    //     .prop_filter("a query with a payload or params", |(_, payload, named)| {
+    //         !(payload.is_empty() && named.is_empty())
+    //     })
+    //     .prop_map(|(channel, payload, named)| QuerySpec {
+    //         channel,
+    //         payload,
+    //         named,
+    //     })
+    //     .boxed()
+    // ```
+    (vec(values.clone(), 0..3), arb_named(values))
+        .prop_filter("a query with a payload or params", |(payload, named)| {
             !(payload.is_empty() && named.is_empty())
         })
-        .prop_map(|(channel, payload, named)| QuerySpec {
-            channel,
-            payload,
-            named,
-        })
+        .prop_map(|(payload, named)| QuerySpec { payload, named })
         .boxed()
 }
 
@@ -338,25 +369,84 @@ pub fn arb_ground_construct() -> BoxedStrategy<ReifiedConstruct> {
     arb_construct_with(arb_ground_par())
 }
 
-/// The encoding of `construct` in its own position: the process `Par` of a USE or NEWSPACE
-/// tuple, the trailing data element of PARAMS, the bind source of QUERY and the value of
-/// FREE.
+// Changed by decision 112: each construct is a field of the term around it. The text before:
+// ```
+// /// The encoding of `construct` in its own position: the process `Par` of a USE or NEWSPACE
+// /// tuple, the trailing data element of PARAMS, the bind source of QUERY and the value of
+// /// FREE.
+// ```
+/// The encoding of `construct` in its own position: the process `Par` that holds the use block
+/// or the annotated `new`, the trailing data element of PARAMS, a process `Par` with one
+/// receive whose one bind holds the query, and the value of FREE.
 pub fn position_par(construct: &ReifiedConstruct) -> Par {
     match construct {
-        ReifiedConstruct::Use(_) | ReifiedConstruct::NewSpace(_) => {
-            match encode(construct)
-                .expect("a generated construct is well formed")
-                .expr_instance
-            {
-                Some(ExprInstance::ETupleBody(tuple)) => push_process_expr(Par::default(), tuple),
-                other => panic!("encode returned {other:?} instead of a tuple"),
+        // Changed by decision 112: a use block is a field of its process, and an annotated
+        // `new` holds its annotations. The text before:
+        // ```
+        // ReifiedConstruct::Use(_) | ReifiedConstruct::NewSpace(_) => {
+        //     match encode(construct)
+        //         .expect("a generated construct is well formed")
+        //         .expr_instance
+        //     {
+        //         Some(ExprInstance::ETupleBody(tuple)) => push_process_expr(Par::default(), tuple),
+        //         other => panic!("encode returned {other:?} instead of a tuple"),
+        //     }
+        // }
+        // ```
+        ReifiedConstruct::Use(UseBlock { space, body }) => {
+            push_use_block(Par::default(), use_block(space.clone(), body.clone()))
+        }
+        ReifiedConstruct::NewSpace(NewSpace { annotations, new }) => {
+            let mut binder_annotations = annotations.clone();
+            binder_annotations.resize(annotations.len() + new.uri.len(), None);
+            let annotated = new_space(new.clone(), binder_annotations)
+                .expect("a generated annotated new is well formed");
+            let body_connective = new.p.as_ref().is_some_and(|body| body.connective_used);
+            let annotation_connective = annotations
+                .iter()
+                .flatten()
+                .any(|space| space.connective_used);
+            Par {
+                locally_free: annotated.locally_free.clone(),
+                connective_used: body_connective || annotation_connective,
+                news: vec![annotated],
+                ..Par::default()
             }
         }
         ReifiedConstruct::Params(params) => encode_params(params)
             .expect("generated params are well formed")
             .expect("generated params are not empty"),
+        // Changed by decision 112: a query has no `Par` encoding, so its position is the one
+        // bind of a receive. The text before:
+        // ```
+        // ReifiedConstruct::Query(query) => {
+        //     encode_query(query).expect("a generated query is well formed")
+        // }
+        // ```
         ReifiedConstruct::Query(query) => {
-            encode_query(query).expect("a generated query is well formed")
+            let values: Vec<Par> = query
+                .payload
+                .iter()
+                .chain(query.named.values())
+                .cloned()
+                .collect();
+            let (locally_free, connective_used) = bits(&values);
+            Par {
+                receives: vec![Receive {
+                    binds: vec![ReceiveBind {
+                        source: Some(Par::default()),
+                        query_spec: Some(query.clone()),
+                        ..ReceiveBind::default()
+                    }],
+                    body: Some(Par::default()),
+                    locally_free: locally_free.clone(),
+                    connective_used,
+                    ..Receive::default()
+                }],
+                locally_free,
+                connective_used,
+                ..Par::default()
+            }
         }
         ReifiedConstruct::Free(theory) => {
             encode_free(theory).expect("a generated theory is well formed")

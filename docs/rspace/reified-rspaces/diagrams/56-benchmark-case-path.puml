@@ -1,28 +1,49 @@
 ' 56 The path of one benchmark case: its setup, its reference play with the
 ' contract check, and its timed iterations.
 '
+' Changed by decision 89: the metered view reads are retired. The text before:
+' ' Source of Figure 1 of ../performance.md (section 1). The figure restates
+' ' bench_case, prepare and observe of rholang/benches/common/mod.rs, and the
+' ' metered view reads of the staged view (NativeViewReads::data in
+' ' rspace++/src/rspace/space_store_handle.rs). It adds no new fact.
 ' Source of Figure 1 of ../performance.md (section 1). The figure restates
 ' bench_case, prepare and observe of rholang/benches/common/mod.rs, and the
-' metered view reads of the staged view (NativeViewReads::data in
+' view reads of the staged view (TxnView::load_data in
 ' rspace++/src/rspace/space_store_handle.rs). It adds no new fact.
 '
 ' Reading order:
+' Changed by decisions 89, 102 and 111: no host-work limit bounds a deploy,
+' an ordered family fills with one send in each deploy, the contract check
+' compares the fields of the class of the case, and the metered view reads
+' are retired. The text before:
+' '   1. The setup builds the pre-state on a new chain: setup deploys, then
+' '      fill deploys of ten sends, or of one send when ten do not fit. Each
+' '      fill deploy that succeeds ends with a checkpoint. A fill that cannot
+' '      store one more send ends the case: the collection is full.
+' '   2. The reference play evaluates the measured deploy once. It reads the
+' '      values on the result channel, the phlo and the host work, takes the
+' '      checkpoint, and compares the four with the contract.
+' '   3. A deploy that fails, for example with HostWorkRejected, is recorded
+' '      and not timed.
+' '   5. Inside the evaluation, each space job reads its staged view through
+' '      metered view reads. A read reserves the host work of the key and of
+' '      the whole loaded value before it loads, so a read of a channel of n
+' '      records reserves work in proportion to n.
 '   1. The setup builds the pre-state on a new chain: setup deploys, then
-'      fill deploys of ten sends, or of one send when ten do not fit. Each
-'      fill deploy that succeeds ends with a checkpoint. A fill that cannot
-'      store one more send ends the case: the collection is full.
+'      fill deploys of ten sends, or of one send on an ordered family. Each
+'      fill deploy that succeeds ends with a checkpoint. A fill deploy that
+'      fails resets to the last root and continues with one send in each
+'      deploy. A fill deploy of one send that fails ends the case, and the
+'      run fails unless the contract holds this outcome.
 '   2. The reference play evaluates the measured deploy once. It reads the
-'      values on the result channel, the phlo and the host work, takes the
-'      checkpoint, and compares the four with the contract.
-'   3. A deploy that fails, for example with HostWorkRejected, is recorded
-'      and not timed.
+'      values on the result channel and the phlo, takes the checkpoint, and
+'      compares the fields of the class of the case with the contract.
+'   3. A deploy that fails is recorded and not timed.
 '   4. Each timed iteration resets the chain to the pre-state outside the
 '      timer, then evaluates the deploy, with the checkpoint only when the
 '      case includes it.
-'   5. Inside the evaluation, each space job reads its staged view through
-'      metered view reads. A read reserves the host work of the key and of
-'      the whole loaded value before it loads, so a read of a channel of n
-'      records reserves work in proportion to n.
+'   5. Inside the evaluation, each space job reads its staged view. The first
+'      read of a channel loads the records of the channel into the view.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 56-benchmark-case-path.puml   Check: ./render.sh --check
@@ -46,37 +67,55 @@ partition "Setup: not timed (prepare)" {
   :setup deploys: the factory call of the space
   each one checked for no error, then a checkpoint; <<$rrs_factory>>
   while (records left to store?) is (yes)
+' Changed by decision 89: no limit ends a fill, and an ordered family fills
+' with one send in each deploy. The text before:
+'     or of one send after ten did not fit; <<$rrs_storage>>
+'     if (the deploy fits the v6 limits?) then (yes)
     :a fill deploy of ten sends in a use block
-    or of one send after ten did not fit; <<$rrs_storage>>
-    if (the deploy fits the v6 limits?) then (yes)
+    or of one send on an ordered family; <<$rrs_storage>>
+    if (the deploy succeeds?) then (yes)
       :checkpoint: the new pre-state root; <<$rrs_storage>>
     else (no)
       if (the deploy had more than one send?) then (yes)
         :reset to the last root
         continue with one send in each deploy; <<$rrs_host>>
       else (no)
-        :record **the collection is full at r records**
-        the contract holds this outcome; <<$rrs_reject>>
+' Changed by decision 89: no limit ends a fill. The text before:
+'         :record **the collection is full at r records**
+'         the contract holds this outcome; <<$rrs_reject>>
+        :a fill deploy of one send failed
+        the run fails unless the contract holds this outcome; <<$rrs_reject>>
         stop
       endif
     endif
   endwhile (no)
 }
 partition "Reference play: checked, not timed (observe)" {
+' Changed by decisions 89, 102 and 111: a deploy has no host-work budget, the
+' contract holds no host work, and the check compares the fields of the class
+' of the case. The text before:
+'   with a fresh v6 host-work budget and a phlo limit of <latex>10^{9}</latex>; <<$rrs_agent>>
+'   :read the values on the result channel, the phlo
+'   and the used host work of each dimension; <<$rrs_host>>
+'   if (result, phlo, root and host work equal the contract?) then (yes)
   :evaluate the measured deploy once
-  with a fresh v6 host-work budget and a phlo limit of <latex>10^{9}</latex>; <<$rrs_agent>>
-  :read the values on the result channel, the phlo
-  and the used host work of each dimension; <<$rrs_host>>
+  with a phlo limit of <latex>10^{9}</latex>; <<$rrs_agent>>
+  :read the values on the result channel
+  and the phlo; <<$rrs_host>>
   :checkpoint: the root after the deploy; <<$rrs_storage>>
-  if (result, phlo, root and host work equal the contract?) then (yes)
+  if (the fields of the class of the case equal the contract?) then (yes)
   else (no)
     :the run fails: the contract does not hold; <<$rrs_reject>>
     stop
   endif
   :append the record line: the observed values,
   the setup time and the reference time; <<$rrs_host>>
-  if (the deploy failed, for example with HostWorkRejected?) then (yes)
-    :no timing: the series stops at this count; <<$rrs_reject>>
+' Changed by decision 89: no host-work limit rejects a deploy, and a series
+' runs its fixed counts. The text before:
+'   if (the deploy failed, for example with HostWorkRejected?) then (yes)
+'     :no timing: the series stops at this count; <<$rrs_reject>>
+  if (the deploy failed?) then (yes)
+    :no timing: the case has nothing to measure; <<$rrs_reject>>
     stop
   else (no)
   endif
@@ -86,12 +125,20 @@ partition "Timed iterations (iter_custom)" {
     :reset the chain to the pre-state root
     outside the timer; <<$rrs_host>>
     :start the timer; <<$rrs_system>>
+' Changed by decision 112: the Reified syntax uses protobuf fields. The text
+' before:
+'     recognize the marker tuples of use and of the params; <<$rrs_syntax>>
     :parse and normalize the source text
-    recognize the marker tuples of use and of the params; <<$rrs_syntax>>
+    recognize the fields of use and of the params; <<$rrs_syntax>>
+' Changed by decision 90 (DR-132): racing evaluation replaced the deterministic order. The text before:
+'     under the deterministic operation order; <<$rrs_agent>>
     :reduce: each space operation runs as a space job
-    under the deterministic operation order; <<$rrs_agent>>
-    :metered view reads: reserve the key and the whole loaded value
-    then load the records of the channel into the staged view; <<$rrs_substrate>>
+    under racing evaluation; <<$rrs_agent>>
+' Changed by decision 89: the metered view reads are retired. The text before:
+'     :metered view reads: reserve the key and the whole loaded value
+'     then load the records of the channel into the staged view; <<$rrs_substrate>>
+    :view reads: load the records of the channel
+    into the staged view; <<$rrs_substrate>>
     :match, stage and commit: the events
     and the observer calls that charge the phlo; <<$rrs_substrate>>
     if (the case includes the checkpoint?) then (yes)
@@ -106,14 +153,18 @@ partition "Timed iterations (iter_custom)" {
 the median and its 95 % bootstrap interval; <<$rrs_system>>
 stop
 
+' Changed by decisions 89 and 112: the metered view reads are retired, and the
+' Reified syntax uses protobuf fields. The text before:
+' |<$rrs_substrate>  | substrate: metered view reads, staging and commit |
+' |<$rrs_syntax>     | syntax: parse, normalization and marker tuples |
 legend bottom
 **Concept colors**
 |<$rrs_host>       | host code at the baseline and the test chain |
 |<$rrs_factory>    | the factory call of a space |
 |<$rrs_storage>    | records, the history trie and checkpoints |
 |<$rrs_agent>      | evaluation and space jobs |
-|<$rrs_substrate>  | substrate: metered view reads, staging and commit |
-|<$rrs_syntax>     | syntax: parse, normalization and marker tuples |
+|<$rrs_substrate>  | substrate: view reads, staging and commit |
+|<$rrs_syntax>     | syntax: parse, normalization and fields |
 |<$rrs_system>     | timer and statistics |
 |<$rrs_reject>     | an outcome without timing, or a failed run |
 endlegend

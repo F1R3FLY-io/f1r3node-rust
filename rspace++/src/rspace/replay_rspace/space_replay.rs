@@ -32,14 +32,24 @@ use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::r#match::Match;
 use crate::rspace::reporting_rspace::ReportingRspace;
 use crate::rspace::rspace_interface::{RSpaceAccountingObserver, RSpaceOperationSource};
+// Changed by decision 94: the transaction covers the exact keys of phase B,
+// so the host builds no stripe coverage.
+// use crate::rspace::space_store_handle::{
+//     BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire,
+// ReadyFire,     ReadyProduce, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError,
+// SpaceTxnHost,     StagedConsume, StagedConsumeFire, StagedFire, StagedOperation,
+// StagedProduce, SweepReport,     TxnBackend, TxnRegistration, completion, fired_receipt,
+// installed_channels, ready_consume,     ready_produce, root_leaf_records, run_before_observe,
+// sweep_channels, sweep_volatile_channels, };
+// use crate::rspace::striped_locks;
 use crate::rspace::space_store_handle::{
-    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire, ReadyFire,
-    ReadyProduce, SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost,
-    StagedConsume, StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport,
-    TxnBackend, TxnRegistration, completion, fired_receipt, installed_channels, ready_consume,
-    ready_produce, root_leaf_records, run_before_observe, sweep_channels, sweep_volatile_channels,
+    BeforeObserve, BoxedSpaceTxn, HostTxn, ReadyConsume, ReadyConsumeFire, ReadyFire, ReadyProduce,
+    SharedStore, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost, StagedConsume,
+    StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport, TxnBackend,
+    TxnRegistration, completion, fired_receipt, installed_channels, ready_consume, ready_produce,
+    root_leaf_records, run_before_observe, sweep_channels, sweep_volatile_channels,
 };
-use crate::rspace::striped_locks;
+use crate::rspace::striped_locks::{self, ChannelLockGuard};
 use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
 
 struct ReplayBackend<C, P, A, K> {
@@ -82,11 +92,21 @@ where
         binding
     }
 
+    // Changed by decision 92: replay follows its rigged log, which records no
+    // footprint, so it ignores the footprint key.
+    // fn apply_op(
+    //     &self,
+    //     store: &Self::Store,
+    //     operation: StagedOperation<C, P, A, K>,
+    //     before_observe: Option<BeforeObserve>,
+    //     events: &mut Vec<Event>,
+    // ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
     fn apply_op(
         &self,
         store: &Self::Store,
         operation: StagedOperation<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        _footprint_key: Option<&C>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
         let store: &dyn HotStore<C, P, A, K> = &**store;
@@ -98,6 +118,11 @@ where
                 self.apply_consume(store, consume, before_observe, events)
             }
         }
+    }
+
+    // Added by decision 94: phase B as the host produce and consume take it.
+    async fn lock_phase_b(&self, hashes: &[u64]) -> Result<ChannelLockGuard, SpaceTxnError> {
+        Ok(striped_locks::acquire_locks(&self.space.phase_b_locks, hashes).await)
     }
 }
 
@@ -140,16 +165,31 @@ where
         let produce_ref = produce.source.clone();
         let source = RSpaceOperationSource::Produce(&produce_ref);
         run_before_observe(before_observe, source)?;
-        let observer = self.space.start_accounting_operation(
+        // Changed by decision 90 (DR-132): the start names the recorded row, and the
+        // observed body and the finish run under that name, as `locked_produce`
+        // of the host replay does. Without the name, a native charge has no
+        // operation context. let observer =
+        // self.space.start_accounting_operation(     source,
+        //     std::slice::from_ref(&produce.channel),
+        //     &joins,
+        // )?;
+        // let result = self.produce_observed(store, produce, source,
+        // observer.as_deref(), events); if let Some(observer) = observer {
+        //     observer.observe_operation_finish(source, completion(&result));
+        // }
+        // result
+        let (observer, name) = self.space.start_accounting_operation(
             source,
             std::slice::from_ref(&produce.channel),
             &joins,
         )?;
-        let result = self.produce_observed(store, produce, source, observer.as_deref(), events);
-        if let Some(observer) = observer {
-            observer.observe_operation_finish(source, completion(&result));
-        }
-        result
+        crate::rspace::operation_context::named(name, move || {
+            let result = self.produce_observed(store, produce, source, observer.as_deref(), events);
+            if let Some(observer) = observer {
+                observer.observe_operation_finish(source, completion(&result));
+            }
+            result
+        })
     }
 
     // replay_rspace.rs `locked_produce_observed`: refuse a directive, observe
@@ -319,14 +359,26 @@ where
         let consume_ref = consume.source.clone();
         let source = RSpaceOperationSource::Consume(&consume_ref);
         run_before_observe(before_observe, source)?;
-        let observer = self
-            .space
-            .start_accounting_operation(source, &consume.channels, &[])?;
-        let result = self.consume_observed(consume, source, observer.as_deref(), events);
-        if let Some(observer) = observer {
-            observer.observe_operation_finish(source, completion(&result));
-        }
-        result
+        // Changed by decision 90 (DR-132): the start names the recorded row, and the
+        // observed body and the finish run under that name, as `locked_consume`
+        // of the host replay does. let observer = self
+        //     .space
+        //     .start_accounting_operation(source, &consume.channels, &[])?;
+        // let result = self.consume_observed(consume, source, observer.as_deref(),
+        // events); if let Some(observer) = observer {
+        //     observer.observe_operation_finish(source, completion(&result));
+        // }
+        // result
+        let (observer, name) =
+            self.space
+                .start_accounting_operation(source, &consume.channels, &[])?;
+        crate::rspace::operation_context::named(name, move || {
+            let result = self.consume_observed(consume, source, observer.as_deref(), events);
+            if let Some(observer) = observer {
+                observer.observe_operation_finish(source, completion(&result));
+            }
+            result
+        })
     }
 
     // replay_rspace.rs `locked_consume_observed`: refuse a directive, observe
@@ -459,14 +511,28 @@ where
         return Err(SpaceTxnError::InvalidOperation("lock keys must not be empty"));
     }
     let hashes: Vec<u64> = lock_keys.iter().map(striped_locks::channel_hash).collect();
-    let coverage = LockCoverage::new(&hashes, space.phase_a_locks.len(), space.phase_b_locks.len());
-    let locks = space.consume_lock(&hashes).await;
+    // Changed by decision 94: the begin takes phase A, and the transaction
+    // takes phase B ([`SpaceTxn::lock_phase_b`]).
+    // let coverage = LockCoverage::new(&hashes, space.phase_a_locks.len(),
+    // space.phase_b_locks.len()); let locks =
+    // space.consume_lock(&hashes).await;
+    let phase_a = striped_locks::acquire_locks(&space.phase_a_locks, &hashes).await;
     let store = space.get_store();
     let installed = installed_channels(&space.installs)?;
     let backend = ReplayBackend {
         space: space.clone(),
     };
-    Ok(Box::new(HostTxn::new(mode, backend, store, installed, coverage, locks, registration)))
+    // Ok(Box::new(HostTxn::new(mode, backend, store, installed, coverage, locks,
+    // registration)))
+    Ok(Box::new(HostTxn::new(
+        mode,
+        backend,
+        store,
+        installed,
+        lock_keys.to_vec(),
+        phase_a,
+        registration,
+    )))
 }
 
 fn replay_root_leaf_record_count<C, P, A, K>(
@@ -531,7 +597,16 @@ where
 
     fn matcher(&self) -> Arc<Box<dyn Match<P, A, K>>> { Arc::clone(&self.matcher) }
 
-    async fn begin(
+    // Changed by decision 94: the host takes phase A at the begin. The default
+    // `begin` takes both phases over the lock keys.
+    // async fn begin(
+    //     &self,
+    //     lock_keys: &[C],
+    //     registration: TxnRegistration,
+    // ) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError> {
+    //     begin_replay(self, SpaceMode::Replay, lock_keys, registration).await
+    // }
+    async fn begin_phase_a(
         &self,
         lock_keys: &[C],
         registration: TxnRegistration,
@@ -564,7 +639,16 @@ where
 
     fn matcher(&self) -> Arc<Box<dyn Match<P, A, K>>> { Arc::clone(&self.replay_rspace.matcher) }
 
-    async fn begin(
+    // Changed by decision 94: the host takes phase A at the begin. The default
+    // `begin` takes both phases over the lock keys.
+    // async fn begin(
+    //     &self,
+    //     lock_keys: &[C],
+    //     registration: TxnRegistration,
+    // ) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError> {
+    //     begin_replay(&self.replay_rspace, SpaceMode::Reporting, lock_keys,
+    // registration).await }
+    async fn begin_phase_a(
         &self,
         lock_keys: &[C],
         registration: TxnRegistration,
@@ -615,6 +699,9 @@ mod tests {
             peeks: BTreeSet::new(),
             outcome: ConsumeOutcome::Park,
             before_observe: None,
+            own: false,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
         }
     }
 

@@ -218,6 +218,7 @@ fn extract_bool(par: &Par) -> Option<bool> {
         || !par.conditionals.is_empty()
         || !par.cost_signed_terms.is_empty()
         || !par.cost_stacks.is_empty()
+        || !par.use_blocks.is_empty()
         || par.exprs.len() != 1
     {
         return None;

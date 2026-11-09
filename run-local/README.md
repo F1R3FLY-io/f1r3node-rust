@@ -21,6 +21,8 @@ variable aborts the recipe before anything compiles. `docker/.env.example`
 carries the development key the shipped Docker configs use, and the key must
 match a bonded entry in `genesis/standalone/bonds.txt`.
 
+`conf/standalone.conf` sets `casper.genesis-block-data.resource-policy` to the default resource policy of the `root` shard, as the Docker configurations do. A protocol-6 genesis requires this policy (DR-66). `node deploy` signs its schedule by default.
+
 ## Directory Structure
 
 ```

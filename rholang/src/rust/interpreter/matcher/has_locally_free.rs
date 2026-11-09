@@ -128,6 +128,20 @@ impl HasLocallyFree<CostStack> for SpatialMatcherContext {
     }
 }
 
+impl HasLocallyFree<UseBlock> for SpatialMatcherContext {
+    fn connective_used(&self, source: UseBlock) -> bool {
+        source.space.as_ref().is_some_and(|p| p.connective_used)
+            || source.body.as_ref().is_some_and(|p| p.connective_used)
+    }
+
+    fn locally_free(&self, source: UseBlock, _depth: i32) -> Vec<u8> {
+        union(
+            source.space.map(|p| p.locally_free).unwrap_or_default(),
+            source.body.map(|p| p.locally_free).unwrap_or_default(),
+        )
+    }
+}
+
 impl HasLocallyFree<Bundle> for SpatialMatcherContext {
     fn connective_used(&self, _source: Bundle) -> bool { false }
 
@@ -169,6 +183,12 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
 
             Some(EListBody(e)) => e.connective_used,
             Some(ETupleBody(e)) => e.connective_used,
+            Some(EFreeBody(e)) => e.args.iter().any(|p| p.connective_used),
+            Some(EParamsBody(e)) => e
+                .positional
+                .iter()
+                .chain(e.named.values())
+                .any(|p| p.connective_used),
             Some(ESetBody(e)) => e.connective_used,
             Some(EMapBody(e)) => e.connective_used,
             Some(EPathmapBody(e)) => e.connective_used,
@@ -255,6 +275,17 @@ impl HasLocallyFree<Expr> for SpatialMatcherContext {
 
             Some(EListBody(e)) => e.locally_free,
             Some(ETupleBody(e)) => e.locally_free,
+            Some(EFreeBody(e)) => e
+                .args
+                .into_iter()
+                .map(|p| p.locally_free)
+                .fold(Vec::new(), union),
+            Some(EParamsBody(e)) => e
+                .positional
+                .into_iter()
+                .chain(e.named.into_values())
+                .map(|p| p.locally_free)
+                .fold(Vec::new(), union),
             Some(ESetBody(e)) => e.locally_free,
             Some(EMapBody(e)) => e.locally_free,
             Some(EPathmapBody(e)) => e.locally_free,
@@ -490,6 +521,12 @@ impl HasLocallyFree<Expr> for Expr {
 
             Some(EListBody(e)) => e.connective_used,
             Some(ETupleBody(e)) => e.connective_used,
+            Some(EFreeBody(e)) => e.args.iter().any(|p| p.connective_used),
+            Some(EParamsBody(e)) => e
+                .positional
+                .iter()
+                .chain(e.named.values())
+                .any(|p| p.connective_used),
             Some(ESetBody(e)) => e.connective_used,
             Some(EMapBody(e)) => e.connective_used,
             Some(EPathmapBody(e)) => e.connective_used,
@@ -576,6 +613,17 @@ impl HasLocallyFree<Expr> for Expr {
 
             Some(EListBody(e)) => e.locally_free,
             Some(ETupleBody(e)) => e.locally_free,
+            Some(EFreeBody(e)) => e
+                .args
+                .into_iter()
+                .map(|p| p.locally_free)
+                .fold(Vec::new(), union),
+            Some(EParamsBody(e)) => e
+                .positional
+                .into_iter()
+                .chain(e.named.into_values())
+                .map(|p| p.locally_free)
+                .fold(Vec::new(), union),
             Some(ESetBody(e)) => e.locally_free,
             Some(EMapBody(e)) => e.locally_free,
             Some(EPathmapBody(e)) => e.locally_free,
@@ -828,6 +876,24 @@ impl HasLocallyFreeRef<CostStack> for SpatialMatcherContext {
     }
 }
 
+impl HasLocallyFreeRef<UseBlock> for SpatialMatcherContext {
+    fn connective_used_ref(&self, source: &UseBlock) -> bool {
+        source.space.as_ref().is_some_and(|p| p.connective_used)
+            || source.body.as_ref().is_some_and(|p| p.connective_used)
+    }
+
+    fn locally_free_is_empty(&self, source: &UseBlock, _depth: i32) -> bool {
+        source
+            .space
+            .as_ref()
+            .is_none_or(|p| p.locally_free.is_empty())
+            && source
+                .body
+                .as_ref()
+                .is_none_or(|p| p.locally_free.is_empty())
+    }
+}
+
 impl HasLocallyFreeRef<Bundle> for SpatialMatcherContext {
     fn connective_used_ref(&self, _source: &Bundle) -> bool { false }
 
@@ -859,6 +925,12 @@ impl HasLocallyFreeRef<Expr> for SpatialMatcherContext {
 
             Some(EListBody(e)) => e.connective_used,
             Some(ETupleBody(e)) => e.connective_used,
+            Some(EFreeBody(e)) => e.args.iter().any(|p| p.connective_used),
+            Some(EParamsBody(e)) => e
+                .positional
+                .iter()
+                .chain(e.named.values())
+                .any(|p| p.connective_used),
             Some(ESetBody(e)) => e.connective_used,
             Some(EMapBody(e)) => e.connective_used,
             Some(EPathmapBody(e)) => e.connective_used,
@@ -903,6 +975,12 @@ impl HasLocallyFreeRef<Expr> for SpatialMatcherContext {
 
             Some(EListBody(e)) => e.locally_free.is_empty(),
             Some(ETupleBody(e)) => e.locally_free.is_empty(),
+            Some(EFreeBody(e)) => e.args.iter().all(|p| p.locally_free.is_empty()),
+            Some(EParamsBody(e)) => e
+                .positional
+                .iter()
+                .chain(e.named.values())
+                .all(|p| p.locally_free.is_empty()),
             Some(ESetBody(e)) => e.locally_free.is_empty(),
             Some(EMapBody(e)) => e.locally_free.is_empty(),
             Some(EPathmapBody(e)) => e.locally_free.is_empty(),
@@ -1385,6 +1463,7 @@ mod tests {
             persistent: false,
             locally_free: create_bit_vector(&[3]),
             connective_used: true,
+            params: None,
         };
         assert!(HasLocallyFree::<Send>::connective_used(
             &context,
@@ -1467,6 +1546,7 @@ mod tests {
             remainder: None,
             free_count: 0,
             cost_signature: None,
+            query_spec: None,
         };
         assert!(!HasLocallyFree::<ReceiveBind>::connective_used(
             &context,
@@ -1483,6 +1563,7 @@ mod tests {
             remainder: None,
             free_count: 1,
             cost_signature: None,
+            query_spec: None,
         };
         assert!(HasLocallyFree::<ReceiveBind>::connective_used(
             &context, dirty_bind
@@ -1759,6 +1840,8 @@ mod by_reference_tests {
             check(&context, CostSignedTerm {
                 body: signed.0,
                 signature: signed.1,
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
             })?;
             check(&context, CostStack { cells })?;
             check(&context, Bundle {

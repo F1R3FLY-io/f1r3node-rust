@@ -14,9 +14,10 @@ use tracing::{debug, info, warn};
 
 use crate::rust::errors::CasperError;
 use crate::rust::metrics_constants::{
-    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_REQUESTS_RETRIES_METRIC,
-    BLOCK_REQUESTS_RETRY_ACTION_METRIC, BLOCK_REQUESTS_STALE_EVICTIONS_METRIC,
-    BLOCK_REQUESTS_TOTAL_METRIC, BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC,
+    BLOCK_DOWNLOAD_END_TO_END_TIME_METRIC, BLOCK_REQUESTS_RECOVERY_METRIC,
+    BLOCK_REQUESTS_RETRIES_METRIC, BLOCK_REQUESTS_RETRY_ACTION_METRIC,
+    BLOCK_REQUESTS_STALE_EVICTIONS_METRIC, BLOCK_REQUESTS_TOTAL_METRIC,
+    BLOCK_RETRIEVER_BROADCAST_TRACKING_SIZE_METRIC,
     BLOCK_RETRIEVER_DEP_RECOVERY_TRACKING_SIZE_METRIC, BLOCK_RETRIEVER_METRICS_SOURCE,
     BLOCK_RETRIEVER_PEERS_TOTAL_SIZE_METRIC, BLOCK_RETRIEVER_REQUESTED_BLOCKS_SIZE_METRIC,
     BLOCK_RETRIEVER_WAITING_LIST_TOTAL_SIZE_METRIC,
@@ -1242,6 +1243,8 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
         self.register_retry_attempt(&hash)?;
         metrics::counter!(BLOCK_REQUESTS_RETRIES_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE)
             .increment(1);
+        metrics::counter!(BLOCK_REQUESTS_RECOVERY_METRIC, "source" => BLOCK_RETRIEVER_METRICS_SOURCE)
+            .increment(1);
 
         info!(
             "Recovery re-request issued for dependency {}",
@@ -1540,6 +1543,24 @@ impl<T: TransportLayer + Send + Sync> BlockRetriever<T> {
     /// Explicitly stop tracking a hash when it is no longer required by CasperBuffer dependency graph.
     pub fn forget_hash_tracking(&self, hash: &BlockHash) -> Result<(), CasperError> {
         self.cleanup_hash_tracking(hash)
+    }
+
+    pub fn forget_received_hash_tracking(&self, hash: &BlockHash) -> Result<(), CasperError> {
+        let removed = {
+            let mut state = self.requested_blocks.lock().map_err(|_| {
+                CasperError::RuntimeError("Failed to acquire requested_blocks lock".to_string())
+            })?;
+            if state.get(hash).is_some_and(|request| request.received) {
+                state.remove(hash);
+                true
+            } else {
+                false
+            }
+        };
+        if removed {
+            self.cleanup_aux_tracking_for_hash(hash)?;
+        }
+        Ok(())
     }
 
     pub async fn is_received(&self, hash: BlockHash) -> Result<bool, CasperError> {

@@ -82,10 +82,15 @@ pub enum StreamError {
     WrongNetworkId,
     /// Maximum size reached
     MaxSizeReached,
+    SenderMismatch,
     /// Incomplete message received
-    NotFullMessage { streamed: String },
+    NotFullMessage {
+        streamed: String,
+    },
     /// Unexpected error occurred
-    Unexpected { error: String },
+    Unexpected {
+        error: String,
+    },
 }
 
 impl StreamError {
@@ -96,6 +101,9 @@ impl StreamError {
                 "Could not receive stream! Wrong network id.".to_string()
             }
             StreamError::MaxSizeReached => "Max message size was reached.".to_string(),
+            StreamError::SenderMismatch => {
+                "Could not receive stream! Sender does not match the TLS certificate.".to_string()
+            }
             StreamError::NotFullMessage { streamed } => {
                 format!(
                     "Received not full stream message, will not process. {}",
@@ -113,6 +121,8 @@ impl StreamError {
 
     /// Create a MaxSizeReached error (circuit opened)
     pub fn circuit_opened() -> Self { StreamError::MaxSizeReached }
+
+    pub fn sender_mismatch() -> Self { StreamError::SenderMismatch }
 
     /// Create a NotFullMessage error
     pub fn not_full_message(streamed: String) -> Self { StreamError::NotFullMessage { streamed } }
@@ -201,13 +211,14 @@ impl StreamHandler {
     ///
     /// This method processes a stream of chunks using the circuit breaker pattern
     /// and provides proper cleanup in all scenarios (success, failure, errors).
-    pub async fn handle_stream<S>(
+    pub async fn handle_stream<S, F>(
         stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<StreamMessage, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         // Initialize streaming state
         let init_stmd = match Self::init(cache) {
@@ -239,14 +250,15 @@ impl StreamHandler {
     }
 
     /// Process stream with automatic cleanup (internal helper)
-    async fn process_stream_with_cleanup<S>(
+    async fn process_stream_with_cleanup<S, F>(
         init_stmd: Streamed,
         stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<StreamMessage, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         let key = init_stmd.key.clone(); // Store key for cleanup
 
@@ -287,14 +299,15 @@ impl StreamHandler {
     /// - Header chunks: Creates Header and updates Streamed state
     /// - Data chunks: Appends data to cache and updates read count
     /// - Unknown chunks: Sets an error
-    pub async fn collect<S>(
+    pub async fn collect<S, F>(
         init: Streamed,
         mut stream: S,
-        circuit_breaker: CircuitBreaker,
+        circuit_breaker: F,
         cache: &StreamCache,
     ) -> Result<Streamed, StreamError>
     where
         S: Stream<Item = Chunk> + Unpin,
+        F: Fn(&Streamed) -> Circuit,
     {
         let mut current_state = init;
 

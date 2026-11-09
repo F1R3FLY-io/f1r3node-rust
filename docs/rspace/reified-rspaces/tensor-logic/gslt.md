@@ -460,8 +460,8 @@ So the decoder trusts nothing that it has not checked.
 
 ## 7. No change to the node grammar
 
-TL terms are values inside the existing `QUERY` and `PARAMS` tuples of [decision 18](../decision-register.md#decision-18).
-The encoders already accept any `Par` (`models/src/rust/reified/encoding.rs:500-560`), so the node grammar does not change.
+TL terms are values inside the query and params fields of a bind and of a send ([decision 112](../decision-register.md#decision-112)). *Changed by [decision 112](../decision-register.md#decision-112): before, they were values inside the `QUERY` and `PARAMS` tuples of decision 18.*
+The fields already accept any `Par` (`models/src/rust/reified/encoding.rs:663-683`), so the node grammar does not change.
 One validator changes: the literal check of `threshold` must know the query group, because its range relaxes when the group holds `score` ([decision 56](../decision-register.md#decision-56), `models/src/rust/reified/validation.rs:172-226`).
 
 ## 8. Content identity, installation and versioning
@@ -482,7 +482,7 @@ Figure TL14 shows the installation and the identity.
 [Decision 53](../decision-register.md#decision-53) puts TL-1 programs behind the existing capability `rho:lang:vector`, and [decision 17](../decision-register.md#decision-17) admits native engines only as capabilities with a URN.
 So TL extends that capability and adds no URN (open question K10).
 
-- **Address.** The capability keeps the channel `[0xE0, 0x23]`, the body ref 235 and the packed arity 2, `[ret, [op, x…]]` (`rholang/src/rust/interpreter/reified/system_channels.rs:386-393`). It is a deterministic call, and it is not recorded.
+- **Address.** The capability keeps the channel `[0xE0, 0x23]`, the body ref 235 and the packed arity 2, `[ret, [op, x…]]` (`rholang/src/rust/interpreter/reified/system_channels.rs:427-434`). It is a deterministic call, and it is not recorded.
 - **Replies.** The reply comes first: `[true, …]` or `[false, code, detail]` ([decision 57](../decision-register.md#decision-57)). The Agents sugar `vec!eval(…)` applies ([AGF25](#ref-agf25)).
 
 | Method | Inputs | Output |
@@ -494,7 +494,7 @@ So TL extends that capability and adds no URN (open question K10).
 
 - **The output kind `auto`.** An integer result of integer inputs is a `GInt` or a `GBigInt`. Another result is a `GBigRat`, unless an input is a float, in which case it is a `GDouble` of $`\mathrm{RN}_{53}`$. This extends the rule of the widest kind of [decision 66](../decision-register.md#decision-66).
 - **Errors.** The codes of [static semantics 12](static-semantics.md#12-diagnostics), and `UnknownMethod` and `BadArgument`.
-- **Costs.** Every phase reserves on the budget of the deploy, as the existing operations of the capability do (`rholang/src/rust/interpreter/reified/system_processes.rs:365-389`).
+- **Costs.** Every phase reserves on the budget of the deploy, as the existing operations of the capability do (`rholang/src/rust/interpreter/reified/system_processes.rs:448-468`).
 
 ## 10. Admission theories
 

@@ -84,7 +84,6 @@ docs/*.md.bak
 .*.aux
 *.v.d
 *.crashcoqide
-
 .coqdeps.d
 .coq-native/
 .coq-cache/
@@ -134,8 +133,6 @@ formal/rocq/*/.Makefile.d
 
 *.temp
 
-.pgmcp.toml
-
 # Apalache symbolic-checker scratch
 _apalache-out/
 .localtools
@@ -151,3 +148,9 @@ docs/discoveries/*.md
 .pi/
 graphify-out/
 /graphify-out
+docs/work-logs/*.md
+docs/handoffs/
+docs/tdd-plans/
+
+# CbC R8 named-claim ledger locks (operational, never evidence)
+*.claims.lock

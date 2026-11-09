@@ -4,6 +4,10 @@
 //! source tree. A pure property and a property over the in-memory agent run 64 cases. A
 //! property that evaluates deploys on a Rholang runtime runs 16 cases and shrinks at most 64
 //! times, because one case costs a runtime.
+//!
+//! The racing runtimes of decisions 93 and 111 are here too. A racing test runs on each runtime
+//! of [`RACING_WORKERS`], [`RACING_RUNS`] times when it samples schedules, and each run replays
+//! its own record.
 
 use proptest::prelude::ProptestConfig;
 use proptest::strategy::Strategy;
@@ -61,4 +65,29 @@ pub fn tokio_runtime() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .expect("build the tokio runtime of a case")
+}
+
+/// Added by decision 111: the worker threads of the racing runtimes, where 0 is the
+/// current-thread runtime. Each run replays its own record, and no test needs the
+/// current-thread runtime to pass.
+pub const RACING_WORKERS: [usize; 3] = [0, 2, 8];
+
+/// Added by decision 93: the runs of a racing program on each runtime of [`RACING_WORKERS`].
+pub const RACING_RUNS: usize = 3;
+
+/// Added by decision 111: the runtime of a racing run: the current-thread runtime for 0
+/// workers, else a multi-thread runtime with `workers` worker threads, as the base builds its
+/// racing runtimes (`random_candidate_order.rs`).
+pub fn racing_runtime(workers: usize) -> tokio::runtime::Runtime {
+    match workers {
+        0 => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread racing runtime"),
+        _ => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .enable_all()
+            .build()
+            .expect("a racing runtime"),
+    }
 }

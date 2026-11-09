@@ -5,11 +5,18 @@
 ' Accepted members execute in canonical order; the held-capacity guard keeps the
 ' holds of later members available.
 '
+' Changed by DR-134 (implementation note 3 of DR-65): the decision pass checks
+' every member at R0 before any runtime entry; members that draw one grant also
+' form one group; each member caps its settlement capacity by the later holds
+' at R_{i-1} (option B, design section 8.4); dev's play budget applies between
+' members, and the truncation rule re-runs the shipped prefix when needed.
+'
 ' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-65);
 '                  publications/cost-accounting/cost-accounted-rho.tex (sec:deploy-boundaries).
 ' Palette:  candidates = supply blue · DR-64 check = gate teal · grouping = process lilac
-'           execution = pool green · settlement = note green · user failure = note amber
-'           reject = red · decisions = control amber
+'           execution = pool green · capacity cap = capability indigo
+'           settlement = note green · user failure = note amber
+'           play budget and re-run = delta orange · reject = red · decisions = control amber
 ' Render:  plantuml -tsvg docs/casper/theory/diagrams/offered-same-block-funding-groups.puml
 '          (or: ./render.sh offered-same-block-funding-groups.puml)
 
@@ -21,39 +28,48 @@ skinparam ActivityBorderColor #333333
 skinparam ActivityDiamondBackgroundColor $ca_control
 skinparam ActivityDiamondBorderColor #333333
 skinparam PartitionBackgroundColor #FAFAFA
-title Same-block funding groups and the held-capacity guard (DR-65)
+title Same-block funding groups, the capacity cap and the held-capacity guard (DR-65)
 
 start
-partition "Proposer and every validator" {
-  :pending offered candidates\nin canonical order; <<$ca_supply>>
+partition "Decision pass at <latex>R_0</latex>, before any runtime entry (proposer and every validator)" {
+  :pending offered candidates in canonical order\n(valid-after block, timestamp, identity)\nplay sorts the batch · replay rejects any other order\nor a repeated member; <<$ca_supply>>
   :DR-64 check of each candidate\non its own signed sources at <latex>R_0</latex>; <<$ca_gate>>
-  if (candidate fundable alone?) then (no)
-    :reject that candidate alone\n(it cannot sink other candidates); <<$ca_rejectfill>>
+  if (a candidate fails alone?) then (yes)
+    :the first such candidate is rejected alone\n(it cannot sink other candidates)\nplay: quarantine it, retry the rest from <latex>R_0</latex>\nreplay: reject the block; <<$ca_rejectfill>>
     detach
-  else (yes)
+  else (no)
   endif
-  :union-find over canonical physical custody keys\nmembers that share a purse form one group <latex>G</latex>; <<$ca_process>>
-  if (<latex>\exists p:\ \sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)</latex>) then (yes)
-    :reject every member of <latex>G</latex>\nno effect · no charge; <<$ca_rejectfill>>
+  :union-find over custodies and grant identifiers\nmembers that share a purse or a grant form one group <latex>G</latex>; <<$ca_process>>
+  if (<latex>\exists p:\ \sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)</latex>\nor the draws on one grant exceed its remaining ceiling?) then (yes)
+    :reject every member of <latex>G</latex>\nno effect · no charge\nplay: quarantine <latex>G</latex>, retry the rest from <latex>R_0</latex>; <<$ca_rejectfill>>
     note right $ca_note_red
       P1 simultaneous arrival:
       not enough resources for all
       members, so none of them begins.
     end note
     detach
-  else (no · group accepted)
+  else (no · every group accepted)
   endif
+  :later holds of each accepted member <latex>i</latex>\n<latex>L_i(p) = \sum_{j > i} \mathrm{hold}_j(p)</latex>; <<$ca_process>>
 }
-partition "Execution of accepted members" {
-  repeat :member <latex>i</latex> funds from <latex>R_0</latex>\nand executes from <latex>R_{i-1}</latex>\nin a fresh offered runtime; <<$ca_pool>>
-    if (<latex>\mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \geq \sum_{j > i} \mathrm{hold}_j(p)</latex>) then (holds for every purse)
-      :settle member <latex>i</latex>\ncharge use · refund unused hold; <<$ca_note_green>>
+partition "Execution of the accepted members, in canonical order" {
+  repeat
+    :member <latex>i</latex> funds from <latex>R_0</latex>\nand executes from <latex>R_{i-1}</latex>\nin a fresh offered runtime; <<$ca_pool>>
+    :settlement inputs read at <latex>R_{i-1}</latex>\n<latex>\mathrm{cap}_i(p) = \min\bigl(\mathrm{caps}_i(p),\ \mathrm{balance}_{R_{i-1}}(p) - L_i(p)\bigr)</latex>; <<$ca_capability>>
+    if (<latex>\mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \geq L_i(p)</latex>\nfor every debited or later-held purse?) then (holds)
+      :settle member <latex>i</latex>\ncharge the measured use\n(the unused hold never leaves the purse); <<$ca_note_green>>
     else (guard fails)
-      :member <latex>i</latex> is a classified user failure\nroll back · pay billable work and fee\nfrom the restored balance; <<$ca_note_amber>>
+      :member <latex>i</latex> is a charged user failure\nroll back to <latex>R_{i-1}</latex> · pay billable work and fee\nfrom the restored balance, under the same cap; <<$ca_note_amber>>
     endif
-  repeat while (more accepted members?) is (yes)
+  repeat while (more accepted members, and dev's play budget not spent?) is (yes)
   ->no;
-  :publish the block\nvalidators recompute groups, holds, and guards; <<$ca_note_green>>
+  if (the budget stopped the batch, and a group spans the cut\nor a shipped member settled as a guard rollback?) then (yes)
+    :play the shipped prefix again from <latex>R_0</latex>\nwith no budget, at most once; <<$ca_delta>>
+  else (no)
+    :ship the members as played; <<$ca_delta>>
+  endif
+  :system deploys run from <latex>R_n</latex> · publish the block; <<$ca_note_green>>
+  :validators recompute the order, the groups, the later holds,\nthe caps and the guards over the shipped members\n(they re-guard a committed success that has later holds); <<$ca_note_green>>
 }
 stop
 
@@ -61,10 +77,12 @@ legend bottom
   |= colour |= meaning |
   |<$ca_supply>| pending candidates |
   |<$ca_gate>| DR-64 individual funding check |
-  |<$ca_process>| grouping by shared physical purse |
+  |<$ca_process>| grouping and later holds |
   |<$ca_pool>| execution with committed holds |
+  |<$ca_capability>| capacity cap by the later holds |
   |<$ca_note_green>| settlement and publication |
-  |<$ca_note_amber>| classified user failure (held-capacity guard) |
+  |<$ca_note_amber>| charged user failure (held-capacity guard) |
+  |<$ca_delta>| dev's play budget and the truncation rule |
   |<$ca_rejectfill>| rejection with no effect |
   |<$ca_control>| decision |
 endlegend

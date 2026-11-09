@@ -287,7 +287,7 @@ c(f(e)) = c(e) + c_f(p, \beta)
 | $`c_{\oplus}`$, $`c_{\times}`$ | The unit costs of an aggregation step and of a multiplication |
 | $`c_f`$ | For a correctly rounded function, one Ziv step for each width of its schedule ([dynamic semantics 3](dynamic-semantics.md#3-correctly-rounded-functions)) |
 
-The unit costs are those of the tensor module of P6 (`rholang/src/rust/interpreter/tensor/costs.rs:8-23`).
+The unit costs were those of the tensor module of P6. The removal of host work deleted that module file (open question K17 of the [design rationale](design-rationale.md)).
 The bound is advisory: evaluation reserves its work step by step, as [decision 40](../decision-register.md#decision-40) requires.
 A budget of at least $`B`$ never ends in `HostWorkRejected` ([verification plan](verification-plan.md#1-formal-models)).
 

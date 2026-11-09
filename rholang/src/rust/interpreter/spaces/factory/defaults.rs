@@ -42,8 +42,13 @@
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
-use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
+// Changed by decision 127 (kind registry): the registry holds the schema rows, so this module
+// names no store and no collection. The text before:
+// use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
+use models::rust::space_factory_urn::SpaceFactoryUrn;
 
+// Added by decision 127 (kind registry).
+use crate::rust::interpreter::spaces::families::Family;
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
 use crate::rust::interpreter::tensor::exact::Metric;
 
@@ -80,79 +85,107 @@ pub const MAX_CAPACITY: i64 = 1_000_000;
 /// The greatest `dimensions` of a VectorDB space (design v3 4.2).
 pub const MAX_DIMENSIONS: i64 = 4096;
 
+/// Added by decision 127 (kind registry): the value rule of a constructor param that a
+/// registered kind brings: the canonical value, or `None` for a refused value, as
+/// [`ParamRule::canonical`] gives.
+pub type ParamCheck = fn(&Par) -> Option<Par>;
+
+// Changed by decision 127 (kind registry): the schema rows are public, so the built-in
+// families and a registered kind can name them. The old line follows each doc.
 /// The constructor schema of a family without params.
-const NO_PARAMS: &[&str] = &[];
+// const NO_PARAMS: &[&str] = &[];
+pub const NO_PARAMS: &[&str] = &[];
 
 /// The constructor schema of a HashMap or a Vector priority queue.
-const PRIORITY_QUEUE_PARAMS: &[&str] = &[PRIORITIES_PARAM];
+// const PRIORITY_QUEUE_PARAMS: &[&str] = &[PRIORITIES_PARAM];
+pub const PRIORITY_QUEUE_PARAMS: &[&str] = &[PRIORITIES_PARAM];
 
 /// The constructor schema of an Array family other than the priority queue.
-const ARRAY_PARAMS: &[&str] = &[CYCLIC_PARAM, SIZE_PARAM];
+// const ARRAY_PARAMS: &[&str] = &[CYCLIC_PARAM, SIZE_PARAM];
+pub const ARRAY_PARAMS: &[&str] = &[CYCLIC_PARAM, SIZE_PARAM];
 
 /// The constructor schema of the Array priority queue.
-const ARRAY_PRIORITY_QUEUE_PARAMS: &[&str] = &[CYCLIC_PARAM, PRIORITIES_PARAM, SIZE_PARAM];
+// const ARRAY_PRIORITY_QUEUE_PARAMS: &[&str] = &[CYCLIC_PARAM, PRIORITIES_PARAM, SIZE_PARAM];
+pub const ARRAY_PRIORITY_QUEUE_PARAMS: &[&str] = &[CYCLIC_PARAM, PRIORITIES_PARAM, SIZE_PARAM];
 
 /// The params that every Array factory requires.
-const ARRAY_REQUIRED: &[&str] = &[SIZE_PARAM];
+// const ARRAY_REQUIRED: &[&str] = &[SIZE_PARAM];
+pub const ARRAY_REQUIRED: &[&str] = &[SIZE_PARAM];
 
 /// The constructor schema of a VectorDB family, in bytewise order.
-const VECTORDB_PARAMS: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_PARAM];
+// const VECTORDB_PARAMS: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_PARAM];
+pub const VECTORDB_PARAMS: &[&str] =
+    &[CAPACITY_PARAM, DIMENSIONS_PARAM, METRIC_PARAM, MIRROR_PARAM];
 
 /// The params that every VectorDB factory requires.
-const VECTORDB_REQUIRED: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM];
+// const VECTORDB_REQUIRED: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM];
+pub const VECTORDB_REQUIRED: &[&str] = &[CAPACITY_PARAM, DIMENSIONS_PARAM];
 
-/// The one table of the constructor schemas: the named params of the factory of `family` in
-/// bytewise order, and the params that it requires. [`constructor_schema`] and
-/// [`required_params`] are its two views.
+// Changed by decision 127 (kind registry): the registry holds the schema rows. The text before:
+// ```
+// /// The one table of the constructor schemas: the named params of the factory of `family` in
+// /// bytewise order, and the params that it requires. [`constructor_schema`] and
+// /// [`required_params`] are its two views.
+// ```
+/// The constructor schemas come from the registry: each registered family carries the named
+/// params of its factory in bytewise order and the params that it requires.
+/// [`constructor_schema`] and [`required_params`] are its two views.
 fn schema(family: SpaceFactoryUrn) -> Option<(&'static [&'static str], &'static [&'static str])> {
-    match (family.outer, family.inner) {
-        // Changed by P7 step 3 (design v3 HS-7): the HashSet families take the params of their
-        // discipline, as the HashMap families do.
-        // (
-        //     SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
-        //     SpaceInner::Bag
-        //     | SpaceInner::Queue
-        //     | SpaceInner::Stack
-        //     | SpaceInner::Set
-        //     | SpaceInner::Cell,
-        // ) => Some((NO_PARAMS, NO_PARAMS)),
-        // (
-        //     SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
-        //     SpaceInner::PriorityQueue,
-        // ) => Some((PRIORITY_QUEUE_PARAMS, NO_PARAMS)),
-        (
-            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,
-            SpaceInner::Bag
-            | SpaceInner::Queue
-            | SpaceInner::Stack
-            | SpaceInner::Set
-            | SpaceInner::Cell,
-        ) => Some((NO_PARAMS, NO_PARAMS)),
-        (
-            SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,
-            SpaceInner::PriorityQueue,
-        ) => Some((PRIORITY_QUEUE_PARAMS, NO_PARAMS)),
-        (
-            SpaceOuter::Array,
-            SpaceInner::Bag
-            | SpaceInner::Queue
-            | SpaceInner::Stack
-            | SpaceInner::Set
-            | SpaceInner::Cell,
-        ) => Some((ARRAY_PARAMS, ARRAY_REQUIRED)),
-        (SpaceOuter::Array, SpaceInner::PriorityQueue) => {
-            Some((ARRAY_PRIORITY_QUEUE_PARAMS, ARRAY_REQUIRED))
-        }
-        (SpaceOuter::HashMap | SpaceOuter::Vector, SpaceInner::VectorDb) => {
-            Some((VECTORDB_PARAMS, VECTORDB_REQUIRED))
-        }
-        // Changed by P7 step 3 (design v3 HS-7): only the pairs that are no families remain.
-        // (SpaceOuter::PathMap | SpaceOuter::Array, SpaceInner::VectorDb)
-        // | (SpaceOuter::HashSet, _) => None,
-        (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::HashSet, SpaceInner::VectorDb) => {
-            None
-        }
-    }
+    // Changed by decision 127 (kind registry): each registered family carries its row
+    // (`Family::constructor_schema`, `Family::required_params`). The built-in families carry
+    // the rows of this table, and a family outside the registry has none, as before. The text
+    // before:
+    // ```
+    // match (family.outer, family.inner) {
+    //     // Changed by P7 step 3 (design v3 HS-7): the HashSet families take the params of their
+    //     // discipline, as the HashMap families do.
+    //     // (
+    //     //     SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
+    //     //     SpaceInner::Bag
+    //     //     | SpaceInner::Queue
+    //     //     | SpaceInner::Stack
+    //     //     | SpaceInner::Set
+    //     //     | SpaceInner::Cell,
+    //     // ) => Some((NO_PARAMS, NO_PARAMS)),
+    //     // (
+    //     //     SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector,
+    //     //     SpaceInner::PriorityQueue,
+    //     // ) => Some((PRIORITY_QUEUE_PARAMS, NO_PARAMS)),
+    //     (
+    //         SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,
+    //         SpaceInner::Bag
+    //         | SpaceInner::Queue
+    //         | SpaceInner::Stack
+    //         | SpaceInner::Set
+    //         | SpaceInner::Cell,
+    //     ) => Some((NO_PARAMS, NO_PARAMS)),
+    //     (
+    //         SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Vector | SpaceOuter::HashSet,
+    //         SpaceInner::PriorityQueue,
+    //     ) => Some((PRIORITY_QUEUE_PARAMS, NO_PARAMS)),
+    //     (
+    //         SpaceOuter::Array,
+    //         SpaceInner::Bag
+    //         | SpaceInner::Queue
+    //         | SpaceInner::Stack
+    //         | SpaceInner::Set
+    //         | SpaceInner::Cell,
+    //     ) => Some((ARRAY_PARAMS, ARRAY_REQUIRED)),
+    //     (SpaceOuter::Array, SpaceInner::PriorityQueue) => {
+    //         Some((ARRAY_PRIORITY_QUEUE_PARAMS, ARRAY_REQUIRED))
+    //     }
+    //     (SpaceOuter::HashMap | SpaceOuter::Vector, SpaceInner::VectorDb) => {
+    //         Some((VECTORDB_PARAMS, VECTORDB_REQUIRED))
+    //     }
+    //     // Changed by P7 step 3 (design v3 HS-7): only the pairs that are no families remain.
+    //     // (SpaceOuter::PathMap | SpaceOuter::Array, SpaceInner::VectorDb)
+    //     // | (SpaceOuter::HashSet, _) => None,
+    //     (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::HashSet, SpaceInner::VectorDb) => {
+    //         None
+    //     }
+    // }
+    // ```
+    Family::of_urn(family).map(|family| (family.constructor_schema(), family.required_params()))
 }
 
 /// The named params of the factory of `family`, in bytewise order. A family outside the
@@ -310,6 +343,8 @@ fn distance_within(word: &str, candidate: &str, bound: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    // Added by decision 127 (kind registry): the tests name the built-in stores.
+    use models::rust::space_factory_urn::{SpaceInner, SpaceOuter};
     use models::rust::utils::{new_gbool_par, new_gint_par, new_gstring_par};
 
     use super::*;

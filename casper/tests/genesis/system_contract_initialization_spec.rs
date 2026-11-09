@@ -10,10 +10,12 @@
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -42,7 +44,12 @@ async fn pos_contract_should_return_correct_bonds_at_genesis() {
 
     let (result, _cost) = node
         .runtime_manager
-        .play_exploratory_deploy(get_bonds_query.to_string(), &post_state_hash, None)
+        .play_exploratory_deploy(
+            get_bonds_query.to_string(),
+            &post_state_hash,
+            None,
+            node.adopted_policy(),
+        )
         .await
         .expect("Failed to execute exploratory deploy");
 
@@ -98,7 +105,12 @@ async fn system_vault_should_be_accessible_at_genesis() {
 
     let (result, _cost) = node
         .runtime_manager
-        .play_exploratory_deploy(get_vault_query, &post_state_hash, None)
+        .play_exploratory_deploy(
+            get_vault_query,
+            &post_state_hash,
+            None,
+            node.adopted_policy(),
+        )
         .await
         .expect("Failed to execute exploratory deploy");
 
@@ -147,7 +159,12 @@ async fn validator_vaults_should_have_zero_balance_at_genesis() {
 
     let (result, _cost) = node
         .runtime_manager
-        .play_exploratory_deploy(get_validator_vault_query, &post_state_hash, None)
+        .play_exploratory_deploy(
+            get_validator_vault_query,
+            &post_state_hash,
+            None,
+            node.adopted_policy(),
+        )
         .await
         .expect("Failed to execute exploratory deploy");
 
@@ -281,6 +298,7 @@ async fn system_contracts_should_work_after_adding_block() {
             get_bonds_query.to_string(),
             &block.body.state.post_state_hash,
             None,
+            node.adopted_policy(),
         )
         .await
         .expect("Failed to execute exploratory deploy");
@@ -333,7 +351,7 @@ async fn validator_key_lookup_should_succeed_in_all_bonds() {
 
     let (result, _cost) = node
         .runtime_manager
-        .play_exploratory_deploy(lookup_query, &post_state_hash, None)
+        .play_exploratory_deploy(lookup_query, &post_state_hash, None, node.adopted_policy())
         .await
         .expect("Failed to execute exploratory deploy");
 

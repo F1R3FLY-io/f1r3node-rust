@@ -547,6 +547,8 @@ mod tests {
             ))
             .into(),
             report: vec![precharge_report, user_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -580,6 +582,8 @@ mod tests {
             ))
             .into(),
             report: vec![precharge_report, user_report, refund_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -613,6 +617,8 @@ mod tests {
             ))
             .into(),
             report: vec![empty_precharge, user_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -653,6 +659,8 @@ mod tests {
             ))
             .into(),
             report: vec![wrong_precharge, user_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -690,6 +698,8 @@ mod tests {
             ))
             .into(),
             report: vec![first_report, second_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -726,6 +736,8 @@ mod tests {
                 make_empty_report(ReportPhase::Unspecified),
                 make_empty_report(ReportPhase::Unspecified),
             ],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -751,6 +763,8 @@ mod tests {
             ))
             .into(),
             report: vec![],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -807,6 +821,8 @@ mod tests {
             ))
             .into(),
             report: vec![precharge_report, batch_with_two, batch_with_one],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -849,6 +865,8 @@ mod tests {
             })
             .into(),
             report: vec![user_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -883,6 +901,8 @@ mod tests {
             ))
             .into(),
             report: vec![precharge_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -922,6 +942,8 @@ mod tests {
             ))
             .into(),
             report: vec![user_report, precharge_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -963,6 +985,8 @@ mod tests {
             ))
             .into(),
             report: vec![user_report],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -1024,6 +1048,8 @@ mod tests {
             ))
             .into(),
             report: vec![precharge, user, refund],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -1086,6 +1112,8 @@ mod tests {
             ))
             .into(),
             report: vec![user, precharge, refund],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -1128,6 +1156,8 @@ mod tests {
             ))
             .into(),
             report: vec![user],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -1178,6 +1208,8 @@ mod tests {
             ))
             .into(),
             report: vec![user_marked, user_unmarked, precharge],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -1219,6 +1251,8 @@ mod tests {
             ))
             .into(),
             report: vec![precharge],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -1268,6 +1302,8 @@ mod tests {
             ))
             .into(),
             report: vec![precharge, unknown],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);
@@ -1314,6 +1350,8 @@ mod tests {
             ))
             .into(),
             report: vec![unknown],
+            // Added by DR-134 (DR-70): a legacy deploy report.
+            offered: None,
         });
 
         let result = extract_transfers_from_report(&report, &transfer_unforgeable);

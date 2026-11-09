@@ -85,7 +85,7 @@ impl FundedDeploy {
                 .funding_intent
                 .take()
                 .ok_or_else(|| "funded deploy requires explicit funding consent".to_string())?;
-            Self::new(DeployData::_from_proto(proto), funding.to_vec(), limits)
+            Self::new(DeployData::_from_proto(proto)?, funding.to_vec(), limits)
         })
     }
 

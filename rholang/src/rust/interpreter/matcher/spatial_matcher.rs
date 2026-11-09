@@ -29,6 +29,7 @@ list_match!(
     ReceiveBind,
     If,
     CostSignedTerm,
+    UseBlock,
     CostStack
 );
 
@@ -55,6 +56,7 @@ pub(super) fn free_variable_level(pattern: &Par) -> Option<i32> {
         connective_used,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = pattern;
     if !*connective_used
         || !sends.is_empty()
@@ -67,6 +69,7 @@ pub(super) fn free_variable_level(pattern: &Par) -> Option<i32> {
         || !conditionals.is_empty()
         || !cost_signed_terms.is_empty()
         || !cost_stacks.is_empty()
+        || !use_blocks.is_empty()
     {
         return None;
     }
@@ -184,7 +187,9 @@ impl SpatialMatcherContext {
     pub(super) fn free_variable_fast_path(&self) -> bool { free_variable_fast_path() }
 
     /// D-D3 (DR-105): binds an owned target to a free-variable pattern. It
-    /// makes the ten `list_match_single_` calls of the Par/Par matcher, in the
+    // Changed by decision 112: the Par has one more list, the use blocks. The text before:
+    // /// makes the ten `list_match_single_` calls of the Par/Par matcher, in the
+    /// makes the eleven `list_match_single_` calls of the Par/Par matcher, in the
     /// same order and with the same empty pattern lists, so the result and the
     /// free map equal those of the general path, also on failure
     /// (`FreeVariableFastPath.fast_path_equals_general`).
@@ -254,6 +259,13 @@ impl SpatialMatcherContext {
             false,
         )?;
         self.list_match_single_(
+            target.use_blocks,
+            Vec::new(),
+            &|p, values| p.use_blocks = values,
+            remainder,
+            false,
+        )?;
+        self.list_match_single_(
             target.cost_stacks,
             Vec::new(),
             &|p, values| p.cost_stacks = values,
@@ -282,6 +294,9 @@ impl SpatialMatcherContext {
         })?;
         self.bind_field_by_reference(&target.cost_signed_terms, level, &|p, values| {
             p.cost_signed_terms = values
+        })?;
+        self.bind_field_by_reference(&target.use_blocks, level, &|p, values| {
+            p.use_blocks = values
         })?;
         self.bind_field_by_reference(&target.cost_stacks, level, &|p, values| {
             p.cost_stacks = values
@@ -635,6 +650,15 @@ impl SpatialMatcher<Par, Par> for SpatialMatcherContext {
             })
             .and_then(|_| {
                 self.list_match_single_(
+                    remainder.use_blocks,
+                    pattern.use_blocks,
+                    &|p, values| p.use_blocks = values,
+                    var_level,
+                    wildcard,
+                )
+            })
+            .and_then(|_| {
+                self.list_match_single_(
                     remainder.cost_stacks,
                     pattern.cost_stacks,
                     &|p, values| p.cost_stacks = values,
@@ -662,6 +686,12 @@ impl SpatialMatcher<CostSignedTerm, CostSignedTerm> for SpatialMatcherContext {
         // once per enclosing block.
         // self.reserve_inspect(&target)?;
         // self.reserve_inspect(&pattern)?;
+        guard(target == pattern)
+    }
+}
+
+impl SpatialMatcher<UseBlock, UseBlock> for SpatialMatcherContext {
+    fn spatial_match(&mut self, target: UseBlock, pattern: UseBlock) -> Option<()> {
         guard(target == pattern)
     }
 }
@@ -695,9 +725,12 @@ impl SpatialMatcher<Send, Send> for SpatialMatcherContext {
         // once per enclosing block.
         // self.reserve_inspect(&target)?;
         // self.reserve_inspect(&pattern)?;
-        let result = guard(target.persistent == pattern.persistent)
-            .and_then(|_| self.spatial_match(target.chan.unwrap(), pattern.chan.unwrap()))
-            .and_then(|_| self.fold_match(&target.data, &pattern.data, None));
+        // Changed by decision 112: the guard compares the new field. The text before:
+        // let result = guard(target.persistent == pattern.persistent)
+        let result =
+            guard(target.persistent == pattern.persistent && target.params == pattern.params)
+                .and_then(|_| self.spatial_match(target.chan.unwrap(), pattern.chan.unwrap()))
+                .and_then(|_| self.fold_match(&target.data, &pattern.data, None));
 
         result.map(|_| ())
     }
@@ -723,7 +756,9 @@ impl SpatialMatcher<New, New> for SpatialMatcherContext {
         // once per enclosing block.
         // self.reserve_inspect(&target)?;
         // self.reserve_inspect(&pattern)?;
-        guard(target.bind_count == pattern.bind_count)
+        // Changed by decision 112: the guard compares the new field. The text before:
+        // guard(target.bind_count == pattern.bind_count)
+        guard(target.bind_count == pattern.bind_count && target.space_types == pattern.space_types)
             .and_then(|_| self.spatial_match(target.p.unwrap(), pattern.p.unwrap()))
     }
 }
@@ -966,6 +1001,10 @@ impl SpatialMatcher<Expr, Expr> for SpatialMatcherContext {
                 .spatial_match(t1.unwrap(), p1.unwrap())
                 .and_then(|_| self.spatial_match(t2.unwrap(), p2.unwrap())),
 
+            (Some(EFreeBody(target)), Some(EFreeBody(pattern))) => guard(target == pattern),
+
+            (Some(EParamsBody(target)), Some(EParamsBody(pattern))) => guard(target == pattern),
+
             _ => None,
         }
     }
@@ -1009,7 +1048,9 @@ impl SpatialMatcher<ReceiveBind, ReceiveBind> for SpatialMatcherContext {
         // once per enclosing block.
         // self.reserve_inspect(&target)?;
         // self.reserve_inspect(&pattern)?;
-        guard(target.patterns == pattern.patterns)
+        // Changed by decision 112: the guard compares the new field. The text before:
+        // guard(target.patterns == pattern.patterns)
+        guard(target.patterns == pattern.patterns && target.query_spec == pattern.query_spec)
             .and_then(|_| self.spatial_match(target.source.unwrap(), pattern.source.unwrap()))
     }
 }
@@ -1459,6 +1500,8 @@ mod tests {
                         .map(|open| CostSignedTerm {
                             body: body(open),
                             signature: None,
+                            // Added by G3 (DR-135, S3b): a surface signed term.
+                            held_price: None,
                         })
                         .collect(),
                     cost_stacks: stacks

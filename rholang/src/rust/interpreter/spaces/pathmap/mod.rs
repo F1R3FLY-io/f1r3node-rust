@@ -187,6 +187,7 @@ mod test_support {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                params: None,
             }],
             ..Par::default()
         }

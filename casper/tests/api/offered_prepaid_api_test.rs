@@ -27,7 +27,7 @@ use rholang::rust::interpreter::accounting::native_phlo_rules::{
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::rho_type::RhoNumber;
+use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoNumber};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -157,6 +157,7 @@ fn signed_offer(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term: term.to_owned(),
         language: "rholang".to_owned(),
         time_stamp: timestamp,
@@ -372,12 +373,18 @@ async fn offered_retained_birth_funds_later_prepaid_draw_across_validators() {
             balance_query_source(&owner_address),
             &second_block.body.state.post_state_hash,
             None,
+            nodes[1].adopted_policy(),
         )
         .await
         .unwrap();
     assert_eq!(balance.len(), 1);
     assert_eq!(
-        u64::try_from(RhoNumber::unapply(&balance[0]).unwrap()).unwrap(),
+        u64::try_from(
+            RhoBigInt::unapply(&balance[0])
+                .or_else(|| RhoNumber::unapply(&balance[0]).map(num_bigint::BigInt::from))
+                .unwrap(),
+        )
+        .unwrap(),
         producer_receipt.purses[0].post_balance
     );
 }

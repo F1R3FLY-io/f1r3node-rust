@@ -1,8 +1,8 @@
 {
   "schema": "reified-rspaces-model-map/2",
   "phase": "P6",
-  "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v, and the VectorDB discipline of one collection (the driver of disciplines/vectordb.rs and the similarity paths of the join engine) and its Rocq model VectorDbDiscipline.v, and its TLA+ model VectorDb.tla, the replies of rho:lang:vector (tensor/ops.rs) and their Rocq model VectorOps.v, and the ChromaDB mirror of a VectorDB space (the capture, the journal, the writer, the reconciler and the recorded process ann) and its TLA+ model ChromaMirror.tla.",
-  "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.6 and 5. The headline ids are the ids of the P6 phase of formal/reified-rspaces-invariant-map.json.",
+  "title": "P6 steps 2 and 8b: the exact numeric core of the VectorDB family (rholang/src/rust/interpreter/tensor) and its Rocq model Similarity.v, and the VectorDB discipline of one collection (the driver of disciplines/vectordb.rs and the similarity paths of the join engine) and its Rocq model VectorDbDiscipline.v, and its TLA+ model VectorDb.tla, the replies of rho:lang:vector (tensor/ops.rs) and their Rocq model VectorOps.v, and the ChromaDB mirror of a VectorDB space (the capture, the batch of each commit, the writer and the recorded process ann) and its TLA+ model ChromaMirror.tla.",
+  "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.6 and 5. The headline ids are the ids of the P6 phase of formal/reified-rspaces-invariant-map.json. Decisions 98, 104 and 114 (merge 2 of feature/cost-accounted-rho at 702496775) retire the journal, the settle step, the evaluation scope and the reconciler, retire W7, W8, W11 and W12, and add W13 and W14.",
   "code_base": "The items are in the P6 commits of steps 2, 6, 7a to 7c and 8b of this repository. The line numbers are informative. The checker finds each item by its scope and name.",
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
@@ -220,43 +220,31 @@
       "kind": "tla",
       "name": "AdvisoryRecorded",
       "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-      "statement": "Replay uses the recorded answer of ann and never asks its own mirror (decision 57)."
-    },
-    "W7": {
-      "kind": "tla",
-      "name": "EqualHostWork",
-      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-      "statement": "Play and replay make the same checks of an ann call, so they reserve the same host work for them (decision 67)."
-    },
-    "W8": {
-      "kind": "tla",
-      "name": "PublishOnlyOnSuccess",
-      "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-      "statement": "Every published write comes from a deploy whose final result has no errors, and the clear at the start of a root evaluation drops the journal of an exploratory evaluation (M1, decision 66)."
+      "statement": "Replay uses the recorded answer of ann and never asks its own mirror (decision 57), and it makes no check against consensus state (decision 104)."
     },
     "W9": {
       "kind": "tla",
       "name": "NetWritesExact",
       "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-      "statement": "A published batch upserts exactly the records that its deploy added and deletes exactly the records that it removed, so a Rule E pair writes nothing."
+      "statement": "A published batch of a play upserts exactly the records that its commit added and deletes exactly the records that it removed, so a Rule E pair writes nothing (decision 98)."
     },
     "W10": {
       "kind": "tla",
       "name": "PublishNeverWaits",
       "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-      "statement": "A publication never waits for the writer: a full queue marks the collection dirty (decision 58)."
+      "statement": "A publication never waits for the writer (decision 58): a batch that finds the queue full is dropped (decision 114)."
     },
-    "W11": {
+    "W13": {
       "kind": "tla",
-      "name": "ReconciledEqualsFinalizedView",
+      "name": "ReplayNeverPublishes",
       "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-      "statement": "After a reconciler pass that finishes, the mirror holds the finalized view on every registered channel (decision 66)."
+      "statement": "Replay, reporting and native replay publish nothing, as no base replay calls a service (decision 98, DR-114)."
     },
-    "W12": {
+    "W14": {
       "kind": "tla",
-      "name": "WatermarkHonest",
+      "name": "OnePublicationPerCommit",
       "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-      "statement": "The watermark of a collection never passes the block of the last reconciler pass that finished."
+      "statement": "A commit of a play publishes its net writes at most once, at the commit, whatever the final result of its deploy (decision 98, DR-114)."
     }
   },
   "items": [
@@ -1171,7 +1159,7 @@
       "scope": "MirrorCapture",
       "kind": "fn",
       "name": "writes",
-      "line": 236,
+      "line": 265,
       "role": "The net writes of one committed transaction: the first and the last event of each record id decide an upsert, a delete or nothing.",
       "rocq": [],
       "tla": [
@@ -1184,56 +1172,22 @@
       ]
     },
     {
-      "item": "MirrorJournal::record",
+      "item": "MirrorBatch::from",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
-      "scope": "MirrorJournal",
+      "scope": "MirrorBatch",
       "kind": "fn",
-      "name": "record",
-      "line": 408,
-      "role": "Appends the net writes of a transaction to the journal of the evaluation: the last write of each record id wins.",
+      "name": "from",
+      "line": 155,
+      "role": "The batch of the net writes of one commit, with the upserts and the deletes in record-id order (decision 98).",
       "rocq": [],
       "tla": [
-        "Deploy"
-      ],
-      "covers": [
-        "W9"
-      ]
-    },
-    {
-      "item": "MirrorJournal::take",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
-      "scope": "MirrorJournal",
-      "kind": "fn",
-      "name": "take",
-      "line": 429,
-      "role": "Removes the writes of the journal as one batch for each collection.",
-      "rocq": [],
-      "tla": [
-        "Deploy",
+        "CommitBatch",
         "Batch"
       ],
       "covers": [
-        "W8",
-        "W9"
-      ]
-    },
-    {
-      "item": "MirrorJournal::clear",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
-      "scope": "MirrorJournal",
-      "kind": "fn",
-      "name": "clear",
-      "line": 460,
-      "role": "Drops the writes of the journal.",
-      "rocq": [],
-      "tla": [
-        "Explore"
-      ],
-      "covers": [
-        "W8"
+        "W9",
+        "W14"
       ]
     },
     {
@@ -1243,50 +1197,20 @@
       "scope": "ReifiedRuntime",
       "kind": "fn",
       "name": "run_op",
-      "line": 171,
-      "role": "A space job: its transaction records the net writes in the journal and never writes the mirror.",
+      "line": 347,
+      "role": "A space job: one transaction and one commit. In play it publishes the net writes of the commit to the writer of the node before the hold drops, whatever the final result of the deploy, and its transaction never writes the mirror (decision 98). Replay, reporting and native replay publish nothing.",
       "rocq": [],
       "tla": [
-        "Deploy"
+        "CommitBatch",
+        "Deploy",
+        "Explore",
+        "Replay"
       ],
       "covers": [
         "W5",
-        "W9"
-      ]
-    },
-    {
-      "item": "ReifiedRuntime::settle_mirror_journal",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
-      "scope": "ReifiedRuntime",
-      "kind": "fn",
-      "name": "settle_mirror_journal",
-      "line": 205,
-      "role": "M1: a final result without errors publishes the journal, and any other result drops it.",
-      "rocq": [],
-      "tla": [
-        "Deploy"
-      ],
-      "covers": [
-        "W8"
-      ]
-    },
-    {
-      "item": "ReifiedRuntime::begin_evaluation_scope",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/runtime.rs",
-      "scope": "ReifiedRuntime",
-      "kind": "fn",
-      "name": "begin_evaluation_scope",
-      "line": 95,
-      "role": "The start of a root evaluation drops a journal that no result settled.",
-      "rocq": [],
-      "tla": [
-        "Explore",
-        "Deploy"
-      ],
-      "covers": [
-        "W8"
+        "W9",
+        "W13",
+        "W14"
       ]
     },
     {
@@ -1296,8 +1220,8 @@
       "scope": "MirrorWriter",
       "kind": "fn",
       "name": "publish",
-      "line": 486,
-      "role": "Hands the batches to the bounded queue with try_send and never waits: a refused batch marks its collection dirty.",
+      "line": 538,
+      "role": "Hands the batches to the bounded queue with try_send and never waits: a batch that the queue does not take is dropped (decision 114).",
       "rocq": [],
       "tla": [
         "Publish"
@@ -1313,15 +1237,14 @@
       "scope": "MirrorWriter",
       "kind": "fn",
       "name": "spawn_with",
-      "line": 455,
-      "role": "The writer task: it applies the batches in order with bounded attempts, and a batch that still fails marks its collection dirty.",
+      "line": 506,
+      "role": "The writer task: it applies the batches in order with bounded attempts, and a batch that still fails is dropped (decision 114).",
       "rocq": [],
       "tla": [
         "Apply"
       ],
       "covers": [
-        "W10",
-        "W11"
+        "W10"
       ]
     },
     {
@@ -1330,98 +1253,14 @@
       "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
       "kind": "fn",
       "name": "apply",
-      "line": 365,
-      "role": "The writes of one batch in order: the collection, the registration of its channels, the upserts, the deletes.",
+      "line": 410,
+      "role": "The writes of one batch in order: the collection, the upserts, the deletes. A batch registers no channels (decision 114).",
       "rocq": [],
       "tla": [
         "Apply"
       ],
       "covers": [
-        "W11"
-      ]
-    },
-    {
-      "item": "reconcile",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-      "kind": "fn",
-      "name": "reconcile",
-      "line": 139,
-      "role": "One reconciler pass for a finalized block: it prepares the dirty collections and repairs each collection below the block or dirty.",
-      "rocq": [],
-      "tla": [
-        "Reconcile"
-      ],
-      "covers": [
-        "W11",
-        "W12"
-      ]
-    },
-    {
-      "item": "prepare_dirty",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-      "kind": "fn",
-      "name": "prepare_dirty",
-      "line": 216,
-      "role": "Makes a dirty collection and registers the channels of its unapplied batches.",
-      "rocq": [],
-      "tla": [
-        "Reconcile"
-      ],
-      "covers": [
-        "W11"
-      ]
-    },
-    {
-      "item": "remark",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-      "kind": "fn",
-      "name": "remark",
-      "line": 235,
-      "role": "Marks a dirty collection dirty again after a pass that did not repair it.",
-      "rocq": [],
-      "tla": [
-        "Reconcile"
-      ],
-      "covers": [
-        "W11"
-      ]
-    },
-    {
-      "item": "repair",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-      "kind": "fn",
-      "name": "repair",
-      "line": 253,
-      "role": "Repairs the registered channels of a collection to the finalized state, then sets the watermark to the larger of the block and the old watermark.",
-      "rocq": [],
-      "tla": [
-        "Reconcile",
-        "OnChans"
-      ],
-      "covers": [
-        "W11",
-        "W12"
-      ]
-    },
-    {
-      "item": "channel_repair",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-      "kind": "fn",
-      "name": "channel_repair",
-      "line": 300,
-      "role": "The orphans and the missing records of one registered channel at the finalized state.",
-      "rocq": [],
-      "tla": [
-        "Reconcile",
-        "OnChans"
-      ],
-      "covers": [
-        "W11"
+        "W10"
       ]
     },
     {
@@ -1430,8 +1269,8 @@
       "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
       "kind": "fn",
       "name": "ann",
-      "line": 436,
-      "role": "The process rho:vectordb:ann: the checks of consensus state in play and in replay, then the recorded reply in replay or the answer of the services in play.",
+      "line": 588,
+      "role": "The process rho:vectordb:ann: play makes the checks of the call and asks the services, and the dispatcher records the reply; replay makes no check and delivers the record through native_replayed_reply (decisions 104 and 105).",
       "rocq": [],
       "tla": [
         "Deploy",
@@ -1439,8 +1278,7 @@
       ],
       "covers": [
         "W5",
-        "W6",
-        "W7"
+        "W6"
       ]
     },
     {
@@ -1449,15 +1287,14 @@
       "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
       "kind": "fn",
       "name": "ann_request",
-      "line": 492,
-      "role": "The checks of an ann call (decision 67): a mirrored VectorDB space, a query of its dimensions, and k in [1, capacity].",
+      "line": 687,
+      "role": "The checks of an ann call, in play only (decision 104): a mirrored VectorDB space, a query of its dimensions, and k in [1, capacity]. A failed check gives EXT_BAD_ARG (decision 105).",
       "rocq": [],
       "tla": [
-        "CheckWork",
-        "Replay"
+        "Deploy"
       ],
       "covers": [
-        "W7"
+        "W5"
       ]
     },
     {
@@ -1466,8 +1303,8 @@
       "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
       "kind": "fn",
       "name": "ann_answer",
-      "line": 590,
-      "role": "The answer of the services in play: the neighbours and the watermark of the mirror, which the dispatcher records.",
+      "line": 795,
+      "role": "The answer of the services in play: the neighbours of the mirror and their distances, which the dispatcher records. A failure gives no answer, and the reply carries no watermark (decisions 105 and 114).",
       "rocq": [],
       "tla": [
         "Deploy"
@@ -1483,11 +1320,28 @@
       "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
       "kind": "fn",
       "name": "produce_recorded",
-      "line": 640,
+      "line": 855,
       "role": "Produces the output of a recorded process and keeps it on a failed produce, so the dispatcher records it.",
       "rocq": [],
       "tla": [
-        "Deploy"
+        "Deploy",
+        "Replay"
+      ],
+      "covers": [
+        "W6"
+      ]
+    },
+    {
+      "item": "native_replayed_reply",
+      "required": true,
+      "file": "rholang/src/rust/interpreter/system_processes.rs",
+      "kind": "fn",
+      "name": "native_replayed_reply",
+      "line": 763,
+      "role": "The reply that native replay delivers for a recorded output: the record itself, or BugFound when the record is missing or is not plain data. The driver of native_recorded_call and the handlers of embed and ann share it (DR-114, decision 116).",
+      "rocq": [],
+      "tla": [
+        "Replay"
       ],
       "covers": [
         "W6"

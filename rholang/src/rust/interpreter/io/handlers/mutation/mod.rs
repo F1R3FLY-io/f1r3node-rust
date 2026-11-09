@@ -29,11 +29,10 @@
 //     parameterized mutation (single-event incremental cost + H-6
 //     reserve-then-finalize with partial-write patch via
 //     `finalize_write_journal_via_table`).  Added by slice 4.38.
-//
-// Yet to land:
-//
-//   - `fs_write_at` — same as fs_write but with offset; libc::pwrite;
-//     no shadow position advance (POSIX pwrite semantics).
+//   - `fs_write_at` — fd + offset + ByteArray; libc::pwrite.  Same
+//     journal shape as fs_write but WITHOUT shadow position
+//     advance (POSIX pwrite doesn't move the OS-fd position).
+//     Added by slice 4.39.  Mutation family 8/8 complete.
 //
 // Family: [`HandlerFamily::Mutation`](super::super::handler_trait::family::HandlerFamily::Mutation).
 
@@ -44,3 +43,4 @@ pub mod fs_remove_file;
 pub mod fs_rename;
 pub mod fs_truncate;
 pub mod fs_write;
+pub mod fs_write_at;

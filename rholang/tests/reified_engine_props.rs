@@ -43,6 +43,9 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use rholang::rust::interpreter::accounting::byte_accounting::produce_introduction_identity;
+// Added by decision 102 (plan v2 pins): a setup that retries a park takes a large phlo limit.
+use rholang::rust::interpreter::accounting::costs::Cost;
+use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, JoinOp, ProduceOp, SpaceEnv, SpaceOp, SpaceOutcome,
@@ -64,22 +67,33 @@ use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
-use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+// Changed by decision 102 (plan v2 pins): no oracle reads the raw waiter of a snapshot, so the
+// test does not name `WaitingContinuation`. The old line follows.
+// use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::space_store_handle::{
-    canonical_continuation_order, canonical_data_order,
-};
+// Changed by decision 102 (plan v2 pins): the send oracle follows the choice of the agent, so it
+// reads no canonical waiter order. The old lines follow.
+// use rspace_plus_plus::rspace::space_store_handle::{
+//     canonical_continuation_order, canonical_data_order,
+// };
+use rspace_plus_plus::rspace::space_store_handle::canonical_data_order;
 // Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
 // use rspace_plus_plus::rspace::space_store_handle::metered_encode;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 // Disabled with `ProbeSet`, which `SetDiscipline` replaces (SET batch): only `ProbeSet` used it.
 // use serde::Serialize;
+// Changed by decision 92: the check of the anchor of an abort.
+// use support::agent::{
+//     any, budget, config_of, create, creation, data_channel, env_over, exactly, int, key_of, named,
+//     run, string, ParRSpace,
+// };
 use support::agent::{
-    any, budget, config_of, create, creation, data_channel, env_over, exactly, int, key_of, named,
-    run, string, ParRSpace,
+    any, budget, config_of, create, creation, data_channel, env_over, exactly, int, key_of,
+    logs_anchors_only, named, run, string, ParRSpace,
 };
 use support::props::{check, pure_config, tokio_runtime};
 
@@ -91,6 +105,17 @@ const SPACE: NativeSpace = NativeSpace {
 
 /// The longest script of a property.
 const SCRIPT_STEPS: usize = 8;
+
+/// Added by decision 102 (plan v2 pins): the most tries of a setup that needs a guarded waiter
+/// to park. Play picks the record of a receive at random (rule CR-1), so a guarded waiter parks
+/// only when its pick is a record that its guard refuses. Each setup of this file parks with
+/// probability 1/2 in each try, so all tries fire with probability 2^-128, about 2.9·10^-39.
+const PARK_TRIES: usize = 128;
+
+/// Added by decision 102 (plan v2 pins): the phlo limit of a setup that retries a park. A try
+/// that fires spends phlo, and the reset of the space does not refund it. So the setup takes a
+/// limit that [`PARK_TRIES`] tries cannot spend.
+const PARK_PHLO: i64 = 1_000_000_000_000;
 
 /// A count of the cases of a property that reached one behavior. A property asserts a least
 /// count after its run, so a property that never reaches its behavior fails instead of passing
@@ -426,6 +451,10 @@ fn region(index: usize) -> CostAuthority {
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![byte])),
             }),
+            // Added by decision 90 (DR-135): an unpriced region, as outside native
+            // execution.
+            price: 0,
+            caller: None,
         }],
     }
 }
@@ -516,7 +545,10 @@ struct Rec {
 /// A parked waiter, decoded.
 #[derive(Clone, Debug)]
 struct Wtr {
-    raw: WaitingContinuation<BindPattern, TaggedContinuation>,
+    // Changed by decision 102 (plan v2 pins): the send oracle follows the choice of the agent, so
+    // it reads no canonical waiter order, and no oracle reads the raw waiter. The old field
+    // follows.
+    // raw: WaitingContinuation<BindPattern, TaggedContinuation>,
     name: String,
     pattern: BindPattern,
     continuation: TaggedContinuation,
@@ -643,7 +675,9 @@ async fn snapshot(host: &ParRSpace, data: &Par) -> Snapshot {
                 pattern: raw.patterns.first().cloned().expect("one bind"),
                 persistent: raw.persist,
                 continuation,
-                raw,
+                // Changed by decision 102 (plan v2 pins): `Wtr` has no field `raw`. The old line
+                // follows.
+                // raw,
             }
         })
         .collect();
@@ -997,48 +1031,149 @@ fn prop_engine_match_is_the_injected_matcher() {
     });
 }
 
-/// The choices of a send under decision 37 for a scan family: each fire takes the first
-/// remaining waiter, in canonical order, that binds the datum and admits it, and a stored datum
-/// has no such waiter.
+// Changed by decision 102 (plan v2 pins): play picks a waiter and a record at random (rule CR-1),
+// so the oracles follow the choice of the agent instead of the canonical order. The old oracles
+// follow.
+// /// The choices of a send under decision 37 for a scan family: each fire takes the first
+// /// remaining waiter, in canonical order, that binds the datum and admits it, and a stored datum
+// /// has no such waiter.
+// fn check_offer_choices(
+//     obs: &Observation,
+//     payload: &ListParWithRandom,
+//     skipped: &Hits,
+// ) -> Result<(), TestCaseError> {
+//     let raw: Vec<_> = obs
+//         .before
+//         .waiters
+//         .iter()
+//         .map(|waiter| waiter.raw.clone())
+//         .collect();
+//     let order = canonical_continuation_order(&raw);
+//     let mut remaining: Vec<&Wtr> = order
+//         .iter()
+//         .map(|&index| &obs.before.waiters[index])
+//         .collect();
+//     let token = payload.random_state.clone();
+//     for fire in obs
+//         .fires
+//         .iter()
+//         .filter(|fire| fire.results.iter().any(|r| r.token == token))
+//     {
+//         let expected = remaining.iter().position(|waiter| takes(waiter, payload));
+//         prop_assert!(expected.is_some(), "a send fires only an admitting waiter");
+//         let expected = expected.expect("checked above");
+//         if remaining[..expected]
+//             .iter()
+//             .any(|waiter| binds(&waiter.pattern, payload).is_some())
+//         {
+//             skipped.hit();
+//         }
+//         prop_assert_eq!(
+//             &fire.name,
+//             &remaining[expected].name,
+//             "the first admitting waiter fires"
+//         );
+//         if !remaining[expected].persistent {
+//             remaining.remove(expected);
+//         }
+//     }
+//     if obs.after.record(&token).is_some() && obs.before.record(&token).is_none() {
+//         prop_assert!(
+//             !remaining.iter().any(|waiter| takes(waiter, payload)),
+//             "a datum is stored only when no waiter admits it"
+//         );
+//     }
+//     Ok(())
+// }
+//
+// /// The choice of a receive under decision 37 for a scan family: the first record, in canonical
+// /// order, that the pattern binds, and one guard check on it.
+// fn check_receive_choice(
+//     trace: &Trace,
+//     obs: &Observation,
+//     name: &str,
+//     refused: &Hits,
+// ) -> Result<(), TestCaseError> {
+//     let receiver = trace.receivers.get(name).expect("a receive of the script");
+//     let raw: Vec<_> = obs
+//         .before
+//         .records
+//         .iter()
+//         .map(|record| record.raw.clone())
+//         .collect();
+//     let order = canonical_data_order(&raw);
+//     let first = order
+//         .iter()
+//         .map(|&index| &obs.before.records[index])
+//         .find(|record| binds(&receiver.pattern, &record.payload).is_some());
+//     let own: Vec<&Fired> = obs.fires.iter().filter(|fire| fire.name == name).collect();
+//     match first {
+//         None => prop_assert!(own.is_empty(), "a receive with no spatial match parks"),
+//         Some(record) => {
+//             let matched = binds(&receiver.pattern, &record.payload).expect("checked above");
+//             match admits(&receiver.continuation, &matched) {
+//                 false => {
+//                     prop_assert!(own.is_empty(), "a guard refusal of the first match parks");
+//                     refused.hit();
+//                 }
+//                 true => {
+//                     let fire = own.first();
+//                     prop_assert!(fire.is_some(), "the first spatial match fires");
+//                     let fire = fire.expect("checked above");
+//                     prop_assert_eq!(
+//                         &fire.results[0].token,
+//                         &record.token,
+//                         "the first spatial match in canonical order fires"
+//                     );
+//                 }
+//             }
+//         }
+//     }
+//     Ok(())
+// }
+/// The choices of a send under decision 37 for a scan family.
+///
+/// Changed by decision 102 (plan v2 pins): play visits the waiters in a random pick order (rule
+/// CR-1). So the model follows the choice of the agent. Each fire takes a remaining waiter that
+/// binds the datum and admits it, and the model removes that waiter when it does not persist. A
+/// stored datum has no such waiter. The coverage counts a send that fires while a waiter binds
+/// the datum and refuses it, in a state that no choice reached (`pick_free`, [`has_choice`]).
+/// The text before: "each fire takes the first remaining waiter, in canonical order, that binds
+/// the datum and admits it, and a stored datum has no such waiter."
 fn check_offer_choices(
     obs: &Observation,
     payload: &ListParWithRandom,
+    pick_free: bool,
     skipped: &Hits,
 ) -> Result<(), TestCaseError> {
-    let raw: Vec<_> = obs
-        .before
-        .waiters
-        .iter()
-        .map(|waiter| waiter.raw.clone())
-        .collect();
-    let order = canonical_continuation_order(&raw);
-    let mut remaining: Vec<&Wtr> = order
-        .iter()
-        .map(|&index| &obs.before.waiters[index])
-        .collect();
+    let mut remaining: Vec<&Wtr> = obs.before.waiters.iter().collect();
     let token = payload.random_state.clone();
+    let mut fired = false;
     for fire in obs
         .fires
         .iter()
         .filter(|fire| fire.results.iter().any(|r| r.token == token))
     {
-        let expected = remaining.iter().position(|waiter| takes(waiter, payload));
-        prop_assert!(expected.is_some(), "a send fires only an admitting waiter");
-        let expected = expected.expect("checked above");
-        if remaining[..expected]
+        let chosen = remaining
             .iter()
-            .any(|waiter| binds(&waiter.pattern, payload).is_some())
-        {
-            skipped.hit();
-        }
-        prop_assert_eq!(
-            &fire.name,
-            &remaining[expected].name,
-            "the first admitting waiter fires"
+            .position(|waiter| waiter.name == fire.name && takes(waiter, payload));
+        prop_assert!(
+            chosen.is_some(),
+            "a send fires a remaining waiter that binds and admits the datum"
         );
-        if !remaining[expected].persistent {
-            remaining.remove(expected);
+        let chosen = chosen.expect("checked above");
+        if !remaining[chosen].persistent {
+            remaining.remove(chosen);
         }
+        fired = true;
+    }
+    let refusal = obs
+        .before
+        .waiters
+        .iter()
+        .any(|waiter| binds(&waiter.pattern, payload).is_some() && !takes(waiter, payload));
+    if let (true, true, true) = (pick_free, fired, refusal) {
+        skipped.hit();
     }
     if obs.after.record(&token).is_some() && obs.before.record(&token).is_none() {
         prop_assert!(
@@ -1049,12 +1184,23 @@ fn check_offer_choices(
     Ok(())
 }
 
-/// The choice of a receive under decision 37 for a scan family: the first record, in canonical
-/// order, that the pattern binds, and one guard check on it.
+/// The choice of a receive under decision 37 for a scan family.
+///
+/// Changed by decision 102 (plan v2 pins) and decision 101 (rule CR-13): play visits the records
+/// in a random pick order (rule CR-1). The receive takes its pick, a record that the pattern
+/// binds, and it checks the guard once. A set that does not peek binds the first member of the
+/// class of its pick in DR-75 order and checks the guard on it. Every other receive binds its
+/// pick. All members of a class hold one payload, so the guard gives one answer for a class. So
+/// a fire binds a record that the pattern binds and the guard admits. A receive with a spatial
+/// match parks only when the guard refuses a possible pick. The coverage counts a park in a state
+/// that no choice reached (`pick_free`, [`has_choice`]), when the guard refuses every record that
+/// the pattern binds. The text before: "the first record, in canonical order, that the pattern
+/// binds, and one guard check on it."
 fn check_receive_choice(
     trace: &Trace,
     obs: &Observation,
     name: &str,
+    pick_free: bool,
     refused: &Hits,
 ) -> Result<(), TestCaseError> {
     let receiver = trace.receivers.get(name).expect("a receive of the script");
@@ -1065,40 +1211,131 @@ fn check_receive_choice(
         .map(|record| record.raw.clone())
         .collect();
     let order = canonical_data_order(&raw);
-    let first = order
+    let matches: Vec<&Rec> = order
         .iter()
         .map(|&index| &obs.before.records[index])
-        .find(|record| binds(&receiver.pattern, &record.payload).is_some());
+        .filter(|record| binds(&receiver.pattern, &record.payload).is_some())
+        .collect();
+    let passes = |record: &Rec| {
+        binds(&receiver.pattern, &record.payload)
+            .is_some_and(|matched| admits(&receiver.continuation, &matched))
+    };
     let own: Vec<&Fired> = obs.fires.iter().filter(|fire| fire.name == name).collect();
-    match first {
-        None => prop_assert!(own.is_empty(), "a receive with no spatial match parks"),
-        Some(record) => {
-            let matched = binds(&receiver.pattern, &record.payload).expect("checked above");
-            match admits(&receiver.continuation, &matched) {
-                false => {
-                    prop_assert!(own.is_empty(), "a guard refusal of the first match parks");
-                    refused.hit();
-                }
-                true => {
-                    let fire = own.first();
-                    prop_assert!(fire.is_some(), "the first spatial match fires");
-                    let fire = fire.expect("checked above");
-                    prop_assert_eq!(
-                        &fire.results[0].token,
-                        &record.token,
-                        "the first spatial match in canonical order fires"
-                    );
-                }
+    match (matches.is_empty(), own.first()) {
+        (true, _) => prop_assert!(own.is_empty(), "a receive with no spatial match parks"),
+        (false, None) => {
+            prop_assert!(
+                matches.iter().any(|record| !passes(record)),
+                "a receive with a spatial match parks only on a guard refusal of a possible pick"
+            );
+            if let (true, true) = (pick_free, matches.iter().all(|record| !passes(record))) {
+                refused.hit();
+            }
+        }
+        (false, Some(fire)) => {
+            let token = &fire.results[0].token;
+            let bound = matches.iter().find(|record| &record.token == token);
+            prop_assert!(
+                bound.is_some(),
+                "a receive binds a record that its pattern binds"
+            );
+            let bound = bound.expect("checked above");
+            prop_assert!(
+                passes(bound),
+                "a receive fires only when the guard admits its binding"
+            );
+            if let (Family::Set, false) = (trace.family, receiver.peek) {
+                let first = matches
+                    .iter()
+                    .find(|record| record.value == bound.value)
+                    .expect("the bound record is a member of its class");
+                prop_assert_eq!(
+                    &first.token,
+                    &bound.token,
+                    "a set binds the first member of the class of its pick in canonical order"
+                );
             }
         }
     }
     Ok(())
 }
 
-/// F18 (`guard_once_greedy_like_head`): a scan family chooses as the host rule of decision 37
-/// over the canonical order: a receive takes the first spatial match and checks the guard once,
-/// and a send fires the first waiter that binds and admits its datum. The cell checks its one
-/// head, as the head driver does.
+/// Added by decision 102 (plan v2 pins): true when the operation of `obs` can reach two outcomes
+/// or more, as the pick order of play decides (rule CR-1), or when the operation fails.
+///
+/// * A send has a choice when two waiters or more take its datum.
+/// * A receive has a choice when its possible picks give two outcomes or more. Each record that
+///   the guard admits gives a fire, one for each class for a set that does not peek. A guard
+///   refusal of a possible pick gives a park.
+/// * A receive that peeks and fires has a choice too when two waiters or more take the record
+///   that its restore offers again.
+///
+/// The operations of a trace before its first choice reach the same states in every run. So a
+/// coverage count of those states does not depend on a pick.
+fn has_choice(trace: &Trace, obs: &Observation) -> bool {
+    let takers = |payload: &ListParWithRandom| {
+        obs.before
+            .waiters
+            .iter()
+            .filter(|waiter| takes(waiter, payload))
+            .count()
+    };
+    match (&obs.result, &obs.op) {
+        (Err(_), _) | (Ok(_), SpaceOp::Settle(_) | SpaceOp::Join(_)) => true,
+        (Ok(_), SpaceOp::Produce(produce)) => takers(&produce.data) >= 2,
+        (Ok(_), SpaceOp::Consume(_)) => {
+            let name = receive_name(&obs.op).expect("a receive");
+            let receiver = trace.receivers.get(&name).expect("a receive of the script");
+            let by_class = trace.family == Family::Set && !receiver.peek;
+            let mut admitted = BTreeSet::new();
+            let mut refusal = false;
+            for record in &obs.before.records {
+                if let Some(matched) = binds(&receiver.pattern, &record.payload) {
+                    match (admits(&receiver.continuation, &matched), by_class) {
+                        (true, true) => {
+                            admitted.insert(record.value.to_be_bytes().to_vec());
+                        }
+                        (true, false) => {
+                            admitted.insert(record.token.clone());
+                        }
+                        (false, _) => refusal = true,
+                    }
+                }
+            }
+            let restored = match receiver.peek {
+                true => obs
+                    .fires
+                    .iter()
+                    .filter(|fire| fire.name == name)
+                    .flat_map(|fire| fire.results.iter())
+                    .any(|bound| !bound.persistent && takers(&bound.payload) >= 2),
+                false => false,
+            };
+            admitted.len() + usize::from(refusal) >= 2 || restored
+        }
+    }
+}
+
+/// F18 (`guard_once_greedy_like_head`): a scan family chooses as the host rule of decision 37: a
+/// receive checks the guard once, and a send fires a waiter that binds and admits its datum. The
+/// cell checks its one head, as the head driver does.
+///
+/// Changed by decision 102 (plan v2 pins) and decision 101 (rule CR-13): play picks a record and
+/// a waiter at random (rule CR-1). So the model follows the choice of the agent
+/// ([`check_offer_choices`], [`check_receive_choice`]):
+///
+/// * A receive takes a record that its pattern binds and checks the guard once. A set that does
+///   not peek binds the first member of the class of its pick in DR-75 order. A receive with a
+///   spatial match parks only when the guard refuses a possible pick.
+/// * A send fires a remaining waiter that binds and admits its datum. It stores the datum only
+///   when no waiter admits it.
+///
+/// The coverage counts only states that no choice reached ([`has_choice`]). With the fixed seed
+/// of the harness, those states are the same in every run, so the coverage assertions have no
+/// miss probability. The property has no other probabilistic assertion. The text before: "a
+/// scan family chooses as the host rule of decision 37 over the canonical order: a receive takes
+/// the first spatial match and checks the guard once, and a send fires the first waiter that
+/// binds and admits its datum."
 #[test]
 fn prop_engine_guard_checked_once_as_the_host_checks_it() {
     let skipped = Hits::new();
@@ -1108,30 +1345,60 @@ fn prop_engine_guard_checked_once_as_the_host_checks_it() {
             &[Family::Bag, Family::Set, Family::Cell],
             &script,
             |trace| {
+                // Added by decision 102 (plan v2 pins): true while no earlier operation of the
+                // trace had a choice.
+                let mut pick_free = true;
                 for obs in &trace.observations {
-                    if obs.result.is_err()
-                        || (obs.before.records.len() > 1 && trace.family == Family::Cell)
-                    {
-                        continue;
-                    }
-                    match &obs.op {
-                        SpaceOp::Produce(produce) if produce.reissued_ord.is_none() => {
+                    // Changed by decision 102 (plan v2 pins): an unchecked operation ends no
+                    // loop, so that `pick_free` follows every operation. The old lines follow.
+                    // if obs.result.is_err()
+                    //     || (obs.before.records.len() > 1 && trace.family == Family::Cell)
+                    // {
+                    //     continue;
+                    // }
+                    // match &obs.op {
+                    //     SpaceOp::Produce(produce) if produce.reissued_ord.is_none() => {
+                    //         let payload = produce.data.clone();
+                    //         check_offer_choices(obs, &payload, &skipped)?;
+                    //     }
+                    //     SpaceOp::Consume(_) => {
+                    //         let name = receive_name(&obs.op).expect("a receive");
+                    //         check_receive_choice(trace, obs, &name, &refused)?;
+                    //     }
+                    //     SpaceOp::Produce(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => {}
+                    // }
+                    let unchecked = obs.result.is_err()
+                        || (obs.before.records.len() > 1 && trace.family == Family::Cell);
+                    match (unchecked, &obs.op) {
+                        (true, _) => {}
+                        (false, SpaceOp::Produce(produce)) if produce.reissued_ord.is_none() => {
                             let payload = produce.data.clone();
-                            check_offer_choices(obs, &payload, &skipped)?;
+                            check_offer_choices(obs, &payload, pick_free, &skipped)?;
                         }
-                        SpaceOp::Consume(_) => {
+                        (false, SpaceOp::Consume(_)) => {
                             let name = receive_name(&obs.op).expect("a receive");
-                            check_receive_choice(trace, obs, &name, &refused)?;
+                            check_receive_choice(trace, obs, &name, pick_free, &refused)?;
                         }
-                        SpaceOp::Produce(_) | SpaceOp::Settle(_) | SpaceOp::Join(_) => {}
+                        (false, SpaceOp::Produce(_) | SpaceOp::Settle(_) | SpaceOp::Join(_)) => {}
                     }
+                    pick_free = pick_free && !has_choice(trace, obs);
                 }
                 Ok(())
             },
         )
     });
-    skipped.assert_at_least(4, "a send fires a later waiter after a guard refusal");
-    refused.assert_at_least(1, "a receive parks on a guard refusal of its first match");
+    // Changed by decision 102 (plan v2 pins): the coverage counts the states that no choice
+    // reached. The old lines follow.
+    // skipped.assert_at_least(4, "a send fires a later waiter after a guard refusal");
+    // refused.assert_at_least(1, "a receive parks on a guard refusal of its first match");
+    skipped.assert_at_least(
+        4,
+        "a send fires an admitting waiter while a waiter binds the datum and refuses it",
+    );
+    refused.assert_at_least(
+        1,
+        "a receive parks because the guard refuses every record that its pattern binds",
+    );
 }
 
 /// F19 (`wildcard_matcher_degenerate`): under the legacy WildcardMatch a receive for one value
@@ -1739,7 +2006,8 @@ fn prop_engine_set_class_retired() {
 }
 
 /// V7 (`CellCapacity`): a cell holds at most one record and one waiter, and an operation that
-/// fails with `CellOccupied` changes nothing.
+/// fails with `CellOccupied` changes nothing. Decision 92: the failed operation commits its
+/// anchor only, which leaves the state of the space in place.
 #[test]
 fn prop_engine_cell_capacity() {
     let aborts = Hits::new();
@@ -1752,7 +2020,12 @@ fn prop_engine_cell_capacity() {
                 if let Err(error) = &obs.result {
                     aborts.hit();
                     prop_assert_eq!(error, &SpaceError::CellOccupied);
-                    prop_assert!(obs.events.is_empty(), "an abort stages nothing");
+                    // Changed by decision 92: an abort commits its anchor only.
+                    // prop_assert!(obs.events.is_empty(), "an abort stages nothing");
+                    prop_assert!(
+                        logs_anchors_only(&obs.events, SPACE, 1),
+                        "an abort logs its anchor only"
+                    );
                     prop_assert_eq!(obs.before.tokens(), obs.after.tokens());
                     prop_assert_eq!(&obs.counter, &counter, "an abort bumps nothing");
                 } else {
@@ -1833,17 +2106,33 @@ fn prop_engine_peek_restores_record() {
 
 // ── A deterministic case: the growth of the staged list ────────────────────────────────────
 
-/// A set with seventy stored members of one class, one record of another class first in the
-/// canonical order, and a guarded waiter that refused that record. A send of the class fires the
-/// waiter and retires the seventy members, so the operation stages more than the head-only room
-/// of the staged list. The operation commits, and only the record of the other class remains.
+/// A set with seventy stored members of one class, seventy records of another class, and a
+/// guarded waiter that refused a record of the other class. A send of the class fires the waiter
+/// and retires the seventy members, so the operation stages more than the head-only room of the
+/// staged list. The operation commits, and only the records of the other class remain.
+///
+/// Changed by decision 102 (plan v2 pins): play picks the record of a receive at random (rule
+/// CR-1), so no record comes first for the guarded waiter. The waiter parks only when its pick
+/// is a record of the other class. That occurs with probability 70/140 = 1/2 in each try. The
+/// setup goes back to a checkpoint after each try that fires, and it tries again, up to
+/// [`PARK_TRIES`] times. All tries fire with probability 2^-128, about 2.9·10^-39. The send of
+/// the class has one waiter, so the rest of the test makes no random choice. The text before:
+/// "A set with seventy stored members of one class, one record of another class first in the
+/// canonical order, and a guarded waiter that refused that record. [...] The operation commits,
+/// and only the record of the other class remains."
 #[test]
 fn engine_set_retirement_grows_the_staged_list() {
     const MEMBERS: usize = 70;
+    // Added by decision 102 (plan v2 pins): the records of the other class. A try of the guarded
+    // waiter parks with probability OTHERS / (MEMBERS + OTHERS) = 1/2.
+    const OTHERS: usize = 70;
     let runtime = tokio_runtime();
     let build = || async {
         let host = host_with(Injected::Real).await;
-        let budget = budget();
+        // Changed by decision 102 (plan v2 pins): the setup retries a park, so it takes a large
+        // phlo limit. The old line follows.
+        // let budget = budget();
+        let budget = RuntimeBudget::new(Cost::create(PARK_PHLO, "rrs engine set retirement"));
         let env = env_over(host.clone(), &budget);
         let agent = GenericSpace::<HashMapOuter, SetDiscipline>::default();
         let config = config_of(
@@ -1869,46 +2158,87 @@ fn engine_set_retirement_grows_the_staged_list() {
             .await
             .expect("a member stores");
         }
-        // A record of value 2 that comes first in the canonical order.
-        let mut index = MEMBERS;
-        loop {
+        // Changed by decision 102 (plan v2 pins): play picks the record of a receive at random
+        // (rule CR-1), so the setup stores `OTHERS` records of value 2 instead of one record of
+        // value 2 first in the canonical order. The old lines follow.
+        // // A record of value 2 that comes first in the canonical order.
+        // let mut index = MEMBERS;
+        // loop {
+        //     run(
+        //         &agent,
+        //         &env,
+        //         SpaceOp::Produce(send_op(&channel, index, 2, false)),
+        //     )
+        //     .await
+        //     .expect("the other record stores");
+        //     let stored: Vec<_> = host.get_data(&data).await;
+        //     let order = canonical_data_order(&stored);
+        //     let first = record::unwrap_datum(&stored[order[0]].a)
+        //         .expect("a record")
+        //         .datum;
+        //     if value_of(&first) == 2 {
+        //         break;
+        //     }
+        //     run(
+        //         &agent,
+        //         &env,
+        //         SpaceOp::Consume(receive_op(&channel, index, Wanted::Two, false, false)),
+        //     )
+        //     .await
+        //     .expect("the other record leaves");
+        //     index += 1;
+        //     assert!(
+        //         index < MEMBERS + 1_000,
+        //         "a record of value 2 comes first in time"
+        //     );
+        // }
+        // // The guarded waiter: its first spatial match is the record of value 2, which its guard
+        // // `x == 1` refuses, so it parks (decision 37).
+        // let guarded = ConsumeOp {
+        //     guard: Some(bound_equals(1)),
+        //     ..receive_op(&channel, index + 1, Wanted::Any, false, false)
+        // };
+        // run(&agent, &env, SpaceOp::Consume(guarded))
+        //     .await
+        //     .expect("the waiter parks");
+        for index in MEMBERS..MEMBERS + OTHERS {
             run(
                 &agent,
                 &env,
                 SpaceOp::Produce(send_op(&channel, index, 2, false)),
             )
             .await
-            .expect("the other record stores");
-            let stored: Vec<_> = host.get_data(&data).await;
-            let order = canonical_data_order(&stored);
-            let first = record::unwrap_datum(&stored[order[0]].a)
-                .expect("a record")
-                .datum;
-            if value_of(&first) == 2 {
-                break;
-            }
-            run(
-                &agent,
-                &env,
-                SpaceOp::Consume(receive_op(&channel, index, Wanted::Two, false, false)),
-            )
-            .await
-            .expect("the other record leaves");
-            index += 1;
-            assert!(
-                index < MEMBERS + 1_000,
-                "a record of value 2 comes first in time"
-            );
+            .expect("a record of the other class stores");
         }
-        // The guarded waiter: its first spatial match is the record of value 2, which its guard
-        // `x == 1` refuses, so it parks (decision 37).
+        // The guarded waiter: its guard `x == 1` refuses a pick of value 2, so it parks
+        // (decision 37). A pick of value 1 fires it. Then the space goes back to the checkpoint,
+        // and the waiter tries again.
+        let start = host
+            .create_checkpoint()
+            .await
+            .expect("a checkpoint before the guarded waiter")
+            .root;
         let guarded = ConsumeOp {
             guard: Some(bound_equals(1)),
-            ..receive_op(&channel, index + 1, Wanted::Any, false, false)
+            ..receive_op(&channel, MEMBERS + OTHERS, Wanted::Any, false, false)
         };
-        run(&agent, &env, SpaceOp::Consume(guarded))
-            .await
-            .expect("the waiter parks");
+        let mut parked = false;
+        for _ in 0..PARK_TRIES {
+            let outcome = run(&agent, &env, SpaceOp::Consume(guarded.clone()))
+                .await
+                .expect("the guarded waiter runs");
+            match outcome.fires.is_empty() {
+                true => {
+                    parked = true;
+                    break;
+                }
+                false => host
+                    .reset(&start)
+                    .await
+                    .expect("the space goes back to the checkpoint"),
+            }
+        }
+        assert!(parked, "the guarded waiter parks within {PARK_TRIES} tries");
         assert_eq!(
             host.get_waiting_continuations(vec![data.clone()])
                 .await
@@ -1916,7 +2246,10 @@ fn engine_set_retirement_grows_the_staged_list() {
             1
         );
         host.take_event_log().await;
-        (host, budget, agent, channel, data, index + 2)
+        // Changed by decision 102 (plan v2 pins): the index of the next send follows the guarded
+        // waiter. The old line follows.
+        // (host, budget, agent, channel, data, index + 2)
+        (host, budget, agent, channel, data, MEMBERS + OTHERS + 1)
     };
     let (host, budget, agent, channel, data, next) = runtime.block_on(build());
     let outcome = runtime
@@ -1938,20 +2271,40 @@ fn engine_set_retirement_grows_the_staged_list() {
         "one fire and one K_retire for each member"
     );
     let left = runtime.block_on(snapshot(&host, &data));
-    assert_eq!(left.records.len(), 1, "only the record of value 2 remains");
-    assert_eq!(left.records[0].value, 2);
+    // Changed by decision 102 (plan v2 pins): the setup stores `OTHERS` records of value 2. The
+    // old lines follow.
+    // assert_eq!(left.records.len(), 1, "only the record of value 2 remains");
+    // assert_eq!(left.records[0].value, 2);
+    assert_eq!(
+        left.records.len(),
+        OTHERS,
+        "only the records of value 2 remain"
+    );
+    assert!(left.records.iter().all(|record| record.value == 2));
 }
 
 // ── A deterministic case: the second send fires a guarded waiter (Rule E) ───────────────────
 
 /// Builds a collection of `D` with a record of value 1 first in the canonical order and a record
-/// of value 2 after it, and a parked waiter of any value with the guard `x == 2`. The first
-/// spatial match of the waiter is the record of value 1, which its guard refuses, so it parks
-/// (decision 37). A peek of the record of value 2 removes it, and its second send then fires
-/// the guarded waiter, as the host's `produce_peeks` does (decision 45, C.11).
+/// of value 2 after it, and a parked waiter of any value with the guard `x == 2`. The waiter
+/// parks on a guard refusal of the record of value 1 (decision 37). A peek of the record of
+/// value 2 removes it, and its second send then fires the guarded waiter, as the host's
+/// `produce_peeks` does (decision 45, C.11).
+///
+/// Changed by decision 102 (plan v2 pins): play picks the record of a receive at random (rule
+/// CR-1). So the guarded waiter parks only when its pick is the record of value 1, with
+/// probability 1/2 in each try. The setup goes back to a checkpoint after each try that fires,
+/// and it tries again, up to [`PARK_TRIES`] times. All tries fire with probability 2^-128, about
+/// 2.9·10^-39. The peek binds only the record of value 2, and its second send meets only the
+/// guarded waiter, so the rest of the witness makes no random choice. The text before: "The
+/// first spatial match of the waiter is the record of value 1, which its guard refuses, so it
+/// parks (decision 37)."
 async fn reoffer_witness<D: Discipline>() -> (Vec<Fired>, Snapshot) {
     let host = host_with(Injected::Real).await;
-    let budget = budget();
+    // Changed by decision 102 (plan v2 pins): the setup retries a park, so it takes a large phlo
+    // limit. The old line follows.
+    // let budget = budget();
+    let budget = RuntimeBudget::new(Cost::create(PARK_PHLO, "rrs engine peek restore"));
     let env = env_over(host.clone(), &budget);
     let agent = GenericSpace::<HashMapOuter, D>::default();
     let config = config_of(SPACE, HashMapOuter::NAME, D::NAME, SpaceQualifier::Default);
@@ -1997,19 +2350,54 @@ async fn reoffer_witness<D: Discipline>() -> (Vec<Fired>, Snapshot) {
         index += 1;
         assert!(index < 1_000, "a record of value 1 comes first in time");
     }
-    run(
-        &agent,
-        &env,
-        SpaceOp::Consume(receive_op(
-            &channel,
-            index + 1,
-            Wanted::AnyTwo,
-            false,
-            false,
-        )),
-    )
-    .await
-    .expect("the guarded waiter parks");
+    // Changed by decision 102 (plan v2 pins): play picks the record of the guarded waiter at
+    // random (rule CR-1), so the waiter tries from a checkpoint until it parks. The old lines
+    // follow.
+    // run(
+    //     &agent,
+    //     &env,
+    //     SpaceOp::Consume(receive_op(
+    //         &channel,
+    //         index + 1,
+    //         Wanted::AnyTwo,
+    //         false,
+    //         false,
+    //     )),
+    // )
+    // .await
+    // .expect("the guarded waiter parks");
+    let start = host
+        .create_checkpoint()
+        .await
+        .expect("a checkpoint before the guarded waiter")
+        .root;
+    let mut parked = false;
+    for _ in 0..PARK_TRIES {
+        let outcome = run(
+            &agent,
+            &env,
+            SpaceOp::Consume(receive_op(
+                &channel,
+                index + 1,
+                Wanted::AnyTwo,
+                false,
+                false,
+            )),
+        )
+        .await
+        .expect("the guarded waiter runs");
+        match outcome.fires.is_empty() {
+            true => {
+                parked = true;
+                break;
+            }
+            false => host
+                .reset(&start)
+                .await
+                .expect("the space goes back to the checkpoint"),
+        }
+    }
+    assert!(parked, "the guarded waiter parks within {PARK_TRIES} tries");
     assert_eq!(
         host.get_waiting_continuations(vec![data.clone()])
             .await
@@ -2029,6 +2417,11 @@ async fn reoffer_witness<D: Discipline>() -> (Vec<Fired>, Snapshot) {
 /// Rule E with the re-offer of A.7: on a bag and on a set, the peek fires with the record of
 /// value 2, and the second send of that record fires the guarded waiter. So the record leaves
 /// the collection with the waiter, and the record of value 1 stays.
+///
+/// Changed by decision 102 (plan v2 pins): play picks the record of a receive at random (rule
+/// CR-1). So [`reoffer_witness`] parks the guarded waiter with up to [`PARK_TRIES`] tries from a
+/// checkpoint. The test fails to park on the bag or on the set with probability 2·2^-128 =
+/// 2^-127, about 5.9·10^-39. The claim of the test does not change.
 #[test]
 fn engine_peek_restore_reoffers_to_a_guarded_waiter() {
     let runtime = tokio_runtime();
@@ -2098,7 +2491,13 @@ fn engine_oracle_detects_a_pending_match_behind_a_queue_head() {
 }
 
 /// The oracles of V3 and of F18 detect a broken run: a record that disappears without a fire,
-/// and a fire of a waiter that is not the first admitting waiter in canonical order.
+/// and a fire of a waiter that is not a remaining waiter that admits the datum.
+///
+/// Changed by decision 102 (plan v2 pins): the oracle of F18 follows the choice of the agent
+/// (rule CR-1). The renamed fire names the waiter of any value, which the first send spent. So
+/// it is not a remaining waiter, and the oracle rejects it. Each send of the script has one
+/// waiter that admits its datum, so the run makes no random choice. The text before: "a fire of
+/// a waiter that is not the first admitting waiter in canonical order."
 #[test]
 fn engine_oracles_detect_a_lost_record_and_a_wrong_choice() {
     let script = [
@@ -2160,7 +2559,10 @@ fn engine_oracles_detect_a_lost_record_and_a_wrong_choice() {
         panic!("the fourth operation is a send")
     };
     let skipped = Hits::new();
-    assert!(check_offer_choices(second, &produce.data, &skipped).is_ok());
+    // Changed by decision 102 (plan v2 pins): the oracle takes the coverage flag `pick_free`.
+    // The old line follows.
+    // assert!(check_offer_choices(second, &produce.data, &skipped).is_ok());
+    assert!(check_offer_choices(second, &produce.data, false, &skipped).is_ok());
     let mut wrong = second.fires.clone();
     wrong[0].name = receiver(0);
     let renamed = Observation {
@@ -2174,5 +2576,8 @@ fn engine_oracles_detect_a_lost_record_and_a_wrong_choice() {
         in_flight: BTreeSet::new(),
         counter: Vec::new(),
     };
-    assert!(check_offer_choices(&renamed, &produce.data, &skipped).is_err());
+    // Changed by decision 102 (plan v2 pins): the oracle takes the coverage flag `pick_free`.
+    // The old line follows.
+    // assert!(check_offer_choices(&renamed, &produce.data, &skipped).is_err());
+    assert!(check_offer_choices(&renamed, &produce.data, false, &skipped).is_err());
 }

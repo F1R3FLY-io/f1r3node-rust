@@ -58,6 +58,8 @@ HTTP: `POST /api/trace`
 
 Returns the full event log for the block: every produce, consume, and COMM event for every deploy and system deploy, with channel hashes, random states, and originating deploy ID. Read-only nodes serve this endpoint; validator nodes do not.
 
+An offered deploy (protocol 6) reports the events of its user run in a USER batch, as a dev user deploy does. Its entry also carries the committed native cost evidence and the settlement receipt (DR-70). The cost settlement replaces the PRECHARGE and REFUND batches of dev, so they do not appear.
+
 See [node API reference](node/api-reference.md) for the full schema.
 
 ### Detecting orphan sends

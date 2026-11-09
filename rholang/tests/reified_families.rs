@@ -25,6 +25,10 @@
 // a HashSet family the qualifier `seq` (`family_ctor`), and the deploys of this file, which run
 // in legacy execution, create no HashSet space: each HashSet factory fails closed with
 // `QualifierUnavailable`. `reified_hashset.rs` creates HashSet spaces in native execution.
+//
+// Changed by decision 90 (C6, step D): spaces have one execution model, native funded execution,
+// so no factory refuses `seq`. The deploys of this file name the `default` qualifier, which a
+// HashSet factory refuses, so they skip the HashSet families (`legacy_creates`).
 
 #[path = "support/mod.rs"]
 mod support;
@@ -35,6 +39,7 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::Par;
 use models::rust::reified::builders;
+use models::rust::reified::encoding::encode_params;
 use models::rust::reified::params::SendParam;
 use models::rust::reified::validation::is_param_key;
 use models::rust::space_factory_urn::{
@@ -96,7 +101,11 @@ fn params_tuple(positional: &[Par], named: &BTreeMap<String, Par>) -> Option<Par
             .iter()
             .map(|(key, value)| SendParam::Named(key.clone(), value.clone())),
     );
-    builders::send_params(params).expect("valid params")
+    // Changed by decision 112: `send_params` returns the protobuf field, and a factory call reads
+    // the value form of the params. The text before:
+    // builders::send_params(params).expect("valid params")
+    let params = builders::send_params(params).expect("valid params")?;
+    encode_params(&params).expect("valid params")
 }
 
 /// The constructor list `[PARAMS?]` of `positional` and `named`.
@@ -132,8 +141,14 @@ fn family_ctor(family: SpaceFactoryUrn, positional: &[Par], named: &BTreeMap<Str
     )
 }
 
-/// True when legacy execution creates a space of `family`: the family takes `default`. A HashSet
-/// family takes only `seq`, which legacy execution refuses (QT-5).
+// Changed by decision 90 (C6, step D): spaces run only in native execution. The legacy text
+// follows.
+//
+// /// True when legacy execution creates a space of `family`: the family takes `default`. A HashSet
+// /// family takes only `seq`, which legacy execution refuses (QT-5).
+/// True when the deploys of this file create a space of `family` with their constructor, which
+/// names `default`: the family takes `default`. A HashSet family takes only `seq`, and
+/// `reified_hashset.rs` creates its spaces.
 fn legacy_creates(family: SpaceFactoryUrn) -> bool {
     family.supports_qualifier(UrnQualifier::Default)
 }
@@ -218,7 +233,12 @@ fn messages(errors: &[InterpreterError]) -> Vec<String> {
             InterpreterError::AggregateError { interpreter_errors } => {
                 pending.extend(interpreter_errors.iter());
             }
-            InterpreterError::ReduceError(message) => found.push(message.clone()),
+            // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): a user
+            // failure of a space is a `SpaceUserError` with the text of its reduce error.
+            // InterpreterError::ReduceError(message) => found.push(message.clone()),
+            InterpreterError::ReduceError(message) | InterpreterError::SpaceUserError(message) => {
+                found.push(message.clone())
+            }
             other => found.push(format!("{other:?}")),
         }
     }
@@ -626,26 +646,36 @@ async fn space_factory_families_registered() {
     );
 }
 
+// Changed by decision 90 (C6, step D): the session runs native deploys, where a HashSet factory
+// creates a seq space. The legacy text follows.
+//
+// /// Each registered factory creates a space whose config names its family, with the canonical
+// /// required params, and `getSpaceAgent` replies the capability of the family (decision 9.4).
+// /// Legacy execution refuses the only qualifier of a HashSet factory, so it creates nothing
+// /// (QT-5).
 /// Each registered factory creates a space whose config names its family, with the canonical
 /// required params, and `getSpaceAgent` replies the capability of the family (decision 9.4).
-/// Legacy execution refuses the only qualifier of a HashSet factory, so it creates nothing
-/// (QT-5).
+/// The deploys name `default`, which a HashSet factory refuses, so the test skips the HashSet
+/// families. `reified_hashset.rs` creates their `seq` spaces.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_factory_registered_families_create_their_spaces() {
     let mut session = Session::new().await;
     let urn_map = session.play.reducer.urn_map.clone();
     for (index, (family, _)) in registered_families().enumerate() {
         if !legacy_creates(family) {
-            session
-                .fail_with(
-                    &format!(
-                        "new factory(`{family}`) in {{ for (space <- factory!?(\"seq\")) {{ Nil }} }}"
-                    ),
-                    &format!("rrs-p7-legacy {family}"),
-                    &Injections::new(),
-                    &["QualifierUnavailable"],
-                )
-                .await;
+            // Changed by decision 90 (C6, step D): the session runs native deploys, and a HashSet
+            // factory creates a seq space, which lives for one deploy. `reified_hashset.rs` creates
+            // HashSet spaces, so this loop skips them. The legacy check follows.
+            // session
+            //     .fail_with(
+            //         &format!(
+            //             "new factory(`{family}`) in {{ for (space <- factory!?(\"seq\")) {{ Nil }} }}"
+            //         ),
+            //         &format!("rrs-p7-legacy {family}"),
+            //         &Injections::new(),
+            //         &["QualifierUnavailable"],
+            //     )
+            //     .await;
             continue;
         }
         let params = minimal_params(family);
@@ -928,8 +958,12 @@ async fn space_factory_kwargs_unknown_param_with_suggestion() {
             "{family}"
         );
     }
-    // Legacy execution refuses the qualifier of a HashSet factory before its params
-    // (`reified_hashset.rs` checks the params natively).
+    // Changed by decision 90 (C6, step D): the session runs native deploys. The legacy comment
+    // follows.
+    // // Legacy execution refuses the qualifier of a HashSet factory before its params
+    // // (`reified_hashset.rs` checks the params natively).
+    // The deploys name `default`, which a HashSet factory refuses before its params, so the loop
+    // skips the HashSet families (`reified_hashset.rs` checks their params).
     let mut session = Session::new().await;
     for (family, _) in registered_families().filter(|(family, _)| legacy_creates(*family)) {
         let schema = constructor_schema(family).expect("a registered family has a schema");
@@ -1696,11 +1730,18 @@ fn prop_vectordb_params_validated() {
     );
 }
 
+// Changed by decision 90 (C6, step D): the session runs native deploys. The legacy text follows.
+//
+// /// The factory of a registered family creates a space whose config names the family and holds
+// /// the canonical params of the constructor, for random valid params of the schema. A VectorDB
+// /// constructor takes `capacity` and `dimensions`, any metric, and a mirror only with a metric
+// /// that ChromaDB indexes. The deploys run in legacy execution, which creates no HashSet space
+// /// (QT-5).
 /// The factory of a registered family creates a space whose config names the family and holds
 /// the canonical params of the constructor, for random valid params of the schema. A VectorDB
 /// constructor takes `capacity` and `dimensions`, any metric, and a mirror only with a metric
-/// that ChromaDB indexes. The deploys run in legacy execution, which creates no HashSet space
-/// (QT-5).
+/// that ChromaDB indexes. The deploys name `default`, so they skip the HashSet families, which
+/// take only `seq`.
 #[test]
 fn prop_factory_config_names_its_family() {
     let families: Vec<SpaceFactoryUrn> = registered_families()

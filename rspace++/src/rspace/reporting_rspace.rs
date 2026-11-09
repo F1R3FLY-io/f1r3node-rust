@@ -115,6 +115,9 @@ where
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
     K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
 {
+    // Changed by Reified RSpaces (decision 19, P1): `ReportingRspace` implements `SpaceTxnHost`
+    // through its inner replay space (`space_replay.rs`), so the field is visible in the crate.
+    // replay_rspace: ReplayRSpace<C, P, A, K>,
     pub(crate) replay_rspace: ReplayRSpace<C, P, A, K>,
     // Global lock order (hold this order in every path, and never acquire
     // an earlier lock while holding a later one): soft_report -> report ->
@@ -331,6 +334,14 @@ where
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>> {
         self.replay_rspace.get_data(channel).await
+    }
+
+    async fn get_data_at(
+        &self,
+        checkpoint: &SoftCheckpoint<C, P, A, K>,
+        channel: &C,
+    ) -> Vec<Datum<A>> {
+        self.replay_rspace.get_data_at(checkpoint, channel).await
     }
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>> {

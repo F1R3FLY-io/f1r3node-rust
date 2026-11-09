@@ -13,17 +13,27 @@
 //! | `vectordb_query` | `vectordb_cosine`, `vectordb_top_k`, `vectordb_batch_cosine` |
 //! | `concurrency` | `lock_contention_same_channel`, `lock_contention_different_channels` |
 //! | `queue_ordering` | `atomic_ordering` |
+//! | `handle_produce` | none: the registry lookups of the handle `produce` path (decision 127) |
 //!
 //! The legacy groups `phlogiston` and `registry_lookup`/`registry_scale` have no counterpart:
 //! one charging path exists (M-3), so each case records its phlo, and the registry is deleted
 //! (D12). `checkpoint_operations` is in `reified_persistence.rs`.
+// Changed by decision 89 (T-BENCH, ruling L-5): no host-work limit bounds a deploy, so the
+// one-deploy series use fixed counts, and a collection that orders records by arrival fills with
+// one send in each deploy. The text before:
+// ```
+// //! A measured deploy is one native play at the v6 limits, without its checkpoint. The host work
+// //! of the v6 limits bounds the operations of one deploy, so each one-deploy series measures 1
+// //! and 10 operations and the largest count that fits, which a calibration finds. The series
+// //! then records the next count, which fails with `HostWorkRejected`, and stops there. The
+// //! contract records the counts of each series, so only a capture of a new series calibrates.
+// //! The read series fill their collections in setup deploys of [`common::CHUNK`] operations.
+// ```
 //!
-//! A measured deploy is one native play at the v6 limits, without its checkpoint. The host work
-//! of the v6 limits bounds the operations of one deploy, so each one-deploy series measures 1
-//! and 10 operations and the largest count that fits, which a calibration finds. The series
-//! then records the next count, which fails with `HostWorkRejected`, and stops there. The
-//! contract records the counts of each series, so only a capture of a new series calibrates.
-//! The read series fill their collections in setup deploys of [`common::CHUNK`] operations.
+//! A measured deploy is one native play, without its checkpoint. A one-deploy series measures 1,
+//! 10 and 100 operations. A read series fills its collection in setup deploys of
+//! [`common::CHUNK`] operations, and of one operation for a collection that orders its records
+//! by arrival, so the order of those records is the order of the sends in every run.
 
 #[path = "../tests/support/mod.rs"]
 mod support;
@@ -31,22 +41,44 @@ mod support;
 #[allow(dead_code)]
 mod common;
 
+// Changed by decision 89 (T-BENCH, ruling L-5): the calibration is retired, so the bench uses
+// neither its functions nor the filter. The text before:
+// ```
+// use common::{
+//     bench_case, create, create_and_use, fill, group, host_fill, largest_fitting, matches, par,
+//     recorded_counts, runtime, sizes, with_space, Case, Step,
+// };
+// ```
 use common::{
-    bench_case, create, create_and_use, fill, group, host_fill, largest_fitting, matches, par,
-    recorded_counts, runtime, sizes, with_space, Case, Step,
+    bench_case, create, create_and_use, fill, group, host_fill, par, runtime, sizes, with_space,
+    Case, Step, PAYLOAD_BASE,
 };
 use criterion::{criterion_group, criterion_main, Criterion};
 use tokio::runtime::Runtime;
 
 /// The record counts of the read series.
 const READ_SIZES: [u64; 4] = [10, 100, 1_000, 10_000];
-/// The first bound of a calibration. No space family fits 200 operations in one deploy, and the
-/// calibration doubles the bound for a series that does.
-const CALIBRATION_BOUND: u64 = 200;
+// Retired by decision 89 (T-BENCH, ruling L-5): no series calibrates. The constant was also the
+// least capacity of a VectorDB space in these benches, which MIN_CAPACITY now names. The text
+// before:
+// ```
+// /// The first bound of a calibration. No space family fits 200 operations in one deploy, and the
+// /// calibration doubles the bound for a series that does.
+// const CALIBRATION_BOUND: u64 = 200;
+// ```
+/// The least capacity of a VectorDB space in these benches. The one-deploy series store at most
+/// the largest count of [`ONE_DEPLOY_COUNTS`] records in one deploy.
+const MIN_CAPACITY: u64 = 200;
 /// The parallel operations of the concurrency group.
 const CONCURRENT: u64 = 8;
 /// The dimensions of the VectorDB records.
 const DIMENSIONS: u64 = 4;
+/// The operations of one deploy in the one-deploy series and in the `handle_produce` series
+/// (decision 89, ruling L-5).
+const ONE_DEPLOY_COUNTS: [u64; 3] = [1, 10, 100];
+/// The sends of one deploy in the `queue_ordering` series, the counts that P10 step S8 timed. A
+/// larger count can reach the fire round cap of the persistent receive (decision 89, ruling L-5).
+const QUEUE_ORDERING_COUNTS: [u64; 3] = [1, 10, 31];
 
 /// The hashmap families of the disciplines, with their constructor arguments for `n` records.
 fn disciplines(n: u64) -> Vec<(&'static str, String)> {
@@ -60,7 +92,10 @@ fn disciplines(n: u64) -> Vec<(&'static str, String)> {
             "hashmap:vectordb",
             format!(
                 "\"default\"; capacity={}, dimensions={DIMENSIONS}",
-                n.max(CALIBRATION_BOUND)
+                // Changed by decision 89 (T-BENCH, ruling L-5): the constant is renamed. The text
+                // before:
+                // n.max(CALIBRATION_BOUND)
+                n.max(MIN_CAPACITY)
             ),
         ),
     ]
@@ -71,7 +106,10 @@ fn payload(family: &str, i: u64) -> String {
     if family.ends_with("vectordb") {
         format!("[{}, {}, {}, 1]", i % 7, i % 5, i % 3)
     } else {
-        i.to_string()
+        // Changed by decision 102 (T-BENCH): every integer payload has one encoded size, so a
+        // random pick among records does not change the phlo. The text before:
+        // i.to_string()
+        (PAYLOAD_BASE + i).to_string()
     }
 }
 
@@ -100,10 +138,28 @@ fn short(family: &str) -> &str {
         .expect("a family has an inner collection")
 }
 
-/// Measures the one-deploy series of `term(n)` on the pre-state of `setup`: 1 and 10
-/// operations, the largest count that fits, and the next count, which records the stop. The
-/// counts come from the contract, and a capture of a series that it does not record yet
-/// calibrates them.
+/// The setup steps that store `n` records of `family`, with the send `f(i)` for each record `i`.
+/// A family that orders its records by arrival gets one send in each deploy, so the order of its
+/// records is the order of `i` in every run. Every other family gets one fill step.
+fn fill_steps(family: &str, n: u64, f: impl Fn(u64) -> String) -> Vec<Step> {
+    match short(family) {
+        "queue" | "stack" | "priorityqueue" => {
+            (0..n).map(|i| Step::Deploy(with_space(&f(i)))).collect()
+        }
+        _ => vec![fill(n, f)],
+    }
+}
+
+// Changed by decision 89 (T-BENCH, ruling L-5): the series measures fixed counts. The text
+// before:
+// ```
+// /// Measures the one-deploy series of `term(n)` on the pre-state of `setup`: 1 and 10
+// /// operations, the largest count that fits, and the next count, which records the stop. The
+// /// counts come from the contract, and a capture of a series that it does not record yet
+// /// calibrates them.
+// ```
+/// Measures the one-deploy series of `term(n)` on the pre-state of `setup` for each count of
+/// [`ONE_DEPLOY_COUNTS`]. `bench_case` applies the filter of the run to each case.
 fn one_deploy_series(
     g: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime>,
     rt: &Runtime,
@@ -112,19 +168,23 @@ fn one_deploy_series(
     setup: Vec<Step>,
     term: impl Fn(u64) -> String,
 ) {
-    let prefix = format!("{name}/{id}/");
-    let mut counts = recorded_counts(&prefix);
-    if counts.is_empty() {
-        let largest = largest_fitting(rt, name, id, &setup, &term, CALIBRATION_BOUND);
-        counts = vec![1, 10, largest, largest + 1];
-        counts.retain(|n| *n >= 1);
-        counts.sort_unstable();
-        counts.dedup();
-    }
-    if !counts.iter().any(|n| matches(&format!("{prefix}{n}"))) {
-        return;
-    }
-    for n in counts {
+    // Changed by decision 89 (T-BENCH, ruling L-5): the counts are fixed. The text before:
+    // ```
+    // let prefix = format!("{name}/{id}/");
+    // let mut counts = recorded_counts(&prefix);
+    // if counts.is_empty() {
+    //     let largest = largest_fitting(rt, name, id, &setup, &term, CALIBRATION_BOUND);
+    //     counts = vec![1, 10, largest, largest + 1];
+    //     counts.retain(|n| *n >= 1);
+    //     counts.sort_unstable();
+    //     counts.dedup();
+    // }
+    // if !counts.iter().any(|n| matches(&format!("{prefix}{n}"))) {
+    //     return;
+    // }
+    // for n in counts {
+    // ```
+    for n in sizes(&ONE_DEPLOY_COUNTS) {
         let case = Case {
             id: format!("{id}/{n}"),
             setup: setup.clone(),
@@ -160,7 +220,9 @@ fn bench_factory(c: &mut Criterion) {
 fn bench_send(c: &mut Criterion) {
     let rt = runtime();
     let mut g = group(c, "send");
-    for (family, ctor) in disciplines(CALIBRATION_BOUND) {
+    // Changed by decision 89 (T-BENCH, ruling L-5): the constant is renamed. The text before:
+    // for (family, ctor) in disciplines(CALIBRATION_BOUND) {
+    for (family, ctor) in disciplines(MIN_CAPACITY) {
         one_deploy_series(
             &mut g,
             &rt,
@@ -225,7 +287,9 @@ fn bench_send(c: &mut Criterion) {
 fn bench_send_receive(c: &mut Criterion) {
     let rt = runtime();
     let mut g = group(c, "send_receive");
-    for (family, ctor) in disciplines(CALIBRATION_BOUND) {
+    // Changed by decision 89 (T-BENCH, ruling L-5): the constant is renamed. The text before:
+    // for (family, ctor) in disciplines(CALIBRATION_BOUND) {
+    for (family, ctor) in disciplines(MIN_CAPACITY) {
         one_deploy_series(
             &mut g,
             &rt,
@@ -253,7 +317,10 @@ fn bench_receive_from_n(c: &mut Criterion) {
     for n in sizes(&READ_SIZES) {
         for (family, ctor) in disciplines(n) {
             let mut setup = vec![Step::Deploy(create(family, &ctor))];
-            setup.push(fill(n, |i| send(family, i)));
+            // Changed by decision 111 (T-BENCH): the fill of a family that orders its records by
+            // arrival plays one send in each deploy. The text before:
+            // setup.push(fill(n, |i| send(family, i)));
+            setup.extend(fill_steps(family, n, |i| send(family, i)));
             let case = Case {
                 id: format!("{}/{n}", short(family)),
                 setup,
@@ -265,7 +332,10 @@ fn bench_receive_from_n(c: &mut Criterion) {
         // The equivalent host program: a receive from an ordinary channel with n data.
         let host = Case {
             id: format!("host/{n}"),
-            setup: vec![host_fill(n, |i| format!("@\"c\"!({i})"))],
+            // Changed by decision 102 (T-BENCH): every record has one encoded size, so a random
+            // pick does not change the phlo. The text before:
+            // setup: vec![host_fill(n, |i| format!("@\"c\"!({i})"))],
+            setup: vec![host_fill(n, |i| format!("@\"c\"!({})", PAYLOAD_BASE + i))],
             term: format!("for (@x <- @\"c\") {{ @\"{}\"!(x) }}", common::OUT),
             with_checkpoint: false,
         };
@@ -280,7 +350,10 @@ fn bench_send_to_n(c: &mut Criterion) {
     for n in sizes(&READ_SIZES) {
         for (family, ctor) in disciplines(n + 1) {
             let mut setup = vec![Step::Deploy(create(family, &ctor))];
-            setup.push(fill(n, |i| send(family, i)));
+            // Changed by decision 111 (T-BENCH): the fill of a family that orders its records by
+            // arrival plays one send in each deploy. The text before:
+            // setup.push(fill(n, |i| send(family, i)));
+            setup.extend(fill_steps(family, n, |i| send(family, i)));
             let case = Case {
                 id: format!("{}/{n}", short(family)),
                 setup,
@@ -322,7 +395,12 @@ fn bench_matcher(c: &mut Criterion) {
         ];
         for (id, family, body) in cases {
             let mut setup = vec![Step::Deploy(create(family, "\"default\""))];
-            setup.push(fill(n, |i| format!("@\"c\"!({i})")));
+            // Changed by decisions 102 and 111 (T-BENCH): every record has one encoded size, and
+            // the fill of a queue plays one send in each deploy. The text before:
+            // setup.push(fill(n, |i| format!("@\"c\"!({i})")));
+            setup.extend(fill_steps(family, n, |i| {
+                format!("@\"c\"!({})", PAYLOAD_BASE + i)
+            }));
             let case = Case {
                 id: format!("{id}/{n}"),
                 setup,
@@ -338,7 +416,14 @@ fn bench_matcher(c: &mut Criterion) {
             setup: vec![
                 Step::Deploy(create("hashmap:bag", "\"default\"")),
                 fill(2 * n, |i| {
-                    format!("@\"{}\"!({})", if i % 2 == 0 { "a" } else { "b" }, i / 2)
+                    // Changed by decision 102 (T-BENCH): every record has one encoded size, so a
+                    // random pick does not change the phlo. The text before:
+                    // format!("@\"{}\"!({})", if i % 2 == 0 { "a" } else { "b" }, i / 2)
+                    format!(
+                        "@\"{}\"!({})",
+                        if i % 2 == 0 { "a" } else { "b" },
+                        PAYLOAD_BASE + i / 2
+                    )
                 }),
             ],
             term: with_space("for (@x <- @\"a\" & @y <- @\"b\") { out!([x, y]) }"),
@@ -449,19 +534,62 @@ fn bench_queue_ordering(c: &mut Criterion) {
     let mut g = group(c, "queue_ordering");
     // n sends take their orders from the counter of the collection, and one persistent receive
     // then takes the records in FIFO order, one record in each round.
-    one_deploy_series(
-        &mut g,
-        &rt,
-        "queue_ordering",
-        "send_and_drain",
-        vec![Step::Deploy(create("hashmap:queue", "\"default\""))],
-        |n| {
-            with_space(&format!(
+    // Changed by decision 89 (T-BENCH, ruling L-5): the counts are fixed, and the series keeps
+    // its program. The receive arrives after any number of the sends, and a persistent receive
+    // that meets the fire round cap of stored records re-issues and bumps the counter once more,
+    // so a count that can reach the cap has no stable phlo. The text before:
+    // ```
+    // one_deploy_series(
+    //     &mut g,
+    //     &rt,
+    //     "queue_ordering",
+    //     "send_and_drain",
+    //     vec![Step::Deploy(create("hashmap:queue", "\"default\""))],
+    //     |n| {
+    //         with_space(&format!(
+    //             "{} |\nfor (@x <= @\"c\") {{ Nil }}",
+    //             par(n, |i| format!("@\"c\"!({i})"))
+    //         ))
+    //     },
+    // );
+    // ```
+    for n in sizes(&QUEUE_ORDERING_COUNTS) {
+        let case = Case {
+            id: format!("send_and_drain/{n}"),
+            setup: vec![Step::Deploy(create("hashmap:queue", "\"default\""))],
+            term: with_space(&format!(
                 "{} |\nfor (@x <= @\"c\") {{ Nil }}",
                 par(n, |i| format!("@\"c\"!({i})"))
-            ))
-        },
-    );
+            )),
+            with_checkpoint: false,
+        };
+        bench_case(&mut g, &rt, "queue_ordering", &case);
+    }
+    g.finish();
+}
+
+/// Added by decision 127 (ruling RK2 2.1): one deploy of `n` handle `produce` calls on a hashmap
+/// queue space. Each call resolves the family of the space from its config and reads the send
+/// schema of the family (`param_schema`), so the series measures the two registry lookups of
+/// that path. The counts are those of the one-deploy series.
+fn bench_handle_produce(c: &mut Criterion) {
+    let rt = runtime();
+    let mut g = group(c, "handle_produce");
+    for n in sizes(&ONE_DEPLOY_COUNTS) {
+        let case = Case {
+            id: format!("queue/{n}"),
+            setup: vec![Step::Deploy(create("hashmap:queue", "\"default\""))],
+            term: format!(
+                "for (space <- @\"{handle}\") {{\n  @\"{handle}\"!(*space) |\n{calls}\n}}",
+                handle = common::HANDLE,
+                calls = par(n, |i| {
+                    format!("for (_ <- space!?(\"produce\", \"c\", [{i}])) {{ Nil }}")
+                }),
+            ),
+            with_checkpoint: false,
+        };
+        bench_case(&mut g, &rt, "handle_produce", &case);
+    }
     g.finish();
 }
 
@@ -475,6 +603,7 @@ criterion_group!(
     bench_matcher,
     bench_vectordb_query,
     bench_concurrency,
+    bench_handle_produce,
     bench_queue_ordering
 );
 criterion_main!(benches);

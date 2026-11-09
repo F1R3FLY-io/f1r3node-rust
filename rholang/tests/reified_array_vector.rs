@@ -47,17 +47,21 @@ use rholang::rust::interpreter::accounting::phlo_controls::{
 use rholang::rust::interpreter::accounting::{
     funding_sig_compound, NativeRuntimeConfig, RuntimeBudget,
 };
-use rholang::rust::interpreter::deterministic_reduction::{root, ReductionCoordinator};
+// Disabled by decision 90 (DR-132): the scheduler module is gone.
+// use rholang::rust::interpreter::deterministic_reduction::{root, ReductionCoordinator};
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::route::{classify_channel, ChannelClass};
 use rholang::rust::interpreter::reified::runtime;
-use rholang::rust::interpreter::rho_runtime::RhoISpace;
+// Disabled by decision 90 (DR-132): only the scheduler test, now commented out, named it.
+// use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::spaces::agent::{
     AllocOp, Allocation, ProduceOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
 };
 use rholang::rust::interpreter::spaces::allocator::{self, AllocationRule};
-use rholang::rust::interpreter::spaces::counter::{counter_continuation, counter_pattern};
+// Changed by decision 90 (decision 69): only the retired `allocation_legacy_charges_equal_host`
+// built the take of the allocator (Option P, removed with the legacy meter by DR-134).
+// use rholang::rust::interpreter::spaces::counter::{counter_continuation, counter_pattern};
 use rholang::rust::interpreter::spaces::disciplines::bag::BagDiscipline;
 use rholang::rust::interpreter::spaces::disciplines::cell::CellDiscipline;
 use rholang::rust::interpreter::spaces::disciplines::priority_queue::PriorityQueueDiscipline;
@@ -89,12 +93,22 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 use shared::rust::hashable_set::HashableSet;
+// Changed by decision 90 (C6, step D): the rigged replay modes retire, so this file no longer uses
+// `play_and_replay` and `ParReplay`. The text before:
+// ```
+// use support::agent::{
+//     any, budget, create, creation, data_channel, env_over, exactly, fired, int, play,
+//     play_and_replay, receive_on, records_on, run, send_on, string, waiters_on, ParRSpace,
+//     ParReplay,
+// };
+// ```
 use support::agent::{
-    any, budget, create, creation, data_channel, env_over, exactly, fired, int, play,
-    play_and_replay, receive_on, records_on, run, send_on, string, waiters_on, ParRSpace,
-    ParReplay,
+    any, budget, create, creation, data_channel, env_over, exactly, fired, int, play, receive_on,
+    records_on, run, send_on, string, waiters_on, ParRSpace,
 };
-use support::legacy::{charging_host, host_consume, host_produce};
+// Changed by decision 90 (decision 69): only the retired `allocation_legacy_charges_equal_host`
+// ran a host program (Option P, removed with the legacy meter by DR-134).
+// use support::legacy::{charging_host, host_consume, host_produce};
 use support::props::{check, pure_config, tokio_runtime};
 
 /// The agent of the family `array:queue`.
@@ -362,6 +376,10 @@ fn region(byte: u8) -> CostAuthority {
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![byte])),
             }),
+            // Added by decision 90 (DR-135): an unpriced region, as outside native
+            // execution.
+            price: 0,
+            caller: None,
         }],
     }
 }
@@ -1225,119 +1243,127 @@ async fn space_vector_forged_channel_rejected() {
     assert!(fixture.space.take_event_log().await.is_empty());
 }
 
-/// The script of the replay test: allocations and operations on the allocated names.
-#[derive(Clone, Debug, PartialEq)]
-enum Step {
-    Allocate(u64),
-    Send(u64, i64),
-    Receive(u64),
-}
-
-/// The result of one step: the indices of an allocation, or the fires of an operation. The
-/// outcome of an operation is large, so it is boxed.
-#[derive(Clone, Debug, PartialEq)]
-enum Ran {
-    Allocated(Result<Vec<u64>, SpaceError>),
-    Operated(Box<Result<SpaceOutcome, SpaceError>>),
-}
-
-async fn run_steps(store: Store, env: &SpaceEnv, steps: &[Step]) -> Vec<Ran> {
-    let mut ran = Vec::with_capacity(steps.len());
-    for (job, step) in (1u64..).zip(steps) {
-        ran.push(match step {
-            Step::Allocate(count) => {
-                Ran::Allocated(allocate_with(store.agent(), env, alloc_op(job, *count)).await)
-            }
-            Step::Send(index, value) => Ran::Operated(Box::new(
-                run(
-                    store.agent(),
-                    env,
-                    SpaceOp::Produce(send_with_id(
-                        &name(*index),
-                        *value,
-                        usize::try_from(job).expect("an id"),
-                    )),
-                )
-                .await,
-            )),
-            Step::Receive(index) => Ran::Operated(Box::new(
-                run(
-                    store.agent(),
-                    env,
-                    SpaceOp::Consume(receive_on(SPACE, &name(*index), "w", any())),
-                )
-                .await,
-            )),
-        });
-    }
-    ran
-}
-
-#[tokio::test]
-async fn space_vector_replay_equal() {
-    let steps = [
-        Step::Allocate(1),
-        Step::Allocate(2),
-        Step::Send(0, 5),
-        Step::Receive(1),
-        Step::Send(1, 6),
-        Step::Allocate(1),
-        Step::Receive(0),
-    ];
-    for store in [Store::Vector, Store::Cyclic(2), Store::Fixed(4)] {
-        let (play_space, replay_space): (ParRSpace, ParReplay) = play_and_replay().await;
-        let play_env = env_over(play_space.clone(), &budget());
-        create(
-            store.agent(),
-            &play_env,
-            creation(SPACE, store.config(), store.family()),
-        )
-        .await;
-        let start = play_space
-            .create_checkpoint()
-            .await
-            .expect("a checkpoint after the creation")
-            .root;
-        let played = run_steps(store, &play_env, &steps).await;
-        assert!(
-            played.iter().all(|ran| match ran {
-                Ran::Allocated(result) => result.is_ok(),
-                Ran::Operated(result) => result.is_ok(),
-            }),
-            "{store:?}: {played:?}"
-        );
-        let checkpoint = play_space.create_checkpoint().await.expect("a checkpoint");
-        replay_space
-            .rig_and_reset(start.clone(), checkpoint.log)
-            .await
-            .expect("the replay rigs the play log");
-        let replay_env = env_over(replay_space.clone(), &budget());
-        let replayed = run_steps(store, &replay_env, &steps).await;
-        assert_eq!(replayed, played, "{store:?}");
-        replay_space
-            .check_replay_data()
-            .await
-            .expect("every recorded COMM is paired");
-        assert_eq!(
-            replay_space
-                .create_checkpoint()
-                .await
-                .expect("a checkpoint")
-                .root,
-            checkpoint.root,
-            "{store:?}"
-        );
-        // Negative control: a replay without the recorded COMMs diverges at the allocator.
-        replay_space
-            .rig_and_reset(start, Vec::new())
-            .await
-            .expect("the replay rigs an empty log");
-        match allocate_with(store.agent(), &replay_env, alloc_op(1, 1)).await {
-            Err(SpaceError::ReplayDivergence(_)) => {}
-            other => panic!("{store:?}: a log without the COMMs diverges: {other:?}"),
-        }
-    }
-}
+// Retired by decision 90 (C6, step D): `space_vector_replay_equal` and its step helpers ran through
+// the rigged replay modes, which retire (decision 125). Native replay: the family matrix
+// `space_native_replay_equal_{hashmap,pathmap,array,vector}`. Its negative controls:
+// `space_native_forged_predecessor_fails_closed`,
+// `native_space_replay_rejects_a_tampered_candidate`,
+// `native_space_replay_rejects_an_outcome_that_does_not_fit`. The text before:
+// ```
+// /// The script of the replay test: allocations and operations on the allocated names.
+// #[derive(Clone, Debug, PartialEq)]
+// enum Step {
+//     Allocate(u64),
+//     Send(u64, i64),
+//     Receive(u64),
+// }
+//
+// /// The result of one step: the indices of an allocation, or the fires of an operation. The
+// /// outcome of an operation is large, so it is boxed.
+// #[derive(Clone, Debug, PartialEq)]
+// enum Ran {
+//     Allocated(Result<Vec<u64>, SpaceError>),
+//     Operated(Box<Result<SpaceOutcome, SpaceError>>),
+// }
+//
+// async fn run_steps(store: Store, env: &SpaceEnv, steps: &[Step]) -> Vec<Ran> {
+//     let mut ran = Vec::with_capacity(steps.len());
+//     for (job, step) in (1u64..).zip(steps) {
+//         ran.push(match step {
+//             Step::Allocate(count) => {
+//                 Ran::Allocated(allocate_with(store.agent(), env, alloc_op(job, *count)).await)
+//             }
+//             Step::Send(index, value) => Ran::Operated(Box::new(
+//                 run(
+//                     store.agent(),
+//                     env,
+//                     SpaceOp::Produce(send_with_id(
+//                         &name(*index),
+//                         *value,
+//                         usize::try_from(job).expect("an id"),
+//                     )),
+//                 )
+//                 .await,
+//             )),
+//             Step::Receive(index) => Ran::Operated(Box::new(
+//                 run(
+//                     store.agent(),
+//                     env,
+//                     SpaceOp::Consume(receive_on(SPACE, &name(*index), "w", any())),
+//                 )
+//                 .await,
+//             )),
+//         });
+//     }
+//     ran
+// }
+//
+// #[tokio::test]
+// async fn space_vector_replay_equal() {
+//     let steps = [
+//         Step::Allocate(1),
+//         Step::Allocate(2),
+//         Step::Send(0, 5),
+//         Step::Receive(1),
+//         Step::Send(1, 6),
+//         Step::Allocate(1),
+//         Step::Receive(0),
+//     ];
+//     for store in [Store::Vector, Store::Cyclic(2), Store::Fixed(4)] {
+//         let (play_space, replay_space): (ParRSpace, ParReplay) = play_and_replay().await;
+//         let play_env = env_over(play_space.clone(), &budget());
+//         create(
+//             store.agent(),
+//             &play_env,
+//             creation(SPACE, store.config(), store.family()),
+//         )
+//         .await;
+//         let start = play_space
+//             .create_checkpoint()
+//             .await
+//             .expect("a checkpoint after the creation")
+//             .root;
+//         let played = run_steps(store, &play_env, &steps).await;
+//         assert!(
+//             played.iter().all(|ran| match ran {
+//                 Ran::Allocated(result) => result.is_ok(),
+//                 Ran::Operated(result) => result.is_ok(),
+//             }),
+//             "{store:?}: {played:?}"
+//         );
+//         let checkpoint = play_space.create_checkpoint().await.expect("a checkpoint");
+//         replay_space
+//             .rig_and_reset(start.clone(), checkpoint.log)
+//             .await
+//             .expect("the replay rigs the play log");
+//         let replay_env = env_over(replay_space.clone(), &budget());
+//         let replayed = run_steps(store, &replay_env, &steps).await;
+//         assert_eq!(replayed, played, "{store:?}");
+//         replay_space
+//             .check_replay_data()
+//             .await
+//             .expect("every recorded COMM is paired");
+//         assert_eq!(
+//             replay_space
+//                 .create_checkpoint()
+//                 .await
+//                 .expect("a checkpoint")
+//                 .root,
+//             checkpoint.root,
+//             "{store:?}"
+//         );
+//         // Negative control: a replay without the recorded COMMs diverges at the allocator.
+//         replay_space
+//             .rig_and_reset(start, Vec::new())
+//             .await
+//             .expect("the replay rigs an empty log");
+//         match allocate_with(store.agent(), &replay_env, alloc_op(1, 1)).await {
+//             Err(SpaceError::ReplayDivergence(_)) => {}
+//             other => panic!("{store:?}: a log without the COMMs diverges: {other:?}"),
+//         }
+//     }
+// }
+// ```
 
 // ── The allocation job ────────────────────────────────────────────────────────────────────────
 
@@ -1377,11 +1403,82 @@ async fn space_allocation_job_dangling_aborts() {
     assert!(space.take_event_log().await.is_empty());
 }
 
+// Disabled by decision 90 (DR-132): the deterministic scheduler and its `root` are gone, and space
+// jobs run inline in the counted task of their caller. `space_allocation_job_runs_inline` below
+// runs the same jobs and checks the same results.
+// #[tokio::test]
+// async fn space_allocation_job_runs_under_the_scheduler() {
+//     let host = play().await;
+//     let session: RhoISpace = Arc::new(Box::new(host.clone()));
+//     let budget = budget();
+//     let reified = runtime::for_host(host.clone(), budget.clone());
+//     let array: Arc<dyn SpaceAgent> =
+//         Arc::new(GenericSpace::<ArrayOuter, QueueDiscipline>::default());
+//     let hashmap: Arc<dyn SpaceAgent> =
+//         Arc::new(GenericSpace::<HashMapOuter, QueueDiscipline>::default());
+//     let hashmap_space = NativeSpace {
+//         sid: [0x5F; SID_LEN],
+//         durability: Durability::Durable,
+//     };
+//     let hashmap_config = SpaceConfig::new(
+//         hashmap_space.sid,
+//         HashMapOuter::NAME,
+//         QueueDiscipline::NAME,
+//         SpaceQualifier::Default,
+//     );
+//     let results = root(session, budget, ReductionCoordinator::default(), async {
+//         reified
+//             .create_space(
+//                 Arc::clone(&array),
+//                 creation(SPACE, Store::Fixed(3).config(), Store::Fixed(3).family()),
+//             )
+//             .await?;
+//         reified
+//             .create_space(
+//                 Arc::clone(&hashmap),
+//                 creation(
+//                     hashmap_space,
+//                     hashmap_config.to_par(),
+//                     SpaceFactoryUrn::HASHMAP_QUEUE,
+//                 ),
+//             )
+//             .await?;
+//         let first = reified.allocate(Arc::clone(&array), alloc_op(1, 2)).await?;
+//         let second = reified.allocate(Arc::clone(&array), alloc_op(2, 1)).await?;
+//         let baseline = reified
+//             .allocate(Arc::clone(&hashmap), AllocOp {
+//                 space: hashmap_space,
+//                 ..alloc_op(3, 2)
+//             })
+//             .await?;
+//         let exhausted = reified.allocate(Arc::clone(&array), alloc_op(4, 1)).await;
+//         Ok::<_, InterpreterError>((first, second, baseline, exhausted))
+//     })
+//     .await
+//     .expect("the space jobs run");
+//     let (first, second, baseline, exhausted) = results;
+//     assert_eq!(first, Some(vec![0, 1]));
+//     assert_eq!(second, Some(vec![2]));
+//     assert_eq!(baseline, None, "a HashMap space keeps the baseline draws");
+//     match exhausted {
+//         Err(InterpreterError::ReduceError(message)) => {
+//             assert!(message.starts_with("reified:OutOfNames: "), "{message}")
+//         }
+//         other => panic!("a full Array space aborts the job: {other:?}"),
+//     }
+//     assert_eq!(allocator_values(&host).await, vec![3]);
+// }
+
+/// Added by decision 90 (DR-132): the allocation jobs of an Array space run inline, as every space
+/// job does: they allocate consecutive index names, a HashMap space keeps the baseline draws, and
+/// a full Array space aborts the job with `OutOfNames`.
 #[tokio::test]
-async fn space_allocation_job_runs_under_the_scheduler() {
+async fn space_allocation_job_runs_inline() {
     let host = play().await;
-    let session: RhoISpace = Arc::new(Box::new(host.clone()));
-    let budget = budget();
+    // Changed by decision 90 (C6, decision 69): a host runtime runs space jobs only when its
+    // budget runs a native deploy. The legacy budget follows.
+    // let budget = budget();
+    let budget = native_budget();
     let reified = runtime::for_host(host.clone(), budget.clone());
     let array: Arc<dyn SpaceAgent> =
         Arc::new(GenericSpace::<ArrayOuter, QueueDiscipline>::default());
@@ -1397,7 +1494,7 @@ async fn space_allocation_job_runs_under_the_scheduler() {
         QueueDiscipline::NAME,
         SpaceQualifier::Default,
     );
-    let results = root(session, budget, ReductionCoordinator::default(), async {
+    let results = async {
         reified
             .create_space(
                 Arc::clone(&array),
@@ -1424,7 +1521,7 @@ async fn space_allocation_job_runs_under_the_scheduler() {
             .await?;
         let exhausted = reified.allocate(Arc::clone(&array), alloc_op(4, 1)).await;
         Ok::<_, InterpreterError>((first, second, baseline, exhausted))
-    })
+    }
     .await
     .expect("the space jobs run");
     let (first, second, baseline, exhausted) = results;
@@ -1432,7 +1529,10 @@ async fn space_allocation_job_runs_under_the_scheduler() {
     assert_eq!(second, Some(vec![2]));
     assert_eq!(baseline, None, "a HashMap space keeps the baseline draws");
     match exhausted {
-        Err(InterpreterError::ReduceError(message)) => {
+        // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): `OutOfNames` is a
+        // user failure, so it is a `SpaceUserError` with the text of its reduce error.
+        // Err(InterpreterError::ReduceError(message)) => {
+        Err(InterpreterError::SpaceUserError(message)) => {
             assert!(message.starts_with("reified:OutOfNames: "), "{message}")
         }
         other => panic!("a full Array space aborts the job: {other:?}"),
@@ -1495,9 +1595,27 @@ fn native_config() -> NativeRuntimeConfig {
     })
 }
 
+/// Added by decision 90 (C6, decision 69): a budget in native execution, with a funded deploy
+/// signature and the phlo limit of [`native_config`]. A host runtime runs space jobs only when
+/// its budget runs a native deploy.
+fn native_budget() -> RuntimeBudget {
+    let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs-p5d native allocation"));
+    native.set_deploy_signature_funded(
+        b"rrs-p5d-native",
+        funding_sig_compound(&[&1u64.to_be_bytes()]),
+    );
+    native
+        .reset_for_native_execution(native_config())
+        .expect("the budget enters native execution");
+    assert!(native.native_execution_active());
+    native
+}
+
 // Disabled by decision 47: native execution runs the allocation job, so it does not fail with
 // `SpacesUnsupportedInNativeExecution`. Its successor is
 // `allocation_native_play_allocates_as_legacy`.
+// Changed by decision 90 (C6): the successor is now
+// `allocation_native_play_allocates_and_legacy_fails_closed`.
 //
 // ```
 // #[tokio::test]
@@ -1535,130 +1653,182 @@ fn native_config() -> NativeRuntimeConfig {
 // }
 // ```
 
-#[tokio::test]
-async fn allocation_native_play_allocates_as_legacy() {
-    // Decision 47: native play runs the allocation job of an Array space as legacy execution
-    // runs it: the same indices, the same events and the same allocator value. A native replay
-    // runtime that is not bound yet fails the job closed with `RuntimeUnavailable`, so it reads
-    // no config and stages nothing.
-    let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs-p5d native allocation"));
-    native.set_deploy_signature_funded(
-        b"rrs-p5d-native",
-        funding_sig_compound(&[&1u64.to_be_bytes()]),
-    );
-    native
-        .reset_for_native_execution(native_config())
-        .expect("the budget enters native execution");
-    assert!(native.native_execution_active());
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, so a host runtime
+// outside native execution fails closed, and the comparison of native play with legacy execution
+// has no legacy side. The test that replaces it follows the legacy test, as
+// `space_joins_native_play_commits_and_legacy_fails_closed` replaces its legacy test.
+//
+// #[tokio::test]
+// async fn allocation_native_play_allocates_as_legacy() {
+//     // Decision 47: native play runs the allocation job of an Array space as legacy execution
+//     // runs it: the same indices, the same events and the same allocator value. A native replay
+//     // runtime that is not bound yet fails the job closed with `RuntimeUnavailable`, so it reads
+//     // no config and stages nothing.
+//     let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs-p5d native allocation"));
+//     native.set_deploy_signature_funded(
+//         b"rrs-p5d-native",
+//         funding_sig_compound(&[&1u64.to_be_bytes()]),
+//     );
+//     native
+//         .reset_for_native_execution(native_config())
+//         .expect("the budget enters native execution");
+//     assert!(native.native_execution_active());
+//     let array: Arc<dyn SpaceAgent> =
+//         Arc::new(GenericSpace::<ArrayOuter, QueueDiscipline>::default());
+//     let mut runs = Vec::with_capacity(2);
+//     for deploy in [budget(), native] {
+//         let space = play().await;
+//         let env = env_over(space.clone(), &budget());
+//         create_store(Store::Fixed(4), &space, &env).await;
+//         space.take_event_log().await;
+//         let indices = runtime::for_host(space.clone(), deploy)
+//             .allocate(Arc::clone(&array), alloc_op(1, 1))
+//             .await
+//             .expect("the allocation commits");
+//         runs.push((
+//             indices,
+//             space.take_event_log().await,
+//             allocator_values(&space).await,
+//         ));
+//     }
+//     assert_eq!(runs[0].0, Some(vec![0]));
+//     assert_eq!(runs[1], runs[0]);
+//
+//     let space = play().await;
+//     let env = env_over(space.clone(), &budget());
+//     create_store(Store::Fixed(4), &space, &env).await;
+//     space.take_event_log().await;
+//     match runtime::native_replay()
+//         .allocate(Arc::clone(&array), alloc_op(1, 1))
+//         .await
+//     {
+//         Err(InterpreterError::ReduceError(message)) => assert!(
+//             message.starts_with("reified:RuntimeUnavailable: "),
+//             "{message}"
+//         ),
+//         other => panic!("an unbound native replay runtime allocated: {other:?}"),
+//     }
+//     assert!(space.take_event_log().await.is_empty());
+//     assert_eq!(allocator_values(&space).await, vec![0]);
+// }
+
+/// Decision 47: native play runs the allocation job of an Array space as an allocation job runs
+/// it (`space_array_gensym_indices_sequential`). It takes the allocator, puts its next value and
+/// allocates the first index. Decision 90 (C6): a host runtime whose deploy is not in native
+/// execution and a native replay runtime that is not bound yet fail the job closed with
+/// `RuntimeUnavailable`. They read no config, stage nothing and keep the allocator at 0.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allocation_native_play_allocates_and_legacy_fails_closed() {
     let array: Arc<dyn SpaceAgent> =
         Arc::new(GenericSpace::<ArrayOuter, QueueDiscipline>::default());
-    let mut runs = Vec::with_capacity(2);
-    for deploy in [budget(), native] {
-        let space = play().await;
-        let env = env_over(space.clone(), &budget());
-        create_store(Store::Fixed(4), &space, &env).await;
-        space.take_event_log().await;
-        let indices = runtime::for_host(space.clone(), deploy)
-            .allocate(Arc::clone(&array), alloc_op(1, 1))
-            .await
-            .expect("the allocation commits");
-        runs.push((
-            indices,
-            space.take_event_log().await,
-            allocator_values(&space).await,
-        ));
-    }
-    assert_eq!(runs[0].0, Some(vec![0]));
-    assert_eq!(runs[1], runs[0]);
+    let space = play().await;
+    let env = env_over(space.clone(), &budget());
+    create_store(Store::Fixed(4), &space, &env).await;
+    space.take_event_log().await;
+    let indices = runtime::for_host(space.clone(), native_budget())
+        .allocate(Arc::clone(&array), alloc_op(1, 1))
+        .await
+        .expect("the allocation commits");
+    assert_eq!(indices, Some(vec![0]));
+    assert_eq!(
+        allocator_labels(&space.take_event_log().await),
+        vec!["consume A", "comm A", "produce A"],
+        "native play takes the allocator and puts its next value"
+    );
+    assert_eq!(allocator_values(&space).await, vec![1]);
 
     let space = play().await;
     let env = env_over(space.clone(), &budget());
     create_store(Store::Fixed(4), &space, &env).await;
     space.take_event_log().await;
-    match runtime::native_replay()
-        .allocate(Arc::clone(&array), alloc_op(1, 1))
-        .await
-    {
-        Err(InterpreterError::ReduceError(message)) => assert!(
-            message.starts_with("reified:RuntimeUnavailable: "),
-            "{message}"
-        ),
-        other => panic!("an unbound native replay runtime allocated: {other:?}"),
+    for reified in [
+        runtime::for_host(space.clone(), budget()),
+        runtime::native_replay(),
+    ] {
+        match reified.allocate(Arc::clone(&array), alloc_op(1, 1)).await {
+            Err(InterpreterError::ReduceError(message)) => assert!(
+                message.starts_with("reified:RuntimeUnavailable: "),
+                "{message}"
+            ),
+            other => panic!("a runtime outside native execution allocated: {other:?}"),
+        }
     }
     assert!(space.take_event_log().await.is_empty());
     assert_eq!(allocator_values(&space).await, vec![0]);
 }
 
-#[tokio::test]
-async fn allocation_legacy_charges_equal_host() {
-    // Decision 45, Option P: in a legacy deploy, the take and the put of the allocator pay what
-    // ChargingRSpace charges for the equivalent host calls, in the order of the host program.
-    let authority = region(9);
-    for store in [Store::Fixed(4), Store::Cyclic(2), Store::Vector] {
-        let space = play().await;
-        let agent_budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs-p5d agent"));
-        let _agent_legacy = agent_budget.enter_legacy_scope();
-        let env = env_over(space.clone(), &agent_budget);
-        create_store(store, &space, &env).await;
-        let stored = space
-            .get_data(&allocator::allocator_channel(SPACE))
-            .await
-            .remove(0)
-            .a;
-        let before = agent_budget.get_log().len();
-        let op = AllocOp {
-            authority: authority.clone(),
-            ..alloc_op(1, 3)
-        };
-        let indices = allocate_with(store.agent(), &env, op)
-            .await
-            .expect("an allocation");
-        let charged = agent_budget.get_log()[before..].to_vec();
-        let (_, next) = model(store, 0, 3).expect("the allocation fits");
-        assert_eq!(indices.len(), 3);
-
-        let host_budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs-p5d host"));
-        let _host_legacy = host_budget.enter_legacy_scope();
-        let host = charging_host(&host_budget).await;
-        let channel = allocator::allocator_channel(SPACE);
-        host_produce(&host, &host_budget, channel.clone(), stored, false).await;
-        let random = job_random(1);
-        let take = host_consume(
-            &host,
-            &host_budget,
-            vec![channel.clone()],
-            vec![counter_pattern()],
-            counter_continuation(
-                0,
-                &RandomPurpose::Allocator.derive(&random).split_byte(0),
-                Some(authority.clone()),
-            ),
-            false,
-            false,
-        )
-        .await;
-        assert!(take.fired.is_some(), "{store:?}: the host take fires on A");
-        let put = host_produce(
-            &host,
-            &host_budget,
-            channel,
-            record::counter_record(
-                next,
-                &RandomPurpose::Allocator.derive(&random).split_byte(1),
-                Some(authority.clone()),
-            ),
-            false,
-        )
-        .await;
-        assert!(put.fired.is_none(), "{store:?}: the host put stores A");
-        let expected: Vec<Cost> = take.entries.into_iter().chain(put.entries).collect();
-        assert!(!expected.is_empty());
-        assert_eq!(
-            charged, expected,
-            "{store:?}: the legacy log of the host program"
-        );
-    }
-}
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+//
+// #[tokio::test]
+// async fn allocation_legacy_charges_equal_host() {
+//     // Decision 45, Option P: in a legacy deploy, the take and the put of the allocator pay what
+//     // ChargingRSpace charges for the equivalent host calls, in the order of the host program.
+//     let authority = region(9);
+//     for store in [Store::Fixed(4), Store::Cyclic(2), Store::Vector] {
+//         let space = play().await;
+//         let agent_budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs-p5d agent"));
+//         let _agent_legacy = agent_budget.enter_legacy_scope();
+//         let env = env_over(space.clone(), &agent_budget);
+//         create_store(store, &space, &env).await;
+//         let stored = space
+//             .get_data(&allocator::allocator_channel(SPACE))
+//             .await
+//             .remove(0)
+//             .a;
+//         let before = agent_budget.get_log().len();
+//         let op = AllocOp {
+//             authority: authority.clone(),
+//             ..alloc_op(1, 3)
+//         };
+//         let indices = allocate_with(store.agent(), &env, op)
+//             .await
+//             .expect("an allocation");
+//         let charged = agent_budget.get_log()[before..].to_vec();
+//         let (_, next) = model(store, 0, 3).expect("the allocation fits");
+//         assert_eq!(indices.len(), 3);
+//
+//         let host_budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs-p5d host"));
+//         let _host_legacy = host_budget.enter_legacy_scope();
+//         let host = charging_host(&host_budget).await;
+//         let channel = allocator::allocator_channel(SPACE);
+//         host_produce(&host, &host_budget, channel.clone(), stored, false).await;
+//         let random = job_random(1);
+//         let take = host_consume(
+//             &host,
+//             &host_budget,
+//             vec![channel.clone()],
+//             vec![counter_pattern()],
+//             counter_continuation(
+//                 0,
+//                 &RandomPurpose::Allocator.derive(&random).split_byte(0),
+//                 Some(authority.clone()),
+//             ),
+//             false,
+//             false,
+//         )
+//         .await;
+//         assert!(take.fired.is_some(), "{store:?}: the host take fires on A");
+//         let put = host_produce(
+//             &host,
+//             &host_budget,
+//             channel,
+//             record::counter_record(
+//                 next,
+//                 &RandomPurpose::Allocator.derive(&random).split_byte(1),
+//                 Some(authority.clone()),
+//             ),
+//             false,
+//         )
+//         .await;
+//         assert!(put.fired.is_none(), "{store:?}: the host put stores A");
+//         let expected: Vec<Cost> = take.entries.into_iter().chain(put.entries).collect();
+//         assert!(!expected.is_empty());
+//         assert_eq!(
+//             charged, expected,
+//             "{store:?}: the legacy log of the host program"
+//         );
+//     }
+// }
 
 // ── The merge of allocations (CounterConflict.tla, NoDuplicateIndex) ────────────────────────
 

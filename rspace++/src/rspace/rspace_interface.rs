@@ -9,6 +9,7 @@ use super::checkpoint::Checkpoint;
 use super::errors::RSpaceError;
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, ProduceCandidate, Row, WaitingContinuation};
+use super::operation_context::OperationOrder;
 use super::trace::Log;
 use super::trace::event::{COMM, Consume, Produce};
 use crate::rspace::checkpoint::SoftCheckpoint;
@@ -75,13 +76,19 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
         Ok(None)
     }
 
+    // Changed by DR-132: the start hook returns the name of the recorded
+    // operation, and RSpace runs the rest of the locked operation under it.
+    // Racing evaluation sets no outer name.
+    // ) -> Result<(), RSpaceError> {
+    //     Ok(())
+    // }
     fn observe_operation_start(
         &self,
         _source: RSpaceOperationSource<'_>,
         _channels: &[C],
         _joins: &[Vec<C>],
-    ) -> Result<(), RSpaceError> {
-        Ok(())
+    ) -> Result<Option<OperationOrder>, RSpaceError> {
+        Ok(None)
     }
 
     fn observe_operation_finish(
@@ -116,7 +123,60 @@ pub trait RSpaceAccountingObserver<C, P, A, K>: Send + Sync {
         continuation_persistent: bool,
         data: &[(&A, bool)],
     ) -> Result<(), RSpaceError>;
+
+    /// Added by G3 (DR-135, S5): whether the observer checks owners in the
+    /// running operation (R5, R6). Without owner funding it is false, and
+    /// RSpace matches as on dev.
+    fn owner_checks_active(&self) -> bool { false }
+
+    /// Added by G3 (DR-135, S5): whether a continuation may take `datum` as
+    /// one item of a match, before the other items are known (R5). A false
+    /// result makes the datum a miss of its pattern.
+    fn admit_item(
+        &self,
+        _continuation: &K,
+        _continuation_persistent: bool,
+        _channel_count: usize,
+        _datum: &A,
+        _datum_persistent: bool,
+    ) -> Result<bool, RSpaceError> {
+        Ok(true)
+    }
+
+    /// Added by G3 (DR-135, S5): `observe_comm` with the channel and the
+    /// stored value of each datum (R9). The default observes the COMM as
+    /// `observe_comm` does.
+    fn observe_comm_participants(
+        &self,
+        comm: &COMM,
+        continuation: &K,
+        continuation_persistent: bool,
+        participants: &[CommParticipant<'_, C, A>],
+    ) -> Result<(), RSpaceError> {
+        let mut data = Vec::with_capacity(participants.len());
+        data.extend(
+            participants
+                .iter()
+                .map(|participant| (participant.matched, participant.persistent)),
+        );
+        self.observe_comm(comm, continuation, continuation_persistent, &data)
+    }
 }
+
+/// Added by G3 (DR-135, S5): one datum of a COMM: its channel, the value that
+/// the continuation binds, the value that the store held, and whether the
+/// datum is persistent. A peek restores the stored value (R9).
+pub struct CommParticipant<'a, C, A> {
+    pub channel: &'a C,
+    pub matched: &'a A,
+    pub stored: &'a A,
+    pub persistent: bool,
+}
+
+/// Added by DR-132: the accounting observer of a locked operation and the
+/// name of its recorded row. The rest of the operation runs under the name.
+pub type AccountingStart<C, P, A, K> =
+    (Option<std::sync::Arc<dyn RSpaceAccountingObserver<C, P, A, K>>>, Option<OperationOrder>);
 
 /** The interface for RSpace
  *
@@ -149,6 +209,13 @@ pub trait ISpace<
     async fn create_checkpoint(&self) -> Result<Checkpoint, RSpaceError>;
 
     async fn get_data(&self, channel: &C) -> Vec<Datum<A>>;
+
+    /// Reads `channel` as it was at `checkpoint`, without reverting to it.
+    async fn get_data_at(
+        &self,
+        checkpoint: &SoftCheckpoint<C, P, A, K>,
+        channel: &C,
+    ) -> Vec<Datum<A>>;
 
     async fn get_waiting_continuations(&self, channels: Vec<C>) -> Vec<WaitingContinuation<P, K>>;
 

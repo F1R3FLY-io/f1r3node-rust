@@ -37,7 +37,11 @@ impl TestContext {
     }
 
     async fn create_protocol() -> Result<Self, Box<dyn Error>> {
-        let params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        // Changed by DR-134 (DR-66 item 5): the protocol takes the parameters of the
+        // offered genesis that the builder creates.
+        // let params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        let mut params = GenesisBuilder::build_genesis_parameters_with_defaults(None, None);
+        GenesisBuilder::apply_offered_v6(&mut params);
         let genesis_params = params.2.clone();
 
         let mut genesis_builder = GenesisBuilder::new();
@@ -61,7 +65,10 @@ impl TestContext {
         // and we need an owned value. This is acceptable since networkSize=1 (only one element).
         let node = nodes.remove(0);
 
-        let protocol = BlockApproverProtocol::new(
+        // Changed by DR-134 (DR-66 item 5): the protocol carries the genesis
+        // resource policy, as casper_launch.rs sets it from the configuration.
+        // let protocol = BlockApproverProtocol::new(
+        let mut protocol = BlockApproverProtocol::new(
             node.validator_id_opt.clone().unwrap(),
             genesis_params.timestamp,
             genesis_params.vaults,
@@ -84,6 +91,7 @@ impl TestContext {
             node.tle.clone(),
             Arc::new(node.rp_conf.clone()),
         )?;
+        protocol.resource_policy = Some(crate::helper::offered_deploy::offered_v6_policy());
 
         Ok(Self {
             protocol,
@@ -190,7 +198,7 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
     // Scala: BlockApproverProtocol.validateCandidate[Effect](...) - static method call
-    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate_with_policy(
         &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
@@ -212,6 +220,8 @@ async fn block_approver_protocol_should_successfully_validate_correct_candidate(
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        // Added by DR-134 (DR-66 item 5): the genesis resource policy.
+        ctx.protocol.resource_policy.as_ref(),
     )
     .await;
 
@@ -228,7 +238,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
     // Scala: validateCandidate with bonds = Map.empty (incorrect bonds)
     let wrong_bonds = HashMap::new();
 
-    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate_with_policy(
         &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
@@ -250,6 +260,8 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_bonds() 
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        // Added by DR-134 (DR-66 item 5): the genesis resource policy.
+        ctx.protocol.resource_policy.as_ref(),
     )
     .await;
 
@@ -266,7 +278,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
     // Scala: validateCandidate with vaults = Seq.empty[Vault] (incorrect vaults)
     let wrong_vaults = vec![];
 
-    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate_with_policy(
         &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
@@ -288,6 +300,8 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_vaults()
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        // Added by DR-134 (DR-66 item 5): the genesis resource policy.
+        ctx.protocol.resource_policy.as_ref(),
     )
     .await;
 
@@ -308,7 +322,7 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
     let unapproved = TestContext::create_unapproved(ctx.required_sigs, &ctx.node.genesis.clone());
 
     // Scala: validateCandidate with incorrect genesis params (minimumBond + 1, maximumBond - 1, etc.)
-    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate(
+    let result = BlockApproverProtocol::<TransportLayerTestImpl>::validate_candidate_with_policy(
         &ctx.node.runtime_manager,
         &unapproved.candidate,
         ctx.protocol.required_sigs,
@@ -330,6 +344,8 @@ async fn block_approver_protocol_should_reject_candidate_with_incorrect_blessed_
         &ctx.protocol.native_token_name,
         &ctx.protocol.native_token_symbol,
         ctx.protocol.native_token_decimals,
+        // Added by DR-134 (DR-66 item 5): the genesis resource policy.
+        ctx.protocol.resource_policy.as_ref(),
     )
     .await;
 

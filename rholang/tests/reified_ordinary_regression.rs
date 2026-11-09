@@ -45,7 +45,10 @@ use serde_json::{json, Map, Value};
 const CAPTURE_DIRECTORY: &str = "RRS_CAPTURE_ORDINARY_OUT";
 const CORPUS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../test-vectors/ordinary-execution-v1.json"
+    // Changed by decision 112: the fields change the vector of this tree, and decision 120 keeps
+    // v1 frozen as evidence for the masked comparison (ruling 6). The text before:
+    // "/../test-vectors/ordinary-execution-v1.json"
+    "/../test-vectors/ordinary-execution-v2.json"
 );
 const DEPLOY_SIGNATURE: &[u8] = b"rrs-ordinary-execution-v1-deploy";
 const FUNDING_SIGNATURE: &[u8] = b"rrs-ordinary-execution-v1-payer";
@@ -83,7 +86,13 @@ const R3_SAME_CHANNEL_JOIN: &str =
 // feature/cost-accounted-rho at 4d67b5ccc. Under the canonical order, `[1, 1]`
 // and `[1, 2]` are witnesses, and `[1, 0]`, `[1, 3]`, `[1, 4]`, `[1, 5]`,
 // `[1, 7]`, `[1, 8]` and `[1, 9]` are not (measured at 4d67b5ccc).
-const R3_GREEDY_DATA: &str = r#"@"rrs-r3-greedy"!([1, 1]) | @"rrs-r3-greedy"!([1, 6])"#;
+// At 702496775 the source hashes of the two produces changed, as section R1
+// shows. Only `[1, 8]` and `[1, 9]` are witnesses there, and `[1, 0]` to
+// `[1, 5]` and `[1, 7]` are not (measured in a clean export of 702496775).
+// Changed by the merge of feature/cost-accounted-rho at 702496775: the datum
+// `[1, 1]` no longer makes the greedy matcher fail.
+// const R3_GREEDY_DATA: &str = r#"@"rrs-r3-greedy"!([1, 1]) | @"rrs-r3-greedy"!([1, 6])"#;
+const R3_GREEDY_DATA: &str = r#"@"rrs-r3-greedy"!([1, 8]) | @"rrs-r3-greedy"!([1, 6])"#;
 const R3_GREEDY_RECEIVE: &str = r#"for (@left, @right <- @"rrs-r3-greedy-names") { for (@[y, 6] <- @left & @[1, x] <- @right) { @"rrs-r3-greedy-out"!(x, y) } } | @"rrs-r3-greedy-names"!("rrs-r3-greedy", "rrs-r3-greedy")"#;
 const R3_CONTROL_DATA: &str = r#"@"rrs-r3-control"!([1, 9]) | @"rrs-r3-control"!([7, 6])"#;
 const R3_CONTROL_RECEIVE: &str = r#"for (@left, @right <- @"rrs-r3-control-names") { for (@[y, 6] <- @left & @[1, x] <- @right) { @"rrs-r3-control-out"!(x, y) } } | @"rrs-r3-control-names"!("rrs-r3-control", "rrs-r3-control")"#;
@@ -212,6 +221,13 @@ struct CostProgram {
     source: &'static str,
     phlo: i64,
     native_limit: u64,
+    /// Added by decision 93: the journal rows of the program follow the arrival order of its
+    /// parallel processes. A persistent operation that fires a waiting partner is issued again
+    /// (dev's `dispatchAndRun`, `reduce.rs` `continue_produce_process` and
+    /// `continue_consume_process`), and a loop stops at the first operation that its budget
+    /// refuses. Racing evaluation decides that order (DR-132), so the corpus keeps no row count
+    /// and no COMM row of such a program.
+    rows_follow_arrival: bool,
 }
 
 const R6_PROGRAMS: [CostProgram; 11] = [
@@ -220,42 +236,49 @@ const R6_PROGRAMS: [CostProgram; 11] = [
         source: r#"@"rrs-r6-send"!(1)"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "receive",
         source: r#"for (@x <- @"rrs-r6-receive") { Nil }"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "persistent_send",
         source: r#"@"rrs-r6-persistent-send"!!(1) | for (@x <- @"rrs-r6-persistent-send") { @"rrs-r6-persistent-send-out"!(x) }"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: true,
     },
     CostProgram {
         name: "persistent_receive",
         source: r#"for (@x <= @"rrs-r6-persistent-receive") { @"rrs-r6-persistent-receive-out"!(x) } | @"rrs-r6-persistent-receive"!(1) | @"rrs-r6-persistent-receive"!(2)"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: true,
     },
     CostProgram {
         name: "join",
         source: r#"@"rrs-r6-join-left"!(1) | @"rrs-r6-join-right"!(2) | for (@x <- @"rrs-r6-join-left" & @y <- @"rrs-r6-join-right") { @"rrs-r6-join-out"!(x + y) }"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "peek",
         source: r#"@"rrs-r6-peek"!(1) | for (@x <<- @"rrs-r6-peek") { @"rrs-r6-peek-out"!(x) }"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "new",
         source: r#"new a, b in { a!(1) | for (@x <- a) { b!(x) } }"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "match",
@@ -265,24 +288,28 @@ const R6_PROGRAMS: [CostProgram; 11] = [
 }"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "arithmetic",
         source: r#"@"rrs-r6-arithmetic"!((7 * 6 - 2) / 4 % 3 + 10)"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "system_process",
         source: r#"new stdout(`rho:io:stdout`) in { stdout!("rrs-r6-system-process") }"#,
         phlo: EVALUATION_PHLO,
         native_limit: NATIVE_LIMIT,
+        rows_follow_arrival: false,
     },
     CostProgram {
         name: "out_of_phlo",
         source: r#"new loop in { contract loop(@n) = { loop!(n + 1) } | loop!(0) }"#,
         phlo: 20_000,
         native_limit: 20_000,
+        rows_follow_arrival: true,
     },
 ];
 
@@ -516,6 +543,21 @@ fn kinds_json(log: &[Event]) -> Value {
             .map(|event| Value::from(event_kind(event)))
             .collect(),
     )
+}
+
+// Added by decision 93: racing evaluation gives arrival-order logs (DR-132), so no test compares
+// the order of a log of parallel processes across runs. Such a log is compared as a multiset: its
+// events, or its event kinds, in one canonical order.
+fn arrival_events_json(log: &[Event]) -> Value {
+    let mut events: Vec<Value> = log.iter().map(event_json).collect();
+    events.sort_by_cached_key(|event| event.to_string());
+    Value::Array(events)
+}
+
+fn arrival_kinds_json(log: &[Event]) -> Value {
+    let mut kinds: Vec<&'static str> = log.iter().map(event_kind).collect();
+    kinds.sort_unstable();
+    Value::Array(kinds.into_iter().map(Value::from).collect())
 }
 
 fn datum_json(datum: &Datum<ListParWithRandom>) -> Value {
@@ -920,6 +962,9 @@ fn r1_section(
     evaluated: &[Produce],
     comm: &COMM,
     logs: Value,
+    // Added by decision 93: true when one evaluation ran the produces in parallel, so that their
+    // evaluation order follows their arrival (DR-132).
+    evaluation_races: bool,
 ) -> Value {
     let channel_of = |produce: &Produce| {
         bind_channels
@@ -963,23 +1008,55 @@ fn r1_section(
     let comm_order = produce_channel_order(&comm.produces);
     let evaluation_order = produce_channel_order(evaluated);
     let bind_order: Vec<String> = bind_channels.iter().map(channel_hash_hex).collect();
-    assert_ne!(
-        evaluation_order, comm_order,
-        "the evaluation order must differ from the canonical COMM order"
-    );
+    // Changed by decision 93: racing evaluation decides the order of parallel produces, so that
+    // order can equal the canonical COMM order. Each run then checks that the parallel produces
+    // are the produces of the COMM, and the corpus keeps the evaluation order of sequential steps
+    // only.
+    // assert_ne!(
+    //     evaluation_order, comm_order,
+    //     "the evaluation order must differ from the canonical COMM order"
+    // );
+    match evaluation_races {
+        true => {
+            let mut arrived = evaluation_order.clone();
+            arrived.sort_unstable();
+            let mut canonical = comm_order.clone();
+            canonical.sort_unstable();
+            assert_eq!(
+                arrived, canonical,
+                "the parallel produces are the produces of the COMM"
+            );
+        }
+        false => assert_ne!(
+            evaluation_order, comm_order,
+            "the evaluation order must differ from the canonical COMM order"
+        ),
+    }
     assert_ne!(
         bind_order, comm_order,
         "the bind order must differ from the canonical COMM order"
     );
-    json!({
+    // json!({
+    //     "channels": channel_labels(channel_names),
+    //     "evaluation_order": evaluation_order,
+    //     "bind_order": bind_order,
+    //     "comm_produce_order": comm_order,
+    //     "comm_equals_comm_new_canonical_sort": true,
+    //     "comm": comm_json(comm),
+    //     "logs": logs,
+    // })
+    let mut section = json!({
         "channels": channel_labels(channel_names),
-        "evaluation_order": evaluation_order,
         "bind_order": bind_order,
         "comm_produce_order": comm_order,
         "comm_equals_comm_new_canonical_sort": true,
         "comm": comm_json(comm),
         "logs": logs,
-    })
+    });
+    if !evaluation_races {
+        section["evaluation_order"] = json!(evaluation_order);
+    }
+    section
 }
 
 async fn r1_consume_triggered() -> Value {
@@ -997,16 +1074,24 @@ async fn r1_consume_triggered() -> Value {
         &bind_channels,
         &evaluated,
         comm,
+        // Changed by decision 93: the three sends of the data step run in parallel, so its log
+        // follows their arrival, and the corpus keeps it as a multiset.
+        // json!({
+        //     "data": {
+        //         "kinds": kinds_json(&data_log),
+        //         "events": events_json(&data_log),
+        //     },
         json!({
             "data": {
-                "kinds": kinds_json(&data_log),
-                "events": events_json(&data_log),
+                "kinds": arrival_kinds_json(&data_log),
+                "events": arrival_events_json(&data_log),
             },
             "receive": {
                 "kinds": kinds_json(&receive_log),
                 "events": events_json(&receive_log),
             },
         }),
+        true,
     )
 }
 
@@ -1060,6 +1145,7 @@ async fn r1_produce_triggered() -> Value {
             },
             "sends": sends,
         }),
+        false,
     )
 }
 
@@ -1150,7 +1236,13 @@ async fn r2_data_first() -> Value {
     json!({
         "channels": channel_labels(&["rrs-r2-data-first", "rrs-r2-data-first-seen"]),
         "send": { "kinds": kinds_json(&send_log), "events": events_json(&send_log) },
-        "peek": { "kinds": kinds_json(&peek_log), "events": events_json(&peek_log) },
+        // Changed by decision 93 (DR-132): the peek COMM runs its body and its re-produce in
+        // parallel, so this log is a multiset. The text before:
+        // "peek": { "kinds": kinds_json(&peek_log), "events": events_json(&peek_log) },
+        "peek": {
+            "kinds": arrival_kinds_json(&peek_log),
+            "events": arrival_events_json(&peek_log),
+        },
         "outcome": r2_reproduce_section(&channel, &original, &peek_log, &remaining),
         "seen_data_count": seen.len(),
     })
@@ -1204,7 +1296,13 @@ async fn r2_continuation_first() -> Value {
         "peek": { "kinds": kinds_json(&peek_log), "events": events_json(&peek_log) },
         "waiting_peeks": waiting.peeks.iter().copied().collect::<Vec<_>>(),
         "waiting_persist": waiting.persist,
-        "send": { "kinds": kinds_json(&send_log), "events": events_json(&send_log) },
+        // Changed by decision 93 (DR-132): the peek COMM runs its body and its re-produce in
+        // parallel, so this log is a multiset. The text before:
+        // "send": { "kinds": kinds_json(&send_log), "events": events_json(&send_log) },
+        "send": {
+            "kinds": arrival_kinds_json(&send_log),
+            "events": arrival_events_json(&send_log),
+        },
         "outcome": r2_reproduce_section(&channel, &original, &send_log, &remaining),
         "seen_data_count": seen.len(),
     })
@@ -1384,7 +1482,11 @@ async fn r3_join(
                 output_name,
                 &format!("{channel_name}-names"),
             ]),
-            "data": { "kinds": kinds_json(&data_log), "events": events_json(&data_log) },
+            // Changed by decision 93: the two sends of the data step and the two processes of the
+            // receive step run in parallel, so both logs follow their arrival (DR-132), and the
+            // corpus keeps them as multisets.
+            // "data": { "kinds": kinds_json(&data_log), "events": events_json(&data_log) },
+            "data": { "kinds": arrival_kinds_json(&data_log), "events": arrival_events_json(&data_log) },
             "deterministic_data_order": ordered
                 .iter()
                 .map(|datum| datum.a.pars.iter().map(pretty).collect::<Vec<_>>())
@@ -1396,7 +1498,11 @@ async fn r3_join(
             "match_matrix": matches,
             "greedy_assignment": greedy,
             "backtracking_assignment_exists": backtracking,
-            "receive": { "kinds": kinds_json(&receive_log), "events": events_json(&receive_log) },
+            // "receive": { "kinds": kinds_json(&receive_log), "events": events_json(&receive_log) },
+            "receive": {
+                "kinds": arrival_kinds_json(&receive_log),
+                "events": arrival_events_json(&receive_log),
+            },
             "comm_count": comm_count,
             "remaining_data_count": remaining.len(),
             "waiting_continuation_count": waiting.len(),
@@ -1459,6 +1565,29 @@ async fn reified_ordinary_regression_r3_greedy_join_first_match() {
     );
 }
 
+// Measures the witness of the aliased join for `R3_GREEDY_DATA`. Each line reports one datum
+// `[1, k]`. A datum is a witness when the greedy matcher finds no communication and a
+// backtracking assignment exists. The reveal batch runs this helper with `--ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "measures the r3 witnesses, run it with --ignored"]
+async fn reified_ordinary_regression_r3_measure_witnesses() {
+    for k in 0..=9 {
+        let data = format!(r#"@"rrs-r3-greedy"!([1, {k}]) | @"rrs-r3-greedy"!([1, 6])"#);
+        let (measured, backtracking) = r3_join(
+            "rrs-r3-greedy",
+            "rrs-r3-greedy-out",
+            &data,
+            R3_GREEDY_RECEIVE,
+            "rrs-r3-greedy",
+        )
+        .await;
+        println!(
+            "r3 witness [1, {k}]: comm_count {} backtracking {backtracking} order {} matrix {}",
+            measured["comm_count"], measured["deterministic_data_order"], measured["match_matrix"],
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_ordinary_regression_r4_leaf_bytes() {
     let Runtimes {
@@ -1511,7 +1640,10 @@ async fn reified_ordinary_regression_r4_leaf_bytes() {
         "program": R4_PROGRAM,
         "empty_root": hex::encode(&empty_root.0),
         "checkpoint_root": hex::encode(&checkpoint.root.0),
-        "kinds": kinds_json(&log),
+        // Changed by decision 93: the processes of the program run in parallel, so its log
+        // follows their arrival (DR-132), and the corpus keeps its kinds as a multiset.
+        // "kinds": kinds_json(&log),
+        "kinds": arrival_kinds_json(&log),
         "data": {
             "channel": pretty_channel(&data_channel),
             "key": hex::encode(&data_key.0),
@@ -1781,8 +1913,32 @@ fn native_config(limit: u64) -> NativeRuntimeConfig {
     })
 }
 
-fn native_json(result: &EvaluateResult) -> Value {
-    let comm_identity_counts: Vec<usize> = result
+// Changed by decision 93: the corpus keeps the journal rows of a program only when they do not
+// follow the arrival order of its processes (`CostProgram::rows_follow_arrival`). Journal order is
+// start order (DR-132), so it keeps the COMM rows as a multiset.
+// fn native_json(result: &EvaluateResult) -> Value {
+//     let comm_identity_counts: Vec<usize> = result
+//         .native_operation_recording
+//         .as_ref()
+//         .map(|rows| {
+//             rows.iter()
+//                 .filter_map(|row| row.comm.as_ref())
+//                 .map(|comm| comm.source.produces.len() + comm.source.repetitions.len())
+//                 .collect()
+//         })
+//         .unwrap_or_default();
+//     json!({
+//         "native_phlo_usage": result.native_phlo_usage,
+//         "errors": errors_json(&result.errors),
+//         "operation_count": result
+//             .native_operation_recording
+//             .as_ref()
+//             .map(|rows| rows.len()),
+//         "comm_identity_counts": comm_identity_counts,
+//     })
+// }
+fn native_json(result: &EvaluateResult, rows_follow_arrival: bool) -> Value {
+    let mut comm_identity_counts: Vec<usize> = result
         .native_operation_recording
         .as_ref()
         .map(|rows| {
@@ -1792,15 +1948,19 @@ fn native_json(result: &EvaluateResult) -> Value {
                 .collect()
         })
         .unwrap_or_default();
-    json!({
+    comm_identity_counts.sort_unstable();
+    let mut native = json!({
         "native_phlo_usage": result.native_phlo_usage,
         "errors": errors_json(&result.errors),
-        "operation_count": result
+    });
+    if !rows_follow_arrival {
+        native["operation_count"] = json!(result
             .native_operation_recording
             .as_ref()
-            .map(|rows| rows.len()),
-        "comm_identity_counts": comm_identity_counts,
-    })
+            .map(|rows| rows.len()));
+        native["comm_identity_counts"] = json!(comm_identity_counts);
+    }
+    native
 }
 
 async fn r6_program(program: &CostProgram) -> Value {
@@ -1834,7 +1994,10 @@ async fn r6_program(program: &CostProgram) -> Value {
             )
             .await
             .unwrap_or_else(|error| panic!("{label} native evaluation failed: {error:?}"));
-        native_json(&result)
+        // Changed by decision 93: the journal rows of an arrival-ordered program follow racing
+        // evaluation (`CostProgram::rows_follow_arrival`).
+        // native_json(&result)
+        native_json(&result, program.rows_follow_arrival)
     };
     json!({
         "source": program.source,
@@ -2018,7 +2181,10 @@ async fn reified_ordinary_regression_r8_state_dump() {
         "r8_state_dump",
         json!({
             "program": R8_PROGRAM,
-            "kinds": kinds_json(&log),
+            // Changed by decision 93: the processes of the program run in parallel, so its log
+            // follows their arrival (DR-132), and the corpus keeps its kinds as a multiset.
+            // "kinds": kinds_json(&log),
+            "kinds": arrival_kinds_json(&log),
             "data": data,
             "continuations": continuations,
             "joins": joins,
@@ -2094,8 +2260,12 @@ async fn reified_ordinary_regression_r9_play_replay_equality() {
             "play_root": hex::encode(&play_checkpoint.root.0),
             "replay_root_equals_play_root": true,
             "play_cost": played.cost.value,
-            "event_log_length": play_checkpoint.log.len(),
-            "event_kinds": kinds_json(&play_checkpoint.log),
+            // Changed by decision 93: racing evaluation decides which processes meet first, so
+            // the length and the kinds of the play log differ between runs of the clean base
+            // (DR-132). Each run rigs its own log and checks the root, the cost and the complete
+            // use of the log above.
+            // "event_log_length": play_checkpoint.log.len(),
+            // "event_kinds": kinds_json(&play_checkpoint.log),
         }),
     );
 }

@@ -386,7 +386,10 @@ fn signed_demand_par(par: &Par, deploy_key: SigKey, execution_position: bool) ->
                 for receive in &par.receives {
                     ordered.push(DemandTask::Receive(receive, scope));
                 }
-                for new in &par.news {
+                // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+                // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+                // for new in &par.news {
+                for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
                     ordered.push(DemandTask::New(new, scope, execution));
                 }
                 for mat in &par.matches {
@@ -681,7 +684,11 @@ pub fn static_authority_signatures(
                             ordered.push(CollectTask::Par(body));
                         }
                     }
-                    for new in &par.news {
+                    // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a
+                    // space annotation, as a marker body was never walked (decision 90 R-2). The
+                    // text before:
+                    // for new in &par.news {
+                    for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
                         if let Some(body) = &new.p {
                             ordered.push(CollectTask::Par(body));
                         }
@@ -926,7 +933,10 @@ fn demand_by_sig_into(
                         ordered.push(LaneTask::Child(body));
                     }
                 }
-                for new in &par.news {
+                // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+                // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+                // for new in &par.news {
+                for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
                     if let Some(body) = &new.p {
                         ordered.push(LaneTask::Child(body));
                     }
@@ -1187,6 +1197,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }
     }
 
@@ -1209,6 +1220,8 @@ mod tests {
             cost_signed_terms: vec![CostSignedTerm {
                 body: Some(body),
                 signature: Some(signature),
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
             }],
             ..Par::default()
         }
@@ -1366,6 +1379,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         });
         let deploy = atom(1);
         let DemandBound::FiniteUpperBound { bound, .. } = demand_bound(&par, &deploy) else {
@@ -1581,6 +1595,7 @@ mod tests {
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(body),
             persistent: false,
@@ -1606,6 +1621,7 @@ mod tests {
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(empty_par()),
             persistent: true,
@@ -1634,6 +1650,7 @@ mod tests {
             uri: Vec::new(),
             injections: Default::default(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         };
         let mut par = Par::default();
         par.news.push(new);
@@ -1761,6 +1778,7 @@ mod tests {
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(empty_par()),
             persistent: false,
@@ -2329,7 +2347,10 @@ mod recursive_oracle {
             }
         }
 
-        for new in &par.news {
+        // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+        // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+        // for new in &par.news {
+        for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
             if let Some(body) = new.p.as_ref() {
                 result = result.combine(signed_demand_par(
                     body,
@@ -2487,7 +2508,10 @@ mod recursive_oracle {
                     collect(body, signatures)?;
                 }
             }
-            for new in &par.news {
+            // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+            // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+            // for new in &par.news {
+            for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
                 if let Some(body) = &new.p {
                     collect(body, signatures)?;
                 }
@@ -2577,7 +2601,10 @@ mod recursive_oracle {
             }
         }
         // new / match / if / bundle: process positions recursed, no COMM node (D3).
-        for new in &par.news {
+        // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+        // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+        // for new in &par.news {
+        for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
             if let Some(body) = &new.p {
                 demand_by_sig_into(body, envelope_key, region_sig, acc);
             }

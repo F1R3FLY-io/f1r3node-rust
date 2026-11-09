@@ -1,13 +1,36 @@
 // comm/src/main/scala/coop/rchain/comm/transport/HostnameTrustManagerFactory.scala
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use crypto::rust::util::certificate_helper::CertificateHelper;
 use p256::elliptic_curve::sec1::FromEncodedPoint;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName};
+use rustls::crypto::WebPkiSupportedAlgorithms;
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, SubjectPublicKeyInfoDer};
 use rustls::{DigitallySignedStruct, DistinguishedName, Error as RustlsError, SignatureScheme};
+
+static SIGNATURE_ALGORITHMS: LazyLock<WebPkiSupportedAlgorithms> =
+    LazyLock::new(|| rustls::crypto::ring::default_provider().signature_verification_algorithms);
+
+fn verify_tls12_handshake_signature(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &DigitallySignedStruct,
+) -> Result<HandshakeSignatureValid, RustlsError> {
+    rustls::crypto::verify_tls12_signature(message, cert, dss, &SIGNATURE_ALGORITHMS)
+}
+
+fn verify_tls13_handshake_signature(
+    message: &[u8],
+    cert: &CertificateDer<'_>,
+    dss: &DigitallySignedStruct,
+) -> Result<HandshakeSignatureValid, RustlsError> {
+    let (_, parsed) = x509_parser::parse_x509_certificate(cert.as_ref())
+        .map_err(|_| RustlsError::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+    let spki = SubjectPublicKeyInfoDer::from(parsed.public_key().raw);
+    rustls::crypto::verify_tls13_signature_with_raw_key(message, &spki, dss, &SIGNATURE_ALGORITHMS)
+}
 
 /// Custom error type for certificate validation
 #[derive(Debug, Clone)]
@@ -449,20 +472,20 @@ impl ServerCertVerifier for HostnameTrustManager {
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        Ok(HandshakeSignatureValid::assertion())
+        verify_tls12_handshake_signature(message, cert, dss)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, RustlsError> {
-        Ok(HandshakeSignatureValid::assertion())
+        verify_tls13_handshake_signature(message, cert, dss)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -525,20 +548,20 @@ impl rustls::server::danger::ClientCertVerifier for F1r3flyClientCertVerifier {
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, RustlsError> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        verify_tls12_handshake_signature(message, cert, dss)
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, RustlsError> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        verify_tls13_handshake_signature(message, cert, dss)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -760,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_verification_stubs_accept() {
+    fn test_supported_verify_schemes() {
         let manager = HostnameTrustManager::new();
         assert_eq!(manager.supported_verify_schemes(), vec![
             SignatureScheme::ECDSA_NISTP256_SHA256,
@@ -870,5 +893,81 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[derive(Debug)]
+    struct FixedClientCert(Arc<rustls::sign::CertifiedKey>);
+
+    impl rustls::client::ResolvesClientCert for FixedClientCert {
+        fn resolve(
+            &self,
+            _root_hint_subjects: &[&[u8]],
+            _sigschemes: &[SignatureScheme],
+        ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+            Some(self.0.clone())
+        }
+
+        fn has_certs(&self) -> bool { true }
+    }
+
+    async fn server_handshake_error(client_cert: &str, client_key: &str) -> Option<RustlsError> {
+        let (server_cert, server_key) = generated_pem_pair();
+        let server_der = HostnameTrustManagerFactory::parse_pem_certificate(&server_cert).unwrap();
+        let server_address = HostnameTrustManager::new()
+            .check_client_trusted(&server_der, "RSA")
+            .unwrap();
+
+        let signing_key = rustls::crypto::ring::sign::any_supported_type(
+            &HostnameTrustManagerFactory::parse_pem_private_key(client_key).unwrap(),
+        )
+        .unwrap();
+        let client_config = rustls::ClientConfig::builder_with_provider(
+            rustls::crypto::ring::default_provider().into(),
+        )
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(
+            HostnameTrustManagerFactory::instance().create_trust_manager(),
+        )
+        .with_client_cert_resolver(Arc::new(FixedClientCert(Arc::new(
+            rustls::sign::CertifiedKey::new(
+                vec![HostnameTrustManagerFactory::parse_pem_certificate(client_cert).unwrap()],
+                signing_key,
+            ),
+        ))));
+        let server_config =
+            HostnameTrustManagerFactory::server_config(&server_cert, &server_key).unwrap();
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let (_, server_result) = tokio::join!(
+            tokio_rustls::TlsConnector::from(Arc::new(client_config))
+                .connect(ServerName::try_from(server_address).unwrap(), client_io),
+            tokio_rustls::TlsAcceptor::from(Arc::new(server_config)).accept(server_io)
+        );
+        server_result.err().map(|error| {
+            error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<RustlsError>())
+                .cloned()
+                .unwrap_or_else(|| RustlsError::General(error.to_string()))
+        })
+    }
+
+    #[tokio::test]
+    async fn server_rejects_client_certificate_without_its_private_key() {
+        let (victim_cert, victim_key) = generated_pem_pair();
+        let (_, attacker_key) = generated_pem_pair();
+
+        assert_eq!(
+            server_handshake_error(&victim_cert, &victim_key).await,
+            None
+        );
+        assert_eq!(
+            server_handshake_error(&victim_cert, &attacker_key).await,
+            Some(RustlsError::InvalidCertificate(
+                rustls::CertificateError::BadSignature
+            ))
+        );
     }
 }

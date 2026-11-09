@@ -95,6 +95,33 @@ pub fn validate_metadata(metadata: &Value) -> Result<()> {
     Ok(())
 }
 
+pub fn yanked_present(metadata: &Value, policy: &Policy) -> BTreeSet<String> {
+    let resolved: BTreeSet<String> = metadata
+        .get("packages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|p| {
+            p.get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|s| s.starts_with("registry+"))
+        })
+        .filter_map(|p| {
+            Some(format!(
+                "{}@{}",
+                p.get("name")?.as_str()?,
+                p.get("version")?.as_str()?
+            ))
+        })
+        .collect();
+    policy
+        .yanked
+        .keys()
+        .filter(|spec| resolved.contains(*spec))
+        .cloned()
+        .collect()
+}
+
 fn prefix(manifest: &str) -> String {
     if manifest == "Cargo.toml" {
         "workspace".into()
@@ -156,6 +183,7 @@ fn scan_manifest(
     bytes.extend(output.stderr);
     fs::write(reports.join(format!("{prefix}-deny.jsonl")), &bytes)?;
     let mut report = report::validate(std::str::from_utf8(&bytes)?, &policy.exceptions);
+    report.yanked_present = yanked_present(&parsed, policy);
     if !output.status.success() {
         report
             .errors
@@ -184,9 +212,13 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
     let reports = root.join("target/supply-chain");
     fs::create_dir_all(&reports)?;
     let mut all = Report::default();
+    let mut yanked_used = BTreeSet::new();
     for manifest in &policy.manifests {
         let report = match scan_manifest(root, manifest, tool, &reports, policy, runner) {
-            Ok(report) => report,
+            Ok(report) => {
+                yanked_used.extend(report.yanked_present.iter().cloned());
+                report
+            }
             Err(error) => {
                 let message = format!("{manifest}: {error}");
                 let evidence = json!({"manifest": manifest, "errors": [&message]});
@@ -222,6 +254,17 @@ pub fn scan_all(root: &Path, policy: &Policy, tool: &str, runner: &impl Runner) 
         .collect();
     if !unused.is_empty() {
         let message = format!("Unused advisory exceptions: {}", unused.join(", "));
+        eprintln!("{message}");
+        all.errors.push(message);
+    }
+    let unused: Vec<_> = policy
+        .yanked
+        .keys()
+        .filter(|spec| !yanked_used.contains(*spec))
+        .cloned()
+        .collect();
+    if !unused.is_empty() {
+        let message = format!("Unused yanked-crate exceptions: {}", unused.join(", "));
         eprintln!("{message}");
         all.errors.push(message);
     }

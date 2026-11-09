@@ -1,5 +1,6 @@
 use super::exports::{
     Bundle, CostSignedTerm, CostStack, Expr, GUnforgeable, If, Match, New, Par, Receive, Send,
+    UseBlock,
 };
 use super::par_count::ParCount;
 
@@ -110,7 +111,10 @@ struct SubPars {
     conditionals: Vec<(Vec<If>, Vec<If>)>,
     cost_signed_terms: Vec<(Vec<CostSignedTerm>, Vec<CostSignedTerm>)>,
     cost_stacks: Vec<(Vec<CostStack>, Vec<CostStack>)>,
-    positions: [usize; 10],
+    use_blocks: Vec<(Vec<UseBlock>, Vec<UseBlock>)>,
+    // Changed by decision 112: a Par has eleven list fields. The text before:
+    // positions: [usize; 10],
+    positions: [usize; 11],
     exhausted: bool,
 }
 
@@ -127,12 +131,15 @@ impl SubPars {
             7 => self.conditionals.len(),
             8 => self.cost_signed_terms.len(),
             9 => self.cost_stacks.len(),
+            10 => self.use_blocks.len(),
             _ => unreachable!(),
         }
     }
 
     fn advance(&mut self) {
-        for field in (0..10).rev() {
+        // Changed by decision 112: a Par has eleven list fields. The text before:
+        // for field in (0..10).rev() {
+        for field in (0..11).rev() {
             self.positions[field] += 1;
             if self.positions[field] < self.length(field) {
                 return;
@@ -160,6 +167,7 @@ impl Iterator for SubPars {
         let conditionals = self.conditionals[self.positions[7]].clone();
         let cost_signed_terms = self.cost_signed_terms[self.positions[8]].clone();
         let cost_stacks = self.cost_stacks[self.positions[9]].clone();
+        let use_blocks = self.use_blocks[self.positions[10]].clone();
         let candidate = (
             Par {
                 sends: sends.0,
@@ -175,6 +183,7 @@ impl Iterator for SubPars {
                 connective_used: false,
                 cost_signed_terms: cost_signed_terms.0,
                 cost_stacks: cost_stacks.0,
+                use_blocks: use_blocks.0,
             },
             Par {
                 sends: sends.1,
@@ -190,6 +199,7 @@ impl Iterator for SubPars {
                 connective_used: false,
                 cost_signed_terms: cost_signed_terms.1,
                 cost_stacks: cost_stacks.1,
+                use_blocks: use_blocks.1,
             },
         );
         self.advance();
@@ -275,8 +285,17 @@ pub(super) fn sub_pars(
             min_prune.cost_stacks,
             max_prune.cost_stacks,
         ),
+        (
+            par.use_blocks.len(),
+            min.use_blocks,
+            max.use_blocks,
+            min_prune.use_blocks,
+            max_prune.use_blocks,
+        ),
     ];
-    let mut sizes = [(0isize, 0isize); 10];
+    // Changed by decision 112: a Par has eleven list fields. The text before:
+    // let mut sizes = [(0isize, 0isize); 10];
+    let mut sizes = [(0isize, 0isize); 11];
     for (size, (len, minimum, maximum, min_remaining, max_remaining)) in
         sizes.iter_mut().zip(bounds)
     {
@@ -302,6 +321,7 @@ pub(super) fn sub_pars(
     let conditionals = min_max_subsets(&par.conditionals, sizes[7].0, sizes[7].1);
     let cost_signed_terms = min_max_subsets(&par.cost_signed_terms, sizes[8].0, sizes[8].1);
     let cost_stacks = min_max_subsets(&par.cost_stacks, sizes[9].0, sizes[9].1);
+    let use_blocks = min_max_subsets(&par.use_blocks, sizes[10].0, sizes[10].1);
     let exhausted = [
         sends.len(),
         receives.len(),
@@ -313,6 +333,7 @@ pub(super) fn sub_pars(
         conditionals.len(),
         cost_signed_terms.len(),
         cost_stacks.len(),
+        use_blocks.len(),
     ]
     .contains(&0);
     Some(SubPars {
@@ -326,7 +347,10 @@ pub(super) fn sub_pars(
         conditionals,
         cost_signed_terms,
         cost_stacks,
-        positions: [0; 10],
+        use_blocks,
+        // Changed by decision 112: a Par has eleven list fields. The text before:
+        // positions: [0; 10],
+        positions: [0; 11],
         exhausted,
     })
 }

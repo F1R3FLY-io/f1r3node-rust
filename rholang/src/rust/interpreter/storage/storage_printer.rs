@@ -78,6 +78,7 @@ fn to_sends(data: &Vec<Datum<ListParWithRandom>>, channels: &Vec<Par>) -> Par {
                 persistent: datum.persist,
                 locally_free: Vec::new(),
                 connective_used: false,
+                params: None,
             });
         }
     }
@@ -109,6 +110,7 @@ fn to_receives(
                     remainder: pattern.remainder.clone(),
                     free_count: pattern.free_count,
                     cost_signature: None,
+                    query_spec: None,
                 });
             }
         }

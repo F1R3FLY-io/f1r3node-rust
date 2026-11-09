@@ -33,37 +33,16 @@ correctness — proved, model-checked, and tested — is the organizing concern.
 
 An AVL index stores keys in a balanced binary search tree.
 At each node, the child heights differ by at most one.
-Native accounting uses stable arena positions and reserves lookup, growth, and insertion work before publication.
+Native accounting uses stable arena positions.
 
 **Preferred usage.** Use this term for the private native-accounting indexes.
 *Distinguish from* the immutable sorted indexes used to check imported budget traces.
+### Deploy parameter
 
-**Note (DR-131).** This branch removed host-work metering (`75de2dc39`). The
-three host-work terms below name the host-work API that `dev` keeps. Restore
-the metering of this branch with `git revert 75de2dc39`.
+A deploy parameter is a named, typed Rholang value included in the signed deploy data.
+Rholang code accesses the value through `rho:deploy:param:<name>`.
 
-### Host-work unit
-
-A host-work unit measures one deterministic part of node work.
-It does not represent a token, a phlogiston charge, or a wallet debit.
-
-**Preferred usage.** Use this term for one unit in a named host-work dimension.
-*Distinguish from* semantic resource cost, which controls economic settlement.
-
-### Host-work budget
-
-A host-work budget contains independent dimension counters, one limit schedule, and one sticky rejection state for a deployment boundary.
-
-**Preferred usage.** Use this term for deterministic node-work protection across play and replay.
-*Distinguish from* the economic budget that reserves SystemVault custody.
-
-### Host-work limit schedule
-
-A host-work limit schedule maps each host-work dimension to one unsigned integer limit.
-The protocol version must bind one schedule for all validating nodes.
-
-**Preferred usage.** Use this term for the complete versioned mapping.
-*Avoid*: host-work limit, when the text refers to more than one dimension.
+**Preferred usage.** Use this term for values in `DeployData.parameters`.
 
 ### Soak harness
 
@@ -582,6 +561,18 @@ until the decision lands.
 *Distinguish from* the [retry gate](#retry-gate): the gate is a consensus
 legality rule; this packaging policy is node-local discretion on top of it.
 *Avoid*: "retry deferral" without qualification.
+
+### Value stream
+
+A value stream is the end-to-end sequence of activities that delivers a discrete unit of value. Each user story names its value stream, and an epic inherits it through the story.
+
+**Preferred usage.** Use this term for the `**Value Stream:**` line of a story in `docs/UserStories.md`. The [task tracking guide](task-tracking.md#value-streams) lists the current value streams. *Distinguish from* an epic, which is the implementation scope for one story. *Avoid*: workstream or track for this concept.
+
+### Task claim
+
+A task claim records who works on a task in `docs/ToDos.md`. It sets the `claimed_by` and `claimed_at` fields of the task.
+
+**Preferred usage.** Use task claim, or claim a task, for this coordination record. *Distinguish from* [Claim](#claim), which is a correctness property under `docs/claims/`. *Avoid*: bare claim where the CbC sense is possible.
 
 ## Architecture Stack Mapping
 

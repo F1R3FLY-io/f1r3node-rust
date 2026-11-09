@@ -21,13 +21,15 @@
 // weight needs a quorum WITHOUT the silent party.) The short
 // deploy_lifespan (5) closes the window within a handful of blocks.
 
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
 use crypto::rust::private_key::PrivateKey;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use prost::bytes::Bytes;
 use serial_test::serial;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 

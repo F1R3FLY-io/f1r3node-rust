@@ -31,7 +31,8 @@ fn records(
 /// The function checks that:
 /// - every node accepts the block and stores the producer's mergeable entry;
 /// - the producer records one self-replay of the block;
-/// - every node replays the block as a validator.
+/// - every other node replays the block as a validator. The producer may
+///   answer its own block from dev's replay cache (changed by DR-134).
 pub async fn propose_offer_replayed_by_every_role(
     nodes: &mut [TestNode],
     offer: models::casper::DeployDataProto,
@@ -88,7 +89,25 @@ pub async fn propose_offer_replayed_by_every_role(
         1,
         "{stage}: one producer self-replay"
     );
-    for (index, node) in nodes.iter().enumerate() {
+    // Changed by DR-134 (dev parity of the offered replay): the producer may
+    // answer its own block from dev's replay cache (DR-102: "The producer does
+    // not replay its own block again"). Dev's cache is best effort: a block
+    // with more than 1,536 log events is not cached, and an entry can be
+    // evicted, so the producer then replays the block. The producer's
+    // acceptance above covers both cases. Every other node replays the block
+    // as a validator.
+    // for (index, node) in nodes.iter().enumerate() {
+    //     assert!(
+    //         records(
+    //             node,
+    //             OfferedUsageKind::ValidatorReplay,
+    //             &deploy_id,
+    //             &pre_state_root,
+    //         ) > 0,
+    //         "{stage}: node {index} replays the block"
+    //     );
+    // }
+    for (index, node) in nodes.iter().enumerate().skip(1) {
         assert!(
             records(
                 node,

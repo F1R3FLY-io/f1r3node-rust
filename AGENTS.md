@@ -146,6 +146,30 @@ A checker cannot establish full ASD-STE100 conformance. Do not claim that text i
 - Only use a subagent if the user has explicitly told you to do so
 - Do not delegate work to subagents on your own initiative. Perform tasks directly by default
 
+## Project Workflow
+
+- Coordinate with other agents through shared Markdown files. Read `docs/ToDos.md` before you start, and claim a task there before you work on it.
+- For a significant feature, write the user story, the design, and the specification before the code. Then add the epic and its tasks to `docs/ToDos.md`.
+- Task identifiers use the form `TASK-NNN-N`, where `NNN` is the epic number. Give each task an `acceptance` list of measurable conditions.
+- Record the value stream on the user story. An epic gets its value stream through its `user_story` field.
+- See `CLAUDE.md` § "Project Workflow" for the claim format, the optional task fields, and the workspace standards.
+
+## Cross-Repository References
+
+- Use a document-relative Markdown link for a file in this repository.
+- Use a `yaml cross-reference` record for current guidance in another repository. Do not write a Markdown link to a file in another repository.
+- See `CLAUDE.md` § "Cross-Repository References" for the record fields and the check command.
+
+## Development Modes
+
+| Mode | Command | Git access |
+|------|---------|------------|
+| Safe | `claude` / `claude-safe` | Through `/quick-commit` and `/recursive-push` only |
+| Agentic | `claude-agentic` | Direct git access |
+| YOLO | `claude-agentic` in a worktree that the human created | Full autonomy in isolation |
+
+Safe mode is the default. Agents never create worktrees outside agentic mode.
+
 ## Security
 - Never log or expose private keys
 - Validate all user inputs and state transitions

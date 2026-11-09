@@ -6,7 +6,9 @@
 //!
 //! The fire loop of a collection operation (P4 design B.4) is bounded. A bounded chain fires
 //! in the transaction for at most [`FIRE_ROUND_CAP`] rounds. Then the agent commits the staged
-//! prefix and re-issues the rest as a new `Intent::Space`. A divergent pair re-issues after
+// Changed by decision 90: racing evaluation has no `Intent::Space`. The text before:
+// //! prefix and re-issues the rest as a new `Intent::Space`. A divergent pair re-issues after
+//! prefix and re-issues the rest as a new space job. A divergent pair re-issues after
 //! each round (A10).
 
 /// The most fires of one collection operation in one transaction. Each round matches one head
@@ -14,7 +16,9 @@
 /// matcher calls.
 pub const FIRE_ROUND_CAP: usize = 64;
 
-/// Why a collection operation re-issues as a new `Intent::Space`.
+// Changed by decision 90: racing evaluation has no `Intent::Space`. The text before:
+// /// Why a collection operation re-issues as a new `Intent::Space`.
+/// Why a collection operation re-issues as a new space job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ReissueCause {
     /// Neither side of the fire left the store and the incoming side survives: a persistent
@@ -23,6 +27,9 @@ pub enum ReissueCause {
     DivergentPair,
     /// The fire loop reached [`FIRE_ROUND_CAP`] (readiness review S5).
     RoundCap,
+    /// Added by decision 124 (plan v4 C7.7, rule CR-31): the finish of a deviating transaction
+    /// took the Stop branch. The re-issue stages its anchor first (CR-19 case 2).
+    OwnerRefusal,
 }
 
 /// The step of a fire loop after one fire (P4 design B.4).
@@ -49,6 +56,10 @@ impl FireRounds {
 
     /// The fires so far.
     pub const fn fired(&self) -> usize { self.fired }
+
+    /// Added by decision 124 (plan v4 C7.11, ruling RDOJ 5.2): a loop that has fired `fired`
+    /// times. The finish rebuilds the step of row d with the fire count before it (CR-31).
+    pub const fn at(fired: usize) -> Self { Self { fired } }
 
     /// Records one fire and returns the next step (A10, readiness review S5).
     ///
@@ -105,5 +116,27 @@ mod tests {
         }
         assert_eq!(last.after_fire(true, false), FireStep::Done);
         assert_eq!(FireRounds::default(), FireRounds::new());
+    }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RDOJ 5.2): a loop rebuilt with
+    /// the fire count before row d takes the step of the fire of row d in a loop from the start,
+    /// so the finish reads the cap of row d from the count alone.
+    #[test]
+    fn fire_rounds_at_rebuilds_the_step_of_row_d() {
+        for fired in [0, 1, 62, 63] {
+            let mut rounds = FireRounds::new();
+            for _ in 0..fired {
+                rounds.after_fire(false, false);
+            }
+            assert_eq!(
+                FireRounds::at(fired).after_fire(false, false),
+                rounds.after_fire(false, false),
+                "{fired}"
+            );
+        }
+        assert_eq!(
+            FireRounds::at(63).after_fire(false, false),
+            FireStep::Reissue(ReissueCause::RoundCap)
+        );
     }
 }

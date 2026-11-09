@@ -22,9 +22,19 @@
 //!   They run 64 cases.
 //! * The queue properties run the real agent `GenericSpace<HashMapOuter, QueueDiscipline>` over
 //!   an in-memory RSpace. They run 64 cases.
-//! * The properties that need a Rholang runtime evaluate deploys on the play and replay
-//!   runtimes of `create_runtimes`. The merge properties also run the merger of HEAD: check #1
-//!   to #3, `depends`, `StateChange` and the trie actions. These properties run 16 cases.
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, native funded
+// execution. So the runtime properties play natively, and native replay certifies each deploy.
+// The legacy bullet follows.
+// //! * The properties that need a Rholang runtime evaluate deploys on the play and replay
+// //!   runtimes of `create_runtimes`. The merge properties also run the merger of HEAD: check #1
+// //!   to #3, `depends`, `StateChange` and the trie actions. These properties run 16 cases.
+//! * The properties that need a Rholang runtime play deploys natively on one runtime. Native
+//!   replay certifies each deploy from its pre-state, as proposer self-certification does. The
+//!   merge properties also run the merger of HEAD: check #1 to #3, `depends`, `StateChange` and
+//!   the trie actions. These properties run 16 cases.
+//! * Three merge properties race the operations of their deploys (decision 93). Their serial
+//!   state is the root after each branch record replays on the root before it. They run each
+//!   case on every racing runtime of decision 111.
 //!
 //! A deploy names its Reified ids through the normalizer environment. The program binds a name
 //! with ``new x(`uri`)``, and the environment maps the URI to the id. A program cannot forge an
@@ -32,6 +42,10 @@
 
 #[path = "../../models/tests/support/reified_strategies.rs"]
 mod reified_strategies;
+
+// Added by decision 90 (C6): the native runtime and the certification of the shared harness.
+#[path = "support/mod.rs"]
+mod support;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -47,9 +61,16 @@ use models::rhoapi::{
     BindPattern, Bundle, CostAuthority, CostRegion, CostSignature, EList, Expr, GDeployId,
     GDeployerId, GUnforgeable, ListParWithRandom, New, Par, ParWithRandom, TaggedContinuation, Var,
 };
+// Changed by decision 112: the wrapper of a use block is a Par field, so the test reads it with
+// the field decoder. The text before:
+// ```
+// use models::rust::reified::encoding::{
+//     decode_process_tuple, encode_free, encode_params, Marker, ProcessConstruct, SendParams,
+//     UseBlock,
+// };
+// ```
 use models::rust::reified::encoding::{
-    decode_process_tuple, encode_free, encode_params, Marker, ProcessConstruct, SendParams,
-    UseBlock,
+    decode_use_block, encode_free, encode_params, Marker, SendParams, UseBlock,
 };
 use models::rust::rholang::implicits::concatenate_pars;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -70,7 +91,9 @@ use rholang::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
 use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig};
+// Changed by decision 90 (C6): the node funds the deploy signature of the shared harness.
+// use rholang::rust::interpreter::accounting::{RuntimeBudget, Sig};
+use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
@@ -99,7 +122,9 @@ use rholang::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use rholang::rust::interpreter::spaces::errors::{
     SpaceError, SpaceReplyCode, SPACE_ERROR_REPLY_TAG,
 };
-use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+// Changed by decision 90 (C6, step D): the factory reads no execution model.
+// use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
 use rholang::rust::interpreter::spaces::factory::defaults::{constructor_schema, required_params};
 use rholang::rust::interpreter::spaces::factory::urn::{factory_capability, factory_channel};
 use rholang::rust::interpreter::spaces::generic::{
@@ -125,7 +150,8 @@ use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::id::derive_space_id;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier as ConfigQualifier;
 use rholang::rust::interpreter::system_processes::byte_name;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Disabled by decision 90 (C6): the node plays natively on the runtime of the shared harness.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rholang::rust::interpreter::util::allocate_new_bindings;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash as stable_hash;
@@ -146,6 +172,12 @@ use rspace_plus_plus::rspace::space_store_handle::{
     ConsumeOutcome, ProduceOutcome, SpaceConsume, SpaceProduce, SpaceStoreHandle,
 };
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
+// Added by decision 90 (C6): the native runtime and the certification of the shared harness.
+use support::native::{
+    assert_certified, committed_evidence_of, config, finish_injected, fresh_space_runtime_with,
+    funding, rejected, replay_environment_with, space_runtime_with, Certification, PlaySpace,
+    AMPLE_LIMIT, DEPLOY,
+};
 
 // ─── Configuration ───────────────────────────────────────────────────────────────────────────
 
@@ -201,6 +233,28 @@ fn tokio_runtime() -> tokio::runtime::Runtime {
         .expect("build the tokio runtime of a case")
 }
 
+/// Added by decision 111: the worker threads of the racing runtimes, where 0 is the
+/// current-thread runtime. Each run replays its own records, and no property needs the
+/// current-thread runtime to pass.
+const RACING_WORKERS: [usize; 3] = [0, 2, 8];
+
+/// Added by decision 111: the runtime of a racing case with `workers` worker threads. Zero
+/// workers give the current-thread runtime, as the base builds its racing runtimes
+/// (`random_candidate_order.rs`).
+fn racing_runtime(workers: usize) -> tokio::runtime::Runtime {
+    match workers {
+        0 => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a current-thread racing runtime"),
+        _ => tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(workers)
+            .enable_all()
+            .build()
+            .expect("a racing runtime"),
+    }
+}
+
 // ─── Shared values ───────────────────────────────────────────────────────────────────────────
 
 fn gbool(value: bool) -> Par { reified_strategies::gbool(value) }
@@ -217,6 +271,10 @@ fn region(byte: u8) -> CostAuthority {
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![byte])),
             }),
+            // Added by decision 90 (DR-135): an unpriced region, as outside native
+            // execution.
+            price: 0,
+            caller: None,
         }],
     }
 }
@@ -748,6 +806,7 @@ fn prop_reified_ids_disjoint_from_new_ids() {
                 uri: Vec::new(),
                 injections: BTreeMap::new(),
                 locally_free: Vec::new(),
+                space_types: Vec::new(),
             };
             let mut rand = Blake2b512Random::create_from_bytes(&seed);
             let bound = allocate_new_bindings(&new, &Env::new(), &mut rand, &HashMap::new())
@@ -2140,9 +2199,16 @@ fn prop_check1_restatement_matches_merger() {
                 join_channels.into_iter().map(check1_channel).collect();
             let mergeable: BTreeSet<Blake2b256Hash> =
                 mergeable_channels.into_iter().map(check1_channel).collect();
+            // Changed by decision 90: the base keeps number-channel diffs as `BigInt`.
+            // .map(|channel| (channel.clone(), (0, MergeType::IntegerAdd)))
             let number_channels: NumberChannelsDiff = mergeable
                 .iter()
-                .map(|channel| (channel.clone(), (0, MergeType::IntegerAdd)))
+                .map(|channel| {
+                    (
+                        channel.clone(),
+                        (num_bigint::BigInt::from(0), MergeType::IntegerAdd),
+                    )
+                })
                 .collect();
             let in_pre_state = |produce: &Produce| pre_state.contains(produce);
             let touches_join = |produce: &Produce| joins.contains(&produce.channel_hash);
@@ -2666,6 +2732,9 @@ impl AgentRig {
                 persist: false,
                 outcome: ProduceOutcome::Store,
                 before_observe: None,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             })
             .expect("the counter stages");
             for index in order {
@@ -2682,6 +2751,9 @@ impl AgentRig {
                             persist: record.persist,
                             outcome: ProduceOutcome::Store,
                             before_observe: None,
+                            own: false,
+                            // Added by decision 123 (plan v4, V3-9): no row search.
+                            search: None,
                         })
                         .expect("a record stages");
                     }
@@ -2711,6 +2783,9 @@ impl AgentRig {
                             },
                             outcome: ConsumeOutcome::Park,
                             before_observe: None,
+                            own: false,
+                            // Added by decision 123 (plan v4, V3-9): no row search.
+                            search: None,
                         })
                         .expect("a waiter stages");
                     }
@@ -3330,6 +3405,13 @@ async fn queue_loop_bounded_case(case: (QueueState, QueueOp)) -> Result<(), Test
                     prop_assert!(record.persist || peek);
                 }
             }
+        }
+        // Added by decision 124 (plan v4 C7.7): a run without owner funding never re-issues for
+        // an owner refusal.
+        Some(ReissueCause::OwnerRefusal) => {
+            return Err(TestCaseError::fail(
+                "a run without owner funding re-issued for an owner refusal",
+            ));
         }
         None => {}
     }
@@ -4696,10 +4778,12 @@ type RhoHistory = Arc<
     >,
 >;
 
-const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-props-deploy";
-const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-props-payer";
-const DEPLOY_PHLO: i64 = 100_000_000;
-const DEPLOY_LABEL: &str = "rrs-p4-props";
+// Disabled by decision 90 (C6): the node funds the deploy signature of the shared harness, and
+// each deploy plays at the native limit of the shared harness.
+// const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-props-deploy";
+// const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-props-payer";
+// const DEPLOY_PHLO: i64 = 100_000_000;
+// const DEPLOY_LABEL: &str = "rrs-p4-props";
 
 /// The public channel of the deliveries of the receives of a test.
 const OUT: &str = "rrs-p4-out";
@@ -4736,9 +4820,18 @@ impl DeploySpec {
 }
 
 /// The result of a deploy, as casper processes it: the evaluation and the event log.
+// Changed by decision 90 (C6): a deploy also keeps the post-state root of a deploy that
+// succeeds, which native replay must reach. The legacy record follows.
+// struct Deployed {
+//     result: EvaluateResult,
+//     log: Vec<Event>,
+// }
 struct Deployed {
     result: EvaluateResult,
     log: Vec<Event>,
+    /// The checkpoint root after a deploy that succeeds. A failed deploy is reverted, so it has
+    /// no post-state root.
+    root: Option<Blake2b256Hash>,
 }
 
 /// The `<Code>` of each `reified:<Code>:` error of an evaluation, and `other` for every other
@@ -4747,11 +4840,16 @@ fn error_codes(errors: &[InterpreterError]) -> Vec<String> {
     errors
         .iter()
         .map(|error| match error {
-            InterpreterError::ReduceError(message) => message
-                .strip_prefix("reified:")
-                .and_then(|rest| rest.split(':').next())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("other: {message}")),
+            // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): a user failure
+            // of a space is a `SpaceUserError` with the text of its reduce error.
+            // InterpreterError::ReduceError(message) => message
+            InterpreterError::ReduceError(message) | InterpreterError::SpaceUserError(message) => {
+                message
+                    .strip_prefix("reified:")
+                    .and_then(|rest| rest.split(':').next())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("other: {message}"))
+            }
             other => format!("other: {other:?}"),
         })
         .collect()
@@ -4761,107 +4859,263 @@ impl Deployed {
     fn codes(&self) -> Vec<String> { error_codes(&self.result.errors) }
 }
 
-/// A play runtime and a replay runtime over one in-memory store, as `create_runtimes` makes
-/// them, with a funded deploy signature.
+/// Added by decision 90 (C6): the certification of the native play `result` of `spec`, with the
+/// event log `log`, by native replay from the root of `history`. The journal check and the trace
+/// binding read the committed evidence of play, as validator replay reads it.
+async fn certify_record(
+    history: RhoHistory,
+    spec: &DeploySpec,
+    result: &EvaluateResult,
+    log: &[Event],
+) -> Certification {
+    let (recording, journal) = committed_evidence_of(result);
+    let environment = replay_environment_with(
+        history,
+        log.to_vec(),
+        AMPLE_LIMIT,
+        &recording,
+        journal,
+        &mut Vec::new(),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the committed evidence of the deploy checks: {error}"));
+    finish_injected(
+        environment,
+        &spec.program,
+        Blake2b512Random::create_from_bytes(&spec.seed),
+        injections(&spec.injected),
+    )
+    .await
+}
+
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, native funded
+// execution. So the node plays each deploy natively on one runtime, and native replay certifies
+// each deploy from its pre-state, as the native session of the shared harness does
+// (`support::session::Session::deploy_full`). The legacy node and its rigged replay follow.
+//
+// /// A play runtime and a replay runtime over one in-memory store, as `create_runtimes` makes
+// /// them, with a funded deploy signature.
+// struct Node {
+//     manager: InMemoryStoreManager,
+//     play: RhoRuntimeImpl,
+//     replay: RhoRuntimeImpl,
+//     history: RhoHistory,
+// }
+//
+// impl Node {
+//     async fn new() -> Node {
+//         let mut manager = InMemoryStoreManager::new();
+//         let (play, replay, history) = Node::runtimes(&mut manager).await;
+//         Node {
+//             manager,
+//             play,
+//             replay,
+//             history,
+//         }
+//     }
+//
+//     async fn runtimes(
+//         manager: &mut InMemoryStoreManager,
+//     ) -> (RhoRuntimeImpl, RhoRuntimeImpl, RhoHistory) {
+//         let stores = manager
+//             .r_space_stores()
+//             .await
+//             .expect("the in-memory RSpace stores");
+//         let (play, replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
+//         for runtime in [&play, &replay] {
+//             runtime.cost.set_deploy_signature_funded(
+//                 DEPLOY_SIGNATURE,
+//                 Sig::Ground(FUNDING_SIGNATURE.to_vec()),
+//             );
+//         }
+//         (play, replay, history)
+//     }
+//
+//     /// New runtimes over the same stores, with empty hot stores: a process restart.
+//     async fn restart(&mut self) {
+//         let (play, replay, history) = Node::runtimes(&mut self.manager).await;
+//         self.play = play;
+//         self.replay = replay;
+//         self.history = history;
+//     }
+//
+//     /// Evaluates a deploy on the play runtime as casper processes a user deploy. It takes a soft
+//     /// checkpoint, evaluates, takes the event log, and reverts when the deploy failed.
+//     async fn deploy(&mut self, spec: &DeploySpec) -> Deployed {
+//         let checkpoint = self.play.create_soft_checkpoint().await;
+//         let result = self
+//             .play
+//             .evaluate(
+//                 &spec.program,
+//                 Cost::create(DEPLOY_PHLO, DEPLOY_LABEL),
+//                 injections(&spec.injected),
+//                 Blake2b512Random::create_from_bytes(&spec.seed),
+//             )
+//             .await
+//             .expect("the evaluation returns a result");
+//         let log = self.play.take_event_log().await;
+//         if !result.errors.is_empty() {
+//             self.play.revert_to_soft_checkpoint(checkpoint).await;
+//         }
+//         Deployed { result, log }
+//     }
+//
+//     /// Replays a deploy from `root` with its play log on the replay runtime.
+//     async fn replay(
+//         &mut self,
+//         root: &Blake2b256Hash,
+//         spec: &DeploySpec,
+//         played: &Deployed,
+//     ) -> EvaluateResult {
+//         self.replay
+//             .reset(root)
+//             .await
+//             .expect("reset the replay runtime");
+//         self.replay
+//             .rig(played.log.clone())
+//             .await
+//             .expect("rig the replay runtime");
+//         let checkpoint = self.replay.create_soft_checkpoint().await;
+//         let result = self
+//             .replay
+//             .evaluate(
+//                 &spec.program,
+//                 Cost::create(DEPLOY_PHLO, DEPLOY_LABEL),
+//                 injections(&spec.injected),
+//                 Blake2b512Random::create_from_bytes(&spec.seed),
+//             )
+//             .await
+//             .expect("the replay evaluation returns a result");
+//         self.replay
+//             .check_replay_data()
+//             .await
+//             .expect("the replay consumes the complete play log");
+//         if !result.errors.is_empty() {
+//             self.replay.revert_to_soft_checkpoint(checkpoint).await;
+//         }
+//         result
+//     }
+//
+//     // The other methods of the legacy node are unchanged. They follow in `impl Node` below.
+// }
+
+/// A native play runtime over one in-memory store, with a funded deploy signature (decision 90,
+/// C6). Native replay certifies each deploy of the node from its pre-state.
 struct Node {
-    manager: InMemoryStoreManager,
     play: RhoRuntimeImpl,
-    replay: RhoRuntimeImpl,
+    /// The play space of the runtime. Its history repository is the pre-state of the next
+    /// deploy, as a validator holds it before replay.
+    space: PlaySpace,
+    /// The history repository of the store of the node. Its readers read the state at each
+    /// checkpoint root of the node.
     history: RhoHistory,
 }
 
 impl Node {
     async fn new() -> Node {
-        let mut manager = InMemoryStoreManager::new();
-        let (play, replay, history) = Node::runtimes(&mut manager).await;
+        let (play, space) = fresh_space_runtime_with(&mut Vec::new()).await;
+        play.cost.set_deploy_signature_funded(DEPLOY, funding());
+        let history = space.get_history_repository();
         Node {
-            manager,
             play,
-            replay,
+            space,
             history,
         }
     }
 
-    async fn runtimes(
-        manager: &mut InMemoryStoreManager,
-    ) -> (RhoRuntimeImpl, RhoRuntimeImpl, RhoHistory) {
-        let stores = manager
-            .r_space_stores()
-            .await
-            .expect("the in-memory RSpace stores");
-        let (play, replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
-        for runtime in [&play, &replay] {
-            runtime.cost.set_deploy_signature_funded(
-                DEPLOY_SIGNATURE,
-                Sig::Ground(FUNDING_SIGNATURE.to_vec()),
-            );
-        }
-        (play, replay, history)
-    }
-
-    /// New runtimes over the same stores, with empty hot stores: a process restart.
+    /// A new runtime over a spawned space of the same store, with an empty hot store: a process
+    /// restart, as `support::native::NativeChain::restarted` restarts a chain (decision 90, C6).
     async fn restart(&mut self) {
-        let (play, replay, history) = Node::runtimes(&mut self.manager).await;
+        let space = self
+            .space
+            .spawn()
+            .expect("spawn a space over the store of the node");
+        let play = space_runtime_with(space.clone(), &mut Vec::new()).await;
+        play.cost.set_deploy_signature_funded(DEPLOY, funding());
+        self.history = space.get_history_repository();
         self.play = play;
-        self.replay = replay;
-        self.history = history;
+        self.space = space;
     }
 
-    /// Evaluates a deploy on the play runtime as casper processes a user deploy. It takes a soft
-    /// checkpoint, evaluates, takes the event log, and reverts when the deploy failed.
+    /// Plays a deploy natively on the play runtime, as casper processes a user deploy. It takes
+    /// a soft checkpoint, evaluates and takes the event log. It reverts a failed deploy and
+    /// checkpoints a deploy that succeeds. Native replay then certifies the deploy from its
+    /// pre-state, as proposer self-certification does (decision 90, C6).
     async fn deploy(&mut self, spec: &DeploySpec) -> Deployed {
+        let history = self.space.get_history_repository();
         let checkpoint = self.play.create_soft_checkpoint().await;
         let result = self
             .play
-            .evaluate(
+            .evaluate_with_native_phlo(
                 &spec.program,
-                Cost::create(DEPLOY_PHLO, DEPLOY_LABEL),
                 injections(&spec.injected),
                 Blake2b512Random::create_from_bytes(&spec.seed),
+                None,
+                config(AMPLE_LIMIT),
             )
             .await
-            .expect("the evaluation returns a result");
+            .expect("native play returns a result");
         let log = self.play.take_event_log().await;
-        if !result.errors.is_empty() {
-            self.play.revert_to_soft_checkpoint(checkpoint).await;
-        }
-        Deployed { result, log }
+        let root = match result.errors.is_empty() {
+            true => Some(self.play.create_checkpoint().await.root),
+            false => {
+                self.play.revert_to_soft_checkpoint(checkpoint).await;
+                None
+            }
+        };
+        let certification = certify_record(history, spec, &result, &log).await;
+        assert_certified(
+            &format!("the deploy with the seed {}", hex::encode(&spec.seed)),
+            &result,
+            root.as_ref(),
+            &certification,
+        );
+        Deployed { result, log, root }
     }
 
-    /// Replays a deploy from `root` with its play log on the replay runtime.
+    /// Replays the deploy `played` of `spec` natively from `root`, with the committed evidence
+    /// and the event log of play (decision 90, C6). The replay consumes every journal row of
+    /// play, and it reaches the post-state root of a deploy that succeeds.
     async fn replay(
-        &mut self,
+        &self,
         root: &Blake2b256Hash,
         spec: &DeploySpec,
         played: &Deployed,
     ) -> EvaluateResult {
-        self.replay
+        let history = self
+            .history
+            .reset(root)
+            .expect("reset the history to the root of the replay");
+        let certification =
+            certify_record(Arc::new(history), spec, &played.result, &played.log).await;
+        assert_eq!(
+            certification.complete,
+            Ok(()),
+            "the replay consumes every journal row of play"
+        );
+        if let Some(post) = &played.root {
+            assert_eq!(
+                certification.root.as_ref(),
+                Ok(post),
+                "the replay reaches the post-state root of play"
+            );
+        }
+        certification.evaluation.expect("native replay evaluates")
+    }
+
+    /// Added by decision 90 (C6): a second runtime over the store of the node, reset to the root
+    /// `root`, as another node reads the state of the store.
+    async fn runtime_at(&self, root: &Blake2b256Hash) -> RhoRuntimeImpl {
+        let space = self
+            .space
+            .spawn()
+            .expect("spawn a space over the store of the node");
+        let mut runtime = space_runtime_with(space, &mut Vec::new()).await;
+        runtime
             .reset(root)
             .await
-            .expect("reset the replay runtime");
-        self.replay
-            .rig(played.log.clone())
-            .await
-            .expect("rig the replay runtime");
-        let checkpoint = self.replay.create_soft_checkpoint().await;
-        let result = self
-            .replay
-            .evaluate(
-                &spec.program,
-                Cost::create(DEPLOY_PHLO, DEPLOY_LABEL),
-                injections(&spec.injected),
-                Blake2b512Random::create_from_bytes(&spec.seed),
-            )
-            .await
-            .expect("the replay evaluation returns a result");
-        self.replay
-            .check_replay_data()
-            .await
-            .expect("the replay consumes the complete play log");
-        if !result.errors.is_empty() {
-            self.replay.revert_to_soft_checkpoint(checkpoint).await;
-        }
-        result
+            .expect("reset the second runtime to the root");
+        runtime
     }
 
     async fn checkpoint(&mut self) -> Blake2b256Hash { self.play.create_checkpoint().await.root }
@@ -5246,6 +5500,39 @@ impl MergeRig {
 
     fn index(&self, log: &[Event]) -> EventLogIndex {
         pre_state_index(&self.node.history, &self.root, log)
+    }
+
+    /// Added by decision 93 (step E, design R2): the serial state of the branches `runs`, in
+    /// order, from the pre-state. The record of each branch replays natively on the root before
+    /// it. The state is `None` when a record does not replay there. Each branch has one deploy,
+    /// whose spec comes with the branch.
+    ///
+    /// The operations of a deploy race (decision 93), so a fresh serial play can take another
+    /// allowed order than the branch took. The replay of the records of the branches keeps the
+    /// orders that the merge combines.
+    async fn replayed(&self, runs: &[(&DeploySpec, &BranchRun)]) -> Option<Blake2b256Hash> {
+        let mut root = self.root.clone();
+        for (spec, run) in runs {
+            let [deployed] = run.deployed.as_slice() else {
+                panic!("a replayed branch has {} deploys", run.deployed.len());
+            };
+            let history = self
+                .node
+                .history
+                .reset(&root)
+                .expect("reset the history to the root before the record");
+            let certification =
+                certify_record(Arc::new(history), spec, &deployed.result, &deployed.log).await;
+            match rejected(&certification) {
+                true => return None,
+                false => {
+                    root = certification
+                        .root
+                        .expect("a replay that native replay accepts exports its root");
+                }
+            }
+        }
+        Some(root)
     }
 
     fn counter_hash(&self, slot: usize) -> Blake2b256Hash {
@@ -5699,9 +5986,20 @@ fn prop_nonracing_queue_branches_serializable() {
             vec(any::<u8>(), 4),
         ),
         |(records, first, second, seed)| {
-            tokio_runtime().block_on(nonracing_queue_branches_serializable_case(
-                records, first, second, seed,
-            ))
+            // Changed by decision 111: each case runs on every racing runtime, and each run
+            // replays its own records. The legacy runtime of the case follows.
+            // tokio_runtime().block_on(nonracing_queue_branches_serializable_case(
+            //     records, first, second, seed,
+            // ))
+            for workers in RACING_WORKERS {
+                racing_runtime(workers).block_on(nonracing_queue_branches_serializable_case(
+                    records.clone(),
+                    first.clone(),
+                    second.clone(),
+                    seed.clone(),
+                ))?;
+            }
+            Ok(())
         },
     );
 }
@@ -5737,10 +6035,21 @@ async fn nonracing_queue_branches_serializable_case(
         (&first_run.post, &first_index),
         (&second_run.post, &second_index),
     ]);
-    let serial = rig.branch(&[first.clone(), second.clone()]).await;
-    let reversed = rig.branch(&[second, first]).await;
-    prop_assert_eq!(&merged, &serial.post);
-    prop_assert_eq!(&merged, &reversed.post);
+    // Changed by decision 93 (step E, design R2): the operations of a branch race on its queue,
+    // so a fresh serial play can take another allowed order. The serial state replays the record
+    // of each branch on the root before it. The legacy fresh serial plays follow.
+    // let serial = rig.branch(&[first.clone(), second.clone()]).await;
+    // let reversed = rig.branch(&[second, first]).await;
+    // prop_assert_eq!(&merged, &serial.post);
+    // prop_assert_eq!(&merged, &reversed.post);
+    let serial = rig
+        .replayed(&[(&first, &first_run), (&second, &second_run)])
+        .await;
+    let reversed = rig
+        .replayed(&[(&second, &second_run), (&first, &first_run)])
+        .await;
+    prop_assert_eq!(Some(&merged), serial.as_ref());
+    prop_assert_eq!(Some(&merged), reversed.as_ref());
     Ok(())
 }
 
@@ -6302,6 +6611,7 @@ fn prop_ordinary_channels_route_default() {
                 uri: Vec::new(),
                 injections: BTreeMap::new(),
                 locally_free: Vec::new(),
+                space_types: Vec::new(),
             };
             let bound = allocate_new_bindings(
                 &new,
@@ -6450,18 +6760,32 @@ async fn use_wrapper_restores_ctx_case(
     prop_assert_eq!(wrap_body(&None, body.clone()), body.clone());
     let wrapped = wrap_body(&Some(Arc::new(target.clone())), body.clone());
     prop_assert_eq!(&wrapped.locally_free, &body.locally_free);
-    let tuple = match wrapped.exprs.as_slice() {
-        [Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(tuple)),
-        }] => tuple.clone(),
-        other => panic!("the wrapper is one tuple: {other:?}"),
+    // Changed by decision 112: the wrapper is one use block field of the Par. The text before:
+    // ```
+    // let tuple = match wrapped.exprs.as_slice() {
+    //     [Expr {
+    //         expr_instance: Some(ExprInstance::ETupleBody(tuple)),
+    //     }] => tuple.clone(),
+    //     other => panic!("the wrapper is one tuple: {other:?}"),
+    // };
+    // prop_assert_eq!(
+    //     decode_process_tuple(&tuple),
+    //     Ok(ProcessConstruct::Use(UseBlock {
+    //         space: target.space.clone(),
+    //         body
+    //     }))
+    // );
+    // ```
+    let block = match wrapped.use_blocks.as_slice() {
+        [block] => block,
+        other => panic!("the wrapper is one use block: {other:?}"),
     };
     prop_assert_eq!(
-        decode_process_tuple(&tuple),
-        Ok(ProcessConstruct::Use(UseBlock {
+        decode_use_block(block),
+        Ok(UseBlock {
             space: target.space.clone(),
             body
-        }))
+        })
     );
     let mut node = Node::new().await;
     let space = node.create_space(&[&seed[..], b"-space"].concat()).await;
@@ -6743,32 +7067,49 @@ fn prop_aliases_map_to_family() {
     );
 }
 
-/// `qualifier_matrix`: the HashSet store takes the `seq` qualifier only, every other store
-/// takes every qualifier. In native execution every factory with a constructor schema accepts
-/// `default`, `temp` and `seq` (P7 steps 1 and 2, design v3 QT-1). Legacy execution refuses `seq`
-/// with `QualifierUnavailable` before the params, because the Seq rules need the job order of
-/// native execution (QT-5). An Array factory then also needs its `size` (F7, P5 design v3 A.10).
-/// Every family without a schema is unavailable. Since P7 the HashSet families have a schema, so
-/// a HashSet factory refuses `default` and `temp` with `BadConstructorArgument` (HS-6).
+// Changed by decision 90 (C6, step D): spaces run only in native execution, so gate 3 reads no
+// execution model, and no factory refuses `seq`. The legacy text follows.
+//
+// /// `qualifier_matrix`: the HashSet store takes the `seq` qualifier only, every other store
+// /// takes every qualifier. In native execution every factory with a constructor schema accepts
+// /// `default`, `temp` and `seq` (P7 steps 1 and 2, design v3 QT-1). Legacy execution refuses `seq`
+// /// with `QualifierUnavailable` before the params, because the Seq rules need the job order of
+// /// native execution (QT-5). An Array factory then also needs its `size` (F7, P5 design v3 A.10).
+// /// Every family without a schema is unavailable. Since P7 the HashSet families have a schema, so
+// /// a HashSet factory refuses `default` and `temp` with `BadConstructorArgument` (HS-6).
+/// `qualifier_matrix`: the HashSet store takes the `seq` qualifier only, and every other store
+/// takes every qualifier. A factory with a constructor schema accepts each qualifier that its
+/// store takes (P7 steps 1 and 2, design v3 QT-1). Gate 3 reads no execution model, because
+/// spaces run only in native execution (decision 90, C6). An Array factory then also needs its
+/// `size` (F7, P5 design v3 A.10). Every family without a schema is unavailable, and a HashSet
+/// factory refuses `default` and `temp` with `BadConstructorArgument` (HS-6).
 #[test]
 fn prop_qualifier_matrix() {
     check(
         pure_config(),
-        (arb_family(), arb_factory_qualifier(), any::<bool>()),
-        |(family, qualifier, native)| {
+        // Changed by decision 90 (C6, step D): the property draws no execution model.
+        // (arb_family(), arb_factory_qualifier(), any::<bool>()),
+        // |(family, qualifier, native)| {
+        (arb_family(), arb_factory_qualifier()),
+        |(family, qualifier)| {
             prop_assert_eq!(
                 family.supports_qualifier(qualifier),
                 family.outer != SpaceOuter::HashSet || qualifier == SpaceQualifier::Seq
             );
-            let execution = match native {
-                true => Execution::Native,
-                false => Execution::Legacy,
-            };
+            // Retired by decision 90 (C6, step D): gate 3 reads no execution model.
+            // let execution = match native {
+            //     true => Execution::Native,
+            //     false => Execution::Legacy,
+            // };
             let ctor = list(vec![gstring(qualifier.as_str())]);
-            let validated = FactoryConstructor::validate_in(family, &ctor, execution);
+            // Changed by decision 90 (C6, step D): gate 3 reads no execution model, so the property
+            // calls `validate`, as before P7 step 2.
+            // let validated = FactoryConstructor::validate_in(family, &ctor, execution);
+            let validated = FactoryConstructor::validate(family, &ctor);
             // Changed by P7 step 2 (design v3 QT-5): `seq` passes gate 3 in native execution.
             // let validated = FactoryConstructor::validate(family, &ctor);
-            let passes_gate_3 = qualifier != SpaceQualifier::Seq || native;
+            // Retired by decision 90 (C6, step D): no execution model refuses `seq`.
+            // let passes_gate_3 = qualifier != SpaceQualifier::Seq || native;
             // Changed by P7 step 3 (design v3 HS-7): a HashSet family has a schema, so the store
             // check of gate 3 decides before the execution check.
             // match (
@@ -6787,10 +7128,15 @@ fn prop_qualifier_matrix() {
                 );
                 return Ok(());
             }
+            // Changed by decision 90 (C6, step D): the cases read no execution model.
+            // match (
+            //     constructor_schema(family).is_some(),
+            //     required_params(family),
+            //     passes_gate_3,
+            // ) {
             match (
                 constructor_schema(family).is_some(),
                 required_params(family),
-                passes_gate_3,
             ) {
                 // Changed by P7 step 1 (design v3 QT-1): `temp` is accepted like `default`.
                 // (true, [], SpaceQualifier::Default) => {
@@ -6798,7 +7144,8 @@ fn prop_qualifier_matrix() {
                 //     prop_assert_eq!(validated.qualifier, SpaceQualifier::Default);
                 //     prop_assert_eq!(validated.durability(), Durability::Durable);
                 // }
-                (true, [], true) => {
+                // (true, [], true) => {
+                (true, []) => {
                     let validated =
                         validated.expect("a family with a schema accepts the qualifier");
                     prop_assert_eq!(validated.qualifier, qualifier);
@@ -6808,7 +7155,8 @@ fn prop_qualifier_matrix() {
                     };
                     prop_assert_eq!(validated.durability(), durability);
                 }
-                (true, [required, ..], true) => {
+                // (true, [required, ..], true) => {
+                (true, [required, ..]) => {
                     prop_assert_eq!(
                         validated,
                         Err(SpaceError::MissingParam {
@@ -6816,13 +7164,15 @@ fn prop_qualifier_matrix() {
                         })
                     )
                 }
-                (true, _, false) => prop_assert_eq!(
-                    validated,
-                    Err(SpaceError::QualifierUnavailable(
-                        SpaceQualifier::Seq.as_str().to_string()
-                    ))
-                ),
-                (false, _, _) => prop_assert_eq!(
+                // Retired by decision 90 (C6, step D): no factory refuses `seq`.
+                // (true, _, false) => prop_assert_eq!(
+                //     validated,
+                //     Err(SpaceError::QualifierUnavailable(
+                //         SpaceQualifier::Seq.as_str().to_string()
+                //     ))
+                // ),
+                // (false, _, _) => prop_assert_eq!(
+                (false, _) => prop_assert_eq!(
                     validated,
                     Err(SpaceError::FamilyUnavailable {
                         outer: family.outer.as_str().to_string(),
@@ -6993,8 +7343,23 @@ async fn sid_derivation_deterministic_case(
     prop_assert_eq!(published_space(&second.play, out).await, Some(created));
     let replayed = first.replay(&start, &spec, &played).await;
     prop_assert!(replayed.errors.is_empty(), "{:?}", replayed.errors);
-    prop_assert_eq!(replayed.cost.value, played.result.cost.value);
-    prop_assert_eq!(published_space(&first.replay, out).await, Some(created));
+    // Changed by decision 90 (C6): native replay uses the native phlo of play. The legacy cost
+    // check follows.
+    // prop_assert_eq!(replayed.cost.value, played.result.cost.value);
+    prop_assert_eq!(replayed.native_phlo_usage, played.result.native_phlo_usage);
+    // Changed by decision 90 (C6): the replay reaches the post-state root of play
+    // (`Node::replay`), so the state of the replay is the state at that root. The legacy read of
+    // the replay runtime follows.
+    // prop_assert_eq!(published_space(&first.replay, out).await, Some(created));
+    let replay_state = first
+        .runtime_at(
+            played
+                .root
+                .as_ref()
+                .expect("the factory deploy has a post-state root"),
+        )
+        .await;
+    prop_assert_eq!(published_space(&replay_state, out).await, Some(created));
     Ok(())
 }
 
@@ -7060,7 +7425,10 @@ async fn persistent_op_call_aborts_case(
     );
     let replayed = node.replay(&start, &persistent, &played).await;
     prop_assert_eq!(error_codes(&replayed.errors), codes);
-    prop_assert_eq!(replayed.cost.value, played.result.cost.value);
+    // Changed by decision 90 (C6): native replay uses the native phlo of play. The legacy cost
+    // check follows.
+    // prop_assert_eq!(replayed.cost.value, played.result.cost.value);
+    prop_assert_eq!(replayed.native_phlo_usage, played.result.native_phlo_usage);
     let plain = DeploySpec::new(
         with_binders(&[("x", ID_URI)], "x!(1)"),
         injected,
@@ -7111,7 +7479,10 @@ async fn space_already_exists_is_deterministic_abort_case(
         prop_assert_eq!(second.codes(), vec!["SpaceAlreadyExists".to_string()]);
         let replayed = node.replay(&root, &spec, &second).await;
         prop_assert_eq!(error_codes(&replayed.errors), second.codes());
-        prop_assert_eq!(replayed.cost.value, second.result.cost.value);
+        // Changed by decision 90 (C6): native replay uses the native phlo of play. The legacy
+        // cost check follows.
+        // prop_assert_eq!(replayed.cost.value, second.result.cost.value);
+        prop_assert_eq!(replayed.native_phlo_usage, second.result.native_phlo_usage);
         prop_assert_eq!(published_space(&node.play, out).await, Some(space));
         let config = node
             .play
@@ -7130,7 +7501,10 @@ async fn space_already_exists_is_deterministic_abort_case(
             .get_continuations(vec![gprivate(namespace::handle_channel(space))])
             .await;
         prop_assert_eq!(handles.len(), 1);
-        outcomes.push((space, second.codes(), second.result.cost.value));
+        // Changed by decision 90 (C6): the outcome of a node holds the native phlo of the abort.
+        // The legacy outcome follows.
+        // outcomes.push((space, second.codes(), second.result.cost.value));
+        outcomes.push((space, second.codes(), second.result.native_phlo_usage));
     }
     prop_assert_eq!(&outcomes[0], &outcomes[1]);
     Ok(())
@@ -7512,9 +7886,21 @@ fn prop_merged_queue_state_is_serial() {
             vec(any::<u8>(), 4),
         ),
         |(opened, layout, first, second, seed)| {
-            tokio_runtime().block_on(merged_queue_state_is_serial_case(
-                opened, layout, first, second, seed,
-            ))
+            // Changed by decision 111: each case runs on every racing runtime, and each run
+            // replays its own records. The legacy runtime of the case follows.
+            // tokio_runtime().block_on(merged_queue_state_is_serial_case(
+            //     opened, layout, first, second, seed,
+            // ))
+            for workers in RACING_WORKERS {
+                racing_runtime(workers).block_on(merged_queue_state_is_serial_case(
+                    opened.clone(),
+                    layout,
+                    first.clone(),
+                    second.clone(),
+                    seed.clone(),
+                ))?;
+            }
+            Ok(())
         },
     );
 }
@@ -7591,10 +7977,24 @@ async fn merged_queue_state_is_serial_case(
             (&first_run.post, &first_index),
             (&second_run.post, &second_index),
         ]);
-        let serial = rig.branch(&[first.clone(), second.clone()]).await;
-        let reversed = rig.branch(&[second, first]).await;
+        // Changed by decision 93 (step E, design R2): the operations of a branch race on its
+        // collections, so a fresh serial play can take another allowed order. The serial state
+        // replays the record of each branch on the root before it. The legacy fresh serial plays
+        // follow.
+        // let serial = rig.branch(&[first.clone(), second.clone()]).await;
+        // let reversed = rig.branch(&[second, first]).await;
+        // prop_assert!(
+        //     merged == serial.post || merged == reversed.post,
+        //     "the merge is not serial"
+        // );
+        let serial = rig
+            .replayed(&[(&first, &first_run), (&second, &second_run)])
+            .await;
+        let reversed = rig
+            .replayed(&[(&second, &second_run), (&first, &first_run)])
+            .await;
         prop_assert!(
-            merged == serial.post || merged == reversed.post,
+            serial.as_ref() == Some(&merged) || reversed.as_ref() == Some(&merged),
             "the merge is not serial"
         );
     }
@@ -7756,7 +8156,10 @@ async fn dangling_deterministic_error_case(
         );
         let replayed = node.replay(&start, &spec, &played).await;
         prop_assert_eq!(error_codes(&replayed.errors), played.codes());
-        prop_assert_eq!(replayed.cost.value, played.result.cost.value);
+        // Changed by decision 90 (C6): native replay uses the native phlo of play. The legacy
+        // cost check follows.
+        // prop_assert_eq!(replayed.cost.value, played.result.cost.value);
+        prop_assert_eq!(replayed.native_phlo_usage, played.result.native_phlo_usage);
         let key = CollectionKey::of_channel(&name).expect("a name has a key");
         let data = gprivate(namespace::data_channel(space, &key));
         prop_assert!(node.play.get_data(&data).await.is_empty());
@@ -7775,7 +8178,10 @@ async fn dangling_deterministic_error_case(
                 )]
             )]);
         }
-        results.push((played.codes(), played.result.cost.value));
+        // Changed by decision 90 (C6): the result of a node holds the native phlo of the deploy.
+        // The legacy result follows.
+        // results.push((played.codes(), played.result.cost.value));
+        results.push((played.codes(), played.result.native_phlo_usage));
     }
     prop_assert_eq!(&results[0], &results[1]);
     Ok(())
@@ -7944,13 +8350,25 @@ fn prop_handle_calls_merge_like_contracts() {
             vec(any::<u8>(), 4),
         ),
         |(records, first, second, join_control, seed)| {
-            tokio_runtime().block_on(handle_calls_merge_like_contracts_case(
-                records,
-                first,
-                second,
-                join_control,
-                seed,
-            ))
+            // Changed by decision 111: each case runs on every racing runtime, and each run
+            // replays its own records. The legacy runtime of the case follows.
+            // tokio_runtime().block_on(handle_calls_merge_like_contracts_case(
+            //     records,
+            //     first,
+            //     second,
+            //     join_control,
+            //     seed,
+            // ))
+            for workers in RACING_WORKERS {
+                racing_runtime(workers).block_on(handle_calls_merge_like_contracts_case(
+                    records.clone(),
+                    first.clone(),
+                    second.clone(),
+                    join_control,
+                    seed.clone(),
+                ))?;
+            }
+            Ok(())
         },
     );
 }
@@ -8006,10 +8424,22 @@ async fn handle_calls_merge_like_contracts_case(
                 (&first_run.post, &first_index),
                 (&second_run.post, &second_index),
             ]);
-            let serial = rig.branch(&[first.clone(), second.clone()]).await;
-            let reversed = rig.branch(&[second, first]).await;
-            prop_assert_eq!(&merged, &serial.post);
-            prop_assert_eq!(&merged, &reversed.post);
+            // Changed by decision 93 (step E, design R2): two produce calls of a branch on one
+            // queue race, so a fresh serial play can take another allowed order. The serial
+            // state replays the record of each branch on the root before it. The legacy fresh
+            // serial plays follow.
+            // let serial = rig.branch(&[first.clone(), second.clone()]).await;
+            // let reversed = rig.branch(&[second, first]).await;
+            // prop_assert_eq!(&merged, &serial.post);
+            // prop_assert_eq!(&merged, &reversed.post);
+            let serial = rig
+                .replayed(&[(&first, &first_run), (&second, &second_run)])
+                .await;
+            let reversed = rig
+                .replayed(&[(&second, &second_run), (&first, &first_run)])
+                .await;
+            prop_assert_eq!(Some(&merged), serial.as_ref());
+            prop_assert_eq!(Some(&merged), reversed.as_ref());
         }
     }
     Ok(())
@@ -8158,7 +8588,14 @@ fn params_par(params: ParamsKind) -> Option<Par> {
         ParamsKind::PersistentNumber => encoded(Vec::new(), vec![("persistent", gint(1))]),
         ParamsKind::Misspelled => encoded(Vec::new(), vec![("priorty", gint(1))]),
         ParamsKind::Positional => encoded(vec![gint(1)], Vec::new()),
-        ParamsKind::Malformed => Some(tuple(vec![Marker::Params.par(), gint(1), gint(2)])),
+        // Changed by decision 112: the params of a message travel in an EParams value, and a
+        // value that holds no parameter is the malformed form. The text before:
+        // ParamsKind::Malformed => Some(tuple(vec![Marker::Params.par(), gint(1), gint(2)])),
+        ParamsKind::Malformed => Some(reified_strategies::expr_par(
+            ExprInstance::EParamsBody(SendParams::default()),
+            Vec::new(),
+            false,
+        )),
     }
 }
 

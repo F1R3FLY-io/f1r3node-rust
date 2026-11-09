@@ -47,8 +47,12 @@ use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
 use rholang::rust::interpreter::reified::route::{classify_channel, ChannelClass};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::rho_runtime::{
+//     create_native_replay_env, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
+// };
 use rholang::rust::interpreter::rho_runtime::{
-    create_native_replay_env, create_rho_runtime, RhoRuntime, RhoRuntimeImpl,
+    create_native_replay_env, create_rho_runtime, RhoRuntime,
 };
 use rholang::rust::interpreter::spaces::namespace::{
     self, Durability, NameTail, NativeSpace, ReifiedId, SID_LEN,
@@ -60,9 +64,14 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::Event;
 use support::props::{check, runtime_config, tokio_runtime};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use support::session::{
+//     config_channel, counter_channel, error_codes, events_touching, injected, native, with_space,
+//     Injections, Session, Space,
+// };
 use support::session::{
-    config_channel, counter_channel, error_codes, events_touching, injected, native, with_space,
-    Injections, Session, Space,
+    config_channel, counter_channel, events_touching, injected, native, with_space, Injections,
+    Session, Space,
 };
 use tokio::sync::{Mutex, RwLock};
 
@@ -533,47 +542,57 @@ struct Program {
     codes: Vec<&'static str>,
 }
 
-/// Plays `program` as Casper plays a user deploy: a soft checkpoint, the evaluation, the event
-/// log, the revert of a failed deploy, and a checkpoint for the root.
-async fn play_program(
-    runtime: &mut RhoRuntimeImpl,
-    program: &Program,
-    injections: &Injections,
-) -> (EvaluateResult, Vec<Event>, String) {
-    let fallback = runtime.create_soft_checkpoint().await;
-    let result = evaluate(runtime, program, injections).await;
-    let log = runtime.take_event_log().await;
-    if !result.errors.is_empty() {
-        runtime.revert_to_soft_checkpoint(fallback).await;
-    }
-    let root = runtime.create_checkpoint().await.root;
-    (result, log, format!("{root:?}"))
-}
-
-async fn evaluate(
-    runtime: &RhoRuntimeImpl,
-    program: &Program,
-    injections: &Injections,
-) -> EvaluateResult {
-    runtime
-        .evaluate(
-            &program.source,
-            Cost::create(support::session::PHLO, program.label.to_string()),
-            injections.clone(),
-            Blake2b512Random::create_from_bytes(program.label.as_bytes()),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{}: no result: {error:?}", program.label))
-}
+// Changed by decision 90 (C6, decision 69): the session plays each program natively and
+// certifies it by native replay. The legacy play and evaluation follow.
+//
+// /// Plays `program` as Casper plays a user deploy: a soft checkpoint, the evaluation, the event
+// /// log, the revert of a failed deploy, and a checkpoint for the root.
+// async fn play_program(
+//     runtime: &mut RhoRuntimeImpl,
+//     program: &Program,
+//     injections: &Injections,
+// ) -> (EvaluateResult, Vec<Event>, String) {
+//     let fallback = runtime.create_soft_checkpoint().await;
+//     let result = evaluate(runtime, program, injections).await;
+//     let log = runtime.take_event_log().await;
+//     if !result.errors.is_empty() {
+//         runtime.revert_to_soft_checkpoint(fallback).await;
+//     }
+//     let root = runtime.create_checkpoint().await.root;
+//     (result, log, format!("{root:?}"))
+// }
+//
+// async fn evaluate(
+//     runtime: &RhoRuntimeImpl,
+//     program: &Program,
+//     injections: &Injections,
+// ) -> EvaluateResult {
+//     runtime
+//         .evaluate(
+//             &program.source,
+//             Cost::create(support::session::PHLO, program.label.to_string()),
+//             injections.clone(),
+//             Blake2b512Random::create_from_bytes(program.label.as_bytes()),
+//         )
+//         .await
+//         .unwrap_or_else(|error| panic!("{}: no result: {error:?}", program.label))
+// }
 
 /// Replay reproduces play for the deploys of the hooks: a `new` in a `use` block, a `new` with
-/// annotations, `gensym`, a rejected query and rejected params. Each replay has the codes, the
-/// cost and the root of its play, and it uses every event of the play log.
+/// annotations, `gensym`, a rejected query and rejected params. Native replay certifies each
+/// deploy (decision 90, C6). It gives the codes, the phlo usage and the root of play, and it
+/// uses every journal row of the deploy.
+// Changed by decision 90 (C6): the legacy doc follows.
+//
+// /// Replay reproduces play for the deploys of the hooks: a `new` in a `use` block, a `new` with
+// /// annotations, `gensym`, a rejected query and rejected params. Each replay has the codes, the
+// /// cost and the root of its play, and it uses every event of the play log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hooks_replay_equal() {
     let (mut session, _space) = queue_session().await;
-    session.play.create_checkpoint().await;
-    let start = session.play.get_root().await;
+    // Changed by decision 90 (C6): the session certifies each deploy from its own pre-state.
+    // session.play.create_checkpoint().await;
+    // let start = session.play.get_root().await;
     let injections = missing_injections();
     let programs = [
         Program {
@@ -610,57 +629,70 @@ async fn hooks_replay_equal() {
             codes: vec!["DanglingHandle"],
         },
     ];
-    let mut played = Vec::with_capacity(programs.len());
+    // Changed by decision 90 (C6): the session plays each program natively and certifies it by
+    // native replay, so no rigged replay runtime replays the logs. The legacy loops follow.
+    // let mut played = Vec::with_capacity(programs.len());
+    // for program in &programs {
+    //     let (result, log, root) = play_program(&mut session.play, program, &injections).await;
+    //     assert_eq!(
+    //         error_codes(&result.errors),
+    //         program.codes,
+    //         "{}: the play codes",
+    //         program.label
+    //     );
+    //     played.push((result.cost.value, log, root));
+    // }
+    // session
+    //     .replay
+    //     .reset(&start)
+    //     .await
+    //     .expect("reset the replay runtime to the start root");
+    // for (program, (cost, log, root)) in programs.iter().zip(played) {
+    //     session
+    //         .replay
+    //         .rig(log)
+    //         .await
+    //         .expect("rig the replay runtime with the play log");
+    //     let fallback = session.replay.create_soft_checkpoint().await;
+    //     let result = evaluate(&session.replay, program, &injections).await;
+    //     session.replay.take_event_log().await;
+    //     if !result.errors.is_empty() {
+    //         session.replay.revert_to_soft_checkpoint(fallback).await;
+    //     }
+    //     session
+    //         .replay
+    //         .check_replay_data()
+    //         .await
+    //         .unwrap_or_else(|error| {
+    //             panic!("{}: the replay leaves events: {error:?}", program.label)
+    //         });
+    //     assert_eq!(
+    //         error_codes(&result.errors),
+    //         program.codes,
+    //         "{}: the replay codes",
+    //         program.label
+    //     );
+    //     assert_eq!(
+    //         result.cost.value, cost,
+    //         "{}: the replay cost",
+    //         program.label
+    //     );
+    //     let replayed = session.replay.create_checkpoint().await.root;
+    //     assert_eq!(
+    //         format!("{replayed:?}"),
+    //         root,
+    //         "{}: the replay root",
+    //         program.label
+    //     );
+    // }
     for program in &programs {
-        let (result, log, root) = play_program(&mut session.play, program, &injections).await;
+        let deploy = session
+            .deploy_with(&program.source, program.label, &injections)
+            .await;
         assert_eq!(
-            error_codes(&result.errors),
+            deploy.codes(),
             program.codes,
             "{}: the play codes",
-            program.label
-        );
-        played.push((result.cost.value, log, root));
-    }
-    session
-        .replay
-        .reset(&start)
-        .await
-        .expect("reset the replay runtime to the start root");
-    for (program, (cost, log, root)) in programs.iter().zip(played) {
-        session
-            .replay
-            .rig(log)
-            .await
-            .expect("rig the replay runtime with the play log");
-        let fallback = session.replay.create_soft_checkpoint().await;
-        let result = evaluate(&session.replay, program, &injections).await;
-        session.replay.take_event_log().await;
-        if !result.errors.is_empty() {
-            session.replay.revert_to_soft_checkpoint(fallback).await;
-        }
-        session
-            .replay
-            .check_replay_data()
-            .await
-            .unwrap_or_else(|error| {
-                panic!("{}: the replay leaves events: {error:?}", program.label)
-            });
-        assert_eq!(
-            error_codes(&result.errors),
-            program.codes,
-            "{}: the replay codes",
-            program.label
-        );
-        assert_eq!(
-            result.cost.value, cost,
-            "{}: the replay cost",
-            program.label
-        );
-        let replayed = session.replay.create_checkpoint().await.root;
-        assert_eq!(
-            format!("{replayed:?}"),
-            root,
-            "{}: the replay root",
             program.label
         );
     }
@@ -955,12 +987,15 @@ async fn native_replay(
 #[tokio::test]
 async fn hooks_new_in_use_native_play_and_replay_agree() {
     let played = native_play(NATIVE_NEW_IN_USE).await;
-    assert_eq!(played.result.errors, vec![InterpreterError::ReduceError(
-        format!(
+    // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): `DanglingHandle` is
+    // a user failure, so it is a `SpaceUserError` with the text of its reduce error.
+    // assert_eq!(played.result.errors, vec![InterpreterError::ReduceError(
+    assert_eq!(played.result.errors, vec![
+        InterpreterError::SpaceUserError(format!(
             "reified:DanglingHandle: the space {} of this handle does not exist",
             "5a".repeat(32)
-        )
-    )]);
+        ))
+    ]);
     assert_eq!(
         played.space_channels, 0,
         "native play stored no record on a channel of a space"

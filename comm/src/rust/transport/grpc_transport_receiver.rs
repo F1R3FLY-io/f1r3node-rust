@@ -15,6 +15,7 @@ use tokio::sync::{Mutex, OnceCell};
 use tokio::task::JoinHandle;
 use tonic::{Request, Response, Status};
 
+use super::f1r3fly_server::F1r3flyConnectInfo;
 use super::limited_buffer::{FlumeLimitedBuffer, LimitedBufferObservable};
 use super::messages::{Send as CommSend, StreamMessage};
 use super::packet_ops::StreamCache;
@@ -63,6 +64,20 @@ fn circuit_breaker_with_params(streamed: &Streamed) -> Circuit {
 
         Circuit::closed()
     })
+}
+
+fn verify_stream_sender(streamed: &Streamed, sender_id: &[u8]) -> Circuit {
+    match &streamed.header {
+        Some(header) if header.sender.id.key.as_ref() != sender_id => {
+            tracing::warn!(
+                "Stream sender verification failed. Header: {}, certificate: {}",
+                hex::encode(&header.sender.id.key),
+                hex::encode(sender_id)
+            );
+            Circuit::opened(StreamError::sender_mismatch())
+        }
+        _ => Circuit::closed(),
+    }
 }
 
 /// Type alias for message buffers using Arc for shared access
@@ -384,6 +399,7 @@ impl TransportLayerService {
         stream: S,
         network_id: &str,
         max_size: u64,
+        sender_id: &[u8],
     ) -> Result<StreamMessage, StreamError>
     where
         S: futures::stream::Stream<Item = Chunk> + Unpin,
@@ -394,8 +410,15 @@ impl TransportLayerService {
         });
 
         // Use the public StreamHandler API
-        let result =
-            StreamHandler::handle_stream(stream, circuit_breaker_with_params, &self.cache).await;
+        let result = StreamHandler::handle_stream(
+            stream,
+            |streamed: &Streamed| match circuit_breaker_with_params(streamed) {
+                Circuit::Closed => verify_stream_sender(streamed, sender_id),
+                opened => opened,
+            },
+            &self.cache,
+        )
+        .await;
 
         // Clear thread-local parameters
         CIRCUIT_BREAKER_PARAMS.with(|params| {
@@ -500,10 +523,11 @@ impl TransportLayer for TransportLayerService {
         &self,
         request: Request<tonic::Streaming<Chunk>>,
     ) -> Result<Response<TlResponse>, Status> {
-        // Validate the request using SSL session server interceptor
-        // Note: For streaming requests, we validate the TLS session context
-        // The actual message content validation happens in StreamHandler
-        SslSessionServerInterceptor::validate_stream_request(&request)?;
+        let sender_id = SslSessionServerInterceptor::validate_stream_request(&request)?;
+        let connection = request
+            .extensions()
+            .get::<F1r3flyConnectInfo>()
+            .map(|info| (info.closer.clone(), info.tcp_info.remote_addr));
 
         let stream = request.into_inner();
 
@@ -518,13 +542,29 @@ impl TransportLayer for TransportLayerService {
 
         // Use our custom handler with parameters
         let stream_result = self
-            .handle_stream_with_params(chunk_stream, &self.network_id, self.max_stream_message_size)
+            .handle_stream_with_params(
+                chunk_stream,
+                &self.network_id,
+                self.max_stream_message_size,
+                &sender_id,
+            )
             .await;
 
         let response = match stream_result {
             Err(StreamError::Unexpected { ref error }) => {
                 tracing::error!(error = %error, "blob stream processing failed");
                 self.create_internal_server_error_response(error.clone())
+            }
+            Err(ref error @ StreamError::SenderMismatch) => {
+                if let Some((closer, remote_addr)) = &connection {
+                    tracing::warn!(
+                        peer = ?remote_addr,
+                        "Closing the connection: {}",
+                        error.message()
+                    );
+                    closer.close();
+                }
+                self.create_internal_server_error_response(error.message())
             }
             Err(ref error) => {
                 tracing::warn!("Stream error: {}", error.message());

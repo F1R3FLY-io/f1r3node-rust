@@ -10,8 +10,10 @@
 //! The machine is adapted from `feature/f1r3lang-mettail-only`
 //! (`e5102e945:models/src/rust/rholang/bincode_decoder.rs`). The adaptations
 //! for this branch:
+// Changed by decision 112: the oneof has two more arms. The text before:
+// //! 1. The variant indices are this branch's: 42 `ExprInstance` arms, with the
 //!
-//! 1. The variant indices are this branch's: 42 `ExprInstance` arms, with the
+//! 1. The variant indices are this branch's: 44 `ExprInstance` arms, with the
 //!    five numeric arms `GUint64`, `GInt32`, `GUint32`, `GUint16` and `GUint8`.
 //!    `GFloat32` is index 37 here (36 on that line). The indices are written
 //!    here, and [`expr_instance_variant_index`] maps every arm to its index
@@ -61,14 +63,23 @@
 //! one input byte, so the live values are bounded by the input length.
 //!
 //! ## Wire shapes that a hand-written decoder can get wrong
+// Changed by decision 112: two more maps take this wire shape. The text before:
+// ```
+// //! 1. `New.injections` is a `BTreeMap<String, Par>`: a count, then key and
+// //!    value pairs. A duplicate key overwrites, as `BTreeMap::insert` does.
+// ```
 //!
-//! 1. `New.injections` is a `BTreeMap<String, Par>`: a count, then key and
-//!    value pairs. A duplicate key overwrites, as `BTreeMap::insert` does.
+//! 1. `New.injections`, `SendParams.named` and `QuerySpec.named` are each a
+//!    `BTreeMap<String, Par>`: a count, then key and value pairs. A duplicate
+//!    key overwrites, as `BTreeMap::insert` does.
 //! 2. The 13 `locally_free` fields are written as empty bytes by
 //!    `serialize_as_empty_bytes`, but read back at their real length. The
 //!    decoder reads the real length.
 //! 3. `ConnNotBody` holds a bare `Par` with no `Option` tag.
 //! 4. `ETuple` has no `remainder` field, unlike `EList`, `ESet` and `EMap`.
+//! 5. Added by G3 (DR-135): `CostRegion` holds its `price` (`u64`) and the
+//!    `Option` of its `caller` after its signature. The caller's signature
+//!    can quote a `Par`, so the caller is a machine type (SA3).
 //!
 //! ## The rejection set
 //!
@@ -98,14 +109,18 @@ use crate::rhoapi::expr::ExprInstance;
 use crate::rhoapi::g_unforgeable::UnfInstance;
 use crate::rhoapi::tagged_continuation::TaggedCont;
 use crate::rhoapi::var::{VarInstance, WildcardMsg};
+// Changed by G3 (DR-135): the machine also builds the caller of a region.
+// use crate::rhoapi::{
+//     BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
 use crate::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
-    CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
-    EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GAuthorityId,
-    GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate, GSysAuthToken,
-    GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match, MatchCase, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostCaller, CostRegion,
+    CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EFree, EGt,
+    EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq,
+    ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr,
+    GAuthorityId, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate,
+    GSysAuthToken, GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match,
+    MatchCase, New, Par, ParWithRandom, QuerySpec, Receive, ReceiveBind, Send, SendParams,
+    SpaceAnnotation, TaggedContinuation, UseBlock, Var, VarRef,
 };
 use crate::rust::rholang::dismantle::dismantle_terms;
 
@@ -159,7 +174,11 @@ pub const EX_G_INT32: u32 = 38;
 pub const EX_G_UINT32: u32 = 39;
 pub const EX_G_UINT16: u32 = 40;
 pub const EX_G_UINT8: u32 = 41;
-pub const EXPR_INSTANCE_VARIANT_COUNT: u32 = 42;
+pub const EX_E_FREE_BODY: u32 = 42;
+pub const EX_E_PARAMS_BODY: u32 = 43;
+// Changed by decision 112: the oneof has two more arms. The text before:
+// pub const EXPR_INSTANCE_VARIANT_COUNT: u32 = 42;
+pub const EXPR_INSTANCE_VARIANT_COUNT: u32 = 44;
 
 /// The `ConnectiveInstance` arms in declaration order.
 pub const CN_CONN_AND_BODY: u32 = 0;
@@ -237,6 +256,8 @@ pub fn expr_instance_variant_index(instance: &ExprInstance) -> u32 {
         ExprInstance::GUint32(_) => EX_G_UINT32,
         ExprInstance::GUint16(_) => EX_G_UINT16,
         ExprInstance::GUint8(_) => EX_G_UINT8,
+        ExprInstance::EFreeBody(_) => EX_E_FREE_BODY,
+        ExprInstance::EParamsBody(_) => EX_E_PARAMS_BODY,
     }
 }
 
@@ -540,6 +561,15 @@ enum Kind {
     CostSignedTerm,
     CostStack,
     CostRegion,
+    UseBlock,
+    SpaceAnnotation,
+}
+
+/// The message that the shared params ops build.
+#[derive(Clone, Copy, Debug)]
+enum ParamsKind {
+    Send,
+    Query,
 }
 
 impl Kind {
@@ -562,6 +592,8 @@ impl Kind {
             Kind::CostSignedTerm => Op::CostSignedTermStart,
             Kind::CostStack => Op::CostStackStart,
             Kind::CostRegion => Op::CostRegionStart,
+            Kind::UseBlock => Op::UseBlockStart,
+            Kind::SpaceAnnotation => Op::SpaceAnnotationStart,
         }
     }
 }
@@ -581,7 +613,9 @@ enum Op {
 
     // ---- Par: sends, receives, news, exprs, matches, unforgeables, bundles,
     //           connectives, conditionals, locally_free, connective_used,
-    //           cost_signed_terms, cost_stacks
+    // Changed by decision 112: the Par record ends with `use_blocks`. The text before:
+    // //           cost_signed_terms, cost_stacks
+    //           cost_signed_terms, cost_stacks, use_blocks
     ParStart,
     /// `field` indexes the eight repeated `Par`-bearing fields in declaration
     /// order. `unforgeables`, a bounded leaf sequence, is read inline just
@@ -591,9 +625,22 @@ enum Op {
     },
     ParCostSigned,
     ParCostStacks,
+    ParUseBlocks,
     ParBuild,
 
-    // ---- Send: chan, data, persistent, locally_free, connective_used
+    // ---- UseBlock: space, body
+    UseBlockStart,
+    UseBlockBody {
+        has_space: bool,
+    },
+    UseBlockBuild {
+        has_space: bool,
+        has_body: bool,
+    },
+
+    // Changed by decision 112: the Send record ends with `params`. The text before:
+    // // ---- Send: chan, data, persistent, locally_free, connective_used
+    // ---- Send: chan, data, persistent, locally_free, connective_used, params
     SendStart,
     SendData {
         has_chan: bool,
@@ -601,6 +648,29 @@ enum Op {
     SendBuild {
         has_chan: bool,
         n_data: usize,
+    },
+    SendFinish {
+        has_chan: bool,
+        n_data: usize,
+        has_params: bool,
+    },
+
+    // ---- SendParams and QuerySpec: positional or payload, then named
+    ParamsStart {
+        kind: ParamsKind,
+    },
+    ParamsNamed {
+        kind: ParamsKind,
+        n_positional: usize,
+    },
+    /// One named entry: read the key, then descend for the value.
+    ParamsEntry {
+        remaining: usize,
+    },
+    ParamsBuild {
+        kind: ParamsKind,
+        n_positional: usize,
+        n_named: usize,
     },
 
     // ---- Receive: binds, body, persistent, peek, bind_count, locally_free,
@@ -619,7 +689,9 @@ enum Op {
         has_condition: bool,
     },
 
-    // ---- ReceiveBind: patterns, source, remainder, free_count, cost_signature
+    // Changed by decision 112: the ReceiveBind record ends with `query_spec`. The text before:
+    // // ---- ReceiveBind: patterns, source, remainder, free_count, cost_signature
+    // ---- ReceiveBind: patterns, source, remainder, free_count, cost_signature, query_spec
     BindStart,
     BindSource {
         n_patterns: usize,
@@ -632,6 +704,12 @@ enum Op {
         n_patterns: usize,
         has_source: bool,
         has_signature: bool,
+    },
+    BindQueryBuild {
+        n_patterns: usize,
+        has_source: bool,
+        has_signature: bool,
+        has_query: bool,
     },
 
     // ---- the cost family
@@ -646,6 +724,8 @@ enum Op {
     CostSignedTermSignature {
         has_body: bool,
     },
+    // Added by G3 (DR-135, S3b): after its signature, a signed term reads its
+    // held price, an Option tag and then a u64.
     CostSignedTermBuild {
         has_body: bool,
         has_signature: bool,
@@ -655,7 +735,19 @@ enum Op {
         count: usize,
     },
     CostRegionStart,
+    // Changed by G3 (DR-135): after its signature, a region reads its price
+    // and the tag of its caller (SA3).
     CostRegionBuild {
+        has_signature: bool,
+    },
+    /// Added by G3 (DR-135): closes a region whose caller the machine decoded
+    /// after the region's price. The price waits on `region_prices`.
+    CostRegionFinish {
+        has_signature: bool,
+    },
+    /// Added by G3 (DR-135): `CostCaller`: signature, price.
+    CostCallerStart,
+    CostCallerBuild {
         has_signature: bool,
     },
     CostAuthorityStart,
@@ -663,7 +755,9 @@ enum Op {
         count: usize,
     },
 
-    // ---- New: bind_count, p, uri, injections, locally_free
+    // Changed by decision 112: the New record ends with `space_types`. The text before:
+    // // ---- New: bind_count, p, uri, injections, locally_free
+    // ---- New: bind_count, p, uri, injections, locally_free, space_types
     NewStart,
     NewAfterP {
         has_p: bool,
@@ -675,6 +769,17 @@ enum Op {
     NewBuild {
         has_p: bool,
         n_entries: usize,
+    },
+    NewFinish {
+        has_p: bool,
+        n_entries: usize,
+        n_types: usize,
+    },
+
+    // ---- SpaceAnnotation: space
+    SpaceAnnotationStart,
+    SpaceAnnotationBuild {
+        has_space: bool,
     },
 
     // ---- Match: target, cases, locally_free, connective_used
@@ -764,6 +869,12 @@ enum Op {
     ExprZipperBuild {
         has_pathmap: bool,
     },
+    /// `EFree`: theory (on `method_names`), args.
+    ExprFreeBuild {
+        n_args: usize,
+    },
+    /// Wraps the `SendParams` on top of the `send_params` stack into an `Expr`.
+    ExprParamsBuild,
 
     // ---- EPathMap: ps, locally_free, connective_used, remainder
     PathmapStart,
@@ -861,6 +972,14 @@ struct ParFrame {
     connective_used: bool,
     n_cost_signed_terms: usize,
     n_cost_stacks: usize,
+    n_use_blocks: usize,
+}
+
+/// `Send`'s three scalars, read before `params`.
+struct SendTail {
+    persistent: bool,
+    locally_free: Vec<u8>,
+    connective_used: bool,
 }
 
 struct BindTail {
@@ -883,6 +1002,7 @@ struct NewFrame {
     bind_count: i32,
     uri: Vec<String>,
     keys: Vec<String>,
+    locally_free: Vec<u8>,
 }
 
 // ===========================================================================
@@ -901,7 +1021,13 @@ struct Machine<'a> {
     cost_signatures: Vec<CostSignature>,
     cost_signed_terms: Vec<CostSignedTerm>,
     cost_stacks: Vec<CostStack>,
+    use_blocks: Vec<UseBlock>,
+    send_params: Vec<SendParams>,
+    bind_queries: Vec<QuerySpec>,
+    space_annotations: Vec<SpaceAnnotation>,
     cost_regions: Vec<CostRegion>,
+    /// Added by G3 (DR-135): the callers of the regions (A1).
+    cost_callers: Vec<CostCaller>,
     cost_authorities: Vec<CostAuthority>,
     news: Vec<New>,
     matches: Vec<Match>,
@@ -921,7 +1047,12 @@ struct Machine<'a> {
     // side frames
     par_frames: Vec<ParFrame>,
     bind_tails: Vec<BindTail>,
+    send_tails: Vec<SendTail>,
+    param_keys: Vec<String>,
     region_ids: Vec<Vec<u8>>,
+    /// Added by G3 (DR-135): the price of a region whose caller is still in
+    /// decode.
+    region_prices: Vec<u64>,
     receive_tails: Vec<ReceiveTail>,
     new_frames: Vec<NewFrame>,
     method_names: Vec<String>,
@@ -940,6 +1071,16 @@ fn take_one<T>(stack: &mut Vec<T>, what: &'static str) -> Res<T> {
     stack
         .pop()
         .ok_or(ColdStoreDecodeError::MachineInvariant(what))
+}
+
+/// Added by G3 (DR-135): moves the signatures of a partly decoded region, its
+/// own and its caller's, into the teardown list. Either can quote a deep
+/// `Par`, so neither may leave through the recursive derived `Drop`.
+fn release_region(region: CostRegion, signatures: &mut Vec<CostSignature>) {
+    signatures.extend(region.signature);
+    if let Some(caller) = region.caller {
+        signatures.extend(caller.signature);
+    }
 }
 
 /// Pops a `Par` when `present`, and gives `None` otherwise.
@@ -974,7 +1115,13 @@ impl<'a> Machine<'a> {
             cost_signatures: Vec::new(),
             cost_signed_terms: Vec::new(),
             cost_stacks: Vec::new(),
+            use_blocks: Vec::new(),
+            send_params: Vec::new(),
+            bind_queries: Vec::new(),
+            space_annotations: Vec::new(),
             cost_regions: Vec::new(),
+            // Added by G3 (DR-135).
+            cost_callers: Vec::new(),
             cost_authorities: Vec::new(),
             news: Vec::new(),
             matches: Vec::new(),
@@ -992,7 +1139,11 @@ impl<'a> Machine<'a> {
             tagged_continuations: Vec::new(),
             par_frames: Vec::new(),
             bind_tails: Vec::new(),
+            send_tails: Vec::new(),
+            param_keys: Vec::new(),
             region_ids: Vec::new(),
+            // Added by G3 (DR-135).
+            region_prices: Vec::new(),
             receive_tails: Vec::new(),
             new_frames: Vec::new(),
             method_names: Vec::new(),
@@ -1054,7 +1205,13 @@ impl<'a> Machine<'a> {
             ("cost_signatures", self.cost_signatures.len(), false),
             ("cost_signed_terms", self.cost_signed_terms.len(), false),
             ("cost_stacks", self.cost_stacks.len(), false),
+            ("use_blocks", self.use_blocks.len(), false),
+            ("send_params", self.send_params.len(), false),
+            ("bind_queries", self.bind_queries.len(), false),
+            ("space_annotations", self.space_annotations.len(), false),
             ("cost_regions", self.cost_regions.len(), false),
+            // Added by G3 (DR-135).
+            ("cost_callers", self.cost_callers.len(), false),
             ("cost_authorities", self.cost_authorities.len(), false),
             ("news", self.news.len(), false),
             ("matches", self.matches.len(), false),
@@ -1096,12 +1253,20 @@ impl<'a> Machine<'a> {
                 return Err(ColdStoreDecodeError::MachineInvariant(name));
             }
         }
+        // Changed by G3 (DR-135): the region prices are a side frame too.
+        // if !self.par_frames.is_empty()
+        //     || !self.bind_tails.is_empty()
+        //     || !self.region_ids.is_empty()
+        //     || !self.receive_tails.is_empty()
         if !self.par_frames.is_empty()
             || !self.bind_tails.is_empty()
             || !self.region_ids.is_empty()
+            || !self.region_prices.is_empty()
             || !self.receive_tails.is_empty()
             || !self.new_frames.is_empty()
             || !self.method_names.is_empty()
+            || !self.send_tails.is_empty()
+            || !self.param_keys.is_empty()
         {
             return Err(ColdStoreDecodeError::MachineInvariant(
                 "side frame not drained at end of run",
@@ -1172,14 +1337,25 @@ impl<'a> Machine<'a> {
             Op::ParCostStacks => {
                 let count = self.r.len()?;
                 self.par_frame()?.n_cost_stacks = count;
-                self.ops.push(Op::ParBuild);
+                // Changed by decision 112: the use blocks follow the cost stacks in the
+                // stream. The text before:
+                // self.ops.push(Op::ParBuild);
+                self.ops.push(Op::ParUseBlocks);
                 self.repeat(Kind::CostStack, count);
+            }
+            Op::ParUseBlocks => {
+                let count = self.r.len()?;
+                self.par_frame()?.n_use_blocks = count;
+                self.ops.push(Op::ParBuild);
+                self.repeat(Kind::UseBlock, count);
             }
             Op::ParBuild => {
                 let frame = self
                     .par_frames
                     .pop()
                     .ok_or(ColdStoreDecodeError::MachineInvariant("Par frame"))?;
+                let use_blocks =
+                    take_n(&mut self.use_blocks, frame.n_use_blocks, "Par.use_blocks")?;
                 let cost_stacks = take_n(
                     &mut self.cost_stacks,
                     frame.n_cost_stacks,
@@ -1214,7 +1390,33 @@ impl<'a> Machine<'a> {
                     connective_used: frame.connective_used,
                     cost_signed_terms,
                     cost_stacks,
+                    use_blocks,
                 });
+            }
+
+            // ---------------------------------------------------------------
+            // UseBlock
+            // ---------------------------------------------------------------
+            Op::UseBlockStart => {
+                let has_space = self.r.option_tag()?;
+                self.ops.push(Op::UseBlockBody { has_space });
+                self.opt_par_child(has_space);
+            }
+            Op::UseBlockBody { has_space } => {
+                let has_body = self.r.option_tag()?;
+                self.ops.push(Op::UseBlockBuild {
+                    has_space,
+                    has_body,
+                });
+                self.opt_par_child(has_body);
+            }
+            Op::UseBlockBuild {
+                has_space,
+                has_body,
+            } => {
+                let body = take_opt_par(&mut self.pars, has_body, "UseBlock.body")?;
+                let space = take_opt_par(&mut self.pars, has_space, "UseBlock.space")?;
+                self.use_blocks.push(UseBlock { space, body });
             }
 
             // ---------------------------------------------------------------
@@ -1230,10 +1432,58 @@ impl<'a> Machine<'a> {
                 self.ops.push(Op::SendBuild { has_chan, n_data });
                 self.repeat(Kind::Par, n_data);
             }
+            // Changed by decision 112: `params` follows the scalars in the stream, so the
+            // scalars wait on a side stack while the params decode. The text before:
+            // ```
+            // Op::SendBuild { has_chan, n_data } => {
+            //     let persistent = self.r.bool()?;
+            //     let locally_free = self.r.byte_seq()?;
+            //     let connective_used = self.r.bool()?;
+            //     // `chan` was pushed before the `data` elements, so it comes off
+            //     // after them.
+            //     let data = take_n(&mut self.pars, n_data, "Send.data")?;
+            //     let chan = take_opt_par(&mut self.pars, has_chan, "Send.chan")?;
+            //     self.sends.push(Send {
+            //         chan,
+            //         data,
+            //         persistent,
+            //         locally_free,
+            //         connective_used,
+            //     });
+            // }
+            // ```
             Op::SendBuild { has_chan, n_data } => {
                 let persistent = self.r.bool()?;
                 let locally_free = self.r.byte_seq()?;
                 let connective_used = self.r.bool()?;
+                let has_params = self.r.option_tag()?;
+                self.send_tails.push(SendTail {
+                    persistent,
+                    locally_free,
+                    connective_used,
+                });
+                self.ops.push(Op::SendFinish {
+                    has_chan,
+                    n_data,
+                    has_params,
+                });
+                if has_params {
+                    self.ops.push(Op::ParamsStart {
+                        kind: ParamsKind::Send,
+                    });
+                }
+            }
+            Op::SendFinish {
+                has_chan,
+                n_data,
+                has_params,
+            } => {
+                let tail = take_one(&mut self.send_tails, "Send tail")?;
+                let params = if has_params {
+                    Some(take_one(&mut self.send_params, "Send.params")?)
+                } else {
+                    None
+                };
                 // `chan` was pushed before the `data` elements, so it comes off
                 // after them.
                 let data = take_n(&mut self.pars, n_data, "Send.data")?;
@@ -1241,10 +1491,64 @@ impl<'a> Machine<'a> {
                 self.sends.push(Send {
                     chan,
                     data,
-                    persistent,
-                    locally_free,
-                    connective_used,
+                    persistent: tail.persistent,
+                    locally_free: tail.locally_free,
+                    connective_used: tail.connective_used,
+                    params,
                 });
+            }
+
+            // ---------------------------------------------------------------
+            // SendParams and QuerySpec: the shared params program
+            // ---------------------------------------------------------------
+            Op::ParamsStart { kind } => {
+                let n_positional = self.r.len()?;
+                self.ops.push(Op::ParamsNamed { kind, n_positional });
+                self.repeat(Kind::Par, n_positional);
+            }
+            Op::ParamsNamed { kind, n_positional } => {
+                let n_named = self.r.len()?;
+                self.ops.push(Op::ParamsBuild {
+                    kind,
+                    n_positional,
+                    n_named,
+                });
+                self.ops.push(Op::ParamsEntry { remaining: n_named });
+            }
+            Op::ParamsEntry { remaining } => {
+                // The keys interleave with arbitrarily deep values, as in `NewEntry`.
+                if remaining > 0 {
+                    let key = self.r.string()?;
+                    self.param_keys.push(key);
+                    self.ops.push(Op::ParamsEntry {
+                        remaining: remaining - 1,
+                    });
+                    self.ops.push(Op::ParStart);
+                }
+            }
+            Op::ParamsBuild {
+                kind,
+                n_positional,
+                n_named,
+            } => {
+                // The named values were pushed after the positional ones, so they come
+                // off first.
+                let values = take_n(&mut self.pars, n_named, "params named values")?;
+                let positional = take_n(&mut self.pars, n_positional, "params positional")?;
+                let keys = take_n(&mut self.param_keys, n_named, "params keys")?;
+                // `BTreeMap::insert` in stream order: a duplicate key overwrites, as
+                // serde's map visitor does, and the stream need not be sorted.
+                let mut named = BTreeMap::new();
+                for (key, value) in keys.into_iter().zip(values) {
+                    named.insert(key, value);
+                }
+                match kind {
+                    ParamsKind::Send => self.send_params.push(SendParams { positional, named }),
+                    ParamsKind::Query => self.bind_queries.push(QuerySpec {
+                        payload: positional,
+                        named,
+                    }),
+                }
             }
 
             // ---------------------------------------------------------------
@@ -1337,11 +1641,65 @@ impl<'a> Machine<'a> {
                     self.ops.push(Op::CostSignatureStart);
                 }
             }
+            // Changed by decision 112: `query_spec` follows the cost signature in the stream.
+            // This op reads its tag and schedules the query, and the body moves to
+            // `Op::BindQueryBuild`. The text before:
+            // ```
+            // Op::BindCostBuild {
+            //     n_patterns,
+            //     has_source,
+            //     has_signature,
+            // } => {
+            //     let cost_signature = if has_signature {
+            //         Some(take_one(
+            //             &mut self.cost_signatures,
+            //             "ReceiveBind.cost_signature",
+            //         )?)
+            //     } else {
+            //         None
+            //     };
+            //     let tail = take_one(&mut self.bind_tails, "ReceiveBind tail")?;
+            //     // `source` was pushed after the patterns, so it comes off first.
+            //     let source = take_opt_par(&mut self.pars, has_source, "ReceiveBind.source")?;
+            //     let patterns = take_n(&mut self.pars, n_patterns, "ReceiveBind.patterns")?;
+            //     self.binds.push(ReceiveBind {
+            //         patterns,
+            //         source,
+            //         remainder: tail.remainder,
+            //         free_count: tail.free_count,
+            //         cost_signature,
+            //     });
+            // }
+            // ```
             Op::BindCostBuild {
                 n_patterns,
                 has_source,
                 has_signature,
             } => {
+                let has_query = self.r.option_tag()?;
+                self.ops.push(Op::BindQueryBuild {
+                    n_patterns,
+                    has_source,
+                    has_signature,
+                    has_query,
+                });
+                if has_query {
+                    self.ops.push(Op::ParamsStart {
+                        kind: ParamsKind::Query,
+                    });
+                }
+            }
+            Op::BindQueryBuild {
+                n_patterns,
+                has_source,
+                has_signature,
+                has_query,
+            } => {
+                let query_spec = if has_query {
+                    Some(take_one(&mut self.bind_queries, "ReceiveBind.query_spec")?)
+                } else {
+                    None
+                };
                 let cost_signature = if has_signature {
                     Some(take_one(
                         &mut self.cost_signatures,
@@ -1360,6 +1718,7 @@ impl<'a> Machine<'a> {
                     remainder: tail.remainder,
                     free_count: tail.free_count,
                     cost_signature,
+                    query_spec,
                 });
             }
 
@@ -1435,10 +1794,36 @@ impl<'a> Machine<'a> {
                     self.ops.push(Op::CostSignatureStart);
                 }
             }
+            // Changed by G3 (DR-135, S3b): the held price follows the
+            // signature in the stream, an Option tag and then a u64. It is
+            // read before the signature and the body leave their stacks, so a
+            // truncated input never drops a deep term through the recursive
+            // derived `Drop`, and the teardown of the machine stays iterative.
+            // Op::CostSignedTermBuild {
+            //     has_body,
+            //     has_signature,
+            // } => {
+            //     let signature = if has_signature {
+            //         Some(take_one(
+            //             &mut self.cost_signatures,
+            //             "CostSignedTerm.signature",
+            //         )?)
+            //     } else {
+            //         None
+            //     };
+            //     let body = take_opt_par(&mut self.pars, has_body, "CostSignedTerm.body")?;
+            //     self.cost_signed_terms
+            //         .push(CostSignedTerm { body, signature });
+            // }
             Op::CostSignedTermBuild {
                 has_body,
                 has_signature,
             } => {
+                let held_price = if self.r.option_tag()? {
+                    Some(self.r.u64()?)
+                } else {
+                    None
+                };
                 let signature = if has_signature {
                     Some(take_one(
                         &mut self.cost_signatures,
@@ -1448,8 +1833,11 @@ impl<'a> Machine<'a> {
                     None
                 };
                 let body = take_opt_par(&mut self.pars, has_body, "CostSignedTerm.body")?;
-                self.cost_signed_terms
-                    .push(CostSignedTerm { body, signature });
+                self.cost_signed_terms.push(CostSignedTerm {
+                    body,
+                    signature,
+                    held_price,
+                });
             }
             Op::CostStackStart => {
                 let count = self.r.len()?;
@@ -1469,17 +1857,56 @@ impl<'a> Machine<'a> {
                     self.ops.push(Op::CostSignatureStart);
                 }
             }
+            // Changed by G3 (DR-135): the price and the caller tag follow the
+            // signature in the stream (SA3). A region without a caller closes
+            // here. A region with a caller first decodes the caller, whose
+            // signature lands above the region's own signature on
+            // `cost_signatures`, so `CostCallerBuild` takes the caller's.
+            // Op::CostRegionBuild { has_signature } => {
+            //     let signature = if has_signature {
+            //         Some(take_one(&mut self.cost_signatures, "CostRegion.signature")?)
+            //     } else {
+            //         None
+            //     };
+            //     let instance_id = take_one(&mut self.region_ids, "CostRegion.instance_id")?;
+            //     self.cost_regions.push(CostRegion {
+            //         instance_id,
+            //         signature,
+            //     });
+            // }
             Op::CostRegionBuild { has_signature } => {
+                let price = self.r.u64()?;
+                if self.r.option_tag()? {
+                    self.region_prices.push(price);
+                    self.ops.push(Op::CostRegionFinish { has_signature });
+                    self.ops.push(Op::CostCallerStart);
+                } else {
+                    self.push_region(has_signature, price, None)?;
+                }
+            }
+            Op::CostRegionFinish { has_signature } => {
+                let caller = take_one(&mut self.cost_callers, "CostRegion.caller")?;
+                let price = take_one(&mut self.region_prices, "CostRegion.price")?;
+                self.push_region(has_signature, price, Some(caller))?;
+            }
+            Op::CostCallerStart => {
+                let has_signature = self.r.option_tag()?;
+                self.ops.push(Op::CostCallerBuild { has_signature });
+                if has_signature {
+                    self.ops.push(Op::CostSignatureStart);
+                }
+            }
+            Op::CostCallerBuild { has_signature } => {
+                // The price is read before the signature leaves its stack, so
+                // a truncated input never drops a deep signature through the
+                // recursive derived `Drop`.
+                let price = self.r.u64()?;
                 let signature = if has_signature {
-                    Some(take_one(&mut self.cost_signatures, "CostRegion.signature")?)
+                    Some(take_one(&mut self.cost_signatures, "CostCaller.signature")?)
                 } else {
                     None
                 };
-                let instance_id = take_one(&mut self.region_ids, "CostRegion.instance_id")?;
-                self.cost_regions.push(CostRegion {
-                    instance_id,
-                    signature,
-                });
+                self.cost_callers.push(CostCaller { signature, price });
             }
             Op::CostAuthorityStart => {
                 let count = self.r.len()?;
@@ -1501,6 +1928,7 @@ impl<'a> Machine<'a> {
                     bind_count,
                     uri: Vec::new(),
                     keys: Vec::new(),
+                    locally_free: Vec::new(),
                 });
                 self.ops.push(Op::NewAfterP { has_p });
                 self.opt_par_child(has_p);
@@ -1530,12 +1958,55 @@ impl<'a> Machine<'a> {
                     self.ops.push(Op::ParStart);
                 }
             }
+            // Changed by decision 112: `space_types` follows `locally_free` in the stream, so
+            // the build reads the count, schedules the annotations, and the body moves to
+            // `Op::NewFinish`. The text before:
+            // ```
+            // Op::NewBuild { has_p, n_entries } => {
+            //     let locally_free = self.r.byte_seq()?;
+            //     let frame = self
+            //         .new_frames
+            //         .pop()
+            //         .ok_or(ColdStoreDecodeError::MachineInvariant("New frame"))?;
+            //     let values = take_n(&mut self.pars, n_entries, "New.injections")?;
+            //     let p = take_opt_par(&mut self.pars, has_p, "New.p")?;
+            //     // `BTreeMap::insert` in stream order: a duplicate key
+            //     // overwrites, as serde's map visitor does, and the stream need
+            //     // not be sorted.
+            //     let mut injections = BTreeMap::new();
+            //     for (key, value) in frame.keys.into_iter().zip(values) {
+            //         injections.insert(key, value);
+            //     }
+            //     self.news.push(New {
+            //         bind_count: frame.bind_count,
+            //         p,
+            //         uri: frame.uri,
+            //         injections,
+            //         locally_free,
+            //     });
+            // }
+            // ```
             Op::NewBuild { has_p, n_entries } => {
                 let locally_free = self.r.byte_seq()?;
+                let n_types = self.r.len()?;
+                self.new_frame()?.locally_free = locally_free;
+                self.ops.push(Op::NewFinish {
+                    has_p,
+                    n_entries,
+                    n_types,
+                });
+                self.repeat(Kind::SpaceAnnotation, n_types);
+            }
+            Op::NewFinish {
+                has_p,
+                n_entries,
+                n_types,
+            } => {
                 let frame = self
                     .new_frames
                     .pop()
                     .ok_or(ColdStoreDecodeError::MachineInvariant("New frame"))?;
+                let space_types = take_n(&mut self.space_annotations, n_types, "New.space_types")?;
                 let values = take_n(&mut self.pars, n_entries, "New.injections")?;
                 let p = take_opt_par(&mut self.pars, has_p, "New.p")?;
                 // `BTreeMap::insert` in stream order: a duplicate key
@@ -1550,8 +2021,22 @@ impl<'a> Machine<'a> {
                     p,
                     uri: frame.uri,
                     injections,
-                    locally_free,
+                    locally_free: frame.locally_free,
+                    space_types,
                 });
+            }
+
+            // ---------------------------------------------------------------
+            // SpaceAnnotation
+            // ---------------------------------------------------------------
+            Op::SpaceAnnotationStart => {
+                let has_space = self.r.option_tag()?;
+                self.ops.push(Op::SpaceAnnotationBuild { has_space });
+                self.opt_par_child(has_space);
+            }
+            Op::SpaceAnnotationBuild { has_space } => {
+                let space = take_opt_par(&mut self.pars, has_space, "SpaceAnnotation.space")?;
+                self.space_annotations.push(SpaceAnnotation { space });
             }
 
             // ---------------------------------------------------------------
@@ -1818,6 +2303,21 @@ impl<'a> Machine<'a> {
                         }
                     }
 
+                    // ---- the Reified arms
+                    EX_E_FREE_BODY => {
+                        let theory = self.r.string()?;
+                        self.method_names.push(theory);
+                        let n_args = self.r.len()?;
+                        self.ops.push(Op::ExprFreeBuild { n_args });
+                        self.repeat(Kind::Par, n_args);
+                    }
+                    EX_E_PARAMS_BODY => {
+                        self.ops.push(Op::ExprParamsBuild);
+                        self.ops.push(Op::ParamsStart {
+                            kind: ParamsKind::Send,
+                        });
+                    }
+
                     // ---- the seventeen `(Option<Par>, Option<Par>)` arms
                     _ => {
                         if !BINARY_EXPR_VARIANTS.contains(&variant) {
@@ -1927,6 +2427,15 @@ impl<'a> Machine<'a> {
             Op::ExprFromPathmap => {
                 let pathmap = take_one(&mut self.pathmaps, "EPathmapBody")?;
                 self.push_expr(ExprInstance::EPathmapBody(pathmap));
+            }
+            Op::ExprFreeBuild { n_args } => {
+                let args = take_n(&mut self.pars, n_args, "EFree.args")?;
+                let theory = take_one(&mut self.method_names, "EFree.theory")?;
+                self.push_expr(ExprInstance::EFreeBody(EFree { theory, args }));
+            }
+            Op::ExprParamsBuild => {
+                let params = take_one(&mut self.send_params, "EParamsBody")?;
+                self.push_expr(ExprInstance::EParamsBody(params));
             }
             Op::ExprZipperBuild { has_pathmap } => {
                 let current_path = self.r.byte_seq_seq()?;
@@ -2244,6 +2753,30 @@ impl<'a> Machine<'a> {
         Ok(())
     }
 
+    /// Added by G3 (DR-135): closes a region. Its signature, when present, is
+    /// on top of `cost_signatures`, and its identity is on top of
+    /// `region_ids`.
+    fn push_region(
+        &mut self,
+        has_signature: bool,
+        price: u64,
+        caller: Option<CostCaller>,
+    ) -> Res<()> {
+        let signature = if has_signature {
+            Some(take_one(&mut self.cost_signatures, "CostRegion.signature")?)
+        } else {
+            None
+        };
+        let instance_id = take_one(&mut self.region_ids, "CostRegion.instance_id")?;
+        self.cost_regions.push(CostRegion {
+            instance_id,
+            signature,
+            price,
+            caller,
+        });
+        Ok(())
+    }
+
     /// Pops the cost authority of a continuation or a datum when present.
     fn take_authority(&mut self, present: bool) -> Res<Option<CostAuthority>> {
         if present {
@@ -2284,6 +2817,8 @@ impl<'a> Machine<'a> {
             && self.cost_signed_terms.is_empty()
             && self.cost_stacks.is_empty()
             && self.cost_regions.is_empty()
+            // Added by G3 (DR-135).
+            && self.cost_callers.is_empty()
             && self.cost_authorities.is_empty()
             && self.news.is_empty()
             && self.matches.is_empty()
@@ -2299,6 +2834,10 @@ impl<'a> Machine<'a> {
             && self.par_with_randoms.is_empty()
             && self.list_par_with_randoms.is_empty()
             && self.tagged_continuations.is_empty()
+            && self.use_blocks.is_empty()
+            && self.send_params.is_empty()
+            && self.bind_queries.is_empty()
+            && self.space_annotations.is_empty()
     }
 
     /// Releases every partly decoded value without recursion. Every value
@@ -2312,12 +2851,25 @@ impl<'a> Machine<'a> {
 
         let mut loose: Vec<Par> = mem::take(&mut self.pars);
         let mut loose_cost_signatures = mem::take(&mut self.cost_signatures);
+        // Changed by G3 (DR-135): a region also releases the signature of its
+        // caller, which can quote a deep `Par`.
+        // for region in mem::take(&mut self.cost_regions) {
+        //     loose_cost_signatures.extend(region.signature);
+        // }
+        // for authority in mem::take(&mut self.cost_authorities) {
+        //     for region in authority.regions {
+        //         loose_cost_signatures.extend(region.signature);
+        //     }
+        // }
         for region in mem::take(&mut self.cost_regions) {
-            loose_cost_signatures.extend(region.signature);
+            release_region(region, &mut loose_cost_signatures);
+        }
+        for caller in mem::take(&mut self.cost_callers) {
+            loose_cost_signatures.extend(caller.signature);
         }
         for authority in mem::take(&mut self.cost_authorities) {
             for region in authority.regions {
-                loose_cost_signatures.extend(region.signature);
+                release_region(region, &mut loose_cost_signatures);
             }
         }
 
@@ -2366,12 +2918,25 @@ impl<'a> Machine<'a> {
         for with_random in mem::take(&mut self.par_with_randoms) {
             loose.extend(with_random.body);
         }
+        for params in mem::take(&mut self.send_params) {
+            loose.extend(params.positional);
+            loose.extend(params.named.into_values());
+        }
+        for query in mem::take(&mut self.bind_queries) {
+            loose.extend(query.payload);
+            loose.extend(query.named.into_values());
+        }
+        for annotation in mem::take(&mut self.space_annotations) {
+            loose.extend(annotation.space);
+        }
         let mut loose_cost_stacks = mem::take(&mut self.cost_stacks);
         for list in mem::take(&mut self.list_par_with_randoms) {
             loose.extend(list.pars);
             if let Some(authority) = list.cost_authority {
                 for region in authority.regions {
-                    loose_cost_signatures.extend(region.signature);
+                    // Changed by G3 (DR-135): with the caller's signature.
+                    // loose_cost_signatures.extend(region.signature);
+                    release_region(region, &mut loose_cost_signatures);
                 }
             }
             loose_cost_stacks.extend(list.cost_stack);
@@ -2383,7 +2948,9 @@ impl<'a> Machine<'a> {
             }
             if let Some(authority) = continuation.cost_authority {
                 for region in authority.regions {
-                    loose_cost_signatures.extend(region.signature);
+                    // Changed by G3 (DR-135): with the caller's signature.
+                    // loose_cost_signatures.extend(region.signature);
+                    release_region(region, &mut loose_cost_signatures);
                 }
             }
         }
@@ -2399,6 +2966,7 @@ impl<'a> Machine<'a> {
             conditionals: mem::take(&mut self.ifs),
             cost_signed_terms: mem::take(&mut self.cost_signed_terms),
             cost_stacks: loose_cost_stacks,
+            use_blocks: mem::take(&mut self.use_blocks),
             ..Default::default()
         };
         if !loose_cost_signatures.is_empty() {

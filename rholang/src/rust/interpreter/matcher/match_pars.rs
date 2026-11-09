@@ -15,6 +15,7 @@ pub fn compare_sends_without_locally_free(a: &Send, b: &Send) -> bool {
         && a.data == b.data
         && a.persistent == b.persistent
         && a.connective_used == b.connective_used
+        && a.params == b.params
 }
 
 pub fn compare_receives_without_locally_free(a: &Receive, b: &Receive) -> bool {
@@ -34,6 +35,7 @@ pub fn compare_news_without_locally_free(a: &New, b: &New) -> bool {
         && match_pars(a.p.as_ref().unwrap(), b.p.as_ref().unwrap())
         && a.uri == b.uri
         && a.injections == b.injections
+        && a.space_types == b.space_types
 }
 
 pub fn compare_exprs_without_locally_free(a: &Expr, b: &Expr) -> bool {
@@ -79,6 +81,7 @@ pub fn compare_receive_binds_without_locally_free(a: &ReceiveBind, b: &ReceiveBi
         && match_pars(a.source.as_ref().unwrap(), b.source.as_ref().unwrap())
         && a.remainder == b.remainder
         && a.free_count == b.free_count
+        && a.query_spec == b.query_spec
 }
 
 pub fn match_pars(target: &Par, pattern: &Par) -> bool {
@@ -140,5 +143,6 @@ pub fn match_pars(target: &Par, pattern: &Par) -> bool {
             .all(|(t, p)| compare_conditionals_without_locally_free(t, p))
         && target.cost_signed_terms == pattern.cost_signed_terms
         && target.cost_stacks == pattern.cost_stacks
+        && target.use_blocks == pattern.use_blocks
         && target.connective_used == pattern.connective_used
 }

@@ -85,6 +85,8 @@ fn row(owners: usize, regions: usize, comm: bool, raw: [u64; 3]) -> Arc<ByteObse
                 CostRegion {
                     instance_id,
                     signature: Some(signature.clone()),
+                    // Added by G3 (DR-135): no price and no caller.
+                    ..Default::default()
                 }
             })
             .collect(),
@@ -290,6 +292,10 @@ fn loom_reservation_and_receipt_publication_share_one_critical_section() {
         let reservation = NativePhloReservation {
             policy: Arc::clone(&policy),
             used: 0,
+            // Added by G3 (DR-135, S11).
+            client_used: 0,
+            // Added by G3 (DR-135, S4).
+            owners: None,
         };
         let state = loom::sync::Arc::new(loom::sync::Mutex::new((reservation, [
             None::<PreparedNativePhloCharge>,
@@ -334,5 +340,143 @@ fn loom_reservation_and_receipt_publication_share_one_critical_section() {
                 assert_eq!(charge.observation().event_id, [identity as u8; 32]);
             }
         }
+    });
+}
+
+/// Added by G3 (DR-135): an observation whose regions have their own
+/// signatures. A signature is Unit (`0`), one ground (`1`) or a canonical
+/// compound of that many grounds. The identities ascend, as canonical
+/// authorities require.
+fn mixed_row(owners: &[usize], comm: bool, raw: [u64; 3]) -> Arc<ByteObservation> {
+    let mut regions = Vec::with_capacity(owners.len());
+    for (index, count) in owners.iter().enumerate() {
+        let atom = |byte: usize| CostSignature {
+            value: Some(Value::Ground(vec![byte as u8, 7])),
+        };
+        let signature = match count {
+            0 => CostSignature {
+                value: Some(Value::Unit(true)),
+            },
+            1 => atom(index),
+            _ => {
+                sort_signature(&CostSignature {
+                    value: Some(Value::Compound(CostSignatureCompound {
+                        elements: (0..*count).map(atom).collect(),
+                    })),
+                })
+                .term
+            }
+        };
+        let mut instance_id = vec![0; 32];
+        instance_id[24..].copy_from_slice(&(index as u64).to_be_bytes());
+        regions.push(CostRegion {
+            instance_id,
+            signature: Some(signature),
+            // The price does not change the usage of a region (R4).
+            price: index as u64,
+            caller: None,
+        });
+    }
+    Arc::new(ByteObservation {
+        event_id: [5; 32],
+        kind: if comm {
+            AuthorityByteEventKind::Comm
+        } else {
+            AuthorityByteEventKind::ProduceIntroduction
+        },
+        authority: CostAuthority { regions },
+        measurement: Some(ByteCharge {
+            introduction_bytes: raw[0],
+            transfer_bytes: raw[1],
+            trace_bytes: raw[2],
+        }),
+        legacy_amount: None,
+    })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    /// Added by G3 (DR-135): the usage of each region position is the
+    /// measured quantity times the region's leaf units, and the positions
+    /// sum to the prepared usage (R4). The oracle is the loop that `prepare`
+    /// ran before G3: one total over every occurrence, here in `u128`.
+    #[test]
+    fn region_usages_sum_to_the_prepared_usage(
+        weights in prop::array::uniform4(0_u64..20),
+        raw in prop::array::uniform3(0_u64..100),
+        owners in prop::collection::vec(prop_oneof![Just(0_usize), Just(1_usize), 2_usize..7], 1..9),
+        comm in any::<bool>(),
+    ) {
+        with_contract(weights, u64::MAX, u64::MAX, 0, |contract| {
+            let observation = mixed_row(&owners, comm, raw);
+            let charge = contract.prepare(Arc::clone(&observation), limits()).unwrap();
+            let quantity = u128::from(comm) * u128::from(weights[0])
+                + raw
+                    .into_iter()
+                    .zip(&weights[1..])
+                    .map(|(amount, weight)| u128::from(amount) * u128::from(*weight))
+                    .sum::<u128>();
+            let total: u128 = owners.iter().map(|count| quantity * *count as u128).sum();
+            assert_eq!(u128::from(charge.usage()), total);
+            assert_eq!(charge.region_usages().len(), observation.authority.regions.len());
+            assert_eq!(
+                charge.region_usages().iter().map(|usage| u128::from(*usage)).sum::<u128>(),
+                u128::from(charge.usage())
+            );
+            for (usage, count) in charge.region_usages().iter().zip(&owners) {
+                assert_eq!(u128::from(*usage), quantity * *count as u128);
+            }
+        });
+    }
+}
+
+/// Added by G3 (DR-135, S11): the caller's bound counts only the client part
+/// of a charge (item 13). With bound 10, a charge of 30 whose owners pay 25
+/// is accepted, because its client part is 5. A later charge of 10 with no
+/// owner usage exceeds the bound. The total counts each granted charge, and
+/// an error changes nothing.
+#[test]
+fn reserve_with_owner_usage_counts_only_the_client_part() {
+    with_contract([0, 0, 1, 0], 10, 10, 0, |contract| {
+        let charge = contract
+            .prepare(row(1, 1, false, [0, 30, 0]), limits())
+            .expect("a charge of 30");
+        assert_eq!(charge.usage(), 30);
+        let later = contract
+            .prepare(row(1, 1, false, [0, 10, 0]), limits())
+            .expect("a charge of 10");
+        let mut meter = contract.reservation();
+        meter
+            .reserve_with_owner_usage(&charge, 25)
+            .expect("the client part 5 fits the bound 10");
+        assert_eq!((meter.used(), meter.client_used()), (30, 5));
+        assert!(matches!(
+            meter.reserve_with_owner_usage(&later, 0),
+            Err(NativePhloExecutionError::BoundExceeded)
+        ));
+        assert_eq!(
+            (meter.used(), meter.client_used()),
+            (30, 5),
+            "a denial changes nothing"
+        );
+        assert!(matches!(
+            meter.reserve_with_owner_usage(&later, 11),
+            Err(NativePhloExecutionError::Overflow)
+        ));
+        assert_eq!(
+            (meter.used(), meter.client_used()),
+            (30, 5),
+            "an owner usage above the charge changes nothing"
+        );
+        meter
+            .reserve_with_owner_usage(&later, 5)
+            .expect("the client part 5 fills the bound");
+        assert_eq!((meter.used(), meter.client_used()), (40, 10));
+        assert!(matches!(
+            meter.reserve(&later),
+            Err(NativePhloExecutionError::BoundExceeded)
+        ));
+        assert_eq!((meter.used(), meter.client_used()), (40, 10));
     });
 }

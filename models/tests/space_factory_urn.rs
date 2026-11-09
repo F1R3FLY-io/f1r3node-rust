@@ -12,9 +12,13 @@ mod reified_strategies;
 use std::collections::{BTreeMap, BTreeSet};
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{EList, Par, Var};
+// Changed by decision 112: a test builds a malformed `EFree` element. The text before:
+// use models::rhoapi::{EList, Par, Var};
+use models::rhoapi::{EFree, EList, Par, Var};
 use models::rust::reified::builders;
-use models::rust::reified::encoding::{encode_free, FreeTheory, Marker, SendParams};
+// Changed by decision 112: the params element comes from `encode_params`. The text before:
+// use models::rust::reified::encoding::{encode_free, FreeTheory, Marker, SendParams};
+use models::rust::reified::encoding::{encode_free, encode_params, FreeTheory, Marker, SendParams};
 use models::rust::reified::params::SendParam;
 use models::rust::space_factory_urn::{
     SpaceFactoryConstructor, SpaceFactoryConstructorError, SpaceFactoryUrn, SpaceFactoryUrnError,
@@ -70,14 +74,29 @@ fn family(urn: &str) -> SpaceFactoryUrn {
 
 fn named(key: &str, value: Par) -> SendParam { SendParam::Named(key.to_owned(), value) }
 
-/// The PARAMS tuple of `params`, as the normalizer builds it for a params section.
-fn params_tuple(params: Vec<SendParam>) -> Par {
-    builders::send_params(params)
+// Changed by decision 112: `builders::send_params` returns the field value, and a constructor
+// list holds the `EParamsBody` element of that value. The text before:
+// ```
+// /// The PARAMS tuple of `params`, as the normalizer builds it for a params section.
+// fn params_tuple(params: Vec<SendParam>) -> Par {
+//     builders::send_params(params)
+//         .expect("the params are valid")
+//         .expect("the params are not empty")
+// }
+// ```
+/// The PARAMS element of `params`: the form that a constructor list holds.
+fn params_element(params: Vec<SendParam>) -> Par {
+    let params = builders::send_params(params)
         .expect("the params are valid")
+        .expect("the params are not empty");
+    encode_params(&params)
+        .expect("the params are well formed")
         .expect("the params are not empty")
 }
 
-/// The FREE tuple of `free name(args…)`.
+// Changed by decision 112: the theory is an `EFreeBody` element. The text before:
+// /// The FREE tuple of `free name(args…)`.
+/// The FREE element of `free name(args…)`.
 fn theory(name: &str, args: Vec<Par>) -> Par {
     encode_free(&FreeTheory {
         name: name.to_owned(),
@@ -334,11 +353,15 @@ fn space_urn_factory_constructor_qualifier_theory_params() {
         4 * 3 * 4,
         "every constructor has its own encoding"
     );
-    // The tuples of the P2 builders are the canonical constructor elements.
+    // Changed by decision 112: the elements hold protobuf fields. The text before:
+    // // The tuples of the P2 builders are the canonical constructor elements.
+    // The elements of the P2 builders are the canonical constructor elements.
     let built = vec![
         gstring("default"),
         theory("Nat", Vec::new()),
-        params_tuple(vec![named("capacity", gint(4))]),
+        // Changed by decision 112: the helper builds an element. The text before:
+        // params_tuple(vec![named("capacity", gint(4))]),
+        params_element(vec![named("capacity", gint(4))]),
     ];
     assert_eq!(
         SpaceFactoryConstructor::parse(&list(built.clone())),
@@ -371,7 +394,9 @@ fn space_urn_factory_constructor_qualifier_theory_params() {
 fn space_urn_factory_rejects_invalid_constructors() {
     let qualifier = gstring("default");
     let nat = theory("Nat", Vec::new());
-    let capacity = params_tuple(vec![named("capacity", gint(4))]);
+    // Changed by decision 112: the helper builds an element. The text before:
+    // let capacity = params_tuple(vec![named("capacity", gint(4))]);
+    let capacity = params_element(vec![named("capacity", gint(4))]);
     for elements in [
         vec![nat.clone(), qualifier.clone()],
         vec![capacity.clone(), qualifier.clone()],
@@ -414,16 +439,63 @@ fn space_urn_factory_rejects_invalid_constructors() {
             "{element:?}"
         );
     }
+    // Changed by decision 112: no decoder reads a derived flag, so a flagged theory or params
+    // element still parses. The malformed forms are a bad theory name and a bad param key.
+    // The text before:
+    // ```
+    // let mut stale_theory = nat;
+    // stale_theory.connective_used = true;
+    // assert!(matches!(
+    //     SpaceFactoryConstructor::parse_elements(&[qualifier.clone(), stale_theory]),
+    //     Err(SpaceFactoryConstructorError::MalformedTheory(_))
+    // ));
+    // let mut stale_params = capacity;
+    // stale_params.connective_used = true;
+    // assert!(matches!(
+    //     SpaceFactoryConstructor::parse_elements(&[qualifier.clone(), stale_params]),
+    //     Err(SpaceFactoryConstructorError::MalformedParams(_))
+    // ));
+    // ```
     let mut stale_theory = nat;
     stale_theory.connective_used = true;
     assert!(matches!(
         SpaceFactoryConstructor::parse_elements(&[qualifier.clone(), stale_theory]),
+        Ok(SpaceFactoryConstructor {
+            theory: Some(_),
+            ..
+        })
+    ));
+    let bad_theory = expr_par(
+        ExprInstance::EFreeBody(EFree {
+            theory: "new".to_owned(),
+            args: Vec::new(),
+        }),
+        Vec::new(),
+        false,
+    );
+    assert!(matches!(
+        SpaceFactoryConstructor::parse_elements(&[qualifier.clone(), bad_theory]),
         Err(SpaceFactoryConstructorError::MalformedTheory(_))
     ));
     let mut stale_params = capacity;
     stale_params.connective_used = true;
     assert!(matches!(
         SpaceFactoryConstructor::parse_elements(&[qualifier.clone(), stale_params]),
+        Ok(SpaceFactoryConstructor {
+            params: Some(_),
+            ..
+        })
+    ));
+    let bad_params = expr_par(
+        ExprInstance::EParamsBody(SendParams {
+            positional: Vec::new(),
+            named: BTreeMap::from([("Nil".to_owned(), gint(4))]),
+        }),
+        Vec::new(),
+        false,
+    );
+    assert!(matches!(
+        SpaceFactoryConstructor::parse_elements(&[qualifier.clone(), bad_params]),
         Err(SpaceFactoryConstructorError::MalformedParams(_))
     ));
     for ctor in [
@@ -458,6 +530,9 @@ fn space_urn_factory_qualifier_support_matrix() {
                 | SpaceOuter::PathMap
                 | SpaceOuter::Array
                 | SpaceOuter::Vector => true,
+                // Added by decision 127 (kind registry): `SpaceOuter` is a name, so the match
+                // needs a wildcard. No family of the table reaches it.
+                _ => true,
             };
             assert_eq!(
                 parsed.supports_qualifier(qualifier),

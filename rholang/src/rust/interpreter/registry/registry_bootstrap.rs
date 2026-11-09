@@ -40,6 +40,7 @@ fn bootstrap(channel: Par) -> New {
                     remainder: None,
                     free_count: 1,
                     cost_signature: None,
+                    query_spec: None,
                 }],
                 // x!(channel)
                 body: Some(Par::default().with_sends(vec![Send {
@@ -48,6 +49,7 @@ fn bootstrap(channel: Par) -> New {
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    params: None,
                 }])),
                 persistent: false,
                 peek: false,
@@ -67,9 +69,11 @@ fn bootstrap(channel: Par) -> New {
             connective_used: false,
             cost_signed_terms: Vec::new(),
             cost_stacks: Vec::new(),
+            use_blocks: Vec::new(),
         }),
         uri: Vec::new(),
         injections: BTreeMap::default(),
         locally_free: Vec::new(),
+        space_types: Vec::new(),
     }
 }

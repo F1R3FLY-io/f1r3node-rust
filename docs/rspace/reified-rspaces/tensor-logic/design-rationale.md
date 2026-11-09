@@ -107,6 +107,7 @@ Each entry gives the options, the recommendation, and what the other options lea
 - **K14. The Unicode version.** Pin it to the Unicode version of the normalization and security crates of the node. Record it in the checker ABI. Recommendation: yes.
 - **K15. The installed rewrites.** Install the rewrites of S1 and S2, so that F1r3lang agrees with the native normalizer. Check the agreement with the test `prop_tl_installed_rewrites_agree`. Recommendation: yes. The sugar inside expressions stays native ([GSLT 3](gslt.md#3-the-sugar-and-its-rewrites)).
 - **K16. Virtual indices and recursion** (finding F7). Confirm that both stay in `tl:Program` and out of scores and checks. Recommendation: confirm.
+- **K17. The cost model after [decision 89](../decision-register.md#decision-89).** The host-work budget that this proposal uses no longer exists. Restate the cost model in terms of phlo before any code.
 
 ## 4. Missing F1r3lang facilities
 

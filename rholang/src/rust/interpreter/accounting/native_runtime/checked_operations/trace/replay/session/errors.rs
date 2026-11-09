@@ -14,6 +14,10 @@ fn native_error_transport_does_not_turn_mismatch_into_denial() {
         NativeReplayError::Budget(NativeBudgetTraceError::Work(
             FundingSearchError::AllocationFailed,
         )),
+        // Added by DR-132 (D2-B): a stall and an uncounted operation are
+        // platform failures, never a denial.
+        NativeReplayError::Stalled,
+        NativeReplayError::Uncounted,
     ] {
         assert!(matches!(error(cause), RSpaceError::InterpreterError(_)));
     }

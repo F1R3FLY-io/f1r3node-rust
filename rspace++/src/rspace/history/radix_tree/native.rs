@@ -417,7 +417,7 @@ mod tests {
             let legacy = RadixTreeImpl::new(legacy_store.clone());
             if let Some(next) = legacy.make_actions(&legacy_root, actions.clone()).unwrap() {
                 legacy.save_node(next.clone());
-                legacy_store.put(legacy.prepare_commit().unwrap()).unwrap();
+                legacy_store.put(legacy.pending_writes().unwrap()).unwrap();
                 legacy_root = next;
             }
             let native = RadixTreeImpl::new(native_store.clone());

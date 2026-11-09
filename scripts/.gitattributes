@@ -1,0 +1,18 @@
+/ci/check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
+/ci/test-check-node-observation-bindings.sh cbc=mandatory cbc-weight=high
+/ci/check-node-canonical-wire.sh cbc=mandatory cbc-weight=high
+/ci/check-tla-invariants.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/test-check-tla-invariants.sh cbc=mandatory cbc-weight=high
+/ci/check-formal-invariants.sh cbc=mandatory cbc-weight=high
+/run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/bench/test-run-merge-recovery-soak.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/bench/test-soak-disk-admission-timing.sh cbc=mandatory cbc-weight=high
+/bench/write-soak-summary.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/casper-soak/** cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/bench/casper-soak.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/bench/fixtures/casper-lifecycle-executor.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/check-casper-soak-models.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/ci/check-casper-soak-bindings.sh cbc=mandatory cbc-weight=high cbc-evidence=docs/casper/cbc-evidence
+/bench/test-soak-disk-admission.sh cbc-evidence=docs/casper/cbc-evidence
+/bench/casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence
+/bench/test_casper_soak_manifest.py cbc-evidence=docs/casper/cbc-evidence

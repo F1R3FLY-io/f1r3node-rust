@@ -12,6 +12,25 @@
 // orders every transaction of one space before the next, so every
 // predecessor of a space row has completed (design v2, section 4.5).
 //
+// Changed by decision 90 (DR-132): racing evaluation removed the scheduler
+// and its per-space order, so a transaction can reach its rows before their
+// predecessors complete. Before its first operation, under its stripes, the
+// transaction checks all its rows (`check_ready`, `SpaceTxnReadiness`). A
+// transaction that is not ready applies nothing and fails with `NotReady`.
+// The job then releases its stripes, waits for a change as a counted waiter
+// (`wait_changed`), and stages again (`NativeReplayStall.tla`). A backend
+// still never waits while it holds stripes, and a row that is not ready
+// after a passed check fails closed (P1).
+//
+// Changed by decision 92: every row of a space transaction names the
+// footprint key `S(sid)` as one more join group. The first row of a
+// committed transaction is unique to its job. So the check reads the first
+// staged row only (`SpaceReplayOrder.tla`), and a later row that is not
+// ready or does not fit fails closed at its commit. Changed by decision 95:
+// the check and the wait go through the epoch of the session
+// (`NativeOperationEpoch::space_transaction_ready` and
+// `NativeOperationEpoch::wait_space_change`).
+//
 // A transaction reads and changes the digest-keyed store of the session
 // (DR-96) through `NativeSpaceStore`, so a space operation and a host
 // operation of native replay share one store, as they share the hot store in
@@ -23,44 +42,96 @@
 // holds the effects of the space operations, and native replay reaches the
 // root of play.
 //
+// Changed by decision 123 (plan v4, V3-8, V3-16, R9, R20) and decision 124
+// (L10): play changes the hot store through the free store steps of
+// ops_produce.rs and ops_consume.rs. `space_play.rs` calls them in place of
+// the retired copies of `space_store_handle.rs`. A recorded denial publishes
+// its row through the one base `publish_denial` of `operations.rs`. No
+// failure closes the epoch.
+//
 // The session logs no event. The backend gives the events of play to the
 // event correlation check of `commit_operation` only. A non-persistent
 // produce advances the produce counter of the session, which `host_counter`
 // reads, as `log_produce` advances the counter of play. A space operation
 // meters only what its host operation meters, through the observations of
 // the ticket: its COMMs and the bytes that it stores (DR-131).
+//
+// Changed by decision 90 (C6): a session for a block report also gives each
+// applied space row to the reporting logger of its space, where the replay
+// backend of `space_replay.rs` logs the row. This is how `operations.rs`
+// logs a host row (DR-134, DR-70). Validation and play build no logger, so
+// they skip every logging step.
+//
+// Added by decision 124 (plan v4 C7.16, C7.18, C7.20, rules CR-18, CR-22 and
+// F12): under owner funding a row with a search runs the base replay walk at
+// its commit (`apply_row`). It verifies the recorded refusals, then it selects
+// the recorded tuple over the search. Each tuple but the staged one runs the
+// guard once, then the theory (F12). A recorded store of a staged fire stores
+// the datum. A store above the bound of its channel is the host outcome, and
+// the readers accept a side above its bound (CR-22).
 
 use std::collections::BTreeSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+// Changed by decision 124 (L10): the `denied` flag retires.
+// use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+// Added by decision 124 (L15, L16, plan v4 C7.16, errata V4-6): the refusal
+// loop of the base replay, over the row search.
+use super::operations::verify_row_refusals;
 use super::{NativeReplaySession, PublicationGuard, result};
 use crate::rspace::errors::RSpaceError;
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::native_source::{GroupKeys, StoreKey};
 use crate::rspace::internal::{Datum, WaitingContinuation};
 use crate::rspace::r#match::Match;
+// Changed by decision 95: the readiness of a space transaction comes from
+// the epoch.
+// use crate::rspace::replay_rspace::native_epoch::{
+//     NativeOperationEpoch, NativeOperationPublication, NativeOperationTicket,
+// NativeReplayDecision,     NativeReplayOutcome,
+// };
 use crate::rspace::replay_rspace::native_epoch::{
     NativeOperationEpoch, NativeOperationPublication, NativeOperationTicket, NativeReplayDecision,
-    NativeReplayOutcome,
+    NativeReplayOutcome, SpaceTransactionReadiness,
 };
 use crate::rspace::rspace_interface::RSpaceOperationSource;
 use crate::rspace::serializers::cold_store_decode::ColdStoreDecode;
+// Changed by decisions 92 and 94: the transaction covers the exact keys of
+// phase B, and the footprint names the footprint key.
+// use crate::rspace::space_store_handle::{
+//     BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire,
+// ReadyFire,     ReadyProduce, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost,
+// StagedConsume,     StagedConsumeFire, StagedFire, StagedOperation, StagedProduce,
+// SweepReport, TxnBackend,     TxnRegistration, TxnStore, check_swept, fired_receipt,
+// plan_sweep, ready_consume,     ready_produce, root_leaf_records, run_before_observe,
+// sweep_channels, swept_join_count, };
+// use crate::rspace::striped_locks;
+// Changed by decision 102 (decision 119 S2): the backend reads the recorded
+// rows of a transaction.
+// Changed by decision 124 (L10): the arms name the source of a skipped row.
 use crate::rspace::space_store_handle::{
-    BeforeObserve, BoxedSpaceTxn, HostTxn, LockCoverage, ReadyConsume, ReadyConsumeFire, ReadyFire,
-    ReadyProduce, SpaceMode, SpaceOpReceipt, SpaceTxnError, SpaceTxnHost, StagedConsume,
-    StagedConsumeFire, StagedFire, StagedOperation, StagedProduce, SweepReport, TxnBackend,
-    TxnRegistration, TxnStore, check_swept, fired_receipt, plan_sweep, ready_consume,
-    ready_produce, root_leaf_records, run_before_observe, sweep_channels, swept_join_count,
+    AppliedRow, BeforeObserve, BoxedSpaceTxn, HostTxn, OpSource, ReadyConsume, ReadyConsumeFire,
+    ReadyFire, ReadyProduce, RecordedRow, ReplayItemRule, RowCandidates, RowLists, RowParts,
+    RowReads, RowSearch, RowSearchWithReads, RowTupleRequest, SpaceMode, SpaceOpReceipt,
+    SpaceTxnError, SpaceTxnHost, StagedConsume, StagedConsumeFire, StagedFire, StagedOperation,
+    StagedProduce, StoreEffect, SweepReport, TailRead, TxnBackend, TxnRegistration, TxnStore,
+    actual_park_effects, check_swept, fired_receipt, footprint_joins, plan_sweep,
+    ready_actual_consume_fire, ready_actual_produce_fire, ready_consume, ready_produce,
+    root_leaf_records, row_enumeration, run_before_observe, skipped_row, sweep_channels,
+    swept_join_count,
 };
-use crate::rspace::striped_locks;
-use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
+use crate::rspace::striped_locks::{self, ChannelLockGuard};
+// Changed by decision 90 (C6, step D): the rigged replay paths retire, so only
+// the test module of this file names a COMM. The text before:
+// use crate::rspace::trace::event::{COMM, Event, IOEvent, Produce};
+use crate::rspace::trace::event::{Event, IOEvent, Produce};
 
 type Authority<C, P, A, K, E> =
     <<E as NativeOperationEpoch<C, P, A, K>>::Ticket as NativeOperationTicket<C, P, A, K>>::Authority;
@@ -196,6 +267,11 @@ where
     authority: AuthorityResolver<C, P, A, K, E>,
     installed: BTreeSet<Blake2b256Hash>,
     store: Arc<NativeSpaceStore<O, C, P, A, K, E>>,
+    // Added by decision 90 (DR-132): the readiness wait of the transactions of
+    // the host.
+    // Disabled by decision 95: the epoch of the session checks and waits
+    // (`NativeOperationEpoch::space_transaction_ready`).
+    // readiness: Arc<dyn SpaceTxnReadiness>,
 }
 
 // The mismatch of native replay, in the class of the session's own mismatch
@@ -213,6 +289,53 @@ fn require(
         false => Err(mismatch("the observed decision differs from the recorded outcome")),
     }
 }
+
+/// Added by decision 90 (DR-132): whether the recorded outcome `outcome` fits a
+/// staged operation, a fire when `fire` holds (R4 step 7). The commit of each
+/// operation and the readiness check of the whole transaction
+/// (`SpaceTxnReadiness::check`) share this rule.
+///
+/// Changed by decision 92: only the commit of each operation reads the rule,
+/// because the readiness check reads no outcome. A skipped introduction (G3,
+/// DR-135, S6) fits a store and a fire, as the base host operation replays it
+/// (`operations.rs`).
+// pub fn outcome_fits(fire: bool, outcome: NativeReplayOutcome) -> bool {
+//     match (fire, outcome) {
+//         (false, NativeReplayOutcome::Stored |
+// NativeReplayOutcome::DeniedIntroduction) => true,         (
+//             true,
+//             NativeReplayOutcome::Matched |
+//             NativeReplayOutcome::DeniedIntroduction |
+//             NativeReplayOutcome::DeniedComm,
+//         ) => true,
+//         _ => false,
+//     }
+// }
+pub fn outcome_fits(fire: bool, outcome: NativeReplayOutcome) -> bool {
+    match (fire, outcome) {
+        (
+            false,
+            NativeReplayOutcome::Stored |
+            NativeReplayOutcome::DeniedIntroduction |
+            NativeReplayOutcome::SkippedIntroduction,
+        ) => true,
+        (
+            true,
+            NativeReplayOutcome::Matched |
+            NativeReplayOutcome::DeniedIntroduction |
+            NativeReplayOutcome::SkippedIntroduction |
+            NativeReplayOutcome::DeniedComm,
+        ) => true,
+        _ => false,
+    }
+}
+
+// Disabled by decision 92: the readiness check reads the first staged row
+// only, so no check reads an outcome that ends the transaction, and no check
+// reads the rows of every operation. Disabled by decision 95: the epoch of the
+// session checks and waits (`NativeOperationEpoch::space_transaction_ready`
+// and `NativeOperationEpoch::wait_space_change`), so the host takes no
+// readiness wait.
 
 impl<O, C, P, A, K, E> NativeSpaceHost<O, C, P, A, K, E>
 where
@@ -265,6 +388,32 @@ where
     /// takes them from its installs. Every transaction and every sweep of
     /// the host shares one store, so the store identity of a commit is
     /// stable.
+    ///
+    /// Changed by decision 90 (DR-132): `readiness` is the readiness wait of
+    /// the transactions of the host, over the journal of the session.
+    ///
+    /// Changed by decision 95: the epoch of the session checks and waits, so
+    /// the host takes no readiness wait.
+    // pub fn new(
+    //     owner: Arc<O>,
+    //     session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
+    //     authority: AuthorityResolver<C, P, A, K, E>,
+    //     installed: BTreeSet<Blake2b256Hash>,
+    //     readiness: Arc<dyn SpaceTxnReadiness>,
+    // ) -> Self {
+    //     let store = Arc::new(NativeSpaceStore {
+    //         owner: Arc::clone(&owner),
+    //         session,
+    //     });
+    //     Self {
+    //         owner,
+    //         session,
+    //         authority,
+    //         installed,
+    //         store,
+    //         readiness,
+    //     }
+    // }
     pub fn new(
         owner: Arc<O>,
         session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
@@ -340,7 +489,45 @@ where
     // (DR-131): R3 refused a transaction without the metered reads, and the
     // metered reads are removed with host-work metering, so a native replay
     // transaction reads as a transaction of play reads.
-    async fn begin(
+    // Changed by decision 94: the host takes phase A at the begin, and the
+    // transaction takes phase B ([`SpaceTxn::lock_phase_b`]). The default
+    // `begin` takes both phases over the lock keys, as `consume_lock` does.
+    // async fn begin(
+    //     &self,
+    //     lock_keys: &[C],
+    //     registration: TxnRegistration,
+    // ) -> Result<BoxedSpaceTxn<C, P, A, K>, SpaceTxnError> {
+    //     let session = self.session();
+    //     session.ensure_open()?;
+    //     if lock_keys.is_empty() {
+    //         return Err(SpaceTxnError::InvalidOperation("lock keys must not be
+    // empty"));     }
+    //     let hashes: Vec<u64> =
+    // lock_keys.iter().map(striped_locks::channel_hash).collect();
+    //     let coverage = LockCoverage::new(
+    //         &hashes,
+    //         session.space.phase_a_locks.len(),
+    //         session.space.phase_b_locks.len(),
+    //     );
+    //     let locks = session.consume_lock(&hashes).await?;
+    //     let backend = NativeBackend {
+    //         owner: Arc::clone(&self.owner),
+    //         session: self.session,
+    //         authority: Arc::clone(&self.authority),
+    //         store: Arc::clone(&self.store),
+    //         denied: AtomicBool::new(false),
+    //     };
+    //     Ok(Box::new(HostTxn::new(
+    //         SpaceMode::NativeReplay,
+    //         backend,
+    //         Arc::clone(&self.store),
+    //         self.installed.clone(),
+    //         coverage,
+    //         locks,
+    //         registration,
+    //     )))
+    // }
+    async fn begin_phase_a(
         &self,
         lock_keys: &[C],
         registration: TxnRegistration,
@@ -351,26 +538,24 @@ where
             return Err(SpaceTxnError::InvalidOperation("lock keys must not be empty"));
         }
         let hashes: Vec<u64> = lock_keys.iter().map(striped_locks::channel_hash).collect();
-        let coverage = LockCoverage::new(
-            &hashes,
-            session.space.phase_a_locks.len(),
-            session.space.phase_b_locks.len(),
-        );
-        let locks = session.consume_lock(&hashes).await?;
+        let phase_a = striped_locks::native::prepare(&session.space.phase_a_locks, &hashes)?
+            .acquire()
+            .await;
         let backend = NativeBackend {
             owner: Arc::clone(&self.owner),
             session: self.session,
             authority: Arc::clone(&self.authority),
             store: Arc::clone(&self.store),
-            denied: AtomicBool::new(false),
+            // Retired by decision 124 (L10): no flag.
+            // denied: AtomicBool::new(false),
         };
         Ok(Box::new(HostTxn::new(
             SpaceMode::NativeReplay,
             backend,
             Arc::clone(&self.store),
             self.installed.clone(),
-            coverage,
-            locks,
+            lock_keys.to_vec(),
+            phase_a,
             registration,
         )))
     }
@@ -444,6 +629,17 @@ where
         check_swept(store, &channels, &groups)?;
         Ok(report)
     }
+
+    // Added by decision 90 (DR-132): the counted wait of a job whose transaction
+    // was not ready (`TxnPark`).
+    // Changed by decision 95: the epoch of the session waits.
+    async fn wait_changed(&self, seen: u64) -> Result<(), SpaceTxnError> {
+        self.session()
+            .epoch
+            .wait_space_change(seen)
+            .await
+            .map_err(SpaceTxnError::Host)
+    }
 }
 
 // The backend of a native replay transaction.
@@ -459,9 +655,14 @@ where
     session: fn(&O) -> &NativeReplaySession<C, P, A, K, E>,
     authority: AuthorityResolver<C, P, A, K, E>,
     store: Arc<NativeSpaceStore<O, C, P, A, K, E>>,
-    // Set when the current operation published a recorded denial, so its row
-    // is complete and its failure keeps the epoch open.
-    denied: AtomicBool,
+    // Retired by decision 124 (L10): no failure closes the epoch, so no flag
+    // keeps it open. The text before:
+    // // Set when the current operation published a recorded denial, so its row
+    // // is complete and its failure keeps the epoch open.
+    // denied: AtomicBool,
+    // Added by decision 90 (DR-132): the readiness wait of the transaction.
+    // Disabled by decision 95: the epoch of the session checks the readiness.
+    // readiness: Arc<dyn SpaceTxnReadiness>,
 }
 
 impl<O, C, P, A, K, E> TxnBackend<C, P, A, K> for NativeBackend<O, C, P, A, K, E>
@@ -517,17 +718,137 @@ where
         self.session().space.get_produce_count(produce)
     }
 
-    fn recorded(&self, _event: &IOEvent) -> Vec<(COMM, usize)> { Vec::new() }
+    // Retired by decision 90 (C6, step D): the trait no longer asks for the
+    // rigged log. The text before:
+    // ```
+    // fn recorded(&self, _event: &IOEvent) -> Vec<(COMM, usize)> { Vec::new() }
+    //
+    // fn recorded_binding(&self, _event: &IOEvent, _comm: &COMM) -> Option<(COMM, usize)> { None }
+    // ```
 
-    fn recorded_binding(&self, _event: &IOEvent, _comm: &COMM) -> Option<(COMM, usize)> { None }
+    // Added by decision 90 (DR-132): the readiness check of the whole transaction
+    // (`TxnCheck`), under its stripes and before its first operation. While the
+    // stripes are held, no other operation can reserve or publish a row of the
+    // footprints of the transaction, so the rows that the check selects are the
+    // rows that the operations then reserve, and a passed check stays valid
+    // through the commit. A transaction that is not ready applies nothing
+    // and keeps the epoch open: the job waits and stages again.
+    // Changed by decision 92: the check reads the first staged operation
+    // `first` only. Changed by decision 95: the epoch of the session checks it.
+    fn check_ready(&self, first: &StagedOperation<C, P, A, K>) -> Result<(), SpaceTxnError> {
+        let session = self.session();
+        session.ensure_open()?;
+        let source = match first {
+            StagedOperation::Produce(produce) => RSpaceOperationSource::Produce(&produce.source),
+            StagedOperation::Consume(consume) => RSpaceOperationSource::Consume(&consume.source),
+        };
+        match session
+            .epoch
+            .space_transaction_ready(source)
+            .map_err(SpaceTxnError::Host)?
+        {
+            SpaceTransactionReadiness::Ready => Ok(()),
+            SpaceTransactionReadiness::NotReady { seen } => Err(SpaceTxnError::NotReady { seen }),
+        }
+    }
 
+    // Added by decision 102 (decision 119 S2): the recorded row of a staged
+    // operation comes from the epoch of the session
+    // (`NativeOperationEpoch::space_recorded_row`).
+    fn recorded_row(
+        &self,
+        source: RSpaceOperationSource<'_>,
+        previous: Option<usize>,
+        footprint_key: &C,
+    ) -> Result<Option<RecordedRow>, SpaceTxnError> {
+        let session = self.session();
+        session.ensure_open()?;
+        session
+            .epoch
+            .space_recorded_row(source, previous, footprint_key)
+            .map_err(SpaceTxnError::Host)
+    }
+
+    // Changed by decision 92: each operation authenticates the footprint key
+    // of its transaction in its footprint.
+    // fn apply_op(
+    //     &self,
+    //     store: &Self::Store,
+    //     operation: StagedOperation<C, P, A, K>,
+    //     before_observe: Option<BeforeObserve>,
+    //     events: &mut Vec<Event>,
+    // ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
     fn apply_op(
         &self,
         store: &Self::Store,
         operation: StagedOperation<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        footprint_key: Option<&C>,
         events: &mut Vec<Event>,
     ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
+        // Changed by decision 124 (L10, plan v4 C7.16): the session gate and
+        // the dispatch moved to `apply_row`, which takes the row search. The
+        // text before:
+        // ```
+        // let session = self.session();
+        // // R4 step 1 (A6): the session must be open and not at a boundary. A
+        // // transaction cannot own a guard of the gate, so each operation takes
+        // // it and fails closed on contention.
+        // session.ensure_open()?;
+        // let _gate = session
+        //     .gate
+        //     .try_read()
+        //     .map_err(|_| mismatch("the session is at a boundary"))?;
+        // ```
+        // let result = match operation {
+        //     StagedOperation::Produce(produce) => {
+        //         self.apply_produce(store, produce, before_observe, events)
+        //     }
+        //     StagedOperation::Consume(consume) => {
+        //         self.apply_consume(store, consume, before_observe, events)
+        //     }
+        // };
+        // Changed by decision 124 (L10): a failed operation leaves the epoch
+        // open, as a failed host operation does in the base. Its ticket
+        // cancels its row on drop. A waiter of that row parks counted, so the
+        // stall rule of the base replay ends the wait (DR-132). The match is
+        // the tail of `apply_row` now. The text before:
+        // ```
+        // let result = match operation {
+        //     StagedOperation::Produce(produce) => {
+        //         self.apply_produce(store, produce, before_observe, events)
+        //     }
+        //     StagedOperation::Consume(consume) => {
+        //         self.apply_consume(store, consume, before_observe, events)
+        //     }
+        // };
+        // // A failed operation leaves its journal row incomplete, and an operation
+        // // that waits for the row would wait forever. So the failure closes the
+        // // epoch: every waiting operation wakes and fails (Closed), and the
+        // // certification fails closed. A recorded denial publishes its row first,
+        // // and play goes on after it, so it keeps the epoch open.
+        // if result.is_err() && !self.denied.swap(false, Ordering::AcqRel) {
+        //     session.epoch.invalidate();
+        // }
+        // result
+        // ```
+        self.apply_row(store, operation, before_observe, footprint_key, None, events)
+            .map(|applied| applied.receipt)
+    }
+
+    // Added by decision 124 (L10, plan v4 C7.16, LP-6): the row of native
+    // replay. The session gate holds for the row (R4 step 1). The dispatch
+    // takes the row search. An introduction that its owner cannot pay skips
+    // the row (R8). Its row stores nothing, and it can stop a unit (CR-18).
+    fn apply_row(
+        &self,
+        store: &Self::Store,
+        operation: StagedOperation<C, P, A, K>,
+        before_observe: Option<BeforeObserve>,
+        footprint_key: Option<&C>,
+        search: Option<RowSearchWithReads<'_, C, P, A, K>>,
+        events: &mut Vec<Event>,
+    ) -> Result<AppliedRow<C, P, A, K>, SpaceTxnError> {
         let session = self.session();
         // R4 step 1 (A6): the session must be open and not at a boundary. A
         // transaction cannot own a guard of the gate, so each operation takes
@@ -537,23 +858,49 @@ where
             .gate
             .try_read()
             .map_err(|_| mismatch("the session is at a boundary"))?;
-        let result = match operation {
+        let source = match &operation {
+            StagedOperation::Produce(produce) => OpSource::Produce(produce.source.clone()),
+            StagedOperation::Consume(consume) => OpSource::Consume(consume.source.clone()),
+        };
+        let applied = match operation {
             StagedOperation::Produce(produce) => {
-                self.apply_produce(store, produce, before_observe, events)
+                self.apply_produce(store, produce, before_observe, footprint_key, search, events)
             }
             StagedOperation::Consume(consume) => {
-                self.apply_consume(store, consume, before_observe, events)
+                self.apply_consume(store, consume, before_observe, footprint_key, search, events)
             }
         };
-        // A failed operation leaves its journal row incomplete, and an operation
-        // that waits for the row would wait forever. So the failure closes the
-        // epoch: every waiting operation wakes and fails (Closed), and the
-        // certification fails closed. A recorded denial publishes its row first,
-        // and play goes on after it, so it keeps the epoch open.
-        if result.is_err() && !self.denied.swap(false, Ordering::AcqRel) {
-            session.epoch.invalidate();
+        match applied {
+            Err(SpaceTxnError::Host(RSpaceError::IntroductionRefused)) => {
+                Ok(skipped_row(source, true))
+            }
+            other => other,
         }
-        result
+    }
+
+    // Added by decision 124 (plan v4 C7.11, CR-31, ruling RADD 1.2): the tail
+    // read of a deviating unit, over the lists of the replay search of the row
+    // (`produce_found`) on the store after the retire group of the unit.
+    fn tail_read(
+        &self,
+        store: &Self::Store,
+        search: &mut dyn RowSearch<C, P, A, K>,
+        reads: RowReads<'_>,
+    ) -> Result<TailRead, SpaceTxnError> {
+        let read_data = reads.data(store);
+        let read_continuations = reads.continuations(store);
+        let read_joins = reads.joins(store);
+        let counter = |produce: &Produce| self.host_counter(produce);
+        let matcher: &dyn Match<P, A, K> = &**self.session().space.matcher;
+        let lists = RowLists::new(&read_data, &read_continuations, &read_joins, None, &counter);
+        search.tail_read(&lists, matcher)
+    }
+
+    // Added by decision 94: phase B as the session takes it for a host
+    // operation, with the fallible preparation of `striped_locks::native`.
+    async fn lock_phase_b(&self, hashes: &[u64]) -> Result<ChannelLockGuard, SpaceTxnError> {
+        let prepared = striped_locks::native::prepare(&self.session().space.phase_b_locks, hashes)?;
+        Ok(prepared.acquire().await)
     }
 }
 
@@ -606,6 +953,12 @@ where
     // R4 steps 4 and 5: the authority of the operation, which step 3
     // registered, and its journal row. A row that is not ready fails closed
     // (P1): the backend holds stripes and never waits.
+    // Changed by decision 90 (DR-132): the readiness check of the transaction
+    // (`check_ready`) passed under the same stripes, so a row that is not
+    // ready here shows a defect or forged evidence, and it still fails closed.
+    // Changed by decision 92: the check reads the first row only. A later row
+    // follows the first row on the chain of `S(sid)`, so a later row that is
+    // not ready here also shows a defect or forged evidence.
     fn begin_row(
         &self,
         source: RSpaceOperationSource<'_>,
@@ -619,48 +972,416 @@ where
         Ok((authority, ticket))
     }
 
-    // R5 (A11): a recorded denial is published with its outcome, and the
-    // operation fails as play fails it, with the error that the epoch names
-    // for its denial (DR-113).
-    fn publish_denial(
+    // Added by decision 124 (L15, L16, plan v4 C7.16, errata V4-6, V4-17,
+    // V4-18): the replay search of a produce row, before the row commits. It
+    // verifies the recorded refusals of the row over the search (R7). A staged
+    // fire selects the recorded tuple over the search (X7). The staged tuple
+    // c0 keeps the staged fire. Another tuple gives the actual fire, readied
+    // against the store, and a recorded store drops the fire. A store above
+    // the bound of its channel is the host outcome (CR-22). Each searched row
+    // enumerates its pairs for CanStop(d) and CanContinue(d) (CR-18, S1). A
+    // Matched row books none of them (CR-20, F19).
+    fn produce_found(
         &self,
-        ticket: E::Ticket,
-        outcome: NativeReplayOutcome,
-    ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
+        store: &NativeSpaceStore<O, C, P, A, K, E>,
+        ticket: &mut E::Ticket,
+        incoming: &Datum<A>,
+        fire: Option<ReadyFire<C, P, A, K>>,
+        search: RowSearchWithReads<'_, C, P, A, K>,
+    ) -> Result<(Option<ReadyFire<C, P, A, K>>, RowParts<C, P, A, K>), SpaceTxnError> {
         let session = self.session();
-        let mut completion = ticket.prepare(outcome)?;
-        let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
-            session.epoch.invalidate()
-        });
-        completion.publish();
-        publication.complete();
-        self.denied.store(true, Ordering::Release);
-        // Changed by decision 89 (DR-113): the epoch names the error of its
-        // denial, because the class of an exhaustion depends on the bound
-        // source, as `operations.rs` returns it for a host operation.
-        // Err(SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))
-        Err(SpaceTxnError::Host(session.epoch.denial()))
+        let (mut search, reads) = search;
+        let read_data = reads.data(store);
+        let read_continuations = reads.continuations(store);
+        let read_joins = reads.joins(store);
+        let counter = |produce: &Produce| self.host_counter(produce);
+        let matcher: &dyn Match<P, A, K> = &**session.space.matcher;
+        let own_datum = ticket
+            .owner_filter()
+            .is_some_and(|filter| filter.requires_own_datum());
+        let mut refused = Vec::new();
+        verify_row_refusals(
+            ticket,
+            |identity| {
+                let lists = RowLists::new(
+                    &read_data,
+                    &read_continuations,
+                    &read_joins,
+                    Some(identity),
+                    &counter,
+                );
+                let mut candidates = RowCandidates::new(&mut *search, lists, None);
+                let groups = candidates.groups();
+                session.space.find_refused_produce_tuple_with(
+                    &mut candidates,
+                    incoming,
+                    &groups,
+                    identity,
+                    own_datum,
+                )
+            },
+            |ticket, index, found| {
+                ticket
+                    .verify_refusal(
+                        index,
+                        &found.comm,
+                        &found.continuation.continuation,
+                        found.continuation.persist,
+                        &found.data,
+                        Some(&incoming.a),
+                    )
+                    .map_err(SpaceTxnError::Host)?;
+                let consume = &found.continuation.source.hash;
+                refused.extend(
+                    found
+                        .data
+                        .iter()
+                        .map(|candidate| (candidate.datum.source.hash.clone(), consume.clone())),
+                );
+                Ok(())
+            },
+            || mismatch("a recorded refusal names no tuple of the row search"),
+        )?;
+        let Some(filter) = ticket.owner_filter() else {
+            return Err(SpaceTxnError::Inconsistent("a searched replay row has no owner filter"));
+        };
+        let rule = ReplayItemRule(filter);
+        let fired = fire.is_some();
+        let selected = match &fire {
+            Some(_) => {
+                let lists =
+                    RowLists::new(&read_data, &read_continuations, &read_joins, None, &counter);
+                let mut candidates = RowCandidates::new(&mut *search, lists, Some(&rule));
+                let groups = candidates.groups();
+                let selected = session.space.prepare_produce_candidate_with(
+                    &mut candidates,
+                    incoming,
+                    &groups,
+                    ticket.candidate_identity(),
+                    Some(filter),
+                )?;
+                match selected {
+                    Some(selected) => {
+                        let channels = groups.get(selected.group).cloned().ok_or(
+                            SpaceTxnError::Inconsistent("a selected tuple has no run of the row"),
+                        )?;
+                        Some((channels, selected))
+                    }
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        let (fire, actual, effects, deviated) = match (selected, fire, ticket.outcome()) {
+            (None, None, _) => (None, None, None, false),
+            (None, Some(_), NativeReplayOutcome::Stored) => {
+                let effects = match search.keeps_staged_record() {
+                    true => vec![StoreEffect::PutDatum(incoming.source.clone())],
+                    false => Vec::new(),
+                };
+                (None, None, Some(effects), true)
+            }
+            (Some(_), _, NativeReplayOutcome::Stored) | (None, Some(_), _) => {
+                return Err(mismatch("the row search does not give the recorded outcome"));
+            }
+            // Added by decision 124 (P2, R-end, REPLAY-END): the row fires the staged
+            // tuple, which is the actual fire of play. The search keeps that fire, as
+            // the arm below does, so a cut after a record end reads the unit of a
+            // fire. The staged fire already holds the retires of the tuple.
+            (Some((channels, selected)), Some(staged), _) if selected.comm == staged.comm => {
+                let request = RowTupleRequest {
+                    matcher,
+                    group: &channels,
+                    patterns: &selected.continuation.patterns,
+                    continuation: &selected.continuation.continuation,
+                    persistent: selected.continuation.persist,
+                    source: &selected.continuation.source,
+                    own: None,
+                    item: None,
+                };
+                search.actual_fire(&request, &selected.data);
+                (Some(staged), None, None, false)
+            }
+            (Some((channels, selected)), _, _) => {
+                let request = RowTupleRequest {
+                    matcher,
+                    group: &channels,
+                    patterns: &selected.continuation.patterns,
+                    continuation: &selected.continuation.continuation,
+                    persistent: selected.continuation.persist,
+                    source: &selected.continuation.source,
+                    own: None,
+                    item: None,
+                };
+                let actual = search.actual_fire(&request, &selected.data);
+                let next = match incoming.persist {
+                    true => None,
+                    false => Some(&incoming.source),
+                };
+                let fire = (channels, selected.continuation, selected.data);
+                let (fire, effects) = ready_actual_produce_fire(self, store, reads, next, fire)?;
+                (Some(fire), Some(actual), Some(effects), true)
+            }
+        };
+        let lists = RowLists::new(&read_data, &read_continuations, &read_joins, None, &counter);
+        let (item_failed, vetoing) = row_enumeration(&mut *search, &lists, matcher, &rule, None)?;
+        let stored = fire.is_none();
+        let can_stop = !refused.is_empty() || !item_failed.is_empty() || (stored && fired);
+        let can_continue = refused.is_empty() && !deviated;
+        // A Matched row books no item pair (F19), and only a Stored or Parked
+        // row is vetoing (CR-20, item 2). A head row lists its head only
+        // (CR-2), so it deviates only to a store or a park.
+        let (item_failed, vetoing) = match stored {
+            true => (item_failed, vetoing),
+            false => (Vec::new(), false),
+        };
+        let parts = RowParts {
+            effects,
+            deviated,
+            refused,
+            item_failed,
+            actual,
+            can_stop,
+            can_continue,
+            vetoing,
+            claims: match deviated {
+                false => None,
+                true => search.actual_claims(),
+            },
+            search: Some(search),
+        };
+        Ok((fire, parts))
     }
 
-    // R4 step 9 (first part): the staged COMM is the COMM of the recorded
-    // candidate. `observe_comm` checks it again.
-    fn check_candidate(&self, ticket: &E::Ticket, comm: &COMM) -> Result<(), SpaceTxnError> {
-        let identity = ticket
-            .candidate_identity()
-            .ok_or_else(|| mismatch("a recorded fire has no candidate identity"))?;
-        match identity.matches_comm(comm) {
-            true => Ok(()),
-            false => Err(mismatch("the staged COMM differs from the recorded candidate")),
-        }
+    // Added by decision 124 (L15, L16, plan v4 C7.16, errata V4-6, V4-17,
+    // V4-18): the replay search of a consume row, before the row commits. It
+    // verifies the recorded refusals of the row over the search (R7). A staged
+    // fire selects the recorded tuple over the search (X7). The staged tuple
+    // c0 keeps the staged fire. Another tuple gives the actual fire, readied
+    // against the store, and a recorded park drops the fire. Each searched row
+    // enumerates its pairs for CanStop(d) and CanContinue(d) (CR-18, S1). A
+    // Matched row books none of them (CR-20, F19).
+    fn consume_found(
+        &self,
+        store: &NativeSpaceStore<O, C, P, A, K, E>,
+        ticket: &mut E::Ticket,
+        waiting: (&[C], &WaitingContinuation<P, K>),
+        fire: Option<ReadyConsumeFire<C, A>>,
+        search: RowSearchWithReads<'_, C, P, A, K>,
+    ) -> Result<(Option<ReadyConsumeFire<C, A>>, RowParts<C, P, A, K>), SpaceTxnError> {
+        let session = self.session();
+        let (channels, wk) = waiting;
+        let (mut search, reads) = search;
+        let read_data = reads.data(store);
+        let read_continuations = reads.continuations(store);
+        let read_joins = reads.joins(store);
+        let counter = |produce: &Produce| self.host_counter(produce);
+        let matcher: &dyn Match<P, A, K> = &**session.space.matcher;
+        let mut refused = Vec::new();
+        verify_row_refusals(
+            ticket,
+            |identity| {
+                let lists = RowLists::new(
+                    &read_data,
+                    &read_continuations,
+                    &read_joins,
+                    Some(identity),
+                    &counter,
+                );
+                let mut candidates = RowCandidates::new(&mut *search, lists, None);
+                session.space.find_refused_consume_tuple_with(
+                    &mut candidates,
+                    channels,
+                    &wk.patterns,
+                    &wk.continuation,
+                    &wk.source,
+                    &wk.peeks,
+                    identity,
+                )
+            },
+            |ticket, index, found| {
+                ticket
+                    .verify_refusal(
+                        index,
+                        &found.comm,
+                        &wk.continuation,
+                        wk.persist,
+                        &found.data,
+                        None,
+                    )
+                    .map_err(SpaceTxnError::Host)?;
+                let consume = &wk.source.hash;
+                refused.extend(
+                    found
+                        .data
+                        .iter()
+                        .map(|candidate| (candidate.datum.source.hash.clone(), consume.clone())),
+                );
+                Ok(())
+            },
+            || mismatch("a recorded refusal names no tuple of the row search"),
+        )?;
+        let Some(filter) = ticket.owner_filter() else {
+            return Err(SpaceTxnError::Inconsistent("a searched replay row has no owner filter"));
+        };
+        let rule = ReplayItemRule(filter);
+        let fired = fire.is_some();
+        let selected = match &fire {
+            Some(_) => {
+                let lists =
+                    RowLists::new(&read_data, &read_continuations, &read_joins, None, &counter);
+                let mut candidates = RowCandidates::new(&mut *search, lists, Some(&rule));
+                session.space.prepare_consume_candidate_with(
+                    &mut candidates,
+                    channels,
+                    &wk.patterns,
+                    &wk.continuation,
+                    &wk.source,
+                    &wk.peeks,
+                    ticket.candidate_identity(),
+                    Some((filter, wk.persist)),
+                )?
+            }
+            None => None,
+        };
+        let (fire, actual, effects, deviated) = match (selected, fire, ticket.outcome()) {
+            (None, None, _) => (None, None, None, false),
+            (None, Some(_), NativeReplayOutcome::Stored) => {
+                let effects = actual_park_effects(store, reads, channels, wk.clone())?;
+                (None, None, Some(effects), true)
+            }
+            (Some(_), _, NativeReplayOutcome::Stored) | (None, Some(_), _) => {
+                return Err(mismatch("the row search does not give the recorded outcome"));
+            }
+            // Added by decision 124 (P2, R-end, REPLAY-END): the row fires the staged
+            // tuple, which is the actual fire of play. The search keeps that fire, as
+            // the arm below does, so a cut after a record end reads the unit of a
+            // fire. The staged fire already holds the retires of the tuple.
+            (Some(selected), Some(staged), _) if selected.comm == staged.comm => {
+                let request = RowTupleRequest {
+                    matcher,
+                    group: channels,
+                    patterns: &wk.patterns,
+                    continuation: &wk.continuation,
+                    persistent: wk.persist,
+                    source: &wk.source,
+                    own: None,
+                    item: None,
+                };
+                search.actual_fire(&request, &selected.data);
+                (Some(staged), None, None, false)
+            }
+            (Some(selected), _, _) => {
+                let request = RowTupleRequest {
+                    matcher,
+                    group: channels,
+                    patterns: &wk.patterns,
+                    continuation: &wk.continuation,
+                    persistent: wk.persist,
+                    source: &wk.source,
+                    own: None,
+                    item: None,
+                };
+                let actual = search.actual_fire(&request, &selected.data);
+                let source = (&wk.source, &wk.peeks);
+                let (fire, effects) =
+                    ready_actual_consume_fire(self, store, reads, source, channels, selected.data)?;
+                (Some(fire), Some(actual), Some(effects), true)
+            }
+        };
+        let lists = RowLists::new(&read_data, &read_continuations, &read_joins, None, &counter);
+        let (item_failed, vetoing) =
+            row_enumeration(&mut *search, &lists, matcher, &rule, Some(&wk.continuation))?;
+        let stored = fire.is_none();
+        let can_stop = !refused.is_empty() || !item_failed.is_empty() || (stored && fired);
+        let can_continue = refused.is_empty() && !deviated;
+        // A Matched row books no item pair (F19), and only a Stored or Parked
+        // row is vetoing (CR-20, item 2).
+        let (item_failed, vetoing) = match stored {
+            true => (item_failed, vetoing),
+            false => (Vec::new(), false),
+        };
+        let parts = RowParts {
+            effects,
+            deviated,
+            refused,
+            item_failed,
+            actual,
+            can_stop,
+            can_continue,
+            vetoing,
+            claims: match deviated {
+                false => None,
+                true => search.actual_claims(),
+            },
+            search: Some(search),
+        };
+        Ok((fire, parts))
     }
 
+    // Retired by decision 124 (L10): the arms call the base `publish_denial`
+    // of `operations.rs`, as the base arms do. The flag is gone, so the
+    // wrapper has no step of its own. The text before:
+    // ```
+    // // R5 (A11): a recorded denial is published with its outcome, and the
+    // // operation fails as play fails it, with the error that the epoch names
+    // // for its denial (DR-113).
+    // fn publish_denial(
+    //     &self,
+    //     ticket: E::Ticket,
+    //     outcome: NativeReplayOutcome,
+    // ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
+    //     let session = self.session();
+    //     let mut completion = ticket.prepare(outcome)?;
+    //     let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
+    //         session.epoch.invalidate()
+    //     });
+    //     completion.publish();
+    //     publication.complete();
+    //     self.denied.store(true, Ordering::Release);
+    //     // Changed by decision 89 (DR-113): the epoch names the error of its
+    //     // denial, because the class of an exhaustion depends on the bound
+    //     // source, as `operations.rs` returns it for a host operation.
+    //     // Err(SpaceTxnError::Host(RSpaceError::OutOfPhlogistons))
+    //     Err(SpaceTxnError::Host(session.epoch.denial()))
+    // }
+    // ```
+
+    // Retired by decision 123 (plan v4 C3g) and decision 124 (review N, M3):
+    // base `observe_comm` checks the COMM source before it observes
+    // (`authenticate_comm_source` of the rholang replay). The text before:
+    // ```
+    // // R4 step 9 (first part): the staged COMM is the COMM of the recorded
+    // // candidate. `observe_comm` checks it again.
+    // fn check_candidate(&self, ticket: &E::Ticket, comm: &COMM) -> Result<(), SpaceTxnError> {
+    //     let identity = ticket
+    //         .candidate_identity()
+    //         .ok_or_else(|| mismatch("a recorded fire has no candidate identity"))?;
+    //     match identity.matches_comm(comm) {
+    //         true => Ok(()),
+    //         false => Err(mismatch("the staged COMM differs from the recorded candidate")),
+    //     }
+    // }
+    // ```
+
+    // Changed by decision 92: the footprint names the footprint key
+    // `footprint_key` as one more join group, as play records it.
+    // fn apply_produce(
+    //     &self,
+    //     store: &NativeSpaceStore<O, C, P, A, K, E>,
+    //     produce: StagedProduce<C, P, A, K>,
+    //     before_observe: Option<BeforeObserve>,
+    //     events: &mut Vec<Event>,
+    // ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
     fn apply_produce(
         &self,
         store: &NativeSpaceStore<O, C, P, A, K, E>,
         produce: StagedProduce<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        footprint_key: Option<&C>,
+        search: Option<RowSearchWithReads<'_, C, P, A, K>>,
         events: &mut Vec<Event>,
-    ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
+    ) -> Result<AppliedRow<C, P, A, K>, SpaceTxnError> {
         let session = self.session();
         // Step 2: the commit checks of play, over the session store.
         let host_counter = self.host_counter(&produce.source);
@@ -678,29 +1399,77 @@ where
         // Steps 3 to 6.
         run_before_observe(before_observe, source)?;
         let (authority, mut ticket) = self.begin_row(source)?;
+        // ticket.authenticate_footprint(std::slice::from_ref(&channel), &joins)?;
+        let joins = footprint_joins(&joins, footprint_key);
         ticket.authenticate_footprint(std::slice::from_ref(&channel), &joins)?;
         // Step 7.
         let outcome = ticket.outcome();
-        let fits = match (&fire, outcome) {
-            (None, NativeReplayOutcome::Stored | NativeReplayOutcome::DeniedIntroduction) => true,
-            (
-                Some(_),
-                NativeReplayOutcome::Matched |
-                NativeReplayOutcome::DeniedIntroduction |
-                NativeReplayOutcome::DeniedComm,
-            ) => true,
-            _ => false,
-        };
+        // Changed by decision 90 (DR-132): the readiness check shares the rule
+        // (`outcome_fits`).
+        // let fits = match (&fire, outcome) {
+        //     (None, NativeReplayOutcome::Stored |
+        // NativeReplayOutcome::DeniedIntroduction) => true,     (
+        //         Some(_),
+        //         NativeReplayOutcome::Matched |
+        //         NativeReplayOutcome::DeniedIntroduction |
+        //         NativeReplayOutcome::DeniedComm,
+        //     ) => true,
+        //     _ => false,
+        // };
+        let fits = outcome_fits(fire.is_some(), outcome) ||
+            matches!((&fire, &search, outcome), (Some(_), Some(_), NativeReplayOutcome::Stored));
         if !fits {
             return Err(mismatch("the recorded outcome does not fit the staged produce"));
         }
         // Step 8.
         let decision = ticket.observe_produce(&produce_ref, &channel, &data, &authority)?;
-        if outcome == NativeReplayOutcome::DeniedIntroduction {
-            require(decision, NativeReplayDecision::Denied)?;
-            return self.publish_denial(ticket, outcome);
+        // Changed by decision 92: an owner-refused introduction replays as a
+        // skip (G3, DR-135, S6), as `operations.rs` replays it.
+        // if outcome == NativeReplayOutcome::DeniedIntroduction {
+        //     require(decision, NativeReplayDecision::Denied)?;
+        //     return self.publish_denial(ticket, outcome);
+        // }
+        match outcome {
+            NativeReplayOutcome::DeniedIntroduction => {
+                require(decision, NativeReplayDecision::Denied)?;
+                // Changed by decision 124 (L10): the arm calls the base
+                // `publish_denial`, as the base arm does. The text before:
+                // return self.publish_denial(ticket, outcome);
+                return session
+                    .publish_denial(ticket, outcome)
+                    .map(|()| skipped_row(OpSource::Produce(produce_ref.clone()), true))
+                    .map_err(SpaceTxnError::Host);
+            }
+            NativeReplayOutcome::SkippedIntroduction => {
+                require(decision, NativeReplayDecision::OwnerRefused)?;
+                // Changed by decision 124 (L10): the arm calls the base
+                // `publish_denial`, as the base arm does. The text before:
+                // return self.publish_denial(ticket, outcome);
+                return session
+                    .publish_denial(ticket, outcome)
+                    .map(|()| skipped_row(OpSource::Produce(produce_ref.clone()), true))
+                    .map_err(SpaceTxnError::Host);
+            }
+            NativeReplayOutcome::Stored |
+            NativeReplayOutcome::Matched |
+            NativeReplayOutcome::DeniedComm => {}
         }
         require(decision, NativeReplayDecision::Granted)?;
+        // Added by decision 124 (L15, L16, plan v4 C7.16, errata V4-17): under
+        // owner funding a row with a search runs its replay search before it
+        // commits (`produce_found`). The search may replace the staged fire by
+        // the actual fire of the row, or drop it for a recorded store.
+        let (fire, parts) = match (search, ticket.owner_filter().is_some()) {
+            (Some(search), true) => {
+                let incoming = Datum {
+                    a: data.clone(),
+                    persist,
+                    source: produce_ref.clone(),
+                };
+                self.produce_found(store, &mut ticket, &incoming, fire, search)?
+            }
+            (_, _) => (fire, RowParts::staged()),
+        };
         match fire {
             None => {
                 // Steps 10 to 12, with the store step of a stored host
@@ -708,6 +1477,22 @@ where
                 // the store before the publication.
                 let key = StoreKey::from_digest(&produce_ref.channel_hash)?;
                 session.prefetch_data(&channel, key)?;
+                // Added by decision 124 (ruling RADD2 1.2, J-STORE, rule CR-19
+                // case 3, F22): a row that deviates to a store writes nothing
+                // when its search keeps no staged record, or when the store
+                // holds the persistent record already, as play does.
+                let keeps = match (parts.deviated, parts.search.as_deref()) {
+                    (true, Some(search)) => search.keeps_staged_record(),
+                    (_, _) => true,
+                };
+                let writes = match (parts.deviated, keeps, persist) {
+                    (true, false, _) => false,
+                    (true, true, true) => !store
+                        .data(&channel, &produce_ref.channel_hash)?
+                        .iter()
+                        .any(|datum| datum.source == produce_ref),
+                    (true, true, false) | (false, _, _) => true,
+                };
                 let counter = session
                     .space
                     .prepare_produce_counter(&produce_ref, persist)?;
@@ -715,21 +1500,56 @@ where
                 let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
                     session.epoch.invalidate()
                 });
+                // Added by decision 90 (C6): a reporting session logs the
+                // stored produce, so it keeps a copy of the datum that the
+                // store takes, as `operations.rs` does for a host produce.
+                let logged = session.logging.then(|| data.clone());
                 // Changed by decision 89 (DR-96): the session store takes the
                 // datum, so the export of the session holds it.
                 // store_data(store, channel, data, persist, produce_ref.clone());
-                session.store.put_datum(&channel, key, Datum {
-                    a: data,
-                    persist,
-                    source: produce_ref.clone(),
-                })?;
+                // Changed by decision 124 (ruling RADD2 1.2, J-STORE, rule CR-19
+                // case 3, F22): a row that `writes` denies writes no datum. The
+                // text before:
+                // ```
+                // session.store.put_datum(&channel, key, Datum {
+                //     a: data,
+                //     persist,
+                //     source: produce_ref.clone(),
+                // })?;
+                // ```
+                match writes {
+                    true => {
+                        session.store.put_datum(&channel, key, Datum {
+                            a: data,
+                            persist,
+                            source: produce_ref.clone(),
+                        })?;
+                    }
+                    false => {}
+                }
                 counter.publish();
                 completion.publish();
                 publication.complete();
                 events.push(Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
-                Ok(SpaceOpReceipt::Stored {
+                // Added by decision 90 (C6): a reporting session logs the
+                // stored produce, as `space_replay.rs` logs it.
+                if let Some(data) = logged {
+                    session
+                        .space
+                        .log_produce(produce_ref.clone(), &channel, &data, persist);
+                }
+                // Changed by decision 124 (L15, L16, plan v4 C7.16): the row
+                // gives its applied row, with the parts of its search. The
+                // text before:
+                // ```
+                // Ok(SpaceOpReceipt::Stored {
+                //     produce: produce_ref,
+                // })
+                // ```
+                let receipt = SpaceOpReceipt::Stored {
                     produce: produce_ref,
-                })
+                };
+                Ok(AppliedRow { receipt, parts })
             }
             Some(fire) => {
                 let ReadyFire {
@@ -746,7 +1566,9 @@ where
                     committed,
                 } = fire;
                 // Step 9.
-                self.check_candidate(&ticket, &comm)?;
+                // Retired by decision 123 (plan v4 C3g) and decision 124
+                // (review N, M3): base `observe_comm` checks the COMM source.
+                // self.check_candidate(&ticket, &comm)?;
                 let decision = ticket.observe_comm(
                     &comm,
                     &continuation.continuation,
@@ -755,7 +1577,13 @@ where
                 )?;
                 if outcome == NativeReplayOutcome::DeniedComm {
                     require(decision, NativeReplayDecision::Denied)?;
-                    return self.publish_denial(ticket, outcome);
+                    // Changed by decision 124 (L10): the arm calls the base
+                    // `publish_denial`, as the base arm does. The text before:
+                    // return self.publish_denial(ticket, outcome);
+                    return session
+                        .publish_denial(ticket, outcome)
+                        .map(|()| skipped_row(OpSource::Produce(produce_ref.clone()), true))
+                        .map_err(SpaceTxnError::Host);
                 }
                 require(decision, NativeReplayDecision::Granted)?;
                 let returned = ticket.returned_produce(&produce_ref)?;
@@ -802,24 +1630,55 @@ where
                 publication.complete();
                 events.push(Event::IoEvent(IOEvent::Produce(produce_ref.clone())));
                 events.push(Event::Comm(comm.clone()));
+                // Added by decision 90 (C6): a reporting session logs the
+                // matched produce and its COMM, as `space_replay.rs` logs them
+                // and as `operations.rs` logs a matched host produce.
+                if session.logging {
+                    session
+                        .space
+                        .log_produce(produce_ref.clone(), &channel, &data, persist);
+                    session.space.log_comm(
+                        &candidates,
+                        &channels,
+                        continuation.clone(),
+                        comm.clone(),
+                        "comm.produce",
+                    );
+                }
                 let consume_ref = continuation.source.clone();
                 let fired = candidates.len();
                 let wrapped =
                     session
                         .space
                         .wrap_result(channels, continuation, consume_ref, candidates);
+                // Changed by decision 124 (L15, L16, plan v4 C7.16): the row
+                // gives its applied row, with the parts of its search. The
+                // text before:
+                // fired_receipt(comm, wrapped, fired, Some(returned))
                 fired_receipt(comm, wrapped, fired, Some(returned))
+                    .map(|receipt| AppliedRow { receipt, parts })
             }
         }
     }
 
+    // Changed by decision 92: the footprint names the footprint key
+    // `footprint_key` as its one join group, as play records it.
+    // fn apply_consume(
+    //     &self,
+    //     store: &NativeSpaceStore<O, C, P, A, K, E>,
+    //     consume: StagedConsume<C, P, A, K>,
+    //     before_observe: Option<BeforeObserve>,
+    //     events: &mut Vec<Event>,
+    // ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
     fn apply_consume(
         &self,
         store: &NativeSpaceStore<O, C, P, A, K, E>,
         consume: StagedConsume<C, P, A, K>,
         before_observe: Option<BeforeObserve>,
+        footprint_key: Option<&C>,
+        search: Option<RowSearchWithReads<'_, C, P, A, K>>,
         events: &mut Vec<Event>,
-    ) -> Result<SpaceOpReceipt<C, P, A, K>, SpaceTxnError> {
+    ) -> Result<AppliedRow<C, P, A, K>, SpaceTxnError> {
         let session = self.session();
         // Step 2.
         let consume =
@@ -836,21 +1695,29 @@ where
         } = consume;
         let source = RSpaceOperationSource::Consume(&consume_ref);
         // Steps 3 to 6. A consume authenticates its channels and no joins.
+        // Changed by decision 92: a consume authenticates its channels and the
+        // footprint key as its one join group.
         run_before_observe(before_observe, source)?;
         let (authority, mut ticket) = self.begin_row(source)?;
-        ticket.authenticate_footprint(&channels, &[])?;
+        // ticket.authenticate_footprint(&channels, &[])?;
+        let joins = footprint_joins(&[], footprint_key);
+        ticket.authenticate_footprint(&channels, &joins)?;
         // Step 7.
         let outcome = ticket.outcome();
-        let fits = match (&fire, outcome) {
-            (None, NativeReplayOutcome::Stored | NativeReplayOutcome::DeniedIntroduction) => true,
-            (
-                Some(_),
-                NativeReplayOutcome::Matched |
-                NativeReplayOutcome::DeniedIntroduction |
-                NativeReplayOutcome::DeniedComm,
-            ) => true,
-            _ => false,
-        };
+        // Changed by decision 90 (DR-132): the readiness check shares the rule
+        // (`outcome_fits`).
+        // let fits = match (&fire, outcome) {
+        //     (None, NativeReplayOutcome::Stored |
+        // NativeReplayOutcome::DeniedIntroduction) => true,     (
+        //         Some(_),
+        //         NativeReplayOutcome::Matched |
+        //         NativeReplayOutcome::DeniedIntroduction |
+        //         NativeReplayOutcome::DeniedComm,
+        //     ) => true,
+        //     _ => false,
+        // };
+        let fits = outcome_fits(fire.is_some(), outcome) ||
+            matches!((&fire, &search, outcome), (Some(_), Some(_), NativeReplayOutcome::Stored));
         if !fits {
             return Err(mismatch("the recorded outcome does not fit the staged consume"));
         }
@@ -863,9 +1730,36 @@ where
             &peeks,
             &authority,
         )?;
-        if outcome == NativeReplayOutcome::DeniedIntroduction {
-            require(decision, NativeReplayDecision::Denied)?;
-            return self.publish_denial(ticket, outcome);
+        // Changed by decision 92: an owner-refused introduction replays as a
+        // skip (G3, DR-135, S6), as `operations.rs` replays it.
+        // if outcome == NativeReplayOutcome::DeniedIntroduction {
+        //     require(decision, NativeReplayDecision::Denied)?;
+        //     return self.publish_denial(ticket, outcome);
+        // }
+        match outcome {
+            NativeReplayOutcome::DeniedIntroduction => {
+                require(decision, NativeReplayDecision::Denied)?;
+                // Changed by decision 124 (L10): the arm calls the base
+                // `publish_denial`, as the base arm does. The text before:
+                // return self.publish_denial(ticket, outcome);
+                return session
+                    .publish_denial(ticket, outcome)
+                    .map(|()| skipped_row(OpSource::Consume(consume_ref.clone()), true))
+                    .map_err(SpaceTxnError::Host);
+            }
+            NativeReplayOutcome::SkippedIntroduction => {
+                require(decision, NativeReplayDecision::OwnerRefused)?;
+                // Changed by decision 124 (L10): the arm calls the base
+                // `publish_denial`, as the base arm does. The text before:
+                // return self.publish_denial(ticket, outcome);
+                return session
+                    .publish_denial(ticket, outcome)
+                    .map(|()| skipped_row(OpSource::Consume(consume_ref.clone()), true))
+                    .map_err(SpaceTxnError::Host);
+            }
+            NativeReplayOutcome::Stored |
+            NativeReplayOutcome::Matched |
+            NativeReplayOutcome::DeniedComm => {}
         }
         require(decision, NativeReplayDecision::Granted)?;
         let wk = WaitingContinuation {
@@ -876,6 +1770,17 @@ where
             source: consume_ref.clone(),
         };
         let keys = group_keys(&group)?;
+        // Added by decision 124 (L15, L16, plan v4 C7.16, errata V4-17): under
+        // owner funding a row with a search runs its replay search before it
+        // commits (`consume_found`). The search may replace the staged fire by
+        // the actual fire of the row, or drop it for a recorded park.
+        let (fire, parts) = match (search, ticket.owner_filter().is_some()) {
+            (Some(search), true) => {
+                let waiting = (channels.as_slice(), &wk);
+                self.consume_found(store, &mut ticket, waiting, fire, search)?
+            }
+            (_, _) => (fire, RowParts::staged()),
+        };
         match fire {
             None => {
                 // Steps 10 to 12, with the store step of a parked host
@@ -890,6 +1795,13 @@ where
                 let publication = PublicationGuard::with_invalidation(&session.unavailable, || {
                     session.epoch.invalidate()
                 });
+                // Added by decision 90 (C6): a reporting session logs the
+                // parked consume, so it keeps a copy of the parts of the
+                // continuation that the store takes, as `operations.rs` does
+                // for a host consume.
+                let logged = session
+                    .logging
+                    .then(|| (wk.patterns.clone(), wk.continuation.clone(), wk.peeks.clone()));
                 // Changed by decision 89 (DR-96): the session store takes the
                 // continuation and its joins, and it gives the depth of the
                 // group for the waiting-continuation estimate.
@@ -903,9 +1815,30 @@ where
                 completion.publish();
                 publication.complete();
                 events.push(Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
-                Ok(SpaceOpReceipt::Parked {
+                // Added by decision 90 (C6): a reporting session logs the
+                // parked consume, as `space_replay.rs` logs it.
+                if let Some((patterns, continuation, peeks)) = logged {
+                    session.space.log_consume(
+                        consume_ref.clone(),
+                        &channels,
+                        &patterns,
+                        &continuation,
+                        persist,
+                        &peeks,
+                    );
+                }
+                // Changed by decision 124 (L15, L16, plan v4 C7.16): the row
+                // gives its applied row, with the parts of its search. The
+                // text before:
+                // ```
+                // Ok(SpaceOpReceipt::Parked {
+                //     consume: consume_ref,
+                // })
+                // ```
+                let receipt = SpaceOpReceipt::Parked {
                     consume: consume_ref,
-                })
+                };
+                Ok(AppliedRow { receipt, parts })
             }
             Some(ReadyConsumeFire {
                 fire: StagedConsumeFire { candidates, .. },
@@ -913,12 +1846,20 @@ where
                 committed,
             }) => {
                 // Step 9.
-                self.check_candidate(&ticket, &comm)?;
+                // Retired by decision 123 (plan v4 C3g) and decision 124
+                // (review N, M3): base `observe_comm` checks the COMM source.
+                // self.check_candidate(&ticket, &comm)?;
                 let decision =
                     ticket.observe_comm(&comm, &wk.continuation, wk.persist, &candidates)?;
                 if outcome == NativeReplayOutcome::DeniedComm {
                     require(decision, NativeReplayDecision::Denied)?;
-                    return self.publish_denial(ticket, outcome);
+                    // Changed by decision 124 (L10): the arm calls the base
+                    // `publish_denial`, as the base arm does. The text before:
+                    // return self.publish_denial(ticket, outcome);
+                    return session
+                        .publish_denial(ticket, outcome)
+                        .map(|()| skipped_row(OpSource::Consume(consume_ref.clone()), true))
+                        .map_err(SpaceTxnError::Host);
                 }
                 require(decision, NativeReplayDecision::Granted)?;
                 // Steps 10 to 12, with the store step of a host consume match
@@ -943,11 +1884,36 @@ where
                 publication.complete();
                 events.push(Event::IoEvent(IOEvent::Consume(consume_ref.clone())));
                 events.push(Event::Comm(comm.clone()));
+                // Added by decision 90 (C6): a reporting session logs the
+                // matched consume and its COMM, as `space_replay.rs` logs them
+                // and as `operations.rs` logs a matched host consume.
+                if session.logging {
+                    session.space.log_consume(
+                        consume_ref.clone(),
+                        &channels,
+                        &wk.patterns,
+                        &wk.continuation,
+                        wk.persist,
+                        &wk.peeks,
+                    );
+                    session.space.log_comm(
+                        &candidates,
+                        &channels,
+                        wk.clone(),
+                        comm.clone(),
+                        "comm.consume",
+                    );
+                }
                 let fired = candidates.len();
                 let wrapped = session
                     .space
                     .wrap_result(channels, wk, consume_ref, candidates);
+                // Changed by decision 124 (L15, L16, plan v4 C7.16): the row
+                // gives its applied row, with the parts of its search. The
+                // text before:
+                // fired_receipt(comm, wrapped, fired, None)
                 fired_receipt(comm, wrapped, fired, None)
+                    .map(|receipt| AppliedRow { receipt, parts })
             }
         }
     }
@@ -962,18 +1928,37 @@ mod tests {
     use super::*;
     use crate::rspace::hot_store_action::{HotStoreAction, InsertAction};
     use crate::rspace::internal::{ConsumeCandidate, Datum, Install};
+    // Changed by decision 124 (plan of the batch B tests, B16, ruling RADD2v2
+    // 8.7): a funded script names the owner checks of replay. The text before:
+    // use crate::rspace::replay_rspace::native_epoch::{
+    //     NativeCandidateIdentity, NativeReplayBoundary, NativeReplayEpoch,
+    //     NativeReplayRestore,
+    // };
     use crate::rspace::replay_rspace::native_epoch::{
-        NativeCandidateIdentity, NativeReplayBoundary, NativeReplayEpoch, NativeReplayRestore,
+        NativeCandidateIdentity, NativeOwnerFilter, NativeReplayBoundary, NativeReplayEpoch,
+        NativeReplayRestore,
     };
     use crate::rspace::rspace::RSpace;
     use crate::rspace::rspace_interface::ISpace;
     use crate::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use crate::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    // Changed by decision 124 (plan of the batch B tests, B16, ruling RADD2v2
+    // 8.7): the test of the cut names the parts of its scripted search. The text
+    // before:
+    // use crate::rspace::space_store_handle::{
+    //     ConsumeOutcome, ProduceOutcome, SharedStore, SpaceConsume,
+    //     SpaceProduce, SpaceStoreHandle, SpaceTxnReceipt, bind_candidate,
+    //     incoming_candidate, installed_channel_keys,
+    // };
     use crate::rspace::space_store_handle::{
-        ConsumeOutcome, ProduceOutcome, SharedStore, SpaceConsume, SpaceProduce, SpaceStoreHandle,
-        SpaceTxnReceipt, bind_candidate, incoming_candidate, installed_channel_keys,
+        ActualFire, ConsumeOutcome, FinishRow, ProduceOutcome, RowItemRule, RowReissue, RowRun,
+        SharedStore, SpaceConsume, SpaceProduce, SpaceStoreHandle, SpaceTxnReceipt, bind_candidate,
+        incoming_candidate, installed_channel_keys,
     };
-    use crate::rspace::trace::event::Consume;
+    // Changed by decision 90 (C6, step D): the file no longer imports `COMM` at
+    // its top, and these tests name it. The text before:
+    // use crate::rspace::trace::event::Consume;
+    use crate::rspace::trace::event::{COMM, Consume};
 
     // One recorded journal row: its outcome, the decisions of its introduction and
     // of its COMM, and the COMM of its candidate.
@@ -1022,6 +2007,16 @@ mod tests {
             }
         }
 
+        // Added by decision 92: a skipped introduction (G3, DR-135, S6). Its owner
+        // could not pay, so the decision of the introduction is `OwnerRefused`.
+        fn skipped_introduction() -> Self {
+            Self {
+                outcome: NativeReplayOutcome::SkippedIntroduction,
+                introduction: NativeReplayDecision::OwnerRefused,
+                ..Self::stored()
+            }
+        }
+
         fn denied_comm(candidate: COMM) -> Self {
             Self {
                 outcome: NativeReplayOutcome::DeniedComm,
@@ -1039,6 +2034,17 @@ mod tests {
         rows: Arc<Mutex<VecDeque<Row>>>,
         log: Arc<Mutex<Vec<String>>>,
         not_ready: Arc<AtomicBool>,
+        // Added by decision 90 (DR-132): the readiness checks that still report
+        // `NotReady`, and the log of the checks and waits of the transactions.
+        unready_checks: Arc<std::sync::atomic::AtomicUsize>,
+        readiness_log: Arc<Mutex<Vec<String>>>,
+        // Added by decision 102 (decision 119 S2): the scripted answers of the
+        // lookup of the recorded rows, and the log of the lookups.
+        recorded_rows: Arc<Mutex<VecDeque<Option<RecordedRow>>>>,
+        lookup_log: Arc<Mutex<Vec<String>>>,
+        // Added by decision 124 (plan of the batch B tests, B16, ruling RADD2v2
+        // 8.7): whether the tickets of the script have owner funding.
+        funded: Arc<AtomicBool>,
     }
 
     impl Script {
@@ -1173,15 +2179,40 @@ mod tests {
             Ok(self.row.introduction)
         }
 
+        // Changed by decision 123 (plan v4 C3g) and decision 124 (review N, M3):
+        // the scripted ticket checks the COMM source before it observes, as
+        // base `observe_comm` does (`authenticate_comm_source`), because
+        // `check_candidate` retires. The failure keeps the text of the retired
+        // check, so the negative controls keep their error. The text before:
+        // ```
+        // fn observe_comm(
+        //     &mut self,
+        //     _source: &COMM,
+        //     _continuation: &String,
+        //     _persistent: bool,
+        //     _data: &[ConsumeCandidate<String, String>],
+        // ) -> Result<NativeReplayDecision, RSpaceError> {
+        //     self.script.note("observe_comm");
+        //     Ok(self.row.comm)
+        // }
+        // ```
         fn observe_comm(
             &mut self,
-            _source: &COMM,
+            source: &COMM,
             _continuation: &String,
             _persistent: bool,
             _data: &[ConsumeCandidate<String, String>],
         ) -> Result<NativeReplayDecision, RSpaceError> {
-            self.script.note("observe_comm");
-            Ok(self.row.comm)
+            match self.identity.matches_comm(source) {
+                true => {
+                    self.script.note("observe_comm");
+                    Ok(self.row.comm)
+                }
+                false => Err(RSpaceError::InterpreterError(
+                    "native space replay: the staged COMM differs from the recorded candidate"
+                        .to_owned(),
+                )),
+            }
         }
 
         fn returned_produce(&self, source: &Produce) -> Result<Produce, RSpaceError> {
@@ -1197,6 +2228,15 @@ mod tests {
             }
             self.script.note(format!("prepare {outcome:?}"));
             Ok(Publication(self.script))
+        }
+
+        // Added by decision 124 (plan of the batch B tests, B16, ruling RADD2v2
+        // 8.7): a ticket of a funded script has the owner checks of `Funding`.
+        fn owner_filter(&self) -> Option<&dyn NativeOwnerFilter<String, String, String, String>> {
+            match self.script.funded.load(Ordering::Acquire) {
+                false => None,
+                true => Some(&Funding),
+            }
         }
     }
 
@@ -1236,6 +2276,102 @@ mod tests {
                 script: self.clone(),
             }))
         }
+
+        // Added by decision 95: the scripted readiness of the first row. A
+        // check logs the kind of the first operation ("produce" or "consume")
+        // and passes, or it reports `NotReady` at `SCRIPTED_VERSION` while the
+        // script holds unready checks.
+        fn space_transaction_ready(
+            &self,
+            first: RSpaceOperationSource<'_>,
+        ) -> Result<SpaceTransactionReadiness, RSpaceError> {
+            let kind = match first {
+                RSpaceOperationSource::Produce(_) => "produce",
+                RSpaceOperationSource::Consume(_) => "consume",
+            };
+            self.readiness_log
+                .lock()
+                .expect("readiness log lock")
+                .push(format!("check {kind}"));
+            let unready =
+                self.unready_checks
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_sub(1)
+                    });
+            match unready {
+                Ok(_) => Ok(SpaceTransactionReadiness::NotReady {
+                    seen: SCRIPTED_VERSION,
+                }),
+                Err(_) => Ok(SpaceTransactionReadiness::Ready),
+            }
+        }
+
+        // Added by decision 95: a scripted wait logs its version and returns.
+        async fn wait_space_change(&self, seen: u64) -> Result<(), RSpaceError> {
+            self.readiness_log
+                .lock()
+                .expect("readiness log lock")
+                .push(format!("wait {seen}"));
+            Ok(())
+        }
+
+        // Added by decision 102 (decision 119 S2): a scripted lookup logs the
+        // kind of its operation and its `previous` row, and it takes the next
+        // scripted answer. Without a scripted answer it gives None, which
+        // stages the transaction in DR-75 order (rule CR-5).
+        fn space_recorded_row(
+            &self,
+            source: RSpaceOperationSource<'_>,
+            previous: Option<usize>,
+            _footprint_key: &String,
+        ) -> Result<Option<RecordedRow>, RSpaceError> {
+            let kind = match source {
+                RSpaceOperationSource::Produce(_) => "produce",
+                RSpaceOperationSource::Consume(_) => "consume",
+            };
+            self.lookup_log
+                .lock()
+                .expect("lookup log lock")
+                .push(format!("recorded {kind} {previous:?}"));
+            Ok(self
+                .recorded_rows
+                .lock()
+                .expect("recorded rows lock")
+                .pop_front()
+                .flatten())
+        }
+    }
+
+    // Added by decision 90 (DR-132): the version that a scripted `NotReady`
+    // reports.
+    const SCRIPTED_VERSION: u64 = 7;
+
+    // Disabled by decision 95: the epoch of the session checks and waits, so
+    // the scripted epoch (`space_transaction_ready` and `wait_space_change`)
+    // replaces the scripted readiness wait of the host.
+
+    impl Script {
+        // Added by decision 90 (DR-132).
+        fn readiness_log(&self) -> Vec<String> {
+            self.readiness_log
+                .lock()
+                .expect("readiness log lock")
+                .clone()
+        }
+
+        // Added by decision 102 (plan v4 C3b): scripts the answers of the next
+        // lookups of the recorded rows, in order.
+        fn script_rows(&self, rows: impl IntoIterator<Item = Option<RecordedRow>>) {
+            self.recorded_rows
+                .lock()
+                .expect("recorded rows lock")
+                .extend(rows);
+        }
+
+        // Added by decision 102 (plan v4 C3b): the log of the lookups so far.
+        fn lookups(&self) -> Vec<String> {
+            self.lookup_log.lock().expect("lookup log lock").clone()
+        }
     }
 
     struct AnyMatch;
@@ -1274,6 +2410,10 @@ mod tests {
 
     // The handle of a session whose system processes install the channels of
     // `installed` (R2).
+    // Changed by decision 90 (DR-132): the host takes the scripted readiness wait
+    // of the epoch of the session.
+    // Changed by decision 95: the scripted epoch of the session checks and
+    // waits, so the host takes no readiness wait.
     fn handle_with(session: &Arc<Session>, installed: BTreeSet<Blake2b256Hash>) -> Handle {
         let host = NativeSpaceHost::new(
             Arc::clone(session),
@@ -1349,6 +2489,9 @@ mod tests {
             persist: false,
             outcome: ProduceOutcome::Store,
             before_observe: None,
+            own: false,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
         }
     }
 
@@ -1361,6 +2504,9 @@ mod tests {
             peeks: BTreeSet::new(),
             outcome: ConsumeOutcome::Park,
             before_observe: None,
+            own: false,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
         }
     }
 
@@ -1385,6 +2531,9 @@ mod tests {
                 )],
             },
             before_observe: None,
+            own: false,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
         }
     }
 
@@ -1403,6 +2552,9 @@ mod tests {
                 data: vec![bind_candidate(s(channel), stored, stored.a.clone(), index)],
             },
             before_observe: None,
+            own: false,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
         }
     }
 
@@ -1509,7 +2661,15 @@ mod tests {
         assert_eq!(error, mismatch("the staged COMM differs from the recorded candidate"));
         assert!(!script.log().contains(&"observe_comm".to_owned()));
         assert!(!script.log().contains(&"publish".to_owned()));
-        assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
+        // Changed by decision 124 (L10): no failure closes the epoch. The text
+        // before:
+        // ```
+        // assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
+        // ```
+        assert!(
+            !script.log().contains(&"invalidate".to_owned()),
+            "a failure leaves the epoch open (decision 124, L10)"
+        );
         let state = StoreState::of_session(&session);
         assert_eq!(state.continuations.get(&vec![s("b")]).map(Vec::len), Some(1));
     }
@@ -1526,7 +2686,15 @@ mod tests {
         txn.produce(store_op("a", "x")).expect("stage x");
         let error = txn.commit().await.expect_err("a misfit outcome fails");
         assert_eq!(error, mismatch("the recorded outcome does not fit the staged produce"));
-        assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
+        // Changed by decision 124 (L10): no failure closes the epoch. The text
+        // before:
+        // ```
+        // assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
+        // ```
+        assert!(
+            !script.log().contains(&"invalidate".to_owned()),
+            "a failure leaves the epoch open (decision 124, L10)"
+        );
         assert!(
             !script
                 .log()
@@ -1578,7 +2746,10 @@ mod tests {
         );
         assert!(
             !script.log().contains(&"invalidate".to_owned()),
-            "a recorded denial keeps the epoch open"
+            // Changed by decision 124 (L10): no failure closes the epoch now, a
+            // denial included. The text before:
+            // "a recorded denial keeps the epoch open"
+            "a recorded denial keeps the epoch open, as every failure does (L10)"
         );
     }
 
@@ -1612,8 +2783,9 @@ mod tests {
     }
 
     // P1: a row that is not ready fails the operation closed. The backend holds
-    // stripes, so it never waits, and the test ends. The failure closes the
-    // epoch.
+    // stripes, so it never waits, and the test ends. Changed by decision 124
+    // (L10): the failure leaves the epoch open. The text before: "The failure
+    // closes the epoch."
     #[tokio::test]
     async fn native_space_replay_fails_closed_on_a_row_that_is_not_ready() {
         let script = Script::default();
@@ -1624,9 +2796,13 @@ mod tests {
         txn.produce(store_op("a", "x")).expect("stage x");
         let error = txn.commit().await.expect_err("an unready row fails");
         assert_eq!(error, mismatch("the journal row of the operation is not ready"));
-        // The failure closes the epoch, so an operation that waits for the row
-        // wakes and fails.
-        assert_eq!(script.log(), vec!["begin produce", "invalidate"]);
+        // Changed by decision 124 (L10): the failure leaves the epoch open. A
+        // waiter of the row parks counted, and the stall rule ends its wait
+        // (DR-132). The text before:
+        // // The failure closes the epoch, so an operation that waits for the row
+        // // wakes and fails.
+        // assert_eq!(script.log(), vec!["begin produce", "invalidate"]);
+        assert_eq!(script.log(), vec!["begin produce"]);
         // The view load caches the empty history value of `a`. No record is stored.
         assert!(
             StoreState::of_session(&session)
@@ -1634,6 +2810,216 @@ mod tests {
                 .get(&s("a"))
                 .is_none_or(Vec::is_empty)
         );
+    }
+
+    // Added by decision 90 (DR-132): a transaction whose rows are not ready fails
+    // with `NotReady` before its first operation. It begins no row, makes no
+    // observation, stores nothing and keeps the epoch open (review amendment
+    // (e)). Its stripes are free after the commit, so the job can wait and run
+    // again, and the second run commits through its row.
+    #[tokio::test]
+    async fn native_space_replay_waits_when_the_transaction_is_not_ready() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.unready_checks.store(1, Ordering::Release);
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
+        txn.produce(store_op("a", "x")).expect("stage x");
+        let error = txn
+            .commit()
+            .await
+            .expect_err("an unready transaction waits");
+        assert_eq!(error, SpaceTxnError::NotReady {
+            seen: SCRIPTED_VERSION
+        });
+        assert!(script.log().is_empty(), "nothing began, observed or invalidated");
+        assert!(
+            StoreState::of_session(&session)
+                .data
+                .get(&s("a"))
+                .is_none_or(Vec::is_empty)
+        );
+        drop(txn);
+        handle
+            .wait_changed(SCRIPTED_VERSION)
+            .await
+            .expect("the job waits without a transaction");
+        script.push(Row::stored());
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin again");
+        txn.produce(store_op("a", "x")).expect("stage x again");
+        txn.commit().await.expect("the second run commits");
+        // Changed by decision 95: the scripted epoch logs the kind of the first
+        // operation.
+        assert_eq!(script.readiness_log(), vec![
+            "check produce".to_owned(),
+            format!("wait {SCRIPTED_VERSION}"),
+            "check produce".to_owned(),
+        ]);
+        assert_eq!(
+            StoreState::of_session(&session)
+                .data
+                .get(&s("a"))
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    // Added by decision 90 (DR-132): the check reads every staged operation of the
+    // transaction, in staging order and before the first one applies, with the
+    // staged COMM of a fire.
+    // Disabled by decision 92: the check reads the first staged operation only.
+    // `native_space_replay_checks_the_first_staged_row_only` checks that rule.
+
+    // Added by decision 92: the check reads the first staged operation only,
+    // before it applies (`SpaceReplayOrder.tla`, `FirstReady`). The park of k
+    // checks its consume. The next transaction stages a consume and then a
+    // fire, and its check reads the consume only. A transaction that is not
+    // ready begins no row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_space_replay_checks_the_first_staged_row_only() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        park_k(&script, &handle).await;
+        script.clear();
+        script.unready_checks.store(1, Ordering::Release);
+        let mut txn = handle.begin(&[s("a"), s("b")]).await.expect("begin");
+        let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
+        txn.consume(park_op("a", "j")).expect("stage the park of j");
+        txn.produce(fire_op("b", "y", &waiting))
+            .expect("stage the fire");
+        let error = txn
+            .commit()
+            .await
+            .expect_err("an unready transaction waits");
+        assert_eq!(error, SpaceTxnError::NotReady {
+            seen: SCRIPTED_VERSION
+        });
+        assert!(script.log().is_empty(), "no operation began");
+        assert_eq!(script.readiness_log(), vec![
+            "check consume".to_owned(),
+            "check consume".to_owned(),
+        ]);
+    }
+
+    // Added by decision 92: every row of a transaction with a footprint key
+    // authenticates the key as one more join group of its footprint, as play
+    // records it. A produce adds the group after its joins, and a consume
+    // has the key as its one group.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_space_replay_authenticates_the_footprint_key() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.push(Row::stored());
+        script.push(Row::stored());
+        let mut txn = handle
+            .begin(&[s("a"), s("b"), s("S")])
+            .await
+            .expect("begin");
+        txn.set_footprint_key(s("S")).expect("S is a lock key");
+        let mut first = store_op("a", "x");
+        first.own = true;
+        txn.produce(first).expect("stage x");
+        txn.consume(park_op("b", "k")).expect("stage the park");
+        txn.commit().await.expect("commit");
+        assert_eq!(script.log(), vec![
+            "begin produce",
+            "footprint [\"a\"] [[\"S\"]]",
+            "observe_produce a",
+            "prepare Stored",
+            "publish",
+            "begin consume",
+            "footprint [\"b\"] [[\"S\"]]",
+            "observe_consume [\"b\"]",
+            "prepare Stored",
+            "publish",
+        ]);
+        script.clear();
+        let mut txn = handle.begin(&[s("b"), s("S")]).await.expect("begin");
+        txn.set_footprint_key(s("S")).expect("S is a lock key");
+        let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
+        let mut fire = fire_op("b", "z", &waiting);
+        fire.own = true;
+        let staged = txn.produce(fire).expect("stage the fire of k");
+        script.push(Row::matched(staged.comm.clone()));
+        txn.commit().await.expect("commit the fire");
+        assert_eq!(&script.log()[..2], &["begin produce", "footprint [\"b\"] [[\"b\"], [\"S\"]]",]);
+    }
+
+    // Added by decision 92: a skipped introduction (G3, DR-135, S6) publishes its
+    // row with its outcome. The row commits as `Skipped`, as play skips it (R8,
+    // decision 124, L10), and it stops the commit (CR-18). The operations before
+    // it stay applied, and the epoch stays open.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_space_replay_publishes_a_skipped_introduction() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.push(Row::stored());
+        script.push(Row::skipped_introduction());
+        let mut txn = handle.begin(&[s("a"), s("b")]).await.expect("begin");
+        txn.produce(store_op("a", "x")).expect("stage x");
+        txn.consume(park_op("b", "k")).expect("stage the park");
+        let receipt = txn.commit().await.expect("the refusal skips its row");
+        assert_eq!(receipt.ops.len(), 2);
+        assert!(matches!(receipt.ops[1], SpaceOpReceipt::Skipped { .. }));
+        assert_eq!(receipt.deviation.map(|deviation| deviation.index), Some(1));
+        assert_eq!(&script.log()[5..], &[
+            "begin consume",
+            "footprint [\"b\"] []",
+            "observe_consume [\"b\"]",
+            "prepare SkippedIntroduction",
+            "publish",
+        ]);
+        assert!(
+            !script.log().contains(&"invalidate".to_owned()),
+            // Changed by decision 124 (L10): no failure closes the epoch now, a
+            // skipped introduction included.
+            "a skipped introduction keeps the epoch open, as every failure does (L10)"
+        );
+        let state = StoreState::of_session(&session);
+        assert_eq!(state.data.get(&s("a")).map(Vec::len), Some(1));
+        assert!(
+            state
+                .continuations
+                .get(&vec![s("b")])
+                .is_none_or(Vec::is_empty),
+            "the refused park stores nothing"
+        );
+    }
+
+    // Added by decision 90 (item 3.10, and decision 91 SQ-4): the hold of a commit
+    // keeps its stripes, so a transaction on its channels begins only after the
+    // hold drops. While the hold lives, its task holds an open transaction of
+    // the handle, so it cannot begin another one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn native_space_replay_hold_keeps_the_stripes_of_a_commit() {
+        use std::time::Duration;
+
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.push(Row::stored());
+        let mut txn = handle.begin(&[s("a")]).await.expect("begin");
+        txn.produce(store_op("a", "x")).expect("stage x");
+        let (receipt, hold) = txn.commit_holding().await.expect("commit and hold");
+        assert_eq!(receipt.ops.len(), 1);
+        assert!(matches!(handle.begin(&[s("b")]).await, Err(SpaceTxnError::NestedTransaction)));
+        let other = handle.clone();
+        let mut waiting = tokio::spawn(async move { other.begin(&[s("a")]).await.map(drop) });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut waiting)
+                .await
+                .is_err(),
+            "the stripe of a is held"
+        );
+        drop(hold);
+        tokio::time::timeout(Duration::from_secs(10), waiting)
+            .await
+            .expect("the begin proceeds after the hold drops")
+            .expect("the other task joins")
+            .expect("the other transaction begins");
     }
 
     // R2 (A4): the installed channels of the session are guarded, as in play.
@@ -1657,6 +3043,14 @@ mod tests {
 
     // S1: native replay stages as play: it pairs nothing and admits every
     // candidate.
+    // Changed by decision 102 (rules CR-4, CR-5 and R13): native replay still
+    // pairs nothing, but it names a record by the COMM of its recorded row, as
+    // replay does. A transaction without a footprint key has no chain, so it
+    // follows no row, and `recorded_comms` gives None without a lookup. The
+    // staged view counts the staged produce, so the record is named with
+    // `incoming` false and not with `incoming` true. The text before: "S1:
+    // native replay stages as play: it pairs nothing and admits every
+    // candidate."
     #[tokio::test]
     async fn native_space_replay_stages_as_play() {
         let script = Script::default();
@@ -1677,7 +3071,545 @@ mod tests {
             persist: false,
             source: z,
         };
-        assert_eq!(txn.admits(&comm, &incoming, true), Ok(true));
+        // Changed by decision 102 (rules CR-4 and R13): the named-record test of
+        // replay.
+        // assert_eq!(txn.admits(&comm, &incoming, true), Ok(true));
+        assert_eq!(txn.admits(&comm, &incoming, false), Ok(true));
+        assert_eq!(txn.admits(&comm, &incoming, true), Ok(false));
+        assert!(script.lookups().is_empty(), "a transaction without a chain looks up no row");
+    }
+
+    // Added by decision 102 (plan v4 C3b): a transaction over the channels
+    // `channels` and the footprint key `S`, whose rows form one chain.
+    async fn begin_chained(
+        handle: &Handle,
+        channels: &[&str],
+    ) -> BoxedSpaceTxn<String, String, String, String> {
+        let mut keys = Vec::with_capacity(channels.len() + 1);
+        keys.extend(channels.iter().map(|channel| s(channel)));
+        keys.push(s("S"));
+        let mut txn = handle.begin(&keys).await.expect("begin");
+        txn.set_footprint_key(s("S")).expect("S is a lock key");
+        txn
+    }
+
+    // Added by decision 102 (plan v4 C3b): the own store of `data` on
+    // `channel`, which can be the first operation of a chained transaction.
+    fn own_store_op(channel: &str, data: &str) -> SpaceProduce<String, String, String, String> {
+        let mut op = store_op(channel, data);
+        op.own = true;
+        op
+    }
+
+    // Added by decision 102 (plan v4 C3b): a recorded row with the journal
+    // index `journal`, the outcome `outcome` and no COMM.
+    fn row_at(journal: usize, outcome: NativeReplayOutcome) -> Option<RecordedRow> {
+        Some((journal, outcome, None))
+    }
+
+    // Added by decision 102 (decision 119 S1, plan v4 C3b, rules CR-4 and
+    // CR-5): operation 0 takes the first open row of its source, and each
+    // later operation takes the successor of the row of the operation before
+    // it. The lookup of `recorded_comms` waits for the stage call of its
+    // source, so each operation looks up once. A Stored row names no COMM.
+    #[tokio::test]
+    async fn native_space_replay_follows_the_chain_of_the_footprint_key() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.script_rows([
+            row_at(4, NativeReplayOutcome::Stored),
+            row_at(9, NativeReplayOutcome::Stored),
+        ]);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        let x = Produce::create(&s("a"), &s("x"), false);
+        assert_eq!(txn.recorded_comms(RSpaceOperationSource::Produce(&x)), Some(Vec::new()));
+        assert_eq!(txn.recorded_comms(RSpaceOperationSource::Produce(&x)), Some(Vec::new()));
+        txn.produce(own_store_op("a", "x")).expect("stage x");
+        assert_eq!(script.lookups(), vec!["recorded produce None"]);
+        txn.consume(park_op("b", "k")).expect("stage the park");
+        assert_eq!(script.lookups(), vec!["recorded produce None", "recorded consume Some(4)"]);
+        script.push(Row::stored());
+        script.push(Row::stored());
+        let receipt = txn.commit().await.expect("commit");
+        assert_eq!(receipt.ops.len(), 2);
+        // Added by decision 124 (L11, L12): no cut, no deviation and no refused
+        // pair (V4-17).
+        assert_eq!(receipt.deviation, None);
+        assert!(receipt.refused.is_empty());
+    }
+
+    // Added by decision 102 (decision 119 S1, plan v4 C3b, rule CR-6): a stage
+    // call whose source has no successor row of the followed row stages
+    // nothing and fails with `RecordEnded`.
+    // Changed by decision 124 (L11): the commit needs CanStop of the last row
+    // of the cut. The record stays ended.
+    #[tokio::test]
+    async fn native_space_replay_ends_the_record_at_a_successor_miss() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.script_rows([row_at(4, NativeReplayOutcome::Stored), None]);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        txn.produce(own_store_op("a", "x")).expect("stage x");
+        assert_eq!(txn.consume(park_op("b", "k")).err(), Some(SpaceTxnError::RecordEnded));
+        assert_eq!(txn.consume(park_op("b", "k")).err(), Some(SpaceTxnError::RecordEnded));
+        assert_eq!(script.lookups(), vec!["recorded produce None", "recorded consume Some(4)"]);
+        assert!(!txn.end_record(), "an ended record does not end again");
+        script.push(Row::stored());
+        // Changed by decision 124 (L11): a cut needs CanStop of its last row.
+        // A Stored row whose staging had no allowed candidate has none, so the
+        // commit fails with the session mismatch after the row applied.
+        let error = txn.commit().await.expect_err("a cut without CanStop fails");
+        assert_eq!(error, SpaceTxnError::Host(super::super::mismatch()));
+        let state = StoreState::of_session(&session);
+        assert!(
+            state
+                .continuations
+                .get(&vec![s("b")])
+                .is_none_or(Vec::is_empty),
+            "the call after the record end stages nothing"
+        );
+    }
+
+    // Added by plan v4 errata (V4-12, rule CR-5): the row of a leading anchor
+    // is not a followed row. The error rule: a staging error after the anchor
+    // keeps the failure path, so `end_record` is false. The miss rule: a
+    // stage call without a successor row of the anchor row frees the cursor
+    // and stages its operation. The rest of the transaction stages in DR-75
+    // mode and looks up no row.
+    #[tokio::test]
+    async fn native_space_replay_frees_the_cursor_at_a_miss_after_a_leading_anchor() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.script_rows([row_at(4, NativeReplayOutcome::Stored), None]);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        txn.produce(own_store_op("a", "anchor"))
+            .expect("stage the anchor");
+        txn.mark_leading_anchor();
+        assert!(!txn.end_record(), "the error rule keeps the failure path");
+        txn.consume(park_op("b", "k"))
+            .expect("the miss rule stages the park");
+        assert!(!txn.end_record(), "a free cursor keeps the failure path");
+        let y = Produce::create(&s("a"), &s("y"), false);
+        assert_eq!(txn.recorded_comms(RSpaceOperationSource::Produce(&y)), None);
+        txn.produce(store_op("a", "y"))
+            .expect("stage y in DR-75 mode");
+        assert_eq!(script.lookups(), vec!["recorded produce None", "recorded consume Some(4)"]);
+        for _ in 0..3 {
+            script.push(Row::stored());
+        }
+        let receipt = txn.commit().await.expect("commit");
+        assert_eq!(receipt.ops.len(), 3);
+    }
+
+    // Added by plan v4 errata (V4-12, rule CR-32): after the transaction
+    // followed a row after its leading anchor, a staging error ends the
+    // staging. `end_record` ends the record once, and a later stage call
+    // fails with `RecordEnded`. A mark after the first operation changes
+    // nothing.
+    #[tokio::test]
+    async fn native_space_replay_ends_the_record_after_a_followed_row() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.script_rows([
+            row_at(4, NativeReplayOutcome::Stored),
+            row_at(9, NativeReplayOutcome::Stored),
+        ]);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        txn.produce(own_store_op("a", "anchor"))
+            .expect("stage the anchor");
+        txn.mark_leading_anchor();
+        txn.consume(park_op("b", "k")).expect("stage the park");
+        txn.mark_leading_anchor();
+        assert!(txn.end_record(), "a staging error after a followed row ends the staging");
+        assert!(!txn.end_record(), "the record ends once");
+        assert_eq!(txn.produce(store_op("a", "y")).err(), Some(SpaceTxnError::RecordEnded));
+        assert_eq!(script.lookups(), vec!["recorded produce None", "recorded consume Some(4)"]);
+    }
+
+    // Added by decision 124 (L11, CR-32): after a followed row, a staging
+    // error ends the staging (`end_record`). The commit of the cut needs
+    // CanStop of its last row. The park on `b` is Stored with no data, so it
+    // has no CanStop, and the commit fails with the session mismatch.
+    #[tokio::test]
+    async fn native_space_replay_fails_a_cr32_cut_without_can_stop() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.script_rows([
+            row_at(4, NativeReplayOutcome::Stored),
+            row_at(9, NativeReplayOutcome::Stored),
+        ]);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        txn.produce(own_store_op("a", "anchor"))
+            .expect("stage the anchor");
+        txn.mark_leading_anchor();
+        txn.consume(park_op("b", "k")).expect("stage the park");
+        assert!(txn.end_record(), "a staging error after a followed row ends the staging");
+        script.push(Row::stored());
+        script.push(Row::stored());
+        let error = txn
+            .commit()
+            .await
+            .expect_err("a CR-32 cut without CanStop fails");
+        assert_eq!(error, SpaceTxnError::Host(super::super::mismatch()));
+        assert!(!script.log().contains(&"invalidate".to_owned()));
+    }
+
+    // Added by decision 124 (L11, V4-19): a followed row that publishes a
+    // denial fails the commit with the denial error. The unit rule does not
+    // run for that row, so a record end after it changes nothing. This is the
+    // order of base `publish_denial`.
+    #[tokio::test]
+    async fn native_space_replay_fails_a_denied_cut_with_the_denial() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.script_rows([row_at(4, NativeReplayOutcome::DeniedIntroduction), None]);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        txn.produce(own_store_op("a", "x")).expect("stage x");
+        assert_eq!(txn.consume(park_op("b", "k")).err(), Some(SpaceTxnError::RecordEnded));
+        script.push(Row::denied_introduction());
+        let error = txn.commit().await.expect_err("the denial fails the commit");
+        assert_eq!(error, SpaceTxnError::Host(RSpaceError::SignedLimitExhausted));
+        assert!(script.log().contains(&"publish".to_owned()));
+        assert!(!script.log().contains(&"invalidate".to_owned()));
+    }
+
+    // Added by decision 124 (plan of the batch B tests, B16, rulings RADD2v2
+    // 6.6 (f) and 8.7, form (i)): the owner checks of a funded script. Every
+    // item passes, the row refused no COMM, and a produce keeps its own datum
+    // (R5, R6, R7).
+    struct Funding;
+
+    impl NativeOwnerFilter<String, String, String, String> for Funding {
+        fn admit_item(
+            &self,
+            _continuation: &String,
+            _continuation_persistent: bool,
+            _channel_count: usize,
+            _datum: &String,
+            _datum_persistent: bool,
+        ) -> Result<bool, RSpaceError> {
+            Ok(true)
+        }
+
+        fn names_refusal_for(&self, _consume: &Consume) -> bool { false }
+
+        fn requires_own_datum(&self) -> bool { true }
+    }
+
+    // Added by decision 124 (plan of the batch B tests, B16, rulings RADD2v2
+    // 6.6 (f) and 8.7, form (i)): a scripted row search with no run. So the
+    // replay search of its row finds no tuple: a store keeps its row, and a
+    // fire that the record stores deviates (C2v3 6.18 (g)). The search gives
+    // `failed` as the item failures of its row and `tail` as its tail read, and
+    // it hands out `reissue` and `finish` once.
+    struct CutSearch {
+        failed: Vec<(Blake2b256Hash, Blake2b256Hash)>,
+        tail: TailRead,
+        reissue: Option<RowReissue>,
+        finish: Vec<FinishRow<String, String, String, String>>,
+    }
+
+    impl RowSearch<String, String, String, String> for CutSearch {
+        fn runs(&self) -> Vec<RowRun<String>> { Vec::new() }
+
+        fn continuations(
+            &mut self,
+            _run: usize,
+            _lists: &RowLists<'_, String, String, String, String>,
+        ) -> Result<Vec<(Arc<WaitingContinuation<String, String>>, i32)>, SpaceTxnError> {
+            Ok(Vec::new())
+        }
+
+        fn tuple(
+            &mut self,
+            _run: usize,
+            _lists: &RowLists<'_, String, String, String, String>,
+            _request: RowTupleRequest<'_, String, String, String, String>,
+        ) -> Result<Option<Vec<ConsumeCandidate<String, String>>>, SpaceTxnError> {
+            Ok(None)
+        }
+
+        fn restore(&mut self) {}
+
+        fn commit_check(
+            &mut self,
+            _request: &RowTupleRequest<'_, String, String, String, String>,
+            _tuple: &[ConsumeCandidate<String, String>],
+        ) -> Result<bool, SpaceTxnError> {
+            Ok(true)
+        }
+
+        fn may_veto(
+            &self,
+            _matcher: &dyn Match<String, String, String>,
+            _continuation: &String,
+        ) -> bool {
+            false
+        }
+
+        fn staged_retires(&self) -> usize { 0 }
+
+        fn actual_fire(
+            &mut self,
+            _request: &RowTupleRequest<'_, String, String, String, String>,
+            _tuple: &[ConsumeCandidate<String, String>],
+        ) -> ActualFire<String, String, String, String> {
+            ActualFire {
+                retires: Vec::new(),
+                dispatched: None,
+            }
+        }
+
+        fn item_failures(
+            &self,
+            _lists: &RowLists<'_, String, String, String, String>,
+            _matcher: &dyn Match<String, String, String>,
+            _rule: &dyn RowItemRule<String, String>,
+        ) -> Result<Vec<(Blake2b256Hash, Blake2b256Hash)>, SpaceTxnError> {
+            Ok(self.failed.clone())
+        }
+
+        fn tail_read(
+            &mut self,
+            _lists: &RowLists<'_, String, String, String, String>,
+            _matcher: &dyn Match<String, String, String>,
+        ) -> Result<TailRead, SpaceTxnError> {
+            Ok(self.tail)
+        }
+
+        fn tail_reissue(&mut self) -> Option<RowReissue> { self.reissue.take() }
+
+        fn finish_rows(&mut self) -> Vec<FinishRow<String, String, String, String>> {
+            std::mem::take(&mut self.finish)
+        }
+    }
+
+    // Added by decision 124 (plan of the batch B tests, B16, ruling RADD2v2
+    // 8.7): the boxed search of a row with `failed` item failures, the tail
+    // read `tail`, the re-issue `reissue` and the finish rows `finish`.
+    fn cut_search(
+        failed: usize,
+        tail: TailRead,
+        reissue: Option<RowReissue>,
+        finish: Vec<FinishRow<String, String, String, String>>,
+    ) -> Box<dyn RowSearch<String, String, String, String>> {
+        let pair = (Blake2b256Hash::new(b"record"), Blake2b256Hash::new(b"waiter"));
+        Box::new(CutSearch {
+            failed: vec![pair; failed],
+            tail,
+            reissue,
+            finish,
+        })
+    }
+
+    // Added by decision 124 (plan of the batch B tests, B16, ruling RADD2v2
+    // 8.7): a script whose tickets have owner funding, its session and its
+    // handle.
+    async fn funded_session() -> (Script, Arc<Session>, Handle) {
+        let script = Script::default();
+        script.funded.store(true, Ordering::Release);
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        (script, session, handle)
+    }
+
+    // Added by decision 124 (plan of the batch B tests, B16, ruling RADD2v2
+    // 8.7): parks `k` on `b`, then stages in a chained transaction the own fire
+    // of `k` with `z`, which carries the search `search`.
+    async fn staged_fire_of_k(
+        script: &Script,
+        handle: &Handle,
+        search: Box<dyn RowSearch<String, String, String, String>>,
+    ) -> BoxedSpaceTxn<String, String, String, String> {
+        park_k(script, handle).await;
+        let mut txn = begin_chained(handle, &["b"]).await;
+        let waiting = txn.continuations(&[s("b")]).expect("read [b]")[0].clone();
+        let mut fire = fire_op("b", "z", &waiting);
+        fire.own = true;
+        fire.search = Some(search);
+        txn.produce(fire).expect("stage the fire of k");
+        txn
+    }
+
+    // Added by decision 124 (plan of the batch B tests, B16, rulings RADD2v2
+    // 6.6 (f) and 8.7, form (i)): the one test of the cut. Native replay builds
+    // the cut of each case in a run of its transaction, with a scripted search
+    // and owner funding. Cases 1 to 3 are those of ADD A2.9, and cases 4 to 6
+    // are U6: R-dev, R-end and the mismatch.
+    #[tokio::test]
+    async fn native_replay_cut_reads_the_search_of_its_row() {
+        // Case 1: a Skipped row with no search, then a record end. The row
+        // deviates, so the cut reads `Ends` with no re-issue (F-V4-11).
+        let (script, _session, handle) = funded_session().await;
+        script.script_rows([row_at(4, NativeReplayOutcome::SkippedIntroduction), None]);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        txn.produce(own_store_op("a", "x")).expect("stage x");
+        assert_eq!(txn.consume(park_op("b", "k")).err(), Some(SpaceTxnError::RecordEnded));
+        script.push(Row::skipped_introduction());
+        let receipt = txn.commit().await.expect("case 1: a Skipped row can stop");
+        let cut = receipt.deviation.expect("case 1 cuts");
+        assert_eq!((cut.index, cut.tail_read), (0, TailRead::Ends));
+        assert_eq!(cut.reissue, None);
+
+        // Case 2: a Stored row with a search, which does not deviate, then a
+        // record end. The cut takes the answer and the re-issue of the search,
+        // and the item failure of the row gives CanStop.
+        let (script, _session, handle) = funded_session().await;
+        script.script_rows([row_at(4, NativeReplayOutcome::Stored), None]);
+        let reissue = RowReissue::new(2_u8);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        let mut store = own_store_op("a", "x");
+        store.search = Some(cut_search(1, TailRead::Reissues, Some(reissue.clone()), Vec::new()));
+        txn.produce(store).expect("stage x");
+        assert_eq!(txn.consume(park_op("b", "k")).err(), Some(SpaceTxnError::RecordEnded));
+        script.push(Row::stored());
+        let receipt = txn.commit().await.expect("case 2: a failure can stop");
+        let cut = receipt.deviation.expect("case 2 cuts");
+        assert_eq!((cut.index, cut.tail_read), (0, TailRead::Reissues));
+        assert_eq!(cut.reissue, Some(reissue));
+        assert_eq!(cut.item_failed.len(), 1);
+
+        // Case 3: the fire of `k` with a search, which the record stores. The
+        // row deviates as the last row, and the cut reads its search.
+        let (script, _session, handle) = funded_session().await;
+        let reissue = RowReissue::new(3_u8);
+        let search = cut_search(0, TailRead::Stages, Some(reissue.clone()), Vec::new());
+        let mut txn = staged_fire_of_k(&script, &handle, search).await;
+        script.push(Row::stored());
+        let receipt = txn.commit().await.expect("case 3: a deviation can stop");
+        assert!(matches!(receipt.ops.as_slice(), [SpaceOpReceipt::Stored { .. }]));
+        let cut = receipt.deviation.expect("case 3 deviates");
+        assert_eq!((cut.index, cut.tail_read), (0, TailRead::Stages));
+        assert_eq!(cut.reissue, Some(reissue));
+
+        // Case 4, U6 (a), R-dev: as case 3, with one finish row that the later
+        // staged row follows. The finish row commits after the group, and the
+        // unit is the last unit.
+        let (script, _session, handle) = funded_session().await;
+        let finish = vec![FinishRow::Store(store_op("b", "y"))];
+        let search = cut_search(0, TailRead::Stages, None, finish);
+        let mut txn = staged_fire_of_k(&script, &handle, search).await;
+        txn.produce(store_op("b", "y")).expect("stage y");
+        script.push(Row::stored());
+        script.push(Row::stored());
+        let receipt = txn.commit().await.expect("case 4: y is a finish row");
+        assert!(matches!(receipt.ops.as_slice(), [
+            SpaceOpReceipt::Stored { .. },
+            SpaceOpReceipt::Stored { .. }
+        ]));
+        assert_eq!(receipt.deviation.map(|cut| cut.index), Some(0));
+
+        // Case 5, U6 (b), R-end: a Stored row with a search and one finish row,
+        // a later row that follows it, then a record end. Row 0 is the last row
+        // with a search, so the cut moves to row 0 with the scripted re-issue.
+        let (script, _session, handle) = funded_session().await;
+        script.script_rows([
+            row_at(4, NativeReplayOutcome::Stored),
+            row_at(9, NativeReplayOutcome::Stored),
+            None,
+        ]);
+        let reissue = RowReissue::new(5_u8);
+        let mut txn = begin_chained(&handle, &["a", "b"]).await;
+        let mut store = own_store_op("a", "x");
+        let finish = vec![FinishRow::Store(store_op("a", "y"))];
+        store.search = Some(cut_search(1, TailRead::Reissues, Some(reissue.clone()), finish));
+        txn.produce(store).expect("stage x");
+        txn.produce(store_op("a", "y")).expect("stage y");
+        assert_eq!(txn.consume(park_op("b", "k")).err(), Some(SpaceTxnError::RecordEnded));
+        script.push(Row::stored());
+        script.push(Row::stored());
+        let receipt = txn.commit().await.expect("case 5: y is a finish row");
+        assert_eq!(receipt.ops.len(), 2);
+        let cut = receipt.deviation.expect("case 5 cuts at row 0");
+        assert_eq!((cut.index, cut.tail_read), (0, TailRead::Reissues));
+        assert_eq!(cut.reissue, Some(reissue));
+
+        // Case 6, U6 (c): as case 4, but the later row stores `w`, which no
+        // finish row names. The unit before the last cannot continue, so the
+        // commit fails with the session mismatch.
+        let (script, _session, handle) = funded_session().await;
+        let finish = vec![FinishRow::Store(store_op("b", "y"))];
+        let search = cut_search(0, TailRead::Stages, None, finish);
+        let mut txn = staged_fire_of_k(&script, &handle, search).await;
+        txn.produce(store_op("b", "w")).expect("stage w");
+        script.push(Row::stored());
+        script.push(Row::stored());
+        let error = txn.commit().await.expect_err("case 6: w is no finish row");
+        assert_eq!(error, SpaceTxnError::Host(super::super::mismatch()));
+    }
+
+    // Added by decision 102 (plan v4 C3b, F6): the discard of the staging
+    // starts the cursor again, so the next operation 0 takes the first open
+    // row of its source again.
+    #[tokio::test]
+    async fn native_space_replay_discard_starts_the_cursor_again() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        script.script_rows([
+            row_at(4, NativeReplayOutcome::Stored),
+            row_at(4, NativeReplayOutcome::Stored),
+        ]);
+        let mut txn = begin_chained(&handle, &["a"]).await;
+        txn.produce(own_store_op("a", "x")).expect("stage x");
+        txn.discard_staged().expect("discard the staging");
+        assert!(!txn.end_record(), "a discarded staging follows no row");
+        txn.produce(own_store_op("a", "x")).expect("stage x again");
+        assert_eq!(script.lookups(), vec!["recorded produce None", "recorded produce None"]);
+        script.push(Row::stored());
+        let receipt = txn.commit().await.expect("commit");
+        assert_eq!(receipt.ops.len(), 1);
+    }
+
+    // Added by decision 102 (decision 119 S1, plan v4 C3b, rule CR-4): the
+    // answer of `recorded_comms` for each outcome of a recorded row. A
+    // Matched or DeniedComm row names its COMM. A Stored row names no COMM.
+    // An introduction row, a Matched row without a COMM, or no row gives
+    // None. Each source looks up once, and no stage call moves the cursor.
+    #[tokio::test]
+    async fn native_space_replay_names_the_comm_of_the_recorded_row() {
+        let script = Script::default();
+        let session = session(&script, Vec::new()).await;
+        let handle = handle(&session);
+        let comm = COMM {
+            consume: Consume::default(),
+            produces: Vec::new(),
+            peeks: BTreeSet::new(),
+            times_repeated: Default::default(),
+        };
+        script.script_rows([
+            Some((1, NativeReplayOutcome::Matched, Some(comm.clone()))),
+            Some((2, NativeReplayOutcome::DeniedComm, Some(comm.clone()))),
+            row_at(3, NativeReplayOutcome::Stored),
+            row_at(4, NativeReplayOutcome::SkippedIntroduction),
+            row_at(5, NativeReplayOutcome::DeniedIntroduction),
+            row_at(6, NativeReplayOutcome::Matched),
+            None,
+        ]);
+        let mut txn = begin_chained(&handle, &["a"]).await;
+        let sources: Vec<Produce> = (0..7)
+            .map(|value| Produce::create(&s("a"), &value.to_string(), false))
+            .collect();
+        let answers: Vec<Option<Vec<COMM>>> = sources
+            .iter()
+            .map(|source| txn.recorded_comms(RSpaceOperationSource::Produce(source)))
+            .collect();
+        assert_eq!(answers, vec![
+            Some(vec![comm.clone()]),
+            Some(vec![comm]),
+            Some(Vec::new()),
+            None,
+            None,
+            None,
+            None,
+        ]);
+        assert_eq!(script.lookups(), vec!["recorded produce None"; 7]);
     }
 
     // A6: at a boundary of the session an operation fails closed instead of
@@ -1858,7 +3790,15 @@ mod tests {
         assert_eq!(error, mismatch("the staged COMM differs from the recorded candidate"));
         assert!(!script.log().contains(&"observe_comm".to_owned()));
         assert!(!script.log().contains(&"publish".to_owned()));
-        assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
+        // Changed by decision 124 (L10): no failure closes the epoch. The text
+        // before:
+        // ```
+        // assert!(script.log().contains(&"invalidate".to_owned()), "the failure closes the epoch");
+        // ```
+        assert!(
+            !script.log().contains(&"invalidate".to_owned()),
+            "a failure leaves the epoch open (decision 124, L10)"
+        );
         let state = StoreState::of_session(&session);
         assert_eq!(state.data.get(&s("a")).map(Vec::len), Some(2));
     }
@@ -2086,6 +4026,7 @@ mod tests {
         // store and the produce counters of play, consumes one row for each
         // operation, and keeps the epoch open. Its export reaches the root of the
         // checkpoint of play (DR-96).
+        // Changed by decision 124 (L10): no failure closes the epoch either.
         #[test]
         fn prop_native_space_replay_reproduces_play(plan in plan_strategy()) {
             property_runtime().block_on(async {
@@ -2120,6 +4061,7 @@ mod tests {
         // with the denial error of the epoch (DR-113), keeps the operations before
         // it applied (D6), as play of the prefix applies them, and keeps the epoch
         // open.
+        // Changed by decision 124 (L10): no failure closes the epoch either.
         #[test]
         fn prop_native_space_replay_denial_keeps_prefix(
             plan in plan_strategy(),
@@ -2163,8 +4105,10 @@ mod tests {
 
         // H26, T8 and NoDeadlock: an outcome that does not fit, another candidate,
         // and a row that is not ready fail the commit closed. The operations before
-        // it stay applied, the failed operation has no effect, and the failure
-        // closes the epoch, so no operation waits for its row.
+        // it stay applied, and the failed operation has no effect. Changed by
+        // decision 124 (L10): the failure leaves the epoch open. A waiter of its
+        // row parks counted, and the stall rule ends the wait. The text before:
+        // "the failure closes the epoch, so no operation waits for its row."
         #[test]
         fn prop_native_space_replay_fails_closed(
             plan in plan_strategy(),
@@ -2200,7 +4144,10 @@ mod tests {
                     StoreState::of_session(&session).nonempty(),
                     StoreState::of_play(prefix.get_store()).nonempty()
                 );
-                proptest::prop_assert!(script.log().contains(&"invalidate".to_owned()));
+                // Changed by decision 124 (L10): the failure leaves the epoch
+                // open. The text before:
+                // proptest::prop_assert!(script.log().contains(&"invalidate".to_owned()));
+                proptest::prop_assert!(!script.log().contains(&"invalidate".to_owned()));
                 Ok::<(), proptest::test_runner::TestCaseError>(())
             })?;
         }

@@ -81,6 +81,8 @@ All compose files use 2 shared config files. Per-role behavior is controlled via
 | `conf/default.conf` | All shard roles | Minimal shard overrides (network, ports, consensus tuning) |
 | `conf/standalone-dev.conf` | Standalone | `standalone = true`, instant finalization |
 
+Both files set `casper.genesis-block-data.resource-policy` to the default resource policy of the `root` shard. A protocol-6 genesis requires this policy (DR-66). The default resource schedule has the resource classes compute, introduction, transfer and trace, each at weight 1, and settles in atomic REV at 8 decimals. `node deploy` signs this schedule by default. A shard with another schedule sets its own policy, and its clients pass the same hex to `node deploy --resource-policy`.
+
 CLI flags used per role:
 
 | Flag | Used by |

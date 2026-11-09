@@ -5,13 +5,17 @@
 //! ChromaDB server: the pinned image of `docker/shard.yml`. The script
 //! `scripts/verify-reified/chroma-live.sh` starts a disposable server, sets `RRS_LIVE_CHROMA=1`,
 //! `CHROMA_ENDPOINT`, a fresh `CHROMA_DATABASE` and `FASTEMBED_CACHE_DIR` under `target/`, and runs
-//! the suite. Every test fails when `RRS_LIVE_CHROMA=1` or `CHROMA_ENDPOINT` is not set, or when
+//! the suite. Changed by decision 90 (item 3.12): the script sets `RUSTBERT_CACHE` in place of
+//! `FASTEMBED_CACHE_DIR`, because the base embeds with rust-bert, which reads that variable. Every test fails when `RRS_LIVE_CHROMA=1` or `CHROMA_ENDPOINT` is not set, or when
 //! the server does not answer, so the leg never skips silently (decision 59).
+//!
+//! Changed by decision 114: the mirror is an oracle store, and nothing repairs it. So the backend
+//! keeps no registry and no watermark, and the leg has no reconciler test (P6 step 7c).
 //!
 //! | Test | What it checks |
 //! |---|---|
-//! | `chroma_live_mirror_calls` | Every call of `ChromaMirror` against the server: the database of the node, the collection and its distance, the registry with its read-modify-write, the watermark, upserts, filtered ids, the query, deletes, and the listing. |
-//! | `chroma_live_publish_and_reconcile` | A native deploy publishes its records to the server through the writer, and a reconciler pass repairs an orphan and a missing record. |
+//! | `chroma_live_mirror_calls` | Every call of `ChromaMirror` against the server: the database of the node, the collection and its distance, upserts, filtered ids, the query, deletes, and the listing. |
+//! | `chroma_live_publish` | A native deploy publishes its records to the server through the writer, one batch for each commit (decision 98). |
 //! | `chroma_live_sbert_embedder` | The SBERT model gives one finite vector of 384 values for each text. |
 
 #![cfg(feature = "chromadb")]
@@ -19,14 +23,22 @@
 #[path = "support/mod.rs"]
 mod support;
 
-use std::collections::{BTreeMap, BTreeSet};
+// Changed by decision 114: only the registry of the retired reconciler was a map.
+// use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use models::rhoapi::Par;
-use rholang::rust::interpreter::reified::mirror_reconciler::{reconcile, Finalized};
+// Retired by decision 114: the mirror is an oracle store, and nothing repairs it.
+// use rholang::rust::interpreter::reified::mirror_reconciler::{reconcile, Finalized};
+// Changed by decision 114: the backend keeps no registry.
+// use rholang::rust::interpreter::reified::vectordb_services::{
+//     self, channel_digest, collection_name, ChromaMirror, Embedder, MirrorBackend, MirrorRegistry,
+//     SbertEmbedder, VectorDbServices,
+// };
 use rholang::rust::interpreter::reified::vectordb_services::{
-    self, channel_digest, collection_name, ChromaMirror, Embedder, MirrorBackend, MirrorRegistry,
-    SbertEmbedder, VectorDbServices,
+    self, channel_digest, collection_name, ChromaMirror, Embedder, MirrorBackend, SbertEmbedder,
+    VectorDbServices,
 };
 use rholang::rust::interpreter::spaces::mirror::{MirrorMetric, MirrorRecord};
 use rholang::rust::interpreter::spaces::record;
@@ -66,15 +78,19 @@ fn record(id: u8, embedding: [f32; 2], channel: &str, document: Option<&str>) ->
 }
 
 /// Every call of the ChromaDB backend against the live server.
+///
+/// Changed by decision 114: the backend keeps no registry and no watermark. Before, the test
+/// also checked the registry with its read-modify-write and the watermark.
 #[tokio::test]
 async fn chroma_live_mirror_calls() {
     let mirror = live_mirror();
     let collection = fresh_collection("calls");
-    assert_eq!(
-        mirror.watermark(&collection).await,
-        Ok(0),
-        "no collection yet"
-    );
+    // Retired by decision 114: the backend keeps no watermark.
+    // assert_eq!(
+    //     mirror.watermark(&collection).await,
+    //     Ok(0),
+    //     "no collection yet"
+    // );
     assert_eq!(
         mirror.ids(&collection, "c1").await,
         Ok(BTreeSet::new()),
@@ -90,47 +106,49 @@ async fn chroma_live_mirror_calls() {
         .await
         .expect("the collection is made");
 
-    let space = [5; 32];
-    mirror
-        .register(
-            &collection,
-            &space,
-            &BTreeMap::from([("c1".to_string(), vec![1, 2])]),
-        )
-        .await
-        .expect("the first channel is registered");
-    mirror
-        .set_watermark(&collection, 7)
-        .await
-        .expect("the watermark is set");
-    mirror
-        .register(
-            &collection,
-            &space,
-            &BTreeMap::from([("c1".to_string(), vec![1, 2]), ("c2".to_string(), vec![3])]),
-        )
-        .await
-        .expect("the second channel is registered");
-    let expected = MirrorRegistry {
-        space: Some(space),
-        channels: BTreeMap::from([("c1".to_string(), vec![1, 2]), ("c2".to_string(), vec![3])]),
-        watermark: 7,
-    };
-    assert_eq!(
-        mirror.registry(&collection).await,
-        Ok(expected.clone()),
-        "every read-modify-write keeps the other keys"
-    );
-    assert_eq!(mirror.watermark(&collection).await, Ok(7));
+    // Retired by decision 114: the backend keeps no registry and no watermark.
+    // let space = [5; 32];
+    // mirror
+    //     .register(
+    //         &collection,
+    //         &space,
+    //         &BTreeMap::from([("c1".to_string(), vec![1, 2])]),
+    //     )
+    //     .await
+    //     .expect("the first channel is registered");
+    // mirror
+    //     .set_watermark(&collection, 7)
+    //     .await
+    //     .expect("the watermark is set");
+    // mirror
+    //     .register(
+    //         &collection,
+    //         &space,
+    //         &BTreeMap::from([("c1".to_string(), vec![1, 2]), ("c2".to_string(), vec![3])]),
+    //     )
+    //     .await
+    //     .expect("the second channel is registered");
+    // let expected = MirrorRegistry {
+    //     space: Some(space),
+    //     channels: BTreeMap::from([("c1".to_string(), vec![1, 2]), ("c2".to_string(), vec![3])]),
+    //     watermark: 7,
+    // };
+    // assert_eq!(
+    //     mirror.registry(&collection).await,
+    //     Ok(expected.clone()),
+    //     "every read-modify-write keeps the other keys"
+    // );
+    // assert_eq!(mirror.watermark(&collection).await, Ok(7));
     mirror
         .ensure_collection(&collection, MirrorMetric::Cosine)
         .await
         .expect("an existing collection is kept");
-    assert_eq!(
-        mirror.registry(&collection).await,
-        Ok(expected),
-        "making an existing collection keeps its metadata"
-    );
+    // Retired by decision 114: the backend keeps no registry.
+    // assert_eq!(
+    //     mirror.registry(&collection).await,
+    //     Ok(expected),
+    //     "making an existing collection keeps its metadata"
+    // );
 
     let near = record(2, [1.0, 0.0], "c1", Some("doc"));
     let far = record(3, [0.0, 1.0], "c1", None);
@@ -165,10 +183,15 @@ async fn chroma_live_mirror_calls() {
     assert!(collections.contains(&collection), "{collections:?}");
 }
 
-/// A native deploy publishes its records to the live server through the writer, and a pass of
-/// the reconciler repairs an orphan and a missing record from the finalized state.
+/// A native deploy publishes its records to the live server through the writer, one batch for
+/// each commit (decision 98).
+///
+/// Changed by decision 114: nothing repairs the mirror. Before, a pass of the reconciler also
+/// repaired an orphan and a missing record from the finalized state.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn chroma_live_publish_and_reconcile() {
+// Renamed by decision 114: the test has no reconciler pass.
+// async fn chroma_live_publish_and_reconcile() {
+async fn chroma_live_publish() {
     let mirror: Arc<dyn MirrorBackend> = Arc::new(live_mirror());
     let services = VectorDbServices::with_writer(
         Arc::new(vectordb_services::UnavailableEmbedder),
@@ -218,32 +241,33 @@ async fn chroma_live_publish_and_reconcile() {
         Ok(stored.clone()),
         "the writer published both records"
     );
-    let registry = mirror.registry(&collection).await.expect("the registry");
-    assert_eq!(registry.space, Some(space.sid));
-    assert_eq!(
-        registry.channels.get(&digest),
-        Some(&key(&mn).as_bytes().to_vec())
-    );
-
-    let first = *stored.iter().next().expect("a record");
-    mirror
-        .delete(&collection, &[first])
-        .await
-        .expect("the record is taken out");
-    mirror
-        .upsert(&collection, &[record(0xEE, [0.5, 0.5], &digest, None)])
-        .await
-        .expect("the orphan is written");
-    let state = chain.finalized_state();
-    let report = reconcile(&vectordb_services::current(), state.as_ref(), &Finalized {
-        block_number: 4,
-        root: played.root.clone(),
-    })
-    .await;
-    assert_eq!(report.repaired, BTreeSet::from([collection.clone()]));
-    assert_eq!((report.deleted, report.added), (1, 1));
-    assert_eq!(mirror.ids(&collection, &digest).await, Ok(stored));
-    assert_eq!(mirror.watermark(&collection).await, Ok(4));
+    // Retired by decision 114: the backend keeps no registry, and nothing repairs the mirror.
+    // let registry = mirror.registry(&collection).await.expect("the registry");
+    // assert_eq!(registry.space, Some(space.sid));
+    // assert_eq!(
+    //     registry.channels.get(&digest),
+    //     Some(&key(&mn).as_bytes().to_vec())
+    // );
+    //
+    // let first = *stored.iter().next().expect("a record");
+    // mirror
+    //     .delete(&collection, &[first])
+    //     .await
+    //     .expect("the record is taken out");
+    // mirror
+    //     .upsert(&collection, &[record(0xEE, [0.5, 0.5], &digest, None)])
+    //     .await
+    //     .expect("the orphan is written");
+    // let state = chain.finalized_state();
+    // let report = reconcile(&vectordb_services::current(), state.as_ref(), &Finalized {
+    //     block_number: 4,
+    //     root: played.root.clone(),
+    // })
+    // .await;
+    // assert_eq!(report.repaired, BTreeSet::from([collection.clone()]));
+    // assert_eq!((report.deleted, report.added), (1, 1));
+    // assert_eq!(mirror.ids(&collection, &digest).await, Ok(stored));
+    // assert_eq!(mirror.watermark(&collection).await, Ok(4));
 }
 
 /// The SBERT model of the node gives one finite vector of 384 values for each text.

@@ -1,6 +1,6 @@
 {
-  "capture_command": "export TMPDIR=$PWD/target/tmp RRS_CAPTURE_FLOATS_OUT=$PWD/target/capture/floats RRS_CAPTURE_REVISION=4c58a925f2b63e4aa3721383a0b885e2f330a145 && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_float_forms_unchanged > target/capture/floats.log 2>&1",
-  "captured_at_revision": "4c58a925f2b63e4aa3721383a0b885e2f330a145",
+  "capture_command": "export TMPDIR=$PWD/target/tmp RRS_CAPTURE_FLOATS_OUT=$PWD/target/capture/floats RRS_CAPTURE_REVISION=7024967758bcef46597ca9b7a7cdd809e757b28c && systemd-run --user --scope --quiet -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=1600% -p IOWeight=30 -p TasksMax=400 -- env CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=4 cargo test --offline -p rholang --test reified_source_normalization -- --exact ordinary_float_forms_unchanged > target/capture/floats.log 2>&1",
+  "captured_at_revision": "7024967758bcef46597ca9b7a7cdd809e757b28c",
   "forms": [
     {
       "name": "trailing_dot",

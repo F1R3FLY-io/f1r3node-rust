@@ -145,6 +145,18 @@ impl NativeReplayReservation {
             .as_ref()
             .ok_or(NativeReplayError::Stage)?
             .observation;
-        self.observe(link, &observed, ObservationStage::Complete)
+        // Changed by G3 (DR-135, S6): a granted COMM attempt keeps its
+        // transferee funded (A5). A retry links an earlier attempt, which
+        // play checked when it granted it.
+        // self.observe(link, &observed, ObservationStage::Complete)
+        let decision = self.observe(link, &observed, ObservationStage::Complete)?;
+        if let (
+            NativeBudgetReplayDecision::Accepted { .. },
+            NativeObservationLink::Attempt(index),
+        ) = (&decision, link)
+        {
+            self.check_transferee(index, continuation, data)?;
+        }
+        Ok(decision)
     }
 }

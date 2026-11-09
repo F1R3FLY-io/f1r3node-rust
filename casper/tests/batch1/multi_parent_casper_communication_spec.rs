@@ -1,10 +1,14 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperCommunicationSpec.scala
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
-use crypto::rust::signatures::signed::Signed;
-use models::rust::casper::protocol::casper_message::DeployData;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use crypto::rust::signatures::signed::Signed;
+// use models::rust::casper::protocol::casper_message::DeployData;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -96,7 +100,9 @@ async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing() {
 // "reenable when merging of REV balances is done" / "Scala ignore" labels were stale).
 #[tokio::test]
 async fn multi_parent_casper_should_ask_peers_for_blocks_it_is_missing_and_add_them() {
-    fn make_deploy(i: usize, shard_id: &str) -> Signed<DeployData> {
+    // Changed by DR-134 (DR-66 item 1).
+    // fn make_deploy(i: usize, shard_id: &str) -> Signed<DeployData> {
+    fn make_deploy(i: usize, shard_id: &str) -> OfferedDeploy {
         let term = if i == 0 { "@2!(2)" } else { "@1!(1)" };
         let sec = if i == 0 {
             construct_deploy::DEFAULT_SEC.clone()

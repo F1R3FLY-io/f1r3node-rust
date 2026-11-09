@@ -60,6 +60,7 @@ pub fn generate_par(depth: usize) -> BoxedStrategy<Par> {
             unforgeables: vec![],
             cost_signed_terms: vec![],
             cost_stacks: vec![],
+            use_blocks: Vec::new(),
         })
         .boxed();
     }
@@ -100,6 +101,7 @@ pub fn generate_par(depth: usize) -> BoxedStrategy<Par> {
                 unforgeables: vec![],
                 cost_signed_terms: vec![],
                 cost_stacks: vec![],
+                use_blocks: Vec::new(),
             },
         )
         .boxed()
@@ -119,6 +121,7 @@ pub fn generate_send(depth: usize) -> BoxedStrategy<Send> {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            params: None,
         })
         .boxed();
     }
@@ -137,6 +140,7 @@ pub fn generate_send(depth: usize) -> BoxedStrategy<Send> {
                 persistent,
                 locally_free,
                 connective_used,
+                params: None,
             },
         )
         .boxed()
@@ -177,6 +181,7 @@ pub fn generate_receive(depth: usize) -> BoxedStrategy<Receive> {
                     remainder,
                     free_count,
                     cost_signature: None,
+                    query_spec: None,
                 }),
             0..1,
         ),
@@ -216,6 +221,7 @@ pub fn generate_new(depth: usize) -> BoxedStrategy<New> {
             uri: vec![],
             injections: Default::default(),
             locally_free: vec![],
+            space_types: Vec::new(),
         })
         .boxed();
     }
@@ -233,6 +239,7 @@ pub fn generate_new(depth: usize) -> BoxedStrategy<New> {
             uri,
             injections,
             locally_free,
+            space_types: Vec::new(),
         })
         .boxed()
 }

@@ -385,6 +385,7 @@ async fn eval_if_conditionals_via_injection() {
                 persistent: false,
                 locally_free: vec![],
                 connective_used: false,
+                params: None,
             }],
             ..Default::default()
         };

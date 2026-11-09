@@ -91,7 +91,7 @@ curl http://localhost:40403/api/status
   "nativeTokenSymbol": "F1R3",
   "nativeTokenDecimals": 8,
   "lastFinalizedBlockNumber": 28,
-  "isValidator": false,
+  "isValidator": true,
   "isReadOnly": false,
   "isReady": true,
   "currentEpoch": 2,
@@ -113,7 +113,7 @@ curl http://localhost:40403/api/status
 | `nativeTokenSymbol` | string | Token ticker symbol |
 | `nativeTokenDecimals` | int | Decimal places (dust per token = 10^decimals) |
 | `lastFinalizedBlockNumber` | int | LFB block number. `-1` if casper not yet initialized |
-| `isValidator` | bool | `true` if the node can propose blocks |
+| `isValidator` | bool | `true` if the node has a configured validator key; this does not confirm current bond status |
 | `isReadOnly` | bool | `true` if running in read-only mode |
 | `isReady` | bool | `true` after engine enters Running state |
 | `currentEpoch` | int | `lastFinalizedBlockNumber / epochLength` |
@@ -150,6 +150,12 @@ curl "http://localhost:40403/api/block/3bfdf56f...?view=summary"
 ```
 
 Full response includes `blockInfo` (header with `isFinalized`) + `deploys` array. Summary omits `deploys`.
+
+Each deploy includes `parameters` when its signed data contains named values.
+The JSON format matches [`data.parameters`](#deploy-parameters) in deploy submissions.
+The node omits empty parameter arrays.
+Full block lists and trace reports use the same parameter format.
+Summary block responses omit deploy data, including parameters.
 
 | Status | Condition |
 |--------|-----------|
@@ -231,6 +237,8 @@ curl http://localhost:40403/api/is-finalized/3bfdf56f...
 
 Submit a signed deploy to the network. Validator nodes only.
 
+**Protocol 6 (DR-66).** A protocol-6 node accepts only offered-funded deploys. This route takes a body-only deploy, so a node that runs Casper refuses it with `400` (`illegal_argument`, message `new deploys require offered-funded cost accounting`). Submit an offered-funded envelope with [`POST /api/deploy/offered`](#post-apideployoffered) or with gRPC `doDeploy`. The [`node deploy`](#command-line-deploy) command signs an owner-direct offer.
+
 **Request body:**
 
 | Field | Type | Required | Description |
@@ -241,6 +249,7 @@ Submit a signed deploy to the network. Validator nodes only.
 | `data.phloLimit` | int | yes | Maximum phlogiston to consume |
 | `data.validAfterBlockNumber` | int | yes | Deploy valid after this block number |
 | `data.shardId` | string | yes | Target shard (e.g. `"root"`) |
+| `data.parameters` | array | no | Named Rholang values. The default is an empty array. |
 | `deployer` | string | yes | Deployer public key (hex) |
 | `signature` | string | yes | Deploy signature (hex) |
 | `sigAlgorithm` | string | yes | Signature algorithm (`"secp256k1"`) |
@@ -266,10 +275,152 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: read-only node, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `400` | Malformed body or invalid field value: read-only node, unbonded validator, wrong shard ID, forbidden key, phlo price below minimum, deploy expired, body-only deploy on a protocol-6 node (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
 | `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
+
+Deploy admission checks the node's validator against the last finalized block's committee. Proposal checks the selected parent's committee. These sets can differ during the finality gap after a bond change.
+
+##### Deploy parameters
+
+A deploy parameter supplies a typed value through `rho:deploy:param:<name>`.
+The deploy signature covers parameter names, values, and array order.
+The node rejects changes to these fields after signing.
+
+```json
+{
+  "parameters": [
+    {"name": "items", "value": {"type": "list", "value": [
+      {"type": "int", "value": -42},
+      {"type": "nil"}
+    ]}}
+  ]
+}
+```
+
+```rholang
+new items(`rho:deploy:param:items`), stdout(`rho:io:stdout`) in {
+  stdout!(*items)
+}
+```
+
+| JSON `type` | JSON `value` |
+|-------------|--------------|
+| `bool` | A Boolean. |
+| `int` | A signed 64-bit integer. |
+| `string` | A string. |
+| `bytes` | An array of integers from 0 through 255. |
+| `tuple`, `list`, `set` | An array of typed values. |
+| `map` | An array of objects with typed `key` and `value` fields. |
+| `nil` | Omit the `value` field. |
+| `uri` | A URI string, used as a Rholang value. |
+
+Lists and tuples preserve element order.
+Sets remove duplicate values and use Rholang ordering.
+Maps use Rholang key ordering and reject duplicate keys, including equivalent set keys.
+A URI parameter does not grant access to a system process.
+
+Parameter names must be unique and match `[A-Za-z_][A-Za-z0-9_]*`.
+Each name can contain at most 256 bytes.
+A deploy can contain at most 50 parameters, 32 nesting levels, and 10,000 values.
+The total data budget is 1 MiB, including names, string data, byte data, and eight bytes per value.
+Transport limits also apply.
+
+Deploys without parameters retain their protobuf bytes and signatures.
+JSON output omits an empty parameter array.
+
+The deploy storage and rejected buffer can read existing records without parameters.
+Both stores write every new record as protobuf with the `F1R3DEP` prefix and version byte `0x01`.
+This storage format also applies to deploys without parameters.
+Nodes that support only the old storage format cannot read these new records.
+Reading a legacy record does not rewrite that record.
+
+The `deploy.storage.legacy_decode` counter records each attempt to decode legacy bincode data in either store.
+The counter includes repeated reads and failed attempts.
+Retain legacy support until active nodes show no legacy decode attempts over an agreed observation period.
+A zero increase without store reads does not prove that legacy records are absent.
+
+The earlier Scala implementation used protobuf field 13 for parameters.
+This Rust schema uses field 13 for `expirationTimestamp` and field 22 for parameters.
+Primitive value fields retain their original numbers, including `sint64` for integers.
+
+To migrate a client from that Scala schema:
+
+1. Generate the client types from this repository's protobuf files.
+2. Encode parameters in field 22 with the recursive value schema.
+3. Apply the name, size, and nesting limits above.
+4. Sign the deploy again with its new protobuf bytes.
+
+The Scala implementation permitted larger byte parameters.
+Clients must apply the total data budget before they sign a deploy for this schema.
+Nodes that use the earlier schema cannot validate these parameter signatures.
+All validators must use a compatible schema before the network accepts deploy parameters.
+
+#### `POST /api/deploy/offered`
+
+Submit an offered-funded deploy (protocol 6). Validator nodes only.
+
+An offered-funded deploy is a signed envelope. It holds the deploy body, the signed funding intent and the signatures. The funding intent names the vaults that pay, the maximum REV that each vault can pay, and the resource schedule and price that the signers accept. The REV ceiling of the offer is $`\text{phloLimit} \times \text{phloPrice} + 1`$ atomic REV, where 1 is the fixed deploy fee.
+
+The node checks the offer before it queues it. The offer must use the offered-funded format and sign the schedule of the adopted genesis resource policy at its own price. It must also target this shard, be inside the block lifespan, and have a price at or above the adopted minimum. The proposer then compares the linear cost estimate of the offer with the vault balances at the block pre-state (DR-122). The proposer does not include an offer that the vaults cannot cover. That offer has no effect and no charge.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `deployDataProtoBase64` | string | yes | Canonical standard base64 of the canonical protobuf encoding of the `DeployDataProto`. Its `authorizationV61.formatVersion` is the offered-funded format |
+
+```bash
+curl -X POST http://localhost:40413/api/deploy/offered \
+  -H 'Content-Type: application/json' \
+  -d '{ "deployDataProtoBase64": "CgRuZXcg…" }'
+```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | Offer accepted. The body is `"Success!\nDeployId is: <hex>"`, where the deploy ID is the 32-byte envelope identity |
+| `400` | Invalid or noncanonical base64 or protobuf, read-only node, inactive genesis policy, schedule or price that differs from the signed terms, price below the adopted minimum, or deploy outside the block lifespan (`invalid_request_body`, `illegal_argument`) |
+| `409` | The offer is already known (`duplicate_deploy`) |
+
+#### `GET /api/deploy/offered/{deploy_id}/receipt`
+
+Return the settlement receipt of an offered deploy that a block holds. `deploy_id` is the hex encoding of the 32-byte deploy ID. The node checks the stored receipt against the committed cost evidence of the deploy before it returns the receipt. The body is `null` when the deploy is not an offered deploy.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `deployId` | string | The deploy ID (hex) |
+| `blockHash` | string | The block that holds the deploy (hex) |
+| `phloUsed` | int | The phlo that the run used |
+| `freshPhlo` | int | The part of `phloUsed` that no existing prepaid receipt covers |
+| `retainedPhlo` | int | The phlo of newly retained resources, a separate acquisition |
+| `phloLimit` | int | The signed phlo limit |
+| `phloPrice` | int | The signed phlo price |
+| `feeRev` | string | The fixed deploy fee in atomic REV |
+| `revSpent` | string | $`(\text{freshPhlo} - \text{ownerPhlo} + \text{retainedPhlo}) \times \text{phloPrice} + \text{ownerRev} + \text{feeRev}`$ |
+| `revCeiling` | string | $`\text{phloLimit} \times \text{phloPrice} + \text{feeRev}`$ |
+| `purses` | array | One entry for each paying vault: `address` (hex), `resourceRev`, `feeRev` and `postBalance`, all as decimal strings. The owner vaults of stored processes that the deploy used are included, and a vault that pays as a source and as an owner has one entry |
+
+The REV amounts are decimal strings, because they are 128-bit values.
+
+`ownerPhlo` and `ownerRev` are the phlo and the REV that the owners of stored processes paid for this deploy (DR-135). They are fields of the committed cost evidence, not of the receipt. Each owner pays at the price that its stored region recorded, so `revSpent` can exceed `revCeiling` by `ownerRev`. The signed limit bounds only the work that the caller pays: $`\text{phloUsed} - \text{ownerPhlo} + \text{retainedPhlo} \le \text{phloLimit}`$, so `phloUsed` can exceed `phloLimit` by at most `ownerPhlo` (DR-135 item 13). Without owner charges, `revSpent` is $`(\text{freshPhlo} + \text{retainedPhlo}) \times \text{phloPrice} + \text{feeRev}`$.
+
+| Status | Condition |
+|--------|-----------|
+| `200` | The receipt, or `null` for a deploy that is not offered |
+| `400` | The deploy ID is not 32 bytes of hex (`invalid_hash`) |
+| `404` | No block holds the deploy (`deploy_not_found`) |
+| `500` | The stored receipt differs from the committed cost evidence |
+
+#### Command-line deploy
+
+`node deploy` signs an owner-direct offer and submits it through gRPC `doDeploy`. In an owner-direct offer, the signer's own vault pays for every resource class of the signer's own lane. The positional arguments are the same as on dev: the phlo limit, the phlo price, the valid-after block number, the private key or the key file, the Rholang file and the shard ID. The source caps and the total exposure of the offer are its REV ceiling, so the signer accepts the same maximum cost as a dev deploy with the same limit and price.
+
+| Option | Description |
+|--------|-------------|
+| `--resource-policy <hex>` | The hexadecimal genesis resource policy of the shard, as in `casper.genesis-block-data.resource-policy`. The offer signs its schedule at the given price. Without this option, the offer signs the default resource schedule of the shipped configurations for the given shard |
+
+The default resource schedule has four resource classes: compute, introduction, transfer and trace, each at weight 1. It settles in atomic REV at 8 decimals under the native compatibility rule. The shipped configurations (`docker/conf`, `run-local/conf` and the Helm chart) carry its policy for the `root` shard.
 
 #### `GET /api/deploy/{deploy_id}`
 
@@ -304,6 +455,7 @@ curl "http://localhost:40403/api/deploy/abc123...?view=summary"
 | `sigAlgorithm` | string | Signature algorithm (full only) |
 | `validAfterBlockNumber` | int | Valid-after constraint (full only) |
 | `transfers` | array/null | Transfer list or null on validators (full only) |
+| `parameters` | array | Named Rholang values from the signed deploy. The node omits this field in summary responses and when no parameters exist. |
 
 **Summary** returns only: `deployId`, `blockHash`, `blockNumber`, `timestamp`, `cost`, `errored`, `isFinalized`.
 
@@ -350,9 +502,14 @@ Possible `state` values: `Finalized`, `Failed`, `Pending`, `Expired`.
 
 Bulk snapshot of deploys currently queued in the node's local proposer pools: `deploy_storage` (submitted, not yet proposed) and `rejected_deploy_buffer` (recovering after a merge conflict). Each entry carries an `isRejected` flag so consumers can distinguish fresh deploys from recovery-backlog deploys.
 
+This HTTP response does not include deploy parameters.
+After block inclusion, use the full deploy or block response to read parameters.
+
 The queue is **node-local**: deploys never gossip between nodes, so an observer (read-only) node always answers `{"deploys": [], "totalAvailable": 0}` — it rejects `doDeploy`, so it never holds pending deploys. Route this request to a validator. For deploy status that is consistent across nodes, use `GET /api/deploy-finalization-status/{sig}` instead, which is DAG-derived.
 
 Already-included, future (`validAfterBlockNumber` ahead of the tip), and expired deploys are filtered out; a signature sitting in both pools is reported once with `isRejected: true`.
+
+**Offered deploys (protocol 6, DR-66).** On a protocol-6 node the pools hold offered-funded envelopes, and the snapshot lists them under the same window, expiry, scope and duplicate rules. An envelope entry uses the same fields: `phloPrice` and `phloLimit` are the signed offer values, `deployer` is the public key of the primary signer, and `sig` is the hex encoding of the 32-byte deploy ID (the envelope identity), which the offered routes take as `deploy_id`.
 
 **Parameters:**
 
@@ -565,6 +722,36 @@ curl "http://localhost:40453/reporting/trace?blockHash=3bfdf56f...&forceReplay=f
 ```json
 {
   "report": { "deploys": [ ... ], "systemDeploys": [ ... ] }
+}
+```
+
+**Offered deploys (protocol 6, DR-70).** The report of an offered deploy has the same event batches as the report of a dev user deploy: the batch of the registry bootstrap for the first deploy (`REPORT_PHASE_UNSPECIFIED`), then the events of the user run (`REPORT_PHASE_USER`). It has no `PRECHARGE` or `REFUND` batch, because the cost settlement replaces them. Its entry also carries `offered`:
+
+- `nativeCostEvidence`: the committed native cost evidence of the deploy, in base64.
+- `receipt`: the settlement receipt. It has the same data as the receipt route `/deploy/offered/{deploy_id}/receipt`. The REV amounts are decimal strings, because they are 128-bit values.
+
+The node extracts transfers from the USER batch, as for any user deploy. System deploys keep their event batches.
+
+```json
+{
+  "deployInfo": { "sig": "…", "cost": 412, "errored": false, … },
+  "report": [ { "phase": "REPORT_PHASE_USER", "events": [ … ] } ],
+  "offered": {
+    "nativeCostEvidence": "AAEC…",
+    "receipt": {
+      "phloUsed": 412,
+      "freshPhlo": 412,
+      "retainedPhlo": 0,
+      "phloLimit": 100000,
+      "phloPrice": 1,
+      "feeRev": "1",
+      "revSpent": "413",
+      "revCeiling": "100001",
+      "purses": [
+        { "address": "AbC…", "resourceRev": "412", "feeRev": "1", "postBalance": 9999587 }
+      ]
+    }
+  }
 }
 ```
 
@@ -788,6 +975,8 @@ curl http://localhost:40453/api/epoch/rewards
 
 Estimate phlogiston cost of Rholang code without committing. Runs exploratory deploy and returns only the cost.
 
+The estimate runs without owner funding, so it reports the whole run, including the work that the owners of stored processes pay. A caller's signed limit needs to cover only the caller's own part (DR-135 item 13).
+
 **Request body:**
 
 | Field | Type | Required | Description |
@@ -855,7 +1044,7 @@ curl -X POST http://localhost:40405/api/propose
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled |
+| `doDeploy` | `DeployDataProto` | `DeployResponse` | Submit a signed deploy to a validator in the last finalized block's committee. Validates phlo price, shard ID, signature, expiration. Triggers auto-propose if enabled. A proto whose `authorizationV61.formatVersion` is the offered-funded format goes to offered admission (as `POST /api/deploy/offered`); a protocol-6 node refuses a body-only deploy (DR-66) |
 | `getBlock` | `BlockQuery` | `BlockResponse` | Get block by hash. Returns `BlockInfo` (header + deploys). Transfers enriched on readonly |
 | `getBlocks` | `BlocksQuery` | `stream BlockInfoResponse` | Get recent blocks by depth. Streaming. Returns `LightBlockInfo` (headers only) |
 | `showMainChain` | `BlocksQuery` | `stream BlockInfoResponse` | Walk the main chain path from tip. Streaming. Returns `LightBlockInfo` |
@@ -868,7 +1057,7 @@ curl -X POST http://localhost:40405/api/propose
 | `exploratoryDeploy` | `ExploratoryDeployQuery` | `ExploratoryDeployResponse` | Execute Rholang read-only. No block created, no phlo consumed. Returns result `Par`s, block context, and cost. Readonly only |
 | `bondStatus` | `BondStatusQuery` | `BondStatusResponse` | Check if a public key is bonded. Validates that the key is a 65-byte uncompressed secp256k1 point; returns error on invalid input. HTTP: `GET /api/bond-status/{pubkey}` |
 | `previewPrivateNames` | `PrivateNamePreviewQuery` | `PrivateNamePreviewResponse` | Generate unforgeable names from deployer key + timestamp. Allows clients to compute signatures over names before deploying. Max 1024 names |
-| `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing |
+| `getEventByHash` | `ReportQuery` | `EventInfoResponse` | Get full block execution trace — every COMM/produce/consume event per deploy and system deploy. Takes block hash + `forceReplay` flag. Used for debugging and auditing. An offered deploy reports its user-run events in a USER batch, and its `DeployInfoWithEventData.offered` also holds the native cost evidence and the settlement receipt (DR-70) |
 | `visualizeDag` | `VisualizeDagQuery` | `stream VisualizeBlocksResponse` | DAG visualization in DOT format. Takes depth + startBlockNumber + showJustificationLines |
 | `machineVerifiableDag` | `MachineVerifyQuery` | `MachineVerifyResponse` | Machine-parseable DAG representation |
 | `status` | `google.protobuf.Empty` | `StatusResponse` | Node status — version, address, peers, network, native token metadata, LFB number, isValidator, isReadOnly, isReady, epoch |
@@ -893,6 +1082,8 @@ Proto definitions: `models/src/main/protobuf/DeployServiceV1.proto`, `ProposeSer
 | **Validator** | `null` (omitted) | Not emitted |
 
 `null` means transfers cannot be extracted on this node type (block replay requires readonly mode). An empty array `[]` means the deploy had no transfers.
+
+An offered deploy (protocol 6) reports the events of its user run in a USER batch, so the node extracts its transfers as for any user deploy (DR-70). The cost settlement is not a transfer of the deploy and does not appear in `transfers`.
 
 ---
 

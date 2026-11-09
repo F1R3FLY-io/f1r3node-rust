@@ -31,16 +31,35 @@ use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_ve
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
 use rspace_plus_plus::rspace::operation_context::{self, CausalPath, OperationOrder};
 use rspace_plus_plus::rspace::rspace::RSpace;
-use rspace_plus_plus::rspace::rspace_interface::{
-    ISpace, RSpaceOperationCompletion, ReplayOperationDirective,
-};
+// Changed by decision 90 (C6, step D): the retired properties of the rigged
+// replay modes were the only users of `RSpaceOperationCompletion` and
+// `ReplayOperationDirective` here. The text before:
+// ```text
+// use rspace_plus_plus::rspace::rspace_interface::{
+//     ISpace, RSpaceOperationCompletion, ReplayOperationDirective,
+// };
+// ```
+use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Changed by decision 90 (C6, step D): the retired `mutate` was the only user
+// of `incoming_candidate` here. The text before:
+// ```text
+// use rspace_plus_plus::rspace::space_store_handle::{
+//     BoxedSpaceTxn, ConsumeOutcome, ProduceOutcome, SpaceConsume, SpaceOpReceipt, SpaceProduce,
+//     SpaceStoreHandle, SpaceTxnError, SweepReport, bind_candidate, incoming_candidate, sub_order,
+// };
+// ```
 use rspace_plus_plus::rspace::space_store_handle::{
     BoxedSpaceTxn, ConsumeOutcome, ProduceOutcome, SpaceConsume, SpaceOpReceipt, SpaceProduce,
-    SpaceStoreHandle, SpaceTxnError, SweepReport, bind_candidate, incoming_candidate, sub_order,
+    SpaceStoreHandle, SpaceTxnError, SweepReport, bind_candidate, sub_order,
 };
-use rspace_plus_plus::rspace::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+// Changed by decision 90 (C6, step D): the retired helpers of the rigged replay
+// modes were the only users of `Consume` here. The text before:
+// ```text
+// use rspace_plus_plus::rspace::trace::event::{COMM, Consume, Event, IOEvent, Produce};
+// ```
+use rspace_plus_plus::rspace::trace::event::{COMM, Event, IOEvent, Produce};
 use serde::{Deserialize, Serialize};
 use support::*;
 
@@ -239,17 +258,21 @@ fn op_groups(peeks: bool, odd: f64) -> impl Strategy<Value = Vec<Vec<Op>>> {
         .prop_map(binds_incoming_once)
 }
 
-// Groups for the two-block property (H29), with a split that leaves at least
-// one group in each block. The groups are normalized as one sequence, because
-// a waiter of block 1 can wait for a send of block 2.
-fn two_block_op_groups() -> impl Strategy<Value = (Vec<Vec<Op>>, usize)> {
-    proptest::collection::vec(proptest::collection::vec(op(false, ODD, REPEAT), 1..=4), 2..=8)
-        .prop_map(binds_incoming_once)
-        .prop_flat_map(|groups| {
-            let len = groups.len();
-            (Just(groups), 1..len)
-        })
-}
+// Retired by decision 90 (C6, step D): only the retired properties of the
+// rigged replay modes called this helper (decision 125). The text before:
+// ```text
+// // Groups for the two-block property (H29), with a split that leaves at least
+// // one group in each block. The groups are normalized as one sequence, because
+// // a waiter of block 1 can wait for a send of block 2.
+// fn two_block_op_groups() -> impl Strategy<Value = (Vec<Vec<Op>>, usize)> {
+//     proptest::collection::vec(proptest::collection::vec(op(false, ODD, REPEAT), 1..=4), 2..=8)
+//         .prop_map(binds_incoming_once)
+//         .prop_flat_map(|groups| {
+//             let len = groups.len();
+//             (Just(groups), 1..len)
+//         })
+// }
+// ```
 
 // Groups for the peek property (H11, FR-10, decision 45). Waiters outnumber
 // sends two to one, and most waiters peek. So peek fires on one channel and
@@ -408,103 +431,138 @@ async fn play_root_equals_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError
     Ok(())
 }
 
-// H5, T1: replay pairs every COMM of the play log once and reaches the play
-// root.
-async fn replay_pairs_play_log(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
-    let (play, replay) = play_and_replay().await;
-    let start = checkpoint(&play).await;
-    let played_receipts =
-        assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
-    let played = checkpoint(&play).await;
-    rig(&replay, &start.root, &played.log).await;
-    let replayed_receipts =
-        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
-    prop_assert_eq!(replayed_receipts, played_receipts);
-    prop_assert!(replay_bindings(&replay).is_empty());
-    match replay.create_checkpoint().await {
-        Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
-        Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint: {:?}", error))),
-    }
-    Ok(())
-}
+// Retired by decision 90 (C6, step D): the test drove the rigged replay or
+// reporting mode of the store, which retires (decision 125). Native replay of
+// the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+// its siblings in `native_session/space.rs`, and by
+// `space_native_replay_equal_*`. The text before:
+// ```text
+// // H5, T1: replay pairs every COMM of the play log once and reaches the play
+// // root.
+// async fn replay_pairs_play_log(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
+//     let plans = plan_groups(&groups).await;
+//     let (play, replay) = play_and_replay().await;
+//     let start = checkpoint(&play).await;
+//     let played_receipts =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
+//     let played = checkpoint(&play).await;
+//     rig(&replay, &start.root, &played.log).await;
+//     let replayed_receipts =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
+//     prop_assert_eq!(replayed_receipts, played_receipts);
+//     prop_assert!(replay_bindings(&replay).is_empty());
+//     match replay.create_checkpoint().await {
+//         Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
+//         Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint: {:?}", error))),
+//     }
+//     Ok(())
+// }
+// ```
 
-// H29: a two-block reset-and-replay trace gives the roots of play. Play
-// commits the first `split` transactions of the plan as block 1 and the rest
-// as block 2, with a checkpoint after each block. Each block holds at least
-// one transaction. Replay resets to the start root, replays block 1 with its
-// log, resets to the root that its own replay of block 1 gives, and replays
-// block 2 with its log. Each block commits the receipts of play, pairs every
-// COMM, and reaches the root of play.
-async fn two_block_replay_preserves_roots(
-    groups: Vec<Vec<Op>>,
-    split: usize,
-) -> Result<(), TestCaseError> {
-    // A checkpoint resets the hot store to the history, which can reorder the
-    // records of a channel. So the plans of block 2 come from scratch spaces
-    // that checkpoint after block 1 too, and their candidate positions match.
-    let (first_groups, second_groups) = groups.split_at(split);
-    let scratch_host = play_space().await;
-    let scratch_txn = play_space().await;
-    let (first, _) = run_guided(&scratch_host, &scratch_txn, first_groups).await;
-    checkpoint(&scratch_host).await;
-    checkpoint(&scratch_txn).await;
-    let (second, _) = run_guided(&scratch_host, &scratch_txn, second_groups).await;
-    let (first, second) = (first.as_slice(), second.as_slice());
-    let (play, replay) = play_and_replay().await;
-    let start = checkpoint(&play).await;
-    let played_first =
-        assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), first).await)?;
-    let block_one = checkpoint(&play).await;
-    let played_second =
-        assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), second).await)?;
-    let block_two = checkpoint(&play).await;
+// Retired by decision 90 (C6, step D): the test drove the rigged replay or
+// reporting mode of the store, which retires (decision 125). Native replay of
+// the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+// its siblings in `native_session/space.rs`, and by
+// `space_native_replay_equal_*`. The text before:
+// ```text
+// // H29: a two-block reset-and-replay trace gives the roots of play. Play
+// // commits the first `split` transactions of the plan as block 1 and the rest
+// // as block 2, with a checkpoint after each block. Each block holds at least
+// // one transaction. Replay resets to the start root, replays block 1 with its
+// // log, resets to the root that its own replay of block 1 gives, and replays
+// // block 2 with its log. Each block commits the receipts of play, pairs every
+// // COMM, and reaches the root of play.
+// async fn two_block_replay_preserves_roots(
+//     groups: Vec<Vec<Op>>,
+//     split: usize,
+// ) -> Result<(), TestCaseError> {
+//     // A checkpoint resets the hot store to the history, which can reorder the
+//     // records of a channel. So the plans of block 2 come from scratch spaces
+//     // that checkpoint after block 1 too, and their candidate positions match.
+//     let (first_groups, second_groups) = groups.split_at(split);
+//     let scratch_host = play_space().await;
+//     let scratch_txn = play_space().await;
+//     let (first, _) = run_guided(&scratch_host, &scratch_txn, first_groups).await;
+//     checkpoint(&scratch_host).await;
+//     checkpoint(&scratch_txn).await;
+//     let (second, _) = run_guided(&scratch_host, &scratch_txn, second_groups).await;
+//     let (first, second) = (first.as_slice(), second.as_slice());
+//     let (play, replay) = play_and_replay().await;
+//     let start = checkpoint(&play).await;
+//     let played_first =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), first).await)?;
+//     let block_one = checkpoint(&play).await;
+//     let played_second =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), second).await)?;
+//     let block_two = checkpoint(&play).await;
+//
+//     rig(&replay, &start.root, &block_one.log).await;
+//     let replayed_first =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), first).await)?;
+//     prop_assert_eq!(replayed_first, played_first);
+//     prop_assert!(replay_bindings(&replay).is_empty());
+//     let root_one = match replay.create_checkpoint().await {
+//         Ok(replayed) => replayed.root,
+//         Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint 1: {:?}", error))),
+//     };
+//     prop_assert_eq!(&root_one, &block_one.root);
+//
+//     rig(&replay, &root_one, &block_two.log).await;
+//     let replayed_second =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), second).await)?;
+//     prop_assert_eq!(replayed_second, played_second);
+//     prop_assert!(replay_bindings(&replay).is_empty());
+//     match replay.create_checkpoint().await {
+//         Ok(replayed) => prop_assert_eq!(replayed.root, block_two.root),
+//         Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint 2: {:?}", error))),
+//     }
+//     Ok(())
+// }
+// ```
 
-    rig(&replay, &start.root, &block_one.log).await;
-    let replayed_first =
-        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), first).await)?;
-    prop_assert_eq!(replayed_first, played_first);
-    prop_assert!(replay_bindings(&replay).is_empty());
-    let root_one = match replay.create_checkpoint().await {
-        Ok(replayed) => replayed.root,
-        Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint 1: {:?}", error))),
-    };
-    prop_assert_eq!(&root_one, &block_one.root);
-
-    rig(&replay, &root_one, &block_two.log).await;
-    let replayed_second =
-        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), second).await)?;
-    prop_assert_eq!(replayed_second, played_second);
-    prop_assert!(replay_bindings(&replay).is_empty());
-    match replay.create_checkpoint().await {
-        Ok(replayed) => prop_assert_eq!(replayed.root, block_two.root),
-        Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint 2: {:?}", error))),
-    }
-    Ok(())
-}
-
-// T1: a host play log replays through transactions and a transaction play
-// log replays through the host; both play logs are equal. The plans come from
-// the host play itself, because host play picks at random (DR-129). The host
-// replay is drawn until it pairs every recorded COMM (`paired_host_replay`,
-// decision 89).
+// Changed by decision 90 (C6, step D): the replay of a host log through
+// transactions retires with the rigged replay modes (decision 125). The text
+// before:
+// ```
+// // T1: a host play log replays through transactions and a transaction play
+// // log replays through the host; both play logs are equal. The plans come from
+// // the host play itself, because host play picks at random (DR-129). The host
+// // replay is drawn until it pairs every recorded COMM (`paired_host_replay`,
+// // decision 89).
+// ```
+// T1: a transaction play log replays through the host, and the play logs of the
+// host and of the transactions are equal. The plans come from the host play
+// itself, because host play picks at random (DR-129). The host replay is drawn
+// until it pairs every recorded COMM (`paired_host_replay`, decision 89).
 async fn cross_replay_with_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     // Changed by decision 89 (DR-129): a second host run can pick other
     // candidates than the run that planned the transactions.
     // let plans = plan_groups(&groups).await;
     let ops = flatten(&groups);
 
-    let (host_play, txn_replay) = play_and_replay().await;
-    let host_start = checkpoint(&host_play).await;
+    // Changed by decision 90 (C6, step D): the replay space goes with the replay
+    // through transactions, and the checkpoint stays because it empties the event
+    // log before the plans run. The text before:
+    // let (host_play, txn_replay) = play_and_replay().await;
+    // let host_start = checkpoint(&host_play).await;
+    let host_play = play_space().await;
+    checkpoint(&host_play).await;
     // run_host_ops(&host_play, &ops).await;
     let (plans, _) = run_guided(&host_play, &play_space().await, &groups).await;
     let host_played = checkpoint(&host_play).await;
-    rig(&txn_replay, &host_start.root, &host_played.log).await;
-    assert_committed(run_plans(&SpaceStoreHandle::new(txn_replay.clone()), &plans).await)?;
-    match txn_replay.create_checkpoint().await {
-        Ok(replayed) => prop_assert_eq!(replayed.root, host_played.root.clone()),
-        Err(error) => return Err(TestCaseError::fail(format!("transaction replay: {:?}", error))),
-    }
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged
+    // replay modes, which retire (decision 125). Native replay of the store is
+    // tested by `native_space_replay_rejects_a_tampered_candidate` and its siblings
+    // in `native_session/space.rs`, and by `space_native_replay_equal_*`. The text
+    // before:
+    // ```
+    // rig(&txn_replay, &host_start.root, &host_played.log).await;
+    // assert_committed(run_plans(&SpaceStoreHandle::new(txn_replay.clone()), &plans).await)?;
+    // match txn_replay.create_checkpoint().await {
+    //     Ok(replayed) => prop_assert_eq!(replayed.root, host_played.root.clone()),
+    //     Err(error) => return Err(TestCaseError::fail(format!("transaction replay: {:?}", error))),
+    // }
+    // ```
 
     // Changed by decision 89 (DR-129): legacy host replay can leave a
     // recorded COMM of this log unpaired, so the host replay is drawn
@@ -529,64 +587,68 @@ async fn cross_replay_with_host(groups: Vec<Vec<Op>>) -> Result<(), TestCaseErro
     Ok(())
 }
 
-// A fire whose COMM was never recorded: a fresh produced value, or a fresh
-// continuation for a consume.
-fn mutate(plan: &Planned) -> Planned {
-    match plan.clone() {
-        Planned::Produce {
-            channel,
-            persist,
-            outcome:
-                ProduceOutcome::Fire {
-                    channels,
-                    continuation,
-                    data,
-                },
-            ..
-        } => {
-            let mutant = s("mutant");
-            let data = data
-                .into_iter()
-                .map(|candidate| match candidate.datum_index {
-                    -1 => incoming_candidate(
-                        candidate.channel.clone(),
-                        Produce::create(&channel, &mutant, persist),
-                        mutant.clone(),
-                        persist,
-                        mutant.clone(),
-                    ),
-                    _ => candidate,
-                })
-                .collect();
-            Planned::Produce {
-                channel,
-                data: mutant,
-                persist,
-                outcome: ProduceOutcome::Fire {
-                    channels,
-                    continuation,
-                    data,
-                },
-            }
-        }
-        Planned::Consume {
-            channels,
-            patterns,
-            persist,
-            peeks,
-            outcome: ConsumeOutcome::Fire { data },
-            ..
-        } => Planned::Consume {
-            channels,
-            patterns,
-            continuation: s("mutant"),
-            persist,
-            peeks,
-            outcome: ConsumeOutcome::Fire { data },
-        },
-        other => other,
-    }
-}
+// Retired by decision 90 (C6, step D): only the retired properties of the
+// rigged replay modes called this helper (decision 125). The text before:
+// ```text
+// // A fire whose COMM was never recorded: a fresh produced value, or a fresh
+// // continuation for a consume.
+// fn mutate(plan: &Planned) -> Planned {
+//     match plan.clone() {
+//         Planned::Produce {
+//             channel,
+//             persist,
+//             outcome:
+//                 ProduceOutcome::Fire {
+//                     channels,
+//                     continuation,
+//                     data,
+//                 },
+//             ..
+//         } => {
+//             let mutant = s("mutant");
+//             let data = data
+//                 .into_iter()
+//                 .map(|candidate| match candidate.datum_index {
+//                     -1 => incoming_candidate(
+//                         candidate.channel.clone(),
+//                         Produce::create(&channel, &mutant, persist),
+//                         mutant.clone(),
+//                         persist,
+//                         mutant.clone(),
+//                     ),
+//                     _ => candidate,
+//                 })
+//                 .collect();
+//             Planned::Produce {
+//                 channel,
+//                 data: mutant,
+//                 persist,
+//                 outcome: ProduceOutcome::Fire {
+//                     channels,
+//                     continuation,
+//                     data,
+//                 },
+//             }
+//         }
+//         Planned::Consume {
+//             channels,
+//             patterns,
+//             persist,
+//             peeks,
+//             outcome: ConsumeOutcome::Fire { data },
+//             ..
+//         } => Planned::Consume {
+//             channels,
+//             patterns,
+//             continuation: s("mutant"),
+//             persist,
+//             peeks,
+//             outcome: ConsumeOutcome::Fire { data },
+//         },
+//         other => other,
+//     }
+// }
+// ```
 
 // The staged view through the transaction's read API.
 fn txn_view(txn: &mut Txn, produces: &[Produce]) -> (ChannelView, BTreeMap<Produce, i32>) {
@@ -647,150 +709,161 @@ fn plan_produces(plan: &Planned) -> Vec<Produce> {
     }
 }
 
-// The observer calls of an unpaired replay fire at commit, all for the
-// source `source`: the start, the directive query, the introduction, the
-// COMM call with `comm`, and the rejected finish (decision 36).
-fn check_unpaired_calls(calls: &[Call], source: &[u8], comm: &COMM) -> Result<(), TestCaseError> {
-    let comm_bytes = bincode::serialize(comm).expect("serialize a COMM");
-    let (start, directive, introduction, observed, finish) = match calls {
-        [
-            Call::Start { source: start, .. },
-            Call::Directive { source: directive },
-            Call::Produce {
-                source: introduction,
-                ..
-            } |
-            Call::Consume {
-                source: introduction,
-                ..
-            },
-            Call::Comm { comm: observed, .. },
-            Call::Finish {
-                source: finish,
-                completion: RSpaceOperationCompletion::Rejected,
-            },
-        ] => (start, directive, introduction, observed, finish),
-        other => {
-            return Err(TestCaseError::fail(format!(
-                "the calls of the unpaired fire: {:?}",
-                other
-            )));
-        }
-    };
-    for called in [start, directive, introduction, finish] {
-        prop_assert_eq!(called.as_slice(), source);
-    }
-    prop_assert_eq!(observed, &comm_bytes);
-    Ok(())
-}
+// Retired by decision 90 (C6, step D): only the retired properties of the
+// rigged replay modes called this helper (decision 125). The text before:
+// ```text
+// // The observer calls of an unpaired replay fire at commit, all for the
+// // source `source`: the start, the directive query, the introduction, the
+// // COMM call with `comm`, and the rejected finish (decision 36).
+// fn check_unpaired_calls(calls: &[Call], source: &[u8], comm: &COMM) -> Result<(), TestCaseError> {
+//     let comm_bytes = bincode::serialize(comm).expect("serialize a COMM");
+//     let (start, directive, introduction, observed, finish) = match calls {
+//         [
+//             Call::Start { source: start, .. },
+//             Call::Directive { source: directive },
+//             Call::Produce {
+//                 source: introduction,
+//                 ..
+//             } |
+//             Call::Consume {
+//                 source: introduction,
+//                 ..
+//             },
+//             Call::Comm { comm: observed, .. },
+//             Call::Finish {
+//                 source: finish,
+//                 completion: RSpaceOperationCompletion::Rejected,
+//             },
+//         ] => (start, directive, introduction, observed, finish),
+//         other => {
+//             return Err(TestCaseError::fail(format!(
+//                 "the calls of the unpaired fire: {:?}",
+//                 other
+//             )));
+//         }
+//     };
+//     for called in [start, directive, introduction, finish] {
+//         prop_assert_eq!(called.as_slice(), source);
+//     }
+//     prop_assert_eq!(observed, &comm_bytes);
+//     Ok(())
+// }
+// ```
 
-// H4, T3 (decision 36): a fire whose COMM the log does not hold stages as
-// in play and stays unpaired. Staging it and a store after it leaves the
-// bindings, the store and the observer untouched, and the staged view
-// equals the view of play after the same operations. The commit applies the
-// operations before the fire, makes the calls of the fire through its COMM
-// call, and fails with the typed `ReplayDivergence`. The state, the bindings
-// and the counters then equal those of a replay that commits only the
-// operations before the fire, so nothing of the fire or after it is logged
-// or applied. A new transaction with the recorded fire and the rest then
-// reaches the play root.
-async fn replay_divergence_typed_at_commit(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
-    let flat: Vec<Planned> = plans.iter().flatten().cloned().collect();
-    let target = flat.iter().position(Planned::is_fire);
-    prop_assume!(target.is_some());
-    let target = target.unwrap_or_default();
-
-    let (play, replay) = play_and_replay().await;
-    let start = checkpoint(&play).await;
-    assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
-    let played = checkpoint(&play).await;
-    let recorder = Recorder::new();
-    observed(&replay, &recorder);
-    rig(&replay, &start.root, &played.log).await;
-
-    let mutant = mutate(&flat[target]);
-    let after = Planned::Produce {
-        channel: s("v2"),
-        data: s("after"),
-        persist: false,
-        outcome: ProduceOutcome::Store,
-    };
-    let produces: Vec<Produce> = plan_produces(&flat[target])
-        .into_iter()
-        .chain(plan_produces(&mutant))
-        .chain(plan_produces(&after))
-        .collect();
-    let handle = SpaceStoreHandle::new(replay.clone());
-    let mut txn = handle.begin(&universe()).await.expect("begin");
-    for plan in &flat[..target] {
-        staged(plan, &mut txn)?;
-    }
-    let bindings = replay_bindings(&replay);
-    let state = replay_state(&replay);
-    let comm = match mutant.stage(&mut txn, None).map(|staged| staged.comm) {
-        Ok(Some(comm)) => comm,
-        other => {
-            return Err(TestCaseError::fail(format!("the unpaired fire stages: {:?}", other)));
-        }
-    };
-    staged(&after, &mut txn)?;
-    prop_assert_eq!(replay_bindings(&replay), bindings);
-    prop_assert_eq!(replay_state(&replay), state);
-    prop_assert!(recorder.calls().is_empty());
-    let twin = play_space().await;
-    let twin_handle = SpaceStoreHandle::new(twin.clone());
-    let mut twin_txn = twin_handle.begin(&universe()).await.expect("begin");
-    for plan in flat[..target].iter().chain([&mutant, &after]) {
-        staged(plan, &mut twin_txn)?;
-    }
-    prop_assert_eq!(txn_view(&mut txn, &produces), txn_view(&mut twin_txn, &produces));
-    drop(twin_txn);
-    prop_assert_eq!(
-        txn.commit().await,
-        Err(SpaceTxnError::ReplayDivergence(Box::new(comm.clone())))
-    );
-
-    let reference = replay_over(&play);
-    let reference_recorder = Recorder::new();
-    observed(&reference, &reference_recorder);
-    rig(&reference, &start.root, &played.log).await;
-    let reference_handle = SpaceStoreHandle::new(reference.clone());
-    let mut reference_txn = reference_handle.begin(&universe()).await.expect("begin");
-    for plan in &flat[..target] {
-        staged(plan, &mut reference_txn)?;
-    }
-    if let Err(error) = reference_txn.commit().await {
-        return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
-    }
-    prop_assert_eq!(replay_state(&replay), replay_state(&reference));
-    prop_assert_eq!(replay_bindings(&replay), replay_bindings(&reference));
-    let prefix = reference_recorder.calls();
-    let calls = recorder.calls();
-    prop_assert!(calls.starts_with(&prefix));
-    check_unpaired_calls(&calls[prefix.len()..], &source_of(&mutant), &comm)?;
-    let mut probe = handle.begin(&universe()).await.expect("begin");
-    let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
-    prop_assert_eq!(
-        counters_of(&mut probe, &produces)?,
-        counters_of(&mut reference_probe, &produces)?
-    );
-    drop(probe);
-    drop(reference_probe);
-
-    let mut txn = handle.begin(&universe()).await.expect("begin");
-    for plan in &flat[target..] {
-        staged(plan, &mut txn)?;
-    }
-    if let Err(error) = txn.commit().await {
-        return Err(TestCaseError::fail(format!("commit after the divergence: {:?}", error)));
-    }
-    match replay.create_checkpoint().await {
-        Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
-        Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint: {:?}", error))),
-    }
-    Ok(())
-}
+// Retired by decision 90 (C6, step D): the test drove the rigged replay or
+// reporting mode of the store, which retires (decision 125). Native replay of
+// the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+// its siblings in `native_session/space.rs`, and by
+// `space_native_replay_equal_*`. The text before:
+// ```text
+// // H4, T3 (decision 36): a fire whose COMM the log does not hold stages as
+// // in play and stays unpaired. Staging it and a store after it leaves the
+// // bindings, the store and the observer untouched, and the staged view
+// // equals the view of play after the same operations. The commit applies the
+// // operations before the fire, makes the calls of the fire through its COMM
+// // call, and fails with the typed `ReplayDivergence`. The state, the bindings
+// // and the counters then equal those of a replay that commits only the
+// // operations before the fire, so nothing of the fire or after it is logged
+// // or applied. A new transaction with the recorded fire and the rest then
+// // reaches the play root.
+// async fn replay_divergence_typed_at_commit(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
+//     let plans = plan_groups(&groups).await;
+//     let flat: Vec<Planned> = plans.iter().flatten().cloned().collect();
+//     let target = flat.iter().position(Planned::is_fire);
+//     prop_assume!(target.is_some());
+//     let target = target.unwrap_or_default();
+//
+//     let (play, replay) = play_and_replay().await;
+//     let start = checkpoint(&play).await;
+//     assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
+//     let played = checkpoint(&play).await;
+//     let recorder = Recorder::new();
+//     observed(&replay, &recorder);
+//     rig(&replay, &start.root, &played.log).await;
+//
+//     let mutant = mutate(&flat[target]);
+//     let after = Planned::Produce {
+//         channel: s("v2"),
+//         data: s("after"),
+//         persist: false,
+//         outcome: ProduceOutcome::Store,
+//     };
+//     let produces: Vec<Produce> = plan_produces(&flat[target])
+//         .into_iter()
+//         .chain(plan_produces(&mutant))
+//         .chain(plan_produces(&after))
+//         .collect();
+//     let handle = SpaceStoreHandle::new(replay.clone());
+//     let mut txn = handle.begin(&universe()).await.expect("begin");
+//     for plan in &flat[..target] {
+//         staged(plan, &mut txn)?;
+//     }
+//     let bindings = replay_bindings(&replay);
+//     let state = replay_state(&replay);
+//     let comm = match mutant.stage(&mut txn, None).map(|staged| staged.comm) {
+//         Ok(Some(comm)) => comm,
+//         other => {
+//             return Err(TestCaseError::fail(format!("the unpaired fire stages: {:?}", other)));
+//         }
+//     };
+//     staged(&after, &mut txn)?;
+//     prop_assert_eq!(replay_bindings(&replay), bindings);
+//     prop_assert_eq!(replay_state(&replay), state);
+//     prop_assert!(recorder.calls().is_empty());
+//     let twin = play_space().await;
+//     let twin_handle = SpaceStoreHandle::new(twin.clone());
+//     let mut twin_txn = twin_handle.begin(&universe()).await.expect("begin");
+//     for plan in flat[..target].iter().chain([&mutant, &after]) {
+//         staged(plan, &mut twin_txn)?;
+//     }
+//     prop_assert_eq!(txn_view(&mut txn, &produces), txn_view(&mut twin_txn, &produces));
+//     drop(twin_txn);
+//     prop_assert_eq!(
+//         txn.commit().await,
+//         Err(SpaceTxnError::ReplayDivergence(Box::new(comm.clone())))
+//     );
+//
+//     let reference = replay_over(&play);
+//     let reference_recorder = Recorder::new();
+//     observed(&reference, &reference_recorder);
+//     rig(&reference, &start.root, &played.log).await;
+//     let reference_handle = SpaceStoreHandle::new(reference.clone());
+//     let mut reference_txn = reference_handle.begin(&universe()).await.expect("begin");
+//     for plan in &flat[..target] {
+//         staged(plan, &mut reference_txn)?;
+//     }
+//     if let Err(error) = reference_txn.commit().await {
+//         return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
+//     }
+//     prop_assert_eq!(replay_state(&replay), replay_state(&reference));
+//     prop_assert_eq!(replay_bindings(&replay), replay_bindings(&reference));
+//     let prefix = reference_recorder.calls();
+//     let calls = recorder.calls();
+//     prop_assert!(calls.starts_with(&prefix));
+//     check_unpaired_calls(&calls[prefix.len()..], &source_of(&mutant), &comm)?;
+//     let mut probe = handle.begin(&universe()).await.expect("begin");
+//     let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
+//     prop_assert_eq!(
+//         counters_of(&mut probe, &produces)?,
+//         counters_of(&mut reference_probe, &produces)?
+//     );
+//     drop(probe);
+//     drop(reference_probe);
+//
+//     let mut txn = handle.begin(&universe()).await.expect("begin");
+//     for plan in &flat[target..] {
+//         staged(plan, &mut txn)?;
+//     }
+//     if let Err(error) = txn.commit().await {
+//         return Err(TestCaseError::fail(format!("commit after the divergence: {:?}", error)));
+//     }
+//     match replay.create_checkpoint().await {
+//         Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
+//         Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint: {:?}", error))),
+//     }
+//     Ok(())
+// }
+// ```
 
 // H6: what a transaction reads after staging equals the store after commit.
 // The groups include peek fires with their re-stores and re-offers (FR-10,
@@ -1019,6 +1092,9 @@ async fn sub_orders_contiguous(
                 persist: false,
                 outcome: ProduceOutcome::Store,
                 before_observe: None,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             })
             .expect("stage");
         }
@@ -1368,9 +1444,15 @@ fn check_receipt_flags(plans: &[Vec<Planned>], receipts: &[Receipt]) -> Result<(
 // removes, so the committed state equals the host's with the record lists up
 // to permutation (H2: since DR-129 the host can take another copy of a
 // byte-identical record), and the events and the root are equal. Every result
-// keeps the host's flag. The
-// same transactions, re-stores and re-offers included, replay and report
-// from the play log.
+// Changed by decision 90 (C6, step D): the replay and the reporting of these
+// transactions retire with the rigged replay modes (decision 125). The text
+// before:
+// ```
+// // keeps the host's flag. The
+// // same transactions, re-stores and re-offers included, replay and report
+// // from the play log.
+// ```
+// keeps the host's flag.
 async fn peek_restore(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let host = play_space().await;
     let host_recorder = Recorder::new();
@@ -1378,7 +1460,11 @@ async fn peek_restore(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let txn = play_space().await;
     let txn_recorder = Recorder::new();
     observed(&txn, &txn_recorder);
-    let start = checkpoint(&txn).await;
+    // Changed by decision 90 (C6, step D): the root lost its reader with the replay
+    // half, and the checkpoint stays because it empties the event log, so that the
+    // later `txn_checkpoint` holds the log since this checkpoint. The text before:
+    // let start = checkpoint(&txn).await;
+    checkpoint(&txn).await;
     let (plans, receipts) = run_guided(&host, &txn, &groups).await;
     let receipts = assert_committed(receipts)?;
     check_receipt_flags(&plans, &receipts)?;
@@ -1392,89 +1478,106 @@ async fn peek_restore(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     prop_assert_eq!(event_bytes(&txn_checkpoint.log), event_bytes(&host_checkpoint.log));
     prop_assert_eq!(txn_checkpoint.root.clone(), host_checkpoint.root);
 
-    let replay = replay_over(&txn);
-    rig(&replay, &start.root, &txn_checkpoint.log).await;
-    let replayed =
-        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
-    prop_assert_eq!(&replayed, &receipts);
-    prop_assert!(replay_bindings(&replay).is_empty());
-    prop_assert_eq!(checkpoint(&replay).await.root, txn_checkpoint.root.clone());
-
-    let reporting = reporting_over(&txn);
-    reporting
-        .rig_and_reset(start.root.clone(), txn_checkpoint.log.clone())
-        .await
-        .expect("rig the reporting space");
-    let reported =
-        assert_committed(run_plans(&SpaceStoreHandle::new(reporting.clone()), &plans).await)?;
-    prop_assert_eq!(reported, receipts);
-    let reported_root = ISpace::create_checkpoint(&reporting)
-        .await
-        .expect("checkpoint the reporting space")
-        .root;
-    prop_assert_eq!(reported_root, txn_checkpoint.root);
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged
+    // replay modes, which retire (decision 125). Native replay of the store is
+    // tested by `native_space_replay_rejects_a_tampered_candidate` and its siblings
+    // in `native_session/space.rs`, and by `space_native_replay_equal_*`. The text
+    // before:
+    // ```
+    // let replay = replay_over(&txn);
+    // rig(&replay, &start.root, &txn_checkpoint.log).await;
+    // let replayed =
+    //     assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
+    // prop_assert_eq!(&replayed, &receipts);
+    // prop_assert!(replay_bindings(&replay).is_empty());
+    // prop_assert_eq!(checkpoint(&replay).await.root, txn_checkpoint.root.clone());
+    //
+    // let reporting = reporting_over(&txn);
+    // reporting
+    //     .rig_and_reset(start.root.clone(), txn_checkpoint.log.clone())
+    //     .await
+    //     .expect("rig the reporting space");
+    // let reported =
+    //     assert_committed(run_plans(&SpaceStoreHandle::new(reporting.clone()), &plans).await)?;
+    // prop_assert_eq!(reported, receipts);
+    // let reported_root = ISpace::create_checkpoint(&reporting)
+    //     .await
+    //     .expect("checkpoint the reporting space")
+    //     .root;
+    // prop_assert_eq!(reported_root, txn_checkpoint.root);
+    // ```
     Ok(())
 }
 
-// H12: reporting replays exactly like replay and reports what the host
-// reporting space reports. The host reporting space is drawn until it pairs
-// every recorded COMM (`paired_host_replay`, decision 89).
-async fn reporting_equals_replay(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
-    let play = play_space().await;
-    let start = checkpoint(&play).await;
-    assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
-    let played = checkpoint(&play).await;
-    let replay = replay_over(&play);
-    let replay_recorder = Recorder::new();
-    observed(&replay, &replay_recorder);
-    let reporting = reporting_over(&play);
-    let reporting_recorder = Recorder::new();
-    observed(&reporting, &reporting_recorder);
-    // Changed by decision 89 (DR-129): the plans come from random host play,
-    // and legacy host replay can then leave a recorded COMM unpaired, so the
-    // host reporting space is drawn (`paired_host_replay`).
-    // let by_host = reporting_over(&play);
-    rig(&replay, &start.root, &played.log).await;
-    // for space in [&reporting, &by_host] {
-    //     space
-    //         .rig_and_reset(start.root.clone(), played.log.clone())
-    //         .await
-    //         .expect("rig a reporting space");
-    // }
-    reporting
-        .rig_and_reset(start.root.clone(), played.log.clone())
-        .await
-        .expect("rig a reporting space");
-    let replayed =
-        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
-    let reported =
-        assert_committed(run_plans(&SpaceStoreHandle::new(reporting.clone()), &plans).await)?;
-    // run_host_ops(&by_host, &flatten(&groups)).await;
-    let by_host =
-        paired_host_replay(|| reporting_over(&play), &start.root, &played.log, &flatten(&groups))
-            .await
-            .map_err(TestCaseError::fail)?;
-    prop_assert_eq!(reported, replayed);
-    prop_assert_eq!(reporting_recorder.calls(), replay_recorder.calls());
-    prop_assert_eq!(
-        reporting.get_report().expect("reporting report"),
-        by_host.get_report().expect("host report")
-    );
-    let replay_root = checkpoint(&replay).await.root;
-    let reporting_root = ISpace::create_checkpoint(&reporting)
-        .await
-        .expect("checkpoint the reporting space")
-        .root;
-    prop_assert_eq!(reporting_root, replay_root.clone());
-    prop_assert_eq!(replay_root, played.root);
-    Ok(())
-}
+// Retired by decision 90 (C6, step D): the test drove the rigged replay or
+// reporting mode of the store, which retires (decision 125). Native replay of
+// the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+// its siblings in `native_session/space.rs`, and by
+// `space_native_replay_equal_*`. The text before:
+// ```text
+// // H12: reporting replays exactly like replay and reports what the host
+// // reporting space reports. The host reporting space is drawn until it pairs
+// // every recorded COMM (`paired_host_replay`, decision 89).
+// async fn reporting_equals_replay(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
+//     let plans = plan_groups(&groups).await;
+//     let play = play_space().await;
+//     let start = checkpoint(&play).await;
+//     assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
+//     let played = checkpoint(&play).await;
+//     let replay = replay_over(&play);
+//     let replay_recorder = Recorder::new();
+//     observed(&replay, &replay_recorder);
+//     let reporting = reporting_over(&play);
+//     let reporting_recorder = Recorder::new();
+//     observed(&reporting, &reporting_recorder);
+//     // Changed by decision 89 (DR-129): the plans come from random host play,
+//     // and legacy host replay can then leave a recorded COMM unpaired, so the
+//     // host reporting space is drawn (`paired_host_replay`).
+//     // let by_host = reporting_over(&play);
+//     rig(&replay, &start.root, &played.log).await;
+//     // for space in [&reporting, &by_host] {
+//     //     space
+//     //         .rig_and_reset(start.root.clone(), played.log.clone())
+//     //         .await
+//     //         .expect("rig a reporting space");
+//     // }
+//     reporting
+//         .rig_and_reset(start.root.clone(), played.log.clone())
+//         .await
+//         .expect("rig a reporting space");
+//     let replayed =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
+//     let reported =
+//         assert_committed(run_plans(&SpaceStoreHandle::new(reporting.clone()), &plans).await)?;
+//     // run_host_ops(&by_host, &flatten(&groups)).await;
+//     let by_host =
+//         paired_host_replay(|| reporting_over(&play), &start.root, &played.log, &flatten(&groups))
+//             .await
+//             .map_err(TestCaseError::fail)?;
+//     prop_assert_eq!(reported, replayed);
+//     prop_assert_eq!(reporting_recorder.calls(), replay_recorder.calls());
+//     prop_assert_eq!(
+//         reporting.get_report().expect("reporting report"),
+//         by_host.get_report().expect("host report")
+//     );
+//     let replay_root = checkpoint(&replay).await.root;
+//     let reporting_root = ISpace::create_checkpoint(&reporting)
+//         .await
+//         .expect("checkpoint the reporting space")
+//         .root;
+//     prop_assert_eq!(reporting_root, replay_root.clone());
+//     prop_assert_eq!(replay_root, played.root);
+//     Ok(())
+// }
+// ```
 
 // H16: the root leaf record count is the number of records in the leaf.
 async fn root_leaf_count(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let plans = plan_groups(&groups).await;
-    let (play, replay) = play_and_replay().await;
+    // Changed by decision 90 (C6, step D): the replay half of this property retires
+    // with the rigged replay modes (decision 125). The text before:
+    // let (play, replay) = play_and_replay().await;
+    let play = play_space().await;
     let handle = SpaceStoreHandle::new(play.clone());
     assert_committed(run_plans(&handle, &plans).await)?;
     let persisted = checkpoint(&play).await;
@@ -1482,11 +1585,18 @@ async fn root_leaf_count(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     let reader = history
         .get_history_reader(&persisted.root)
         .expect("read the root");
-    replay
-        .reset(&persisted.root)
-        .await
-        .expect("reset the replay space");
-    let replay_handle = SpaceStoreHandle::new(replay.clone());
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged
+    // replay modes, which retire (decision 125). Native replay of the store is
+    // tested by `native_space_replay_rejects_a_tampered_candidate` and its siblings
+    // in `native_session/space.rs`, and by `space_native_replay_equal_*`. The text
+    // before:
+    // ```
+    // replay
+    //     .reset(&persisted.root)
+    //     .await
+    //     .expect("reset the replay space");
+    // let replay_handle = SpaceStoreHandle::new(replay.clone());
+    // ```
     for channel in universe() {
         let count = handle.root_leaf_record_count(&channel);
         let leaf = reader
@@ -1495,200 +1605,246 @@ async fn root_leaf_count(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
             .len() as u64;
         prop_assert_eq!(count.clone(), Ok(leaf));
         prop_assert_eq!(play.get_data(&channel).await.len() as u64, leaf);
-        prop_assert_eq!(replay_handle.root_leaf_record_count(&channel), count);
+        // Retired by decision 90 (C6, step D): the replay half ran through the
+        // rigged replay modes, which retire (decision 125). Native replay of
+        // the store is tested by
+        // `native_space_replay_rejects_a_tampered_candidate` and its siblings
+        // in `native_session/space.rs`, and by `space_native_replay_equal_*`.
+        // The text before:
+        // ```
+        // prop_assert_eq!(replay_handle.root_leaf_record_count(&channel), count);
+        // ```
     }
     Ok(())
 }
 
-// H3: play counts the produce being fired, replay increments before
-// matching; both give the same COMMs, which equal the host's.
+// Changed by decision 90 (C6, step D): the replay side retires with the rigged
+// replay modes (decision 125). The replay counter is tested natively by
+// `space_native_replay_equal_hashmap`. The text before:
+// // H3: play counts the produce being fired, replay increments before
+// // matching; both give the same COMMs, which equal the host's.
+// H3: play counts the produce being fired. The COMMs of the receipts equal
+// those of the log, which equal the host's.
 async fn counter_timing(groups: Vec<Vec<Op>>) -> Result<(), TestCaseError> {
     // Changed by decision 89 (DR-129): host play picks at random, so the plans
     // come from the host run whose COMMs the test compares.
     // let plans = plan_groups(&groups).await;
     let host = play_space().await;
     let (plans, _) = run_guided(&host, &play_space().await, &groups).await;
-    let (play, replay) = play_and_replay().await;
-    let start = checkpoint(&play).await;
+    // Changed by decision 90 (C6, step D): the replay space goes with the replay
+    // half, and the checkpoint stays because it empties the event log. The text
+    // before:
+    // ```
+    // let (play, replay) = play_and_replay().await;
+    // let start = checkpoint(&play).await;
+    // ```
+    let play = play_space().await;
+    checkpoint(&play).await;
     let played_receipts =
         assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
     let played = checkpoint(&play).await;
     // let host = play_space().await;
     // run_host_ops(&host, &flatten(&groups)).await;
     let host_log = host.take_event_log().await;
-    rig(&replay, &start.root, &played.log).await;
-    let replayed_receipts =
-        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged
+    // replay modes, which retire (decision 125). The replay counter is tested
+    // natively by `space_native_replay_equal_hashmap`. The text before:
+    // ```
+    // rig(&replay, &start.root, &played.log).await;
+    // let replayed_receipts =
+    //     assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
+    // ```
     let played_comms = fired_comms(&played_receipts);
-    prop_assert_eq!(fired_comms(&replayed_receipts), played_comms.clone());
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged
+    // replay modes, which retire (decision 125). The replay counter is tested
+    // natively by `space_native_replay_equal_hashmap`. The text before:
+    // prop_assert_eq!(fired_comms(&replayed_receipts), played_comms.clone());
     prop_assert_eq!(comm_bytes(&played.log), played_comms);
     prop_assert_eq!(comm_bytes(&host_log), comm_bytes(&played.log));
     Ok(())
 }
 
-// The trigger event of a staged fire: `Produce(source)` for a produce-side
-// fire, `Consume(source)` for a consume-side fire.
-fn trigger(plan: &Planned) -> Option<IOEvent> {
-    match plan {
-        Planned::Produce {
-            channel,
-            data,
-            persist,
-            outcome: ProduceOutcome::Fire { .. },
-        } => Some(IOEvent::Produce(Produce::create(channel, data, *persist))),
-        Planned::Consume {
-            channels,
-            patterns,
-            continuation,
-            persist,
-            outcome: ConsumeOutcome::Fire { .. },
-            ..
-        } => Some(IOEvent::Consume(Consume::create(channels, patterns, continuation, *persist))),
-        _ => None,
-    }
-}
+// Retired by decision 90 (C6, step D): only the retired properties of the
+// rigged replay modes called this helper (decision 125). The text before:
+// ```text
+// // The trigger event of a staged fire: `Produce(source)` for a produce-side
+// // fire, `Consume(source)` for a consume-side fire.
+// fn trigger(plan: &Planned) -> Option<IOEvent> {
+//     match plan {
+//         Planned::Produce {
+//             channel,
+//             data,
+//             persist,
+//             outcome: ProduceOutcome::Fire { .. },
+//         } => Some(IOEvent::Produce(Produce::create(channel, data, *persist))),
+//         Planned::Consume {
+//             channels,
+//             patterns,
+//             continuation,
+//             persist,
+//             outcome: ConsumeOutcome::Fire { .. },
+//             ..
+//         } => Some(IOEvent::Consume(Consume::create(channels, patterns, continuation, *persist))),
+//         _ => None,
+//     }
+// }
+// ```
 
-// H4 (trigger-key pairing, decision 36): replay pairs a COMM only under its
-// trigger event. With every copy of one fire's trigger event removed from
-// the log, the first fire with that trigger stages unpaired, and every
-// operation stages. Staging leaves the bindings, the store and the observer
-// untouched. The commit fails with `ReplayDivergence` and the COMM of play
-// after the calls of the fire. The state, the bindings, the counters and
-// the calls before the fire equal those of a replay of the same log that
-// commits only the operations before the fire, so nothing of the fire or
-// after it is logged or applied. Against the complete log the same
-// operations before the fire and the fire pair and commit.
-async fn replay_requires_trigger_event(
-    groups: Vec<Vec<Op>>,
-    pick: usize,
-) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
-    let flat: Vec<Planned> = plans.iter().flatten().cloned().collect();
-    let fires: Vec<usize> = flat
-        .iter()
-        .enumerate()
-        .filter(|(_, plan)| plan.is_fire())
-        .map(|(index, _)| index)
-        .collect();
-    prop_assume!(!fires.is_empty());
-    let removed = trigger(&flat[fires[pick % fires.len()]]);
-    prop_assume!(removed.is_some());
-    let removed = removed.unwrap_or_else(|| IOEvent::Consume(Consume::default()));
-    let target = flat
-        .iter()
-        .position(|plan| trigger(plan).as_ref() == Some(&removed))
-        .unwrap_or_default();
+// Retired by decision 90 (C6, step D): the test drove the rigged replay or
+// reporting mode of the store, which retires (decision 125). Native replay of
+// the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+// its siblings in `native_session/space.rs`, and by
+// `space_native_replay_equal_*`. The text before:
+// ```
+// // H4 (trigger-key pairing, decision 36): replay pairs a COMM only under its
+// // trigger event. With every copy of one fire's trigger event removed from
+// // the log, the first fire with that trigger stages unpaired, and every
+// // operation stages. Staging leaves the bindings, the store and the observer
+// // untouched. The commit fails with `ReplayDivergence` and the COMM of play
+// // after the calls of the fire. The state, the bindings, the counters and
+// // the calls before the fire equal those of a replay of the same log that
+// // commits only the operations before the fire, so nothing of the fire or
+// // after it is logged or applied. Against the complete log the same
+// // operations before the fire and the fire pair and commit.
+// async fn replay_requires_trigger_event(
+//     groups: Vec<Vec<Op>>,
+//     pick: usize,
+// ) -> Result<(), TestCaseError> {
+//     let plans = plan_groups(&groups).await;
+//     let flat: Vec<Planned> = plans.iter().flatten().cloned().collect();
+//     let fires: Vec<usize> = flat
+//         .iter()
+//         .enumerate()
+//         .filter(|(_, plan)| plan.is_fire())
+//         .map(|(index, _)| index)
+//         .collect();
+//     prop_assume!(!fires.is_empty());
+//     let removed = trigger(&flat[fires[pick % fires.len()]]);
+//     prop_assume!(removed.is_some());
+//     let removed = removed.unwrap_or_else(|| IOEvent::Consume(Consume::default()));
+//     let target = flat
+//         .iter()
+//         .position(|plan| trigger(plan).as_ref() == Some(&removed))
+//         .unwrap_or_default();
+//
+//     let (play, complete) = play_and_replay().await;
+//     let start = checkpoint(&play).await;
+//     assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
+//     let played = checkpoint(&play).await;
+//     let forged = without_event(&played.log, &removed);
+//     prop_assert!(forged.len() < played.log.len());
+//
+//     rig(&complete, &start.root, &played.log).await;
+//     let complete_handle = SpaceStoreHandle::new(complete.clone());
+//     let mut complete_txn = complete_handle.begin(&universe()).await.expect("begin");
+//     for plan in &flat[..target] {
+//         staged(plan, &mut complete_txn)?;
+//     }
+//     let comm = match flat[target]
+//         .stage(&mut complete_txn, None)
+//         .map(|staged| staged.comm)
+//     {
+//         Ok(Some(comm)) => comm,
+//         other => {
+//             return Err(TestCaseError::fail(format!("the complete log stages: {:?}", other)));
+//         }
+//     };
+//     if let Err(error) = complete_txn.commit().await {
+//         return Err(TestCaseError::fail(format!("the complete log pairs: {:?}", error)));
+//     }
+//
+//     let reference = replay_over(&play);
+//     let reference_recorder = Recorder::new();
+//     observed(&reference, &reference_recorder);
+//     rig(&reference, &start.root, &forged).await;
+//     let reference_handle = SpaceStoreHandle::new(reference.clone());
+//     let mut reference_txn = reference_handle.begin(&universe()).await.expect("begin");
+//     for plan in &flat[..target] {
+//         staged(plan, &mut reference_txn)?;
+//     }
+//     if let Err(error) = reference_txn.commit().await {
+//         return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
+//     }
+//
+//     let forged_replay = replay_over(&play);
+//     let recorder = Recorder::new();
+//     observed(&forged_replay, &recorder);
+//     rig(&forged_replay, &start.root, &forged).await;
+//     let handle = SpaceStoreHandle::new(forged_replay.clone());
+//     let mut txn = handle.begin(&universe()).await.expect("begin");
+//     let bindings = replay_bindings(&forged_replay);
+//     let state = replay_state(&forged_replay);
+//     for plan in &flat {
+//         staged(plan, &mut txn)?;
+//     }
+//     prop_assert_eq!(replay_bindings(&forged_replay), bindings);
+//     prop_assert_eq!(replay_state(&forged_replay), state);
+//     prop_assert!(recorder.calls().is_empty());
+//     prop_assert_eq!(
+//         txn.commit().await,
+//         Err(SpaceTxnError::ReplayDivergence(Box::new(comm.clone())))
+//     );
+//     prop_assert_eq!(replay_state(&forged_replay), replay_state(&reference));
+//     prop_assert_eq!(replay_bindings(&forged_replay), replay_bindings(&reference));
+//     let prefix = reference_recorder.calls();
+//     let calls = recorder.calls();
+//     prop_assert!(calls.starts_with(&prefix));
+//     check_unpaired_calls(&calls[prefix.len()..], &source_of(&flat[target]), &comm)?;
+//     let produces = plan_produces(&flat[target]);
+//     let mut probe = handle.begin(&universe()).await.expect("begin");
+//     let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
+//     prop_assert_eq!(
+//         counters_of(&mut probe, &produces)?,
+//         counters_of(&mut reference_probe, &produces)?
+//     );
+//     Ok(())
+// }
+// ```
 
-    let (play, complete) = play_and_replay().await;
-    let start = checkpoint(&play).await;
-    assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
-    let played = checkpoint(&play).await;
-    let forged = without_event(&played.log, &removed);
-    prop_assert!(forged.len() < played.log.len());
-
-    rig(&complete, &start.root, &played.log).await;
-    let complete_handle = SpaceStoreHandle::new(complete.clone());
-    let mut complete_txn = complete_handle.begin(&universe()).await.expect("begin");
-    for plan in &flat[..target] {
-        staged(plan, &mut complete_txn)?;
-    }
-    let comm = match flat[target]
-        .stage(&mut complete_txn, None)
-        .map(|staged| staged.comm)
-    {
-        Ok(Some(comm)) => comm,
-        other => {
-            return Err(TestCaseError::fail(format!("the complete log stages: {:?}", other)));
-        }
-    };
-    if let Err(error) = complete_txn.commit().await {
-        return Err(TestCaseError::fail(format!("the complete log pairs: {:?}", error)));
-    }
-
-    let reference = replay_over(&play);
-    let reference_recorder = Recorder::new();
-    observed(&reference, &reference_recorder);
-    rig(&reference, &start.root, &forged).await;
-    let reference_handle = SpaceStoreHandle::new(reference.clone());
-    let mut reference_txn = reference_handle.begin(&universe()).await.expect("begin");
-    for plan in &flat[..target] {
-        staged(plan, &mut reference_txn)?;
-    }
-    if let Err(error) = reference_txn.commit().await {
-        return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
-    }
-
-    let forged_replay = replay_over(&play);
-    let recorder = Recorder::new();
-    observed(&forged_replay, &recorder);
-    rig(&forged_replay, &start.root, &forged).await;
-    let handle = SpaceStoreHandle::new(forged_replay.clone());
-    let mut txn = handle.begin(&universe()).await.expect("begin");
-    let bindings = replay_bindings(&forged_replay);
-    let state = replay_state(&forged_replay);
-    for plan in &flat {
-        staged(plan, &mut txn)?;
-    }
-    prop_assert_eq!(replay_bindings(&forged_replay), bindings);
-    prop_assert_eq!(replay_state(&forged_replay), state);
-    prop_assert!(recorder.calls().is_empty());
-    prop_assert_eq!(
-        txn.commit().await,
-        Err(SpaceTxnError::ReplayDivergence(Box::new(comm.clone())))
-    );
-    prop_assert_eq!(replay_state(&forged_replay), replay_state(&reference));
-    prop_assert_eq!(replay_bindings(&forged_replay), replay_bindings(&reference));
-    let prefix = reference_recorder.calls();
-    let calls = recorder.calls();
-    prop_assert!(calls.starts_with(&prefix));
-    check_unpaired_calls(&calls[prefix.len()..], &source_of(&flat[target]), &comm)?;
-    let produces = plan_produces(&flat[target]);
-    let mut probe = handle.begin(&universe()).await.expect("begin");
-    let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
-    prop_assert_eq!(
-        counters_of(&mut probe, &produces)?,
-        counters_of(&mut reference_probe, &produces)?
-    );
-    Ok(())
-}
-
-// H23, T6 (decision 36): a run that an observer call rejects replays to the
-// outcome of play. Play rejects its n-th fallible call, as a deploy that
-// runs out of phlo there, and keeps its log. Replay, rigged with that log,
-// rejects its own n-th call: it fails with the error of play at the same
-// operation, makes the calls of play plus its directive queries, reaches
-// the state of play, and uses every recorded event. n ranges over every
-// fallible call of the full run and one position past them.
-async fn replay_reproduces_play_rejection(
-    groups: Vec<Vec<Op>>,
-    pick: usize,
-) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
-    let counted = play_space().await;
-    let counter = Recorder::new();
-    observed(&counted, &counter);
-    assert_committed(run_plans(&SpaceStoreHandle::new(counted.clone()), &plans).await)?;
-    let calls = counter.fallible_calls();
-    let n = pick % (calls + 1);
-
-    let (play, replay) = play_and_replay().await;
-    let start = checkpoint(&play).await;
-    let play_recorder = Recorder::rejecting_call(n);
-    observed(&play, &play_recorder);
-    let played = run_until_failure(&SpaceStoreHandle::new(play.clone()), &plans).await;
-    let log = play.take_event_log().await;
-    prop_assert_eq!(played.iter().any(Result::is_err), n < calls);
-
-    let replay_recorder = Recorder::rejecting_call(n);
-    observed(&replay, &replay_recorder);
-    rig(&replay, &start.root, &log).await;
-    let replayed = run_until_failure(&SpaceStoreHandle::new(replay.clone()), &plans).await;
-    prop_assert_eq!(replayed, played);
-    prop_assert_eq!(without_directives(replay_recorder.calls()), play_recorder.calls());
-    prop_assert_eq!(replay_state(&replay), logical_state(&play));
-    prop_assert!(replay_bindings(&replay).is_empty());
-    Ok(())
-}
+// Retired by decision 90 (C6, step D): the test drove the rigged replay or
+// reporting mode of the store, which retires (decision 125). Native replay of
+// the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+// its siblings in `native_session/space.rs`, and by
+// `space_native_replay_equal_*`. The text before:
+// ```
+// // H23, T6 (decision 36): a run that an observer call rejects replays to the
+// // outcome of play. Play rejects its n-th fallible call, as a deploy that
+// // runs out of phlo there, and keeps its log. Replay, rigged with that log,
+// // rejects its own n-th call: it fails with the error of play at the same
+// // operation, makes the calls of play plus its directive queries, reaches
+// // the state of play, and uses every recorded event. n ranges over every
+// // fallible call of the full run and one position past them.
+// async fn replay_reproduces_play_rejection(
+//     groups: Vec<Vec<Op>>,
+//     pick: usize,
+// ) -> Result<(), TestCaseError> {
+//     let plans = plan_groups(&groups).await;
+//     let counted = play_space().await;
+//     let counter = Recorder::new();
+//     observed(&counted, &counter);
+//     assert_committed(run_plans(&SpaceStoreHandle::new(counted.clone()), &plans).await)?;
+//     let calls = counter.fallible_calls();
+//     let n = pick % (calls + 1);
+//
+//     let (play, replay) = play_and_replay().await;
+//     let start = checkpoint(&play).await;
+//     let play_recorder = Recorder::rejecting_call(n);
+//     observed(&play, &play_recorder);
+//     let played = run_until_failure(&SpaceStoreHandle::new(play.clone()), &plans).await;
+//     let log = play.take_event_log().await;
+//     prop_assert_eq!(played.iter().any(Result::is_err), n < calls);
+//
+//     let replay_recorder = Recorder::rejecting_call(n);
+//     observed(&replay, &replay_recorder);
+//     rig(&replay, &start.root, &log).await;
+//     let replayed = run_until_failure(&SpaceStoreHandle::new(replay.clone()), &plans).await;
+//     prop_assert_eq!(replayed, played);
+//     prop_assert_eq!(without_directives(replay_recorder.calls()), play_recorder.calls());
+//     prop_assert_eq!(replay_state(&replay), logical_state(&play));
+//     prop_assert!(replay_bindings(&replay).is_empty());
+//     Ok(())
+// }
+// ```
 
 // A staging probe on a group that is not canonical: a permutation, or a
 // repeat out of sorted order.
@@ -1720,6 +1876,9 @@ fn run_probe(txn: &mut Txn, probe: &Probe) -> (Result<(), SpaceTxnError>, Vec<St
         peeks: BTreeSet::new(),
         outcome,
         before_observe: None,
+        own: false,
+        // Added by decision 123 (plan v4, V3-9): no row search.
+        search: None,
     };
     match probe {
         Probe::Read(group) => (txn.continuations(group).map(|_| ()), group.clone()),
@@ -1751,6 +1910,9 @@ fn run_probe(txn: &mut Txn, probe: &Probe) -> (Result<(), SpaceTxnError>, Vec<St
                     data: Vec::new(),
                 },
                 before_observe: None,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             };
             (txn.produce(fire).map(|_| ()), group.clone())
         }
@@ -1890,119 +2052,130 @@ async fn reads_root_neutral(
     Ok(())
 }
 
-fn source_of(plan: &Planned) -> Vec<u8> {
-    let event = match plan {
-        Planned::Produce {
-            channel,
-            data,
-            persist,
-            ..
-        } => IOEvent::Produce(Produce::create(channel, data, *persist)),
-        Planned::Consume {
-            channels,
-            patterns,
-            continuation,
-            persist,
-            ..
-        } => IOEvent::Consume(Consume::create(channels, patterns, continuation, *persist)),
-        Planned::Rejected { plan, .. } => return source_of(plan),
-    };
-    bincode::serialize(&event).expect("serialize the operation source")
-}
+// Retired by decision 90 (C6, step D): only the retired properties of the
+// rigged replay modes called this helper (decision 125). The text before:
+// ```text
+// fn source_of(plan: &Planned) -> Vec<u8> {
+//     let event = match plan {
+//         Planned::Produce {
+//             channel,
+//             data,
+//             persist,
+//             ..
+//         } => IOEvent::Produce(Produce::create(channel, data, *persist)),
+//         Planned::Consume {
+//             channels,
+//             patterns,
+//             continuation,
+//             persist,
+//             ..
+//         } => IOEvent::Consume(Consume::create(channels, patterns, continuation, *persist)),
+//         Planned::Rejected { plan, .. } => return source_of(plan),
+//     };
+//     bincode::serialize(&event).expect("serialize the operation source")
+// }
+// ```
 
-// H19 (decision 19 D4): a native replay directive rejects the operation it
-// is returned for with no effect of that operation: no event, no store,
-// binding or counter change, and only the start, directive and rejected
-// finish calls. The operations before it stay applied, as in the host
-// program.
-async fn replay_directive_fails_closed(
-    groups: Vec<Vec<Op>>,
-    pick: usize,
-) -> Result<(), TestCaseError> {
-    let plans = plan_groups(&groups).await;
-    let applied: Vec<(usize, usize)> = plans
-        .iter()
-        .enumerate()
-        .flat_map(|(group, plans)| {
-            plans
-                .iter()
-                .enumerate()
-                .filter(|(_, plan)| !plan.is_rejected())
-                .map(move |(position, _)| (group, position))
-        })
-        .collect();
-    prop_assume!(!applied.is_empty());
-    let index = pick % applied.len();
-    let (failing_group, failing_position) = applied[index];
-    let failing = &plans[failing_group][failing_position];
-
-    let play = play_space().await;
-    let start = checkpoint(&play).await;
-    assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
-    let played = checkpoint(&play).await;
-
-    let directed = replay_over(&play);
-    let directed_recorder = Recorder::with_directive_at(index, ReplayOperationDirective::Store);
-    observed(&directed, &directed_recorder);
-    rig(&directed, &start.root, &played.log).await;
-    let directed_handle = SpaceStoreHandle::new(directed.clone());
-    assert_committed(run_plans(&directed_handle, &plans[..failing_group]).await)?;
-    let mut txn = directed_handle.begin(&universe()).await.expect("begin");
-    for plan in &plans[failing_group] {
-        staged(plan, &mut txn)?;
-    }
-    prop_assert_eq!(
-        txn.commit().await.err(),
-        Some(SpaceTxnError::NativeReplayDirectiveUnsupported)
-    );
-
-    let reference = replay_over(&play);
-    let reference_recorder = Recorder::new();
-    observed(&reference, &reference_recorder);
-    rig(&reference, &start.root, &played.log).await;
-    let reference_handle = SpaceStoreHandle::new(reference.clone());
-    assert_committed(run_plans(&reference_handle, &plans[..failing_group]).await)?;
-    let mut txn = reference_handle.begin(&universe()).await.expect("begin");
-    for plan in &plans[failing_group][..failing_position] {
-        staged(plan, &mut txn)?;
-    }
-    if let Err(error) = txn.commit().await {
-        return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
-    }
-
-    prop_assert_eq!(replay_state(&directed), replay_state(&reference));
-    prop_assert_eq!(replay_bindings(&directed), replay_bindings(&reference));
-    let source = source_of(failing);
-    let mut expected = reference_recorder.calls();
-    expected.push(Call::Start {
-        source: source.clone(),
-        channels: match failing {
-            Planned::Produce { channel, .. } => vec![channel.clone()],
-            Planned::Consume { channels, .. } => channels.clone(),
-            Planned::Rejected { .. } => Vec::new(),
-        },
-        joins: match failing {
-            Planned::Produce { channel, .. } => reference.get_joins(channel.clone()).await,
-            _ => Vec::new(),
-        },
-    });
-    expected.push(Call::Directive {
-        source: source.clone(),
-    });
-    expected.push(Call::Finish {
-        source,
-        completion: RSpaceOperationCompletion::Rejected,
-    });
-    prop_assert_eq!(directed_recorder.calls(), expected);
-    let produces = plan_produces(failing);
-    let mut directed_probe = directed_handle.begin(&universe()).await.expect("begin");
-    let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
-    prop_assert_eq!(
-        counters_of(&mut directed_probe, &produces)?,
-        counters_of(&mut reference_probe, &produces)?
-    );
-    Ok(())
-}
+// Retired by decision 90 (C6, step D): the test drove the rigged replay or
+// reporting mode of the store, which retires (decision 125). Native replay of
+// the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+// its siblings in `native_session/space.rs`, and by
+// `space_native_replay_equal_*`. The text before:
+// ```
+// // H19 (decision 19 D4): a native replay directive rejects the operation it
+// // is returned for with no effect of that operation: no event, no store,
+// // binding or counter change, and only the start, directive and rejected
+// // finish calls. The operations before it stay applied, as in the host
+// // program.
+// async fn replay_directive_fails_closed(
+//     groups: Vec<Vec<Op>>,
+//     pick: usize,
+// ) -> Result<(), TestCaseError> {
+//     let plans = plan_groups(&groups).await;
+//     let applied: Vec<(usize, usize)> = plans
+//         .iter()
+//         .enumerate()
+//         .flat_map(|(group, plans)| {
+//             plans
+//                 .iter()
+//                 .enumerate()
+//                 .filter(|(_, plan)| !plan.is_rejected())
+//                 .map(move |(position, _)| (group, position))
+//         })
+//         .collect();
+//     prop_assume!(!applied.is_empty());
+//     let index = pick % applied.len();
+//     let (failing_group, failing_position) = applied[index];
+//     let failing = &plans[failing_group][failing_position];
+//
+//     let play = play_space().await;
+//     let start = checkpoint(&play).await;
+//     assert_committed(run_plans(&SpaceStoreHandle::new(play.clone()), &plans).await)?;
+//     let played = checkpoint(&play).await;
+//
+//     let directed = replay_over(&play);
+//     let directed_recorder = Recorder::with_directive_at(index, ReplayOperationDirective::Store);
+//     observed(&directed, &directed_recorder);
+//     rig(&directed, &start.root, &played.log).await;
+//     let directed_handle = SpaceStoreHandle::new(directed.clone());
+//     assert_committed(run_plans(&directed_handle, &plans[..failing_group]).await)?;
+//     let mut txn = directed_handle.begin(&universe()).await.expect("begin");
+//     for plan in &plans[failing_group] {
+//         staged(plan, &mut txn)?;
+//     }
+//     prop_assert_eq!(
+//         txn.commit().await.err(),
+//         Some(SpaceTxnError::NativeReplayDirectiveUnsupported)
+//     );
+//
+//     let reference = replay_over(&play);
+//     let reference_recorder = Recorder::new();
+//     observed(&reference, &reference_recorder);
+//     rig(&reference, &start.root, &played.log).await;
+//     let reference_handle = SpaceStoreHandle::new(reference.clone());
+//     assert_committed(run_plans(&reference_handle, &plans[..failing_group]).await)?;
+//     let mut txn = reference_handle.begin(&universe()).await.expect("begin");
+//     for plan in &plans[failing_group][..failing_position] {
+//         staged(plan, &mut txn)?;
+//     }
+//     if let Err(error) = txn.commit().await {
+//         return Err(TestCaseError::fail(format!("reference prefix commit: {:?}", error)));
+//     }
+//
+//     prop_assert_eq!(replay_state(&directed), replay_state(&reference));
+//     prop_assert_eq!(replay_bindings(&directed), replay_bindings(&reference));
+//     let source = source_of(failing);
+//     let mut expected = reference_recorder.calls();
+//     expected.push(Call::Start {
+//         source: source.clone(),
+//         channels: match failing {
+//             Planned::Produce { channel, .. } => vec![channel.clone()],
+//             Planned::Consume { channels, .. } => channels.clone(),
+//             Planned::Rejected { .. } => Vec::new(),
+//         },
+//         joins: match failing {
+//             Planned::Produce { channel, .. } => reference.get_joins(channel.clone()).await,
+//             _ => Vec::new(),
+//         },
+//     });
+//     expected.push(Call::Directive {
+//         source: source.clone(),
+//     });
+//     expected.push(Call::Finish {
+//         source,
+//         completion: RSpaceOperationCompletion::Rejected,
+//     });
+//     prop_assert_eq!(directed_recorder.calls(), expected);
+//     let produces = plan_produces(failing);
+//     let mut directed_probe = directed_handle.begin(&universe()).await.expect("begin");
+//     let mut reference_probe = reference_handle.begin(&universe()).await.expect("begin");
+//     prop_assert_eq!(
+//         counters_of(&mut directed_probe, &produces)?,
+//         counters_of(&mut reference_probe, &produces)?
+//     );
+//     Ok(())
+// }
+// ```
 
 // One commit attempt: an optional parent (a session step and a path) and
 // the stores it stages.
@@ -2064,6 +2237,9 @@ async fn parent_order_single_commit(attempts: Vec<Attempt>) -> Result<(), TestCa
                     persist: false,
                     outcome: ProduceOutcome::Store,
                     before_observe: None,
+                    own: false,
+                    // Added by decision 123 (plan v4, V3-9): no row search.
+                    search: None,
                 })
                 .expect("stage a store");
             }
@@ -2243,6 +2419,9 @@ fn stage_tagged(
             persist: false,
             outcome: ProduceOutcome::Store,
             before_observe: None,
+            own: false,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
         })?,
         TaggedOp::Park { name, note } => txn.consume(SpaceConsume {
             channels: vec![tagged(TAGGED_NAMES[*name], note_of(*note))],
@@ -2252,6 +2431,9 @@ fn stage_tagged(
             peeks: BTreeSet::new(),
             outcome: ConsumeOutcome::Park,
             before_observe: None,
+            own: false,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
         })?,
         TaggedOp::ParkJoin {
             first,
@@ -2271,6 +2453,9 @@ fn stage_tagged(
                 peeks: BTreeSet::new(),
                 outcome: ConsumeOutcome::Park,
                 before_observe: None,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             })?
         }
         TaggedOp::Fire {
@@ -2298,6 +2483,9 @@ fn stage_tagged(
                     )],
                 },
                 before_observe: None,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             })?
         }
     };
@@ -2681,9 +2869,16 @@ async fn repeated_channel_groups_equal_host(groups: Vec<Vec<Op>>) -> Result<(), 
     let txn = play_space().await;
     let txn_recorder = Recorder::new();
     observed(&txn, &txn_recorder);
-    let start = checkpoint(&txn).await;
+    // Changed by decision 90 (C6, step D): the root lost its reader with the replay
+    // half, and the checkpoint stays because it empties the event log. The text
+    // before:
+    // let start = checkpoint(&txn).await;
+    checkpoint(&txn).await;
     let (plans, receipts) = run_guided(&host, &txn, &groups).await;
-    let played_receipts = assert_committed(receipts)?;
+    // Changed by decision 90 (C6, step D): the receipts have no reader outside the
+    // retired replay half. The text before:
+    // let played_receipts = assert_committed(receipts)?;
+    assert_committed(receipts)?;
     for plan in plans.iter().flatten() {
         binds_each_record_once(plan)?;
     }
@@ -2697,16 +2892,23 @@ async fn repeated_channel_groups_equal_host(groups: Vec<Vec<Op>>) -> Result<(), 
     prop_assert_eq!(event_bytes(&played.log), event_bytes(&host_played.log));
     prop_assert_eq!(played.root.clone(), host_played.root);
 
-    let replay = replay_over(&txn);
-    rig(&replay, &start.root, &played.log).await;
-    let replayed =
-        assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
-    prop_assert_eq!(replayed, played_receipts);
-    prop_assert!(replay_bindings(&replay).is_empty());
-    match replay.create_checkpoint().await {
-        Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
-        Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint: {:?}", error))),
-    }
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged
+    // replay modes, which retire (decision 125). Native replay of the store is
+    // tested by `native_space_replay_rejects_a_tampered_candidate` and its siblings
+    // in `native_session/space.rs`, and by `space_native_replay_equal_*`. The text
+    // before:
+    // ```
+    // let replay = replay_over(&txn);
+    // rig(&replay, &start.root, &played.log).await;
+    // let replayed =
+    //     assert_committed(run_plans(&SpaceStoreHandle::new(replay.clone()), &plans).await)?;
+    // prop_assert_eq!(replayed, played_receipts);
+    // prop_assert!(replay_bindings(&replay).is_empty());
+    // match replay.create_checkpoint().await {
+    //     Ok(replayed) => prop_assert_eq!(replayed.root, played.root),
+    //     Err(error) => return Err(TestCaseError::fail(format!("replay checkpoint: {:?}", error))),
+    // }
+    // ```
     Ok(())
 }
 
@@ -2723,27 +2925,48 @@ proptest! {
         runtime().block_on(play_root_equals_host(groups))?;
     }
 
-    #[test]
-    fn prop_space_txn_replay_pairs_play_log(groups in op_groups(false, ODD)) {
-        runtime().block_on(replay_pairs_play_log(groups))?;
-    }
+    // Retired by decision 90 (C6, step D): the test drove the rigged replay or
+    // reporting mode of the store, which retires (decision 125). Native replay of
+    // the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+    // its siblings in `native_session/space.rs`, and by
+    // `space_native_replay_equal_*`. The text before:
+    // ```
+    // #[test]
+    // fn prop_space_txn_replay_pairs_play_log(groups in op_groups(false, ODD)) {
+    //     runtime().block_on(replay_pairs_play_log(groups))?;
+    // }
+    // ```
 
     #[test]
     fn prop_space_txn_cross_replay_with_host(groups in host_replay_op_groups()) {
         runtime().block_on(cross_replay_with_host(groups))?;
     }
 
-    #[test]
-    fn prop_space_txn_two_block_replay_preserves_roots(
-        (groups, split) in two_block_op_groups(),
-    ) {
-        runtime().block_on(two_block_replay_preserves_roots(groups, split))?;
-    }
+    // Retired by decision 90 (C6, step D): the test drove the rigged replay or
+    // reporting mode of the store, which retires (decision 125). Native replay of
+    // the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+    // its siblings in `native_session/space.rs`, and by
+    // `space_native_replay_equal_*`. The text before:
+    // ```
+    // #[test]
+    // fn prop_space_txn_two_block_replay_preserves_roots(
+    //     (groups, split) in two_block_op_groups(),
+    // ) {
+    //     runtime().block_on(two_block_replay_preserves_roots(groups, split))?;
+    // }
+    // ```
 
-    #[test]
-    fn prop_space_txn_replay_divergence_typed_at_commit(groups in op_groups(false, ODD)) {
-        runtime().block_on(replay_divergence_typed_at_commit(groups))?;
-    }
+    // Retired by decision 90 (C6, step D): the test drove the rigged replay or
+    // reporting mode of the store, which retires (decision 125). Native replay of
+    // the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+    // its siblings in `native_session/space.rs`, and by
+    // `space_native_replay_equal_*`. The text before:
+    // ```
+    // #[test]
+    // fn prop_space_txn_replay_divergence_typed_at_commit(groups in op_groups(false, ODD)) {
+    //     runtime().block_on(replay_divergence_typed_at_commit(groups))?;
+    // }
+    // ```
 
     #[test]
     fn prop_space_txn_view_equals_committed_store(groups in op_groups(true, ODD)) {
@@ -2791,10 +3014,17 @@ proptest! {
         runtime().block_on(peek_restore(groups))?;
     }
 
-    #[test]
-    fn prop_space_txn_reporting_equals_replay(groups in host_replay_op_groups()) {
-        runtime().block_on(reporting_equals_replay(groups))?;
-    }
+    // Retired by decision 90 (C6, step D): the test drove the rigged replay or
+    // reporting mode of the store, which retires (decision 125). Native replay of
+    // the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+    // its siblings in `native_session/space.rs`, and by
+    // `space_native_replay_equal_*`. The text before:
+    // ```
+    // #[test]
+    // fn prop_space_txn_reporting_equals_replay(groups in host_replay_op_groups()) {
+    //     runtime().block_on(reporting_equals_replay(groups))?;
+    // }
+    // ```
 
     #[test]
     fn prop_root_leaf_record_count_matches_history(groups in op_groups(false, ODD)) {
@@ -2806,21 +3036,35 @@ proptest! {
         runtime().block_on(counter_timing(groups))?;
     }
 
-    #[test]
-    fn prop_space_txn_replay_requires_trigger_event(
-        groups in op_groups(false, ODD),
-        pick in any::<usize>(),
-    ) {
-        runtime().block_on(replay_requires_trigger_event(groups, pick))?;
-    }
+    // Retired by decision 90 (C6, step D): the test drove the rigged replay or
+    // reporting mode of the store, which retires (decision 125). Native replay of
+    // the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+    // its siblings in `native_session/space.rs`, and by
+    // `space_native_replay_equal_*`. The text before:
+    // ```
+    // #[test]
+    // fn prop_space_txn_replay_requires_trigger_event(
+    //     groups in op_groups(false, ODD),
+    //     pick in any::<usize>(),
+    // ) {
+    //     runtime().block_on(replay_requires_trigger_event(groups, pick))?;
+    // }
+    // ```
 
-    #[test]
-    fn prop_space_txn_replay_reproduces_play_rejection(
-        groups in op_groups(false, ODD),
-        pick in any::<usize>(),
-    ) {
-        runtime().block_on(replay_reproduces_play_rejection(groups, pick))?;
-    }
+    // Retired by decision 90 (C6, step D): the test drove the rigged replay or
+    // reporting mode of the store, which retires (decision 125). Native replay of
+    // the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+    // its siblings in `native_session/space.rs`, and by
+    // `space_native_replay_equal_*`. The text before:
+    // ```
+    // #[test]
+    // fn prop_space_txn_replay_reproduces_play_rejection(
+    //     groups in op_groups(false, ODD),
+    //     pick in any::<usize>(),
+    // ) {
+    //     runtime().block_on(replay_reproduces_play_rejection(groups, pick))?;
+    // }
+    // ```
 
     #[test]
     fn prop_space_txn_non_canonical_inputs_fail_closed(
@@ -2842,13 +3086,20 @@ proptest! {
         runtime().block_on(reads_root_neutral(setup, reads, persisted, commit))?;
     }
 
-    #[test]
-    fn prop_space_txn_replay_directive_fails_closed(
-        groups in op_groups(false, ODD),
-        pick in any::<usize>(),
-    ) {
-        runtime().block_on(replay_directive_fails_closed(groups, pick))?;
-    }
+    // Retired by decision 90 (C6, step D): the test drove the rigged replay or
+    // reporting mode of the store, which retires (decision 125). Native replay of
+    // the store is tested by `native_space_replay_rejects_a_tampered_candidate` and
+    // its siblings in `native_session/space.rs`, and by
+    // `space_native_replay_equal_*`. The text before:
+    // ```
+    // #[test]
+    // fn prop_space_txn_replay_directive_fails_closed(
+    //     groups in op_groups(false, ODD),
+    //     pick in any::<usize>(),
+    // ) {
+    //     runtime().block_on(replay_directive_fails_closed(groups, pick))?;
+    // }
+    // ```
 
     #[test]
     fn prop_space_txn_parent_order_single_commit(attempts in attempts()) {

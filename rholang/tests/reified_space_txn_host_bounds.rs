@@ -8,7 +8,9 @@ use std::sync::Arc;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rspace_plus_plus::rspace::reporting_rspace::ReportingRspace;
+// Retired by decision 90 (C6, step D): a rigged replay space no longer implements `SpaceTxnHost`.
+// The text before:
+// use rspace_plus_plus::rspace::reporting_rspace::ReportingRspace;
 use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
@@ -39,7 +41,10 @@ async fn begin_and_commit_empty(handle: ParHandle, mode: SpaceMode) {
 #[tokio::test]
 async fn reified_space_txn_host_bounds_hold_for_par_hosts() {
     let mut stores = InMemoryStoreManager::new();
-    let (play, replay) =
+    // Changed by decision 90 (C6, step D): the play space is the only host left of the pair. The
+    // text before:
+    // let (play, replay) =
+    let (play, _replay) =
         RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
             stores
                 .r_space_stores()
@@ -48,21 +53,29 @@ async fn reified_space_txn_host_bounds_hold_for_par_hosts() {
             Arc::new(Box::new(Matcher)),
         )
         .expect("create the play and replay spaces");
-    let mut reporting_stores = InMemoryStoreManager::new();
-    let reporting =
-        ReportingRspace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
-            reporting_stores
-                .r_space_stores()
-                .await
-                .expect("create the reporting stores"),
-            Arc::new(Box::new(Matcher)),
-        )
-        .expect("create the reporting space");
+    // Retired by decision 90 (C6, step D): a rigged replay space no longer implements
+    // `SpaceTxnHost`, so the reporting half of this test retires with it. The text before:
+    // ```
+    // let mut reporting_stores = InMemoryStoreManager::new();
+    // let reporting =
+    //     ReportingRspace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
+    //         reporting_stores
+    //             .r_space_stores()
+    //             .await
+    //             .expect("create the reporting stores"),
+    //         Arc::new(Box::new(Matcher)),
+    //     )
+    //     .expect("create the reporting space");
+    // ```
 
     assert_host(&play);
-    assert_host(&replay);
-    assert_host(&reporting);
+    // Retired by decision 90 (C6, step D): the rigged spaces no longer implement `SpaceTxnHost`.
+    // The text before:
+    // assert_host(&replay);
+    // assert_host(&reporting);
     begin_and_commit_empty(SpaceStoreHandle::new(play), SpaceMode::Play).await;
-    begin_and_commit_empty(SpaceStoreHandle::new(replay), SpaceMode::Replay).await;
-    begin_and_commit_empty(SpaceStoreHandle::new(reporting), SpaceMode::Reporting).await;
+    // Retired by decision 90 (C6, step D): the modes retire with the rigged spaces. The text
+    // before:
+    // begin_and_commit_empty(SpaceStoreHandle::new(replay), SpaceMode::Replay).await;
+    // begin_and_commit_empty(SpaceStoreHandle::new(reporting), SpaceMode::Reporting).await;
 }

@@ -23,6 +23,8 @@
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
+// Added by decision 127 (kind registry).
+use models::rust::space_factory_urn::SpaceQualifier;
 
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::OuterStore;
@@ -35,6 +37,10 @@ pub struct HashSetOuter;
 
 impl OuterStore for HashSetOuter {
     const NAME: &'static str = "hashset";
+
+    /// Added by decision 127 (kind registry): the HashSet store takes the `seq` qualifier only
+    /// (design v3 HS-7), as `SpaceFactoryUrn::supports_qualifier` says.
+    const QUALIFIERS: &'static [SpaceQualifier] = &[SpaceQualifier::Seq];
 
     fn key(&self, channel: &Par) -> Result<CollectionKey, SpaceError> { HashMapOuter.key(channel) }
 
@@ -123,7 +129,8 @@ mod tests {
         );
         assert_eq!(HashSetOuter::NAME, "hashset");
         assert!(!HashSetOuter::ALLOCATOR);
-        assert!(!HashSetOuter::ALWAYS_ESCALATES);
+        // Disabled by decision 94: the constant is gone, because phase B covers every scope.
+        // assert!(!HashSetOuter::ALWAYS_ESCALATES);
     }
 
     #[test]

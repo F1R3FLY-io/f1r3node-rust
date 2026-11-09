@@ -36,6 +36,7 @@ use std::os::fd::AsRawFd;
 use models::rhoapi::Par;
 use tokio::task::spawn_blocking;
 
+use super::fcntl_lock::{current_position, FcntlLockGuard};
 use crate::rust::interpreter::io::errors::{
     io_err_code, join_err_abort, FSERR_CLOSED, FSERR_QUOTA_EXCEEDED,
 };
@@ -70,12 +71,39 @@ pub async fn read_impl_via_table(
     let result = spawn_blocking(move || {
         let raw_fd = file_arc.as_raw_fd();
         let mut buf = vec![0u8; n as usize];
+        // POSIX advisory-lock bracket: F_RDLCK on `[lock_offset,
+        // lock_offset + n)` for the duration of the syscall.  Lets
+        // a cooperating out-of-process writer (another node
+        // process or the Phase-B sidecar's own write path) see
+        // consistent bytes by taking an F_WRLCK that blocks on
+        // this reader.  Same-process callers do NOT contend here
+        // — fcntl locks are per-process; Rholang-side coordination
+        // lives in the in-memory `LockRegistry`.
+        //
+        // For positional reads, `lock_offset = off` directly.
+        // For sequential reads, query the current fd position via
+        // `lseek(fd, 0, SEEK_CUR)` — a non-mutating peek — so the
+        // lock range matches what `libc::read` will actually
+        // target.
+        let lock_offset = match offset {
+            Some(off) => off,
+            None => match current_position(raw_fd) {
+                Ok(p) => p,
+                Err(e) => return Err(e),
+            },
+        };
+        let _lock = match FcntlLockGuard::acquire_rdlck(raw_fd, lock_offset, n) {
+            Ok(g) => g,
+            Err(e) => return Err(e),
+        };
         // SAFETY: `file_arc` (an `Arc<File>`) is moved into this
         // closure and keeps `raw_fd` open for the duration.  `buf`
         // is a live heap allocation of `n` bytes owned by this
         // scope.  pread/read write into `buf` up to `n` bytes and
         // return the count written (or -1 on error); we truncate
-        // `buf` to the returned length after a sign check.
+        // `buf` to the returned length after a sign check.  The
+        // `_lock` guard keeps the advisory read-lock held across
+        // the syscall and releases it on drop.
         let got = unsafe {
             if let Some(off) = offset {
                 libc::pread(raw_fd, buf.as_mut_ptr() as *mut _, n as usize, off as i64)

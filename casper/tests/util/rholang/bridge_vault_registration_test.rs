@@ -3,6 +3,8 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GDeployId, GUnforgeable, Par};
 
+// Added by DR-134 (DR-66 item 1): the deploy of a block is an offered deploy.
+use crate::helper::offered_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -50,7 +52,11 @@ async fn lock_results(register_vault: bool) -> Vec<Par> {
     let mut node = TestNode::standalone(genesis).await.unwrap();
     let shard_id = node.genesis.shard_id.clone();
 
-    let bridge = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): the deploy of the block is an offered
+    // deploy. Its `sig` is the deploy id that `rho:system:deployId` binds. The
+    // exploratory `lock` read below keeps a legacy deploy.
+    // let bridge = construct_deploy::source_deploy_now_full(
+    let bridge = offered_deploy::source_deploy_now_full(
         bridge_source(register_vault),
         Some(5_000_000),
         None,
@@ -101,7 +107,7 @@ new return, rl(`rho:registry:lookup`), deployerId(`rho:system:deployerId`),
     )
     .unwrap();
     node.runtime_manager
-        .capture_results(&post_state, &lock)
+        .capture_results(&post_state, &lock, node.adopted_policy())
         .await
         .unwrap()
 }

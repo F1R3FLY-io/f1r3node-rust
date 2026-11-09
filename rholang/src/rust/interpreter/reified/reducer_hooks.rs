@@ -3,28 +3,46 @@
 //!
 //! This file is the child module `reified_hooks` of `reduce.rs`, so it uses the private items of
 //! the reducer. Hook H1, the term filter, is `util::is_evaluated_process_expr`.
+// Changed by decision 112: the use block and the annotated `new` are fields. The text before:
+// ```
+// //! * H2, `eval_marker`: `use s { P }` evaluates `P` under the use-context of the native space
+// //!   `s`. NEWSPACE moves the names of its annotated binders into their spaces.
+// ```
 //!
-//! * H2, `eval_marker`: `use s { P }` evaluates `P` under the use-context of the native space
-//!   `s`. NEWSPACE moves the names of its annotated binders into their spaces.
+//! * H2, `eval_use_block` and `eval_annotated_new`: `use s { P }` evaluates `P` under the
+//!   use-context of the native space `s`, and a `new` with `space_types` moves the names of its
+//!   annotated binders into their spaces.
 //! * H3, `reified_produce`: the produce of `eval_send`. It routes the channel and applies the
 //!   rules for params and for persistent sends. The named params of a send to a collection go
 //!   to the agent of its space (P5b).
 //! * `reified_consume` and `reified_allocate`: the consume of `eval_receive` and the names of
-//!   `eval_new`, under the use-context of the reducer. A receive with a QUERY tuple as its source
-//!   routes the inner channel of the query (P5b). A `new` that puts names into a space runs one
+// Changed by decision 112: the query is a field of the bind. The text before:
+// ```
+// //!   `eval_new`, under the use-context of the reducer. A receive with a QUERY tuple as its source
+// //!   routes the inner channel of the query (P5b). A `new` that puts names into a space runs one
+// ```
+//!   `eval_new`, under the use-context of the reducer. A receive with a query routes the channel
+//!   of its bind (P5b). A `new` that puts names into a space runs one
 //!   allocation job for each space of its binders (P5d, F11).
-//! * H4, `reject_query_source`: a malformed QUERY tuple fails closed.
+// Changed by decision 112: H4 checks the query field. The text before:
+// //! * H4, `reject_query_source`: a malformed QUERY tuple fails closed.
+//! * H4, `reject_query_source`: a malformed query field fails closed.
 //!
 //! A channel that a program names without Reified syntax routes to the default space. Then each
 //! hook calls the HEAD method with identical arguments, so ordinary execution does not change.
 //! A space route runs one `Intent::Space` operation with `space_op`.
-//!
-//! HEAD evaluation and substitution keep the `connective_used` flag of a tuple, a list or a map
-//! when they replace a variable in it. So before each strict decode, a hook recomputes the flags
-//! that the canonical encoder derives from the children (I-20). The decoder still accepts only
-//! the canonical image of the encoder.
+// Retired by decision 112: a field holds its own flags, so no hook needs the I-20 refresh. The
+// text before:
+// ```
+// //!
+// //! HEAD evaluation and substitution keep the `connective_used` flag of a tuple, a list or a map
+// //! when they replace a variable in it. So before each strict decode, a hook recomputes the flags
+// //! that the canonical encoder derives from the children (I-20). The decoder still accepts only
+// //! the canonical image of the encoder.
+// ```
 
-use std::borrow::Cow;
+// Retired by decision 112: no hook reads a marker tuple through a borrowed Par.
+// use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::future::{Future, Ready};
 use std::pin::Pin;
@@ -32,16 +50,32 @@ use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use futures::future::Either;
-use models::rhoapi::expr::ExprInstance;
+// Changed by decision 112: only the tests of this file read the expr and collection types. The
+// text before:
+// ```
+// use models::rhoapi::expr::ExprInstance;
+// use models::rhoapi::{
+//     BindPattern, Bundle, CostAuthority, EList, EMap, ETuple, Expr, ListParWithRandom, New, Par,
+//     ParWithRandom, TaggedContinuation,
+// };
+// ```
 use models::rhoapi::{
-    BindPattern, Bundle, CostAuthority, EList, EMap, ETuple, Expr, ListParWithRandom, New, Par,
-    ParWithRandom, TaggedContinuation,
+    BindPattern, CostAuthority, ListParWithRandom, New, Par, ParWithRandom, TaggedContinuation,
 };
+// Changed by decision 112: the fields replace the marker tuples, so the readers decode the fields.
+// The text before:
+// ```
+// use models::rust::reified::encoding::{
+//     decode_process_tuple, decode_query_source, marker_of, sole_marker_tuple, split_trailing_params,
+//     Marker, NewSpace, ProcessConstruct, QuerySpec, ReifiedDecodeError, SendParams, UseBlock,
+// };
+// ```
 use models::rust::reified::encoding::{
-    decode_process_tuple, decode_query_source, marker_of, sole_marker_tuple, split_trailing_params,
-    Marker, NewSpace, ProcessConstruct, QuerySpec, ReifiedDecodeError, SendParams, UseBlock,
+    check_query_spec, check_send_params, decode_new_space, decode_use_block, encode_params, Marker,
+    NewSpace, QuerySpec, ReifiedDecodeError, SendParams, UseBlock,
 };
-use models::rust::rholang::implicits::single_bundle;
+// Retired by decision 112: no hook reads the bundle of a query tuple.
+// use models::rust::rholang::implicits::single_bundle;
 use models::rust::utils::{new_elist_par, union};
 
 use super::ReducerCore;
@@ -55,6 +89,9 @@ use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
 use crate::rust::interpreter::dispatch::DispatchType;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
+// Added by decision 124 (plan v4 C7.14): the cause of a re-issue says whether it stages its
+// anchor first.
+use crate::rust::interpreter::reified::costs::ReissueCause;
 use crate::rust::interpreter::reified::errors::ReifiedReduceError;
 use crate::rust::interpreter::reified::route::{self, classify_channel, ChannelClass, Route};
 use crate::rust::interpreter::reified::scope::{
@@ -76,7 +113,9 @@ use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::namespace::{
     self, CollectionKey, NameTail, NativeSpace, RandomPurpose,
 };
-use crate::rust::interpreter::{deterministic_reduction, unwrap_option_safe};
+// Changed by decision 90 (DR-132): the scheduler module is gone.
+// use crate::rust::interpreter::{deterministic_reduction, unwrap_option_safe};
+use crate::rust::interpreter::unwrap_option_safe;
 
 /// A boxed reducer future, as `produce`, `consume` and `dispatch` return it.
 type DispatchFuture<'a> =
@@ -86,8 +125,12 @@ type DispatchFuture<'a> =
 /// persistent)` for each bind.
 type DispatchData = Vec<(Par, ListParWithRandom, ListParWithRandom, bool)>;
 
-/// The text of HEAD for a receive on a bundle without the read flag (`unbundle_receive`).
-const NOT_READABLE: &str = "Trying to read from non-readable channel.";
+// Retired by decision 112: `readable_channel` was the last production reader. The restated tests
+// hold the literal text.
+// ```
+// /// The text of HEAD for a receive on a bundle without the read flag (`unbundle_receive`).
+// const NOT_READABLE: &str = "Trying to read from non-readable channel.";
+// ```
 
 /// The target of a send after routing.
 enum SendRoute {
@@ -133,9 +176,13 @@ enum ReceiveRoute {
 struct RoutedBind {
     /// The pattern of the bind.
     pattern: BindPattern,
-    /// The channel of the bind: the source, or the inner channel of its QUERY tuple.
+    // Changed by decision 112: the query is a field of the bind. The text before:
+    // /// The channel of the bind: the source, or the inner channel of its QUERY tuple.
+    /// The channel of the bind.
     channel: Par,
-    /// The query of the bind, or `None` for a source without a QUERY tuple.
+    // Changed by decision 112: the query is a field of the bind. The text before:
+    // /// The query of the bind, or `None` for a source without a QUERY tuple.
+    /// The query of the bind, or `None` for a bind without a query.
     query: Option<QueryParams>,
     /// The route of the channel.
     route: Route,
@@ -197,33 +244,43 @@ impl BinderGroups {
 }
 
 impl ReducerCore {
-    /// P7 (VR-3): starts an evaluation from `inj` or `inj_with_observation`, and tells whether
-    /// it is a root evaluation: no reduction context runs. Only a root evaluation resets the
-    /// book of the ephemeral spaces, the mirror journal and the committed parents, and only a
-    /// root evaluation sweeps at its end.
+    /// P7 (VR-3): starts an evaluation from `inj_with_observation`, and tells whether it is a
+    /// root evaluation: no dispatch scope of an evaluation runs. Only a root evaluation resets
+    /// the book of the ephemeral spaces and the committed parents, and only a root evaluation
+    /// sweeps at its end. Changed by decision 98: the runtime holds no mirror journal now.
+    ///
+    /// Changed by decision 90 (DR-132): the test reads the dispatch scope of the base, which
+    /// `inj_with_observation` opens after this call. Before, it read the reduction context of
+    /// the scheduler (`deterministic_reduction::current().is_none()`).
     pub(in crate::rust::interpreter) fn begin_root_evaluation(&self) -> bool {
-        let root = deterministic_reduction::current().is_none();
+        let root = super::DEFERRED_DISPATCHES.try_with(|_| ()).is_err();
         if root {
             self.reified.begin_evaluation_scope();
         }
         root
     }
 
+    // Disabled by decision 90 (DR-132): `inj` runs through `inj_with_observation`, which calls
+    // `end_root_evaluation_observed`, so this form has no caller.
+    //
+    // /// P7 (VR-4, VR-8): ends an evaluation that `begin_root_evaluation` started. A root
+    // /// evaluation sweeps its volatile channels on the `Ok` and the `Err` path. A sweep
+    // /// failure turns an `Ok` result into that failure, and an `Err` result keeps its first
+    // /// error.
+    // pub(in crate::rust::interpreter) async fn end_root_evaluation(
+    //     &self,
+    //     root: bool,
+    //     result: Result<(), InterpreterError>,
+    // ) -> Result<(), InterpreterError> {
+    //     self.end_root_evaluation_observed(root, result, EvaluationFailureSummary::default())
+    //         .await
+    //         .0
+    // }
+
     /// P7 (VR-4, VR-8): ends an evaluation that `begin_root_evaluation` started. A root
     /// evaluation sweeps its volatile channels on the `Ok` and the `Err` path. A sweep failure
-    /// turns an `Ok` result into that failure, and an `Err` result keeps its first error.
-    pub(in crate::rust::interpreter) async fn end_root_evaluation(
-        &self,
-        root: bool,
-        result: Result<(), InterpreterError>,
-    ) -> Result<(), InterpreterError> {
-        self.end_root_evaluation_observed(root, result, EvaluationFailureSummary::default())
-            .await
-            .0
-    }
-
-    /// `end_root_evaluation` with the failure summary of the evaluation: a sweep failure adds
-    /// the class `Platform` to the summary (VR-8).
+    /// turns an `Ok` result into that failure, and an `Err` result keeps its first error. A
+    /// sweep failure also adds the class `Platform` to the summary (VR-8).
     pub(in crate::rust::interpreter) async fn end_root_evaluation_observed(
         &self,
         root: bool,
@@ -233,11 +290,14 @@ impl ReducerCore {
         if !root {
             return (result, summary);
         }
-        match self
-            .reified
-            .sweep_volatile(&self.reduction_coordinator)
-            .await
-        {
+        // Changed by decision 90 (DR-132): the sweep runs after the drain, without the
+        // scheduler's coordinator.
+        // match self
+        //     .reified
+        //     .sweep_volatile(&self.reduction_coordinator)
+        //     .await
+        // {
+        match self.reified.sweep_volatile().await {
             Ok(()) => (result, summary),
             Err(sweep) => (
                 result.and(Err(sweep)),
@@ -248,35 +308,77 @@ impl ReducerCore {
 }
 
 impl ReducerCore {
-    /// Hook H2: evaluates a USE or NEWSPACE tuple in process position (P4 design C.3). The term
-    /// filter (H1) admits no other tuple. A tuple that is not canonical after the I-20 refresh
-    /// fails with `Malformed`.
+    // Retired by decision 112: a use block and an annotated `new` are fields, so no marker tuple is
+    // a process. `eval_use_block` and `eval_annotated_new` replace this hook.
+    // ```
+    // /// Hook H2: evaluates a USE or NEWSPACE tuple in process position (P4 design C.3). The term
+    // /// filter (H1) admits no other tuple. A tuple that is not canonical after the I-20 refresh
+    // /// fails with `Malformed`.
+    // ///
+    // /// The future is boxed. The evaluation future of the reducer holds the future of each term
+    // /// kind, and the future of a USE or NEWSPACE tuple holds the allocation jobs of the spaces.
+    // /// Unboxed, it makes the layout of every evaluation future deeper, and the release build of
+    // /// `node` exceeds the query depth limit of rustc. Only marker tuples pay for the box.
+    // pub(super) fn eval_marker<'a>(
+    //     &'a self,
+    //     tuple: &'a ETuple,
+    //     env: &'a Env<Par>,
+    //     rand: Blake2b512Random,
+    //     authority: &'a CostAuthority,
+    // ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a>> {
+    //     Box::pin(async move {
+    //         let construct = decode_process_tuple(&refreshed_tuple(tuple))
+    //             .map_err(ReifiedReduceError::Malformed)?;
+    //         match construct {
+    //             ProcessConstruct::Use(block) => self.eval_use(block, env, rand, authority).await,
+    //             ProcessConstruct::NewSpace(new_space) => {
+    //                 self.eval_new_space(new_space, env, rand, authority).await
+    //             }
+    //         }
+    //     })
+    // }
+    // ```
+
+    /// Hook H2: evaluates a use block of a process (decision 112). A block without its space or
+    /// its body fails with `Malformed`.
     ///
     /// The future is boxed. The evaluation future of the reducer holds the future of each term
-    /// kind, and the future of a USE or NEWSPACE tuple holds the allocation jobs of the spaces.
-    /// Unboxed, it makes the layout of every evaluation future deeper, and the release build of
-    /// `node` exceeds the query depth limit of rustc. Only marker tuples pay for the box.
-    pub(super) fn eval_marker<'a>(
+    /// kind, and the future of a use block holds the allocation jobs of the spaces. Unboxed, it
+    /// makes the layout of every evaluation future deeper, and the release build of `node`
+    /// exceeds the query depth limit of rustc.
+    pub(super) fn eval_use_block<'a>(
         &'a self,
-        tuple: &'a ETuple,
+        block: &'a models::rhoapi::UseBlock,
         env: &'a Env<Par>,
         rand: Blake2b512Random,
         authority: &'a CostAuthority,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a>> {
         Box::pin(async move {
-            let construct = decode_process_tuple(&refreshed_tuple(tuple))
-                .map_err(ReifiedReduceError::Malformed)?;
-            match construct {
-                ProcessConstruct::Use(block) => self.eval_use(block, env, rand, authority).await,
-                ProcessConstruct::NewSpace(new_space) => {
-                    self.eval_new_space(new_space, env, rand, authority).await
-                }
-            }
+            let block = decode_use_block(block).map_err(ReifiedReduceError::Malformed)?;
+            self.eval_use(block, env, rand, authority).await
+        })
+    }
+
+    /// Hook H2: evaluates a `new` with space annotations (decision 112). A `new` whose
+    /// annotations do not fit its binders fails with `Malformed`. The future is boxed, as for
+    /// `eval_use_block`.
+    pub(super) fn eval_annotated_new<'a>(
+        &'a self,
+        new: &'a New,
+        env: &'a Env<Par>,
+        rand: Blake2b512Random,
+        authority: &'a CostAuthority,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterpreterError>> + std::marker::Send + 'a>> {
+        Box::pin(async move {
+            let new_space = decode_new_space(new).map_err(ReifiedReduceError::Malformed)?;
+            self.eval_new_space(new_space, env, rand, authority).await
         })
     }
 
     /// `use s { P }`: evaluates `P` with the use-context of the space `s`. `P` gets the random
-    /// state of the tuple, so the tuple is random-transparent (P4 design C.2).
+    // Changed by decision 112: the use block is a field. The text before:
+    // /// state of the tuple, so the tuple is random-transparent (P4 design C.2).
+    /// state of the block, so the block is random-transparent (P4 design C.2).
     ///
     /// P8 (design v2 AG-2, AG-4): a native space must be live (DG-1). The reference of a user
     /// agent must have a call channel under the bundle rule of `eval_send` (`call_channel`), or
@@ -464,10 +566,60 @@ impl ReducerCore {
     //     self.space_ctx.as_ref().map(|target| target.native)
     // }
 
+    /// One value of a params section or a query: the evaluated expression with its variables
+    /// substituted, as the data of a send.
+    fn evaluated_value(&self, value: &Par, env: &Env<Par>) -> Result<Par, InterpreterError> {
+        let evaluated = self.eval_expr(value, env)?;
+        self.substitute.substitute_and_charge(&evaluated, 0, env)
+    }
+
+    /// The evaluated params of a send (`Send.params`). `check_send_params` runs first, so a
+    /// malformed section fails with `Malformed` before any value is evaluated.
+    pub(super) fn evaluated_send_params(
+        &self,
+        params: &SendParams,
+        env: &Env<Par>,
+    ) -> Result<SendParams, InterpreterError> {
+        check_send_params(params).map_err(ReifiedReduceError::Malformed)?;
+        let positional = params
+            .positional
+            .iter()
+            .map(|value| self.evaluated_value(value, env))
+            .collect::<Result<Vec<_>, _>>()?;
+        let named = params
+            .named
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), self.evaluated_value(value, env)?)))
+            .collect::<Result<BTreeMap<_, _>, InterpreterError>>()?;
+        Ok(SendParams { positional, named })
+    }
+
+    /// The evaluated query of a receive bind (`ReceiveBind.query_spec`). H4 checks the query in
+    /// `unbundle_receive`, so this function reads it without a second check.
+    pub(super) fn evaluated_query(
+        &self,
+        query: &QuerySpec,
+        env: &Env<Par>,
+    ) -> Result<QueryParams, InterpreterError> {
+        let payload = query
+            .payload
+            .iter()
+            .map(|value| self.evaluated_value(value, env))
+            .collect::<Result<Vec<_>, _>>()?;
+        let named = query
+            .named
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), self.evaluated_value(value, env)?)))
+            .collect::<Result<BTreeMap<_, _>, InterpreterError>>()?;
+        Ok(QueryParams { payload, named })
+    }
+
     /// Hook H3: the produce of `eval_send` (P4 design C.3, readiness review §4, P5 design v3
     /// A.8).
+    // Changed by decision 112: the params travel in the Send field. The text before:
+    // /// 1. A trailing PARAMS tuple is decoded after the I-20 refresh. A malformed tuple fails with
     ///
-    /// 1. A trailing PARAMS tuple is decoded after the I-20 refresh. A malformed tuple fails with
+    /// 1. The field `Send.params` is checked (`check_send_params`). A malformed field fails with
     ///    `Malformed`.
     /// 2. The channel routes with the use-context of the reducer.
     /// 3. On the default space, a persistent send to an op channel or to a handle aborts (A21).
@@ -475,7 +627,9 @@ impl ReducerCore {
     ///    its method and operands as one list (I-18). A handle call keeps its params. Every other
     ///    channel, `rho:lang:vector` included, rejects params.
     /// 4. On a native space, the produce runs with `space_op`. Its named params go to the agent
-    ///    in `ProduceOp::params` (`space_params`), and the PARAMS tuple leaves the datum.
+    // Changed by decision 112: the params travel in the Send field. The text before:
+    // ///    in `ProduceOp::params` (`space_params`), and the PARAMS tuple leaves the datum.
+    ///    in `ProduceOp::params` (`space_params`).
     ///    Positional params abort.
     // Changed by P8 step 2 (design v2 TS-1 to TS-3): a send on an agent space is translated.
     // /// 5. A space that a user agent implements fails closed until P8.
@@ -488,9 +642,13 @@ impl ReducerCore {
         persistent: bool,
         introduction_authority: CostAuthority,
         measurement: Option<IntroductionMeasurement>,
+        params: Option<SendParams>,
     ) -> Pin<
         Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send + 'a>,
     > {
+        // Added by decision 91: the datum carries the causal history of the task that sends
+        // it, so a body that it fires knows that history (`Comm` of `SpaceCoordination.tla`).
+        self.reified.record_item_history(&data.random_state);
         // Changed by P8 step 3: the dispatch of a routed send is shared with the call of a
         // translated receive (`dispatch_send`).
         // match self.route_send(chan, data, persistent, introduction_authority) {
@@ -502,7 +660,16 @@ impl ReducerCore {
         //     Ok(SendRoute::Space(op)) => Box::pin(self.space_op(SpaceOp::Produce(op), None)),
         //     Err(error) => Box::pin(std::future::ready(Err(error))),
         // }
-        match self.route_send(chan, data, persistent, introduction_authority, measurement) {
+        // Changed by decision 112: the params travel beside the data. The text before:
+        // match self.route_send(chan, data, persistent, introduction_authority, measurement) {
+        match self.route_send(
+            chan,
+            data,
+            persistent,
+            introduction_authority,
+            measurement,
+            params,
+        ) {
             Ok(route) => self.dispatch_send(route, persistent),
             Err(error) => Box::pin(std::future::ready(Err(error))),
         }
@@ -543,7 +710,9 @@ impl ReducerCore {
     ///
     /// A send on a space that a user agent implements becomes the call
     /// `A'!(sink, "produce", raw, [d1, …, dk])` of [`user_agent::produce_call`]. The checks of
-    /// TS-3 come first: the PARAMS tuple, the route, DG-1, the Seq scan of the data and of `raw`,
+    // Changed by decision 112: the params are a field of the send. The text before:
+    // /// TS-3 come first: the PARAMS tuple, the route, DG-1, the Seq scan of the data and of `raw`,
+    /// TS-3 come first: the params, the route, DG-1, the Seq scan of the data and of `raw`,
     /// `!!` and params. The call is an ordinary send with no use-context (AG-4), so the next
     /// round of the loop routes it: R1 sends it to the default space, and R4 to an inner agent.
     /// The tag of an inner agent is a strict subterm of the tag of its outer agent, so the loop
@@ -559,6 +728,7 @@ impl ReducerCore {
         persistent: bool,
         authority: CostAuthority,
         measurement: Option<IntroductionMeasurement>,
+        params: Option<SendParams>,
     ) -> Result<SendRoute, InterpreterError> {
         self.route_send_from(
             &self.space_ctx,
@@ -568,6 +738,7 @@ impl ReducerCore {
             authority,
             measurement,
             false,
+            params,
         )
     }
 
@@ -583,6 +754,7 @@ impl ReducerCore {
         authority: CostAuthority,
         measurement: Option<IntroductionMeasurement>,
         scanned: bool,
+        params: Option<SendParams>,
     ) -> Result<SendRoute, InterpreterError> {
         let seq = self.reified.seq_spaces();
         // Changed by P8 step 3: the loop starts from the given context and scan state.
@@ -593,7 +765,8 @@ impl ReducerCore {
         // let mut scanned = false;
         let mut scanned = scanned;
         loop {
-            let params = trailing_params(&mut data.pars)?;
+            // Changed by decision 112: the params travel in the Send field. The text before:
+            // let params = trailing_params(&mut data.pars)?;
             // Changed by P8 step 2: a call routes with no use-context (AG-4).
             // let route = self.route_channel(&chan)?;
             let route = route::route(ctx, &chan)?;
@@ -606,6 +779,7 @@ impl ReducerCore {
             // of its names aborts before any mutation.
             if !seq.is_empty() && !scanned {
                 seq::check_send(&chan, &data.pars, &seq)?;
+                seq::check_params(&chan, &data.pars, params.as_ref(), &seq)?;
             }
             match route {
                 Route::Agent { agent, raw } => {
@@ -646,7 +820,9 @@ impl ReducerCore {
         &self,
         route: Route,
         chan: Par,
-        mut data: ListParWithRandom,
+        // Changed by decision 112: the params no longer sit in the data. The text before:
+        // mut data: ListParWithRandom,
+        data: ListParWithRandom,
         persistent: bool,
         params: Option<SendParams>,
         authority: CostAuthority,
@@ -656,24 +832,44 @@ impl ReducerCore {
             Route::Default => {
                 // Moved by P7 step 1 before the liveness check of DG-1 (above).
                 // check_persistent_send(&chan, persistent)?;
-                // A packed send carries other data than the reducer measured, so its
-                // observer measures the datum (DR-118).
-                let (data, measurement) = match (op_of(&chan), handle_of(&chan)) {
-                    (Some(op), _) if is_factory_op(op) => {
+                // Changed by decision 112 (O-1): the params travel in the Send field, and the
+                // reducer forwards them to a factory or a handle as an EParams value. A packed send
+                // and a handle send with params carry other data than the reducer measured, so
+                // their observer measures the datum (DR-118). The text before:
+                // ```
+                // // A packed send carries other data than the reducer measured, so its
+                // // observer measures the datum (DR-118).
+                // let (data, measurement) = match (op_of(&chan), handle_of(&chan)) {
+                //     (Some(op), _) if is_factory_op(op) => {
+                //         reject_positional(params.as_ref())?;
+                //         (pack_arguments(data), None)
+                //     }
+                //     (Some(op), _) if packs_arguments(op) && params.is_none() => {
+                //         (pack_arguments(data), None)
+                //     }
+                //     (_, Some(_)) => {
+                //         reject_positional(params.as_ref())?;
+                //         (data, measurement)
+                //     }
+                //     _ if params.is_some() => {
+                //         return Err(ReifiedReduceError::ParamsUnsupported.into())
+                //     }
+                //     _ => (data, measurement),
+                // };
+                // ```
+                let (data, measurement) = match (op_of(&chan), handle_of(&chan), params) {
+                    (Some(op), _, params) if is_factory_op(op) => {
                         reject_positional(params.as_ref())?;
-                        (pack_arguments(data), None)
+                        (pack_arguments(append_params(data, params)?), None)
                     }
-                    (Some(op), _) if packs_arguments(op) && params.is_none() => {
-                        (pack_arguments(data), None)
+                    (Some(op), _, None) if packs_arguments(op) => (pack_arguments(data), None),
+                    (_, Some(_), Some(params)) => {
+                        reject_positional(Some(&params))?;
+                        (append_params(data, Some(params))?, None)
                     }
-                    (_, Some(_)) => {
-                        reject_positional(params.as_ref())?;
-                        (data, measurement)
-                    }
-                    _ if params.is_some() => {
-                        return Err(ReifiedReduceError::ParamsUnsupported.into())
-                    }
-                    _ => (data, measurement),
+                    (_, Some(_), None) => (data, measurement),
+                    (_, _, Some(_)) => return Err(ReifiedReduceError::ParamsUnsupported.into()),
+                    (_, _, None) => (data, measurement),
                 };
                 Ok(SendRoute::Host {
                     chan,
@@ -685,10 +881,15 @@ impl ReducerCore {
             Route::Space { space, key } => {
                 let params = match params {
                     None => BTreeMap::new(),
-                    Some(params) => {
-                        data.pars.pop();
-                        space_params(params)?
-                    }
+                    // Changed by decision 112: the params travel in the Send field, so the datum
+                    // holds no PARAMS tuple to remove. The text before:
+                    // ```
+                    // Some(params) => {
+                    //     data.pars.pop();
+                    //     space_params(params)?
+                    // }
+                    // ```
+                    Some(params) => space_params(params)?,
                 };
                 Ok(SendRoute::Space(ProduceOp {
                     space,
@@ -712,11 +913,19 @@ impl ReducerCore {
 
     /// The consume of `eval_receive` (P4 design C.3, P5 design v3 A.8). It takes the parameters
     /// of `consume`.
+    // Changed by decision 112: a query is a field of its bind, so no source is a marker tuple. The
+    // text before:
+    // ```
+    // ///
+    // /// Outside a use-context, a receive whose channels all route to the default space and are
+    // /// no marker tuples calls `consume` with identical arguments (`takes_fast_path`). Otherwise
+    // /// the body is wrapped in the USE tuple of the use-context first. Then each bind is read
+    // /// (`query_bind`) and routed, and the routes decide:
+    // ```
     ///
-    /// Outside a use-context, a receive whose channels all route to the default space and are
-    /// no marker tuples calls `consume` with identical arguments (`takes_fast_path`). Otherwise
-    /// the body is wrapped in the USE tuple of the use-context first. Then each bind is read
-    /// (`query_bind`) and routed, and the routes decide:
+    /// Outside a use-context, a receive whose channels all route to the default space and whose
+    /// binds hold no query calls `consume` with identical arguments. Otherwise the body is wrapped
+    /// in a use block of the use-context first. Then each bind is routed, and the routes decide:
     ///
     /// * Every channel on the default space and no query: `consume` with the wrapped body.
     /// * A query on the default space: `QuerySpecUnsupported`.
@@ -737,10 +946,23 @@ impl ReducerCore {
         authority: CostAuthority,
         introduction_authority: CostAuthority,
         measurement: Option<IntroductionMeasurement>,
+        queries: Vec<Option<QueryParams>>,
     ) -> Pin<
         Box<dyn Future<Output = Result<DispatchType, InterpreterError>> + std::marker::Send + 'a>,
     > {
-        if self.space_ctx.is_none() && binds.iter().all(|(_, channel)| takes_fast_path(channel)) {
+        // Added by decision 91: the continuation carries the causal history of the task that
+        // stores it, so its body knows that history (`Comm` of `SpaceCoordination.tla`).
+        self.reified.record_item_history(&body.random_state);
+        // Changed by decision 112: a bind with a query never takes the fast path. The text before:
+        // ```
+        // if self.space_ctx.is_none() && binds.iter().all(|(_, channel)| takes_fast_path(channel)) {
+        // ```
+        if self.space_ctx.is_none()
+            && queries.iter().all(Option::is_none)
+            && binds
+                .iter()
+                .all(|(_, channel)| routes_to_default_without_context(channel))
+        {
             return self.consume(
                 binds,
                 body,
@@ -763,7 +985,9 @@ impl ReducerCore {
             body: body.map(|body| wrap_body(&self.space_ctx, body)),
             random_state,
         };
-        match self.route_receive(binds) {
+        // Changed by decision 112: the queries travel beside the binds. The text before:
+        // match self.route_receive(binds) {
+        match self.route_receive(binds, queries) {
             Ok(ReceiveRoute::Host(binds)) => self.consume(
                 binds,
                 body,
@@ -829,7 +1053,10 @@ impl ReducerCore {
     /// The raw channels are scanned for seq names first (A5). Then the receive makes, in this
     /// order, one persistent matcher receive for each bind, the body receive, and the call on
     /// the agent (TR-7). The receives are on fresh capability ids, so they fire nothing, and the
-    /// call, which can fire, comes last: a fire ends the participant (F16). The call routes as
+    // Changed by decision 90 (DR-132): racing evaluation has no participants. The text before:
+    // /// call, which can fire, comes last: a fire ends the participant (F16). The call
+    // /// routes as
+    /// call, which can fire, comes last (F16). The call routes as
     /// an ordinary send with no use-context, and the translation scanned its data.
     #[allow(clippy::too_many_arguments)]
     async fn agent_consume(
@@ -895,19 +1122,31 @@ impl ReducerCore {
             introduction_authority,
             None,
             true,
+            None,
         )?;
         self.dispatch_send(route, false).await
     }
 
-    /// Reads the source of each bind (`query_bind`) and routes its channel, in bind order. Then
-    /// the routes decide the target of the receive (`single_bind_route`, `join_route`).
+    // Changed by decision 112: the query of a bind travels beside the bind. The text before:
+    // ```
+    // /// Reads the source of each bind (`query_bind`) and routes its channel, in bind order. Then
+    // /// the routes decide the target of the receive (`single_bind_route`, `join_route`).
+    // ```
+    /// Routes the channel of each bind, in bind order. Then the routes decide the target of the
+    /// receive (`single_bind_route`, `join_route`).
     fn route_receive(
         &self,
         binds: Vec<(BindPattern, Par)>,
+        queries: Vec<Option<QueryParams>>,
     ) -> Result<ReceiveRoute, InterpreterError> {
         let mut routed = Vec::with_capacity(binds.len());
-        for (pattern, source) in binds {
-            let (channel, query) = query_bind(source)?;
+        // Changed by decision 112: the query of a bind travels beside the bind (ruling 2). The text
+        // before:
+        // ```
+        // for (pattern, source) in binds {
+        //     let (channel, query) = query_bind(source)?;
+        // ```
+        for ((pattern, channel), query) in binds.into_iter().zip(queries) {
             let route = self.route_channel(&channel)?;
             self.check_route_live(&channel, &route)?;
             routed.push(RoutedBind {
@@ -975,7 +1214,9 @@ impl ReducerCore {
     ///    random state after the draws.
     /// 4. The synthesized `Par` is evaluated with no use-context, with the state
     ///    `base.split_byte(7)` and the authority of the `new`. Each call and the resume term are
-    ///    terms of their own, so each gets its own random state and reduction participant.
+    // Changed by decision 90 (DR-132): racing evaluation has no participants. The text before:
+    // ///    terms of their own, so each gets its own random state and reduction participant.
+    ///    terms of their own, so each gets its own random state.
     async fn agent_new(
         &self,
         new: &New,
@@ -1027,7 +1268,9 @@ impl ReducerCore {
     ///
     /// Outside a use-context, the future is ready at once and allocates nothing, as the call of
     /// `allocate_new_bindings` was. Inside a use-context, the future of the allocation jobs is
-    /// boxed, so it does not deepen the evaluation future of the reducer (see `eval_marker`).
+    // Changed by decision 112: `eval_use_block` replaces the marker hook. The text before:
+    // /// boxed, so it does not deepen the evaluation future of the reducer (see `eval_marker`).
+    /// boxed, so it does not deepen the evaluation future of the reducer (see `eval_use_block`).
     #[allow(clippy::type_complexity)]
     pub(super) fn reified_allocate<'a>(
         &'a self,
@@ -1253,24 +1496,35 @@ impl ReducerCore {
     /// fire removes its non-persistent records, and the agent stores each one again in the same
     /// transaction (decision 45, Rule E). So a dispatch never produces a datum again, and it
     /// makes no `produce_peeks` call.
+    // Changed by decision 90 (DR-132): racing evaluation has no participants. The text before:
+    // ```
+    // /// In a reduction, a dispatch ends the participant that makes it: `eval_continuation`
+    // /// moves the participant to the detached task of the body. So the participant can make
+    // /// no operation after a dispatch. For this reason, `then` is a branch of the outcome,
+    // /// as the re-issue is. The branches are the fires in staging order, then the re-issue
+    // /// (a new `space_op`), then `then`. Each fire and the re-issue has its own metering
+    // /// child.
+    // ```
     ///
-    /// In a reduction, a dispatch ends the participant that makes it: `eval_continuation`
-    /// moves the participant to the detached task of the body. So the participant can make no
-    /// operation after a dispatch. For this reason, `then` is a branch of the outcome, as the
-    /// re-issue is. The branches are the fires in staging order, then the re-issue (a new
-    /// `space_op`), then `then`. Each fire and the re-issue has its own metering child.
+    /// `eval_continuation` runs the body of a fire as a task of the dispatch scope, or inline
+    /// without a scope. `then` is a branch of the outcome, as the re-issue is. The branches are
+    /// the fires in staging order, then the re-issue (a new `space_op`), then `then`. Each fire
+    /// and the re-issue has its own metering child.
     ///
     /// A single fire without a re-issue and without `then` dispatches directly, and `then`
-    /// without fires and without a re-issue runs directly. Otherwise the branches run as
-    /// parallel participants through `run_parallel_dispatches`, which needs a reduction
-    /// context. Without one, the branches run in index order.
+    /// without fires and without a re-issue runs directly. Otherwise the branches run through
+    /// `run_parallel_dispatches`, as the parallel terms of a host `Par` do.
+    ///
+    /// Changed by decision 90 (DR-132): `run_parallel_dispatches` runs the branches as tasks
+    /// of the dispatch scope, or awaits them in index order without a scope. Before, it needed
+    /// a reduction context of the scheduler, and the branches ran in index order without one.
     pub(crate) fn dispatch_space_outcome<'a>(
         &'a self,
         outcome: SpaceOutcome,
         then: Option<DispatchFuture<'static>>,
     ) -> DispatchFuture<'a> {
         Box::pin(async move {
-            // The runtime has appended the mirror writes to the journal of the evaluation
+            // Changed by decision 98: the runtime published the mirror writes of play at the commit
             // (P6 step 7b), so a dispatch reads only the fires and the re-issue.
             let SpaceOutcome { fires, reissue, .. } = outcome;
             if fires.is_empty() && reissue.is_none() {
@@ -1305,53 +1559,88 @@ impl ReducerCore {
                         .await
                 }) as DispatchFuture<'static>);
             }
-            if let Some(SpaceReissue { op, .. }) = reissue {
+            // Changed by decision 124 (plan v4 C7.14, ruling OP2-25 option B, rule CR-19): the
+            // re-issue of a Stop for an owner refusal stages its anchor first (case 2). The text
+            // before:
+            // if let Some(SpaceReissue { op, .. }) = reissue {
+            if let Some(SpaceReissue { op, cause }) = reissue {
+                let anchor_first = matches!(cause, ReissueCause::OwnerRefusal);
                 let branch = self.with_metering_child(branches.len());
                 // Changed by P7 step 2 (design v3 SQ-3, A3): a re-issue is an internal job.
                 // branches.push(Box::pin(async move { branch.space_op(op, None).await })
                 //     as DispatchFuture<'static>);
+                // Changed by decision 124 (plan v4 C7.14): the origin carries `anchor_first`.
+                // The text before:
+                // ```
+                // branches.push(Box::pin(async move {
+                //     branch.space_op_from(op, None, OpOrigin::Internal).await
+                // }) as DispatchFuture<'static>);
+                // ```
                 branches.push(Box::pin(async move {
-                    branch.space_op_from(op, None, OpOrigin::Internal).await
+                    let origin = OpOrigin::Internal { anchor_first };
+                    branch.space_op_from(op, None, origin).await
                 }) as DispatchFuture<'static>);
             }
             branches.extend(then);
-            match deterministic_reduction::current() {
-                Some(_) => self.run_parallel_dispatches(branches).await,
-                None => self.run_sequential_dispatches(branches).await,
-            }
+            // Changed by decision 90 (DR-132): see the doc comment.
+            // match deterministic_reduction::current() {
+            //     Some(_) => self.run_parallel_dispatches(branches).await,
+            //     None => self.run_sequential_dispatches(branches).await,
+            // }
+            self.run_parallel_dispatches(branches).await
         })
     }
 
-    /// Runs dispatch branches one after another in index order, and aggregates their errors as
-    /// `run_parallel_dispatches` does.
-    async fn run_sequential_dispatches(
-        &self,
-        branches: Vec<DispatchFuture<'static>>,
-    ) -> Result<DispatchType, InterpreterError> {
-        let mut errors = Vec::new();
-        for branch in branches {
-            if let Err(error) = branch.await {
-                errors.push(error);
-            }
-        }
-        self.aggregate_evaluator_errors(errors)
-    }
+    // Disabled by decision 90 (DR-132): `run_parallel_dispatches` of the base awaits the
+    // branches in index order when no dispatch scope runs, so this copy has no caller.
+    //
+    // /// Runs dispatch branches one after another in index order, and aggregates their errors
+    // /// as `run_parallel_dispatches` does.
+    // async fn run_sequential_dispatches(
+    //     &self,
+    //     branches: Vec<DispatchFuture<'static>>,
+    // ) -> Result<DispatchType, InterpreterError> {
+    //     let mut errors = Vec::new();
+    //     for branch in branches {
+    //         if let Err(error) = branch.await {
+    //             errors.push(error);
+    //         }
+    //     }
+    //     self.aggregate_evaluator_errors(errors)
+    // }
 }
 
-/// Hook H4: checks the evaluated source of a receive bind before `unbundle_receive` checks its
-/// bundle. The I-20 refresh runs before the decode. A malformed QUERY tuple fails with
-/// `Malformed`. Every other source passes: a well-formed QUERY tuple routes its inner channel in
-/// `reified_consume` (P5 design v3 A.8), and an ordinary source is unchanged.
-pub(super) fn reject_query_source(source: &Par) -> Result<(), InterpreterError> {
-    match decode_query_source(&refreshed_marker_par(source, Marker::Query)) {
-        Ok(None) => Ok(()),
-        // Disabled by P5b (P5 design v3 A.8): a receive query has a meaning on a priority queue,
-        // so a well-formed QUERY tuple no longer fails closed here. `reified_consume` routes its
-        // inner channel and fills `ConsumeOp::query`. The default space and a discipline without
-        // query params still fail with `QuerySpecUnsupported`.
-        // Ok(Some(_)) => Err(ReifiedReduceError::QuerySpecUnsupported.into()),
-        Ok(Some(_)) => Ok(()),
-        Err(error) => Err(ReifiedReduceError::Malformed(error).into()),
+// Changed by decision 112: H4 checks the query field. The text before:
+// ```
+// /// Hook H4: checks the evaluated source of a receive bind before `unbundle_receive` checks its
+// /// bundle. The I-20 refresh runs before the decode. A malformed QUERY tuple fails with
+// /// `Malformed`. Every other source passes: a well-formed QUERY tuple routes its inner channel in
+// /// `reified_consume` (P5 design v3 A.8), and an ordinary source is unchanged.
+// ```
+/// Hook H4: checks the query of a receive bind before `unbundle_receive` checks its bundle. A
+/// malformed query fails with `Malformed`. Every other bind passes, and the query travels with
+/// its bind to `reified_consume` (P5 design v3 A.8).
+// Changed by decision 112: H4 checks the query field. The text before:
+// ```
+// pub(super) fn reject_query_source(source: &Par) -> Result<(), InterpreterError> {
+//     match decode_query_source(&refreshed_marker_par(source, Marker::Query)) {
+//         Ok(None) => Ok(()),
+//         // Disabled by P5b (P5 design v3 A.8): a receive query has a meaning on a priority queue,
+//         // so a well-formed QUERY tuple no longer fails closed here. `reified_consume` routes its
+//         // inner channel and fills `ConsumeOp::query`. The default space and a discipline without
+//         // query params still fail with `QuerySpecUnsupported`.
+//         // Ok(Some(_)) => Err(ReifiedReduceError::QuerySpecUnsupported.into()),
+//         Ok(Some(_)) => Ok(()),
+//         Err(error) => Err(ReifiedReduceError::Malformed(error).into()),
+//     }
+// }
+// ```
+pub(super) fn reject_query_source(query: Option<&QuerySpec>) -> Result<(), InterpreterError> {
+    match query {
+        Some(query) => {
+            check_query_spec(query).map_err(|error| ReifiedReduceError::Malformed(error).into())
+        }
+        None => Ok(()),
     }
 }
 
@@ -1364,59 +1653,67 @@ fn routes_to_default_without_context(channel: &Par) -> bool {
     )
 }
 
-/// True when a receive outside every `use` block can call `consume` without the routing of
-/// `channel` (P5 design v3 A.8): the channel routes to the default space, and it is no marker
-/// tuple. A QUERY tuple names its inner channel, so it must never become a channel of the host.
-/// Every other marker tuple is a forged channel, which also routes to the default space on the
-/// routing path, so only a QUERY tuple changes its result. The check allocates nothing.
-fn takes_fast_path(channel: &Par) -> bool {
-    routes_to_default_without_context(channel) && sole_marker_tuple(channel).is_none()
-}
+// Retired by decision 112: a query is a field of the bind, so `reified_consume` tests the queries
+// and the channels.
+// ```
+// /// True when a receive outside every `use` block can call `consume` without the routing of
+// /// `channel` (P5 design v3 A.8): the channel routes to the default space, and it is no marker
+// /// tuple. A QUERY tuple names its inner channel, so it must never become a channel of the host.
+// /// Every other marker tuple is a forged channel, which also routes to the default space on the
+// /// routing path, so only a QUERY tuple changes its result. The check allocates nothing.
+// fn takes_fast_path(channel: &Par) -> bool {
+//     routes_to_default_without_context(channel) && sole_marker_tuple(channel).is_none()
+// }
+// ```
 
-/// Reads the source of a receive bind (P5 design v3 A.8, decision 21). The I-20 refresh runs
-/// before the decode.
-///
-/// * A source with a QUERY tuple names its inner channel. The inner channel takes the read rule
-///   of `unbundle_receive` (`readable_channel`), and the bind carries the payload and the named
-///   params of the query.
-/// * Every other source is the channel itself, without a query.
-///
-/// Hook H4 already rejects a malformed QUERY tuple, so the `Malformed` error here is defensive.
-fn query_bind(source: Par) -> Result<(Par, Option<QueryParams>), InterpreterError> {
-    let decoded = decode_query_source(&refreshed_marker_par(&source, Marker::Query))
-        .map_err(ReifiedReduceError::Malformed)?;
-    match decoded {
-        None => Ok((source, None)),
-        Some(QuerySpec {
-            channel,
-            payload,
-            named,
-        }) => Ok((
-            readable_channel(channel)?,
-            Some(QueryParams { payload, named }),
-        )),
-    }
-}
-
-/// The inner channel of a query under the read rule of `unbundle_receive`: the body of a bundle
-/// with the read flag, or the channel itself when it is no bundle. A bundle without the read flag
-/// fails with the error of HEAD, a `BundlePermissionError` with the text of HEAD.
-fn readable_channel(channel: Par) -> Result<Par, InterpreterError> {
-    match single_bundle(&channel) {
-        // Changed by decision 89 (DR-128): HEAD raises the text as a `BundlePermissionError`,
-        // which the failure classifier maps to a user failure.
-        // Some(Bundle {
-        //     read_flag: false, ..
-        // }) => Err(InterpreterError::ReduceError(NOT_READABLE.to_string())),
-        Some(Bundle {
-            read_flag: false, ..
-        }) => Err(InterpreterError::BundlePermissionError(
-            NOT_READABLE.to_string(),
-        )),
-        Some(Bundle { body, .. }) => unwrap_option_safe(body),
-        None => Ok(channel),
-    }
-}
+// Retired by decision 112: the query is a field of the bind, so no source holds a QUERY tuple and
+// H4 reads the field. `unbundle_receive` applies the read rule of a bundle to every source.
+// ```
+// /// Reads the source of a receive bind (P5 design v3 A.8, decision 21). The I-20 refresh runs
+// /// before the decode.
+// ///
+// /// * A source with a QUERY tuple names its inner channel. The inner channel takes the read rule
+// ///   of `unbundle_receive` (`readable_channel`), and the bind carries the payload and the named
+// ///   params of the query.
+// /// * Every other source is the channel itself, without a query.
+// ///
+// /// Hook H4 already rejects a malformed QUERY tuple, so the `Malformed` error here is defensive.
+// fn query_bind(source: Par) -> Result<(Par, Option<QueryParams>), InterpreterError> {
+//     let decoded = decode_query_source(&refreshed_marker_par(&source, Marker::Query))
+//         .map_err(ReifiedReduceError::Malformed)?;
+//     match decoded {
+//         None => Ok((source, None)),
+//         Some(QuerySpec {
+//             channel,
+//             payload,
+//             named,
+//         }) => Ok((
+//             readable_channel(channel)?,
+//             Some(QueryParams { payload, named }),
+//         )),
+//     }
+// }
+//
+// /// The inner channel of a query under the read rule of `unbundle_receive`: the body of a bundle
+// /// with the read flag, or the channel itself when it is no bundle. A bundle without the read flag
+// /// fails with the error of HEAD, a `BundlePermissionError` with the text of HEAD.
+// fn readable_channel(channel: Par) -> Result<Par, InterpreterError> {
+//     match single_bundle(&channel) {
+//         // Changed by decision 89 (DR-128): HEAD raises the text as a `BundlePermissionError`,
+//         // which the failure classifier maps to a user failure.
+//         // Some(Bundle {
+//         //     read_flag: false, ..
+//         // }) => Err(InterpreterError::ReduceError(NOT_READABLE.to_string())),
+//         Some(Bundle {
+//             read_flag: false, ..
+//         }) => Err(InterpreterError::BundlePermissionError(
+//             NOT_READABLE.to_string(),
+//         )),
+//         Some(Bundle { body, .. }) => unwrap_option_safe(body),
+//         None => Ok(channel),
+//     }
+// }
+// ```
 
 /// The target of a receive with one bind. A query on the default space has no meaning, so it
 /// fails with `QuerySpecUnsupported`. A bind on a user agent is translated (P8, design v2 TR-1),
@@ -1611,6 +1908,23 @@ fn one_space(routed: &[RoutedBind]) -> Option<NativeSpace> {
 //     }
 // }
 
+/// Added by decision 112 (O-1): the EParams value of a send that a factory or a handle reads.
+fn append_params(
+    mut data: ListParWithRandom,
+    params: Option<SendParams>,
+) -> Result<ListParWithRandom, InterpreterError> {
+    let trailing = params
+        .as_ref()
+        .map(encode_params)
+        .transpose()
+        .map_err(|error| {
+            InterpreterError::BugFoundError(format!("checked params do not encode: {error}"))
+        })?
+        .flatten();
+    data.pars.extend(trailing);
+    Ok(data)
+}
+
 /// The params of a send on a factory or a handle can be named only.
 fn reject_positional(params: Option<&SendParams>) -> Result<(), InterpreterError> {
     match params {
@@ -1622,11 +1936,18 @@ fn reject_positional(params: Option<&SendParams>) -> Result<(), InterpreterError
 }
 
 /// The named params of a send to a collection of a native space (P5 design v3 A.8, C.1 item
-/// 29). They go to the agent in `ProduceOp::params`, and `route_send` removes their PARAMS tuple
-/// from the datum, so the record holds the payload only. The agent checks their keys against
+// Changed by decision 112: the params travel in the Send field. The text before:
+// ```
+// /// 29). They go to the agent in `ProduceOp::params`, and `route_send` removes their PARAMS tuple
+// /// from the datum, so the record holds the payload only. The agent checks their keys against
+// ```
+/// 29). They go to the agent in `ProduceOp::params`. The params never enter the datum, so the
+/// record holds the payload only. The agent checks their keys against
 /// the schema of its discipline, and then their values, before the bump. So a queue, which takes
 /// no send param, still fails with `UnknownParam`. Positional params abort, as on a factory or a
-/// handle. A PARAMS tuple without params is an erased form, which no decoder accepts.
+// Changed by decision 112: the params are a field of the send. The text before:
+// /// handle. A PARAMS tuple without params is an erased form, which no decoder accepts.
+/// handle. An empty `SendParams` is an erased form, which the send hook rejects with `Malformed`.
 fn space_params(params: SendParams) -> Result<BTreeMap<String, Par>, InterpreterError> {
     let SendParams { positional, named } = params;
     match (positional.is_empty(), named.is_empty()) {
@@ -1665,9 +1986,15 @@ fn space_params(params: SendParams) -> Result<BTreeMap<String, Par>, Interpreter
 // }
 
 /// Packs the arguments of a call into `[ret, [x…]]`, so the process has the fixed arity 2
-/// (I-18): a factory call, whose list holds its constructor with the PARAMS tuple, and a call
-/// of `rho:lang:vector`, whose list holds its method and its operands. A send without arguments
-/// is unchanged.
+// Changed by decision 112: the params reach a factory as a value. The text before:
+// ```
+// /// (I-18): a factory call, whose list holds its constructor with the PARAMS tuple, and a call
+// /// of `rho:lang:vector`, whose list holds its method and its operands. A send without arguments
+// /// is unchanged.
+// ```
+/// (I-18): a factory call, whose list holds its constructor with the params value
+/// (`append_params`), and a call of `rho:lang:vector`, whose list holds its method and its
+/// operands. A send without arguments is unchanged.
 fn pack_arguments(data: ListParWithRandom) -> ListParWithRandom {
     let ListParWithRandom {
         pars,
@@ -1799,357 +2126,387 @@ fn put_index_name(
     Ok(())
 }
 
-/// A field of a marker tuple after its head (I-20). The canonical encoder derives the
-/// `connective_used` flag of each container field from the flags of its children. A value field
-/// keeps the flags that the program gives it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Field {
-    /// A value of the program.
-    Value,
-    /// A list: the list and its `Par` take the disjunction over the elements.
-    List,
-    /// A map: the map and its `Par` take the disjunction over the keys and the values.
-    Map,
-    /// The annotations of NEWSPACE: a list of the lists `[]` and `[s]`.
-    Annotations,
-    /// `Par{news: [New]}`: the `Par` takes the flag of the body of the `New`.
-    NewBody,
-}
-
-/// The fields of the tuple of `marker`, in tuple order after the head.
-const fn marker_fields(marker: Marker) -> &'static [Field] {
-    match marker {
-        Marker::Use => &[Field::Value, Field::Value],
-        Marker::NewSpace => &[Field::Annotations, Field::NewBody],
-        Marker::Params => &[Field::List, Field::Map],
-        Marker::Query => &[Field::Value, Field::List, Field::Map],
-        Marker::Free => &[Field::Value, Field::List],
-    }
-}
-
-/// The field at tuple index `index`. The head and the elements after the last field are values.
-/// The decoder rejects a tuple with extra elements whatever their flags are.
-fn field_at(fields: &[Field], index: usize) -> Field {
-    index
-        .checked_sub(1)
-        .and_then(|field| fields.get(field))
-        .copied()
-        .unwrap_or(Field::Value)
-}
-
-/// True when `par` holds nothing but its expressions and its news. The bit sets do not count.
-fn only_exprs_and_news(par: &Par) -> bool {
-    let Par {
-        sends,
-        receives,
-        news: _,
-        exprs: _,
-        matches,
-        unforgeables,
-        bundles,
-        connectives,
-        conditionals,
-        locally_free: _,
-        connective_used: _,
-        cost_signed_terms,
-        cost_stacks,
-    } = par;
-    sends.is_empty()
-        && receives.is_empty()
-        && matches.is_empty()
-        && unforgeables.is_empty()
-        && bundles.is_empty()
-        && connectives.is_empty()
-        && conditionals.is_empty()
-        && cost_signed_terms.is_empty()
-        && cost_stacks.is_empty()
-}
-
-/// The expression of a `Par` that holds exactly one expression and nothing else.
-fn sole_expr(par: &Par) -> Option<&ExprInstance> {
-    match (
-        only_exprs_and_news(par),
-        par.exprs.as_slice(),
-        par.news.is_empty(),
-    ) {
-        (
-            true,
-            [Expr {
-                expr_instance: Some(instance),
-            }],
-            true,
-        ) => Some(instance),
-        _ => None,
-    }
-}
-
-/// The mutable expression of a `Par` that holds exactly one expression and nothing else.
-fn sole_expr_mut(par: &mut Par) -> Option<&mut ExprInstance> {
-    match (only_exprs_and_news(par), par.news.is_empty()) {
-        (true, true) => match par.exprs.as_mut_slice() {
-            [Expr {
-                expr_instance: Some(instance),
-            }] => Some(instance),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// The `New` of a `Par` that holds exactly one `New` and nothing else.
-fn sole_new(par: &Par) -> Option<&New> {
-    match (
-        only_exprs_and_news(par),
-        par.exprs.is_empty(),
-        par.news.as_slice(),
-    ) {
-        (true, true, [new]) => Some(new),
-        _ => None,
-    }
-}
-
-/// The flag that the encoder derives for `par` as `field`. A `Par` without the shape of its field
-/// keeps its own flag, because the decoder rejects the shape first.
-fn derived_flag(par: &Par, field: Field) -> bool {
-    match (field, sole_expr(par)) {
-        (
-            Field::List,
-            Some(ExprInstance::EListBody(EList {
-                ps,
-                remainder: None,
-                ..
-            })),
-        ) => ps.iter().any(|element| element.connective_used),
-        (
-            Field::Annotations,
-            Some(ExprInstance::EListBody(EList {
-                ps,
-                remainder: None,
-                ..
-            })),
-        ) => ps
-            .iter()
-            .any(|annotation| derived_flag(annotation, Field::List)),
-        (
-            Field::Map,
-            Some(ExprInstance::EMapBody(EMap {
-                kvs,
-                remainder: None,
-                ..
-            })),
-        ) => kvs.iter().any(|pair| {
-            pair.key.as_ref().is_some_and(|key| key.connective_used)
-                || pair
-                    .value
-                    .as_ref()
-                    .is_some_and(|value| value.connective_used)
-        }),
-        (Field::NewBody, _) => match sole_new(par) {
-            Some(new) => derived_flag_of_new(new),
-            None => par.connective_used,
-        },
-        (Field::Value | Field::List | Field::Map | Field::Annotations, _) => par.connective_used,
-    }
-}
-
-/// True when every flag that the encoder derives inside `par` as `field` has its derived value.
-fn field_is_current(par: &Par, field: Field) -> bool {
-    let derived = derived_flag(par, field);
-    match (field, sole_expr(par)) {
-        (Field::List, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
-            par.connective_used == derived && list.connective_used == derived
-        }
-        (Field::Annotations, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
-            par.connective_used == derived
-                && list.connective_used == derived
-                && list
-                    .ps
-                    .iter()
-                    .all(|annotation| field_is_current(annotation, Field::List))
-        }
-        (Field::Map, Some(ExprInstance::EMapBody(map))) if map.remainder.is_none() => {
-            par.connective_used == derived && map.connective_used == derived
-        }
-        (Field::NewBody, _) => par.connective_used == derived,
-        _ => true,
-    }
-}
-
-/// Sets every flag that the encoder derives inside `par` as `field` to its derived value.
-fn refresh_field(par: &mut Par, field: Field) {
-    if field == Field::NewBody {
-        if let Some(flag) = sole_new(par).map(derived_flag_of_new) {
-            par.connective_used = flag;
-        }
-        return;
-    }
-    let flag = match (field, sole_expr_mut(par)) {
-        (Field::List, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
-            list.connective_used = list.ps.iter().any(|element| element.connective_used);
-            list.connective_used
-        }
-        (Field::Annotations, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
-            for annotation in &mut list.ps {
-                refresh_field(annotation, Field::List);
-            }
-            list.connective_used = list.ps.iter().any(|annotation| annotation.connective_used);
-            list.connective_used
-        }
-        (Field::Map, Some(ExprInstance::EMapBody(map))) if map.remainder.is_none() => {
-            map.connective_used = map.kvs.iter().any(|pair| {
-                pair.key.as_ref().is_some_and(|key| key.connective_used)
-                    || pair
-                        .value
-                        .as_ref()
-                        .is_some_and(|value| value.connective_used)
-            });
-            map.connective_used
-        }
-        _ => return,
-    };
-    par.connective_used = flag;
-}
-
-/// The flag that `Par{news: [new]}` takes in the encoder: the flag of the body of `new`.
-fn derived_flag_of_new(new: &New) -> bool {
-    new.p.as_ref().is_some_and(|body| body.connective_used)
-}
-
-/// The fields of a tuple with a marker head, or `None` for every other tuple.
-fn tuple_fields(tuple: &ETuple) -> Option<&'static [Field]> {
-    tuple.ps.first().and_then(marker_of).map(marker_fields)
-}
-
-/// The flag that the encoder derives for a marker tuple: the disjunction over its elements.
-fn derived_tuple_flag(tuple: &ETuple, fields: &[Field]) -> bool {
-    tuple
-        .ps
-        .iter()
-        .enumerate()
-        .any(|(index, element)| derived_flag(element, field_at(fields, index)))
-}
-
-/// True when every flag that the encoder derives for a marker tuple has its derived value. A
-/// tuple without a marker head is always current.
-fn tuple_is_current(tuple: &ETuple) -> bool {
-    match tuple_fields(tuple) {
-        Some(fields) => {
-            tuple
-                .ps
-                .iter()
-                .enumerate()
-                .all(|(index, element)| field_is_current(element, field_at(fields, index)))
-                && tuple.connective_used == derived_tuple_flag(tuple, fields)
-        }
-        None => true,
-    }
-}
-
-/// Sets every flag that the encoder derives for a marker tuple to its derived value (I-20). The
-/// elements keep their values.
-fn refresh_tuple(tuple: &mut ETuple) {
-    let Some(fields) = tuple_fields(tuple) else {
-        return;
-    };
-    for (index, element) in tuple.ps.iter_mut().enumerate() {
-        refresh_field(element, field_at(fields, index));
-    }
-    tuple.connective_used = tuple.ps.iter().any(|element| element.connective_used);
-}
-
-/// A marker tuple with the flags that the encoder derives. A current tuple is not copied.
-fn refreshed_tuple(tuple: &ETuple) -> Cow<'_, ETuple> {
-    match tuple_is_current(tuple) {
-        true => Cow::Borrowed(tuple),
-        false => {
-            let mut refreshed = tuple.clone();
-            refresh_tuple(&mut refreshed);
-            Cow::Owned(refreshed)
-        }
-    }
-}
-
-/// The tuple of a `Par` that holds exactly one tuple and nothing else.
-fn held_tuple_mut(par: &mut Par) -> Option<&mut ETuple> {
-    match sole_expr_mut(par) {
-        Some(ExprInstance::ETupleBody(tuple)) => Some(tuple),
-        _ => None,
-    }
-}
-
-/// Sets the derived flags of the marker tuple that `par` holds, and the flag of `par`, which the
-/// encoder takes from the tuple.
-fn refresh_tuple_par(par: &mut Par) {
-    let flag = match held_tuple_mut(par) {
-        Some(tuple) => {
-            refresh_tuple(tuple);
-            tuple.connective_used
-        }
-        None => return,
-    };
-    par.connective_used = flag;
-}
-
-/// True when `par` holds a marker tuple with its derived flags and has the flag of that tuple.
-fn tuple_par_is_current(par: &Par) -> bool {
-    match sole_expr(par) {
-        Some(ExprInstance::ETupleBody(tuple)) => match tuple_fields(tuple) {
-            Some(fields) => {
-                tuple_is_current(tuple) && par.connective_used == derived_tuple_flag(tuple, fields)
-            }
-            None => true,
-        },
-        _ => true,
-    }
-}
-
-/// `par` with the derived flags of its tuple when it holds exactly a tuple of `marker`, and `par`
-/// unchanged otherwise. The tuple of any other marker is inert data here and keeps its bytes.
-fn refreshed_marker_par(par: &Par, marker: Marker) -> Cow<'_, Par> {
-    match sole_marker_tuple(par) {
-        Some((head, _)) if head == marker && !tuple_par_is_current(par) => {
-            let mut refreshed = par.clone();
-            refresh_tuple_par(&mut refreshed);
-            Cow::Owned(refreshed)
-        }
-        _ => Cow::Borrowed(par),
-    }
-}
+// Retired by decision 112: a field holds its own flags, so no tuple needs the I-20 refresh.
+// ```
+// /// A field of a marker tuple after its head (I-20). The canonical encoder derives the
+// /// `connective_used` flag of each container field from the flags of its children. A value field
+// /// keeps the flags that the program gives it.
+// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// enum Field {
+//     /// A value of the program.
+//     Value,
+//     /// A list: the list and its `Par` take the disjunction over the elements.
+//     List,
+//     /// A map: the map and its `Par` take the disjunction over the keys and the values.
+//     Map,
+//     /// The annotations of NEWSPACE: a list of the lists `[]` and `[s]`.
+//     Annotations,
+//     /// `Par{news: [New]}`: the `Par` takes the flag of the body of the `New`.
+//     NewBody,
+// }
+//
+// /// The fields of the tuple of `marker`, in tuple order after the head.
+// const fn marker_fields(marker: Marker) -> &'static [Field] {
+//     match marker {
+//         Marker::Use => &[Field::Value, Field::Value],
+//         Marker::NewSpace => &[Field::Annotations, Field::NewBody],
+//         Marker::Params => &[Field::List, Field::Map],
+//         Marker::Query => &[Field::Value, Field::List, Field::Map],
+//         Marker::Free => &[Field::Value, Field::List],
+//     }
+// }
+//
+// /// The field at tuple index `index`. The head and the elements after the last field are values.
+// /// The decoder rejects a tuple with extra elements whatever their flags are.
+// fn field_at(fields: &[Field], index: usize) -> Field {
+//     index
+//         .checked_sub(1)
+//         .and_then(|field| fields.get(field))
+//         .copied()
+//         .unwrap_or(Field::Value)
+// }
+//
+// /// True when `par` holds nothing but its expressions and its news. The bit sets do not count.
+// fn only_exprs_and_news(par: &Par) -> bool {
+//     let Par {
+//         sends,
+//         receives,
+//         news: _,
+//         exprs: _,
+//         matches,
+//         unforgeables,
+//         bundles,
+//         connectives,
+//         conditionals,
+//         locally_free: _,
+//         connective_used: _,
+//         cost_signed_terms,
+//         cost_stacks,
+//     } = par;
+//     sends.is_empty()
+//         && receives.is_empty()
+//         && matches.is_empty()
+//         && unforgeables.is_empty()
+//         && bundles.is_empty()
+//         && connectives.is_empty()
+//         && conditionals.is_empty()
+//         && cost_signed_terms.is_empty()
+//         && cost_stacks.is_empty()
+// }
+//
+// /// The expression of a `Par` that holds exactly one expression and nothing else.
+// fn sole_expr(par: &Par) -> Option<&ExprInstance> {
+//     match (
+//         only_exprs_and_news(par),
+//         par.exprs.as_slice(),
+//         par.news.is_empty(),
+//     ) {
+//         (
+//             true,
+//             [Expr {
+//                 expr_instance: Some(instance),
+//             }],
+//             true,
+//         ) => Some(instance),
+//         _ => None,
+//     }
+// }
+//
+// /// The mutable expression of a `Par` that holds exactly one expression and nothing else.
+// fn sole_expr_mut(par: &mut Par) -> Option<&mut ExprInstance> {
+//     match (only_exprs_and_news(par), par.news.is_empty()) {
+//         (true, true) => match par.exprs.as_mut_slice() {
+//             [Expr {
+//                 expr_instance: Some(instance),
+//             }] => Some(instance),
+//             _ => None,
+//         },
+//         _ => None,
+//     }
+// }
+//
+// /// The `New` of a `Par` that holds exactly one `New` and nothing else.
+// fn sole_new(par: &Par) -> Option<&New> {
+//     match (
+//         only_exprs_and_news(par),
+//         par.exprs.is_empty(),
+//         par.news.as_slice(),
+//     ) {
+//         (true, true, [new]) => Some(new),
+//         _ => None,
+//     }
+// }
+//
+// /// The flag that the encoder derives for `par` as `field`. A `Par` without the shape of its field
+// /// keeps its own flag, because the decoder rejects the shape first.
+// fn derived_flag(par: &Par, field: Field) -> bool {
+//     match (field, sole_expr(par)) {
+//         (
+//             Field::List,
+//             Some(ExprInstance::EListBody(EList {
+//                 ps,
+//                 remainder: None,
+//                 ..
+//             })),
+//         ) => ps.iter().any(|element| element.connective_used),
+//         (
+//             Field::Annotations,
+//             Some(ExprInstance::EListBody(EList {
+//                 ps,
+//                 remainder: None,
+//                 ..
+//             })),
+//         ) => ps
+//             .iter()
+//             .any(|annotation| derived_flag(annotation, Field::List)),
+//         (
+//             Field::Map,
+//             Some(ExprInstance::EMapBody(EMap {
+//                 kvs,
+//                 remainder: None,
+//                 ..
+//             })),
+//         ) => kvs.iter().any(|pair| {
+//             pair.key.as_ref().is_some_and(|key| key.connective_used)
+//                 || pair
+//                     .value
+//                     .as_ref()
+//                     .is_some_and(|value| value.connective_used)
+//         }),
+//         (Field::NewBody, _) => match sole_new(par) {
+//             Some(new) => derived_flag_of_new(new),
+//             None => par.connective_used,
+//         },
+//         (Field::Value | Field::List | Field::Map | Field::Annotations, _) => par.connective_used,
+//     }
+// }
+//
+// /// True when every flag that the encoder derives inside `par` as `field` has its derived value.
+// fn field_is_current(par: &Par, field: Field) -> bool {
+//     let derived = derived_flag(par, field);
+//     match (field, sole_expr(par)) {
+//         (Field::List, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
+//             par.connective_used == derived && list.connective_used == derived
+//         }
+//         (Field::Annotations, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
+//             par.connective_used == derived
+//                 && list.connective_used == derived
+//                 && list
+//                     .ps
+//                     .iter()
+//                     .all(|annotation| field_is_current(annotation, Field::List))
+//         }
+//         (Field::Map, Some(ExprInstance::EMapBody(map))) if map.remainder.is_none() => {
+//             par.connective_used == derived && map.connective_used == derived
+//         }
+//         (Field::NewBody, _) => par.connective_used == derived,
+//         _ => true,
+//     }
+// }
+//
+// /// Sets every flag that the encoder derives inside `par` as `field` to its derived value.
+// fn refresh_field(par: &mut Par, field: Field) {
+//     if field == Field::NewBody {
+//         if let Some(flag) = sole_new(par).map(derived_flag_of_new) {
+//             par.connective_used = flag;
+//         }
+//         return;
+//     }
+//     let flag = match (field, sole_expr_mut(par)) {
+//         (Field::List, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
+//             list.connective_used = list.ps.iter().any(|element| element.connective_used);
+//             list.connective_used
+//         }
+//         (Field::Annotations, Some(ExprInstance::EListBody(list))) if list.remainder.is_none() => {
+//             for annotation in &mut list.ps {
+//                 refresh_field(annotation, Field::List);
+//             }
+//             list.connective_used = list.ps.iter().any(|annotation| annotation.connective_used);
+//             list.connective_used
+//         }
+//         (Field::Map, Some(ExprInstance::EMapBody(map))) if map.remainder.is_none() => {
+//             map.connective_used = map.kvs.iter().any(|pair| {
+//                 pair.key.as_ref().is_some_and(|key| key.connective_used)
+//                     || pair
+//                         .value
+//                         .as_ref()
+//                         .is_some_and(|value| value.connective_used)
+//             });
+//             map.connective_used
+//         }
+//         _ => return,
+//     };
+//     par.connective_used = flag;
+// }
+//
+// /// The flag that `Par{news: [new]}` takes in the encoder: the flag of the body of `new`.
+// fn derived_flag_of_new(new: &New) -> bool {
+//     new.p.as_ref().is_some_and(|body| body.connective_used)
+// }
+//
+// /// The fields of a tuple with a marker head, or `None` for every other tuple.
+// fn tuple_fields(tuple: &ETuple) -> Option<&'static [Field]> {
+//     tuple.ps.first().and_then(marker_of).map(marker_fields)
+// }
+//
+// /// The flag that the encoder derives for a marker tuple: the disjunction over its elements.
+// fn derived_tuple_flag(tuple: &ETuple, fields: &[Field]) -> bool {
+//     tuple
+//         .ps
+//         .iter()
+//         .enumerate()
+//         .any(|(index, element)| derived_flag(element, field_at(fields, index)))
+// }
+//
+// /// True when every flag that the encoder derives for a marker tuple has its derived value. A
+// /// tuple without a marker head is always current.
+// fn tuple_is_current(tuple: &ETuple) -> bool {
+//     match tuple_fields(tuple) {
+//         Some(fields) => {
+//             tuple
+//                 .ps
+//                 .iter()
+//                 .enumerate()
+//                 .all(|(index, element)| field_is_current(element, field_at(fields, index)))
+//                 && tuple.connective_used == derived_tuple_flag(tuple, fields)
+//         }
+//         None => true,
+//     }
+// }
+//
+// /// Sets every flag that the encoder derives for a marker tuple to its derived value (I-20). The
+// /// elements keep their values.
+// fn refresh_tuple(tuple: &mut ETuple) {
+//     let Some(fields) = tuple_fields(tuple) else {
+//         return;
+//     };
+//     for (index, element) in tuple.ps.iter_mut().enumerate() {
+//         refresh_field(element, field_at(fields, index));
+//     }
+//     tuple.connective_used = tuple.ps.iter().any(|element| element.connective_used);
+// }
+//
+// /// A marker tuple with the flags that the encoder derives. A current tuple is not copied.
+// fn refreshed_tuple(tuple: &ETuple) -> Cow<'_, ETuple> {
+//     match tuple_is_current(tuple) {
+//         true => Cow::Borrowed(tuple),
+//         false => {
+//             let mut refreshed = tuple.clone();
+//             refresh_tuple(&mut refreshed);
+//             Cow::Owned(refreshed)
+//         }
+//     }
+// }
+//
+// /// The tuple of a `Par` that holds exactly one tuple and nothing else.
+// fn held_tuple_mut(par: &mut Par) -> Option<&mut ETuple> {
+//     match sole_expr_mut(par) {
+//         Some(ExprInstance::ETupleBody(tuple)) => Some(tuple),
+//         _ => None,
+//     }
+// }
+//
+// /// Sets the derived flags of the marker tuple that `par` holds, and the flag of `par`, which the
+// /// encoder takes from the tuple.
+// fn refresh_tuple_par(par: &mut Par) {
+//     let flag = match held_tuple_mut(par) {
+//         Some(tuple) => {
+//             refresh_tuple(tuple);
+//             tuple.connective_used
+//         }
+//         None => return,
+//     };
+//     par.connective_used = flag;
+// }
+//
+// /// True when `par` holds a marker tuple with its derived flags and has the flag of that tuple.
+// fn tuple_par_is_current(par: &Par) -> bool {
+//     match sole_expr(par) {
+//         Some(ExprInstance::ETupleBody(tuple)) => match tuple_fields(tuple) {
+//             Some(fields) => {
+//                 tuple_is_current(tuple) && par.connective_used == derived_tuple_flag(tuple, fields)
+//             }
+//             None => true,
+//         },
+//         _ => true,
+//     }
+// }
+//
+// /// `par` with the derived flags of its tuple when it holds exactly a tuple of `marker`, and `par`
+// /// unchanged otherwise. The tuple of any other marker is inert data here and keeps its bytes.
+// fn refreshed_marker_par(par: &Par, marker: Marker) -> Cow<'_, Par> {
+//     match sole_marker_tuple(par) {
+//         Some((head, _)) if head == marker && !tuple_par_is_current(par) => {
+//             let mut refreshed = par.clone();
+//             refresh_tuple_par(&mut refreshed);
+//             Cow::Owned(refreshed)
+//         }
+//         _ => Cow::Borrowed(par),
+//     }
+// }
+// ```
 
 /// No use-context: the context of a call on a user agent (P8, design v2 AG-4).
 static NO_CONTEXT: SpaceCtx = None;
 
-/// Hook H3, step 1: refreshes a trailing PARAMS tuple in place and decodes it. The data of a send
-/// without a PARAMS tuple keeps its bytes.
-fn trailing_params(data: &mut [Par]) -> Result<Option<SendParams>, InterpreterError> {
-    if let Some(last) = data.last_mut() {
-        if matches!(sole_marker_tuple(last), Some((Marker::Params, _))) {
-            refresh_tuple_par(last);
-        }
-    }
-    split_trailing_params(data).map_err(|error| ReifiedReduceError::Malformed(error).into())
-}
+// Retired by decision 112: the params travel in the `Send` field, so no PARAMS tuple leaves the
+// datum and none needs the I-20 refresh.
+// ```
+// /// Hook H3, step 1: refreshes a trailing PARAMS tuple in place and decodes it. The data of a send
+// /// without a PARAMS tuple keeps its bytes.
+// fn trailing_params(data: &mut [Par]) -> Result<Option<SendParams>, InterpreterError> {
+//     if let Some(last) = data.last_mut() {
+//         if matches!(sole_marker_tuple(last), Some((Marker::Params, _))) {
+//             refresh_tuple_par(last);
+//         }
+//     }
+//     split_trailing_params(data).map_err(|error| ReifiedReduceError::Malformed(error).into())
+// }
+// ```
 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     use models::create_bit_vector;
-    use models::rhoapi::connective::ConnectiveInstance;
+    // Changed by decision 112: the restated tests build no connective and no receive, and they
+    // import the expr types that the hooks no longer read. The text before:
+    // ```
+    // use models::rhoapi::connective::ConnectiveInstance;
+    // use models::rhoapi::tagged_continuation::TaggedCont;
+    // use models::rhoapi::{Connective, EEq, Receive, ReceiveBind, Send as SendProcess};
+    // ```
+    use models::rhoapi::expr::ExprInstance;
     use models::rhoapi::tagged_continuation::TaggedCont;
-    use models::rhoapi::{Connective, EEq, Receive, ReceiveBind, Send as SendProcess};
-    use models::rust::reified::builders::{
-        new_space, push_process_expr, query_spec, send_params, use_block,
-    };
+    use models::rhoapi::{Bundle, EEq, EList, ETuple, Expr, ReceiveBind, Send as SendProcess};
+    // Changed by decision 112: the tests build the fields, so `push_process_expr` retires. The text
+    // before:
+    // ```
+    // use models::rust::reified::builders::{
+    //     new_space, push_process_expr, query_spec, send_params, use_block,
+    // };
+    // ```
+    use models::rust::reified::builders::{new_space, query_spec, send_params, use_block};
     use models::rust::reified::params::SendParam;
     use models::rust::space_factory_urn::SpaceFactoryUrn;
+    // Changed by decision 112: the restated tests build no map. The text before:
+    // ```
+    // use models::rust::utils::{
+    //     new_boundvar_par, new_bundle_par, new_emap_par, new_etuple_par, new_freevar_par,
+    //     new_gint_par, new_gstring_par,
+    // };
+    // ```
     use models::rust::utils::{
-        new_boundvar_par, new_bundle_par, new_emap_par, new_etuple_par, new_freevar_par,
-        new_gint_par, new_gstring_par,
+        new_boundvar_par, new_bundle_par, new_etuple_par, new_freevar_par, new_gint_par,
+        new_gstring_par,
     };
-    use proptest::prelude::{
-        any, prop_assert, prop_assert_eq, prop_oneof, Just, ProptestConfig, Strategy,
-    };
+    // Changed by decision 112: the restated tests use only `prop_assert_eq`. The text before:
+    // ```
+    // use proptest::prelude::{
+    //     any, prop_assert, prop_assert_eq, prop_oneof, Just, ProptestConfig, Strategy,
+    // };
+    // ```
+    use proptest::prelude::{any, prop_assert_eq, prop_oneof, Just, ProptestConfig, Strategy};
     use proptest::test_runner::{RngSeed, TestRunner};
     use prost::Message;
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -2160,7 +2517,9 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::cost_accounting::CostAccounting;
     use crate::rust::interpreter::accounting::costs::Cost;
-    use crate::rust::interpreter::deterministic_reduction::root_with_observation;
+    // Changed by decision 90 (DR-132): the scheduler is gone. The tests run their steps in the
+    // per-call dispatch scope of the base (`with_dispatch_scope`).
+    // use crate::rust::interpreter::deterministic_reduction::root_with_observation;
     use crate::rust::interpreter::external_services::ExternalServices;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::reduce::DebruijnInterpreter;
@@ -2178,7 +2537,9 @@ mod tests {
     use crate::rust::interpreter::spaces::record::unwrap_datum;
     use crate::rust::interpreter::spaces::types::config::SpaceConfig;
     use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-    use crate::rust::interpreter::util::{allocate_new_bindings, is_evaluated_process_expr};
+    // Changed by decision 112: the restated tests read no marker expr. The text before:
+    // use crate::rust::interpreter::util::{allocate_new_bindings, is_evaluated_process_expr};
+    use crate::rust::interpreter::util::allocate_new_bindings;
 
     type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
@@ -2214,6 +2575,11 @@ mod tests {
     }
 
     /// The reducer of a runtime with a `Host` runtime over the host.
+    ///
+    /// Changed by decision 90 (C6, decision 69): a host runtime runs space jobs only in native
+    /// execution, so the budget enters native execution, as `evaluate_with_native_phlo` enters it
+    /// for a deploy. The configuration is the native configuration of the fixtures
+    /// (`system_processes::harness::native_config`).
     async fn hosted() -> Fixture {
         let host = host().await;
         let runtime = create_rho_runtime(
@@ -2228,6 +2594,12 @@ mod tests {
         runtime
             .cost
             .set(Cost::create(i64::MAX, "reified hooks test".to_string()));
+        runtime
+            .cost
+            .reset_for_native_execution(
+                crate::rust::interpreter::reified::system_processes::harness::native_config(),
+            )
+            .expect("the test budget enters native execution");
         Fixture {
             host,
             reducer: runtime.reducer,
@@ -2258,16 +2630,19 @@ mod tests {
         )
     }
 
-    /// The process `Int`: a connective, which sets `connective_used`.
-    fn int_connective() -> Par {
-        Par {
-            connectives: vec![Connective {
-                connective_instance: Some(ConnectiveInstance::ConnInt(true)),
-            }],
-            connective_used: true,
-            ..Par::default()
-        }
-    }
+    // Retired by decision 112: the I-20 tests were its last readers.
+    // ```
+    // /// The process `Int`: a connective, which sets `connective_used`.
+    // fn int_connective() -> Par {
+    //     Par {
+    //         connectives: vec![Connective {
+    //             connective_instance: Some(ConnectiveInstance::ConnInt(true)),
+    //         }],
+    //         connective_used: true,
+    //         ..Par::default()
+    //     }
+    // }
+    // ```
 
     /// `chan!(data…)` with the flags of the normalizer.
     fn send(chan: Par, data: Vec<Par>) -> Par {
@@ -2279,6 +2654,7 @@ mod tests {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used,
+                params: None,
             }],
             connective_used,
             ..Par::default()
@@ -2356,18 +2732,26 @@ mod tests {
 
     fn env_of(value: Par) -> Env<Par> { Env::new().put(value) }
 
-    /// `par` after the substitution that `eval_receive` applies to a stored body.
-    fn substituted(reducer: &ReducerCore, par: &Par, env: &Env<Par>) -> Par {
-        reducer
-            .substitute
-            .substitute_no_sort_and_charge(par, 0, env)
-            .expect("the substitution succeeds")
-    }
+    // Retired by decision 112: the I-20 tests were its last readers.
+    // ```
+    // /// `par` after the substitution that `eval_receive` applies to a stored body.
+    // fn substituted(reducer: &ReducerCore, par: &Par, env: &Env<Par>) -> Par {
+    //     reducer
+    //         .substitute
+    //         .substitute_no_sort_and_charge(par, 0, env)
+    //         .expect("the substitution succeeds")
+    // }
+    // ```
 
     /// The `reified:<Code>` of a failed hook.
     fn code<T>(result: Result<T, InterpreterError>) -> Option<String> {
         match result {
-            Err(InterpreterError::ReduceError(message)) => message
+            // Changed by the user decision of 2026-10-25 (as DR-128): a user failure aborts with
+            // `SpaceUserError`, and the other codes keep `ReduceError`.
+            // Err(InterpreterError::ReduceError(message)) => message
+            Err(
+                InterpreterError::ReduceError(message) | InterpreterError::SpaceUserError(message),
+            ) => message
                 .strip_prefix("reified:")
                 .and_then(|rest| rest.split(':').next())
                 .map(str::to_string),
@@ -2415,341 +2799,345 @@ mod tests {
         reducer.reified.create_space(native_agent(), creation).await
     }
 
-    // ── I-20: the derived connective_used flags ────────────────────────────────────────────────
-
-    /// A substitution that makes the body of a USE tuple the process `x!(Int)` leaves the flag
-    /// of the tuple stale. The hook recognizes the tuple, recomputes the flag and decodes the
-    /// canonical image.
-    #[tokio::test]
-    async fn reified_marker_flags_use_body_with_connective_send_is_canonical() {
-        let fixture = detached().await;
-        let space = handle(native(1));
-        let x = private(7);
-        let program = push_process_expr(Par::default(), use_block(space.clone(), bound(0)));
-        let process = substituted(
-            &fixture.reducer,
-            &program,
-            &env_of(send(x.clone(), vec![int_connective()])),
-        );
-        let tuple = sole_tuple(&process);
-        assert!(!tuple.connective_used);
-        assert!(tuple.ps[2].connective_used);
-        assert!(is_evaluated_process_expr(&process.exprs[0]));
-        assert_eq!(
-            decode_process_tuple(tuple),
-            Err(ReifiedDecodeError::NonCanonical {
-                marker: Marker::Use
-            })
-        );
-        assert!(!tuple_is_current(tuple));
-        let refreshed = refreshed_tuple(tuple);
-        assert!(matches!(refreshed, Cow::Owned(_)));
-        assert_eq!(
-            *refreshed,
-            use_block(tuple.ps[1].clone(), tuple.ps[2].clone())
-        );
-        assert_eq!(
-            decode_process_tuple(&refreshed),
-            Ok(ProcessConstruct::Use(UseBlock {
-                space,
-                body: tuple.ps[2].clone(),
-            }))
-        );
-        fixture
-            .reducer
-            .eval_marker(tuple, &Env::new(), rand(b"use"), &authority())
-            .await
-            .expect("the hook evaluates the recognized tuple");
-        assert_eq!(stored(&fixture.host, &x).await, vec![
-            vec![int_connective()]
-        ]);
-    }
-
-    /// A variable child bound to the connective value `Int` leaves the derived flags stale in
-    /// each hook position. Each hook recognizes the canonical construct: the USE and NEWSPACE
-    /// tuples decode, and PARAMS and QUERY fail with their own codes, not with `Malformed`. The
-    /// NEWSPACE tuple of a native space reaches the allocation job of its space, which fails
-    /// closed on the detached runtime (P5d, F11). The NEWSPACE tuple whose annotation is bound to
-    /// `Int` names a user agent, and its translation makes the gensym call (P8 step 4).
-    #[tokio::test]
-    async fn reified_marker_flags_variable_bound_to_connective_is_canonical() {
-        let fixture = detached().await;
-        let value = int_connective();
-        let space = handle(native(2));
-
-        let use_process = substituted(
-            &fixture.reducer,
-            &push_process_expr(Par::default(), use_block(space.clone(), bound(0))),
-            &env_of(value.clone()),
-        );
-        let tuple = sole_tuple(&use_process);
-        assert_eq!(
-            decode_process_tuple(tuple),
-            Err(ReifiedDecodeError::NonCanonical {
-                marker: Marker::Use
-            })
-        );
-        assert_eq!(
-            decode_process_tuple(&refreshed_tuple(tuple)),
-            Ok(ProcessConstruct::Use(UseBlock {
-                space: space.clone(),
-                body: value.clone(),
-            }))
-        );
-        fixture
-            .reducer
-            .eval_marker(tuple, &Env::new(), rand(b"use"), &authority())
-            .await
-            .expect("an inert connective body evaluates");
-
-        let new = New {
-            bind_count: 1,
-            p: Some(bound(1)),
-            uri: Vec::new(),
-            injections: BTreeMap::new(),
-            locally_free: Vec::new(),
-        };
-        let new_process = substituted(
-            &fixture.reducer,
-            &push_process_expr(
-                Par::default(),
-                new_space(new, vec![Some(space.clone())]).expect("a NEWSPACE tuple builds"),
-            ),
-            &env_of(value.clone()),
-        );
-        let tuple = sole_tuple(&new_process);
-        assert!(!tuple.ps[2].connective_used);
-        assert_eq!(
-            decode_process_tuple(tuple),
-            Err(ReifiedDecodeError::NonCanonical {
-                marker: Marker::NewSpace
-            })
-        );
-        match decode_process_tuple(&refreshed_tuple(tuple)) {
-            Ok(ProcessConstruct::NewSpace(decoded)) => {
-                assert_eq!(decoded.annotations, vec![Some(space.clone())]);
-                assert_eq!(decoded.new.p, Some(value.clone()));
-            }
-            other => panic!("the refreshed NEWSPACE tuple decodes, got {other:?}"),
-        }
-        // Disabled by P5d (P5 design v3 A.10, F11): the annotated binder now runs the allocation
-        // job of its space, and the job fails closed on the detached runtime of this fixture.
-        // The tuple still decodes, so the code below is not `Malformed`.
-        // fixture
-        //     .reducer
-        //     .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
-        //     .await
-        //     .expect("the NEWSPACE tuple evaluates");
-        assert_eq!(
-            code(
-                fixture
-                    .reducer
-                    .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
-                    .await
-            ),
-            expected("RuntimeUnavailable")
-        );
-
-        let annotation_process = substituted(
-            &fixture.reducer,
-            &push_process_expr(
-                Par::default(),
-                new_space(
-                    New {
-                        bind_count: 1,
-                        p: Some(Par::default()),
-                        uri: Vec::new(),
-                        injections: BTreeMap::new(),
-                        locally_free: Vec::new(),
-                    },
-                    vec![Some(bound(0))],
-                )
-                .expect("a NEWSPACE tuple builds"),
-            ),
-            &env_of(value.clone()),
-        );
-        let tuple = sole_tuple(&annotation_process);
-        assert!(decode_process_tuple(tuple).is_err());
-        assert!(decode_process_tuple(&refreshed_tuple(tuple)).is_ok());
-        // Changed by P8 step 4 (design v2 W4): an annotation bound to `Int` names a user agent,
-        // so the translation of `new` makes its gensym call on the agent.
-        // assert_eq!(
-        //     code(
-        //         fixture
-        //             .reducer
-        //             .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
-        //             .await
-        //     ),
-        //     expected("AgentSpacesUnavailable")
-        // );
-        fixture
-            .reducer
-            .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
-            .await
-            .expect("the translated new evaluates");
-        let calls = stored(&fixture.host, &value).await;
-        let [call] = calls.as_slice() else {
-            panic!("one gensym call on the agent, not {calls:?}");
-        };
-        assert_eq!(call[1], string("gensym"));
-
-        let params = send_params(vec![SendParam::Named("k".to_string(), bound(0))])
-            .expect("named params build")
-            .expect("params are not empty");
-        let env = env_of(value.clone());
-        let evaluated = fixture
-            .reducer
-            .eval_expr(&params, &env)
-            .expect("the params evaluate");
-        let mut data = vec![fixture
-            .reducer
-            .substitute
-            .substitute_and_charge(&evaluated, 0, &env)
-            .expect("the params substitute")];
-        assert_eq!(
-            split_trailing_params(&data),
-            Err(ReifiedDecodeError::NonCanonical {
-                marker: Marker::Params
-            })
-        );
-        assert_eq!(
-            trailing_params(&mut data).expect("the refreshed params decode"),
-            Some(SendParams {
-                positional: Vec::new(),
-                named: BTreeMap::from([("k".to_string(), value.clone())]),
-            })
-        );
-        let send_term = SendProcess {
-            chan: Some(string("rrs-4c-params")),
-            data: vec![int(1), params],
-            persistent: false,
-            locally_free: Vec::new(),
-            connective_used: false,
-        };
-        assert_eq!(
-            code(
-                fixture
-                    .reducer
-                    .eval_send(&send_term, &env, rand(b"send"), &authority())
-                    .await
-            ),
-            expected("ParamsUnsupported")
-        );
-
-        let source =
-            query_spec(string("rrs-4c-query"), vec![bound(0)], Vec::new()).expect("a query builds");
-        let receive = Receive {
-            binds: vec![ReceiveBind {
-                patterns: vec![new_freevar_par(0, Vec::new())],
-                source: Some(source),
-                remainder: None,
-                free_count: 1,
-                cost_signature: None,
-            }],
-            body: Some(Par::default()),
-            persistent: false,
-            peek: false,
-            bind_count: 1,
-            locally_free: Vec::new(),
-            connective_used: false,
-            condition: None,
-        };
-        assert_eq!(
-            code(
-                fixture
-                    .reducer
-                    .eval_receive(&receive, &env, rand(b"receive"), &authority())
-                    .await
-            ),
-            expected("QuerySpecUnsupported")
-        );
-    }
-
-    /// The refresh changes only the flags that the encoder derives. A current tuple is not
-    /// copied, the values keep their flags, and a tuple of another marker, or without a marker
-    /// head, keeps its bytes.
-    #[tokio::test]
-    async fn reified_marker_flags_change_derived_flags_only() {
-        let fixture = detached().await;
-        let space = handle(native(3));
-        let canonical = [
-            use_block(space.clone(), send(private(1), vec![int_connective()])),
-            new_space(
-                New {
-                    bind_count: 2,
-                    p: Some(send(private(2), vec![bound(0)])),
-                    uri: Vec::new(),
-                    injections: BTreeMap::new(),
-                    locally_free: Vec::new(),
-                },
-                vec![Some(space.clone()), None],
-            )
-            .expect("a NEWSPACE tuple builds"),
-            sole_tuple(
-                &send_params(vec![
-                    SendParam::Positional(int_connective()),
-                    SendParam::Named("k".to_string(), int(1)),
-                ])
-                .expect("params build")
-                .expect("params are not empty"),
-            )
-            .clone(),
-            sole_tuple(
-                &query_spec(string("rrs-4c"), vec![int_connective()], vec![
-                    SendParam::Named("k".to_string(), int(2)),
-                ])
-                .expect("a query builds"),
-            )
-            .clone(),
-        ];
-        let env = env_of(int_connective());
-        let mut samples = Vec::with_capacity(2 * canonical.len() + 2);
-        for tuple in &canonical {
-            assert!(tuple_is_current(tuple));
-            assert!(matches!(refreshed_tuple(tuple), Cow::Borrowed(_)));
-            samples.push(tuple.clone());
-            let mut stale = tuple.clone();
-            stale.connective_used = !stale.connective_used;
-            samples.push(stale);
-        }
-        let stale_use = substituted(
-            &fixture.reducer,
-            &push_process_expr(Par::default(), use_block(space.clone(), bound(0))),
-            &env,
-        );
-        samples.push(sole_tuple(&stale_use).clone());
-        let plain = sole_tuple(&new_etuple_par(vec![int(1), int_connective()])).clone();
-        samples.push(plain.clone());
-        for tuple in samples {
-            let mut refreshed = tuple.clone();
-            refresh_tuple(&mut refreshed);
-            assert_eq!(tuple_is_current(&tuple), refreshed == tuple, "{tuple:?}");
-            assert_eq!(refreshed.ps.len(), tuple.ps.len());
-            if let Some(fields) = tuple_fields(&tuple) {
-                for (index, (before, after)) in tuple.ps.iter().zip(&refreshed.ps).enumerate() {
-                    if field_at(fields, index) == Field::Value {
-                        assert_eq!(before, after);
-                    }
-                }
-            }
-        }
-        assert!(tuple_is_current(&plain));
-        let mut forged_plain = plain.clone();
-        forged_plain.connective_used = false;
-        assert!(tuple_is_current(&forged_plain));
-
-        let inert = stale_use.clone();
-        let mut data = vec![int(1), inert.clone()];
-        assert_eq!(trailing_params(&mut data), Ok(None));
-        assert_eq!(data[1].encode_to_vec(), inert.encode_to_vec());
-        assert!(matches!(
-            refreshed_marker_par(&inert, Marker::Query),
-            Cow::Borrowed(_)
-        ));
-        let mut flagged_head = sole_tuple(&inert).clone();
-        flagged_head.ps[0].connective_used = true;
-        assert!(tuple_is_current(&flagged_head));
-    }
+    // Retired by decision 112: these tests covered the I-20 refresh of marker tuples, and the
+    // fields hold their own flags.
+    // ```
+    // // ── I-20: the derived connective_used flags ────────────────────────────────────────────────
+    //
+    // /// A substitution that makes the body of a USE tuple the process `x!(Int)` leaves the flag
+    // /// of the tuple stale. The hook recognizes the tuple, recomputes the flag and decodes the
+    // /// canonical image.
+    // #[tokio::test]
+    // async fn reified_marker_flags_use_body_with_connective_send_is_canonical() {
+    //     let fixture = detached().await;
+    //     let space = handle(native(1));
+    //     let x = private(7);
+    //     let program = push_process_expr(Par::default(), use_block(space.clone(), bound(0)));
+    //     let process = substituted(
+    //         &fixture.reducer,
+    //         &program,
+    //         &env_of(send(x.clone(), vec![int_connective()])),
+    //     );
+    //     let tuple = sole_tuple(&process);
+    //     assert!(!tuple.connective_used);
+    //     assert!(tuple.ps[2].connective_used);
+    //     assert!(is_evaluated_process_expr(&process.exprs[0]));
+    //     assert_eq!(
+    //         decode_process_tuple(tuple),
+    //         Err(ReifiedDecodeError::NonCanonical {
+    //             marker: Marker::Use
+    //         })
+    //     );
+    //     assert!(!tuple_is_current(tuple));
+    //     let refreshed = refreshed_tuple(tuple);
+    //     assert!(matches!(refreshed, Cow::Owned(_)));
+    //     assert_eq!(
+    //         *refreshed,
+    //         use_block(tuple.ps[1].clone(), tuple.ps[2].clone())
+    //     );
+    //     assert_eq!(
+    //         decode_process_tuple(&refreshed),
+    //         Ok(ProcessConstruct::Use(UseBlock {
+    //             space,
+    //             body: tuple.ps[2].clone(),
+    //         }))
+    //     );
+    //     fixture
+    //         .reducer
+    //         .eval_marker(tuple, &Env::new(), rand(b"use"), &authority())
+    //         .await
+    //         .expect("the hook evaluates the recognized tuple");
+    //     assert_eq!(stored(&fixture.host, &x).await, vec![
+    //         vec![int_connective()]
+    //     ]);
+    // }
+    //
+    // /// A variable child bound to the connective value `Int` leaves the derived flags stale in
+    // /// each hook position. Each hook recognizes the canonical construct: the USE and NEWSPACE
+    // /// tuples decode, and PARAMS and QUERY fail with their own codes, not with `Malformed`. The
+    // /// NEWSPACE tuple of a native space reaches the allocation job of its space, which fails
+    // /// closed on the detached runtime (P5d, F11). The NEWSPACE tuple whose annotation is bound to
+    // /// `Int` names a user agent, and its translation makes the gensym call (P8 step 4).
+    // #[tokio::test]
+    // async fn reified_marker_flags_variable_bound_to_connective_is_canonical() {
+    //     let fixture = detached().await;
+    //     let value = int_connective();
+    //     let space = handle(native(2));
+    //
+    //     let use_process = substituted(
+    //         &fixture.reducer,
+    //         &push_process_expr(Par::default(), use_block(space.clone(), bound(0))),
+    //         &env_of(value.clone()),
+    //     );
+    //     let tuple = sole_tuple(&use_process);
+    //     assert_eq!(
+    //         decode_process_tuple(tuple),
+    //         Err(ReifiedDecodeError::NonCanonical {
+    //             marker: Marker::Use
+    //         })
+    //     );
+    //     assert_eq!(
+    //         decode_process_tuple(&refreshed_tuple(tuple)),
+    //         Ok(ProcessConstruct::Use(UseBlock {
+    //             space: space.clone(),
+    //             body: value.clone(),
+    //         }))
+    //     );
+    //     fixture
+    //         .reducer
+    //         .eval_marker(tuple, &Env::new(), rand(b"use"), &authority())
+    //         .await
+    //         .expect("an inert connective body evaluates");
+    //
+    //     let new = New {
+    //         bind_count: 1,
+    //         p: Some(bound(1)),
+    //         uri: Vec::new(),
+    //         injections: BTreeMap::new(),
+    //         locally_free: Vec::new(),
+    //     };
+    //     let new_process = substituted(
+    //         &fixture.reducer,
+    //         &push_process_expr(
+    //             Par::default(),
+    //             new_space(new, vec![Some(space.clone())]).expect("a NEWSPACE tuple builds"),
+    //         ),
+    //         &env_of(value.clone()),
+    //     );
+    //     let tuple = sole_tuple(&new_process);
+    //     assert!(!tuple.ps[2].connective_used);
+    //     assert_eq!(
+    //         decode_process_tuple(tuple),
+    //         Err(ReifiedDecodeError::NonCanonical {
+    //             marker: Marker::NewSpace
+    //         })
+    //     );
+    //     match decode_process_tuple(&refreshed_tuple(tuple)) {
+    //         Ok(ProcessConstruct::NewSpace(decoded)) => {
+    //             assert_eq!(decoded.annotations, vec![Some(space.clone())]);
+    //             assert_eq!(decoded.new.p, Some(value.clone()));
+    //         }
+    //         other => panic!("the refreshed NEWSPACE tuple decodes, got {other:?}"),
+    //     }
+    //     // Disabled by P5d (P5 design v3 A.10, F11): the annotated binder now runs the allocation
+    //     // job of its space, and the job fails closed on the detached runtime of this fixture.
+    //     // The tuple still decodes, so the code below is not `Malformed`.
+    //     // fixture
+    //     //     .reducer
+    //     //     .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+    //     //     .await
+    //     //     .expect("the NEWSPACE tuple evaluates");
+    //     assert_eq!(
+    //         code(
+    //             fixture
+    //                 .reducer
+    //                 .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+    //                 .await
+    //         ),
+    //         expected("RuntimeUnavailable")
+    //     );
+    //
+    //     let annotation_process = substituted(
+    //         &fixture.reducer,
+    //         &push_process_expr(
+    //             Par::default(),
+    //             new_space(
+    //                 New {
+    //                     bind_count: 1,
+    //                     p: Some(Par::default()),
+    //                     uri: Vec::new(),
+    //                     injections: BTreeMap::new(),
+    //                     locally_free: Vec::new(),
+    //                 },
+    //                 vec![Some(bound(0))],
+    //             )
+    //             .expect("a NEWSPACE tuple builds"),
+    //         ),
+    //         &env_of(value.clone()),
+    //     );
+    //     let tuple = sole_tuple(&annotation_process);
+    //     assert!(decode_process_tuple(tuple).is_err());
+    //     assert!(decode_process_tuple(&refreshed_tuple(tuple)).is_ok());
+    //     // Changed by P8 step 4 (design v2 W4): an annotation bound to `Int` names a user agent,
+    //     // so the translation of `new` makes its gensym call on the agent.
+    //     // assert_eq!(
+    //     //     code(
+    //     //         fixture
+    //     //             .reducer
+    //     //             .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+    //     //             .await
+    //     //     ),
+    //     //     expected("AgentSpacesUnavailable")
+    //     // );
+    //     fixture
+    //         .reducer
+    //         .eval_marker(tuple, &Env::new(), rand(b"new"), &authority())
+    //         .await
+    //         .expect("the translated new evaluates");
+    //     let calls = stored(&fixture.host, &value).await;
+    //     let [call] = calls.as_slice() else {
+    //         panic!("one gensym call on the agent, not {calls:?}");
+    //     };
+    //     assert_eq!(call[1], string("gensym"));
+    //
+    //     let params = send_params(vec![SendParam::Named("k".to_string(), bound(0))])
+    //         .expect("named params build")
+    //         .expect("params are not empty");
+    //     let env = env_of(value.clone());
+    //     let evaluated = fixture
+    //         .reducer
+    //         .eval_expr(&params, &env)
+    //         .expect("the params evaluate");
+    //     let mut data = vec![fixture
+    //         .reducer
+    //         .substitute
+    //         .substitute_and_charge(&evaluated, 0, &env)
+    //         .expect("the params substitute")];
+    //     assert_eq!(
+    //         split_trailing_params(&data),
+    //         Err(ReifiedDecodeError::NonCanonical {
+    //             marker: Marker::Params
+    //         })
+    //     );
+    //     assert_eq!(
+    //         trailing_params(&mut data).expect("the refreshed params decode"),
+    //         Some(SendParams {
+    //             positional: Vec::new(),
+    //             named: BTreeMap::from([("k".to_string(), value.clone())]),
+    //         })
+    //     );
+    //     let send_term = SendProcess {
+    //         chan: Some(string("rrs-4c-params")),
+    //         data: vec![int(1), params],
+    //         persistent: false,
+    //         locally_free: Vec::new(),
+    //         connective_used: false,
+    //     };
+    //     assert_eq!(
+    //         code(
+    //             fixture
+    //                 .reducer
+    //                 .eval_send(&send_term, &env, rand(b"send"), &authority())
+    //                 .await
+    //         ),
+    //         expected("ParamsUnsupported")
+    //     );
+    //
+    //     let source =
+    //         query_spec(string("rrs-4c-query"), vec![bound(0)], Vec::new()).expect("a query builds");
+    //     let receive = Receive {
+    //         binds: vec![ReceiveBind {
+    //             patterns: vec![new_freevar_par(0, Vec::new())],
+    //             source: Some(source),
+    //             remainder: None,
+    //             free_count: 1,
+    //             cost_signature: None,
+    //         }],
+    //         body: Some(Par::default()),
+    //         persistent: false,
+    //         peek: false,
+    //         bind_count: 1,
+    //         locally_free: Vec::new(),
+    //         connective_used: false,
+    //         condition: None,
+    //     };
+    //     assert_eq!(
+    //         code(
+    //             fixture
+    //                 .reducer
+    //                 .eval_receive(&receive, &env, rand(b"receive"), &authority())
+    //                 .await
+    //         ),
+    //         expected("QuerySpecUnsupported")
+    //     );
+    // }
+    //
+    // /// The refresh changes only the flags that the encoder derives. A current tuple is not
+    // /// copied, the values keep their flags, and a tuple of another marker, or without a marker
+    // /// head, keeps its bytes.
+    // #[tokio::test]
+    // async fn reified_marker_flags_change_derived_flags_only() {
+    //     let fixture = detached().await;
+    //     let space = handle(native(3));
+    //     let canonical = [
+    //         use_block(space.clone(), send(private(1), vec![int_connective()])),
+    //         new_space(
+    //             New {
+    //                 bind_count: 2,
+    //                 p: Some(send(private(2), vec![bound(0)])),
+    //                 uri: Vec::new(),
+    //                 injections: BTreeMap::new(),
+    //                 locally_free: Vec::new(),
+    //             },
+    //             vec![Some(space.clone()), None],
+    //         )
+    //         .expect("a NEWSPACE tuple builds"),
+    //         sole_tuple(
+    //             &send_params(vec![
+    //                 SendParam::Positional(int_connective()),
+    //                 SendParam::Named("k".to_string(), int(1)),
+    //             ])
+    //             .expect("params build")
+    //             .expect("params are not empty"),
+    //         )
+    //         .clone(),
+    //         sole_tuple(
+    //             &query_spec(string("rrs-4c"), vec![int_connective()], vec![
+    //                 SendParam::Named("k".to_string(), int(2)),
+    //             ])
+    //             .expect("a query builds"),
+    //         )
+    //         .clone(),
+    //     ];
+    //     let env = env_of(int_connective());
+    //     let mut samples = Vec::with_capacity(2 * canonical.len() + 2);
+    //     for tuple in &canonical {
+    //         assert!(tuple_is_current(tuple));
+    //         assert!(matches!(refreshed_tuple(tuple), Cow::Borrowed(_)));
+    //         samples.push(tuple.clone());
+    //         let mut stale = tuple.clone();
+    //         stale.connective_used = !stale.connective_used;
+    //         samples.push(stale);
+    //     }
+    //     let stale_use = substituted(
+    //         &fixture.reducer,
+    //         &push_process_expr(Par::default(), use_block(space.clone(), bound(0))),
+    //         &env,
+    //     );
+    //     samples.push(sole_tuple(&stale_use).clone());
+    //     let plain = sole_tuple(&new_etuple_par(vec![int(1), int_connective()])).clone();
+    //     samples.push(plain.clone());
+    //     for tuple in samples {
+    //         let mut refreshed = tuple.clone();
+    //         refresh_tuple(&mut refreshed);
+    //         assert_eq!(tuple_is_current(&tuple), refreshed == tuple, "{tuple:?}");
+    //         assert_eq!(refreshed.ps.len(), tuple.ps.len());
+    //         if let Some(fields) = tuple_fields(&tuple) {
+    //             for (index, (before, after)) in tuple.ps.iter().zip(&refreshed.ps).enumerate() {
+    //                 if field_at(fields, index) == Field::Value {
+    //                     assert_eq!(before, after);
+    //                 }
+    //             }
+    //         }
+    //     }
+    //     assert!(tuple_is_current(&plain));
+    //     let mut forged_plain = plain.clone();
+    //     forged_plain.connective_used = false;
+    //     assert!(tuple_is_current(&forged_plain));
+    //
+    //     let inert = stale_use.clone();
+    //     let mut data = vec![int(1), inert.clone()];
+    //     assert_eq!(trailing_params(&mut data), Ok(None));
+    //     assert_eq!(data[1].encode_to_vec(), inert.encode_to_vec());
+    //     assert!(matches!(
+    //         refreshed_marker_par(&inert, Marker::Query),
+    //         Cow::Borrowed(_)
+    //     ));
+    //     let mut flagged_head = sole_tuple(&inert).clone();
+    //     flagged_head.ps[0].connective_used = true;
+    //     assert!(tuple_is_current(&flagged_head));
+    // }
+    // ```
 
     // ── H3: sends ──────────────────────────────────────────────────────────────────────────────
 
@@ -2767,6 +3155,7 @@ mod tests {
                     datum(vec![int(1)]),
                     persistent,
                     authority(),
+                    None,
                     None,
                 )
                 .await
@@ -2800,6 +3189,7 @@ mod tests {
                 authority(),
                 authority(),
                 None,
+                vec![None; binds.len()],
             )
             .await
             .expect("an ordinary receive runs");
@@ -2829,6 +3219,7 @@ mod tests {
             uri: vec!["rho:test:reified".to_string()],
             injections: BTreeMap::from([("rho:test:reified".to_string(), int(5))]),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         };
         let env = env_of(int(0));
         let mut hooked_rand = rand(b"new");
@@ -2876,7 +3267,16 @@ mod tests {
                 code(
                     fixture
                         .reducer
-                        .reified_produce(channel.clone(), call.clone(), true, authority(), None)
+                        // Changed by decision 112: the send takes no params. The text before:
+                        // .reified_produce(channel.clone(), call.clone(), true, authority(), None)
+                        .reified_produce(
+                            channel.clone(),
+                            call.clone(),
+                            true,
+                            authority(),
+                            None,
+                            None,
+                        )
                         .await
                 ),
                 expected(abort)
@@ -2889,7 +3289,16 @@ mod tests {
                     code(
                         fixture
                             .reducer
-                            .reified_produce(channel.clone(), call, false, authority(), None)
+                            // Changed by decision 112: the send takes no params. The text before:
+                            // .reified_produce(channel.clone(), call, false, authority(), None)
+                            .reified_produce(
+                                channel.clone(),
+                                call,
+                                false,
+                                authority(),
+                                None,
+                                None,
+                            )
                             .await
                     ),
                     expected("DanglingHandle")
@@ -2899,7 +3308,16 @@ mod tests {
             }
             fixture
                 .reducer
-                .reified_produce(channel.clone(), call, false, authority(), None)
+                // Changed by decision 112: the send takes no params. The text before:
+                // .reified_produce(channel.clone(), call, false, authority(), None)
+                .reified_produce(
+                    channel.clone(),
+                    call,
+                    false,
+                    authority(),
+                    None,
+                    None,
+                )
                 .await
                 .expect("a call without persistence runs");
             assert_eq!(fixture.host.get_data(&channel).await.len(), 1);
@@ -2912,6 +3330,7 @@ mod tests {
                     datum(vec![int(1)]),
                     true,
                     authority(),
+                    None,
                     None,
                 )
                 .await
@@ -2934,26 +3353,125 @@ mod tests {
             .expect("positional params build")
             .expect("params are not empty");
         let ret = private(3);
-        let send_to = |channel: Par, pars: Vec<Par>| {
+        // Changed by decision 112: the params are an argument of the hook, not a datum element. The
+        // text before:
+        // ```
+        // let send_to = |channel: Par, pars: Vec<Par>| {
+        //     fixture
+        //         .reducer
+        //         .reified_produce(channel, datum(pars), false, authority(), None)
+        // };
+        //
+        // let factory = namespace::gprivate(namespace::op_channel(0x01));
+        // send_to(factory.clone(), vec![
+        //     ret.clone(),
+        //     string("default"),
+        //     named.clone(),
+        // ])
+        // .await
+        // .expect("a factory call runs");
+        // assert_eq!(stored(&fixture.host, &factory).await, vec![vec![
+        //     ret.clone(),
+        //     list(vec![string("default"), named.clone()]),
+        // ]]);
+        // let bare = namespace::gprivate(namespace::op_channel(0x02));
+        // send_to(bare.clone(), vec![ret.clone()])
+        //     .await
+        //     .expect("a factory call without a constructor runs");
+        // assert_eq!(stored(&fixture.host, &bare).await, vec![vec![
+        //     ret.clone(),
+        //     list(Vec::new()),
+        // ]]);
+        // assert_eq!(
+        //     code(send_to(factory.clone(), vec![ret.clone(), positional.clone()]).await),
+        //     expected("PositionalParamsUnsupported")
+        // );
+        // assert_eq!(fixture.host.get_data(&factory).await.len(), 1);
+        //
+        // let this = handle(native(5));
+        // let call = vec![ret.clone(), string("produce"), int(4), named.clone()];
+        // send_to(this.clone(), call.clone())
+        //     .await
+        //     .expect("a handle call runs");
+        // assert_eq!(stored(&fixture.host, &this).await, vec![call]);
+        // assert_eq!(
+        //     code(send_to(this.clone(), vec![ret.clone(), positional.clone()]).await),
+        //     expected("PositionalParamsUnsupported")
+        // );
+        //
+        // for channel in [
+        //     private(4),
+        //     string("rrs-4c-params"),
+        //     namespace::gprivate(namespace::op_channel(GET_SPACE_AGENT)),
+        //     Marker::Use.par(),
+        // ] {
+        //     assert_eq!(
+        //         code(send_to(channel.clone(), vec![int(1), named.clone()]).await),
+        //         expected("ParamsUnsupported")
+        //     );
+        //     assert!(fixture.host.get_data(&channel).await.is_empty());
+        // }
+        //
+        // let name = space_name(native(6), [1; 32]);
+        // assert_eq!(
+        //     code(send_to(name.clone(), vec![int(1), positional.clone()]).await),
+        //     expected("PositionalParamsUnsupported")
+        // );
+        // // Disabled by P5b (P5 design v3 A.8 and C.1 item 29): the hook passes the named params
+        // // of a collection to the agent, which checks them before the bump. The detached runtime
+        // // runs no agent, so the send fails closed. The test
+        // // `reducer_space_routing_named_params_reach_the_agent` checks the `UnknownParam` of the
+        // // agent of a queue.
+        // // match send_to(name, vec![int(1), named.clone()]).await {
+        // //     Err(error) => assert_eq!(
+        // //         error,
+        // //         InterpreterError::from(SpaceError::UnknownParam {
+        // //             key: "k".to_string(),
+        // //             suggestion: None,
+        // //         })
+        // //     ),
+        // //     Ok(_) => panic!("a queue collection took a named param"),
+        // // }
+        // assert_eq!(
+        //     code(send_to(name, vec![int(1), named.clone()]).await),
+        //     expected("RuntimeUnavailable")
+        // );
+        //
+        // let erased = new_etuple_par(vec![
+        //     Marker::Params.par(),
+        //     list(Vec::new()),
+        //     new_emap_par(Vec::new(), Vec::new(), false, None, Vec::new(), false),
+        // ]);
+        // assert_eq!(
+        //     code(send_to(private(5), vec![erased]).await),
+        //     expected("Malformed")
+        // );
+        // ```
+        let forwarded = |params: &SendParams| {
+            encode_params(params)
+                .expect("the params encode")
+                .expect("the params are not empty")
+        };
+        let send_to = |channel: Par, pars: Vec<Par>, params: Option<SendParams>| {
             fixture
                 .reducer
-                .reified_produce(channel, datum(pars), false, authority(), None)
+                .reified_produce(channel, datum(pars), false, authority(), None, params)
         };
 
         let factory = namespace::gprivate(namespace::op_channel(0x01));
-        send_to(factory.clone(), vec![
-            ret.clone(),
-            string("default"),
-            named.clone(),
-        ])
+        send_to(
+            factory.clone(),
+            vec![ret.clone(), string("default")],
+            Some(named.clone()),
+        )
         .await
         .expect("a factory call runs");
         assert_eq!(stored(&fixture.host, &factory).await, vec![vec![
             ret.clone(),
-            list(vec![string("default"), named.clone()]),
+            list(vec![string("default"), forwarded(&named)]),
         ]]);
         let bare = namespace::gprivate(namespace::op_channel(0x02));
-        send_to(bare.clone(), vec![ret.clone()])
+        send_to(bare.clone(), vec![ret.clone()], None)
             .await
             .expect("a factory call without a constructor runs");
         assert_eq!(stored(&fixture.host, &bare).await, vec![vec![
@@ -2961,19 +3479,20 @@ mod tests {
             list(Vec::new()),
         ]]);
         assert_eq!(
-            code(send_to(factory.clone(), vec![ret.clone(), positional.clone()]).await),
+            code(send_to(factory.clone(), vec![ret.clone()], Some(positional.clone())).await),
             expected("PositionalParamsUnsupported")
         );
         assert_eq!(fixture.host.get_data(&factory).await.len(), 1);
 
         let this = handle(native(5));
-        let call = vec![ret.clone(), string("produce"), int(4), named.clone()];
-        send_to(this.clone(), call.clone())
+        let call = vec![ret.clone(), string("produce"), int(4)];
+        send_to(this.clone(), call.clone(), Some(named.clone()))
             .await
             .expect("a handle call runs");
-        assert_eq!(stored(&fixture.host, &this).await, vec![call]);
+        let stored_call = [call, vec![forwarded(&named)]].concat();
+        assert_eq!(stored(&fixture.host, &this).await, vec![stored_call]);
         assert_eq!(
-            code(send_to(this.clone(), vec![ret.clone(), positional.clone()]).await),
+            code(send_to(this.clone(), vec![ret.clone()], Some(positional.clone())).await),
             expected("PositionalParamsUnsupported")
         );
 
@@ -2984,7 +3503,7 @@ mod tests {
             Marker::Use.par(),
         ] {
             assert_eq!(
-                code(send_to(channel.clone(), vec![int(1), named.clone()]).await),
+                code(send_to(channel.clone(), vec![int(1)], Some(named.clone())).await),
                 expected("ParamsUnsupported")
             );
             assert!(fixture.host.get_data(&channel).await.is_empty());
@@ -2992,36 +3511,22 @@ mod tests {
 
         let name = space_name(native(6), [1; 32]);
         assert_eq!(
-            code(send_to(name.clone(), vec![int(1), positional.clone()]).await),
+            code(send_to(name.clone(), vec![int(1)], Some(positional.clone())).await),
             expected("PositionalParamsUnsupported")
         );
-        // Disabled by P5b (P5 design v3 A.8 and C.1 item 29): the hook passes the named params
-        // of a collection to the agent, which checks them before the bump. The detached runtime
-        // runs no agent, so the send fails closed. The test
-        // `reducer_space_routing_named_params_reach_the_agent` checks the `UnknownParam` of the
-        // agent of a queue.
-        // match send_to(name, vec![int(1), named.clone()]).await {
-        //     Err(error) => assert_eq!(
-        //         error,
-        //         InterpreterError::from(SpaceError::UnknownParam {
-        //             key: "k".to_string(),
-        //             suggestion: None,
-        //         })
-        //     ),
-        //     Ok(_) => panic!("a queue collection took a named param"),
-        // }
+        // The hook passes the named params of a collection to the agent, which checks them
+        // before the bump. The detached runtime runs no agent, so the send fails closed.
         assert_eq!(
-            code(send_to(name, vec![int(1), named.clone()]).await),
+            code(send_to(name, vec![int(1)], Some(named.clone())).await),
             expected("RuntimeUnavailable")
         );
 
-        let erased = new_etuple_par(vec![
-            Marker::Params.par(),
-            list(Vec::new()),
-            new_emap_par(Vec::new(), Vec::new(), false, None, Vec::new(), false),
-        ]);
         assert_eq!(
-            code(send_to(private(5), vec![erased]).await),
+            code(
+                fixture
+                    .reducer
+                    .evaluated_send_params(&SendParams::default(), &Env::new())
+            ),
             expected("Malformed")
         );
     }
@@ -3040,7 +3545,16 @@ mod tests {
             code(
                 fixture
                     .reducer
-                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
+                    // Changed by decision 112: the send takes no params. The text before:
+                    // .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
+                    .reified_produce(
+                        name.clone(),
+                        datum(vec![int(1)]),
+                        false,
+                        authority(),
+                        None,
+                        None,
+                    )
                     .await
             ),
             expected("RuntimeUnavailable")
@@ -3058,6 +3572,7 @@ mod tests {
                         authority(),
                         authority(),
                         None,
+                        vec![None],
                     )
                     .await
             ),
@@ -3065,8 +3580,19 @@ mod tests {
         );
         assert_eq!(
             code(
-                core.reified_produce(forged.clone(), datum(vec![int(1)]), true, authority(), None)
-                    .await
+                // Changed by decision 112: the send takes no params. The text before:
+                // ```
+                // core.reified_produce(forged.clone(), datum(vec![int(1)]), true, authority(), None)
+                // ```
+                core.reified_produce(
+                    forged.clone(),
+                    datum(vec![int(1)]),
+                    true,
+                    authority(),
+                    None,
+                    None,
+                )
+                .await
             ),
             expected("RuntimeUnavailable")
         );
@@ -3081,6 +3607,7 @@ mod tests {
                     authority(),
                     authority(),
                     None,
+                    vec![None],
                 )
                 .await
             ),
@@ -3099,7 +3626,16 @@ mod tests {
         assert_eq!(
             code(
                 replay
-                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
+                    // Changed by decision 112: the send takes no params. The text before:
+                    // .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
+                    .reified_produce(
+                        name.clone(),
+                        datum(vec![int(1)]),
+                        false,
+                        authority(),
+                        None,
+                        None,
+                    )
                     .await
             ),
             expected("RuntimeUnavailable")
@@ -3110,7 +3646,16 @@ mod tests {
             code(
                 hosted
                     .reducer
-                    .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
+                    // Changed by decision 112: the send takes no params. The text before:
+                    // .reified_produce(name.clone(), datum(vec![int(1)]), false, authority(), None)
+                    .reified_produce(
+                        name.clone(),
+                        datum(vec![int(1)]),
+                        false,
+                        authority(),
+                        None,
+                        None,
+                    )
                     .await
             ),
             expected("DanglingName")
@@ -3128,6 +3673,7 @@ mod tests {
                         authority(),
                         authority(),
                         None,
+                        vec![None],
                     )
                     .await
             ),
@@ -3141,6 +3687,7 @@ mod tests {
                         datum(vec![int(1)]),
                         false,
                         authority(),
+                        None,
                         None
                     )
                     .await
@@ -3188,6 +3735,7 @@ mod tests {
                 false,
                 authority(),
                 None,
+                None,
             )
             .await
             .expect("the call is produced");
@@ -3210,7 +3758,16 @@ mod tests {
         );
         fixture
             .reducer
-            .reified_produce(outer, datum(vec![int(3)]), false, authority(), None)
+            // Changed by decision 112: the send takes no params. The text before:
+            // .reified_produce(outer, datum(vec![int(3)]), false, authority(), None)
+            .reified_produce(
+                outer,
+                datum(vec![int(3)]),
+                false,
+                authority(),
+                None,
+                None,
+            )
             .await
             .expect("the calls are produced");
         let first = list(vec![int(3)]);
@@ -3237,9 +3794,18 @@ mod tests {
             &fixture.reducer,
             new_bundle_par(string("agent"), true, false),
         );
-        core.reified_produce(string("x"), datum(vec![int(2)]), false, authority(), None)
-            .await
-            .expect("the call is produced");
+        // Changed by decision 112: the send takes no params. The text before:
+        // core.reified_produce(string("x"), datum(vec![int(2)]), false, authority(), None)
+        core.reified_produce(
+            string("x"),
+            datum(vec![int(2)]),
+            false,
+            authority(),
+            None,
+            None,
+        )
+        .await
+        .expect("the call is produced");
         assert_eq!(stored(&fixture.host, &string("agent")).await, vec![vec![
             user_agent::sink_channel(),
             produce_method(),
@@ -3249,9 +3815,14 @@ mod tests {
         assert!(fixture.host.get_data(&string("x")).await.is_empty());
     }
 
-    /// P8 step 2 (design v2 TS-3): the checks of a send on an agent space, in their order. A
-    /// malformed PARAMS tuple fails first, then `!!`, then params, then the write rule of the
-    /// call (AG-4). No check stores a datum.
+    // Changed by decision 112: a send holds no PARAMS tuple to decode. The text before:
+    // ```
+    // /// P8 step 2 (design v2 TS-3): the checks of a send on an agent space, in their order. A
+    // /// malformed PARAMS tuple fails first, then `!!`, then params, then the write rule of the
+    // /// call (AG-4). No check stores a datum.
+    // ```
+    /// P8 step 2 (design v2 TS-3): the checks of a send on an agent space, in their order: `!!`,
+    /// then params, then the write rule of the call (AG-4). No check stores a datum.
     #[tokio::test]
     async fn reducer_space_routing_agent_send_checks() {
         let fixture = detached().await;
@@ -3259,26 +3830,53 @@ mod tests {
         let params = send_params(vec![SendParam::Named("k".to_string(), int(2))])
             .expect("named params encode")
             .expect("one named param");
-        let malformed = new_etuple_par(vec![
-            namespace::gprivate(namespace::op_channel(Marker::Params as u8)),
-            int(1),
-        ]);
+        // Changed by decision 112: the malformed case retires with the PARAMS tuple, and the params
+        // are an argument of the hook. The text before:
+        // ```
+        // let malformed = new_etuple_par(vec![
+        //     namespace::gprivate(namespace::op_channel(Marker::Params as u8)),
+        //     int(1),
+        // ]);
+        // let cases = [
+        //     (vec![int(1), malformed.clone()], true, "Malformed"),
+        //     (vec![int(1)], true, "PersistentSendOnAgentSpace"),
+        //     (
+        //         vec![int(1), params.clone()],
+        //         true,
+        //         "PersistentSendOnAgentSpace",
+        //     ),
+        //     (vec![int(1), params], false, "ParamsUnsupportedOnAgentSpace"),
+        // ];
+        // for (data, persistent, error) in cases {
+        //     assert_eq!(
+        //         code(
+        //             fixture
+        //                 .reducer
+        //                 .reified_produce(tagged.clone(), datum(data), persistent, authority(), None)
+        //                 .await
+        //         ),
+        //         expected(error)
+        //     );
+        // }
+        // ```
         let cases = [
-            (vec![int(1), malformed.clone()], true, "Malformed"),
-            (vec![int(1)], true, "PersistentSendOnAgentSpace"),
-            (
-                vec![int(1), params.clone()],
-                true,
-                "PersistentSendOnAgentSpace",
-            ),
-            (vec![int(1), params], false, "ParamsUnsupportedOnAgentSpace"),
+            (None, true, "PersistentSendOnAgentSpace"),
+            (Some(params.clone()), true, "PersistentSendOnAgentSpace"),
+            (Some(params), false, "ParamsUnsupportedOnAgentSpace"),
         ];
-        for (data, persistent, error) in cases {
+        for (params, persistent, error) in cases {
             assert_eq!(
                 code(
                     fixture
                         .reducer
-                        .reified_produce(tagged.clone(), datum(data), persistent, authority(), None)
+                        .reified_produce(
+                            tagged.clone(),
+                            datum(vec![int(1)]),
+                            persistent,
+                            authority(),
+                            None,
+                            params,
+                        )
                         .await
                 ),
                 expected(error)
@@ -3289,7 +3887,16 @@ mod tests {
             code(
                 fixture
                     .reducer
-                    .reified_produce(read_only, datum(vec![int(1)]), false, authority(), None)
+                    // Changed by decision 112: the send takes no params. The text before:
+                    // .reified_produce(read_only, datum(vec![int(1)]), false, authority(), None)
+                    .reified_produce(
+                        read_only,
+                        datum(vec![int(1)]),
+                        false,
+                        authority(),
+                        None,
+                        None,
+                    )
                     .await
             ),
             expected("HandleNotWritable")
@@ -3346,6 +3953,7 @@ mod tests {
         (persistent, peek): (bool, bool),
         guard: Option<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        let queries = vec![None; channels.len()];
         core.reified_consume(
             channels.into_iter().map(bind).collect(),
             body(Par::default()),
@@ -3355,6 +3963,7 @@ mod tests {
             authority(),
             authority(),
             None,
+            queries,
         )
         .await
     }
@@ -3654,6 +4263,7 @@ mod tests {
         core: &ReducerCore,
         channels: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
+        let queries = vec![None; channels.len()];
         core.reified_consume(
             channels.into_iter().map(bind).collect(),
             body(Par::default()),
@@ -3663,6 +4273,28 @@ mod tests {
             authority(),
             authority(),
             None,
+            queries,
+        )
+        .await
+    }
+
+    /// A receive with one bind for each channel, the query `queries` of each bind and a `Nil`
+    /// body.
+    async fn query_receive(
+        core: &ReducerCore,
+        channels: Vec<Par>,
+        queries: Vec<Option<QueryParams>>,
+    ) -> Result<DispatchType, InterpreterError> {
+        core.reified_consume(
+            channels.into_iter().map(bind).collect(),
+            body(Par::default()),
+            false,
+            false,
+            None,
+            authority(),
+            authority(),
+            None,
+            queries,
         )
         .await
     }
@@ -3691,7 +4323,9 @@ mod tests {
             name(first, 1),
         ]] {
             assert_eq!(
-                route_join(reducer, channels.clone()),
+                // Changed by decision 112: the queries travel beside the binds. The text before:
+                // route_join(reducer, channels.clone()),
+                route_join(reducer, channels.clone(), vec![None; channels.len()]),
                 (
                     first,
                     channels
@@ -3711,7 +4345,9 @@ mod tests {
             name(first, 3),
         ]] {
             assert_eq!(
-                route_join(&core, channels.clone()),
+                // Changed by decision 112: the queries travel beside the binds. The text before:
+                // route_join(&core, channels.clone()),
+                route_join(&core, channels.clone(), vec![None; channels.len()]),
                 (
                     first,
                     channels
@@ -3757,6 +4393,7 @@ mod tests {
             authority(),
             authority(),
             None,
+            vec![None],
         )
         .await
         .expect("the receive parks");
@@ -3804,6 +4441,7 @@ mod tests {
             uri: vec!["rho:test:reified".to_string()],
             injections: BTreeMap::from([("rho:test:reified".to_string(), int(5))]),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         };
         let env = env_of(int(0));
         let mut head_rand = rand(b"stamp");
@@ -3939,12 +4577,18 @@ mod tests {
                 "RuntimeUnavailable",
             ),
         ] {
-            let tuple = use_block(reference, use_body.clone());
+            // Changed by decision 112: a use block is a field, so the hook takes the block. The
+            // text before:
+            // let tuple = use_block(reference, use_body.clone());
+            let block = use_block(reference, use_body.clone());
             assert_eq!(
                 code(
                     fixture
                         .reducer
-                        .eval_marker(&tuple, &Env::new(), rand(b"use"), &authority())
+                        // Changed by decision 112: a use block is a field, so the hook takes the
+                        // block. The text before:
+                        // .eval_marker(&tuple, &Env::new(), rand(b"use"), &authority())
+                        .eval_use_block(&block, &Env::new(), rand(b"use"), &authority())
                         .await
                 ),
                 expected(result)
@@ -3956,7 +4600,10 @@ mod tests {
         // `"agent"!(sink, "produce", "rrs-4c-use", [1])`.
         fixture
             .reducer
-            .eval_marker(
+            // Changed by decision 112: a use block is a field, so the hook takes the block. The
+            // text before:
+            // .eval_marker(
+            .eval_use_block(
                 &use_block(string("agent"), use_body.clone()),
                 &Env::new(),
                 rand(b"use"),
@@ -3976,7 +4623,10 @@ mod tests {
         let x = private(16);
         fixture
             .reducer
-            .eval_marker(
+            // Changed by decision 112: a use block is a field, so the hook takes the block. The
+            // text before:
+            // .eval_marker(
+            .eval_use_block(
                 &use_block(handle(space), send(x.clone(), vec![int(2)])),
                 &Env::new(),
                 rand(b"use"),
@@ -3985,12 +4635,21 @@ mod tests {
             .await
             .expect("a default channel in a use block reaches the host");
         assert_eq!(stored(&fixture.host, &x).await, vec![vec![int(2)]]);
-        let short = sole_tuple(&new_etuple_par(vec![Marker::Use.par(), int(1)])).clone();
+        // Changed by decision 112: a block without its space is the malformed form of the field.
+        // The text before:
+        // let short = sole_tuple(&new_etuple_par(vec![Marker::Use.par(), int(1)])).clone();
+        let short = models::rhoapi::UseBlock {
+            space: None,
+            body: Some(int(1)),
+        };
         assert_eq!(
             code(
                 fixture
                     .reducer
-                    .eval_marker(&short, &Env::new(), rand(b"use"), &authority())
+                    // Changed by decision 112: a use block is a field, so the hook takes the block.
+                    // The text before:
+                    // .eval_marker(&short, &Env::new(), rand(b"use"), &authority())
+                    .eval_use_block(&short, &Env::new(), rand(b"use"), &authority())
                     .await
             ),
             expected("Malformed")
@@ -4026,6 +4685,7 @@ mod tests {
                     uri: Vec::new(),
                     injections: BTreeMap::new(),
                     locally_free: Vec::new(),
+                    space_types: Vec::new(),
                 },
                 vec![Some(annotation), None],
             )
@@ -4038,7 +4698,10 @@ mod tests {
         let out = private(19);
         in_root(
             reducer,
-            reducer.eval_marker(
+            // Changed by decision 112: the annotations are a field of `New`, so the hook takes the
+            // `New`. The text before:
+            // reducer.eval_marker(
+            reducer.eval_annotated_new(
                 &tuple_to(&out, handle(annotated)),
                 &Env::new(),
                 rand(b"newspace"),
@@ -4055,7 +4718,10 @@ mod tests {
         let scoped_out = private(20);
         in_root(
             reducer,
-            scoped(reducer, context).eval_marker(
+            // Changed by decision 112: the annotations are a field of `New`, so the hook takes the
+            // `New`. The text before:
+            // scoped(reducer, context).eval_marker(
+            scoped(reducer, context).eval_annotated_new(
                 &tuple_to(&scoped_out, new_bundle_par(handle(annotated), true, false)),
                 &Env::new(),
                 rand(b"newspace"),
@@ -4087,7 +4753,10 @@ mod tests {
                 code(
                     detached
                         .reducer
-                        .eval_marker(
+                        // Changed by decision 112: the annotations are a field of `New`, so the
+                        // hook takes the `New`. The text before:
+                        // .eval_marker(
+                        .eval_annotated_new(
                             &tuple_to(&rejected, annotation),
                             &Env::new(),
                             rand(b"newspace"),
@@ -4103,7 +4772,10 @@ mod tests {
             code(
                 in_root(
                     reducer,
-                    reducer.eval_marker(
+                    // Changed by decision 112: the annotations are a field of `New`, so the hook
+                    // takes the `New`. The text before:
+                    // reducer.eval_marker(
+                    reducer.eval_annotated_new(
                         &tuple_to(&rejected, handle(native(22))),
                         &Env::new(),
                         rand(b"newspace"),
@@ -4192,13 +4864,17 @@ mod tests {
                 uri: Vec::new(),
                 injections: BTreeMap::new(),
                 locally_free: Vec::new(),
+                space_types: Vec::new(),
             },
             vec![Some(agent.clone()), None],
         )
         .expect("a NEWSPACE tuple builds");
         fixture
             .reducer
-            .eval_marker(&annotated, &Env::new(), rand(b"agent new"), &authority())
+            // Changed by decision 112: the annotations are a field of `New`, so the hook takes the
+            // `New`. The text before:
+            // .eval_marker(&annotated, &Env::new(), rand(b"agent new"), &authority())
+            .eval_annotated_new(&annotated, &Env::new(), rand(b"agent new"), &authority())
             .await
             .expect("the translated new evaluates");
         let mut draws = rand(b"agent new");
@@ -4252,6 +4928,7 @@ mod tests {
             uri: Vec::new(),
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         };
         let core = agent_scoped(&fixture.reducer, agent.clone());
         core.reified_new(&new, Env::new(), rand(b"agent context new"), &authority())
@@ -4336,43 +5013,70 @@ mod tests {
     //     }
     // }
 
-    /// H4 accepts a well-formed QUERY tuple, also with a stale flag (I-20), and every source
-    /// without a QUERY tuple. Only a malformed QUERY tuple fails, with `Malformed`.
+    // Changed by decision 112: H4 reads the query field, so the source holds no tuple and no stale
+    // flag. The text before:
+    // ```
+    // /// H4 accepts a well-formed QUERY tuple, also with a stale flag (I-20), and every source
+    // /// without a QUERY tuple. Only a malformed QUERY tuple fails, with `Malformed`.
+    // #[test]
+    // fn reducer_space_routing_h4_rejects_only_malformed_queries() {
+    //     let query =
+    //         query_spec(string("rrs-4c-query"), vec![int(1)], Vec::new()).expect("a query builds");
+    //     assert_eq!(reject_query_source(&query), Ok(()));
+    //     let mut stale = query.clone();
+    //     stale.connective_used = true;
+    //     assert_eq!(reject_query_source(&stale), Ok(()));
+    //     let malformed = new_etuple_par(vec![Marker::Query.par(), int(1), list(vec![int(2)])]);
+    //     assert_eq!(code(reject_query_source(&malformed)), expected("Malformed"));
+    //     for source in [
+    //         private(1),
+    //         string("rrs-4c"),
+    //         new_etuple_par(vec![int(1), int(2)]),
+    //         push_process_expr(Par::default(), use_block(handle(native(1)), Par::default())),
+    //     ] {
+    //         assert_eq!(reject_query_source(&source), Ok(()));
+    //     }
+    // }
+    // ```
+    /// H4 accepts a well-formed query field and a bind without a query. Only a malformed query
+    /// field fails, with `Malformed`.
     #[test]
     fn reducer_space_routing_h4_rejects_only_malformed_queries() {
-        let query =
-            query_spec(string("rrs-4c-query"), vec![int(1)], Vec::new()).expect("a query builds");
-        assert_eq!(reject_query_source(&query), Ok(()));
-        let mut stale = query.clone();
-        stale.connective_used = true;
-        assert_eq!(reject_query_source(&stale), Ok(()));
-        let malformed = new_etuple_par(vec![Marker::Query.par(), int(1), list(vec![int(2)])]);
-        assert_eq!(code(reject_query_source(&malformed)), expected("Malformed"));
-        for source in [
-            private(1),
-            string("rrs-4c"),
-            new_etuple_par(vec![int(1), int(2)]),
-            push_process_expr(Par::default(), use_block(handle(native(1)), Par::default())),
-        ] {
-            assert_eq!(reject_query_source(&source), Ok(()));
+        let query = query_spec(vec![int(1)], Vec::new()).expect("a query builds");
+        assert_eq!(reject_query_source(Some(&query)), Ok(()));
+        for malformed in [QuerySpec::default(), QuerySpec {
+            payload: Vec::new(),
+            named: BTreeMap::from([("not a key".to_string(), int(2))]),
+        }] {
+            assert_eq!(
+                code(reject_query_source(Some(&malformed))),
+                expected("Malformed")
+            );
         }
+        assert_eq!(reject_query_source(None), Ok(()));
     }
 
-    /// A QUERY tuple with the inner channel `channel`, the payload `payload` and the named
-    /// params `named`.
-    fn query_source(channel: Par, payload: Vec<Par>, named: &[(&str, Par)]) -> Par {
-        query_spec(
-            channel,
-            payload,
-            named
-                .iter()
-                .map(|(key, value)| SendParam::Named((*key).to_string(), value.clone()))
-                .collect(),
-        )
-        .expect("a query builds")
-    }
+    // Retired by decision 112: a query is a field of the bind, so no source holds a QUERY tuple.
+    // ```
+    // /// A QUERY tuple with the inner channel `channel`, the payload `payload` and the named
+    // /// params `named`.
+    // fn query_source(channel: Par, payload: Vec<Par>, named: &[(&str, Par)]) -> Par {
+    //     query_spec(
+    //         channel,
+    //         payload,
+    //         named
+    //             .iter()
+    //             .map(|(key, value)| SendParam::Named((*key).to_string(), value.clone()))
+    //             .collect(),
+    //     )
+    //     .expect("a query builds")
+    // }
+    // ```
 
-    /// The query params of [`query_source`].
+    // Changed by decision 112: `query_source` retired, and the helper builds the field of a bind.
+    // The text before:
+    // /// The query params of [`query_source`].
+    /// The query params of a bind: the payload `payload` and the named params `named`.
     fn query_params(payload: Vec<Par>, named: &[(&str, Par)]) -> QueryParams {
         QueryParams {
             payload,
@@ -4383,17 +5087,50 @@ mod tests {
         }
     }
 
-    /// The route of a receive with one bind on `source`.
-    fn route_one(core: &ReducerCore, source: Par) -> Result<ReceiveRoute, InterpreterError> {
-        core.route_receive(vec![bind(source)])
+    // Changed by decision 112: the query of a bind travels beside the bind (ruling 2). The text
+    // before:
+    // ```
+    // /// The route of a receive with one bind on `source`.
+    // fn route_one(core: &ReducerCore, source: Par) -> Result<ReceiveRoute, InterpreterError> {
+    //     core.route_receive(vec![bind(source)])
+    // }
+    //
+    // /// The space and the binds of the join route of a receive with one bind of `bind` on each
+    // /// of `sources`.
+    // fn route_join(core: &ReducerCore, sources: Vec<Par>) -> (NativeSpace, Vec<JoinBind>) {
+    //     match core.route_receive(sources.into_iter().map(bind).collect()) {
+    // ```
+    /// The route of a receive with one bind on `channel` and the query `query`.
+    fn route_one(
+        core: &ReducerCore,
+        channel: Par,
+        query: Option<QueryParams>,
+    ) -> Result<ReceiveRoute, InterpreterError> {
+        core.route_receive(vec![bind(channel)], vec![query])
     }
 
     /// The space and the binds of the join route of a receive with one bind of `bind` on each
-    /// of `sources`.
-    fn route_join(core: &ReducerCore, sources: Vec<Par>) -> (NativeSpace, Vec<JoinBind>) {
-        match core.route_receive(sources.into_iter().map(bind).collect()) {
+    /// of `channels`, with the query of each bind.
+    fn route_join(
+        core: &ReducerCore,
+        channels: Vec<Par>,
+        queries: Vec<Option<QueryParams>>,
+    ) -> (NativeSpace, Vec<JoinBind>) {
+        match core.route_receive(channels.into_iter().map(bind).collect(), queries) {
             Ok(ReceiveRoute::Join { space, binds }) => (space, binds),
             other => panic!("the receive does not route to a join: {other:?}"),
+        }
+    }
+
+    /// A receive bind on `source` with the pattern of `bind` and no query.
+    fn receive_bind(source: Par) -> ReceiveBind {
+        ReceiveBind {
+            patterns: vec![new_freevar_par(0, Vec::new())],
+            source: Some(source),
+            remainder: None,
+            free_count: 1,
+            cost_signature: None,
+            query_spec: None,
         }
     }
 
@@ -4424,11 +5161,172 @@ mod tests {
         }
     }
 
-    /// A QUERY tuple routes its inner channel (P5b). The tuple never takes the fast path. The
-    /// inner channel takes the read rule of `unbundle_receive`, and its route decides: a space
-    /// gets the query, the default space fails with `QuerySpecUnsupported`, and a user agent
-    /// fails closed. A source without a QUERY tuple keeps its route of P4, and joins keep their
-    /// errors.
+    // Changed by decision 112: a query is a field of its bind, so no source holds a tuple to read,
+    // to refresh or to reject. The read rule of a bundle runs in `unbundle_receive` first. The text
+    // before:
+    // ```
+    // /// A QUERY tuple routes its inner channel (P5b). The tuple never takes the fast path. The
+    // /// inner channel takes the read rule of `unbundle_receive`, and its route decides: a space
+    // /// gets the query, the default space fails with `QuerySpecUnsupported`, and a user agent
+    // /// fails closed. A source without a QUERY tuple keeps its route of P4, and joins keep their
+    // /// errors.
+    // #[tokio::test]
+    // async fn reducer_space_routing_query_routes_the_inner_channel() {
+    //     let fixture = detached().await;
+    //     let reducer: &ReducerCore = &fixture.reducer;
+    //     let space = native(23);
+    //     let context = native(24);
+    //     let name = space_name(space, [6; 32]);
+    //     let host = string("rrs-p5-query-host");
+    //     let payload = vec![int(1)];
+    //     let named = [("k", int(2))];
+    //     let wanted = query_params(payload.clone(), &named);
+    //     let on_host = query_source(host.clone(), payload.clone(), &named);
+    //     let on_name = query_source(name.clone(), payload.clone(), &named);
+    //
+    //     assert!(routes_to_default_without_context(&on_host));
+    //     for marker_tuple in [
+    //         on_host.clone(),
+    //         on_name.clone(),
+    //         push_process_expr(Par::default(), use_block(handle(space), Par::default())),
+    //         send_params(vec![SendParam::Named("k".to_string(), int(1))])
+    //             .expect("params build")
+    //             .expect("params are not empty"),
+    //     ] {
+    //         assert!(!takes_fast_path(&marker_tuple), "{marker_tuple:?}");
+    //     }
+    //     for ordinary in [private(1), host.clone(), name.clone(), handle(space)] {
+    //         assert_eq!(
+    //             takes_fast_path(&ordinary),
+    //             routes_to_default_without_context(&ordinary)
+    //         );
+    //     }
+    //
+    //     let key = CollectionKey::of_channel(&name).expect("a key");
+    //     for core in [reducer.clone(), scoped(reducer, context)] {
+    //         assert_eq!(
+    //             space_route(route_one(&core, on_name.clone())),
+    //             (space, key.clone(), name.clone(), Some(wanted.clone()))
+    //         );
+    //     }
+    //     assert_eq!(
+    //         code(route_one(reducer, on_host.clone())),
+    //         expected("QuerySpecUnsupported")
+    //     );
+    //     assert_eq!(
+    //         space_route(route_one(&scoped(reducer, context), on_host.clone())),
+    //         (
+    //             context,
+    //             CollectionKey::of_channel(&host).expect("a key"),
+    //             host.clone(),
+    //             Some(wanted.clone())
+    //         )
+    //     );
+    //     let readable = new_bundle_par(name.clone(), false, true);
+    //     assert_eq!(
+    //         space_route(route_one(
+    //             reducer,
+    //             query_source(readable, payload.clone(), &named)
+    //         )),
+    //         (space, key.clone(), name.clone(), Some(wanted.clone()))
+    //     );
+    //     let write_only = new_bundle_par(name.clone(), true, false);
+    //     assert_eq!(
+    //         route_one(reducer, query_source(write_only, payload.clone(), &named)).err(),
+    //         // Changed by decision 89 (DR-128): the error of HEAD.
+    //         // Some(InterpreterError::ReduceError(NOT_READABLE.to_string()))
+    //         Some(InterpreterError::BundlePermissionError(
+    //             NOT_READABLE.to_string()
+    //         ))
+    //     );
+    //     let tagged = new_etuple_par(vec![
+    //         namespace::gprivate(namespace::op_channel(AGENT_TAG)),
+    //         string("agent"),
+    //         int(1),
+    //     ]);
+    //     // Changed by P8 step 3 (design v2 TR-2): a query on an agent route aborts with its own
+    //     // code. The P4 code was AgentSpacesUnavailable.
+    //     assert_eq!(
+    //         code(route_one(
+    //             reducer,
+    //             query_source(tagged, payload.clone(), &named)
+    //         )),
+    //         expected("QuerySpecUnsupportedOnAgentSpace")
+    //     );
+    //     let mut stale = on_name.clone();
+    //     stale.connective_used = !stale.connective_used;
+    //     assert_eq!(
+    //         space_route(route_one(reducer, stale)),
+    //         (space, key.clone(), name.clone(), Some(wanted.clone()))
+    //     );
+    //     let malformed = new_etuple_par(vec![Marker::Query.par(), int(1), list(vec![int(2)])]);
+    //     assert_eq!(code(route_one(reducer, malformed)), expected("Malformed"));
+    //     let bare = query_source(name.clone(), vec![int(7)], &[]);
+    //     assert_eq!(
+    //         space_route(route_one(reducer, bare)),
+    //         (
+    //             space,
+    //             key.clone(),
+    //             name.clone(),
+    //             Some(query_params(vec![int(7)], &[]))
+    //         )
+    //     );
+    //
+    //     assert_eq!(
+    //         space_route(route_one(reducer, name.clone())),
+    //         (space, key, name.clone(), None)
+    //     );
+    //     match route_one(reducer, host.clone()) {
+    //         Ok(ReceiveRoute::Host(binds)) => {
+    //             assert_eq!(binds, vec![bind(host.clone())]);
+    //         }
+    //         other => panic!("a host channel routes to {other:?}"),
+    //     }
+    //
+    //     for (channels, failure) in [
+    //         (
+    //             vec![on_host.clone(), string("rrs-p5-query-other")],
+    //             "QuerySpecUnsupported",
+    //         ),
+    //         (vec![on_name.clone(), private(2)], "CrossSpaceJoin"),
+    //     ] {
+    //         assert_eq!(
+    //             code(reducer.route_receive(channels.into_iter().map(bind).collect())),
+    //             expected(failure)
+    //         );
+    //     }
+    //     // A join on one space keeps the query of each bind (P5c): the first bind has the query,
+    //     // and the second has none. The P4 version expected `OrderedJoinUnsupported`.
+    //     let other = space_name(space, [7; 32]);
+    //     assert_eq!(
+    //         route_join(reducer, vec![on_name.clone(), other.clone()]),
+    //         (space, vec![
+    //             join_bind_of(&name, Some(wanted.clone())),
+    //             join_bind_of(&other, None),
+    //         ])
+    //     );
+    //
+    //     assert_eq!(
+    //         code(receive(reducer, vec![on_host.clone()]).await),
+    //         expected("QuerySpecUnsupported")
+    //     );
+    //     assert_eq!(
+    //         code(receive(reducer, vec![on_name.clone()]).await),
+    //         expected("RuntimeUnavailable")
+    //     );
+    //     for channel in [&on_host, &host] {
+    //         assert!(fixture
+    //             .host
+    //             .get_waiting_continuations(vec![channel.clone()])
+    //             .await
+    //             .is_empty());
+    //     }
+    // }
+    // ```
+    /// A query is a field of its bind (decision 112). Its route decides: a space gets the query,
+    /// the default space fails with `QuerySpecUnsupported`, and a user agent fails closed. A bind
+    /// without a query keeps its route of P4, and joins keep their errors. The read rule of a
+    /// bundle runs in `unbundle_receive` first.
     #[tokio::test]
     async fn reducer_space_routing_query_routes_the_inner_channel() {
         let fixture = detached().await;
@@ -4437,43 +5335,25 @@ mod tests {
         let context = native(24);
         let name = space_name(space, [6; 32]);
         let host = string("rrs-p5-query-host");
-        let payload = vec![int(1)];
-        let named = [("k", int(2))];
-        let wanted = query_params(payload.clone(), &named);
-        let on_host = query_source(host.clone(), payload.clone(), &named);
-        let on_name = query_source(name.clone(), payload.clone(), &named);
-
-        assert!(routes_to_default_without_context(&on_host));
-        for marker_tuple in [
-            on_host.clone(),
-            on_name.clone(),
-            push_process_expr(Par::default(), use_block(handle(space), Par::default())),
-            send_params(vec![SendParam::Named("k".to_string(), int(1))])
-                .expect("params build")
-                .expect("params are not empty"),
-        ] {
-            assert!(!takes_fast_path(&marker_tuple), "{marker_tuple:?}");
-        }
-        for ordinary in [private(1), host.clone(), name.clone(), handle(space)] {
-            assert_eq!(
-                takes_fast_path(&ordinary),
-                routes_to_default_without_context(&ordinary)
-            );
-        }
+        let wanted = query_params(vec![int(1)], &[("k", int(2))]);
 
         let key = CollectionKey::of_channel(&name).expect("a key");
         for core in [reducer.clone(), scoped(reducer, context)] {
             assert_eq!(
-                space_route(route_one(&core, on_name.clone())),
+                space_route(route_one(&core, name.clone(), Some(wanted.clone()))),
                 (space, key.clone(), name.clone(), Some(wanted.clone()))
             );
         }
         assert_eq!(
-            code(route_one(reducer, on_host.clone())),
+            code(route_one(reducer, host.clone(), Some(wanted.clone()))),
             expected("QuerySpecUnsupported")
         );
         assert_eq!(
-            space_route(route_one(&scoped(reducer, context), on_host.clone())),
+            space_route(route_one(
+                &scoped(reducer, context),
+                host.clone(),
+                Some(wanted.clone())
+            )),
             (
                 context,
                 CollectionKey::of_channel(&host).expect("a key"),
@@ -4481,21 +5361,22 @@ mod tests {
                 Some(wanted.clone())
             )
         );
-        let readable = new_bundle_par(name.clone(), false, true);
         assert_eq!(
-            space_route(route_one(
-                reducer,
-                query_source(readable, payload.clone(), &named)
-            )),
-            (space, key.clone(), name.clone(), Some(wanted.clone()))
+            reducer.unbundle_receive(
+                &receive_bind(new_bundle_par(name.clone(), false, true)),
+                &Env::new()
+            ),
+            Ok(name.clone())
         );
-        let write_only = new_bundle_par(name.clone(), true, false);
         assert_eq!(
-            route_one(reducer, query_source(write_only, payload.clone(), &named)).err(),
-            // Changed by decision 89 (DR-128): the error of HEAD.
-            // Some(InterpreterError::ReduceError(NOT_READABLE.to_string()))
+            reducer
+                .unbundle_receive(
+                    &receive_bind(new_bundle_par(name.clone(), true, false)),
+                    &Env::new()
+                )
+                .err(),
             Some(InterpreterError::BundlePermissionError(
-                NOT_READABLE.to_string()
+                "Trying to read from non-readable channel.".to_string()
             ))
         );
         let tagged = new_etuple_par(vec![
@@ -4506,51 +5387,40 @@ mod tests {
         // Changed by P8 step 3 (design v2 TR-2): a query on an agent route aborts with its own
         // code. The P4 code was AgentSpacesUnavailable.
         assert_eq!(
-            code(route_one(
-                reducer,
-                query_source(tagged, payload.clone(), &named)
-            )),
+            code(route_one(reducer, tagged, Some(wanted.clone()))),
             expected("QuerySpecUnsupportedOnAgentSpace")
         );
-        let mut stale = on_name.clone();
-        stale.connective_used = !stale.connective_used;
+        let bare = query_params(vec![int(7)], &[]);
         assert_eq!(
-            space_route(route_one(reducer, stale)),
-            (space, key.clone(), name.clone(), Some(wanted.clone()))
-        );
-        let malformed = new_etuple_par(vec![Marker::Query.par(), int(1), list(vec![int(2)])]);
-        assert_eq!(code(route_one(reducer, malformed)), expected("Malformed"));
-        let bare = query_source(name.clone(), vec![int(7)], &[]);
-        assert_eq!(
-            space_route(route_one(reducer, bare)),
-            (
-                space,
-                key.clone(),
-                name.clone(),
-                Some(query_params(vec![int(7)], &[]))
-            )
+            space_route(route_one(reducer, name.clone(), Some(bare.clone()))),
+            (space, key.clone(), name.clone(), Some(bare))
         );
 
         assert_eq!(
-            space_route(route_one(reducer, name.clone())),
+            space_route(route_one(reducer, name.clone(), None)),
             (space, key, name.clone(), None)
         );
-        match route_one(reducer, host.clone()) {
+        match route_one(reducer, host.clone(), None) {
             Ok(ReceiveRoute::Host(binds)) => {
                 assert_eq!(binds, vec![bind(host.clone())]);
             }
             other => panic!("a host channel routes to {other:?}"),
         }
 
-        for (channels, failure) in [
+        for (channels, queries, failure) in [
             (
-                vec![on_host.clone(), string("rrs-p5-query-other")],
+                vec![host.clone(), string("rrs-p5-query-other")],
+                vec![Some(wanted.clone()), None],
                 "QuerySpecUnsupported",
             ),
-            (vec![on_name.clone(), private(2)], "CrossSpaceJoin"),
+            (
+                vec![name.clone(), private(2)],
+                vec![Some(wanted.clone()), None],
+                "CrossSpaceJoin",
+            ),
         ] {
             assert_eq!(
-                code(reducer.route_receive(channels.into_iter().map(bind).collect())),
+                code(reducer.route_receive(channels.into_iter().map(bind).collect(), queries)),
                 expected(failure)
             );
         }
@@ -4558,7 +5428,10 @@ mod tests {
         // and the second has none. The P4 version expected `OrderedJoinUnsupported`.
         let other = space_name(space, [7; 32]);
         assert_eq!(
-            route_join(reducer, vec![on_name.clone(), other.clone()]),
+            route_join(reducer, vec![name.clone(), other.clone()], vec![
+                Some(wanted.clone()),
+                None
+            ]),
             (space, vec![
                 join_bind_of(&name, Some(wanted.clone())),
                 join_bind_of(&other, None),
@@ -4566,20 +5439,18 @@ mod tests {
         );
 
         assert_eq!(
-            code(receive(reducer, vec![on_host.clone()]).await),
+            code(query_receive(reducer, vec![host.clone()], vec![Some(wanted.clone())]).await),
             expected("QuerySpecUnsupported")
         );
         assert_eq!(
-            code(receive(reducer, vec![on_name.clone()]).await),
+            code(query_receive(reducer, vec![name.clone()], vec![Some(wanted)]).await),
             expected("RuntimeUnavailable")
         );
-        for channel in [&on_host, &host] {
-            assert!(fixture
-                .host
-                .get_waiting_continuations(vec![channel.clone()])
-                .await
-                .is_empty());
-        }
+        assert!(fixture
+            .host
+            .get_waiting_continuations(vec![host.clone()])
+            .await
+            .is_empty());
     }
 
     /// The config of the pure properties of this module: the fixed seed and the case count of
@@ -4594,14 +5465,27 @@ mod tests {
         }
     }
 
+    // Changed by decision 112: a field holds its own flags, so the property has no stale tuple
+    // flag. The text before:
+    // ```
+    // /// One generated receive source: a channel, an optional bundle around it with its write and
+    // /// read flags, an optional query, a stale tuple flag (I-20), and an optional use-context.
+    // #[derive(Clone, Debug)]
+    // struct SourceCase {
+    //     channel: Par,
+    //     bundle: Option<(bool, bool)>,
+    //     query: Option<(Vec<Par>, Vec<(String, Par)>)>,
+    //     stale: bool,
+    //     context: bool,
+    // }
+    // ```
     /// One generated receive source: a channel, an optional bundle around it with its write and
-    /// read flags, an optional query, a stale tuple flag (I-20), and an optional use-context.
+    /// read flags, an optional query, and an optional use-context.
     #[derive(Clone, Debug)]
     struct SourceCase {
         channel: Par,
         bundle: Option<(bool, bool)>,
         query: Option<(Vec<Par>, Vec<(String, Par)>)>,
-        stale: bool,
         context: bool,
     }
 
@@ -4638,18 +5522,33 @@ mod tests {
                 }
                 (payload, named)
             });
+        // Changed by decision 112: the generator has no stale tuple flag. The text before:
+        // ```
+        // (
+        //     arb_channel(),
+        //     proptest::option::of(any::<(bool, bool)>()),
+        //     proptest::option::of(query),
+        //     any::<bool>(),
+        //     any::<bool>(),
+        // )
+        //     .prop_map(|(channel, bundle, query, stale, context)| SourceCase {
+        //         channel,
+        //         bundle,
+        //         query,
+        //         stale,
+        //         context,
+        //     })
+        // ```
         (
             arb_channel(),
             proptest::option::of(any::<(bool, bool)>()),
             proptest::option::of(query),
             any::<bool>(),
-            any::<bool>(),
         )
-            .prop_map(|(channel, bundle, query, stale, context)| SourceCase {
+            .prop_map(|(channel, bundle, query, context)| SourceCase {
                 channel,
                 bundle,
                 query,
-                stale,
                 context,
             })
     }
@@ -4707,11 +5606,74 @@ mod tests {
         }
     }
 
-    /// Property of `query_source_routes_inner_channel` (`SpaceRefs.v`, P5b). A receive on a
-    /// QUERY tuple routes the inner channel of the query: a bundle without the read flag fails
-    /// with the text of HEAD, and otherwise the target is the route of the inner channel, with
-    /// the query. The tuple never takes the fast path, and H4 accepts it, also with a stale
-    /// flag. A source without a QUERY tuple keeps the route of P4, with no query.
+    // Changed by decision 112: the query is a field of the bind, and the read rule of a bundle runs
+    // in `unbundle_receive`. The tuple form, its fast path and its stale flag retire. The text
+    // before:
+    // ```
+    // /// Property of `query_source_routes_inner_channel` (`SpaceRefs.v`, P5b). A receive on a
+    // /// QUERY tuple routes the inner channel of the query: a bundle without the read flag fails
+    // /// with the text of HEAD, and otherwise the target is the route of the inner channel, with
+    // /// the query. The tuple never takes the fast path, and H4 accepts it, also with a stale
+    // /// flag. A source without a QUERY tuple keeps the route of P4, with no query.
+    // #[tokio::test]
+    // async fn prop_query_bind_routes_inner_channel() {
+    //     let fixture = detached().await;
+    //     let reducer: &ReducerCore = &fixture.reducer;
+    //     let scoped_core = scoped(reducer, native(42));
+    //     TestRunner::new(pure_config())
+    //         .run(&arb_source_case(), |case| {
+    //             let core = match case.context {
+    //                 true => &scoped_core,
+    //                 false => reducer,
+    //             };
+    //             let wrapped = match case.bundle {
+    //                 Some((write, read)) => new_bundle_par(case.channel.clone(), write, read),
+    //                 None => case.channel.clone(),
+    //             };
+    //             let (source, expected) = match &case.query {
+    //                 Some((payload, named)) => {
+    //                     let keyed: Vec<(&str, Par)> = named
+    //                         .iter()
+    //                         .map(|(key, value)| (key.as_str(), value.clone()))
+    //                         .collect();
+    //                     let mut source = query_source(wrapped.clone(), payload.clone(), &keyed);
+    //                     if case.stale {
+    //                         source.connective_used = !source.connective_used;
+    //                     }
+    //                     prop_assert!(!takes_fast_path(&source));
+    //                     prop_assert_eq!(reject_query_source(&source), Ok(()));
+    //                     let expected = match case.bundle {
+    //                         // Changed by decision 89 (DR-128): the error of HEAD.
+    //                         // Some((_, false)) => Target::Failed(InterpreterError::ReduceError(
+    //                         //     NOT_READABLE.to_string(),
+    //                         // )),
+    //                         Some((_, false)) => Target::Failed(
+    //                             InterpreterError::BundlePermissionError(NOT_READABLE.to_string()),
+    //                         ),
+    //                         Some((_, true)) | None => model_target(
+    //                             &core.space_ctx,
+    //                             case.channel.clone(),
+    //                             Some(query_params(payload.clone(), &keyed)),
+    //                         ),
+    //                     };
+    //                     (source, expected)
+    //                 }
+    //                 None => {
+    //                     let expected = model_target(&core.space_ctx, wrapped.clone(), None);
+    //                     (wrapped, expected)
+    //                 }
+    //             };
+    //             prop_assert_eq!(target_of(route_one(core, source)), expected);
+    //             Ok(())
+    //         })
+    //         .unwrap_or_else(|failure| panic!("{failure}"));
+    // }
+    // ```
+    /// Property of `query_source_routes_inner_channel` (`SpaceRefs.v`, P5b). A bind with a query
+    /// reads its channel under the read rule of `unbundle_receive`: a bundle without the read
+    /// flag fails with the text of HEAD, and otherwise the target is the route of the channel,
+    /// with the query. H4 accepts the query field. A bind without a query keeps the route of P4,
+    /// with no query.
     #[tokio::test]
     async fn prop_query_bind_routes_inner_channel() {
         let fixture = detached().await;
@@ -4727,40 +5689,50 @@ mod tests {
                     Some((write, read)) => new_bundle_par(case.channel.clone(), write, read),
                     None => case.channel.clone(),
                 };
-                let (source, expected) = match &case.query {
+                let (target, expected) = match &case.query {
                     Some((payload, named)) => {
                         let keyed: Vec<(&str, Par)> = named
                             .iter()
                             .map(|(key, value)| (key.as_str(), value.clone()))
                             .collect();
-                        let mut source = query_source(wrapped.clone(), payload.clone(), &keyed);
-                        if case.stale {
-                            source.connective_used = !source.connective_used;
-                        }
-                        prop_assert!(!takes_fast_path(&source));
-                        prop_assert_eq!(reject_query_source(&source), Ok(()));
+                        let query = query_spec(
+                            payload.clone(),
+                            named
+                                .iter()
+                                .map(|(key, value)| SendParam::Named(key.clone(), value.clone()))
+                                .collect(),
+                        )
+                        .expect("a query builds");
+                        prop_assert_eq!(reject_query_source(Some(&query)), Ok(()));
+                        let target =
+                            match core.unbundle_receive(&receive_bind(wrapped), &Env::new()) {
+                                Ok(channel) => target_of(route_one(
+                                    core,
+                                    channel,
+                                    Some(query_params(payload.clone(), &keyed)),
+                                )),
+                                Err(error) => Target::Failed(error),
+                            };
                         let expected = match case.bundle {
-                            // Changed by decision 89 (DR-128): the error of HEAD.
-                            // Some((_, false)) => Target::Failed(InterpreterError::ReduceError(
-                            //     NOT_READABLE.to_string(),
-                            // )),
-                            Some((_, false)) => Target::Failed(
-                                InterpreterError::BundlePermissionError(NOT_READABLE.to_string()),
-                            ),
+                            Some((_, false)) => {
+                                Target::Failed(InterpreterError::BundlePermissionError(
+                                    "Trying to read from non-readable channel.".to_string(),
+                                ))
+                            }
                             Some((_, true)) | None => model_target(
                                 &core.space_ctx,
                                 case.channel.clone(),
                                 Some(query_params(payload.clone(), &keyed)),
                             ),
                         };
-                        (source, expected)
+                        (target, expected)
                     }
                     None => {
                         let expected = model_target(&core.space_ctx, wrapped.clone(), None);
-                        (wrapped, expected)
+                        (target_of(route_one(core, wrapped, None)), expected)
                     }
                 };
-                prop_assert_eq!(target_of(route_one(core, source)), expected);
+                prop_assert_eq!(target, expected);
                 Ok(())
             })
             .unwrap_or_else(|failure| panic!("{failure}"));
@@ -4781,12 +5753,29 @@ mod tests {
         let key = CollectionKey::of_channel(&name).expect("a key");
         let counter = namespace::gprivate(namespace::collection_counter(space, &key));
         let collection = namespace::gprivate(namespace::data_channel(space, &key));
+        // Changed by decision 112: the query travels beside the bind. The text before:
+        // ```
+        // for query in [
+        //     query_source(name.clone(), vec![int(1)], &[]),
+        //     query_source(name.clone(), Vec::new(), &[("priority", int(0))]),
+        // ] {
+        //     assert_eq!(
+        //         in_root(reducer, receive(reducer, vec![query])).await.err(),
+        //         Some(InterpreterError::from(SpaceError::QuerySpecUnsupported))
+        //     );
+        // }
+        // ```
         for query in [
-            query_source(name.clone(), vec![int(1)], &[]),
-            query_source(name.clone(), Vec::new(), &[("priority", int(0))]),
+            query_params(vec![int(1)], &[]),
+            query_params(Vec::new(), &[("priority", int(0))]),
         ] {
             assert_eq!(
-                in_root(reducer, receive(reducer, vec![query])).await.err(),
+                in_root(
+                    reducer,
+                    query_receive(reducer, vec![name.clone()], vec![Some(query)])
+                )
+                .await
+                .err(),
                 Some(InterpreterError::from(SpaceError::QuerySpecUnsupported))
             );
         }
@@ -4801,7 +5790,12 @@ mod tests {
             code(
                 in_root(
                     reducer,
-                    receive(reducer, vec![query_source(missing, vec![int(1)], &[])])
+                    // Changed by decision 112: the query travels beside the bind. The text before:
+                    // receive(reducer, vec![query_source(missing, vec![int(1)], &[])])
+                    query_receive(reducer, vec![missing], vec![Some(query_params(
+                        vec![int(1)],
+                        &[]
+                    ))])
                 )
                 .await
             ),
@@ -4829,12 +5823,23 @@ mod tests {
         let positional = send_params(vec![SendParam::Positional(int(2))])
             .expect("positional params build")
             .expect("params are not empty");
+        // Changed by decision 112: the params travel beside the data. The text before:
+        // ```
+        // match reducer.route_send(
+        //     name.clone(),
+        //     datum(vec![int(1), named.clone()]),
+        //     false,
+        //     authority(),
+        //     None,
+        // ) {
+        // ```
         match reducer.route_send(
             name.clone(),
-            datum(vec![int(1), named.clone()]),
+            datum(vec![int(1)]),
             false,
             authority(),
             None,
+            Some(named.clone()),
         ) {
             Ok(SendRoute::Space(op)) => {
                 assert_eq!(op.params, BTreeMap::from([("k".to_string(), int(1))]));
@@ -4849,10 +5854,14 @@ mod tests {
                     reducer,
                     reducer.reified_produce(
                         name.clone(),
-                        datum(vec![int(1), named.clone()]),
+                        // Changed by decision 112: the params travel beside the data. The text
+                        // before:
+                        // datum(vec![int(1), named.clone()]),
+                        datum(vec![int(1)]),
                         persistent,
                         authority(),
                         None,
+                        Some(named.clone()),
                     ),
                 )
                 .await
@@ -4885,10 +5894,14 @@ mod tests {
                         reducer,
                         reducer.reified_produce(
                             missing.clone(),
-                            datum(vec![int(1), params]),
+                            // Changed by decision 112: the params travel beside the data. The text
+                            // before:
+                            // datum(vec![int(1), params]),
+                            datum(vec![int(1)]),
                             false,
                             authority(),
                             None,
+                            Some(params),
                         ),
                     )
                     .await
@@ -4911,6 +5924,10 @@ mod tests {
                 signature: Some(CostSignature {
                     value: Some(CostSignatureValue::Ground(vec![byte])),
                 }),
+                // Added by decision 90 (DR-135): an unpriced region, as outside native
+                // execution.
+                price: 0,
+                caller: None,
             }],
         }
     }
@@ -4931,6 +5948,7 @@ mod tests {
             uri: Vec::new(),
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         };
         let mut random = rand(seed);
         let names = in_root(
@@ -4987,6 +6005,7 @@ mod tests {
             uri: Vec::new(),
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         };
         let env = env_of(int(0));
         let mut head_rand = rand(b"alloc");
@@ -5077,6 +6096,7 @@ mod tests {
             uri: Vec::new(),
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         };
         let phlo = reducer.metering.budget().get().value;
         let without = allocated_env(reducer, &new).await;
@@ -5207,19 +6227,23 @@ mod tests {
         }
     }
 
-    /// Runs `step` as one root evaluation and returns its result. A dispatch ends the
-    /// participant that makes it, so a test that runs several operations runs each one in its
-    /// own root, as each deploy runs in its own root. As `inj` does, the step begins a new
-    /// evaluation scope of the spaces. The detached reductions must not fail.
+    /// Runs `step` as one root evaluation and returns its result. As `inj` does, the step
+    /// begins a new evaluation scope of the spaces. The detached reductions must not fail.
+    ///
+    /// Changed by decision 90 (DR-132): the step runs in the per-call dispatch scope of the
+    /// base, as `inj_with_observation` runs a deploy, and the scope drains before the result
+    /// returns. Before, it ran under the root of the scheduler, where a dispatch ended the
+    /// participant that made it.
     async fn in_root<T>(reducer: &ReducerCore, step: impl Future<Output = T>) -> T {
         reducer.reified.begin_evaluation_scope();
-        let (result, _, errors) = root_with_observation(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            step,
-        )
-        .await;
+        // let (result, _, errors) = root_with_observation(
+        //     reducer.space.clone(),
+        //     reducer.metering.budget(),
+        //     reducer.reduction_coordinator.clone(),
+        //     step,
+        // )
+        // .await;
+        let (result, _, errors) = super::super::with_dispatch_scope(step).await;
         assert!(
             errors.is_empty(),
             "the detached reductions failed: {errors:?}"
@@ -5254,17 +6278,30 @@ mod tests {
         let channel = channel.clone();
         Box::pin(async move {
             reducer
-                .reified_produce(channel, datum(vec![int(value)]), false, authority(), None)
+                // Changed by decision 112: the send takes no params. The text before:
+                // .reified_produce(channel, datum(vec![int(value)]), false, authority(), None)
+                .reified_produce(
+                    channel,
+                    datum(vec![int(value)]),
+                    false,
+                    authority(),
+                    None,
+                    None,
+                )
                 .await
         })
     }
 
-    /// Readiness review H6: without a reduction context the branches run one after another in
-    /// index order, and their errors aggregate in index order.
+    /// Readiness review H6, changed by decision 90 (DR-132): without a dispatch scope,
+    /// `run_parallel_dispatches` of the base starts the branches as tasks and awaits them in
+    /// index order, so their errors aggregate in index order and every branch has run when the
+    /// dispatch returns. The branches run concurrently, so `then` may run before the fires end.
+    /// Before, the branches ran one after another (`..._without_a_context_runs_in_index_order`).
     #[tokio::test]
-    async fn reducer_space_routing_dispatch_without_a_context_runs_in_index_order() {
+    async fn reducer_space_routing_dispatch_without_a_scope_awaits_the_branches_in_index_order() {
         let fixture = detached().await;
-        assert!(deterministic_reduction::current().is_none());
+        // assert!(deterministic_reduction::current().is_none());
+        assert!(super::super::DEFERRED_DISPATCHES.try_with(|_| ()).is_err());
         let out = private(30);
         fixture
             .reducer
@@ -5329,29 +6366,41 @@ mod tests {
             )
             .await
             .expect("the fires and then run");
-        assert_eq!(*seen.lock().expect("the observation lock"), Some(2));
+        // assert_eq!(*seen.lock().expect("the observation lock"), Some(2));
+        assert!(seen.lock().expect("the observation lock").is_some());
+        assert_eq!(stored(&fixture.host, &after).await, vec![
+            vec![int(10)],
+            vec![int(11)]
+        ]);
     }
 
-    /// Negative control of H6: `run_parallel_dispatches` without a reduction context panics, so
-    /// `dispatch_space_outcome` must not call it there.
-    #[tokio::test]
-    #[should_panic(expected = "parallel dispatch requires a reduction context")]
-    async fn reducer_space_routing_parallel_dispatch_needs_a_reduction_context() {
-        let fixture = detached().await;
-        let branch: DispatchFuture<'static> = Box::pin(async { Ok(DispatchType::Skip) });
-        let _ = fixture.reducer.run_parallel_dispatches(vec![branch]).await;
-    }
+    // Disabled by decision 90 (DR-132): `run_parallel_dispatches` of the base runs without a
+    // dispatch scope too (it awaits the branches in index order), so it no longer panics there,
+    // and `dispatch_space_outcome` calls it in both cases.
+    //
+    // /// Negative control of H6: `run_parallel_dispatches` without a reduction context panics,
+    // /// so `dispatch_space_outcome` must not call it there.
+    // #[tokio::test]
+    // #[should_panic(expected = "parallel dispatch requires a reduction context")]
+    // async fn reducer_space_routing_parallel_dispatch_needs_a_reduction_context() {
+    //     let fixture = detached().await;
+    //     let branch: DispatchFuture<'static> = Box::pin(async { Ok(DispatchType::Skip) });
+    //     let _ = fixture.reducer.run_parallel_dispatches(vec![branch]).await;
+    // }
 
-    /// In a reduction the branches run as parallel participants. The dispatch returns when it
-    /// has started them, and the errors of the branches reach the root in index order. Each
-    /// dispatch runs in its own root, because a dispatch ends the participant that makes it.
+    /// In a dispatch scope the branches run as tasks of the scope. The dispatch returns when it
+    /// has started them, and the errors of the branches reach the drain in index order.
+    ///
+    /// Changed by decision 90 (DR-132): the scope of the base replaces the reduction of the
+    /// scheduler (`..._dispatch_in_a_reduction_runs_parallel_branches`).
     #[tokio::test]
-    async fn reducer_space_routing_dispatch_in_a_reduction_runs_parallel_branches() {
+    async fn reducer_space_routing_dispatch_in_a_scope_runs_the_branches_as_tasks() {
         let fixture = detached().await;
         let reducer: &ReducerCore = &fixture.reducer;
         let out = private(32);
         let dispatched = in_root(reducer, async {
-            assert!(deterministic_reduction::current().is_some());
+            // assert!(deterministic_reduction::current().is_some());
+            assert!(super::super::DEFERRED_DISPATCHES.try_with(|_| ()).is_ok());
             reducer
                 .dispatch_space_outcome(
                     SpaceOutcome {
@@ -5368,34 +6417,38 @@ mod tests {
         assert_eq!(stored(&fixture.host, &out).await, vec![vec![int(4)], vec![
             int(5)
         ]]);
-        let (failed, _, errors) = root_with_observation(
-            reducer.space.clone(),
-            reducer.metering.budget(),
-            reducer.reduction_coordinator.clone(),
-            reducer.dispatch_space_outcome(
+        // let (failed, _, errors) = root_with_observation(
+        //     reducer.space.clone(),
+        //     reducer.metering.budget(),
+        //     reducer.reduction_coordinator.clone(),
+        //     reducer.dispatch_space_outcome(
+        let (failed, _, errors) =
+            super::super::with_dispatch_scope(reducer.dispatch_space_outcome(
                 SpaceOutcome {
                     fires: failing_fires(),
                     reissue: None,
                     mirror: None,
                 },
                 None,
-            ),
-        )
-        .await;
+            ))
+            .await;
         assert!(matches!(failed, Ok(DispatchType::Skip)));
-        assert_failures_in_index_order(
-            reducer
-                .finish_detached_errors(Ok(()), errors)
-                .map(|()| DispatchType::Skip),
-        );
+        // assert_failures_in_index_order(
+        //     reducer
+        //         .finish_detached_errors(Ok(()), errors)
+        //         .map(|()| DispatchType::Skip),
+        // );
+        assert_failures_in_index_order(reducer.aggregate_evaluator_errors(errors));
     }
 
-    /// Regression of the merge with the stack-safe reducer: an operation after a dispatch in one
-    /// participant fails, because the dispatch moved the participant to the body. So `then` runs
-    /// as the last branch, in its own participant. Its operation succeeds, and without fires and
-    /// re-issue `then` runs directly.
+    /// `then` runs as the last branch of the outcome, so its operation runs as its own task and
+    /// succeeds. Without fires and re-issue `then` runs directly.
+    ///
+    /// Changed by decision 90 (DR-132): racing evaluation has no participants. The test came
+    /// from the merge with the stack-safe reducer, where an operation after a dispatch in one
+    /// participant failed (`..._then_runs_after_the_fires_in_its_own_branch`).
     #[tokio::test]
-    async fn reducer_space_routing_then_runs_after_the_fires_in_its_own_branch() {
+    async fn reducer_space_routing_then_runs_as_the_last_branch() {
         let fixture = detached().await;
         let reducer: &ReducerCore = &fixture.reducer;
         let core = Arc::clone(&fixture.reducer.core);
@@ -5487,10 +6540,16 @@ mod tests {
 
     // ── A native space end to end ──────────────────────────────────────────────────────────────
 
-    /// FR-5': every root entry of the reducer begins an evaluation scope of the spaces. Each root
-    /// evaluation starts at the order of the root participant, and the session is the deploy of
-    /// the budget. So the creation and both runs commit their first transaction under one parent
-    /// order. Without a new scope, the first run already fails with `ParentOrderReused`.
+    // Changed by decision 90 (DR-132): racing evaluation opens no order scope at a root. The
+    // text before:
+    // /// FR-5': every root entry of the reducer begins an evaluation scope of the spaces. Each
+    // /// root evaluation starts at the order of the root participant, and the session is the
+    // /// deploy of the budget. So the creation and both runs commit their first transaction
+    // /// under one parent order. Without a new scope, the first run already fails with
+    // /// `ParentOrderReused`.
+    /// FR-5': every root entry of the reducer begins an evaluation scope of the spaces. Racing
+    /// evaluation opens no order scope at a root, so the creation and both runs admit no parent
+    /// order, and both runs commit.
     #[tokio::test]
     async fn reducer_space_routing_each_root_entry_begins_an_evaluation_scope() {
         for entry in [RootEntry::Inj, RootEntry::Observation] {
@@ -5643,72 +6702,80 @@ mod tests {
         }
     }
 
-    /// P7 (VR-4, VR-8): reporting replay sweeps at each root entry. A play on a play host records
-    /// its event log. A replay runtime over a fresh `ReportingRspace` rigs the log and runs the
-    /// same root entry with the same random state, on the `Ok` and the `Err` path. The replay
-    /// gives the result of the play and consumes the log, and the reporting host holds no
-    /// volatile channel.
-    #[tokio::test]
-    async fn reified_sweep_runs_at_each_entry_point_of_the_reporting_replay() {
-        use rspace_plus_plus::rspace::reporting_rspace::ReportingRspace;
-
-        use crate::rust::interpreter::compiler::compiler::Compiler;
-        use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, RhoRuntime};
-
-        let ok = r#"new factory(`rho:space:hashmap:bag`) in {
-  for (s <- factory!?("temp")) {
-    for (x <- s!?("gensym")) { x!(1) | x!(2) | for (@"never" <- x) { Nil } }
-  }
-}"#;
-        let err = r#"new factory(`rho:space:hashmap:cell`) in {
-  for (s <- factory!?("temp")) {
-    for (x <- s!?("gensym")) { x!(1) | x!(2) }
-  }
-}"#;
-        for entry in [RootEntry::Inj, RootEntry::Observation] {
-            for (source, fails) in [(ok, false), (err, true)] {
-                let term = Compiler::source_to_adt(source).expect("the program parses");
-                let fixture = hosted().await;
-                let played = run_root_entry(&fixture.reducer, entry, term.clone()).await;
-                assert_eq!(played.is_err(), fails, "{entry:?}: play {played:?}");
-                let log = fixture.host.take_event_log().await;
-
-                let mut stores = InMemoryStoreManager::new();
-                let reporting = ReportingRspace::create(
-                    stores.r_space_stores().await.expect("in-memory stores"),
-                    Arc::new(Box::new(Matcher)),
-                )
-                .expect("a reporting space");
-                let runtime = create_replay_rho_runtime(
-                    reporting.clone(),
-                    Arc::new(HashMap::new()),
-                    false,
-                    &mut Vec::new(),
-                    ExternalServices::noop(),
-                )
-                .await
-                .expect("create the reporting runtime");
-                runtime
-                    .cost
-                    .set(Cost::create(i64::MAX, "reified hooks test".to_string()));
-                runtime.rig(log).await.expect("rig the reporting runtime");
-                let replayed = run_root_entry(&runtime.reducer, entry, term).await;
-                assert_eq!(
-                    format!("{replayed:?}"),
-                    format!("{played:?}"),
-                    "{entry:?}: the reporting replay gives the result of the play"
-                );
-                runtime.check_replay_data().await.unwrap_or_else(|error| {
-                    panic!("{entry:?}: the replay leaves events: {error:?}")
-                });
-                assert_eq!(
-                    volatile_channels(&reporting).await,
-                    Vec::<Par>::new(),
-                    "{entry:?}: the reporting replay sweeps (failing: {fails})"
-                );
-            }
-        }
-    }
+    // Retired by decision 90 (C6, step D):
+    // `reified_sweep_runs_at_each_entry_point_of_the_reporting_replay` ran through the rigged
+    // replay modes, which retire (decision 125).
+    // `reified_sweep_runs_at_each_entry_point_of_the_reducer` (this file) and
+    // `reified_sweep_runs_at_each_entry_point_native` (`rholang/tests/reified_temp_seq.rs`). The
+    // text before:
+    // ```
+    // /// P7 (VR-4, VR-8): reporting replay sweeps at each root entry. A play on a play host records
+    // /// its event log. A replay runtime over a fresh `ReportingRspace` rigs the log and runs the
+    // /// same root entry with the same random state, on the `Ok` and the `Err` path. The replay
+    // /// gives the result of the play and consumes the log, and the reporting host holds no
+    // /// volatile channel.
+    // #[tokio::test]
+    // async fn reified_sweep_runs_at_each_entry_point_of_the_reporting_replay() {
+    //     use rspace_plus_plus::rspace::reporting_rspace::ReportingRspace;
+    //
+    //     use crate::rust::interpreter::compiler::compiler::Compiler;
+    //     use crate::rust::interpreter::rho_runtime::{create_replay_rho_runtime, RhoRuntime};
+    //
+    //     let ok = r#"new factory(`rho:space:hashmap:bag`) in {
+    //   for (s <- factory!?("temp")) {
+    //     for (x <- s!?("gensym")) { x!(1) | x!(2) | for (@"never" <- x) { Nil } }
+    //   }
+    // }"#;
+    //     let err = r#"new factory(`rho:space:hashmap:cell`) in {
+    //   for (s <- factory!?("temp")) {
+    //     for (x <- s!?("gensym")) { x!(1) | x!(2) }
+    //   }
+    // }"#;
+    //     for entry in [RootEntry::Inj, RootEntry::Observation] {
+    //         for (source, fails) in [(ok, false), (err, true)] {
+    //             let term = Compiler::source_to_adt(source).expect("the program parses");
+    //             let fixture = hosted().await;
+    //             let played = run_root_entry(&fixture.reducer, entry, term.clone()).await;
+    //             assert_eq!(played.is_err(), fails, "{entry:?}: play {played:?}");
+    //             let log = fixture.host.take_event_log().await;
+    //
+    //             let mut stores = InMemoryStoreManager::new();
+    //             let reporting = ReportingRspace::create(
+    //                 stores.r_space_stores().await.expect("in-memory stores"),
+    //                 Arc::new(Box::new(Matcher)),
+    //             )
+    //             .expect("a reporting space");
+    //             let runtime = create_replay_rho_runtime(
+    //                 reporting.clone(),
+    //                 Arc::new(HashMap::new()),
+    //                 false,
+    //                 &mut Vec::new(),
+    //                 ExternalServices::noop(),
+    //             )
+    //             .await
+    //             .expect("create the reporting runtime");
+    //             runtime
+    //                 .cost
+    //                 .set(Cost::create(i64::MAX, "reified hooks test".to_string()));
+    //             runtime.rig(log).await.expect("rig the reporting runtime");
+    //             let replayed = run_root_entry(&runtime.reducer, entry, term).await;
+    //             assert_eq!(
+    //                 format!("{replayed:?}"),
+    //                 format!("{played:?}"),
+    //                 "{entry:?}: the reporting replay gives the result of the play"
+    //             );
+    //             runtime.check_replay_data().await.unwrap_or_else(|error| {
+    //                 panic!("{entry:?}: the replay leaves events: {error:?}")
+    //             });
+    //             assert_eq!(
+    //                 volatile_channels(&reporting).await,
+    //                 Vec::<Par>::new(),
+    //                 "{entry:?}: the reporting replay sweeps (failing: {fails})"
+    //             );
+    //         }
+    //     }
+    // }
+    // ```
 
     /// P7 (VR-3): only a call with no reduction context starts a root evaluation. A nested call
     /// neither resets the book of the ephemeral spaces nor sweeps: a `temp` space that the book
@@ -5768,19 +6835,38 @@ mod tests {
                 authority(),
                 authority(),
                 None,
+                vec![None],
             ),
         )
         .await
         .expect("park the waiter");
         in_root(
             reducer,
-            reducer.reified_produce(name.clone(), datum(vec![int(7)]), false, authority(), None),
+            // Changed by decision 112: the send takes no params. The text before:
+            // reducer.reified_produce(name.clone(), datum(vec![int(7)]), false, authority(), None),
+            reducer.reified_produce(
+                name.clone(),
+                datum(vec![int(7)]),
+                false,
+                authority(),
+                None,
+                None,
+            ),
         )
         .await
         .expect("fire the waiter");
         in_root(
             reducer,
-            reducer.reified_produce(name.clone(), datum(vec![int(8)]), false, authority(), None),
+            // Changed by decision 112: the send takes no params. The text before:
+            // reducer.reified_produce(name.clone(), datum(vec![int(8)]), false, authority(), None),
+            reducer.reified_produce(
+                name.clone(),
+                datum(vec![int(8)]),
+                false,
+                authority(),
+                None,
+                None,
+            ),
         )
         .await
         .expect("store the datum");
@@ -5795,13 +6881,17 @@ mod tests {
                 authority(),
                 authority(),
                 None,
+                vec![None],
             ),
         )
         .await
         .expect("take the datum");
         in_root(
             reducer,
-            reducer.eval_marker(
+            // Changed by decision 112: a use block is a field, so the hook takes the block. The
+            // text before:
+            // reducer.eval_marker(
+            reducer.eval_use_block(
                 &use_block(handle(space), send(forged.clone(), vec![int(9)])),
                 &Env::new(),
                 rand(b"use"),
@@ -5837,5 +6927,82 @@ mod tests {
         for channel in [&name, &forged] {
             assert!(fixture.host.get_data(channel).await.is_empty());
         }
+    }
+
+    /// PL112 M-3 (decision 120 O-1): a handle send with params stores the EParams value after
+    /// its data, so it stores another datum than the reducer measured and its observer measures
+    /// the datum. A handle send without params keeps the measurement of the reducer.
+    #[tokio::test]
+    async fn handle_send_with_params_charges_the_stored_datum() {
+        let fixture = detached().await;
+        let this = handle(native(43));
+        let named = send_params(vec![SendParam::Named("k".to_string(), int(1))])
+            .expect("named params build")
+            .expect("params are not empty");
+        let measured = Some(IntroductionMeasurement::Produce { pars: 7 });
+        let route = |params: Option<SendParams>| {
+            fixture.reducer.route_send(
+                this.clone(),
+                datum(vec![private(3), string("produce")]),
+                false,
+                authority(),
+                measured,
+                params,
+            )
+        };
+        match route(Some(named.clone())) {
+            Ok(SendRoute::Host {
+                data, measurement, ..
+            }) => {
+                assert_eq!(measurement, None);
+                assert_eq!(data.pars.len(), 3);
+                assert_eq!(
+                    data.pars.last(),
+                    Some(
+                        &encode_params(&named)
+                            .expect("the params encode")
+                            .expect("not empty")
+                    )
+                );
+            }
+            Ok(SendRoute::Space(_)) => panic!("a handle call routes to a space"),
+            Err(error) => panic!("the send does not route: {error:?}"),
+        }
+        match route(None) {
+            Ok(SendRoute::Host {
+                data, measurement, ..
+            }) => {
+                assert_eq!(measurement, measured);
+                assert_eq!(data.pars.len(), 2);
+            }
+            Ok(SendRoute::Space(_)) => panic!("a handle call routes to a space"),
+            Err(error) => panic!("the send does not route: {error:?}"),
+        }
+    }
+
+    /// Decision 120 O-5: `eval_new` applies the fs-native filter before the annotated branch, so
+    /// an annotated `new` with an fs-native URN fails with `TermStructureError`.
+    #[tokio::test]
+    async fn an_annotated_new_with_an_fs_native_urn_fails() {
+        let fixture = detached().await;
+        let new = new_space(
+            New {
+                bind_count: 2,
+                p: Some(Par::default()),
+                uri: vec!["rho:io:fs:native:read".to_string()],
+                injections: BTreeMap::new(),
+                locally_free: Vec::new(),
+                space_types: Vec::new(),
+            },
+            vec![Some(handle(native(44))), None],
+        )
+        .expect("an annotated new builds");
+        assert!(matches!(
+            fixture
+                .reducer
+                .eval_new(&new, Env::new(), rand(b"fs new"), &authority())
+                .await,
+            Err(InterpreterError::TermStructureError(_))
+        ));
     }
 }

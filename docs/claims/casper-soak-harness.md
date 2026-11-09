@@ -214,6 +214,31 @@ Only the workflow-copy line differs among the 39 accepted artifacts. Fresh isola
 
 The renewal preserves the previous ledgers and unsuccessful inventory controls. It restores this bounded pre-merge discharge without authorizing node execution.
 
+On 2026-10-21, PR #811 changed the owner scan of `scripts/casper-soak/src/host_control.rs`. The change narrows the ownership guarantee, and it needs a fresh acceptance.
+
+- Before the change, one same-user process with an unreadable environment failed every `stop-owned` and `prefer-oom` call. A non-root runner has such processes, so every stop failed even when no owned writer remained (hosted run 39639227494).
+- After the change, the scan skips a same-user process when the environment read fails with EACCES or EPERM. Every other scan error still fails the call. A writer that does not stop still fails `stop-owned`.
+- **Limitation:** an owned process with an unreadable environment escapes cleanup. `stop-owned` does not kill it, and `prefer-oom` does not change its OOM score. A writer has an unreadable environment only when it is not dumpable, for example after a set-user-ID execution or a `PR_SET_DUMPABLE` change. The soak node, pytest, and the Docker CLI do not do this.
+- The unit tests `stop_skips_a_process_whose_environment_is_unreadable` and `oom_preference_skips_a_process_whose_environment_is_unreadable` run as UID 65534 in the binding container. Each requires an unreadable unrelated process, kills or marks the readable owned writer, and leaves the unrelated process unchanged.
+
+On 2026-10-21 the maintainer accepted this change, the narrower guarantee, and its limitation (PR #811, comment 6324960804) at revision `32798242d`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-01/report.json).
+
+Later on 2026-10-21 the maintainer accepted a fixture fix (PR #811, comment 6326106207) at revision `c3a9a0a28`. Three assertions of `scripts/bench/test-run-merge-recovery-soak.sh` could not fail under `set -e`, and they now fail with a message. The [second acceptance report](../casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-02/report.json) binds the fixture to its [review package](../casper/cbc-evidence/runs/casper-soak-writer-stop-20261021-02/report.json).
+
+On 2026-10-22, TASK-021-27 added a residual stop to the end of each segment. The change widens the cleanup guarantee, and it needs a fresh acceptance.
+
+- In daily soak 39711861154, the nodes of two deadline-stopped subprocess sessions kept running and filled the disk after 18.3 h (issue #24, comment 6354292291). The scheduled soak runs the driver of `master`. `master` did not contain PR #811, so the owner stop of PR #811 did not run in that soak. The residual stop is a second, independent stop. It does not depend on the owner marker.
+- After the owner stop, `host-control stop-under` kills every same-user process whose arguments or working directory are under `.subprocess-data`, whatever its owner marker. It does not consider its own process and its ancestors. A writer that does not stop fails the segment like a failed owner stop.
+- Sometimes the working directory of a same-user process cannot be read (EACCES or EPERM), and its arguments do not name the directory. Such a process is recorded as `uninspected` and is not stopped. After the stop, `stop-under` records the inode, size, modification time, and change time of each entry under the directory, before and after a 2 s wait. A changed, added, or removed entry means that a writer remains, and the stop fails. A process cannot set the change time, so a future-dated file cannot hide a write.
+- `residual-writers.txt` records each such process with its segment, name, match reason, environment readability, and owner-marker state. The record shows why the owner stop missed the process.
+- Under `.subprocess-data`, the failure-evidence copy takes only the session directories that the failed iteration created. A directory that existed before the iteration started is not copied.
+- **Limitation:** a same-user process that names a path under `.subprocess-data` in its arguments is stopped, also when it is not a soak writer. The soak runner is dedicated to one soak, so such a process is part of the soak.
+- **Limitation:** an `uninspected` writer that writes less often than once in 2 s can pass the write check. It does not stop, but it also does not fill the disk quickly.
+- **Limitation:** after a host protection breach, the soak already fails and must publish that failure promptly. The residual stop then kills and records within the disk stop budget, and it skips the write check.
+- Six unit tests and the fixture scenarios 2 and 6 of `scripts/bench/test-run-merge-recovery-soak.sh` cover the stop, the record, the write check, and the evidence scope. The unit tests are `residual_scan_records_why_the_owner_stop_missed_a_writer`, `residual_stop_fails_when_an_uninspectable_writer_keeps_writing`, `residual_stop_detects_writes_beside_a_future_dated_file`, `residual_stop_accepts_an_unchanged_tree_with_a_future_dated_file`, `residual_stop_without_a_quiet_window_still_kills_and_returns_promptly`, and `residual_stop_accepts_an_uninspectable_process_that_writes_elsewhere`.
+
+On 2026-10-23 the maintainer accepted this change, the wider cleanup guarantee, and its three limitations (PR #827, review 5627170022) at revision `c1cf31d7e`. The [acceptance report](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-acceptance-20261023-01/report.json) binds the accepted sources to the [review package](../casper/cbc-evidence/runs/casper-soak-deadline-shard-stop-20261022-01/report.json).
+
 B44, containment assumptions, and the stated model bounds remain unchanged. This acceptance does not discharge profile claims, node correctness, or post-merge work.
 
 The seven profile claims have separate bounded discharges. Candidate qualification and node soaks remain pending. Construction is not applicable.

@@ -2168,6 +2168,13 @@ body. The seal that such a surface stores is a residue region. The residue
 region charges that payer only inside the same deployment, and it has no
 demand in any later deployment. See DR-101.
 
+**Amendment (DR-135).** In a fired body that is not a system body, an
+unsigned surface inherits the body's owner. It opens a region of the owner of
+the continuation's stored seal, at the price that the owner's region
+recorded. An owner on a client lane is the running deployment, as before. A
+process that the body holds runs for the holder of its value (DR-135 item 9).
+Without an owner binding, the first item applies as before.
+
 The production invariant for a committed event $`e`$ and an unrelated ambient
 purse $`p_a`$ is:
 
@@ -4058,7 +4065,7 @@ combined demand exceeds the supply, neither deployment executes.
 P1 also states that accepted resources are committed and unavailable to other
 deployments.
 
-![Activity diagram of the same-block funding decision. In the first partition, the proposer and every validator take the pending offered candidates in canonical order and run the DR-64 check of each candidate on its own signed sources at R0. A candidate that is not fundable alone is rejected alone and cannot sink others. Union-find over canonical physical custody keys groups the remaining candidates that share a purse. If any purse p has a group hold sum greater than its supply at R0, every member of the group is rejected with no effect. In the second partition, each accepted member i funds from R0 and executes from R(i-1) in a fresh offered runtime. At settlement, the held-capacity guard requires balance_after(p) minus debit_i(p) to be at least the holds of all later members. If the guard holds, the member settles. If it fails, the member is a classified user failure that rolls back and pays its billable work and fee. The block is then published, and validators recompute groups, holds, and guards.](diagrams/offered-same-block-funding-groups.svg)
+![Activity diagram of the same-block funding decision. In the first partition, the decision pass at R0 runs before any runtime entry, on the proposer and on every validator. The candidates are in canonical order: play sorts them, and replay rejects any other order or a repeated member. The DR-64 check runs on each candidate at R0. The first candidate that fails alone is rejected alone: play quarantines it and retries the rest from R0, and replay rejects the block. Union-find over custodies and grant identifiers groups the remaining candidates. If a group holds more on a purse than its supply at R0, or draws more on a grant than its remaining ceiling, every member of the group is rejected with no effect, and play quarantines the group and retries the rest. The pass then computes the later holds L_i(p) of each member. In the second partition, each accepted member i funds from R0 and executes from R(i-1) in a fresh offered runtime. It reads its settlement inputs at R(i-1) and caps the capacity of each purse at the balance at R(i-1) minus L_i(p). The held-capacity guard requires balance_after(p) minus debit_i(p) to be at least L_i(p) for every debited or later-held purse. If the guard holds, the member settles. If it fails, the member is a charged user failure that rolls back to R(i-1) and pays its billable work and fee under the same cap. The loop continues while members remain and dev's play budget is not spent. If the budget stopped the batch and a group spans the cut, or a shipped member settled as a guard rollback, the shipped prefix plays again from R0 with no budget, at most once. The system deploys run from R_n, the block is published, and validators recompute the order, the groups, the later holds, the caps and the guards over the shipped members.](diagrams/offered-same-block-funding-groups.svg)
 
 (*Source: [`diagrams/offered-same-block-funding-groups.puml`](diagrams/offered-same-block-funding-groups.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-same-block-funding-groups.puml`.*)
 
@@ -4304,6 +4311,178 @@ signer share a cursor scope. So a settlement read at $`R_0`$ would make the
 second settlement fail. The proposal records the rule in §4.2. The rule refines
 item 1, and the decision above stays.
 
+**Implementation note 3: the ordered batch (DR-134, gap G2, 2026-10-18).**
+DR-134 implements items 1 to 7 for a batch of offers in one block. It also
+implements the amendment of 2026-10-12. The open points O-1 to O-15 of the G2
+plan are resolved from P1 and from `dev`, as DR-134 records.
+
+- **The decision pass (items 2 to 4).**
+  `RuntimeManager::decide_offered_batch` in
+  `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/offered_batch.rs`
+  runs before the first runtime entry of the batch. This is the order that
+  GateBeforeExecute requires.
+  - For each member in canonical order, the pass prepares the member at
+    $`R_0`$. It verifies the grants, reads the wallet snapshot and runs the
+    DR-64 check at $`R_0`$.
+  - The first member that fails alone stops the pass (item 2). Play rejects
+    that member, and replay rejects the block.
+  - `decide_groups` in `execution/funding_groups.rs` joins the members by
+    union-find over their custodies and their grant identifiers. The module
+    is pure and iterative.
+  - A group whose holds on one purse exceed the supply of the purse at
+    $`R_0`$ is rejected entirely (item 4).
+  - Members that draw one grant must fit its remaining ceiling at $`R_0`$
+    together (O-8, P1:2271-2287). A grant that only one member draws is
+    outside the group check. Its settlement checks the ceiling, as before.
+  - Each rejection message starts with "insufficient phlogiston", as DR-123
+    requires.
+- **The later holds.** `later_holds` computes, for each accepted member, the
+  sum of the holds of the later members on each purse. `LaterHolds` in
+  `execution/held_capacity.rs` keeps each positive hold with the payer of its
+  purse. The only member of a batch has no later holds.
+- **The settlement inputs at $`R_{i-1}`$.** Member $`i`$ funds from $`R_0`$
+  and executes from $`R_{i-1}`$. It reads its settlement inputs at
+  $`R_{i-1}`$. These inputs are the wallet snapshot, the grants, the prepaid
+  stacks, the receipts, the demand binding and the retained apply. This
+  implements the amendment of 2026-10-12. The check before execution stays at
+  $`R_0`$.
+- **The capacity cap (option B, O-1 and O-2).**
+  `DirectWalletSnapshot::cap_by_later_holds` caps the capacity of each
+  settlement source by the later holds on its custody (`capped_capacity`). The
+  cap applies on the success path and on the rollback path. Design section 8.4
+  records the rule.
+  - A self-drain stays a charged user failure, as P1:1990-1992 and
+    P1:2301-2302 require. The literal "reject with no charge" of the old
+    section 8.4 does not apply.
+  - With no later holds, the rule is the rule of user decision U3. So one
+    rule covers one member and many members.
+- **The guard (item 5).** The guard covers each purse with a positive debit
+  and each purse with a positive later hold (`guarded_purses`). The balance
+  reader takes the payer of a purse with only a later hold from
+  `LaterHolds`. Such a purse with no balance has the balance 0.
+- **A committed success with later holds (O-13).** Note 2 states that a
+  committed success needs no extra check. That statement is correct only when
+  no later holds exist. Replay now recomputes the guard of a committed success
+  when the member has later holds. If the guard fails, replay rejects the
+  block with "offered replay: the block commits a success, but the
+  held-capacity guard fails".
+- **Play (items 1 and 7).** `RuntimeOps::compute_offered_batch_state` sorts
+  the batch into canonical order and checks the order. It runs the decision
+  pass and then plays each member in a fresh offered runtime. The system
+  deploys run from $`R_n`$.
+- **Dev's play budget (O-10).** The budget is a packing limit of the node, not
+  metering. It applies between members, as in dev's loop of
+  `play_deploys_for_state`. One member always plays. When the budget stops the
+  batch after member $`k < n`$, the proposer ships the first $`k`$ members.
+  The shipped prefix plays again from $`R_0`$ with no budget in two cases:
+  1. A group contains a shipped member and a dropped member. The later holds
+     of the shipped member then change.
+  2. A shipped member settled as a guard rollback. Its guard can depend on a
+     hold of a dropped member on a purse outside the custody of the shipped
+     member.
+  3. *Added by DR-135 (G3).* A dropped member has a positive hold on a purse
+     that the owner table of a shipped member lists. The owner budget of the
+     shipped member subtracts the later holds, so its owner decisions can
+     change when the dropped member leaves the batch
+     (`rerun_after_truncation`, condition (c)).
+
+  In all other cases the executed results equal the results over the shipped
+  prefix, by induction on $`i`$. Validators recompute over the shipped prefix,
+  so the block stays self-consistent. The re-run has no budget, so it happens
+  at most once (`rerun_after_truncation`).
+- **Replay (item 6).** `certify_offered_batch` checks the canonical order.
+  It rejects any other order and any repeated member (O-9). It runs the
+  decision pass over the shipped members, and any rejection fails the block.
+  - Each member is certified with the execution root $`R_{i-1}`$ and its own
+    later holds. The root after member $`i`$ is the execution root of member
+    $`i + 1`$.
+  - The system continuation runs from the root of the last certificate.
+  - Replay keeps one `ValidatorReplay` record for each member.
+- **No new evidence field.** The execution root of member $`i`$ is the
+  post-state root of member $`i - 1`$, and certification checks that root. The
+  funding case already encodes the capacity of each source, which is now the
+  capped capacity.
+- **The proposer (O-4 and O-6).** The proposer puts up to 32 recovered
+  envelopes (dev's `RETRY_DEPLOY_REPROPOSAL_CAP`) and the stored offers into
+  one canonical batch, within the block caps.
+  - The byte budget follows dev's skip-and-continue rule. No offer is an
+    alternate.
+  - When play rejects a member, or every member of a rejected group, the
+    proposer quarantines each named member (DR-72). It then plays the
+    remaining batch again from $`R_0`$ (DR-63).
+  - `OfferedCandidateRejection` gains the field `group`. It names the other
+    members of a rejected group, so the proposer can quarantine them all.
+- **Block reports (DR-70).** `trace_offered` in `reporting_casper.rs` replays a
+  batch with one logger for each member. The bootstrap batch goes on the
+  report of the first member, and each member gets its own USER batch. The
+  system deploys run from the last settled root.
+- **Test hook.** `IgnoreLaterHoldsHook` makes the guard of one deploy ignore
+  its later holds on one node, in play and in replay. A producer with the hook
+  commits a success that the other validators reject.
+- **Shared files.** The play head in `runtime.rs` dispatches a batch of
+  envelopes to `compute_offered_batch_state`. The old single-offer head stays
+  as a comment. The errors file gains the field `group`. The other changes are
+  in cost-accounting modules.
+- **Verification: Rocq.** `SameBlockFundingGroups.v` proves these theorems
+  with no axiom. All 14 queries of `Print Assumptions` print "Closed under the
+  global context".
+  - `group_holds_prevent_overdraft` and
+    `batch_held_capacity_guard_preserves_later_holds`, the obligations of this
+    record. The second is the batch form of
+    `held_capacity_guard_preserves_later_holds`.
+  - `group_decision_permutation_invariant`, the third obligation. Its reach
+    uses the length of the pool as its fuel.
+  - `rollback_charge_at_most_the_hold_is_within_the_cap`. The cap of option B
+    is never below the hold of the member.
+  - `subset_of_accepted_group_is_accepted`, `shipped_prefix_is_accepted` and
+    `guard_monotone_in_later_holds`. These three facts give the truncation
+    rule.
+  - `accepted_members_fit_every_purse`, `accepted_batch_keeps_every_later_hold`
+    and `shipped_prefix_keeps_every_later_hold`.
+  - Four proved negative controls: prefix admission splits the group of supply
+    10 and holds 6 and 6, independent full capacity overdraws the purse, a
+    rollback without the cap loses a later hold, and a kept guard rollback
+    disagrees with the replay of the shipped prefix.
+- **Verification: TLA+.** `SameBlockFundingGroups.tla` checks `TypeOK`,
+  `GroupAllOrNone`, `NoOverdraft`, `GateBeforeExecute`, `HeldCapacityGuard`,
+  `DecisionPermutationInvariant` and `TruncationConsistency`.
+  - TLC passes the base configuration of two members with 878,208 distinct
+    states. It passes the large configuration of three members with 1,401,344.
+  - Apalache passes the configuration of three members at length 11.
+  - Four negative controls fail their named invariants under TLC and under
+    Apalache: PrefixAdmission fails `GroupAllOrNone`, IndependentCapacity fails
+    `NoOverdraft`, NoHeldGuard fails `HeldCapacityGuard`, and
+    KeepTruncatedResults fails `TruncationConsistency`.
+  - `GateBeforeExecute` holds by the structure of the model, so it has no
+    control.
+  - The model treats a grant as a key whose supply is its remaining ceiling.
+    Drains move funds out of the model, so no run adds funds to a purse.
+- **Verification: tests.** These tests pass in release builds.
+  - `offered_batch_runtime_test.rs`: a same-signer pair and a pair of two
+    signers play and replay as one batch. Replay rejects a batch out of
+    canonical order, a repeated member and a member that executed from
+    another root. The checks of a batch precede every runtime entry. A
+    truncated same-signer batch replays, and its member equals its play alone
+    in post-state, cost, failure flag and identity.
+  - `offered_batch_api_test.rs`, on two nodes: a same-signer pair and offers
+    of two signers settle in one block. An over-supply group is rejected
+    entirely, with no charge. A drain into a later hold becomes a charged user
+    failure, and the later member settles. Validators reject a producer whose
+    guard ignores the later holds (O-13).
+  - The amounts of the drain test fit the measured use of its transfer
+    (about 449,161 phlo at price 2). The example amounts of design section
+    8.3 stay in the unit test of the guard.
+  - The property test `realized_use_within_the_estimate_settles_under_later_holds`
+    in `execution/gate/tests.rs` shows feasibility with later holds. Its
+    non-vacuity test reached 93 accepted cases, 88 with a later hold and 59
+    with a tight capacity.
+- **Verification: property tests.** `execution/funding_groups/tests.rs` has
+  five property tests and eight examples. They cover group all or none, the
+  fit of the accepted groups, the invariance of the decision under
+  permutation, the later holds as suffix sums, the canonical order, the
+  remaining ceiling of a shared grant and the truncation rule. `execution/held_capacity.rs` tests the guarded purses and
+  the capped capacity.
+
 ## DR-66 — Protocol-6 test genesis is activated, and the legacy meter is retired
 
 **Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
@@ -4321,7 +4500,7 @@ The section "Historical replay contract" in
 legacy-replay requirement open. It closes only when the user approves narrower
 historical support.
 
-![Diagram that maps each kind of evaluation request to one accounting scope. User deploys use the native offered meter, which is funded, settled, and produces receipts. Genesis uses the trusted install scope, which is unmetered, carries the Unit signature, and records cost zero. System deploys keep their unchanged system scope. The exploratory estimate is a native dry run that is unfunded, host-work bounded, resets to the start root, and returns measured phlo. Internal reads of policy and token metadata use the unmetered internal read path. The RhoSpec harness uses the named inj path. Genesis replay is symmetric with genesis play. Historical body-only execution returns a compatibility error before any state reset, because the legacy meter adapter is commented out and a fresh protocol-6 genesis is required.](diagrams/offered-evaluation-scopes.svg)
+![Diagram that maps each kind of evaluation request to one accounting scope. User deploys use the native offered meter, which is funded, settled, and produces receipts. Genesis uses the trusted install scope, which is unmetered, carries the Unit signature, and records cost zero. System deploys keep their unchanged system scope. The exploratory estimate is a native dry run that is unfunded, bounded by the exploratory phlo limit, resets to the start root, and returns measured phlo. Internal reads of policy and token metadata use the unmetered internal read path. The RhoSpec harness uses the named inj path. Genesis replay is symmetric with genesis play. Historical body-only execution returns a compatibility error before any state reset, because the legacy meter is deleted (DR-134) and a fresh protocol-6 genesis is required.](diagrams/offered-evaluation-scopes.svg)
 
 (*Source: [`diagrams/offered-evaluation-scopes.puml`](diagrams/offered-evaluation-scopes.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-evaluation-scopes.puml`.*)
 
@@ -4342,6 +4521,12 @@ historical support.
 6. The two legacy-charge tests follow the adopted failure policy. A classified
    user failure charges the billable prefix and the fee. A parse error is
    rejected before execution with no charge.
+
+**Amendment (DR-134, 2026-10-17).** The user chose to delete the legacy meter
+("Delete (Recommended)"), so DR-134 item 3 supersedes item 3. The activation
+flag of item 2 is dev's flag, and it stays. A genesis requires the active
+protocol-6 policy, so the flag is always true. Items 1, 4 and 5 are complete
+on every shard (DR-134 items 1 and 2).
 
 **Verification.** `OfferedOnlyActivation.v` proves the offered-only rule
 without axioms. Active admission rejects body-only deploys, active selection
@@ -4644,7 +4829,7 @@ the installer's region. The runtime attribution is correct.
 Funding eligibility admitted only the sources of the triggering envelope
 (`family_selection.rs`). The installer's purse was not a candidate source.
 
-![Sequence diagram with the actors Installer, Gateway client, Proposer and validators, Reducer and native meter, Funding family selection, Installer located purse, and Gateway signed sources. In an earlier block, the installer's offered deploy stores a trigger continuation with the installer's region as a stored signed term. In a later block, the gateway's offered deploy sends a message that matches the stored trigger. The reducer reports the obligations of the candidate: the COMM in the installer region and the body work in the gateway region. Funding selection makes the installer's located purse eligible for installer-region obligations, authorized by the stored signed term, and the gateway's sources eligible for gateway-region obligations. If the installer lane budget, which is the balance at R0 minus earlier group holds, covers the COMM, settlement debits both purses and the gateway receives a receipt with one row per debited purse. If the budget is exhausted, the interaction does not fire and has no charge, which is the P1 Rule 4 token gating. A note states that genesis continuations carry the Unit signature, which maps to no purse.](diagrams/installer-funded-continuation-sequence.svg)
+![Sequence diagram with the actors Installer (owner) and Gateway client and the participants Proposer and validators, Reducer and RSpace with the owner binding, Installer owner purse, and Gateway signed sources. In an earlier block, the installer's offered deploy, at the installer's signed price, stores a trigger continuation whose region records that price. In a later block, batch member i, the gateway's offered deploy arrives. The proposer reads the installer purse at R_{i-1} for the owner table, with budget equal to the capped balance minus the own hold. The reducer runs the gateway's term with the owner table, the gateway's send matches the stored trigger, and the owner share is the usage times the installer's recorded price. If the installer's remaining budget covers its share, the COMM fires and the body runs for its owner, the installer, or for the transferee of a lollipop or slot. Settlement then debits an owner row on the installer purse and a client row with the gateway's own work and fee, and the gateway receives a receipt with one row per debited purse. If the installer cannot pay, the interaction does not fire, both items stay stored, the run continues, the journal records the refusal, replay checks its shortfall, and only the client row is debited. Notes state that validators read every listed owner purse at R_{i-1} again and check the owner table and each refusal, that genesis continuations carry the Unit signature, which maps to no purse, and that a signature that anyone can spell has no purse and budget 0.](diagrams/installer-funded-continuation-sequence.svg)
 
 (*Source: [`diagrams/installer-funded-continuation-sequence.puml`](diagrams/installer-funded-continuation-sequence.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/installer-funded-continuation-sequence.puml`.*)
 
@@ -4688,6 +4873,23 @@ both (§4.3). The linear cost estimate design records the interim rule as B5
   (`rspace++/src/rspace/space_matcher.rs:184-199`). The accounting observer
   has no veto (`rspace++/src/rspace/rspace_interface.rs:116-122`). So the
   premise of B5 is under review in G3.
+
+**Amendment (DR-135).** DR-135 implements items 1 to 3, with these changes:
+
+- The narrowing of 2026-10-12 is replaced. Every unforgeable owner signature
+  has a purse: a key wallet, the vault of one private name, or a compound of
+  such atoms (P1 Rules 2 and 3). Owner bodies create owner seals during the
+  run, so the condition that a seal existed at $`R_0`$ goes away.
+- Decision b of 2026-10-13 replaces the interim rule B5. An interaction that
+  an owner cannot pay does not fire and has no charge, and the run continues
+  with a refusal that replay checks. This restores item 3.
+- The budget of item 2 becomes the G2 capacity at $`R_{i-1}`$ minus the later
+  holds and the owner's own hold (DR-135 item 3).
+- Item 5 uses the funding-slot form decided on 2026-10-19. The trigger
+  transfers ownership of its body to the slot, `for (...) { {% body %}[slot] }`,
+  which is `{for(...) body}[installer ⊸ slot]` (P1:1274-1283, :1557-1567).
+- The narrowing and B5 came from recommended options that the user approved
+  on 2026-10-10. They were not rules that the user set.
 
 **Verification obligations.** The three-node gateway flow passes. A TLA+
 control shows that a trigger with no stored signature cannot draw an installer
@@ -4741,6 +4943,39 @@ out with a reason.
 **Verification obligations.** `block_report_api_test` and
 `multi_parent_casper_reporting_spec` pass on offered blocks.
 
+**Amendment (DR-134, 2026-10-17).** DR-134 implements this record.
+
+- Reporting calls `certify_offered_draft`, the check that validation runs for
+  an offered deploy. It does not call
+  `replay_compute_state_envelopes_with_policy`, because that function also
+  writes the mergeable store, which a read path must not do.
+- With gap G2 (DR-65 implementation note 3), a block can hold a batch of
+  offers. Reporting then calls `certify_offered_batch`, the check that
+  validation runs for a batch, with one logger for each member. The
+  registry-bootstrap batch goes on the report of the first member, and each
+  member gets its own USER batch. The single-offer wrappers of
+  `certify_offered_draft` stay in the code as comments.
+- The system deploys then replay on the reporting runtime from the settled
+  root, so their events stay in the report.
+- An offered deploy reports the committed native cost evidence and the
+  settlement receipt (`OfferedDeployReport`, proto field
+  `DeployInfoWithEventData.offered`).
+- An offered deploy also reports the events of its user run in a USER batch,
+  after the registry-bootstrap batch, as dev reports a user deploy (user
+  direction 2026-10-17: "Align the behavior as closely as possible to dev").
+  The native replay session takes an optional logger. Only reporting passes
+  one (dev's `ReportingLogger`), and the logger records at the logging points
+  of dev's `ReplayRSpace`. Validation and play pass none, so their replay does
+  not change. The node therefore extracts transfers for an offered deploy as
+  for any user deploy. The cost settlement runs outside the logged session, so
+  the report has no PRECHARGE or REFUND batch and no fee transfer.
+- The reporter takes the Casper state for each request
+  (`ReportingCasper::trace_in`), because the reporter is built before Casper
+  starts.
+- The reporter refuses a body-only user deploy after genesis and a genesis
+  that the legacy meter produced (DR-66 item 5) before any permit, runtime or
+  reset.
+
 **Cross-refs.** DR-66. Leaf `ofp-5-offered-reporting`.
 
 ## DR-71 — The exploratory cost estimate is a native unfunded dry run
@@ -4762,6 +4997,21 @@ exploratory reads of policy and token metadata keep the unmetered read path.
 **Verification obligations.** The estimate equals the measured phlo of the
 same term executed as a funded offer at the same root. The dry run leaves the
 root unchanged.
+
+**Amendment (DR-134, 2026-10-17).** DR-134 implements this record.
+
+- `RuntimeManager::play_exploratory_deploy` and
+  `RuntimeManager::capture_results` run `play_exploratory_dry_run`
+  (`direct_wallet_funding/execution/dry_run.rs`).
+- Host-work bounds no longer exist (DR-131). The bound is the operator's
+  exploratory phlo limit (`api-server.exploratory-deploy-phlo-limit`) under
+  the signed-limit bound source.
+- The signer is the deployer, else the node's exploratory key. The signer
+  sets the funding signature, the deploy data and the normalizer environment
+  of an owner-direct offer of that key.
+- `the_dry_run_estimate_equals_the_measured_phlo_of_the_funded_offer` and
+  `estimate_cost_with_deployer_matches_real_deploy_cost` check the
+  obligation of this record.
 
 **Cross-refs.** DR-64, DR-66. Leaf `ofp-5-exploratory-dry-run`.
 
@@ -4785,7 +5035,7 @@ production:
 P1 §`sec:deploy-boundaries` states that a rejected deployment has no effect.
 It must not block other deployments.
 
-![Activity diagram of the quarantine-and-retry loop. The proposer reads pending envelopes in canonical order. An envelope in an inactive format is quarantined at selection with a status entry that has no root. The proposer selects the first eligible offer and keeps at most ordinary_cap minus 1 alternates. It checkpoints the attempt in a fresh offered runtime. If the block is created, it is published. If the result is OfferedCandidateRejected with the attempted identity, the proposer removes that envelope from pending storage and records a bounded status entry with the identity, the root R0, the block, and the reason, at most 4096 entries and 1024 reason bytes. It then tries the next alternate. With no alternate left, it continues with no user deploys when empty-block, slashing, or recovered-slash work exists, and otherwise returns NoNewDeploys. An infrastructure error, such as storage, history, RSpace storage, lock, stream, communication, or availability, keeps its own type and propagates.](diagrams/offered-candidate-quarantine-loop.svg)
+![Activity diagram of the quarantine-and-retry loop. The proposer reads pending envelopes in canonical order. An envelope in an inactive format is quarantined at selection with a status entry that has no root. Since DR-134, the proposer selects one canonical batch within the block caps, with up to 32 recovered envelopes before the stored offers and no alternates. It checkpoints the attempt in a fresh offered runtime. If the block is created, it is published. If the result is OfferedCandidateRejected and names members of the attempted batch, the proposer quarantines every named member. It removes each from pending storage and records a bounded status entry with the identity, the root R0, the block, and the reason, at most 4096 entries and 1024 reason bytes. If members remain in the batch, the next attempt plays the rest of the batch again from R0 (DR-63). With no member left, it continues with no user deploys when empty-block, slashing, or recovered-slash work exists, and otherwise returns NoNewDeploys. An infrastructure error, such as storage, history, RSpace storage, lock, stream, communication, or availability, keeps its own type and propagates.](diagrams/offered-candidate-quarantine-loop.svg)
 
 (*Source: [`diagrams/offered-candidate-quarantine-loop.puml`](diagrams/offered-candidate-quarantine-loop.puml) — render with `plantuml -tsvg docs/casper/theory/diagrams/offered-candidate-quarantine-loop.puml`.*)
 
@@ -4906,6 +5156,62 @@ classified user failure, so it no longer reaches the candidate rejection.
 system-process call no longer reach the candidate rejection. The call is
 recorded and replayed, and a shape error is a classified user failure.
 
+**Amendment (DR-134, 2026-10-18, gap G2).** DR-65 lets one block hold several
+offers. So items 7 and 8 and the loop change. Items 1 to 6 and 9 stay.
+
+- **Item 7.** The proposer selects one canonical batch of offers within the
+  block caps. Selection keeps no alternates.
+  - When play rejects a member, the proposer quarantines that member.
+  - When play rejects a funding group (DR-65 item 4), the rejection names the
+    other members of the group in its field `group`. The proposer then
+    quarantines every named member.
+  - The proposer plays the remaining batch again from $`R_0`$ as a fresh
+    attempt (DR-63).
+- **Item 8.** When no member remains, the proposal continues exactly as with
+  no user deploys.
+- **The bound.** Each rejected attempt removes at least one member. So one
+  proposal makes at most $`|\mathrm{batch}| + 1`$ attempts, and the last
+  attempt can have no user deploys. This bound replaces the bound of item 7.
+  - A rejection by the decision pass of DR-65 enters no runtime.
+  - A rejection after execution can follow the play of earlier members. In
+    the worst case, a proposal plays
+    $`|\mathrm{batch}| \cdot (|\mathrm{batch}| + 1) / 2`$ members.
+- **The loop.** `next_offered_attempt` now runs only when the batch is empty,
+  and it finds no alternate.
+
+```text
+⟨offered proposal⟩ ≡
+  batch ← canonical window within the block caps
+  attempt ← Batch(batch) if batch ≠ ∅, else next_offered_attempt(∅, other_work)
+  loop
+    result ← checkpoint(attempt)
+    if result = OfferedCandidateRejected(id, R0, reason, group)
+         and the attempt holds id and every member of group
+      quarantine(id and every member of group, R0, reason)
+      batch ← batch without the quarantined members
+      attempt ← Batch(batch) if batch ≠ ∅, else next_offered_attempt(∅, other_work)
+      continue
+    return result
+```
+
+- **The model.** In `OfferedCandidateQuarantine.tla`, `chosen` is now a set,
+  and the variable `batch` replaces `alternates`. A failing checkpoint
+  quarantines the first unfundable member and retries the rest of the batch.
+  - `FundableWindowIncluded` replaces `FirstFundableIncluded`. A finished
+    proposal includes exactly the fundable members of its window. With no
+    fundable member, it builds an empty block exactly when other work exists.
+  - `AttemptsBounded` stays $`\mathrm{attempts} \leq \mathrm{cap} + 1`$.
+  - The old definitions stay in the model as comments.
+- **Verification.** TLC passes the base configuration with 10,450 distinct
+  states and the large configuration with 1,838,653. The five negative
+  controls fail their named invariants. The control skiphead now violates
+  `FundableWindowIncluded`, and the gate script names that invariant.
+  - `stored_offers_join_one_canonical_batch_up_to_the_ordinary_cap` replaces
+    the alternates test.
+  - `offered_attempt_loop_matches_quarantine_model` drives the batch loop.
+  - `offered_selection_window_is_canonical_bounded_and_height_independent`
+    expects the canonical prefix and no alternates.
+
 **Cross-refs.** P1 `sec:deploy-boundaries`. DR-63, DR-65. Leaves
 `ofp-1-baseline-liveness` and `ofp-1-baseline-verify-quarantine`. Leaf
 `ofp-3-rejection-status` exposes the status entry through the API.
@@ -4954,6 +5260,8 @@ checks the adopted version against the real `GenesisResourcePolicy::adopt`.
 ## DR-74 — Native evidence encodes each causal path as a delta from the previous path
 
 **Note (DR-131).** Host-work metering is removed (`75de2dc39`). The mentions of host work in this record are historical.
+
+**Changed by DR-132.** The deterministic scheduler is removed (`97d020154`). Each causal path now has one segment, `[(r, 0)]`, which names journal row `r`. The delta codec of this record stays and encodes these paths. Restore: `git revert 97d020154`.
 
 **Status.** Implemented 2026-10-04 for register item I7 of epic 8946 (batch
 B0).
@@ -6163,6 +6471,8 @@ vectors are unchanged.
 
 ## DR-84 — A split adds one causal-path segment
 
+**Superseded by DR-132.** The deterministic scheduler and its splits are removed (`97d020154`). Each causal path has one segment, which names its journal row, so no split adds a segment. Restore: `git revert 97d020154`.
+
 **Status.** Implemented 2026-10-05 for cap root cause C9 of epic 8946
 (batch B1, phase C).
 
@@ -6260,6 +6570,8 @@ Tests:
 
 **Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
 
+**Changed by DR-132.** Each causal path has one segment, which names its journal row (`97d020154`). The chained digest and the recording index stay. Native replay no longer finds a row by the digest of its path. It finds each row by its recorded source. Restore: `git revert 97d020154`.
+
 **Status.** Implemented 2026-10-05 for cap root cause C7a of epic 8946
 (batch B1, phase C). Its gate H5 holds: in the phase B probe, the recording
 occurrence index was 33.6% of the producer execution budget's
@@ -6336,6 +6648,8 @@ Tests:
 ## DR-86 — Native evidence interns its causal paths in one hash-consed trie
 
 **Changed by DR-131.** Host-work metering is removed (`75de2dc39`). The host-work charges of this record no longer apply. Its other parts stay. Restore: `git revert 75de2dc39`.
+
+**Changed by DR-132.** Each causal path has one segment, which names its journal row (`97d020154`). The trie stays and holds these paths. Native replay no longer keeps a digest index of the paths. It finds each row by its recorded source. Restore: `git revert 97d020154`.
 
 **Status.** Implemented 2026-10-05 for cap root cause C7b of epic 8946
 (batch B1, phase C).
@@ -8892,6 +9206,19 @@ under the committed caps. Six of the nine tests still need the Phase D caps.
 **Amendment (DR-116, 2026-10-09).** Gap G6 landed.
 `a_third_signer_inserts_a_version_after_a_merge_with_a_writers_branch` is
 re-enabled and passes.
+
+**Amendment (DR-135).** Item 5 changes. A held process keeps the provenance
+of the value that holds it (P1 `rem:signed-subst`, P1:817-825):
+
+- When the holder of the value differs from the running context, the process
+  runs for the holder, at the holder's recorded price, with an empty
+  authority (DR-135 item 9).
+- The caller of a system body is the single holder of the code that the body
+  received. Without one such holder the body has no caller, and a held
+  process runs for the running deployment.
+- Residue regions record the caller in `CostRegion.caller`. The residue
+  identity does not read the caller, so resolution does not change.
+- Without an owner binding, item 5 applies as before.
 
 **Cross-refs.** DR-31, DR-41, DR-68, DR-98, DR-100. Bug 10056
 (`bug-after-one-signer-writes-the-registry-any-other-signer-s-registry-lookup-or-insert-is-unfundable-work-charged-to-the-earlier-writer-s-authority-51d630`).
@@ -12388,6 +12715,15 @@ estimate binds `Certificate` with the bound $`B`$, and an incomplete estimate
 binds `SignedLimit` with the signed limit. The three family paths with no
 caller keep `Certificate`.
 
+**Amendment (DR-135, 2026-10-20).** The bound counts only the work that the
+caller pays (DR-135 item 13). A share of an owner region at a price of 1 or
+more counts against its owner's budget, not against the bound, so such work
+never exhausts the signed limit. Owner work at price 0 still counts against
+the bound. A receipt therefore holds
+$`\mathrm{phloUsed} - \mathrm{ownerPhlo} + \mathrm{retainedPhlo} \le \mathrm{phloLimit}`$,
+and $`\mathrm{phloUsed}`$ can exceed the limit by at most
+$`\mathrm{ownerPhlo}`$. The classes of this record do not change.
+
 **Cross-refs.** DR-64, DR-72, DR-102, DR-114, DR-115, DR-124.
 `cost-accounting-impl/economic-failure-policy-decisions.md`.
 
@@ -13066,6 +13402,27 @@ These tests stay on legacy deploys:
 - Provisional caps, the same packages: 1916 of 1920 tests pass. The 4 failures
   are the known ones: the gateway test (gap G3), the 64-source test, and the
   two legacy-charge tests of I6.
+
+**Amendment (DR-134, 2026-10-18, gap G2).** Gap G2 has landed (DR-65
+implementation note 3), so item 5 changes. The other items stay.
+
+- **Item 5.** A block takes up to 32 recovered envelopes as members of its
+  offered batch. The number is dev's retry cap,
+  `RETRY_DEPLOY_REPROPOSAL_CAP`. Further recovered envelopes wait for later
+  proposals.
+- **The order.** The recovered envelopes precede the stored offers, as the
+  legacy retry stage precedes the ordinary stage.
+- **The byte budget.** Dev's skip-and-continue rule applies. The proposer
+  admits a recovered envelope when it fits the byte budget or when nothing is
+  selected yet. Otherwise the envelope waits, and the pass continues with the
+  next envelope.
+- **The double-apply guard.** The old rule kept a recovered envelope out of the
+  alternates, because the guard in `create_inner` covers only the selected
+  candidates. A batch has no alternates, so every recovered member is a
+  selected candidate, and the guard covers it.
+- **The tests.** The orphan halves of `dedup_orphan_recovery_spec.rs` and
+  `multi_validator_recovery_spec.rs` need two user deploys in one block. G2
+  removes that blocker, so their ports follow DR-134.
 
 **Cross-refs.** DR-55, DR-69, DR-72, DR-101, DR-115. Bugs 10986 and 11004. Leaf
 `ofp-3-recovery-offered-format`.
@@ -14793,6 +15150,12 @@ restores its pre-state and pays nothing.
   sources. Production rejects that state.
 - P1 checks the tokens of a funding slot at acceptance (P1:1553-1555). A
   correction of the gap fill G-5 for funding slots is pending (G3).
+- *Amendment (DR-135, 2026-10-20).* Resolved for a funding slot that pays as
+  the owner of its continuation. The slot pays at each interaction through
+  its owner budget, so it needs no hold before execution, and the caller
+  reserves only the work that it pays (DR-135 item 13). Rule G-5 itself
+  stays: an on-chain purse that a caller lists as its own source still holds
+  nothing before execution.
 
 **Cross-refs.** DR-5, DR-64, DR-65, DR-102, DR-113, DR-122, DR-124.
 
@@ -15152,6 +15515,43 @@ terms as the papers do. One case differs. A fired stored body runs with an
 empty authority, so its unsigned work charges the triggering deploy
 (`reduce.rs:382-406`). Design section 13 records how that charge differs from
 uniform signing.
+
+**Amendment (DR-134, 2026-10-18, gap G2).** A block can now hold a batch of
+offers (DR-65 implementation note 3). So the live sites of item 1 change. The
+other items stay.
+
+- **The decision pass.** Play and the batch replay run the check in the
+  decision pass of DR-65. `decide_offered_batch` calls
+  `check_offered_member_at_root` for each member, in canonical order. The
+  pass checks every member at $`R_0`$ before the first runtime entry of the
+  batch, as GateBeforeExecute requires.
+- **The URN map.** The pass spawns one offered runtime, the play runtime in
+  play and the replay runtime in replay. Each check of the pass reads the URN
+  map of that runtime, and the pass never enters it.
+- **Play.** `evaluate_native_offered` now receives the result of the check as
+  its argument `gate`. The old call of the check stays in the code as a
+  comment.
+- **The witness replay.** `replay_native_offered_witness` keeps its own check,
+  as item 1 states. It reads the wallet snapshot at $`R_0`$, also for a later
+  member of a batch. So a validator checks each member twice, and both checks
+  read the same root and the same inputs.
+- **The test records.** The pass records its check of each member with the
+  role of the pass. The witness replay records its own check with the role
+  `Replay`.
+
+**Amendment (DR-135).** Item 6 changes. G3 now gates the foreign work that
+executes in a deployment:
+
+- The share of an owner region is drawn from its owner purse, within the
+  owner budget that the recording lists.
+- An interaction that an owner cannot pay does not fire and is recorded as a
+  refusal. An introduction on an owner lane that its owner cannot pay stores
+  nothing.
+- Owner purses settle in rows of their own (DR-135 items 3, 5, 6 and 8).
+
+The check before execution does not change. It still holds the client lanes
+only. Since DR-135 item 13 (2026-10-20), the signed limit and this hold cover
+exactly the work that the caller pays.
 
 **Cross-refs.** DR-64, DR-68, DR-72, DR-101, DR-102, DR-113, DR-122, DR-123.
 Design sections 5.3, 6, 7, 9 and 16 of
@@ -15869,6 +16269,8 @@ serves cost accounting.
   random state, so a Rholang run cannot make them.
 - R7. G3 design v7 depends on the shared order: its join residual and its
   Stored detector. The G3 v8 review must account for this record.
+  - Changed by DR-132: the shared order is gone, because evaluation races as
+    on `dev`. The G3 design must record its skips, filters and denials.
 - A comment in the metered tests cites pgmcp bug 10137. After a vetoed
   join on a repeated channel, play and the metered selection could choose
   other data. R3 matches that defect. This record fixes R3 in play, and
@@ -15933,6 +16335,9 @@ serves cost accounting.
   receive. They now replay each run and require the known outcomes.
 - The other two stay canonical in 72 plays each, because the scheduler runs
   the sends first. They have a DR-129 note and no other change.
+  - Changed by DR-132: racing evaluation runs the sends and the receives in
+    any order. These two tests and the persistent-peek half of the guarded
+    match now replay each run and require the known outcomes.
 - Suites (nextest, release), each three times under each cap set:
   - rholang and rspace++: 4246 of 4246 tests pass in all six runs, with 13
     skipped. The baselines at `717a33b16` have 4238 of 4238.
@@ -15956,6 +16361,18 @@ serves cost accounting.
 - The TLA gate for `NativeCandidateOrder` passes: the two safe
   configurations and three refutations, among them the new control.
 - The documentation syntax, formal source substance and STE checks pass.
+
+**Amendment (DR-135).** Under owner funding, two rules join the replay
+boundary:
+
+- The Stored check also skips a continuation that the journal row names in a
+  refusal. It runs the owner item test on each candidate datum, at the row's
+  snapshot, and it counts an unlisted purse as unbounded while the owner
+  table has room (DR-135 items 5 and 6, SA8).
+- A produce keeps its own datum in every tuple. On a repeated channel, the
+  incoming datum stays first in the E1 order.
+
+Without an owner binding, the rules of this record apply as before.
 
 **Cross-refs.** DR-6, DR-34, DR-66, DR-75, DR-79, DR-88, DR-100, DR-102,
 DR-107. [The canonical candidate order diagram](diagrams/canonical-candidate-order.svg).
@@ -16007,7 +16424,7 @@ approach".
 |---|---|---|---|---|
 | R6 | A join that takes two data from one channel removes them in ascending index order. The first removal shifts the second index, so the wrong datum goes. | Remove in descending index order (`ops_produce.rs`, `ops_consume.rs`, `replay_rspace.rs`) | Yes. Native replay must agree on joins that repeat a channel. | None |
 | K1 | The DER to R‖S conversion of secp256k1-eth pads R and S at the wrong end. About 1 signature in 128 then fails verification (`6a4c71ec0`). | Left-pad R and S to 32 bytes (`secp256k1_eth.rs`) | Yes. Cosigned envelopes with mixed algorithms need it (DR-2). | None |
-| H16 | `getBlockData` and `getDeployData` hold a read guard across `produce().await`. | Release the guard before `produce` (`system_processes.rs`) | Yes. The reduction scheduler needs it (`1af280644`). | None. `dev` changed other parts of the file. |
+| H16 | `getBlockData` and `getDeployData` hold a read guard across `produce().await`. | Release the guard before `produce` (`system_processes.rs`) | No, since DR-132. The reduction scheduler that needed it (`1af280644`) is removed. The fix stays under decision 1. | None. `dev` changed other parts of the file. |
 | W13 | The formal gate passes the source inventory to `jq` as one argument. Above 128 KiB, the call fails with E2BIG. | Pass the inventory on standard input (`scripts/ci/check-formal-gate.sh`) | Yes. The formal tree of this branch is above the limit. | None |
 | W12 | Two audit scripts scan `docs/theory`, which exists on neither branch. So they check nothing. | Scan `docs/casper/theory` (`scripts/audit/check-rocq-line-refs.sh`, `check-source-line-refs.sh`) | Yes. The scripts then check the cost-accounting documents. | None |
 | R17 | The state importer and exporter panic on a malformed chunk from a peer. | Return errors (`rspace_importer.rs`, `rspace_exporter.rs`, `engine/initializing.rs`) | No | None. `dev` changed other parts of `initializing.rs`. |
@@ -16200,3 +16617,1426 @@ DR-100, DR-102, DR-103 and DR-108 to DR-112 adopted host-work charge rules
 that this record removes. DR-128 (the restored test), DR-129 and DR-130.
 DR-132 follows: the deterministic scheduler returns to the racing
 evaluation of `dev`.
+
+## DR-132 — The deterministic scheduler returns to dev's racing evaluation, and native replay finds each recorded operation by its source
+
+**Status.** Decided by the user on 2026-10-14 for epic 8946. The user
+said: "the deterministic scheduler needs to be reverted to dev's version, I
+will coordinate the necessary fileio changes with Mike (the deterministic
+scheduler will have a catastrophic impact on parallelism)". This reverses
+the decision of 2026-10-13 to keep the scheduler (consensus proposal §3.7,
+commit `84cfa5684`). The user approved the plan on 2026-10-16 ("Approve,
+run all steps (Recommended)"), with these choices:
+
+- D1-A: name each native operation by its journal row, inside the current
+  format, and let native replay find each row by its RSpace source, as dev
+  does.
+- D2-A: leave the forged-journal stall out of this record, and record it as
+  a residual risk with an ignored test. Reversed by D2-B.
+- D2-B (2026-10-16): native replay rejects the block when every live task
+  waits on a recorded operation, so every replay ends in a verdict, as on
+  dev. The user chose "Fix the wait in DR-132" after the recorded-call test
+  stalled in step S3, and approved design v2 ("Approve, run all steps
+  (Recommended)").
+- D3-A: delete `deterministic_reduction.rs` and its capability tests. Git
+  keeps them.
+- D4-A: retire the formal artifacts of the scheduler, and keep
+  `DeterministicParallelReduction.v` with an amended header.
+- D5-A: no benchmark.
+
+**Terms.**
+
+- The *deterministic scheduler* is the single-order reduction scheduler of
+  `rholang/src/rust/interpreter/deterministic_reduction.rs` (deleted). It
+  named each native RSpace operation by a causal path and ran the
+  operations of a native frontier one at a time, in path order.
+- *Racing evaluation* is the evaluation of `dev`. Parallel branches run as
+  Tokio tasks, and RSpace operations on disjoint channels run at the same
+  time.
+- The *per-call scope* is dev's `DEFERRED_DISPATCHES` scope of one `inj`
+  call. A continuation body, a re-issue and a parallel child run as tasks of
+  the scope, and `inj` drains the scope before it returns.
+- A *source* of an operation is its RSpace event identity: the channel or
+  channels, the hash of the data or of the patterns and continuation with
+  their random state, and persistence (`operation_sources.rs`).
+- A *row* is one entry of the native operation journal. Its *journal
+  index* is its start order in play.
+- The *committed arm* is a copy of `HEAD` with the changes of this record
+  and the committed size limits. The *working tree* has the provisional size
+  limits, which are not committed.
+- A *live task* is a task of a native replay evaluation, from before its
+  spawn until its future ends. The root is live from `begin` until its
+  evaluation returns.
+- A *parked waiter* is a live task in `wait_ready` whose selected row was
+  not ready at the current version, and that counted itself.
+- The *version* counts the changes that can make a waiter ready: a publish,
+  a cancel, the end of a boundary, an invalidation and a stall.
+- The *progress word* is one `AtomicU64` for each replay. Bits 0 to 30 count
+  the parked waiters, bits 31 to 61 count the live tasks, bit 62 is
+  `STALLED` and bit 63 is `CLOSED`.
+- A *stall* is a state in which every live task is a parked waiter.
+
+**Context.** The scheduler gave four guarantees (proposal §3.7):
+
+1. One canonical order of the operations of a native frontier.
+2. Operation names, by causal path, for the native evidence (DR-74, DR-84
+   to DR-86).
+3. Checkpoints that never see a partial evaluation.
+4. Equal host work in play and replay.
+
+DR-131 removed the fourth with host work. Racing evaluation gives up the
+first. The second and third need replacements, because native play,
+native replay and the evidence keyed every operation by its path.
+
+**Decision.**
+
+1. *Evaluation.* Return to dev's racing evaluation, with dev's per-call
+   scope (`AbortOnDrop`, `DeferredDispatches`, `CloseOnDrop`,
+   `DEFERRED_DISPATCHES`, `spawn_in_dispatch_scope`, `join_error`).
+   `eval` and `eval_with_authority` take dev's form. `inj` drains the scope
+   and aggregates, as on dev.
+2. *Operation names (R-ID, D1-A).* The recorder names row `r` by
+   `(session, [(r, 0)])` and returns the name from
+   `observe_operation_start`. RSpace runs the rest of the locked operation
+   under that name with `operation_context::sync_scope`. Native replay
+   finds the slot of a live operation by its recorded source: the first
+   Available row of that source in journal order, selected again under the
+   state lock at each check. The wire format does not change.
+3. *Locks (F1).* `produce_lock` takes phase B on the produce channel too,
+   in one `acquire_locks` call, in `rspace/locks.rs` and in
+   `replay_rspace.rs`. Every operation then holds phase B on every channel
+   of its footprint.
+4. *Deferral (F2, F3, A1, A2).* Inside a per-call scope,
+   `eval_continuation` runs each body as a task of the scope,
+   `run_parallel_dispatches` runs each re-issue as a task of the scope, and
+   a parallel parent pushes its children into the scope and returns.
+   Without a scope, each of them awaits its work as dev does.
+5. *Failure classes (F5).* `DeferredDispatches` holds the failure
+   recorder of the call. `inj` records the classes of the whole error list,
+   with each task failure, before the final aggregate collapses it.
+6. *Deletions (D3-A, D4-A).* The scheduler, its capability tests and the
+   scheduler-only formal artifacts go. `DeterministicParallelReduction.v`
+   stays, with a header.
+7. *G3 note.* G3 has no code. Its design must record its skips, filters and
+   denials, because racing evaluation decides their order.
+   *Amendment (DR-135).* G3 records three things in recording wire version
+   3: the attempt decision "owner refused", the owner table, and the
+   refusals of each journal row with their positions. Replay checks them in
+   the recorded order, so racing evaluation needs no shared order.
+8. *Stall rule (D2-B).* Native replay counts the live tasks of each
+   evaluation and the parked waiters among them, in the progress word
+   (`trace/replay/progress.rs`). When every live task is a parked waiter,
+   replay declares a stall: every waiter fails with "native replay stalled:
+   every live task waits on a recorded operation", the replay closes, and
+   the evaluation ends with a Platform failure. Validators record the block
+   as `InvalidTransaction`, and a producer rejects the deploy, as dev
+   rejects a log with `UnusedCommEvent`. The rule runs in native replay
+   only: `ExecutionBackend::evaluation_progress` returns `None` for every
+   other backend.
+
+**Literate algorithm.**
+
+```text
+⟨play: name a recorded operation⟩ ≡
+  name ← observer.observe_operation_start(source, channels, joins)
+         -- the recorder appends row r and returns (session, [(r, 0)])
+  if name is present:
+      run the observed body and observe_operation_finish
+      inside operation_context::sync_scope(name)
+  else:
+      run them as dev does
+
+⟨replay: find the slot of a live operation⟩ ≡
+  -- under the replay state lock, at each wait check and at the reservation
+  candidates ← the slots whose recorded source equals the live source,
+               in journal order
+  if candidates is empty: fail with Source
+  first ← the first candidate that is not Completed   -- a partition point
+  slot ← the first Available candidate from first onward
+  if no slot exists: fail with Unavailable
+
+⟨begin an evaluation (D2-B)⟩ ≡
+  under the state lock: the replay is open, no boundary is open,
+                        and no slot is reserved
+  word: compare-and-swap from 0 to one live task   -- only an idle word begins
+  the root holds a live token until its evaluation returns, before the drain
+
+⟨spawn a task of the evaluation⟩ ≡
+  word.live ← word.live + 1                        -- before the spawn
+  spawn the task, which binds its live token first, so the token drops last
+
+⟨wait for the recorded predecessors of a live operation⟩ ≡
+  counted ← the task runs in the scope of this replay's evaluation
+  if not counted and the word is armed: fail with Uncounted
+  registration ← none
+  loop:
+      register the notification
+      under the state lock:
+          check ← the replay is open, select the slot, check its predecessors
+          if check is ready:
+              leave the registration
+              return
+          if check is an error:
+              leave the registration
+              fail
+          if counted and the registration is not at the current version:
+              registration ← the current version
+              word.parked ← word.parked + 1
+              if every live task is parked:
+                  declare the stall
+                  after the unlock, notify
+                  fail with Stalled
+      await the notification
+
+⟨end a change⟩ ≡   -- a publish, a cancel, the end of a boundary, an invalidation
+  under the state lock:
+      change the state
+      version ← version + 1
+      word.parked ← 0
+  after the unlock: notify every waiter
+
+⟨a task ends⟩ ≡    -- normally, by a panic, or by an abort
+  its wait, if any, leaves its registration under the state lock
+  word.live ← word.live − 1                        -- the token drops last
+  if every remaining live task is parked:
+      under the state lock, declare the stall
+      after the unlock, notify
+
+⟨declare the stall⟩ ≡
+  set STALLED, unless STALLED or CLOSED is set already
+  state: closed and stalled
+  version ← version + 1
+  word.parked ← 0
+
+⟨cancel the evaluation⟩ ≡
+  set CLOSED while some task is live, before any task aborts
+  -- no later park or finish declares a stall, and the replay never begins again
+```
+
+**Why the parts agree.**
+
+- The source hash covers the whole operation, so two unrelated operations
+  do not share a source. Random states split at every Par and merge at
+  every COMM.
+- All rows of one source share its channel, so each such row lists the
+  row before it as a channel predecessor. Replay completes a row only after
+  its predecessors, so the completed rows of one source form a prefix in
+  journal order, and a binary search finds its end.
+- Replay keeps play's order on each shared channel: an operation waits for
+  its recorded predecessors.
+- One-segment names make the trie preorder equal to journal order, so
+  `bind_trace`, the checker, the codec and Casper's evidence code run
+  unchanged.
+- Play records only operations that its locks serialize. F1 closes the one
+  gap: a produce could start inside the open footprint of a produce that
+  fired a join.
+- The record decides every order-dependent choice: the DR-113 grants, the
+  DR-114 room race and the DR-129 pick. Byte observations need no change.
+
+**Why the stall rule is exact (D2-B).**
+
+*Definitions.*
+
+- An evaluation is *armed* from a successful `begin` until a stall or a
+  cancel sets a flag, or until its last live task ends.
+- A *change* is a publish, a cancel, the end of a boundary, an invalidation
+  or a stall. Each change increments the version `v` under the state lock.
+- A row `r` is *ready* when it is available, each predecessor of `r` is
+  complete, and no boundary is open (`state.rs`, `ready`).
+- A task *can act* when it is outside `wait_ready`, or when it is inside
+  `wait_ready` and its selected row is ready.
+
+*Invariants.* Five invariants hold while an evaluation is armed.
+
+- I1 (`LiveExact`): the live count equals the number of live tasks. A
+  parent counts its child before the spawn, and the token of a task drops
+  after the future of the task (`spawn_in_dispatch_scope`, `LiveToken`).
+- I2 (`CountExact`): the parked count equals the number of waiters
+  registered at the current version. A waiter counts once for each version,
+  each change clears the count in its own critical section, and a dropped
+  wait leaves its registration, also on a poisoned lock (`Registration`,
+  `Wait`).
+- I3 (`CountedAreBlocked`): a waiter registered at the current version
+  waits on a row that is not ready (Lemma 2).
+- I4: only live tasks change the state. An operation from outside the
+  evaluation fails with `Uncounted`, `begin` requires that no boundary is
+  open, and `begin_boundary` refuses.
+- I5: a live task waits on another task only inside `wait_ready`. The
+  evaluation path has no join or select of futures and spawns only through
+  `spawn_in_dispatch_scope` (source guard). A task holds a reservation only
+  between `wait_ready` and the publication or cancel of that reservation,
+  and no await holds the state lock.
+
+TLA+ checks I1, I2, I3 and the absence of lost wakeups
+(`NativeReplayStall.tla`, `NativeReplayStallLifecycle.tla`). Loom checks the
+production `state.rs` and `progress.rs`. Two source guards check the spawns
+and joins of I5 and the order of the critical sections.
+
+*Lemma 1 (only changes make rows ready).* While the evaluation is armed,
+the set of ready rows grows only by a change. A reservation and the start of
+a boundary only remove rows from it.
+
+Proof. Readiness reads three things: the state of the row, the states of
+its predecessors, and the boundary flag. A publish completes a row, a cancel
+makes a reserved row available, the end of a boundary clears the flag, and
+an invalidation or a stall closes the replay. These are the changes. A
+reservation makes a row unavailable, and the start of a boundary sets the
+flag, so both only remove rows. No other step writes these three things. ∎
+
+*Lemma 2 (a counted waiter is blocked).* If a waiter is registered at the
+current version, the row that it would select now is not ready.
+
+Proof. The waiter registered at version `v` in the critical section of a
+check that found its selected row `r` not ready. The version is still `v`,
+so no change has happened since. By Lemma 1, `r` is still not ready. The
+selection can still move, because `select_slot` returns the first open row
+of the source, and another task can reserve `r`. Then the selection moves to
+a later row `r'` of the same source. Rows of one source share a channel
+`c`. The checker makes each row list the last earlier row on each channel of
+its footprint (`checked_operations.rs`), so the rows of `c` form a chain, and
+`r'` depends on `r` through that chain. A row is ready only when its
+predecessors are complete, and `r` is reserved, not complete. So `r'` is not
+ready either. ∎
+
+*Theorem 1 (soundness).* When a park or a task end declares a stall, no
+task of the evaluation can act again, and no row completes again.
+
+Proof.
+
+1. The declaring step reads `parked = live > 0`, and no flag is set. A park
+   holds the state lock. A task end decrements atomically and then takes the
+   lock. Step 4 shows that nothing changes in between.
+2. By I1, `live` is the number of live tasks. By I2, `parked` is the number
+   of waiters registered at the current version. A registration exists only
+   inside `wait_ready`, and each waiter holds at most one. So each live task
+   is a waiter registered at the current version.
+3. By Lemma 2, each of these waiters waits on a row that is not ready.
+4. A change needs an actor. A publish or a cancel needs a task that holds a
+   reservation, and by I5 no waiter holds one. No boundary is open, so none
+   can end (I4). An invalidation comes only from a failing operation of a
+   task (`native_session.rs`, `native_session/operations.rs`), and no task
+   runs an operation. By I4, nothing outside the evaluation changes the
+   state. So no change happens.
+5. A waiter that wakes without a change checks at the same version. By
+   Lemma 2, it finds a row that is not ready, and it parks again without a
+   new count. So no task acts, no row completes, and without the rule the
+   evaluation would never end. ∎
+
+*Theorem 2 (completeness).* Each evaluation ends: every live task ends, or
+a stall is declared, or a cancel closes the evaluation.
+
+Proof.
+
+1. An evaluation makes finitely many changes. Each publish completes one of
+   finitely many rows. A Rholang process repeats only through a COMM, and in
+   native replay each COMM completes a row, so an evaluation runs finitely
+   many tasks and operations. Each cancel and each invalidation follows a
+   failed operation, and a failed operation ends its task with an error.
+2. Let `v*` be the version after the last change. Each live task then ends,
+   or reaches `wait_ready`, after finitely many steps (step 1 and I5).
+3. A waiter registers its notification before its check (source guard,
+   TLA+ `NoLostWakeup`). So the last change wakes every waiter that checked
+   at an earlier version, and that waiter checks again at `v*`.
+4. A waiter that finds its row ready at `v*` reserves it. A reservation
+   leads to a publish or a cancel, which is a change after `v*`, which is a
+   contradiction. A reservation that finds no ready row returns the waiter to
+   `wait_ready`, at `v*`. So each waiter finds its row not ready at `v*`,
+   and counts once (the version rule).
+5. Let `e` be the last of the parks at `v*` and the task ends after the
+   last change. After `e`, each remaining live task is a waiter counted at
+   `v*`, so `parked = live`. If `live > 0`, the step `e` declares the stall,
+   unless a flag is set: `STALLED` means that a stall was declared, and
+   `CLOSED` means that a cancel closed the evaluation. If `live = 0`, every
+   task has ended, and the drain ends the evaluation. ∎
+
+*Theorem 3 (honest replays complete).* For a journal that an honest play
+records, every replay schedule completes every row, and no stall is
+declared.
+
+Proof. Take any reachable state of the replay with an incomplete row. Let
+`r` be the incomplete row with the smallest journal index.
+
+1. The predecessors of `r` have smaller indexes, so they are complete.
+2. Row indexes follow start order in play. The COMM that spawned the task
+   of `r`, and the earlier operations of that task, have smaller indexes, so
+   they are complete. Their outcomes equal the outcomes of play, because
+   replay follows the record. So the task of `r` exists in replay and
+   reaches the operation of `r`.
+3. `select_slot` returns the first open row of the source of `r`. Each
+   earlier row of that source has a smaller index, so it is complete. So the
+   task selects `r`, or another task of the same source has reserved `r` and
+   is about to complete it.
+4. So some task can act, and by Theorem 1 no stall is declared. The
+   operations of each source in replay are the operations of play, so a
+   source never has more live operations than rows, and `Unavailable` never
+   occurs. By Theorem 2, the evaluation ends, and by steps 1 to 3 it ends
+   with every row complete. ∎
+
+*Theorem 4 (the same verdict on every validator).* All replay schedules of
+one journal and one term reach the same verdict. The proof uses three
+premises.
+
+- A1: live operations of one source come only from identical tasks, so it
+  does not matter which of them takes which row of the source.
+- A2: the outcome of an operation depends only on its row and on the store
+  state of its footprint, and the rows before it on those channels fix that
+  state.
+- A3: shared state outside the rows does not depend on the order. Checked
+  for the introduction registry (the produce hash covers the cost authority
+  of the datum, `RhoTypes.proto:123` and
+  `rspace/trace/event.rs:155-157`, so one identity cannot carry two
+  authorities) and for stack transfers (the capacity check runs only with
+  an allocation, `accounting/mod.rs:1148`, and production native play
+  passes none).
+
+Proof. Model a replay as steps of tasks. A step is local work, a spawn, the
+bookkeeping of the stall rule, a failed operation, or the completion of a
+row (its reservation, its operation and its publication under the stripe
+locks of its footprint). Two different steps that are enabled in one state
+belong to different tasks, because a task has one next step. Such steps
+commute: each stays enabled after the other, and both orders reach the same
+state, up to a renaming of identical tasks.
+
+1. Local work, a spawn and the bookkeeping change only the task itself, or
+   add a task, and change no row and no store state.
+2. Two row completions `r1` and `r2`: if their footprints shared a channel,
+   the chain of that channel would make one row an ancestor of the other,
+   and both could not be enabled. So their footprints are disjoint, their
+   store effects touch disjoint channels, and by A2 and A3 each outcome is
+   the same in both orders.
+3. Two operations of one source: by A1 their tasks are identical, so the
+   order in which they take the rows of the source changes the state only
+   by a renaming of those tasks.
+4. A failed operation depends only on its task and its row (A2), so it
+   commutes with each step of another task.
+
+By Theorem 2 step 1, each schedule has finitely many steps. A terminating
+system whose diverging steps commute has one final state for each start
+state, by Newman's lemma (M. H. A. Newman, "On theories with a combinatorial
+definition of 'equivalence'", *Annals of Mathematics* 43(2), 1942,
+[doi:10.2307/1968867](https://doi.org/10.2307/1968867)). The final state
+fixes the verdict: the complete rows, the outcome of each task, and, by
+Theorems 1 and 2, whether a stall is declared. ∎
+
+**Remaining differences from dev in dev files.**
+
+1. Phase B on the produce channel in `locks.rs` and `replay_rspace.rs`
+   (F1).
+2. Deferral in `eval_continuation` (F2).
+3. Re-issues and parallel children are not awaited inside a scope (F3, A2).
+4. An error in a reply body does not flow back through the system process,
+   as on `HEAD` before this record. On dev, the reply of a system process
+   returns the error of its produce (`system_processes.rs:1391-1396` and
+   `dispatch.rs:85-89` at dev `0f3943d64`, the same code as lines 1924-1929
+   and 117-121 at `HEAD`).
+5. In a native replay evaluation, the per-call scope counts its tasks for
+   the stall rule (D2-B): `DeferredDispatches.progress`, `LiveToken`, the
+   count in `spawn_in_dispatch_scope`, `begin` and the root token in
+   `inj_with_observation`, the closed word in `close`, and `InFlight` in the
+   drain. Without a native replay, each of them is dev's code.
+
+Other dev files that keep branch changes: `rspace_interface.rs`,
+`ops_produce.rs`, `ops_consume.rs`, `replay_rspace.rs`, `trace_log.rs`,
+`ispace_impl.rs`, `rspace.rs` and `operation_context.rs` (dev has this
+module since `b5cd551a3`), and the recorder field of `DeferredDispatches`
+in `reduce.rs`.
+
+**Consensus notes.**
+
+- Protocol 6 is unreleased.
+- Every path field holds one segment. The log order follows the rows.
+- The wire format does not change.
+- The path-segment limit no longer binds native evaluation. Under the
+  scheduler, each nested body added one segment.
+
+**Residual risks.**
+
+- *File I/O waits.* No dispatch table registers the file I/O handlers
+  today. When file I/O reaches native execution, a file-lock wait must
+  register as a parked wait, or the stall rule cannot see that task wait.
+- *Repeated replays of a stalled block.* `replay_block` tries a failed
+  replay three more times before the verdict, so a stalled block costs four
+  replays.
+- *Wakes.* Every change wakes every waiter, which checks once and parks
+  again. This costs time, not correctness.
+- *Count width.* The word counts at most `2^31 - 1` live tasks. `enter`
+  panics before an overflow.
+- *Unnamed operations.* An operation that the recorder does not name keeps
+  arrival order in the log. FF-4 and P-1 check that no native operation
+  stays unnamed.
+- *The DR-129 grant lead.* See proposal §11.
+- *Error-list order.* The drain is FIFO by registration, so an aggregate
+  can list its errors in another order. Casper reads the list only through
+  `is_empty` and `classify_errors`.
+- *Cancellation.* `AbortOnDrop` cannot stop a poll that already runs. The
+  only production cancellation of an evaluation is the exploratory-deploy
+  timeout (casper `api/block_api.rs:496-501`), which runs on a fresh
+  runtime.
+
+**Formal artifacts.**
+
+- D4-A retires the formal artifacts of the scheduler (step S5).
+- D2-B adds two TLA+ models of the stall rule under
+  `formal/tlaplus/cost_accounted_rho/`. `NativeReplayStall.tla` models one
+  evaluation: the wait, the park, the publish, the notification, a boundary
+  and the stall. Its nine scenarios have two to five tasks: honest, missing
+  row, inversion, uncounted task, same-source rows, more tasks than rows,
+  and the small scenarios pair, missing pair and chain. Its invariants are
+  `TypeOK`, `NoFalseStall`, `NoFreshLeave`, `LiveExact`, `CountExact`,
+  `CountedAreBlocked`, `NoLostWakeup`, `NoHang` and `Verdict`.
+  `NativeReplayStallLifecycle.tla` models panics, cancellation, the root
+  token and a second evaluation on one replay. Its invariants are `TypeOK`,
+  `LiveExact`, `CountExact`, `NoFalseStall`, `NoLateStall`, `IdleAfterEnd`
+  and `NoHang`.
+- Each negative control removes one safeguard, and TLC reports the expected
+  violation. Core model: `ParkAfterUnlock` breaks `NoFalseStall` and
+  `NoFreshLeave`, `SkipReset` breaks `NoFalseStall`, `ResetAfterUnlock`
+  breaks `NoHang`, `SkipVersion` breaks `CountExact`, `CountInChild` breaks
+  `NoFalseStall`, `NotifiedAfterCheck` breaks `NoLostWakeup`,
+  `RootUncounted`, `AdmitUncounted` and `BoundaryWhileArmed` break
+  `NoFalseStall`. Lifecycle model: `NoLeaveOnDrop` breaks `CountExact`,
+  `FinishBeforeDrop` breaks `NoFalseStall`, `BeginNonZero` breaks
+  `LiveExact`, `AbortBeforeClose` breaks `NoLateStall`, and
+  `HoldRootThroughDrain` breaks `NoHang`.
+- Eight witnesses are expected violations of reachability predicates, so
+  `Verdict` and `IdleAfterEnd` do not hold only because no run ends: honest,
+  same-source and pair replays complete, missing, inverted, uncounted and
+  missing-pair replays end in a stall, and a second evaluation ends
+  normally.
+- The design listed a control that skips the leave on the error path. The
+  model shows that this leave only ever removes a stale registration
+  (`NoFreshLeave` holds in every scenario), so that control cannot fire.
+  `NoFreshLeave` has its own control instead (`ParkAfterUnlock`).
+- Loom (`formal/loom/cost_accounting/tests/loom_native_replay_stall.rs`)
+  includes the production `state.rs` and `progress.rs`. It checks seven
+  scenarios and six negative controls. The ledger Loom tests check that
+  each change bumps the version once and that a stall refuses a racing
+  reservation.
+
+Results. TLC: the nine scenarios and the lifecycle model pass. The honest
+scenario has 7,447 states (depth 34), the missing scenario has 14,174
+states, and the lifecycle model has 4,390 states (depth 23).
+Every control reports its target violation, and every witness is reached.
+Minimum counterexamples, with one TLC worker, have 3 to 13 states. Apalache
+refutes each of the ten core controls at exactly its minimum length, in 10
+to 105 seconds. Apalache needs 1,500 seconds and more for the long witnesses
+on four or more tasks, so those stay in TLC. Loom: the stall model passes
+with its six negative controls, and the Loom gate passes (282 tests within
+preemption bound 3). The first Loom run aborted, because the instrumented
+drop of a Loom `Arc` panicked again during the deadlock of the lost-wakeup
+control. The model therefore shares the replay through `std::sync::Arc`, and
+its notification parks and unparks registered threads.
+The Apalache gate holds 21 stall entries, and each fits its 1,200-second
+limit. The ten core controls and the five lifecycle controls are refuted at
+their minimum lengths, in 3 to 105 seconds each. The three witnesses are
+reached: pair completion in 428 seconds, the missing-pair verdict in 114
+and the uncounted verdict in 321. The three safe checks run to the largest
+lengths that fit half of the limit: pair to length 14 (529 seconds),
+missing pair to 13 (581) and lifecycle to 7 (422). TLC checks every
+reachable state of these configurations, whose depths are 18, 17 and 23.
+
+**Verification.** The tests of the stall rule (D2-B):
+
+- *Failing first.* Before the stall rule, three tests waited until their
+  10-second deadlines: FF-6, the recorded-call test, and the new
+  changed-reply test (`native_replay_rejects_a_changed_recorded_reply`).
+  Each failed with `Elapsed(())` after 10.0 seconds. With the stall rule,
+  each reaches its verdict in 26 to 28 milliseconds.
+- *Forged journals.* FF-6 runs its operations as counted tasks of one
+  evaluation, and its single-root form runs the receive in the root. P-6
+  (`forged_order_reaches_its_verdict`) plays all six orders of the three
+  operations of FF-6, and replays each journal four times on a
+  current-thread runtime and on runtimes with 2 and 8 workers. The two
+  honest orders must be accepted, and the four orders that form a cycle
+  with the term must end in a stall.
+- *Recorded calls.* The recorded-call test and the changed-reply test must
+  end in a stall, with an incomplete replay.
+- *Honest replays.* P-1 checks after each replay that the progress word is
+  idle and that a new evaluation can begin. It runs on a current-thread
+  runtime and on runtimes with 2 and 8 workers. Design v2 (review m7) also
+  asked for a persistent send to a replying system process. Such a send
+  re-issues itself on each firing, so its evaluation ends only when it
+  exhausts its phlo limit, and native play of that loop leaves its budget
+  recording incomplete. The defect predates DR-132. At `4c58a925f`, with
+  the scheduler and the causal-path names and the same 4,096-segment limit,
+  a persistent send to `sha256` and a persistent send to a contract, each
+  with 20,000 phlo, also leave an incomplete recording. Contract recursion,
+  a single call and repeated calls that exhaust their limits record
+  completely there, with the same usage as after DR-132. That family is
+  therefore commented out in P-1, with this reason.
+- *Changed context.* A changed block context ends in a stall when play
+  recorded the reply before the receive. A stalled replay refuses every
+  boundary, so the environment cannot roll its budget back, and Casper drops
+  the environment after the failed evaluation. The context test accepts
+  either path, and a current-thread test
+  (`native_environment_stalls_on_a_changed_context_after_the_reply`) takes the
+  stall path every time.
+- *Aborted reservation.* A task aborted while it holds a reservation
+  cancels the reservation before its live count drops, so the counts stay
+  exact and the slot opens again
+  (`an_aborted_task_releases_its_reservation_before_its_count`).
+- *Racing order.* Four denial tests take a limit from one play and require
+  a denial in another play:
+  `native_system_callbacks_preserve_generated_payloads_and_charges`,
+  `native_environment_replays_system_callbacks_and_rejects_changed_context`,
+  `native_executor_replays_parsed_processes_denied_comms_and_exact_usage`
+  and `native_export_binds_completed_accounting_to_the_recorded_state_root`.
+  Racing evaluation can order the attempts of the two plays differently.
+  So each test repeats the pair of plays up to 32 times (the DR-129
+  treatment), and one pair must deny. Before this treatment, the last two
+  tests failed 4 and 5 times in 300 repetitions. After it, 600 repetitions
+  passed. A sweep of 20 repetitions over the 1,271 accounting tests found no
+  other failure of this kind.
+- *Unit tests.* `progress_tests.rs` checks the word and the decisions:
+  begin and end, one count for each version, the last park and the last
+  finish, an uncounted waiter, a cancel, and a stale leave. `state.rs`
+  checks the version bumps and the closed entries after a stall. A poisoned
+  lock test drops a parked wait, and the count returns to zero.
+- *Source guards.* The native evaluation path spawns only through
+  `spawn_in_dispatch_scope` and has no join or select of futures (I5).
+  `wait_ready` registers its notification before it takes the state lock,
+  and `changed` clears the count before the unlock and notifies after it.
+
+Results. The suites ran on the exact tree of commit 1, in a copy with the
+committed size limits, and in the working tree. crypto (122 tests), shared
+(166), models (493), graphz (48), block-storage (209), rspace++ (640), comm
+(408), rholang (3,268), node (296), the File I/O fixtures (8) and the
+doctests (3, and 2 ignored) pass. Casper passes 1,814 of 1,815 tests. The
+one failure is DR-131's known gateway test
+(`offered_gateway_slot_api_test.rs:555`, `NoNewDeploys`), which G3 fixes.
+Clippy with `-D warnings` and `cargo fmt --check` are clean. The Loom gate
+passes 282 tests. The full TLA+ gate passes 647 checks, with 485 expected
+refutations. The proof gate passes with 285 modules and 3,279 closed
+assumption queries.
+
+**Restore.** `git revert <commit 2> <commit 1>` restores the scheduler.
+
+**Cross-refs.** DR-74, DR-84 (superseded), DR-85, DR-86, DR-129, DR-130,
+DR-131.
+
+## DR-133 — Divergences from dev that cost accounting does not need return to dev
+
+**Status.** Decided by the user on 2026-10-16 for epic 8946. The user asked:
+"can you check the code for more changes that should be reverted to dev
+like those we've corrected and are correcting? Basically, I want to trim
+off the bits that do not belong in the cost-accounting branch." After the
+audit, the user chose "all nine as separate commits after DR-132". The rule
+behind it is the user's direction of 2026-10-12: keep dev's version of
+everything that is not directly related to the correctness or completeness
+of cost accounting.
+
+**Terms.**
+
+- *Class A*: a difference from dev that a named cost-accounting requirement
+  needs. It stays.
+- *Class B*: a difference with no such requirement. It returns to dev.
+- *Class C*: a fix of a dev bug that the branch carries. It stays until dev
+  fixes the bug (DR-130).
+- *Class D*: a difference whose class needs more evidence. It waits for the
+  user.
+- *Dev's legacy billing*: dev's per-operation phlo, its parse charge and its
+  error table for failed deploys. Only legacy deploys use it. Cost
+  accounting meters COMMs for compute and bytes for storage, nothing else
+  (`consensus_cost_unit`, `accounting/mod.rs:1828-1835`).
+
+**Context.** An audit compared the branch with dev `38dac3c2f` (merge base
+`93e38575e`), in four areas: rspace++, rholang with rho-pure-eval, casper
+with models, and the workspace with shared, crypto, block-storage, node and
+the documents. It updated an audit of 2026-10-13 after DR-131 and DR-132.
+It classified 119 rows and found new ones.
+
+**Decision.** Each group of class B rows returns to dev in its own commit.
+Each commit takes dev's text for exactly its hunks: the merge-base text, or
+dev's later text where dev changed the hunk and the newer text compiles
+alone.
+
+| Trim | Commit | What returns to dev |
+|---|---|---|
+| 1 | `5f91c3263` | rust-bert in place of fastembed (H2, W3, W10), with 44 lock packages at dev's versions |
+| 2 | `d20d4d306` | No cdylib crate type, no unused dashmap or criterion in rholang, no dashmap raw-api, dev's tempfile line (H1, N-H1, N-H2, N-R1, R2) |
+| 3 | superseded by DR-134 | Dev's legacy billing (H8, H9, H10, H32, H33, H35, C17, N-C1) |
+| 4 | `4e2857b8f` | No rho:system:cosigners in the legacy environment, only dev's bitmask tag URI in every runtime (M6, H19) |
+| 5 | `c572ba388` | Dead code: merger helpers, four store error variants, scan_prefix, compression and tracing helpers, non_negative_work, two rewrites, the host-work glossary entries (R13-R15, S2, C14, S3 part, S5, S7, H11, N-M3, N-H5, N-S1, N-D1) |
+| 6 | `039c787fa` | Dev's radix compaction text (R20 part) and dev's exporter fix 6418da355 (R17 exporter part) |
+| 7 | `82d9780ff` | Dev's nextest comment, .gitignore, max-number-of-parents = 100, TLC_RSS = 12G (W4, W8, W9, W11 part) |
+| 8 | `32fc31f00` | Dev's test harness: three specs in rholang's aggregate binary, the legacy Schnorr test (H31, M8) |
+| 9 | this commit | Dev's comments, proto comments, doc whitespace and the check_replay_data() diagnostic (H4, H20, H25, M2, C11, C12, D2) |
+
+**What stays.**
+
+- R25 (class C, not B): the checkpoint reads the history reader before the
+  repository swap, so a failed checkpoint stays retryable (`3107eef0d`,
+  `checkpoint_failure_tests.rs:266-332`).
+- S3, in part: the atomic store operations stay, because R22 (class D) uses
+  them.
+- W6: the soak qualification inputs stay, because another session owns
+  `.github/actions/soak-segment/action.yml`.
+- The class C rows of DR-130, and every class A row.
+
+**Effects on behavior.**
+
+- Trim 4 changes legacy costs and genesis state roots. The normalizer copies
+  the whole environment into the `injections` of every `new` term
+  (`p_new_normalizer.rs:75-84`, as on dev). The legacy cosigners entry
+  therefore made every legacy `new` term larger, the genesis terms
+  included. A branch-added cost pin moved from 53,251 to 52,835. A legacy
+  deploy that names rho:system:cosigners fails at evaluation, as on dev.
+  Dev's genesis never had the entry.
+- Trim 6: a malformed state request logs a warning and gets no response, as
+  on dev, instead of a panic.
+
+**Findings on the way.**
+
+- `concurrent_capture_keeps_tuple_metadata_and_ledger_on_the_same_boundary`
+  (rspace++) fails about once in 1,000 runs, at the same rate before and
+  after trim 6 (2,997 of 3,000 each). Its helper `put_at` takes the shared
+  session gate and no channel lock, so two workers race in `data_view`.
+  This is test-only by inference.
+- `cargo deny` reports advisories that predate these commits:
+  RUSTSEC-2024-0384, RUSTSEC-2026-0346 to 0349 and 0367 to 0369.
+- The local `.pgmcp.toml` belongs in each checkout's `.git/info/exclude`.
+
+**Open.**
+
+- Trim 3 waits for its measurement and the user's approval. A legacy deploy
+  that fails on a float `%` is billed the parse charge, where dev bills the
+  full limit, because DR-128 raises `OperatorNotDefined` there. `%` itself
+  is never metered. A dev-only path in the reducer would fix it, and the
+  rule of one execution model rules that out.
+- *Amendment (DR-134, 2026-10-17).* DR-134 supersedes trim 3. The user
+  chose to delete dev's legacy billing with the rest of the legacy meter, so
+  trim 3 does not return it.
+- The class D rows: H24 and N-M2 (the matcher), R4 (the ordered event log),
+  R18 and R22 (the native root record), N-R5 (a serde derive on COMM), C1 and
+  N-N1 (recursion_limit), M3 (previewPrivateNames), N-C2 (a vault-spec
+  timeout), W5 (rho-pure-eval in CI), S6 (finalized-event dedupe), N-D2
+  (three review ledgers) and N-H4 (the reply-body error marking).
+- `DeployDataProto` field 14 is `cosigners` on the branch, and dev uses it
+  for `parameters` (`438218ac3`). One of them must take another number
+  before the next dev merge.
+- Two Python files in the claims gate, and a frontier-guard check that
+  names no code (`reserve_source_step`).
+
+**Restore.** `git revert` of the trim commit restores its group.
+
+**Cross-refs.** DR-66 (item 2), DR-128, DR-129, DR-130, DR-131, DR-132.
+
+## DR-134 — Only offered deploys run, every evaluation has a native scope, and the legacy meter is deleted
+
+**Status.** Decided by the user on 2026-10-17 for epic 8946 (task 42). The
+user directions were:
+
+- "none of dev's charging logic should be restored! Cost-accounted Rholang
+  only supports metering COMMs for compute and bytes for storage, and does
+  not support legacy accounting!"
+- "Casper's evaluate API must be migrated to cost-accounting! Everything must
+  use cost-accounting!" and "You cannot mix oil and water!"
+- "Only offered-deploys are accepted."
+- The legacy meter: "Delete (Recommended)". This supersedes DR-66 item 3.
+- Shipped configurations: "The test schedule (Recommended)". Body-only
+  clients: "Port the CLI here (Recommended)". The pending listing: "List
+  offered deploys (Recommended)".
+- 2026-10-17: keep dev's play budget, because it is a packing limit and not
+  metering. The branch is "dev amended for cost-accounted rho calculus":
+  outside cost accounting it behaves as dev does.
+
+**Terms.**
+
+- *Offered deploy*: a deploy in the offered-funded envelope of protocol 6.
+  The envelope carries the deploy body, the signed funding intent and the
+  signatures.
+- *Body-only deploy*: dev's signed `DeployData` with a phlo limit and price,
+  and no funding intent.
+- *Legacy meter*: dev's per-operation phlo charges, the parse charge, the
+  error table of failed deploys, the charging tuple space, and the pre-charge
+  and refund system deploys.
+- *Owner-direct offer*: an offer in which the signer's own vault pays for
+  every resource class of the signer's own lane.
+- *Default resource schedule*: the schedule of every offered test and of the
+  shipped configurations. It has four classes, compute, introduction,
+  transfer and trace, each at weight 1, and settles in atomic REV at 8
+  decimals under the native compatibility rule.
+
+**Context.** DR-66 activated protocol 6 for tests and made admission,
+selection and validation offered-only under the activation flag. The legacy
+meter stayed in the code, commented out or reachable through Casper's
+evaluate API, the exploratory estimate, genesis, and block reports. DR-71
+defined the native dry run but did not wire it. Clients such as `node deploy`
+still built body-only deploys.
+
+**Decision.**
+
+1. *Offered-only everywhere.* A genesis requires the active protocol-6
+   resource policy (`create_genesis_block_with_policy`,
+   `casper/src/rust/genesis/genesis.rs`, and `protocol_6_genesis_required`,
+   `costacc/offered_only.rs`). Dev's activation flag and its inactive
+   branches stay, and they are unreachable. `BlockAPI::deploy` refuses a
+   body-only deploy with "new deploys require offered-funded cost
+   accounting". gRPC `doDeploy` sends an offered envelope to
+   `BlockAPI::deploy_offered`.
+2. *One scope for each kind of evaluation* (the DR-66 diagram):
+   - User deploys use the native offered meter.
+   - Genesis play and genesis replay use the trusted install scope and
+     record cost 0 (`RuntimeOps::evaluate_trusted_install`). Replay refuses a
+     genesis that records a cost (`is_legacy_metered_genesis`).
+   - System deploys keep their system scope.
+   - The user-facing exploratory estimate is the DR-71 native dry run
+     (`play_exploratory_dry_run`), through
+     `RuntimeManager::play_exploratory_deploy` and
+     `RuntimeManager::capture_results`.
+   - Internal reads of policy and token metadata use
+     `play_exploratory_par_strict`, which is unmetered.
+   - The RhoSpec harness uses the named inj path.
+   - Body-only execution after genesis returns a compatibility error before
+     any state reset (`body_only_deploys_unsupported`).
+3. *The legacy meter is deleted.* The deletion removes the charging tuple
+   space (`charging_rspace.rs`), the legacy cost functions and their tests,
+   the legacy metering hooks in the reducer and substitution, the pre-charge
+   and refund system deploys, and Casper's legacy `evaluate`,
+   `capture_results*` and `play_exploratory_deploy_with_phlo_limit`.
+4. *Block reports* follow DR-70 as amended by this record.
+5. *Pending deploys.* The pending listing returns format-neutral
+   candidates, a legacy deploy or an offered envelope, under dev's window,
+   expiry, scope and duplicate rules (`admit_list_pending_deploys`).
+6. *The node CLI signs owner-direct offers.* `node deploy` keeps dev's
+   positional arguments. It signs the shard's genesis schedule at the given
+   price. The new option `--resource-policy <hex>` takes the shard's
+   `resource-policy`. Without the option, the CLI signs the default resource
+   schedule of the given shard (`costacc/owner_offer.rs`). The source caps
+   and the total exposure equal the REV ceiling
+   $`\text{phloLimit} \times \text{phloPrice} + 1`$, so the signer accepts
+   the same maximum cost as a dev deploy with the same limit and price.
+7. *Shipped configurations.* `docker/conf/default.conf` (which the remote
+   configurations include), `docker/conf/standalone-dev.conf`,
+   `run-local/conf/standalone.conf` (which the Justfile uses) and the two Helm
+   node configurations set `casper.genesis-block-data.resource-policy` to the
+   default resource policy of the `root` shard.
+8. *Play budget.* Dev's `deploy-play-budget` stays unchanged. It applies
+   between the members of a batch, as dev's loop applies it between deploys.
+   Implementation note 3 of DR-65 states the rule that keeps a truncated
+   block self-consistent.
+9. *Several offers per block (gap G2).* A block holds an ordered batch of
+   offers, as DR-65 decides. Implementation note 3 of DR-65 records the
+   implementation. DR-72, DR-116, DR-124 and section 8.4 of the linear cost
+   estimate carry the amendments that follow from it.
+10. *The offered replay keeps dev's replay controls.* Before DR-134 the
+    offered replay skipped three controls of dev's block replay
+    (`replay_compute_state`). Under offered-only every user block replays
+    through the offered path, so the controls never applied. The offered
+    path now keeps all three, as dev does:
+    - *The replay cache.* The offered play admits the block to dev's replay
+      cache (`admit_offered_replay_cache`). The offered replay answers a
+      replay of a block that this node played from the cache, while the
+      mergeable entry of its post-state is stored
+      (`offered_replay_cache_hit`). The key binds the exact encoding of every
+      processed user deploy and dev's fingerprint of the system deploys
+      (`offered_replay_payload_hash`). A cached post-state that differs from
+      the block's commitment falls back to the full replay.
+    - *The consensus permit.* The offered replay takes dev's one-permit
+      `ReplayLock` before it certifies the batch. Block reports keep yielding
+      to consensus replays, as on dev.
+    - *The timings.* The offered replay records dev's lock-wait, execute and
+      save-mergeable histograms (`block.replay.runtime.*.time`), also for a
+      failed replay.
+
+    Dev's cache hit also rigs a replay runtime with the cached log and drops
+    it. The offered replay never reads a rigged replay space, so its hit does
+    not spawn one.
+
+**Effects on behavior.**
+
+- A node with Casper running accepts no body-only deploy. Clients submit
+  offered envelopes through `POST /api/deploy/offered`, gRPC `doDeploy`, or
+  `node deploy`.
+- Genesis costs are 0, and genesis state roots do not depend on a meter.
+- The exploratory estimate returns the measured phlo of the native meter, the
+  phlo of the same term as a funded owner-direct offer at the same root.
+- A node does not replay a block that the legacy meter produced. A fresh
+  protocol-6 genesis is required.
+
+**Tests.** Every runtime test runs on the offered protocol-6 genesis.
+
+- *Port rules.* A test keeps dev's term and intent. A pin of a legacy cost
+  becomes an assertion on the native receipt. A test that only checked the
+  legacy meter is commented out with its reason.
+- *Replay cost discrepancies.* The two `replaycomputestate_*` tests lower the
+  usage of a processed deploy by one phlo in every place that the deploy
+  commits it: the cost, the evidence usage and fresh phlo, and the wallet
+  receipt. That deploy satisfies every binding of its type, and replay
+  rejects it with "native budget recording differs from committed offer or
+  usage". This is dev's `ReplayCostMismatch` check in native form. A deploy
+  whose cost alone is lowered does not decode.
+- *Commented out.* `legacy_matched_comm_keeps_exact_historical_cost` pinned
+  the deleted meter.
+- *Several offers per block (item 9).* The tests that need more than one user
+  deploy in a block now run on offered batches:
+  - `runtime_manager_test.rs`: dev's two play-budget tests (a zero budget
+    ships one member, an ample budget ships three),
+    `compute_state_should_charge_deploys_separately`,
+    `compute_state_then_compute_bonds_should_be_replayable_after_all` and
+    `replay_attribution_preserves_success_failure_and_cache_paths`.
+  - `interpreter_util_test.rs`: the chain post-state, the cost aggregation,
+    the charged failure inside a batch and the three
+    `validate_block_checkpoint` tests. The extra-events test now uses two
+    distinct members, because the batch replay rejects a repeated member
+    before it reads a log.
+  - `merging_cases.rs`, `multi_parent_casper_should_allow_multiple_deploys_in_a_single_block`,
+    `dedup_orphan_lands_in_rejected_deploy_buffer` and
+    `multi_validator_recovery_dedups_re_proposed_sig`.
+  - New: `offered_batch_runtime_test.rs` (six tests) and
+    `offered_batch_api_test.rs` (five tests), which DR-65 implementation note
+    3 lists. Each changed line of a dev test stays as a comment.
+- *The replay controls (item 10).* `replay_attribution_preserves_success_failure_and_cache_paths`
+  keeps dev's assertions: a failed replay and a full replay record the
+  lock-wait and execute timings, a full replay records the save timing, and
+  a cache hit records none. The DR-102 helper
+  `propose_offer_replayed_by_every_role` no longer requires the producer to
+  replay its own block. The producer may answer it from the cache, as DR-102
+  states ("The producer does not replay its own block again"). The cache is
+  best effort: it skips a block with more than 1,536 log events, so the
+  producer then replays the block, as on dev.
+- *CLI.* `a_cli_owner_direct_offer_is_admitted_proposed_and_replayed` signs a
+  CLI offer, submits it through gRPC `doDeploy`, proposes it, and replays it
+  on a second validator. The unit tests in `owner_offer.rs` check the
+  default policy and the signed caps. The node tests
+  `the_shipped_configurations_carry_the_default_resource_policy` and
+  `the_helm_node_configurations_carry_the_default_resource_policy` check every
+  shipped configuration.
+
+**Verification.**
+
+- `OfferedOnlyActivation.v` keeps dev's flag and takes it from the adopted
+  genesis policy. It proves without axioms that an accepted genesis sets the
+  flag, and that admission, selection, validation and every reachable state
+  are offered-only under that flag. Its negative control shows that an
+  inactive flag reaches a body-only state. The scope map has no legacy case.
+- `EndToEndCostConsensus.tla` records the genesis cost. Replay admits only a
+  trusted-install genesis (`AdmissionRequiresTrustedInstallGenesis`). The
+  control `EndToEndCostConsensusLegacyGenesisUnsafe.cfg` accepts a
+  legacy-metered genesis and must violate that invariant.
+- *Genesis roots (experiment E1).* Two deterministic genesis blocks, one
+  legacy and one protocol-6, were saved at `909387544` before the change.
+  At that commit their recorded costs replayed to the recorded roots, and the
+  same blocks with their costs set to 0 failed with
+  `ReplayCostMismatch { initial_cost: 0, replay_cost: 200245 }`. After
+  DR-134:
+  - With the costs set to 0, both blocks replay to their recorded roots
+    (`8a89eba…` and `6aeeb46…`). So the trusted install scope leaves the
+    genesis post-state roots unchanged, and genesis costs are 0.
+  - With the recorded costs, replay refuses both blocks with the DR-66 item 5
+    compatibility error, before any runtime work.
+  - The temporary test that ran the experiment is no longer in the suite.
+- G2 (item 9): `SameBlockFundingGroups.v` and `SameBlockFundingGroups.tla`
+  verify the ordered batch, with their negative controls. Implementation note
+  3 of DR-65 lists the results. `OfferedCandidateQuarantine.tla` now models
+  the batch loop of the proposer, as the DR-134 amendment of DR-72 states.
+- The Rocq development now has 286 modules, 113,053 lines and 5,818 proof
+  terms (`cost-accounted-rho-verification.md`).
+
+**Findings.**
+
+- The provisional per-deploy purse-binding byte limit (`custody_bytes`
+  131,072 in the uncommitted provisional limits) bounds a deploy to about
+  1,000 measured region instances, because the bindings are keyed by region
+  instance (`locate_purses`, `measurements/regions/purses.rs`). Dev's term in
+  `compute_state_should_just_work` makes 999 sends at depth 2, so the port
+  runs the same contracts at depth 1. The limit is a provisional parameter.
+
+**Open.** None.
+
+**Closed since this record.**
+
+- G2 (DR-65): several offered deploys for each block, and the tests that need
+  more than one offer in a block. Implementation note 3 of DR-65 records it,
+  and the five tests of `offered_batch_api_test.rs` pass.
+- G3 (DR-68, DR-135): owners fund their stored processes. Since step S9
+  (2026-10-20) the tests in which one owner's deploy meets another owner's
+  datum or continuation pass, and the 26 test sites use dev's signers again.
+
+**Restore.** `git revert` of the DR-134 commits restores the legacy meter and
+the body-only paths.
+
+**Cross-refs.** DR-64, DR-65, DR-66, DR-68, DR-70, DR-71, DR-72, DR-122,
+DR-131, DR-133.
+
+## DR-135 — Owners fund their stored processes at their own signed price (G3)
+
+**Status.** Decided by the user for epic 8946 (task 42, gap G3). It
+implements DR-68. The user decisions were:
+
+- 2026-10-13, with the approval of the narrow G3 design (decisions a to d):
+  - any number of owners, each with its own wallet (P1 Rules 2 and 3),
+  - an interaction that an owner cannot pay does not fire, has no charge, and
+    the run continues, with a refusal that validators can check,
+  - a fired body is charged to its owner,
+  - the lollipop transfer works,
+  - excluded: a wake of refused interactions, standing allowances, and
+    prepaid byte cells.
+- 2026-10-19: "Process owners set the price! That should already be
+  implemented!", "Process owners pay for the process!", "We support
+  multi-sig and process ownership transfer!" On the legacy cost-vault slot
+  test: "delete it!"
+- 2026-10-19: keep the changes minimal, and behave as dev does outside cost
+  accounting.
+- 2026-10-20: the user chose "Caller reserves own work" (item 13). For owner
+  work at price 0 the user chose "Keep today's rule for 0". For the cost
+  estimate: "Stick as close to dev's behavior as possible and make as few
+  changes as possible! Keep the current behavior unless it needs to change."
+
+**Terms.**
+
+- *Owner* of a stored item: the signature of its stored seal, that is, the
+  distinct canonical non-`Unit` signatures of the seal's regions, as one
+  signature or as their canonical compound.
+- *Client lane*: a lane that the running deployment's own signed sources may
+  pay (DR-124 item 4). An owner on a client lane is no owner. The running
+  deployment pays for it, as on dev.
+- *Owner purse*: the purse that an owner signature locates. Only an
+  unforgeable signature has one: a key wallet, or the vault of exactly one
+  private name. A canonical compound of such atoms has its lane vault for
+  P1 Rule 3 and one purse for each atom for P1 Rule 2.
+- *Owner table* $`T`$ of a batch member: the owner purses that the member's
+  run consults, each with its owner budget.
+- *Refusal*: an interaction that did not fire because an owner could not
+  pay. It is recorded and checked by replay.
+- *Holder* of a value: the party whose provenance a value that a COMM binds
+  keeps (P1 `rem:signed-subst`). *Held process*: a held value that runs as a
+  process.
+
+**Context.** DR-68 made the installer's located purse a funding source for its
+stored signed region, but nothing implemented it:
+
+- Funding eligibility admitted only the sources of the triggering envelope
+  (`family_selection.rs`).
+- A fired body opened regions of the running deployment, not of the body's
+  owner (`reduce.rs` before this record).
+
+Under offered-only execution (DR-134), every COMM between one owner's stored
+item and another owner's deployment therefore failed its funding. Three tests
+failed for this reason:
+`offered_gateway_call_draws_funded_private_purses_across_validators`,
+`concurrent_writes_to_different_registry_keys_reject_none` and
+`compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents`.
+Twenty-six sites in fifteen test files used one signer "until gap G3".
+
+**Decision.**
+
+1. *A fired body runs for its owner (R1).* The unsigned sends and receives of
+   a fired body open regions of the owner of the continuation's stored seal,
+   at the owner's price. An owner on a client lane runs for the running
+   deployment. A system body (DR-101) keeps its residue mode. A process that
+   it holds runs for the single holder of the code that the body received
+   (item 9).
+2. *Purses (R2).* An owner signature that anyone can spell has no purse and
+   budget 0 (P1:562-572). A compound with a forgeable atom has no purse.
+3. *Budgets (R3).* The budget of an owner purse $`p`$ for batch member $`i`$
+   reuses the G2 capacity of DR-65 note 3:
+
+   ```math
+   \mathrm{budget}_i(p) = \mathrm{cap}\bigl(\mathrm{balance}(p, R_{i-1}),\ \mathrm{later}_i(p)\bigr) - \mathrm{hold}_i(p)
+   ```
+
+   Here $`R_{i-1}`$ is the root before the member, $`\mathrm{later}_i(p)`$ the
+   holds of later members on $`p`$, and $`\mathrm{hold}_i(p)`$ the member's own
+   hold on $`p`$ as a client source.
+   - Play finds $`T`$ by a re-run from the same checkpoint: a run that
+     consults an unlisted purse gives it budget 0, notes it, and the member
+     runs again with the purse listed. The table has room for 64 purses minus
+     the client payers, so a member runs at most room plus one times.
+   - Replay reads every listed purse at $`R_{i-1}`$ again and rejects a table
+     whose budgets differ.
+4. *The owner's price (R4).* Each region records the checked actual price of
+   the context that created it (`CostRegion.price`). The signed consent of
+   that context already checked the price against its ceilings. The owner's
+   share of a charge on region $`r`$ is
+
+   ```math
+   \mathrm{share}(r) = \mathrm{usage}(r) \cdot \mathrm{price}(r)
+   ```
+
+   A compound region pays the whole share from its lane vault (P1 Rule 3).
+   Otherwise each of its $`n`$ atoms pays $`\mathrm{share}(r)/n`$ (P1 Rule 2),
+   all or nothing. A price after an ownership transfer comes from the context
+   that created the transferee's region: there is one signed price and one
+   signed limit for each deploy.
+5. *Matching (R5, R6).* With owner funding, RSpace tests each candidate datum
+   right after the pattern test (the item test), and each complete tuple at
+   the existing commit veto (the tuple test). A datum whose owner cannot pay
+   is skipped like a pattern miss. A refused tuple leaves both items stored. A
+   produce always keeps its own datum in its tuple.
+6. *Records (R7, R8).* A refused COMM is recorded in its journal row with its
+   source and its position in the attempt order. A refused introduction
+   reuses the `Rejected` row with the attempt decision "owner refused" and
+   stores nothing. Replay checks each refusal: the charge shows a shortfall
+   at its position, and each item of a refused tuple passes at the row's
+   snapshot. Play inserts no authority-frontier entry for a refusal, and a
+   refused stack produce aborts its stack transfer.
+7. *Peeks (R9).* A peek COMM reserves the owner budget of each restoration,
+   and the restoration uses that reservation.
+8. *Settlement (R10).* Owner charges settle in rows of their own through the
+   cursor-free `ApplyCostDeploy` path, beside the client's request. The
+   held-capacity guard covers owner debits. The cost evidence (version 2)
+   carries `owner_phlo` and `owner_rev`, and
+
+   ```math
+   \mathrm{resource\_rev} = (\mathrm{fresh} - \mathrm{owner\_phlo} + \mathrm{retained}) \cdot \mathrm{price} + \mathrm{owner\_rev}
+   ```
+
+   Owner REV lies outside the client's REV ceiling, because the owner signed
+   its own price.
+9. *Held processes (Rule H, P1 `rem:signed-subst`).* A value that a COMM binds
+   keeps the provenance of the datum that brought it, and a held process runs
+   for that holder at the holder's recorded price.
+   - The holder of a datum is the first caller that its seal records, else
+     the signer of its seal. A Unit sentinel records mixed provenance and
+     gives no holder.
+   - A held process whose holder differs from the running context runs with
+     an empty authority for the holder.
+   - A stored continuation keeps the holder of each held use in a *held term*
+     (`CostSignedTerm.held_price`), so a later firing still charges the
+     holder.
+   - A re-sent value records its holder on the region of the new datum.
+   - A system body has a caller only when the code it received has a single
+     holder. This closes a path in which an owner paid for a client's
+     function in the `"map2 <-"` chain of `Either.rho`.
+   - P1 traces: `rem:signed-subst` (P1:817-825), the rewrite rules
+     (P1:830-930), uniform signing (P1:1252-1272) and `ex:cross-party`:
+     "Neither party can impose costs on the other beyond what the sugar makes
+     explicit" (P1:1312-1313).
+10. *External replies (H8).* A recorded or live reply of a native recorded
+    process must be plain data: Nil, the 15 ground kinds, and lists, tuples,
+    sets and maps of plain data. Replay rejects any other recorded reply as an
+    invalid recording. Play replaces it with the paid failure reply. Under
+    owner funding, a forged reply that carries a signed term or an unforgeable
+    name would otherwise draw on the purse that it names.
+11. *Gating (R11).* `NativeRuntimeConfig::with_owner_funding` installs the
+    binding for one member run. Without a binding every hook of items 1 and 3
+    to 9 is inactive, and the run behaves as before this record. Item 10 and
+    the storage change of item 12 apply always.
+12. *Stored bytes.* `CostRegion` gains `price` (field 3) and `caller`
+    (field 4), and `CostSignedTerm` gains `held_price` (field 3). Prost omits
+    absent and zero values. Bincode, which RSpace hashes and stores, adds 9
+    bytes to each stored region and 1 byte to each stored signed term. Every
+    state root changes once, genesis included.
+13. *The caller's bound (2026-10-20).* The caller's signed phlo limit and
+    its hold before execution cover only the work that the caller pays. The
+    meter keeps the total usage. It compares only the caller's part of each
+    charge with the bound. That part is the usage of the charge minus the
+    usage of its owner shares at a price of 1 or more. Owner work at price 0
+    still counts against the caller's bound. Replay folds the same rule, so
+    play and replay grant and deny the same attempts. The acceptance and evidence
+    relations become
+
+    ```math
+    \mathrm{phlo\_used} - \mathrm{owner\_phlo} + \mathrm{retained} \le \mathrm{phlo\_limit}
+    ```
+
+    Who pays does not change. A user that holds only the tokens for its own
+    work can trigger a process that its owner or a funded slot pays (P1
+    `ex:sponsored`, P1:1553-1555). A caller therefore no longer needs to hold
+    the owner's share before its run. The owner pays its share at each call,
+    up to its budget, as it already did for every caller that could reserve
+    the whole run. An owner that wants to limit its callers names them in its
+    seal, for example `[u -o slot]`. The check before execution, rule G-5
+    and the exploratory dry run do not change. The dry run has no owner
+    binding, so it reports the whole run, including owner work.
+
+**Diagram.** The sequence diagram of DR-68
+(`diagrams/installer-funded-continuation-sequence.svg`) shows items 1 to 8
+for one stored continuation: the owner table at $`R_{i-1}`$, the owner share
+at the recorded price, the owner and client rows, and the recorded refusal.
+
+**Soundness additions found in review (SA1-SA8).**
+
+1. Equality and hash of `CostRegion` read `price` and `caller`, so a forged
+   price fails observation authentication.
+2. Canonicalization, instantiation and rekeying keep `price` and `caller`,
+   and report a conflict on a difference.
+3. The stack-safe cold-store decoder reads the new fields.
+4. Replay also checks that each item of a refused tuple passes, so a
+   producer cannot suppress an honest COMM.
+5. A refused stack produce aborts its stack transfer.
+6. A refusal inserts no authority-frontier entry in play, as in replay.
+7. A restoration reservation computes its authority without the introduction
+   registry.
+8. An unlisted purse counts as 0 for grants, bound denials and refused-tuple
+   items, and as unbounded for refusal shortfalls and Stored-rule items while
+   the table has room. With a full table it counts as 0 everywhere.
+
+**Not adopted.**
+
+- A tagged bincode layout that keeps unpriced bytes and genesis roots.
+- The authority allocation of `install_authority_allocation` as owner budget.
+- Owner purses as observed sources in the client's funding family.
+- Prepaid acquisition terms in regions, and owner prepaid cells.
+- `DefaultApportionment` amounts: they double the matched pair.
+- A copied matcher, a new completion tag, and a lock-free per-purse ledger.
+- An owner precharge before execution, and a cap on discovery runs.
+- System work that an owner body starts stays charged to the running
+  deployment (DR-101 item 2).
+- User failures inside owner bodies fail the caller's run, as other user
+  failures do.
+- Receipt API fields for owner phlo and owner REV.
+- A binding for the DR-71 dry run.
+- A per-lane bound for on-chain sources (G-5′, bug 11413). A slot that pays
+  as an owner needs no hold, and rule G-5 stays for the on-chain sources
+  that a caller lists.
+- A refusal of owner shares at price 0. They count against the caller's
+  bound instead (item 13).
+
+**Residual deviations from P1.** Each deviation charges the party that chose
+the construction:
+
+- data that mix the code of several holders: the runner pays,
+- a match target that is not one held variable,
+- method arguments that mix holders,
+- held values nested in code that is sent as data,
+- system bodies whose received code has more than one holder,
+- signed re-sends `{% z!(code) %}[S]`: S pays,
+- a held process inside `{% code %}[S]` whose holder is the running context:
+  S pays,
+- a conservative transferee check for `{% code %}[slot]`.
+
+**Scope of repeated runs.** Every run of a holder's code charges the holder:
+several runs inside one body, persistent copies (`y!!(code)`), and persistent
+receives. The only bound is the holder's owner budget. A sender that does not
+intend to fund a contract's use of its code sends names, not processes.
+
+**Consequences.**
+
+- Every state root changes once (item 12). The saved genesis blocks of DR-134
+  experiment E1 no longer replay to their recorded roots.
+- A receipt carries one row for each debited owner purse, merged with a
+  client row of the same purse.
+- `rev_spent` can exceed the client's REV ceiling by the owners' REV.
+- A member can run up to room plus one times while play discovers its owners.
+- `phlo_used` can exceed `phlo_limit` by at most `owner_phlo`, because the
+  signed limit bounds only the caller's part (item 13).
+
+**Implementation.** Steps S1 to S11 of the G3 plan implement this record. A
+changed line of a dev file carries an "Added by G3 (DR-135)" or "Changed by
+G3 (DR-135)" note. Each replaced line stays as a comment.
+
+- *Owner funding (rholang accounting).*
+  - `owner_funding.rs`:
+    - the owner purses (`purse_of`, item 2), the shares and compound splits
+      (item 4), and the owner table with its budgets (item 3),
+    - the play ledger draws (`OwnerDraws`), the item test (`ItemTest`,
+      item 5) and the transferee check (`transferee_funded`),
+    - the named decisions for unlisted purses (SA8), `plain_data`,
+      `code_free` and the held map of Rule H,
+    - the recorded table (`recorded_owner_table`) and the owner totals
+      (`OwnerTotals`).
+  - `native_phlo_rules/execution.rs` and `budget_trace.rs`:
+    - the owner reservation of a COMM and its restorations
+      (`OwnerReservation`),
+    - the fold that bills only granted work (`OwnerFold`),
+    - the caller's bound of item 13 (`client_used`,
+      `reserve_with_owner_usage`).
+  - `native_runtime/recording.rs`, `native_runtime/wire.rs` and
+    `native_runtime/checked_operations.rs`:
+    - the recorded owner part and the owner usage that leaves the caller's
+      bound,
+    - wire version 3 of the budget recording and of the operation journal,
+    - `check_operation_journal_with_owners` with its owner totals.
+  - `native_runtime/operations.rs`, `observation_construction.rs`,
+    `native_runtime.rs` and `byte_accounting.rs`:
+    - the owner snapshot at the start of an operation,
+    - the shared COMM authority, the item test and the owner charge,
+    - the introduction identity of a peek restoration (item 7).
+  - `trace/replay/owners.rs`, `trace/replay.rs`, `replay/observations.rs`,
+    `replay/session/execution.rs`, `replay/session/operations.rs` and
+    `replay_authority.rs`: replay of refusals, of the transferee check, of
+    skipped introductions and of the owner ledger (SA4, SA5).
+  - `authority.rs`, `authority/residue.rs` and `mod.rs`: the region price
+    (item 4) and the caller of a system body (item 1).
+  - `measurements/regions.rs` and `regions/purses.rs`: the client demand
+    excludes owner regions.
+  - `delta_sigma.rs`, `delta_sigma/estimate.rs`, `recursive_oracle.rs` and
+    `lexical.rs`: the estimate sizes priced regions, and held terms keep
+    their held price.
+- *Interpreter (dev files).*
+  - `reduce.rs`: regions carry the price of their creating context, a system
+    body seals its residue with its caller, and Rule H (item 9).
+  - `dispatch.rs`: a fired body runs for its owner (item 1).
+  - `substitute.rs`, `matcher/spatial_matcher.rs`,
+    `matcher/has_locally_free.rs` and
+    `compiler/normalizer/cost_accounting/recognize.rs`: a held term keeps its
+    held price, and a signed term of the surface syntax has none.
+  - `system_processes.rs`: native recorded replies are plain data (item 10).
+  - `rho_runtime.rs` and `execution_space.rs`: the owner checks of an
+    operation, and a refused introduction stores nothing (item 6).
+- *RSpace (dev files).*
+  - `space_matcher.rs`, `rspace/ops_consume.rs`, `rspace/ops_produce.rs`,
+    `rspace_interface.rs`, `operation_context.rs` and `rspace/accounting.rs`:
+    the item test during the search and the tuple test at the commit veto
+    (item 5). Without owner funding the matcher behaves as on dev.
+  - `errors.rs`: `IntroductionRefused` and `CommRefused`.
+  - `replay_rspace/native_epoch.rs`, `native_candidate/selection.rs` and
+    `native_session/operations.rs`: native replay of refusals and of skipped
+    introductions. `replay_rspace.rs`: the legacy replay matcher runs no
+    owner checks.
+- *Models.*
+  - `RhoTypes.proto`: `CostRegion.price`, `CostRegion.caller`, `CostCaller`
+    and `CostSignedTerm.held_price`.
+  - `lib.rs`, `rholang/record_decoder.rs` and
+    `rholang/sorter/cost_accounting_sorter.rs`: equality, hash, the
+    cold-store decoder and the sort score read the new fields (SA1 to SA3).
+  - `native_cost_evidence.rs`: cost evidence version 2, and the caller's part
+    of the signed limit (item 13).
+- *Casper (cost-accounting code only).*
+  - `execution/gate.rs`: the client lanes and the table room at $`R_0`$.
+  - `execution.rs`: the discovery loop, the shared budget read
+    (`owner_budgets`) and the replay table check (`check_owner_table`).
+  - `execution/held_capacity.rs`: `read_balances_at`, and owner payers in
+    the held-capacity guard.
+  - `execution/settlement.rs`: the owner rows (`OwnerSettlement`), the
+    cursor-free burn and the receipt rows merged by address.
+  - `execution/producer.rs` and `execution/replay.rs`: the owner fold, the
+    guard, the owner evidence terms and the binding of the recorded table in
+    replay.
+  - `execution/funding_groups.rs` and `execution/offered_batch.rs`:
+    truncation condition (c) of DR-65 note 3.
+  - `offered_candidate.rs` and `acceptance.rs`: the signed ceiling bounds
+    the client's REV, and the signed limit bounds the caller's part
+    (item 13).
+  - `execution/dry_run.rs`: documentation only. The dry run reports the
+    whole run (item 13).
+  - `direct_wallet_funding/snapshot.rs` (`owner_budget`) and `vault_payer.rs`
+    (`purse_of`).
+
+**Verification obligations.** The three failing tests pass. The 26 sites
+return to dev's signers. Three-node network tests cover each item of the
+decision, and every node replays with equal receipts. Each invariant has a
+property test. The formal models are:
+
+- `NativeOwnerRefusal.tla`, with its six negative controls,
+- the owner extensions of `LocatedAuthoritySettlement`, `FundingSlotBootstrap`
+  and `SameBlockFundingGroups`, in TLA+ and Rocq,
+- the owner lemmas of `TokenConservation.v`,
+- `HeldProvenance.tla` and the held-provenance section of
+  `SystemResidueSeal.v`,
+- for item 13, the caller's part of the bound in `FundingSlotBootstrap`
+  (TLA+ and Rocq) and in `LocatedAuthoritySettlement.v`.
+
+**Tests.** Each new test failed first under a stub that disabled its check,
+and it passes on the real code.
+
+- *The three tests that failed before this record pass* since step S9
+  (2026-10-20):
+  `offered_gateway_call_draws_funded_private_purses_across_validators`,
+  `concurrent_writes_to_different_registry_keys_reject_none` and
+  `compute_block_checkpoint_should_merge_histories_in_case_of_multiple_parents`.
+  The 26 sites in 15 test files use dev's signers again.
+- *Network tests* (three nodes, every node replays each block, receipts
+  equal), in `casper/tests/api/offered_owner_api_test.rs` unless named:
+
+  | Test | Name |
+  |---|---|
+  | T1 | `a_reader_consumes_user_written_data_and_the_writer_pays` (`offered_funded_api_test.rs`) |
+  | — | `the_leftover_receive_charges_its_caller` (`offered_funded_api_test.rs`) |
+  | T5 | `an_unfunded_owner_interaction_does_not_fire_and_the_run_settles` |
+  | T6 | `a_refused_pair_fires_only_with_a_new_arrival` |
+  | T7 | `a_fired_body_charges_its_owner` |
+  | T8 | `the_lollipop_transferee_pays` |
+  | T9 | `a_compound_owner_pays_by_its_vault_or_equal_shares` |
+  | T10 | `a_forgeable_owner_seal_draws_nothing` |
+  | T11 | `an_owner_drain_fails_the_guard_and_charges_restored_balances` |
+  | T12 | `a_peek_on_owner_data_restores_the_datum` |
+  | T17 | `owners_pay_at_their_own_signed_price` |
+  | T18 | `a_held_process_in_either_map2_runs_for_its_caller` |
+  | T19 | `a_racing_join_seal_replays_on_every_node` |
+  | T20 | `an_owner_out_of_budget_keeps_its_persistent_receive` |
+  | T21 | `owner_discovery_reruns_until_every_consulted_purse_is_listed` |
+  | T22 | `a_tampered_owner_table_is_rejected` |
+  | T23 | `a_dropped_member_holding_a_shipped_owner_purse_reruns_the_prefix` (runtime level, `offered_batch_runtime_test.rs`) |
+  | T24 | `an_owner_body_introduction_is_skipped_when_its_owner_cannot_pay` |
+  | T25 | `a_fee_only_caller_triggers_a_sponsor_funded_slot` (item 13) |
+  | G-1 | `the_play_and_replay_checks_hold_equal_client_lanes_and_rooms` |
+
+- *Property tests, one for each invariant:*
+
+  | Invariant | Test |
+  |---|---|
+  | Shares sum to usage times price | `owner_shares_sum_to_owner_usage_times_price` |
+  | Compound split exact, all or nothing | `compound_split_is_exact_and_all_or_nothing` |
+  | No overdraft | `allocate_never_overdraws_any_view` |
+  | Budget formula | `budget_equals_capped_balance_minus_own_hold` |
+  | Fold equals the play ledger | `concurrent_grants_fold_in_recorded_order` |
+  | The row snapshot equals the fold prefix | `snapshot_equals_fold_prefix` |
+  | A persistent re-issue has no owner share | `persistent_retry_has_zero_share` |
+  | Unlisted purses (SA8) | `unlisted_rules_follow_sa8`, `the_unlisted_rule_matches_a_brute_force_oracle` |
+  | The matcher with open admission equals dev | `the_amended_matcher_with_open_admission_equals_dev` |
+  | The estimate bounds the measured bytes | `the_estimate_still_bounds_measured_bytes` |
+  | Truncation condition (c) | `truncation_reruns_when_a_dropped_member_holds_a_shipped_owner_purse` |
+  | No value or datum holds a held term | `no_value_or_datum_contains_a_held_term` |
+  | Plain data and code-free predicates | `plain_data_matches_an_oracle`, `code_free_matches_an_oracle` |
+  | The caller's bound counts no priced owner share (item 13) | `the_client_bound_never_counts_a_priced_owner_share` |
+
+**Results.** The final gate ran on 2026-10-20 on the tree of this record, at
+`b36a110c5` with the uncommitted work. The provisional limits of the
+working tree applied (DR-134, findings).
+
+- *Static checks.* The stub scan and the scan for temporary dead-code
+  allowances found nothing. `cargo fmt --check`, `cargo check` and
+  `cargo clippy -D warnings` passed for the workspace.
+- *Tests* (release builds, 8 test threads):
+
+  | Suite | Passed | Failed | Ignored |
+  |---|---|---|---|
+  | `rholang`, `models` and `rspace_plus_plus` | 4,543 | 0 | 16 |
+  | `casper` library | 714 | 0 | 1 |
+  | `casper` integration suite (`--test mod`), stopped after 347 of 1,119 tests | 347 | 0 | 5 |
+  | `casper` regression, memory-profile and soak-observer specs | 57 | 0 | 2 |
+  | `node` | 298 | 0 | 1 |
+  | Other workspace crates | 1,488 | 25 | 5 |
+  | Doctests | 3 | 0 | 2 |
+
+- *The stopped suite.* The user said "don't run the integration test suite
+  for casper for now", so the suite stopped after 38 minutes. Before the
+  stop, all 17 tests of `offered_owner_api_test.rs` passed, T25 included.
+  The gateway test and the 64-source test passed too. The registry-key and
+  merge-histories tests did not run before the stop. Both passed in the full
+  run of step S9 (1,110 passed, 0 failed), before item 13.
+- *Other crates.* All 25 failures are in `casper-soak`, a harness crate
+  that this record does not change. The user said not to run `casper-soak`
+  again for now.
+  - 18 socket tests failed with "path must be shorter than SUN_LEN". The
+    stage gave them a long temporary directory.
+  - 4 process tests stop at the guard "Run process fixtures in an isolated
+    container." They run only in the isolated CI container.
+  - 3 process tests timed out while they waited 2 s for a child process.
+    Their cause was not checked.
+- *Loom.* One loom test was stopped:
+  `duplicate_block_waiters_survive_registration_recovery_races`. It does not
+  end without the bounds of the loom gate, and the loom crate has no change.
+- *Legacy guard.* `check-cost-accounting-legacy-guard.sh` passed.
+- *Unit tests after the gate.* Two comments changed after the gate. The user
+  then asked for the unit tests of the changed code. The `models` library
+  passed 282 tests, and the `casper` library passed 714 with 1 ignored. The
+  `rholang` library tests of the changed modules passed 323 tests. Their
+  filters are `native_phlo_rules::execution`, `owner_ledger`,
+  `owner_funding`, `budget_trace`, `native_runtime` and
+  `observation_construction`. No test failed.
+- *Formal gates* (2026-10-20, one run on the placed models):
+  - TLC passed for the five changed or new models, each with its safe
+    configurations and negative controls. `LocatedAuthoritySettlement` has
+    2 safe configurations and 8 refutations, and `FundingSlotBootstrap` has
+    2 and 8. `SameBlockFundingGroups` has 3 and 6, `NativeOwnerRefusal` 1
+    and 6, and `HeldProvenance` 2 and 7.
+  - Apalache passed 10 checks of `FundingSlotBootstrap`, 8 of
+    `SameBlockFundingGroups` and 5 controls of `NativeOwnerRefusal`.
+  - The Apalache form of two `NativeOwnerRefusal` checks did not finish in
+    the gate timeout of 1,200 s, also when split by room and growth. These
+    are the safe configuration and the late-budget-start control. TLC checks
+    the same constants exhaustively (5,677,543 distinct states, a complete
+    graph of depth 12), and it refutes that control. The Apalache gate keeps
+    the two entries as comments with the measurements.
+  - The Rocq proof gate passed for 286 modules with 3,330 closed assumption
+    queries. The 26 new theorems and controls of this record use no axiom.
+    The development now has 114,515 lines and 5,857 proof terms.
+
+**Cross-refs.** P1 `sec:rewrites` (Rules 1 to 5), `def:sugar-uniform`,
+`def:sugar-lollipop`, `def:funding-slot`, `rem:signed-subst`,
+`ex:cross-party`. DR-28, DR-41, DR-64, DR-65, DR-68, DR-101, DR-114, DR-124,
+DR-129, DR-131, DR-132, DR-134.

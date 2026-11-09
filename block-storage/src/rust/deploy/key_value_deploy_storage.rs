@@ -1,6 +1,7 @@
 // See block-storage/src/main/scala/coop/rchain/blockstorage/deploy/KeyValueDeployStorage.scala
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crypto::rust::signatures::signed::Signed;
@@ -8,20 +9,13 @@ use models::rust::casper::protocol::casper_message::DeployData;
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeLimits, StoredDeployEnvelope};
 use models::rust::deploy_id::{DeployIdV6, DeployLookupId};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use shared::rust::store::key_value_store::KvStoreError;
+use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
 use shared::rust::store::key_value_typed_store_impl::KeyValueTypedStoreImpl;
 use shared::rust::ByteString;
 
 pub const MAX_ENVELOPE_REJECTIONS: usize = 4096;
 pub const MAX_ENVELOPE_REJECTION_REASON_BYTES: usize = 1024;
-
-#[derive(Clone)]
-pub struct KeyValueDeployStorage {
-    pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
-    pub envelope_store: KeyValueTypedStoreImpl<ByteString, StoredDeployEnvelope>,
-    pub envelope_rejections: EnvelopeRejectionLog,
-}
 
 #[derive(Clone, Debug)]
 pub enum PendingDeployCandidate {
@@ -106,17 +100,107 @@ impl EnvelopeRejectionLog {
     fn ordered_ids(&self) -> Vec<DeployIdV6> { self.0.lock().order.iter().copied().collect() }
 }
 
-impl KeyValueDeployStorage {
+use super::deploy_record_quarantine::DeployRecordQuarantine;
+
+pub const DEPLOY_STORAGE_DB: &str = "deploy_storage";
+pub const DEPLOY_STORAGE_QUARANTINE_DB: &str = "deploy_storage_quarantine";
+pub const REJECTED_DEPLOY_BUFFER_DB: &str = "rejected_deploy_buffer";
+pub const REJECTED_DEPLOY_BUFFER_QUARANTINE_DB: &str = "rejected_deploy_buffer_quarantine";
+
+const DEPLOY_STORE_SIZE_METRIC: &str = "deploy.store.size";
+const DEPLOY_STORE_READ_ALL_DECODED_METRIC: &str = "deploy-store.read-all.decoded";
+
+pub trait DeployStoreName {
+    const NAME: &'static str;
+    const QUARANTINE_NAME: &'static str;
+    const ENVELOPE_NAME: &'static str;
+    const SIZE_WARNING_THRESHOLD: Option<usize> = None;
+}
+
+#[derive(Clone)]
+pub struct DeployStorageName;
+
+impl DeployStoreName for DeployStorageName {
+    const NAME: &'static str = DEPLOY_STORAGE_DB;
+    const ENVELOPE_NAME: &'static str = "deploy_envelope_storage";
+    const QUARANTINE_NAME: &'static str = DEPLOY_STORAGE_QUARANTINE_DB;
+}
+
+#[derive(Clone)]
+pub struct RejectedDeployBufferName;
+
+impl DeployStoreName for RejectedDeployBufferName {
+    const NAME: &'static str = REJECTED_DEPLOY_BUFFER_DB;
+    const ENVELOPE_NAME: &'static str = "rejected_envelope_buffer";
+    const QUARANTINE_NAME: &'static str = REJECTED_DEPLOY_BUFFER_QUARANTINE_DB;
+    const SIZE_WARNING_THRESHOLD: Option<usize> = Some(1_000);
+}
+
+#[derive(Clone)]
+pub struct KeyValueDeployStore<N: DeployStoreName> {
+    pub store: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>>,
+    quarantine: DeployRecordQuarantine,
+    pub envelope_store: KeyValueTypedStoreImpl<ByteString, StoredDeployEnvelope>,
+    pub envelope_rejections: EnvelopeRejectionLog,
+    _name: PhantomData<N>,
+}
+
+pub type KeyValueDeployStorage = KeyValueDeployStore<DeployStorageName>;
+/// Per-node local buffer of deploys rejected during multi-parent merge.
+///
+/// When the merge algorithm drops a deploy from the canonical merged state,
+/// its data is placed here so the block creator can re-propose it in a
+/// subsequent block. Each validator maintains its own buffer; there is no
+/// cross-validator coordination.
+pub type KeyValueRejectedDeployBuffer = KeyValueDeployStore<RejectedDeployBufferName>;
+
+impl<N: DeployStoreName> KeyValueDeployStore<N> {
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
-        let deploy_storage_kv_store = kvm.store("deploy_storage".to_string()).await?;
-        let deploy_storage_db: KeyValueTypedStoreImpl<ByteString, Signed<DeployData>> =
-            KeyValueTypedStoreImpl::new(deploy_storage_kv_store);
-        let envelope_storage_kv_store = kvm.store("deploy_envelope_storage".to_string()).await?;
-        Ok(Self {
-            store: deploy_storage_db,
-            envelope_store: KeyValueTypedStoreImpl::new(envelope_storage_kv_store),
+        let kv_store = kvm.store(N::NAME.to_string()).await?;
+        let quarantine_kv_store = kvm.store(N::QUARANTINE_NAME.to_string()).await?;
+        let envelopes = kvm.store(N::ENVELOPE_NAME.to_string()).await?;
+        Self::from_stores(kv_store, quarantine_kv_store, envelopes)
+    }
+
+    pub fn from_stores(
+        store: Arc<dyn KeyValueStore>,
+        quarantine: Arc<dyn KeyValueStore>,
+        envelopes: Arc<dyn KeyValueStore>,
+    ) -> Result<Self, KvStoreError> {
+        let storage = Self {
+            store: KeyValueTypedStoreImpl::with_value_codec(
+                store,
+                super::deploy_codec::encode,
+                super::deploy_codec::decode,
+            ),
+            quarantine: DeployRecordQuarantine::new(N::NAME, quarantine),
+            envelope_store: KeyValueTypedStoreImpl::new(envelopes),
             envelope_rejections: EnvelopeRejectionLog::default(),
-        })
+            _name: PhantomData,
+        };
+        storage.quarantine.restore_readable(&storage.store)?;
+        Ok(storage)
+    }
+
+    pub fn add_envelopes(&mut self, envelopes: &[DeployEnvelope]) -> Result<(), KvStoreError> {
+        let mut entries = Vec::with_capacity(envelopes.len());
+        for envelope in envelopes {
+            let DeployLookupId::V6(deploy_id) = envelope.identity() else {
+                return Err(KvStoreError::InvalidArgument(
+                    "legacy deploys belong in the legacy rejected-deploy table".to_string(),
+                ));
+            };
+            let stored =
+                StoredDeployEnvelope::new(envelope).map_err(KvStoreError::SerializationError)?;
+            entries.push((deploy_id.as_ref().to_vec(), stored));
+        }
+        self.envelope_store.put(entries)
+    }
+
+    pub fn get_by_sig(&self, sig: &[u8]) -> Result<Option<Signed<DeployData>>, KvStoreError> {
+        let key: ByteString = sig.to_vec();
+        let results = self.store.get(&vec![key])?;
+        Ok(results.into_iter().next().flatten())
     }
 
     pub fn add(&mut self, deploys: Vec<Signed<DeployData>>) -> Result<(), KvStoreError> {
@@ -201,37 +285,6 @@ impl KeyValueDeployStorage {
         self.envelope_rejections.get(deploy_id)
     }
 
-    pub fn read_all_envelopes(
-        &self,
-        limits: DeployEnvelopeLimits,
-    ) -> Result<Vec<PendingDeployCandidate>, KvStoreError> {
-        let mut envelopes = self
-            .read_all()?
-            .into_iter()
-            .map(PendingDeployCandidate::Legacy)
-            .collect::<Vec<_>>();
-        for (key, stored) in self.envelope_store.to_map()? {
-            let deploy_id = DeployIdV6::try_from(key.as_slice())
-                .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
-            let envelope = stored
-                .decode(&DeployLookupId::V6(deploy_id), limits)
-                .map_err(KvStoreError::SerializationError)?;
-            envelopes.push(PendingDeployCandidate::Envelope(envelope));
-        }
-        envelopes.sort_by(|left, right| {
-            let left_id = match left {
-                PendingDeployCandidate::Legacy(deploy) => deploy.sig.as_ref(),
-                PendingDeployCandidate::Envelope(deploy) => deploy.identity().as_bytes(),
-            };
-            let right_id = match right {
-                PendingDeployCandidate::Legacy(deploy) => deploy.sig.as_ref(),
-                PendingDeployCandidate::Envelope(deploy) => deploy.identity().as_bytes(),
-            };
-            left_id.cmp(right_id)
-        });
-        Ok(envelopes)
-    }
-
     pub fn remove_envelope_by_id(&mut self, deploy_id: &DeployIdV6) -> Result<bool, KvStoreError> {
         let key: ByteString = deploy_id.as_ref().to_vec();
         if !self.contains_envelope_id(deploy_id)? {
@@ -269,11 +322,25 @@ impl KeyValueDeployStorage {
 
     pub fn any<F>(&self, predicate: F) -> Result<bool, KvStoreError>
     where F: FnMut(&Signed<DeployData>) -> Result<bool, KvStoreError> {
-        self.store.any_value(predicate)
+        self.quarantine.any(&self.store, predicate)
     }
 
     pub fn read_all(&self) -> Result<HashSet<Signed<DeployData>>, KvStoreError> {
-        self.store.to_map().map(|map| map.into_values().collect())
+        let all = self.quarantine.read_all(&self.store)?;
+        metrics::gauge!(DEPLOY_STORE_SIZE_METRIC, "store" => N::NAME).set(all.len() as f64);
+        metrics::counter!(DEPLOY_STORE_READ_ALL_DECODED_METRIC, "store" => N::NAME)
+            .increment(all.len() as u64);
+        if let Some(limit) = N::SIZE_WARNING_THRESHOLD {
+            if all.len() > limit {
+                tracing::warn!(
+                    store = N::NAME,
+                    size = all.len(),
+                    limit,
+                    "deploy store above size warning threshold"
+                );
+            }
+        }
+        Ok(all)
     }
 
     /// Check if the storage contains any pending deploys. O(1) time and space.
@@ -282,14 +349,70 @@ impl KeyValueDeployStorage {
     }
 }
 
+impl KeyValueDeployStore<DeployStorageName> {
+    pub fn read_all_envelopes(
+        &self,
+        limits: DeployEnvelopeLimits,
+    ) -> Result<Vec<PendingDeployCandidate>, KvStoreError> {
+        let mut envelopes = self
+            .read_all()?
+            .into_iter()
+            .map(PendingDeployCandidate::Legacy)
+            .collect::<Vec<_>>();
+        for (key, stored) in self.envelope_store.to_map()? {
+            let deploy_id = DeployIdV6::try_from(key.as_slice())
+                .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+            let envelope = stored
+                .decode(&DeployLookupId::V6(deploy_id), limits)
+                .map_err(KvStoreError::SerializationError)?;
+            envelopes.push(PendingDeployCandidate::Envelope(envelope));
+        }
+        envelopes.sort_by(|left, right| {
+            let left_id = match left {
+                PendingDeployCandidate::Legacy(deploy) => deploy.sig.as_ref(),
+                PendingDeployCandidate::Envelope(deploy) => deploy.identity().as_bytes(),
+            };
+            let right_id = match right {
+                PendingDeployCandidate::Legacy(deploy) => deploy.sig.as_ref(),
+                PendingDeployCandidate::Envelope(deploy) => deploy.identity().as_bytes(),
+            };
+            left_id.cmp(right_id)
+        });
+        Ok(envelopes)
+    }
+}
+
+impl KeyValueDeployStore<RejectedDeployBufferName> {
+    pub fn read_all_envelopes(
+        &self,
+        limits: DeployEnvelopeLimits,
+    ) -> Result<Vec<DeployEnvelope>, KvStoreError> {
+        let rows = self.envelope_store.to_map()?;
+        let mut envelopes = Vec::with_capacity(rows.len());
+        for (key, stored) in rows {
+            let deploy_id = DeployIdV6::try_from(key.as_slice())
+                .map_err(|error| KvStoreError::SerializationError(error.to_string()))?;
+            let envelope = stored
+                .decode(&DeployLookupId::V6(deploy_id), limits)
+                .map_err(KvStoreError::SerializationError)?;
+            envelopes.push(envelope);
+        }
+        envelopes
+            .sort_by(|left, right| left.identity().as_bytes().cmp(right.identity().as_bytes()));
+        Ok(envelopes)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::HashMap;
     use std::num::NonZeroUsize;
     use std::sync::{Arc, Barrier};
 
     use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
     use crypto::rust::signatures::signed::Cosigned;
+    use metrics_util::debugging::{DebugValue, DebuggingRecorder};
     use models::rust::cost_deploy_data::DeployData as CostDeployData;
     use models::rust::phlo_controls::PhloControlsLimits;
     use models::rust::phlo_intent::PhloFundingIntentLimits;
@@ -311,6 +434,7 @@ pub(crate) mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),
@@ -346,6 +470,7 @@ pub(crate) mod tests {
 
     pub(crate) fn body_envelope() -> DeployEnvelope {
         let body = CostDeployData {
+            parameters: Vec::new(),
             term: "Nil".to_string(),
             language: "rholang".to_string(),
             time_stamp: 1,
@@ -601,6 +726,122 @@ pub(crate) mod tests {
         assert!(!storage.non_empty().unwrap());
     }
 
+    async fn buffer() -> KeyValueRejectedDeployBuffer {
+        let mut kvm = InMemoryStoreManager::new();
+        KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn add_read_all_and_non_empty() {
+        let mut buffer = buffer().await;
+        assert!(!buffer.non_empty().unwrap());
+
+        let (d1, d2) = (deploy(1), deploy(2));
+        buffer.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        assert!(buffer.non_empty().unwrap());
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([d1, d2]));
+    }
+
+    #[tokio::test]
+    async fn remove_deletes_listed_deploys() {
+        let mut buffer = buffer().await;
+        let (d1, d2) = (deploy(1), deploy(2));
+        buffer.add(vec![d1.clone(), d2.clone()]).unwrap();
+
+        buffer.remove(vec![d2]).unwrap();
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([d1]));
+    }
+
+    #[tokio::test]
+    async fn remove_by_sig_reports_presence() {
+        let mut buffer = buffer().await;
+        let d1 = deploy(1);
+        buffer.add(vec![d1.clone()]).unwrap();
+
+        assert!(buffer.remove_by_sig(&d1.sig).unwrap());
+        assert!(!buffer.remove_by_sig(&d1.sig).unwrap());
+        assert!(!buffer.contains_sig(&d1.sig).unwrap());
+        assert!(!buffer.non_empty().unwrap());
+    }
+
+    #[tokio::test]
+    async fn read_all_reports_the_size_of_each_store() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2)]).unwrap();
+        buffer.add(vec![deploy(3)]).unwrap();
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            storage.read_all().unwrap();
+            buffer.read_all().unwrap();
+        });
+
+        let sizes: HashMap<String, f64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == DEPLOY_STORE_SIZE_METRIC)
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Gauge(size) => key
+                    .key()
+                    .labels()
+                    .find(|label| label.key() == "store")
+                    .map(|label| (label.value().to_string(), size.into_inner())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sizes,
+            HashMap::from([
+                ("deploy_storage".to_string(), 2.0),
+                ("rejected_deploy_buffer".to_string(), 1.0),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn read_all_counts_each_decoded_deploy_of_each_store() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1), deploy(2)]).unwrap();
+        buffer.add(vec![deploy(3)]).unwrap();
+
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        metrics::with_local_recorder(&recorder, || {
+            storage.read_all().unwrap();
+            storage.read_all().unwrap();
+            buffer.read_all().unwrap();
+        });
+
+        let decoded: HashMap<String, u64> = snapshotter
+            .snapshot()
+            .into_vec()
+            .into_iter()
+            .filter(|(key, ..)| key.key().name() == DEPLOY_STORE_READ_ALL_DECODED_METRIC)
+            .filter_map(|(key, _, _, value)| match value {
+                DebugValue::Counter(count) => key
+                    .key()
+                    .labels()
+                    .find(|label| label.key() == "store")
+                    .map(|label| (label.value().to_string(), count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            decoded,
+            HashMap::from([
+                ("deploy_storage".to_string(), 4),
+                ("rejected_deploy_buffer".to_string(), 1),
+            ])
+        );
+    }
+
     #[tokio::test]
     async fn add_if_absent_reports_the_duplicate() {
         let mut kvm = InMemoryStoreManager::new();
@@ -611,14 +852,25 @@ pub(crate) mod tests {
         assert_eq!(storage.read_all().unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn the_two_stores_open_separate_lmdb_stores() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        storage.add(vec![deploy(1)]).unwrap();
+        assert!(storage.non_empty().unwrap());
+        assert!(!buffer.non_empty().unwrap());
+    }
+
     #[test]
     fn add_if_absent_is_atomic_across_storage_handles() {
         let store: Arc<dyn KeyValueStore> = Arc::new(InMemoryKeyValueStore::new());
-        let storage = KeyValueDeployStorage {
-            store: KeyValueTypedStoreImpl::new(store),
-            envelope_store: KeyValueTypedStoreImpl::new(Arc::new(InMemoryKeyValueStore::new())),
-            envelope_rejections: EnvelopeRejectionLog::default(),
-        };
+        let storage = KeyValueDeployStorage::from_stores(
+            store,
+            Arc::new(InMemoryKeyValueStore::new()),
+            Arc::new(InMemoryKeyValueStore::new()),
+        )
+        .unwrap();
         let deploy = Signed::create(
             DeployData {
                 term: "Nil".to_string(),
@@ -628,6 +880,7 @@ pub(crate) mod tests {
                 valid_after_block_number: 0,
                 shard_id: "root".to_string(),
                 expiration_timestamp: None,
+                parameters: Vec::new(),
             },
             Box::new(Secp256k1),
             PrivateKey::from_bytes(&[1; 32]),
@@ -655,5 +908,113 @@ pub(crate) mod tests {
 
         assert_eq!(inserted, 1);
         assert_eq!(storage.read_all().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod rejected_envelope_tests {
+    use crypto::rust::private_key::PrivateKey;
+    use crypto::rust::signatures::secp256k1::Secp256k1;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+
+    use super::tests::{body_envelope, envelope_limits};
+    use super::*;
+    fn deploy(time_stamp: i64) -> Signed<DeployData> {
+        Signed::create(
+            DeployData {
+                parameters: Vec::new(),
+                term: "Nil".to_string(),
+                time_stamp,
+                phlo_price: 1,
+                phlo_limit: 100_000,
+                valid_after_block_number: 0,
+                shard_id: "root".to_string(),
+                expiration_timestamp: None,
+            },
+            Box::new(Secp256k1),
+            PrivateKey::from_bytes(&[1; 32]),
+        )
+        .unwrap()
+    }
+
+    async fn buffer() -> KeyValueRejectedDeployBuffer {
+        let mut kvm = InMemoryStoreManager::new();
+        KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn envelope_table_keeps_legacy_rows_and_round_trips_v6_envelopes() {
+        let mut kvm = InMemoryStoreManager::new();
+        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let legacy = deploy(5);
+        buffer.add(vec![legacy.clone()]).unwrap();
+        let envelope = body_envelope();
+        let DeployLookupId::V6(id) = envelope.identity() else {
+            panic!("a body envelope has a v6 identity")
+        };
+        let id = *id;
+
+        buffer
+            .add_envelopes(std::slice::from_ref(&envelope))
+            .unwrap();
+        buffer
+            .add_envelopes(std::slice::from_ref(&envelope))
+            .unwrap();
+        assert_eq!(buffer.read_all_envelopes(envelope_limits()).unwrap(), vec![
+            envelope.clone()
+        ]);
+        assert_eq!(buffer.read_all().unwrap(), HashSet::from([legacy.clone()]));
+
+        let reopened = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        assert_eq!(
+            reopened.read_all_envelopes(envelope_limits()).unwrap(),
+            vec![envelope]
+        );
+        assert_eq!(
+            reopened.read_all().unwrap(),
+            HashSet::from([legacy.clone()])
+        );
+
+        assert!(buffer.remove_envelope_by_id(&id).unwrap());
+        assert!(!buffer.remove_envelope_by_id(&id).unwrap());
+        assert!(buffer
+            .read_all_envelopes(envelope_limits())
+            .unwrap()
+            .is_empty());
+        assert!(buffer.contains_sig(&legacy.sig).unwrap());
+    }
+
+    /// DR-116 (gap G6): the identity lookups take a deploy identity. A 32-byte
+    /// key names the envelope table.
+    #[tokio::test]
+    async fn the_identity_lookups_name_a_buffered_envelope_by_its_deploy_id() {
+        let mut buffer = buffer().await;
+        let legacy = deploy(5);
+        buffer.add(vec![legacy.clone()]).unwrap();
+        let envelope = body_envelope();
+        let DeployLookupId::V6(id) = envelope.identity() else {
+            panic!("a body envelope has a v6 identity")
+        };
+        let id = *id;
+        buffer
+            .add_envelopes(std::slice::from_ref(&envelope))
+            .unwrap();
+        assert!(buffer.contains_sig(id.as_ref()).unwrap());
+        assert!(!buffer.contains_sig(&[7; 32]).unwrap());
+        assert!(buffer.remove_by_sig(id.as_ref()).unwrap());
+        assert!(!buffer.contains_sig(id.as_ref()).unwrap());
+        assert!(!buffer.remove_by_sig(id.as_ref()).unwrap());
+        assert!(buffer.contains_sig(&legacy.sig).unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_envelope_stored_under_another_identity_fails_closed() {
+        let buffer = buffer().await;
+        let stored = StoredDeployEnvelope::new(&body_envelope()).unwrap();
+        buffer
+            .envelope_store
+            .put(vec![(vec![7; 32], stored)])
+            .unwrap();
+        assert!(buffer.read_all_envelopes(envelope_limits()).is_err());
     }
 }

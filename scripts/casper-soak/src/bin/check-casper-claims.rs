@@ -41,6 +41,39 @@ fn fenced(path: &Path, language: &str) -> Result<String> {
         .to_owned())
 }
 
+fn ledger_record(path: &Path, id: &str) -> Result<Value> {
+    let content = String::from_utf8(regular(path, MAX_BYTES)?)?;
+    let mut blocks = Vec::new();
+    for section in content.split("```json\n").skip(1) {
+        let body = section
+            .split_once("```")
+            .ok_or_else(|| eyre!("The metadata block is incomplete."))?
+            .0;
+        blocks.push(parse(body.as_bytes())?);
+    }
+    ensure!(!blocks.is_empty(), "The metadata block is missing.");
+    if blocks.len() == 1 {
+        return Ok(blocks.remove(0));
+    }
+    let mut ids = BTreeSet::new();
+    let mut selected = Vec::new();
+    for block in blocks {
+        let claim = text(&block["claim_id"])?.to_owned();
+        ensure!(
+            block["schema"] == "cbc-claim/v1" && ids.insert(claim.clone()),
+            "The metadata block is ambiguous."
+        );
+        if claim == id {
+            selected.push(block);
+        }
+    }
+    ensure!(
+        selected.len() == 1,
+        "The artifact has no record for this claim."
+    );
+    Ok(selected.remove(0))
+}
+
 fn field<'a>(header: &'a str, key: &str) -> Result<&'a str> {
     let prefix = format!("{key}: ");
     let values: Vec<_> = header
@@ -87,15 +120,13 @@ fn discharged(root: &Path, spec: &str, header: &str, id: &str) -> Result<()> {
     for artifact in artifacts {
         ensure!(seen.insert(artifact), "An artifact is duplicated.");
         let source = relative(root, artifact)?;
-        let slug = if artifact == "scripts/casper-soak/Cargo.toml" {
-            "scripts-casper-soak-cargo-toml".to_owned()
-        } else {
-            artifact
-                .trim_start_matches('.')
-                .replace(['/', '.', '_'], "-")
-        };
+        let slug = artifact
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
         let ledger_path = relative(root, &format!("docs/casper/cbc-evidence/{slug}.md"))?;
-        let ledger = parse(fenced(&ledger_path, "json")?.as_bytes())?;
+        let ledger = ledger_record(&ledger_path, id)?;
         ensure!(
             ledger["status"] == "discharged"
                 && ledger["waiver"].is_null()

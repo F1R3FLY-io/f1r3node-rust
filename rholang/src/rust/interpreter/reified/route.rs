@@ -72,6 +72,7 @@ fn sole_expr(par: &Par) -> Option<&ExprInstance> {
         connective_used: _,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     let structural = sends.is_empty()
         && receives.is_empty()
@@ -82,6 +83,7 @@ fn sole_expr(par: &Par) -> Option<&ExprInstance> {
         && connectives.is_empty()
         && conditionals.is_empty()
         && cost_signed_terms.is_empty()
+        && use_blocks.is_empty()
         && cost_stacks.is_empty();
     match (structural, exprs.as_slice()) {
         (

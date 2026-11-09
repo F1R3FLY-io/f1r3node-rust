@@ -944,7 +944,7 @@
      "test": "reducer_space_costs"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/src/rust/interpreter/spaces/charging_agent.rs",
@@ -963,7 +963,7 @@
      "test": "space_queue_out_of_phlo_sweep_replays_equal"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/src/rust/interpreter/spaces/charging_agent.rs",
@@ -982,7 +982,7 @@
      "test": "reducer_space_costs"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/src/rust/interpreter/spaces/charging_agent.rs",
@@ -1001,7 +1001,7 @@
      "test": "reducer_space_costs"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/src/rust/interpreter/spaces/charging_agent.rs",
@@ -1732,10 +1732,10 @@
    "successors": [
     {
      "file": "rholang/tests/reified_vectordb.rs",
-     "test": "space_vectordb_reads_without_a_vector_follow_the_canonical_order"
+     "test": "space_vectordb_lists_without_a_vector_keep_the_canonical_order"
     }
    ],
-   "reason": "decision 41: reads without a vector follow the canonical source-hash order"
+   "reason": "decision 41 and decision 102: without a vector, a list keeps the canonical source-hash order, and a plain receive takes its pick order"
   },
   {
    "path": "rholang/src/rust/interpreter/spaces/collections/mod.rs",
@@ -1747,10 +1747,10 @@
    "successors": [
     {
      "file": "rholang/tests/reified_vectordb.rs",
-     "test": "space_vectordb_reads_without_a_vector_follow_the_canonical_order"
+     "test": "space_vectordb_lists_without_a_vector_keep_the_canonical_order"
     }
    ],
-   "reason": "decision 41: reads without a vector follow the canonical source-hash order"
+   "reason": "decision 41 and decision 102: without a vector, a list keeps the canonical source-hash order, and a plain receive takes its pick order"
   },
   {
    "path": "rholang/src/rust/interpreter/spaces/collections/mod.rs",
@@ -8104,7 +8104,7 @@
    "successors": [
     {
      "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_driver_and_engine_agree"
+     "test": "prop_vectordb_no_pending_match"
     }
    ],
    "reason": "plan section \"Legacy dispositions\": the Rholang backend is deleted, and the VectorDB discipline runs in the space engine"
@@ -8119,7 +8119,7 @@
    "successors": [
     {
      "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_driver_and_engine_agree"
+     "test": "prop_vectordb_no_pending_match"
     }
    ],
    "reason": "plan section \"Legacy dispositions\": the Rholang backend is deleted, and the VectorDB discipline runs in the space engine"
@@ -9223,11 +9223,11 @@
    "successors": [
     {
      "file": "rholang/tests/reified_seq.rs",
-     "test": "prop_seq_claim_chain"
+     "test": "prop_seq_claim_causal_chain"
     },
     {
      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
-     "test": "seq_claims_admit_exactly_the_descendants_of_the_last_use"
+     "test": "seq_claims_admit_exactly_the_jobs_that_know_the_last_use"
     }
    ]
   },
@@ -9241,11 +9241,11 @@
    "successors": [
     {
      "file": "rholang/tests/reified_seq.rs",
-     "test": "prop_seq_claim_chain"
+     "test": "prop_seq_claim_causal_chain"
     },
     {
      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
-     "test": "seq_claims_admit_exactly_the_descendants_of_the_last_use"
+     "test": "seq_claims_admit_exactly_the_jobs_that_know_the_last_use"
     }
    ],
    "reason": "decision 73: per-channel causal-lineage claims replace the guard of the legacy seq channel"
@@ -9751,7 +9751,7 @@
      "test": "space_queue_observer_parity"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step",
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work",
    "positive_match": true,
    "non_match": [
     {
@@ -9773,7 +9773,7 @@
      "test": "space_queue_divergent_pair_exhausts_phlo"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/e2e_workflows.rs",
@@ -10060,11 +10060,11 @@
    "successors": [
     {
      "file": "rholang/tests/reified_seq.rs",
-     "test": "prop_seq_claim_chain"
+     "test": "prop_seq_claim_causal_chain"
     },
     {
      "file": "rholang/src/rust/interpreter/spaces/ephemeral.rs",
-     "test": "seq_claims_admit_exactly_the_descendants_of_the_last_use"
+     "test": "seq_claims_admit_exactly_the_jobs_that_know_the_last_use"
     }
    ]
   },
@@ -10443,11 +10443,11 @@
    "disposition": "retarget",
    "successors": [
     {
-     "file": "rspace++/tests/reified_space_store_handle.rs",
-     "test": "space_store_handle_replay_unpaired_comm_fails_check_replay_data"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_rejects_a_tampered_candidate"
     }
    ],
-   "reason": "plan section \"Substrate\": the replay of a space checks its data as the host replay does"
+   "reason": "plan section \"Substrate\": the replay of a space checks its data as the host replay does, and decision 125 makes it native replay"
   },
   {
    "path": "rholang/tests/spaces/integration_checkpoint.rs",
@@ -10455,13 +10455,14 @@
    "name": "test_rig_with_event_log",
    "kind": "test",
    "behavior": "checkpoint: rig with event log",
-   "disposition": "port",
+   "disposition": "retarget",
    "successors": [
     {
-     "file": "rspace++/tests/reified_space_store_handle.rs",
-     "test": "space_store_handle_replay_pairs_play_log"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_fires_against_the_recorded_candidate"
     }
-   ]
+   ],
+   "reason": "decision 125: native replay replaces the rig, and it fires each row against its recorded candidate"
   },
   {
    "path": "rholang/tests/spaces/integration_checkpoint.rs",
@@ -10695,10 +10696,6 @@
     {
      "file": "rholang/tests/loom_reified.rs",
      "test": "loom_space_routing"
-    },
-    {
-     "file": "rholang/src/rust/interpreter/reified/schedule.rs",
-     "test": "space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks"
     }
    ]
   },
@@ -11054,7 +11051,7 @@
      "test": "space_queue_divergent_pair_exhausts_phlo"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_adapter.rs",
@@ -11084,10 +11081,10 @@
     },
     {
      "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_charge_independent_of_unread_payloads"
+     "test": "prop_agent_outcome_independent_of_unread_payloads"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11103,10 +11100,10 @@
     },
     {
      "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_charge_independent_of_unread_payloads"
+     "test": "prop_agent_outcome_independent_of_unread_payloads"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11122,10 +11119,10 @@
     },
     {
      "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_charge_independent_of_unread_payloads"
+     "test": "prop_agent_outcome_independent_of_unread_payloads"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11140,15 +11137,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11163,15 +11160,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11186,15 +11183,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11205,15 +11202,15 @@
    "disposition": "retarget",
    "successors": [
     {
-     "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_reservation_cut_rejects_without_effect"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_queue.rs",
      "test": "space_queue_divergent_pair_exhausts_phlo"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11224,15 +11221,15 @@
    "disposition": "retarget",
    "successors": [
     {
-     "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_reservation_cut_rejects_without_effect"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_queue.rs",
      "test": "space_queue_divergent_pair_exhausts_phlo"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11278,10 +11275,10 @@
     },
     {
      "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_charge_independent_of_unread_payloads"
+     "test": "prop_agent_outcome_independent_of_unread_payloads"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11297,10 +11294,10 @@
     },
     {
      "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_charge_independent_of_unread_payloads"
+     "test": "prop_agent_outcome_independent_of_unread_payloads"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11316,10 +11313,10 @@
     },
     {
      "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_charge_independent_of_unread_payloads"
+     "test": "prop_agent_outcome_independent_of_unread_payloads"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11335,10 +11332,10 @@
     },
     {
      "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_charge_independent_of_unread_payloads"
+     "test": "prop_agent_outcome_independent_of_unread_payloads"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11353,15 +11350,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11376,15 +11373,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11399,15 +11396,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11422,15 +11419,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11445,15 +11442,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11468,15 +11465,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11491,15 +11488,15 @@
      "test": "reducer_space_costs"
     },
     {
-     "file": "rholang/src/rust/interpreter/reified/costs.rs",
-     "test": "metered_matching_reserves_on_the_branch_dimensions"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_temp_seq.rs",
      "test": "reified_ephemeral_cost_charged"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11540,15 +11537,15 @@
    "disposition": "retarget",
    "successors": [
     {
-     "file": "rholang/tests/reified_p4_props.rs",
-     "test": "prop_agent_reservation_cut_rejects_without_effect"
+     "file": "rholang/tests/reified_queue.rs",
+     "test": "space_queue_observer_parity"
     },
     {
      "file": "rholang/tests/reified_queue.rs",
      "test": "space_queue_divergent_pair_exhausts_phlo"
     }
    ],
-   "reason": "revised M-3 and decision 40: phlo comes from the RSpace accounting observer, and host work from the metered matcher and the reservations of each step"
+   "reason": "revised M-3, decision 40 and decision 89: phlo comes from the RSpace accounting observer, and no step reserves host work"
   },
   {
    "path": "rholang/tests/spaces/proptest_charging_agent.rs",
@@ -11889,7 +11886,7 @@
    "successors": [
     {
      "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_driver_and_engine_agree"
+     "test": "prop_vectordb_no_pending_match"
     },
     {
      "file": "rholang/tests/reified_vectordb.rs",
@@ -14251,7 +14248,7 @@
    "successors": [
     {
      "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_driver_and_engine_agree"
+     "test": "prop_vectordb_no_pending_match"
     }
    ]
   },
@@ -15928,8 +15925,8 @@
      "test": "prop_space_txn_play_trace_equals_host"
     },
     {
-     "file": "rspace++/tests/reified_space_store_handle_props.rs",
-     "test": "prop_space_txn_replay_pairs_play_log"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_fires_against_the_recorded_candidate"
     }
    ],
    "reason": "plan section \"Substrate\": space operations log ordinary RSpace events, and replay pairs them"
@@ -15947,8 +15944,8 @@
      "test": "prop_space_txn_play_trace_equals_host"
     },
     {
-     "file": "rspace++/tests/reified_space_store_handle_props.rs",
-     "test": "prop_space_txn_replay_pairs_play_log"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_fires_against_the_recorded_candidate"
     }
    ],
    "reason": "plan section \"Substrate\": space operations log ordinary RSpace events, and replay pairs them"
@@ -15966,8 +15963,8 @@
      "test": "prop_space_txn_play_trace_equals_host"
     },
     {
-     "file": "rspace++/tests/reified_space_store_handle_props.rs",
-     "test": "prop_space_txn_replay_pairs_play_log"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_fires_against_the_recorded_candidate"
     }
    ],
    "reason": "plan section \"Substrate\": space operations log ordinary RSpace events, and replay pairs them"
@@ -15985,8 +15982,8 @@
      "test": "prop_space_txn_play_trace_equals_host"
     },
     {
-     "file": "rspace++/tests/reified_space_store_handle_props.rs",
-     "test": "prop_space_txn_replay_pairs_play_log"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_fires_against_the_recorded_candidate"
     }
    ],
    "reason": "plan section \"Substrate\": space operations log ordinary RSpace events, and replay pairs them"
@@ -16004,8 +16001,8 @@
      "test": "prop_space_txn_play_trace_equals_host"
     },
     {
-     "file": "rspace++/tests/reified_space_store_handle_props.rs",
-     "test": "prop_space_txn_replay_pairs_play_log"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_fires_against_the_recorded_candidate"
     }
    ],
    "reason": "plan section \"Substrate\": space operations log ordinary RSpace events, and replay pairs them"
@@ -16023,8 +16020,8 @@
      "test": "prop_space_txn_play_trace_equals_host"
     },
     {
-     "file": "rspace++/tests/reified_space_store_handle_props.rs",
-     "test": "prop_space_txn_replay_pairs_play_log"
+     "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+     "test": "native_space_replay_fires_against_the_recorded_candidate"
     }
    ],
    "reason": "plan section \"Substrate\": space operations log ordinary RSpace events, and replay pairs them"
@@ -19993,8 +19990,8 @@
    "disposition": "port",
    "successors": [
     {
-     "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_replay_equal"
+     "file": "rholang/tests/reified_native_spaces.rs",
+     "test": "space_native_vectordb_replay_equal"
     },
     {
      "file": "rholang/tests/reified_vectordb.rs",
@@ -20011,8 +20008,8 @@
    "disposition": "port",
    "successors": [
     {
-     "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_replay_equal"
+     "file": "rholang/tests/reified_native_spaces.rs",
+     "test": "space_native_vectordb_replay_equal"
     },
     {
      "file": "rholang/tests/reified_vectordb.rs",
@@ -20129,8 +20126,8 @@
    "disposition": "port",
    "successors": [
     {
-     "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_replay_equal"
+     "file": "rholang/tests/reified_native_spaces.rs",
+     "test": "space_native_vectordb_replay_equal"
     },
     {
      "file": "rholang/tests/reified_vectordb.rs",
@@ -20563,7 +20560,7 @@
    "successors": [
     {
      "file": "rholang/tests/reified_vectordb.rs",
-     "test": "prop_vectordb_driver_and_engine_agree"
+     "test": "prop_vectordb_list_is_ordered_and_complete"
     }
    ]
   },

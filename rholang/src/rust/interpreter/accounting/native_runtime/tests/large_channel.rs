@@ -82,13 +82,17 @@ async fn play_native(
     budget
         .reset_for_native_execution(settings)
         .expect("the play budget resets");
+    let space_runtime =
+        crate::rust::interpreter::reified::runtime::for_host(play.clone(), budget.clone());
     let (reducer, _, _, _) = create_rho_env(
         play.clone(),
+        space_runtime,
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(default_mergeable_tags()),
         &mut Vec::new(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .expect("the play environment starts");

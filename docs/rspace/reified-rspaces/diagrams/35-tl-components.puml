@@ -14,7 +14,7 @@
 '   4. The reducer passes the reflected term as a value: in a VectorDB query,
 '      as an argument of rho:lang:vector, or in free TensorCheck(...).
 '   5. The TL engine decodes, normalizes, checks and evaluates the term, and
-'      it reserves host work on the meter before each step.
+'      no meter covers that work (decision 89).
 '   6. The VectorDB agent commits its COMMs to RSpace, and the theory seam
 '      stores the identity of a TensorCheck theory in the config of a space.
 '
@@ -70,7 +70,7 @@ package "Reducer and Reified runtime (this repository)" as RUNTIME $rrs_agent {
   component REDUCER $rrs_host [
   **Reducer**
   the term is a value inside the
-  QUERY and PARAMS tuples (decision 18)
+  fields query_spec and params (decision 112)
   ]
   component AGENT $rrs_agent [
   **VectorDB agent** (TL-0 and TL-3)
@@ -86,7 +86,7 @@ package "Reducer and Reified runtime (this repository)" as RUNTIME $rrs_agent {
   ]
 }
 
-package "TL engine (native and metered)" as ENGINE $rrs_tl_engine {
+package "TL engine (native)" as ENGINE $rrs_tl_engine {
   component DECODE $rrs_tl_engine [
   **DECODE**
   parse_reflected_tag and the
@@ -109,10 +109,11 @@ package "TL engine (native and metered)" as ENGINE $rrs_tl_engine {
   ]
 }
 
-component METER $rrs_meter [
-**Host-work meter** of the deploy
-a reservation before each step (decision 40)
-]
+' Changed by decision 89: the node has no host-work budget, so the engine has no meter. The text before:
+' component METER $rrs_meter [
+' **Host-work meter** of the deploy
+' a reservation before each step (decision 40)
+' ]
 
 database RSPACE $rrs_storage [
 **RSpace**
@@ -134,14 +135,15 @@ SEAM --> DECODE
 DECODE --> NORMALIZE
 NORMALIZE --> CHECK
 CHECK --> EVAL
-EVAL -[$rrs_flow]-> METER : every phase reserves first
+' Changed by decision 89: the meter is gone, so this arrow has no target. The text before:
+' EVAL -[$rrs_flow]-> METER : every phase reserves first
 AGENT -[$rrs_effect]-> RSPACE : COMM
 SEAM -[$rrs_effect]-> RSPACE : identity bytes and KIND T
 
 legend bottom
 **Concept colors**
 |<$rrs_tl_term>  | TL terms: FLTs and their reflection |
-|<$rrs_f1r3lang> | F1r3lang, the reducer and the meter: code that the design calls and never changes |
+|<$rrs_f1r3lang> | F1r3lang and the reducer: code that the design calls and never changes |
 |<$rrs_agent>    | the space agent |
 |<$rrs_tl_engine> | the TL engine, the capability and the theory checker: compiled-in code that decides values |
 |<$rrs_storage>  | consensus state in RSpace |

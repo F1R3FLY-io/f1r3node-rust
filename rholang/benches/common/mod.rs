@@ -1,9 +1,21 @@
 //! The shared parts of the Reified RSpaces benchmarks (P10 step S8, design v2 section 2.8).
+// Changed by decision 89: no host-work limit bounds a deploy. The text before:
+// ```
+// //! A case is a chain of setup deploys and one measured deploy. Each deploy plays natively at the
+// //! v6 limits on the test chain of `rholang/tests/support/native.rs`. Before it measures, a case
+// ```
 //!
-//! A case is a chain of setup deploys and one measured deploy. Each deploy plays natively at the
-//! v6 limits on the test chain of `rholang/tests/support/native.rs`. Before it measures, a case
-//! plays its measured deploy once and checks the result, the phlo and the root against the
-//! frozen contract `test-vectors/reified-bench-contract-v1.json` (the baseline contract of leaf
+//! A case is a chain of setup deploys and one measured deploy. Each deploy plays natively on the
+//! test chain of `rholang/tests/support/native.rs`. Before it measures, a case
+// Changed by decisions 102 and 111 (T-BENCH): the check compares the fields of the class of the
+// case. The text before:
+// ```
+// //! plays its measured deploy once and checks the result, the phlo and the root against the
+// //! frozen contract `test-vectors/reified-bench-contract-v1.json` (the baseline contract of leaf
+// //! 9214). Every run checks it, `--test` included.
+// ```
+//! plays its measured deploy once and checks the fields of its class (`compare_of`) against the
+//! frozen contract `test-vectors/reified-bench-contract-v2.json` (the baseline contract of leaf
 //! 9214). Every run checks it, `--test` included.
 //!
 //! With `RRS_BENCH_CAPTURE=FILE`, a case checks what it observed against FILE, which can be a copy
@@ -35,18 +47,31 @@ use crate::support::native::NativeChain;
 use crate::support::session::error_codes;
 
 /// The path of the frozen contract, relative to the `rholang` crate.
-const CONTRACT: &str = "../test-vectors/reified-bench-contract-v1.json";
+// Changed by decision 112: the v1 contract stays frozen, and the fields form writes v2. The text
+// before:
+// const CONTRACT: &str = "../test-vectors/reified-bench-contract-v1.json";
+const CONTRACT: &str = "../test-vectors/reified-bench-contract-v2.json";
 /// The schema of the contract.
 const SCHEMA: &str = "reified-rspaces-bench-contract/1";
-/// The phlo limit of every deploy of the benchmarks. No deploy of the benchmarks reaches it, so
-/// the host-work limits of protocol version 6 bound each deploy, the host program included. The
-/// test suites use the smaller `AMPLE_LIMIT` of the test support, which a one-deploy series of
-/// the host program reaches at 1,503 sends.
+// Changed by decision 89: no host-work limit bounds a deploy. The text before:
+// ```
+// /// The phlo limit of every deploy of the benchmarks. No deploy of the benchmarks reaches it, so
+// /// the host-work limits of protocol version 6 bound each deploy, the host program included. The
+// /// test suites use the smaller `AMPLE_LIMIT` of the test support, which a one-deploy series of
+// /// the host program reaches at 1,503 sends.
+// ```
+/// The phlo limit of every deploy of the benchmarks.
 pub const PHLO_LIMIT: u64 = 1_000_000_000;
 /// The size bound when `RRS_BENCH_MAX_SIZE` is not set.
 pub const DEFAULT_MAX_SIZE: u64 = 1_000_000;
-/// The operations of one setup deploy. Ten operations fit the v6 limits for every family.
+// Changed by decision 89: no host-work limit bounds a deploy. The text before:
+// /// The operations of one setup deploy. Ten operations fit the v6 limits for every family.
+/// The operations of one setup deploy.
 pub const CHUNK: u64 = 10;
+/// The first integer payload of a record. A `GInt` holds a zigzag varint, so each integer from
+/// 8,192 to 1,048,575 takes three bytes. Every record of a series then has one encoded size, so
+/// a random pick among records does not change the phlo.
+pub const PAYLOAD_BASE: u64 = 10_000;
 /// The channel where a setup deploy publishes the handle of its space.
 pub const HANDLE: &str = "rrs.bench.handle";
 /// The channel where a case reports its result.
@@ -63,6 +88,46 @@ pub struct Observed {
     pub root: String,
 }
 
+/// The fields of [`Observed`] that the check of a case compares. [`compare_of`] gives the class
+/// of each case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Compare {
+    /// The result, the phlo and the root.
+    All,
+    /// The result and the phlo.
+    NoRoot,
+    /// The form of the result, with `#` in the place of each number, and the phlo.
+    Pick,
+}
+
+impl Observed {
+    /// This observation as the contract holds it under the class `compare`. A root that the
+    /// class does not compare is empty, and the result of [`Compare::Pick`] holds its form.
+    fn project(&self, compare: Compare) -> Observed {
+        match compare {
+            Compare::All => self.clone(),
+            Compare::NoRoot => Observed {
+                root: String::new(),
+                ..self.clone()
+            },
+            Compare::Pick => {
+                let number = Regex::new(r"\d+").expect("the pattern of a number is valid");
+                let mut result = Vec::with_capacity(self.result.len());
+                result.extend(
+                    self.result
+                        .iter()
+                        .map(|value| number.replace_all(value, "#").into_owned()),
+                );
+                Observed {
+                    result,
+                    phlo: self.phlo,
+                    root: String::new(),
+                }
+            }
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Contract {
     schema: String,
@@ -72,8 +137,16 @@ struct Contract {
 
 static CAPTURED: Mutex<Option<BTreeMap<String, Observed>>> = Mutex::new(None);
 
-/// The setups that stopped because a collection was full, by their text, with the records that
-/// they stored. A case with the same setup stops at the same record, so it does not build it again.
+// Changed by decision 89: no host-work limit bounds a deploy, so a fill finds no full collection.
+// The text before:
+// ```
+// /// The setups that stopped because a collection was full, by their text, with the records that
+// /// they stored. A case with the same setup stops at the same record, so it does not build it
+// /// again.
+// ```
+/// The setups whose fill stopped because a deploy of one send failed, by their text, with the
+/// records that they stored. A case with the same setup stops at the same record, so it does not
+/// build it again.
 static FULL: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 
 /// One step of the setup of a case.
@@ -81,9 +154,15 @@ static FULL: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 pub enum Step {
     /// One deploy.
     Deploy(String),
+    // Changed by decision 89: no host-work limit bounds a deploy, so a fill finds no full
+    // collection. The text before:
+    // ```
+    // /// Sends that store records in the space on [`HANDLE`], one send for each record. The setup
+    // /// plays [`CHUNK`] sends in each deploy while that fits the v6 limits, and then one send in
+    // /// each deploy. When one send no longer fits, the collection is full.
+    // ```
     /// Sends that store records in the space on [`HANDLE`], one send for each record. The setup
-    /// plays [`CHUNK`] sends in each deploy while that fits the v6 limits, and then one send in
-    /// each deploy. When one send no longer fits, the collection is full.
+    /// plays [`CHUNK`] sends in each deploy.
     Fill(Vec<String>),
     /// Sends of the equivalent host program, on ordinary channels with no space, played like
     /// [`Step::Fill`].
@@ -115,21 +194,25 @@ fn filter() -> Option<Regex> {
 /// benchmark with that id. A run without a filter selects every case.
 pub fn matches(key: &str) -> bool { filter().is_none_or(|filter| filter.is_match(key)) }
 
-/// The counts of the one-deploy series whose keys start with `prefix`, in ascending order, as
-/// the contract records them, or as the capture file records them in a capture. The counts are
-/// 1, 10, the largest count that fits the v6 limits and the next count. Empty when the series is
-/// not recorded yet, so a capture calibrates it. The check of the largest count and of the next
-/// count verifies the boundary in every run, so a recorded series needs no calibration.
-pub fn recorded_counts(prefix: &str) -> Vec<u64> {
-    let mut counts: Vec<u64> = known_cases()
-        .keys()
-        .filter_map(|key| key.strip_prefix(prefix))
-        .filter_map(|count| count.parse().ok())
-        .collect();
-    counts.sort_unstable();
-    counts.dedup();
-    counts
-}
+// Retired by decision 89 (T-BENCH, ruling L-5): the one-deploy series use fixed counts, so no
+// series reads its counts from the contract. The text before:
+// ```
+// /// The counts of the one-deploy series whose keys start with `prefix`, in ascending order, as
+// /// the contract records them, or as the capture file records them in a capture. The counts are
+// /// 1, 10, the largest count that fits the v6 limits and the next count. Empty when the series is
+// /// not recorded yet, so a capture calibrates it. The check of the largest count and of the next
+// /// count verifies the boundary in every run, so a recorded series needs no calibration.
+// pub fn recorded_counts(prefix: &str) -> Vec<u64> {
+//     let mut counts: Vec<u64> = known_cases()
+//         .keys()
+//         .filter_map(|key| key.strip_prefix(prefix))
+//         .filter_map(|count| count.parse().ok())
+//         .collect();
+//     counts.sort_unstable();
+//     counts.dedup();
+//     counts
+// }
+// ```
 
 /// The size bound of the series.
 pub fn max_size() -> u64 {
@@ -172,35 +255,101 @@ fn load_capture(path: &str) -> BTreeMap<String, Observed> {
         .unwrap_or_default()
 }
 
-/// The cases that the checks of this run compare with: those of the capture file in a capture,
-/// and those of the contract otherwise.
-fn known_cases() -> BTreeMap<String, Observed> {
-    match std::env::var("RRS_BENCH_CAPTURE") {
-        Ok(path) => CAPTURED
-            .lock()
-            .expect("the capture lock")
-            .get_or_insert_with(|| load_capture(&path))
-            .clone(),
-        Err(_) => load_contract(),
+// Retired by decision 89 (T-BENCH, ruling L-5): only `recorded_counts` read the known cases, so
+// this function has no caller. The text before:
+// ```
+// /// The cases that the checks of this run compare with: those of the capture file in a capture,
+// /// and those of the contract otherwise.
+// fn known_cases() -> BTreeMap<String, Observed> {
+//     match std::env::var("RRS_BENCH_CAPTURE") {
+//         Ok(path) => CAPTURED
+//             .lock()
+//             .expect("the capture lock")
+//             .get_or_insert_with(|| load_capture(&path))
+//             .clone(),
+//         Err(_) => load_contract(),
+//     }
+// }
+// ```
+
+/// The class of the case `key`. The program of the case gives the class: a field that depends on
+/// the order of arrival in a `par`, or on a random pick among equal candidates, has no stable
+/// value between two honest runs, so the contract holds no such value.
+///
+/// - [`Compare::Pick`]: one receive publishes a record that a pick chose among two or more records
+///   of one encoded size. The pick decides the result and the records that stay.
+/// - [`Compare::NoRoot`]: two or more operations of one deploy write one counter record (a
+///   collection counter, the space counter of a cell or the token of a PathMap), and the last
+///   arrival decides its random state, or a pick among equal candidates removes one and leaves
+///   the others. Each operation takes one distinct counter value, so the multiset of the encoded
+///   sizes and the phlo do not depend on the arrival.
+/// - [`Compare::All`]: every other case. A new series starts here, so a series whose outcome
+///   varies fails on an honest run until it gets an arm here.
+fn compare_of(key: &str) -> Compare {
+    match key.split('/').collect::<Vec<_>>().as_slice() {
+        // A receive publishes the record that the pick chose.
+        ["receive_from_n", "bag" | "set" | "host", _]
+        | ["matcher", "bag_first" | "join_two", _]
+        | ["restart_attach", "bag", _] => Compare::Pick,
+        // Two or more operations of one deploy write one counter record.
+        ["send", "queue" | "stack" | "priorityqueue" | "cell" | "pathmap_bag", "10" | "100"]
+        | ["send_receive", "queue" | "stack" | "priorityqueue", _]
+        | ["handle_produce", "queue", "10" | "100"]
+        | ["queue_ordering", "send_and_drain", _]
+        | ["commit", "queue" | "stack" | "priorityqueue", _]
+        | ["replay", "queue_two_blocks", _]
+        | ["checkpoint_size", "queue" | "stack" | "priorityqueue", _] => Compare::NoRoot,
+        // A pick removes one of n equal waiters, or one of the records that tie for the best
+        // score of a VectorDB read. The fill holds two `[1, 1, 1, 1]` records from 107 records on.
+        ["matcher", "send_fires_waiter", _]
+        | ["receive_from_n", "vectordb", "1000" | "10000"]
+        | ["vectordb_query", "best" | "threshold", "1000" | "10000"] => Compare::NoRoot,
+        _ => Compare::All,
     }
 }
 
-/// Checks `observed` of the case `key` against the contract, or captures it.
+// Changed by decisions 102 and 111 (T-BENCH): the check compares the fields of the class of the
+// case. The text before:
+// /// Checks `observed` of the case `key` against the contract, or captures it.
+/// Checks the fields of `observed` that the class of the case `key` compares against the
+/// contract, or captures them.
 pub fn check(key: &str, observed: &Observed) {
+    let projected = observed.project(compare_of(key));
     if let Ok(path) = std::env::var("RRS_BENCH_CAPTURE") {
         let mut captured = CAPTURED.lock().expect("the capture lock");
         let cases = captured.get_or_insert_with(|| load_capture(&path));
         if let Some(known) = cases.get(key) {
+            // Changed by decisions 102 and 111 (T-BENCH): the capture compares the fields of the
+            // class of the case, so a file that holds a varying field cannot arise. The text
+            // before:
+            // ```
+            // assert_eq!(
+            //     known, observed,
+            //     "{key}: the captured contract holds another result, phlo or root"
+            // );
+            // ```
             assert_eq!(
-                known, observed,
+                known, &projected,
                 "{key}: the captured contract holds another result, phlo or root"
             );
         }
-        cases.insert(key.to_string(), observed.clone());
+        // Changed by decisions 102 and 111 (T-BENCH): the capture stores the fields of the class
+        // of the case. The text before:
+        // cases.insert(key.to_string(), observed.clone());
+        cases.insert(key.to_string(), projected);
         let contract = Contract {
             schema: SCHEMA.to_string(),
-            note: "The result, phlo, root and host work of the measured deploy of each benchmark case \
-                   (P10 step S8). Every benchmark run checks its cases against this file."
+            // Changed by decision 89 (T-BENCH): the file holds no host work, and each entry holds
+            // the fields of the class of its case. The text before:
+            // ```
+            // note: "The result, phlo, root and host work of the measured deploy of each benchmark case \
+            //        (P10 step S8). Every benchmark run checks its cases against this file."
+            //     .to_string(),
+            // ```
+            note: "The result, phlo and root of the measured deploy of each benchmark case (P10 \
+                   step S8), in the form that the class of the case keeps (compare_of in \
+                   rholang/benches/common/mod.rs). Every benchmark run checks its cases against \
+                   this file."
                 .to_string(),
             cases: cases.clone(),
         };
@@ -212,9 +361,17 @@ pub fn check(key: &str, observed: &Observed) {
     let expected = cases
         .get(key)
         .unwrap_or_else(|| panic!("the bench contract has no case {key}"));
+    // Changed by decisions 102 and 111 (T-BENCH): the check compares the fields of the class of
+    // the case. The text before:
+    // ```
+    // assert_eq!(
+    //     expected, observed,
+    //     "{key}: the result, phlo and root of the bench contract"
+    // );
+    // ```
     assert_eq!(
-        expected, observed,
-        "{key}: the result, phlo and root of the bench contract"
+        expected, &projected,
+        "{key}: the fields of the class of the case in the bench contract"
     );
 }
 
@@ -294,60 +451,64 @@ pub async fn observe(
     (observed, root)
 }
 
-/// The largest count of one deploy that a calibration searches. A deploy of more operations
-/// than this is not a measure of these benchmarks.
-const CALIBRATION_LIMIT: u64 = 1 << 16;
-
-/// The largest `n` whose deploy `term(n)` fits the v6 limits on the pre-state of `setup`, or 0
-/// when none fits. The host work of `term(n)` grows with `n`. The search doubles the bound `hi`
-/// until a count does not fit, then a binary search finds the boundary below it. Each probe
-/// resets the chain to the pre-state.
-pub fn largest_fitting(
-    rt: &Runtime,
-    group: &str,
-    id: &str,
-    setup: &[Step],
-    term: impl Fn(u64) -> String,
-    hi: u64,
-) -> u64 {
-    let case = Case {
-        id: format!("{id}/calibration"),
-        setup: setup.to_vec(),
-        term: String::new(),
-        with_checkpoint: false,
-    };
-    let (mut chain, root) = rt
-        .block_on(prepare(&case, group))
-        .unwrap_or_else(|reached| {
-            panic!("{group}/{id}: the calibration setup stops at {reached} records")
-        });
-    let mut fits = |n: u64| -> bool {
-        rt.block_on(async {
-            chain.reset(&root).await;
-            let label = format!("{group}/{id} calibration {n}");
-            matches!(chain.evaluate(&term(n), &label, PHLO_LIMIT).await, Ok(result) if result.errors.is_empty())
-        })
-    };
-    // `lo` fits, or is 0, and `hi` does not fit.
-    let (mut lo, mut hi) = (0, hi);
-    while fits(hi) {
-        assert!(
-            hi < CALIBRATION_LIMIT,
-            "{group}/{id}: {hi} operations fit in one deploy, more than the calibration searches"
-        );
-        lo = hi;
-        hi *= 2;
-    }
-    while lo + 1 < hi {
-        let mid = lo + (hi - lo) / 2;
-        if fits(mid) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
-}
+// Retired by decision 89 (T-BENCH, ruling L-5): no host-work limit bounds a deploy, so the
+// calibration finds no boundary. The one-deploy series use fixed counts. The text before:
+// ```
+// /// The largest count of one deploy that a calibration searches. A deploy of more operations
+// /// than this is not a measure of these benchmarks.
+// const CALIBRATION_LIMIT: u64 = 1 << 16;
+//
+// /// The largest `n` whose deploy `term(n)` fits the v6 limits on the pre-state of `setup`, or 0
+// /// when none fits. The host work of `term(n)` grows with `n`. The search doubles the bound `hi`
+// /// until a count does not fit, then a binary search finds the boundary below it. Each probe
+// /// resets the chain to the pre-state.
+// pub fn largest_fitting(
+//     rt: &Runtime,
+//     group: &str,
+//     id: &str,
+//     setup: &[Step],
+//     term: impl Fn(u64) -> String,
+//     hi: u64,
+// ) -> u64 {
+//     let case = Case {
+//         id: format!("{id}/calibration"),
+//         setup: setup.to_vec(),
+//         term: String::new(),
+//         with_checkpoint: false,
+//     };
+//     let (mut chain, root) = rt
+//         .block_on(prepare(&case, group))
+//         .unwrap_or_else(|reached| {
+//             panic!("{group}/{id}: the calibration setup stops at {reached} records")
+//         });
+//     let mut fits = |n: u64| -> bool {
+//         rt.block_on(async {
+//             chain.reset(&root).await;
+//             let label = format!("{group}/{id} calibration {n}");
+//             matches!(chain.evaluate(&term(n), &label, PHLO_LIMIT).await, Ok(result) if result.errors.is_empty())
+//         })
+//     };
+//     // `lo` fits, or is 0, and `hi` does not fit.
+//     let (mut lo, mut hi) = (0, hi);
+//     while fits(hi) {
+//         assert!(
+//             hi < CALIBRATION_LIMIT,
+//             "{group}/{id}: {hi} operations fit in one deploy, more than the calibration searches"
+//         );
+//         lo = hi;
+//         hi *= 2;
+//     }
+//     while lo + 1 < hi {
+//         let mid = lo + (hi - lo) / 2;
+//         if fits(mid) {
+//             lo = mid;
+//         } else {
+//             hi = mid;
+//         }
+//     }
+//     lo
+// }
+// ```
 
 /// The setup step that stores `n` records with the send `f(i)` for each record `i`.
 pub fn fill(n: u64, f: impl Fn(u64) -> String) -> Step { Step::Fill((0..n).map(f).collect()) }
@@ -460,8 +621,14 @@ pub fn measure_prepared(
     let (mut chain, pre_root) = match prepared {
         Ok(prepared) => prepared,
         Err(reached) => {
-            // The collection is full before it holds the records of the case: one more send
-            // exceeds the v6 limits. The contract records where the series stops.
+            // Changed by decision 89: no limit stops a fill, so this arm no longer means a full
+            // collection. The text before:
+            // ```
+            // // The collection is full before it holds the records of the case: one more send
+            // // exceeds the v6 limits. The contract records where the series stops.
+            // ```
+            // A fill deploy of one send failed, so the setup stopped with `reached` records. The
+            // check fails the run unless the contract records this outcome.
             let observed = Observed {
                 result: vec![format!("error the collection is full at {reached} records")],
                 phlo: None,
@@ -482,8 +649,14 @@ pub fn measure_prepared(
         .iter()
         .any(|value| value.starts_with("error "))
     {
-        // The deploy does not fit the v6 limits: the contract records its error, and the series
-        // stops here, with nothing to measure.
+        // Changed by decision 89: no limit bounds a deploy, and a series runs each of its fixed
+        // counts. The text before:
+        // ```
+        // // The deploy does not fit the v6 limits: the contract records its error, and the series
+        // // stops here, with nothing to measure.
+        // ```
+        // The deploy failed, and the contract records its error, so the case has nothing to
+        // measure.
         return None;
     }
     group.bench_function(case.id.as_str(), |b| {

@@ -16,10 +16,18 @@
 //!
 //! | Property | Statement |
 //! |---|---|
-//! | `prop_vectordb_driver_and_engine_agree` | the driver and the engine fire the same continuations with the same values, and leave the same records and waiters |
+// Retired by decision 90 (C6, step D, ruling R-3): the property ran through the rigged replay
+// modes, which retire (decision 125). The text before:
+// ```
+// //! | `prop_vectordb_driver_and_engine_agree` | the driver and the engine fire the same continuations with the same values, and leave the same records and waiters |
+// ```
 //! | `prop_vectordb_no_pending_match` | after each operation of a program without guards, no parked waiter can fire on the records |
 //! | `prop_vectordb_list_is_ordered_and_complete` | a list holds `min(k, |E|)` values, and its delivered scores follow the selection order |
-//! | `prop_vectordb_replay_equal` | replay stages the transactions of play: equal outcomes, every COMM paired, the root of play |
+// Retired by decision 90 (C6, step D, ruling R-3): the property ran through the rigged replay
+// modes, which retire (decision 125). The text before:
+// ```
+// //! | `prop_vectordb_replay_equal` | replay stages the transactions of play: equal outcomes, every COMM paired, the root of play |
+// ```
 //! | `prop_vectordb_transactions_are_bounded` | a transaction fires at most `FIRE_ROUND_CAP` times and re-issues at the round cap only after exactly that many fires, and a flood of `n` records or waiters drains in `n` fires and `n / FIRE_ROUND_CAP` round-cap re-issues |
 //! | `prop_vectordb_records_are_conserved` | every record that leaves the collection was delivered by a fire of a waiter that does not peek, so no record leaves when every receive peeks (Rule E) |
 
@@ -27,11 +35,20 @@
 mod support;
 
 use std::collections::BTreeMap;
+// Added by decision 124 (plan v2 C7.10, decision 100): the peeks of a parked machinery waiter.
+use std::collections::BTreeSet;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+// Added by decision 124 (plan v2 C7.6, decision 99): the region of the seal test.
+use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
+// Added by decision 124 (plan v2 C7.6, decision 99): the seal test reads the body of a staged
+// machinery continuation.
+use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::VarInstance;
 use models::rhoapi::{BindPattern, CostAuthority, EEq, EVar, Expr, ListParWithRandom, Par, Var};
+// Added by decision 124 (plan v2 C7.6, decision 99): the region of the seal test.
+use models::rhoapi::{CostRegion, CostSignature};
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::{
     new_elist_par, new_freevar_par, new_gbigrat_expr, new_gbool_par, new_gbytearray_par,
@@ -40,26 +57,42 @@ use models::rust::utils::{
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
+// Added by decision 124 (plan v2 C7.6, decision 99): the seal of the seal test.
+use rholang::rust::interpreter::accounting::authority::system_residue_authority_with_caller;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, JoinBind, JoinOp, ProduceOp, QueryParams, SpaceEnv, SpaceOp, SpaceOutcome,
 };
+// Added by decision 124 (plan v2 C7.10, decision 100): the inert machinery waiters.
+use rholang::rust::interpreter::spaces::disciplines::scan::{retire_continuation, retire_pattern};
 use rholang::rust::interpreter::spaces::disciplines::vectordb::VectorDbDiscipline;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::generic::GenericSpace;
 use rholang::rust::interpreter::spaces::namespace::{Durability, NativeSpace, SID_LEN};
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use rholang::rust::interpreter::spaces::record::{self, WaiterPolicy};
+// Added by decision 124 (plan v2 C7.10, decision 100): the inert machinery waiters.
+use rholang::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern};
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
 use rspace_plus_plus::rspace::trace::event::{Event, Produce, COMM};
+// Changed by decision 90 (C6, step D): the rigged replay modes retire, so this file no longer uses
+// `play_and_replay`. The text before:
+// ```
+// use support::agent::{
+//     any, body_name, body_of, budget, create, creation, data_channel, env_over, exactly, fired, int,
+//     key_of, play, play_and_replay, receive_on, run, string, ParRSpace,
+// };
+// ```
 use support::agent::{
     any, body_name, body_of, budget, create, creation, data_channel, env_over, exactly, fired, int,
-    key_of, play, play_and_replay, receive_on, run, string, ParRSpace,
+    key_of, play, receive_on, run, string, ParRSpace,
 };
+// Added by decision 124 (plan v2 C7.6, decision 99): the seal test reads the staged consumes.
+use support::agent::{RecordingHost, StagedCopy};
 use support::props::{check, pure_config, tokio_runtime};
 use support::session::{setup_source, with_space, Injections, Session};
 
@@ -643,7 +676,9 @@ async fn space_vectordb_fixed_point_and_rational_thresholds() {
 }
 
 /// List mode binds ONE value: the list of the first `k` eligible payload values in selection
-/// order, in one COMM over `[D; m]` (design v3 4.4, A11).
+/// order (design v3 4.4). Changed by decision 101 (rule CR-13): one COMM over `[D]` binds the
+/// first member, and one `K_retire` COMM over `[D]` retires each other member that is not
+/// persistent. The text before: "in one COMM over `[D; m]` (design v3 4.4, A11)."
 #[tokio::test]
 async fn space_vectordb_list_mode_delivers_one_list_in_selection_order() {
     let rig = Rig::new(COSINE).await;
@@ -663,10 +698,33 @@ async fn space_vectordb_list_mode_delivers_one_list_in_selection_order() {
         vector(&[1.0, 1.0])
     ])])]);
     let comms = comms(&rig.log().await);
-    assert_eq!(comms.len(), 1, "one COMM");
-    assert_eq!(comms[0].consume.channel_hashes.len(), 2, "over [D; 2]");
-    assert_eq!(comms[0].produces.len(), 2);
-    assert!(comms[0].peeks.is_empty());
+    // Changed by decision 101 (rule CR-13): the fire binds the first member over `[D]`, and the
+    // retire of the second member follows in the same transaction.
+    // assert_eq!(comms.len(), 1, "one COMM");
+    // assert_eq!(comms[0].consume.channel_hashes.len(), 2, "over [D; 2]");
+    // assert_eq!(comms[0].produces.len(), 2);
+    // assert!(comms[0].peeks.is_empty());
+    assert_eq!(comms.len(), 2, "the fire, then one retire");
+    for comm in &comms {
+        assert_eq!(comm.consume.channel_hashes.len(), 1, "over [D]");
+        assert!(comm.peeks.is_empty());
+    }
+    let bound: Vec<Vec<Blake2b256Hash>> = comms
+        .iter()
+        .map(|comm| {
+            comm.produces
+                .iter()
+                .map(|produce| produce.hash.clone())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        bound,
+        vec![vec![record_id(&vector_send(&[1.0, 0.0], "b"))], vec![
+            record_id(&vector_send(&[1.0, 1.0], "c"))
+        ]],
+        "the fire binds the first member, and the retire takes the second"
+    );
     assert_eq!(rig.records().await, vec![(
         vec![vector(&[0.0, 1.0])],
         Some(vector(&[0.0, 1.0])),
@@ -688,10 +746,16 @@ async fn space_vectordb_list_mode_delivers_one_list_in_selection_order() {
     assert!(rig.records().await.is_empty());
 }
 
-/// Without a query vector, a receive reads the records in the canonical order of DR-75: a
-/// plain receive binds the first record whose payload binds, and `k` lists the first records.
+/// Without a query vector, `k` lists the first records in the canonical order of DR-75
+/// (Q-102-1), and a plain receive binds one record whose payload its pattern binds. Changed by
+/// decision 102 (rule CR-1, Q-102-2): a plain receive reads its pick order, which play shuffles.
+/// The text before: "Without a query vector, a receive reads the records in the canonical order
+/// of DR-75: a plain receive binds the first record whose payload binds, and `k` lists the
+/// first records."
+// Changed by decision 102 (Q-102-2): a plain read picks at random, so the name changes. The name
+// before: `space_vectordb_reads_without_a_vector_follow_the_canonical_order`.
 #[tokio::test]
-async fn space_vectordb_reads_without_a_vector_follow_the_canonical_order() {
+async fn space_vectordb_lists_without_a_vector_keep_the_canonical_order() {
     let rig = Rig::new(COSINE).await;
     let sends = [
         vector_send(&[0.0, 1.0], "a"),
@@ -716,9 +780,17 @@ async fn space_vectordb_reads_without_a_vector_follow_the_canonical_order() {
         value(canonical[1])
     ])])]);
     let outcome = rig.receive(receive("plain", any(), None)).await;
-    assert_eq!(fired(&outcome), vec![delivery("plain", vec![value(
-        canonical[0]
-    )])]);
+    // Changed by decision 102 (Q-102-2): play picks one of the three records.
+    // assert_eq!(fired(&outcome), vec![delivery("plain", vec![value(
+    //     canonical[0]
+    // )])]);
+    let picked = fired(&outcome);
+    assert!(
+        canonical
+            .iter()
+            .any(|op| picked == vec![delivery("plain", vec![value(op)])]),
+        "the plain receive binds one of the records: {picked:?}"
+    );
 }
 
 /// The payload is the vector by default (decision 66): a send of one numeric list uses it as its
@@ -1014,8 +1086,11 @@ async fn space_vectordb_capacity_bounds_records_not_waiters() {
 
 // ─── Rule E (decision 45) ────────────────────────────────────────────────────────────────
 
-/// A peek removes the records that it binds and the transaction sends each one again, with its
-/// embedding and its identity (design v3 4.5, A7).
+/// A peek removes the record that it binds and the transaction sends it again, with its
+/// embedding and its identity (design v3 4.5, A7). A list peek binds the first member of its
+/// list. Changed by decision 101 (rule CR-13): the text before: "A peek removes the records
+/// that it binds and the transaction sends each one again, with its embedding and its identity
+/// (design v3 4.5, A7)."
 #[tokio::test]
 async fn space_vectordb_peek_restores_records_with_their_embedding() {
     let rig = Rig::new(COSINE).await;
@@ -1053,8 +1128,11 @@ async fn space_vectordb_peek_restores_records_with_their_embedding() {
     assert_eq!(rig.records().await, before, "both records are back");
 }
 
-/// The restores of a list peek that the round cap leaves are carried by one settle job with the
-/// pending records, and the job keeps their embeddings (arbitration A7).
+/// The restore of a list peek that the round cap leaves is carried by one settle job with the
+/// pending record, and the job keeps its embedding (arbitration A7). Changed by decision 101
+/// (rule CR-13): a list peek binds its first member only, so it owes one restore. The text
+/// before: "The restores of a list peek that the round cap leaves are carried by one settle job
+/// with the pending records, and the job keeps their embeddings (arbitration A7)."
 #[tokio::test]
 async fn space_vectordb_list_peek_restores_carry_at_the_cap() {
     let rig = Rig::new(COSINE).await;
@@ -1067,12 +1145,20 @@ async fn space_vectordb_list_peek_restores_carry_at_the_cap() {
         rig.send(op.clone()).await;
     }
     let before = rig.records().await;
-    // Each guarded peek waiter meets "b" first in canonical order and parks (decision 37).
+    // Changed by decision 102 (rule CR-1): a plain receive picks at random, so each guarded peek
+    // waiter is a single-mode receive whose best record is "b", without a tie. It meets "b"
+    // first and parks (decision 37). The text before: "Each guarded peek waiter meets "b" first
+    // in canonical order and parks (decision 37)."
     for index in 0..FIRE_ROUND_CAP - 1 {
         let outcome = rig
             .receive(resalted(
                 peeking(guarded(
-                    receive(&format!("p{index}"), any(), None),
+                    // receive(&format!("p{index}"), any(), None),
+                    receive(
+                        &format!("p{index}"),
+                        any(),
+                        Some(query(Some(vector(&[0.5, 1.0])), &[])),
+                    ),
                     equals(string("a")),
                 )),
                 &format!("p{index}"),
@@ -1101,11 +1187,14 @@ async fn space_vectordb_list_peek_restores_carry_at_the_cap() {
         panic!("a settle job carries the restores: {:?}", reissue.op);
     };
     let carried = settle.cascade.as_ref().expect("a cascade state");
-    assert_eq!(
-        carried.pending.len(),
-        3,
-        "\"a\" in flight, then \"b\" and \"c\""
-    );
+    // Changed by decision 101 (rule CR-13): the list peek binds its first member "a" only, so
+    // only "a" is in flight at the cap.
+    // assert_eq!(
+    //     carried.pending.len(),
+    //     3,
+    //     "\"a\" in flight, then \"b\" and \"c\""
+    // );
+    assert_eq!(carried.pending.len(), 1, "only \"a\" is in flight");
     assert!(carried.resume.is_none(), "the list receive is spent");
     let rest = rig.run(reissue.op).await.expect("the settle job commits");
     assert!(rest.fires.is_empty());
@@ -1340,6 +1429,170 @@ async fn space_vectordb_cascade_peek_restores_the_lifted_member() {
     cascade_peek(&Rig::joined(COSINE).await).await;
 }
 
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling RAMD 1.5): the source hash of the
+/// consume of the first COMM in the log of `rig` since the last read of the log.
+async fn first_comm_consume(rig: &Rig) -> Blake2b256Hash {
+    let fired = comms(&rig.log().await);
+    let comm = fired.first().expect("the probe fires the waiter");
+    comm.consume.hash.clone()
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling RAMD 1.5): an offer skips a list
+/// waiter when the book holds the pair of a stored member of its list that is not the first
+/// member. A probe rig with an empty book fires the same waiter, and its COMM gives the consume
+/// of the pair.
+#[tokio::test]
+async fn vectordb_offer_skips_a_list_with_a_booked_stored_member() {
+    let near = || Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))]));
+    let probe = Rig::new(COSINE).await;
+    probe.receive(receive("w", any(), near())).await;
+    probe.log().await;
+    probe.send(vector_send(&[0.0, 1.0], "a")).await;
+    let consume = first_comm_consume(&probe).await;
+    let rig = Rig::new(COSINE).await;
+    let stored = record_id(&vector_send(&[0.0, 1.0], "a"));
+    rig.env.volatile.book_pairs([(stored, consume)]);
+    let parked = rig.receive(receive("w", any(), near())).await;
+    assert!(parked.fires.is_empty(), "no record, so the waiter parks");
+    let first = rig.send(vector_send(&[0.0, 1.0], "a")).await;
+    assert!(first.fires.is_empty(), "the pair of the element is booked");
+    let second = rig.send(vector_send(&[1.0, 0.0], "b")).await;
+    assert!(second.fires.is_empty(), "a is a booked member of [b, a]");
+    assert!(comms(&rig.log().await).is_empty(), "no COMM");
+    assert_eq!(rig.records().await.len(), 2);
+    assert_eq!(rig.waiters().await, vec!["w".to_string()]);
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling RAMD 1.5): a receive parks when the
+/// book holds the pair of a member of its list that is not the first member. A probe rig with
+/// an empty book fires the same receive, and its COMM gives the consume of the pair.
+#[tokio::test]
+async fn vectordb_receive_parks_on_a_list_with_a_booked_later_member() {
+    let sends = || {
+        [
+            vector_send(&[0.0, 1.0], "a"),
+            vector_send(&[1.0, 0.0], "b"),
+            vector_send(&[1.0, 1.0], "c"),
+        ]
+    };
+    let near = || Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))]));
+    let probe = Rig::new(COSINE).await;
+    for op in sends() {
+        probe.send(op).await;
+    }
+    probe.log().await;
+    probe.receive(receive("w", any(), near())).await;
+    let consume = first_comm_consume(&probe).await;
+    let rig = Rig::new(COSINE).await;
+    for op in sends() {
+        rig.send(op).await;
+    }
+    let later = record_id(&vector_send(&[1.0, 1.0], "c"));
+    rig.env.volatile.book_pairs([(later, consume)]);
+    rig.log().await;
+    let outcome = rig.receive(receive("w", any(), near())).await;
+    assert!(outcome.fires.is_empty(), "c is a booked member of [b, c]");
+    assert!(comms(&rig.log().await).is_empty(), "no COMM");
+    assert_eq!(rig.records().await.len(), 3);
+    assert_eq!(rig.waiters().await, vec!["w".to_string()]);
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling RAMD 1.5): the operations of
+/// `cascade_peek` with the pair of the second member of the list booked before the take. The
+/// cascade skips the list waiter, so the take fires alone and both members stay stored. The
+/// probe rig `probe` has an empty book. It fires the same waiter at once over two records, and
+/// its COMM gives the consume of the pair.
+async fn cascade_with_a_booked_member(probe: Rig, rig: Rig) {
+    let all = || query(Some(vector(&[1.0, 0.0])), &[("results", string("all"))]);
+    let waiter = || peeking(receive("list", pair(), Some(all())));
+    let second = || vector_send(&[1.0, 1.0], "second");
+    probe.send(vector_send(&[1.0, 0.0], "first")).await;
+    probe.send(second()).await;
+    probe.log().await;
+    let fired = probe.receive(waiter()).await;
+    assert_eq!(fired.fires.len(), 1, "a list of two binds [a, b]");
+    let consume = first_comm_consume(&probe).await;
+    let booked = record_id(&second());
+    rig.env.volatile.book_pairs([(booked, consume)]);
+    rig.send(vector_send(&[1.0, 0.0], "first")).await;
+    rig.send(vector_send(&[0.0, 1.0], "taken")).await;
+    rig.send(second()).await;
+    let parked = rig.receive(waiter()).await;
+    assert!(parked.fires.is_empty(), "a list of three does not bind");
+    let take = receive("take", literal(vector(&[0.0, 1.0])), None);
+    let (fires, causes) = rig
+        .run_all(SpaceOp::Consume(take))
+        .await
+        .expect("the take commits");
+    // The cascade skips the list, so the take fires alone.
+    assert_eq!(fires, vec![delivery("take", vec![])]);
+    assert!(causes.is_empty());
+    assert_eq!(rig.records().await.len(), 2, "both members stay stored");
+    assert_eq!(rig.waiters().await, vec!["list".to_string()]);
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling RAMD 1.5): the cascade of a
+/// VectorDB collection (C2v3 4.7 (e)) skips a list whose second member has a booked pair.
+#[tokio::test]
+async fn vectordb_cascade_skips_a_list_with_a_booked_member() {
+    cascade_with_a_booked_member(Rig::new(COSINE).await, Rig::new(COSINE).await).await;
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling RAMD 1.5): the list cascade of the
+/// join engine (C2v3 4.7 (g)) skips a list whose second member has a booked pair.
+#[tokio::test]
+async fn join_list_cascade_skips_a_booked_member() {
+    cascade_with_a_booked_member(Rig::joined(COSINE).await, Rig::joined(COSINE).await).await;
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13, AMD F13-3 (h)): an offer
+/// skips a waiter whose pair with the element the book holds, so the send stores its datum and
+/// the waiter stays parked. A probe rig with an empty book fires the same waiter, and its COMM
+/// gives the consume of the pair.
+#[tokio::test]
+async fn vectordb_offer_skips_a_waiter_whose_pair_is_booked() {
+    let probe = Rig::new(COSINE).await;
+    probe.receive(receive("w", any(), None)).await;
+    probe.log().await;
+    probe.send(vector_send(&[1.0, 0.0], "a")).await;
+    let consume = first_comm_consume(&probe).await;
+    let rig = Rig::new(COSINE).await;
+    rig.receive(receive("w", any(), None)).await;
+    let element = record_id(&vector_send(&[1.0, 0.0], "a"));
+    rig.env.volatile.book_pairs([(element, consume)]);
+    rig.log().await;
+    rig.send(vector_send(&[1.0, 0.0], "a")).await;
+    assert!(comms(&rig.log().await).is_empty(), "no COMM");
+    assert_eq!(rig.records().await.len(), 1, "the send stores its datum");
+    assert_eq!(rig.waiters().await, vec!["w".to_string()]);
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13, AMD F13-3 (h)): a plain
+/// receive parks when the book holds the pair of its one stored record and its consume, and the
+/// record stays stored. A probe rig with an empty book fires the same receive, and its COMM
+/// gives the consume of the pair.
+#[tokio::test]
+async fn vectordb_receive_parks_on_a_booked_first_member() {
+    let probe = Rig::new(COSINE).await;
+    probe.send(vector_send(&[1.0, 0.0], "a")).await;
+    probe.log().await;
+    probe.receive(receive("w", any(), None)).await;
+    let consume = first_comm_consume(&probe).await;
+    let rig = Rig::new(COSINE).await;
+    rig.send(vector_send(&[1.0, 0.0], "a")).await;
+    let stored = record_id(&vector_send(&[1.0, 0.0], "a"));
+    rig.env.volatile.book_pairs([(stored, consume)]);
+    rig.log().await;
+    rig.receive(receive("w", any(), None)).await;
+    assert!(comms(&rig.log().await).is_empty(), "no COMM");
+    assert_eq!(
+        rig.waiters().await,
+        vec!["w".to_string()],
+        "the receive parks"
+    );
+    assert_eq!(rig.records().await.len(), 1);
+}
+
 /// A waiter refused by its guard on a better record parks, and a later worse record that its
 /// guard admits fires it (decision 37, until P12).
 #[tokio::test]
@@ -1361,6 +1614,148 @@ async fn space_vectordb_guard_refusal_parks_until_a_worse_record_passes() {
     let outcome = rig.send(doc_send("y", &[0.0, 1.0], "c")).await;
     assert_eq!(fired(&outcome), vec![delivery("g", vec![string("y")])]);
     assert_eq!(rig.records().await.len(), 2);
+}
+
+/// Added by decision 124 (plan v2 C7.6, decision 99, C2v3 8.2): a cost authority with one region
+/// of `byte`, in the form of `region` in `reified_set.rs`. The seal of an authority without a
+/// region equals that authority, so the seal test takes an authority with a region.
+fn region(byte: u8) -> CostAuthority {
+    CostAuthority {
+        regions: vec![CostRegion {
+            instance_id: vec![byte; 32],
+            signature: Some(CostSignature {
+                value: Some(CostSignatureValue::Ground(vec![byte])),
+            }),
+            price: 0,
+            caller: None,
+        }],
+    }
+}
+
+/// Added by decision 124 (plan v2 C7.6, decision 99, C2v3 8.2): the `K_retire` rows of
+/// `retire_members` and the `K_lift` of `lift_record` carry the machinery seal of the authority
+/// of their operation: its system residue under the deploy id of the budget (`seal_of`). A
+/// receive of the list `[a, b]` that does not peek retires `b`, and the take of `cascade_peek`
+/// lifts `first`. The agent runs over a recording host, which keeps each staged consume.
+#[tokio::test]
+async fn vdb_retire_and_lift_take_the_seal() {
+    let host = play().await;
+    let (recording, record) = RecordingHost::new(host.clone());
+    let env = env_over(recording, &budget());
+    create(
+        &VectorDb::default(),
+        &env,
+        creation(SPACE, config(COSINE), vdb_family()),
+    )
+    .await;
+    host.take_event_log().await;
+    let rig = Rig { host, env };
+    let all = || query(Some(vector(&[1.0, 0.0])), &[("results", string("all"))]);
+    rig.send(vector_send(&[1.0, 0.0], "a")).await;
+    rig.send(vector_send(&[1.0, 1.0], "b")).await;
+    let mut retiring = receive("retire", pair(), Some(all()));
+    retiring.authority = region(1);
+    rig.receive(retiring).await;
+    rig.send(vector_send(&[1.0, 0.0], "first")).await;
+    rig.send(vector_send(&[0.0, 1.0], "taken")).await;
+    rig.send(vector_send(&[1.0, 1.0], "second")).await;
+    rig.receive(peeking(receive("lift", pair(), Some(all()))))
+        .await;
+    let mut take = receive("take", literal(vector(&[0.0, 1.0])), None);
+    take.authority = region(1);
+    rig.run_all(SpaceOp::Consume(take))
+        .await
+        .expect("the take commits");
+    let seal = system_residue_authority_with_caller(&region(1), &rig.env.budget.deploy_id(), None)
+        .expect("the seal of the region builds");
+    let seen = record.lock().expect("the record lock");
+    // The cost authority of each staged consume whose body is the source hash `member`.
+    let authorities = |member: Blake2b256Hash| {
+        let body = new_gbytearray_par(member.bytes(), Vec::new(), false);
+        seen.staged
+            .iter()
+            .filter_map(|(_, staged)| match staged {
+                StagedCopy::Consume(op) => match &op.continuation.tagged_cont {
+                    Some(TaggedCont::ParBody(par)) if par.body.as_ref() == Some(&body) => {
+                        Some(op.continuation.cost_authority.clone())
+                    }
+                    Some(_) | None => None,
+                },
+                StagedCopy::Produce(_) => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        authorities(record_id(&vector_send(&[1.0, 1.0], "b"))),
+        vec![Some(seal.clone())],
+        "the K_retire of b"
+    );
+    assert_eq!(
+        authorities(record_id(&vector_send(&[1.0, 0.0], "first"))),
+        vec![Some(seal)],
+        "the K_lift of first"
+    );
+}
+
+/// Added by decision 124 (plan v2 C7.10, decision 100, C2v3 8.3): the VDB case of the readers
+/// of inert machinery waiters. A `K_retire` and a `K_lift` sit on the data channel before the
+/// operations of `cascade_peek`. `first_offer_target` skips both for each send, so each record
+/// is stored, and `first_cascade_target` skips both for the take, so the cascade fires the list
+/// waiter. Both stay parked.
+#[tokio::test]
+async fn readers_skip_an_inert_machinery_waiter() {
+    let rig = Rig::new(COSINE).await;
+    let random = Blake2b512Random::create_from_bytes(b"rrs-vdb inert machinery");
+    let retired = record_id(&vector_send(&[0.0, 1.0], "retired"));
+    let machinery = [
+        (
+            retire_pattern(),
+            retire_continuation(&retired, &random, None),
+        ),
+        (lift_pattern(), lift_continuation(0, 1, &random, None)),
+    ];
+    for (pattern, continuation) in machinery {
+        rig.host
+            .consume(
+                vec![data()],
+                vec![pattern],
+                continuation,
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("the machinery waiter parks");
+    }
+    rig.log().await;
+    rig.send(vector_send(&[1.0, 0.0], "first")).await;
+    rig.send(vector_send(&[0.0, 1.0], "taken")).await;
+    rig.send(vector_send(&[1.0, 1.0], "second")).await;
+    assert_eq!(
+        rig.records().await.len(),
+        3,
+        "each send skips both machinery waiters"
+    );
+    let all = query(Some(vector(&[1.0, 0.0])), &[("results", string("all"))]);
+    rig.receive(peeking(receive("list", pair(), Some(all))))
+        .await;
+    let take = receive("take", literal(vector(&[0.0, 1.0])), None);
+    let (fires, _) = rig
+        .run_all(SpaceOp::Consume(take))
+        .await
+        .expect("the take commits");
+    assert_eq!(
+        fires,
+        vec![
+            delivery("take", vec![]),
+            delivery("list", vec![vector(&[1.0, 0.0]), vector(&[1.0, 1.0])]),
+        ],
+        "the cascade skips both machinery waiters and fires the list waiter"
+    );
+    assert_eq!(
+        rig.host.get_waiting_continuations(vec![data()]).await.len(),
+        2,
+        "both machinery waiters stay parked"
+    );
 }
 
 // ─── Joins (design v3 4.6) ───────────────────────────────────────────────────────────────
@@ -1467,79 +1862,253 @@ async fn space_vectordb_join_waiter_fires_on_an_eligible_send() {
     ])]);
 }
 
+/// Added by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 12): a persistent element
+/// in flight binds two positions of its collection through `similarity_flight_bind`. The join
+/// binds the collection twice, each bind in single mode by the query `[1, 0]`, and it parks on
+/// the empty collection. The persistent send of `[1, 0.1]` claims nothing, so it fires the join
+/// with its vector at both binds, in one COMM whose two candidates are the send. The record
+/// stays once, and the join leaves.
+#[tokio::test]
+async fn space_joins_vectordb_persistent_incoming_binds_two_positions() {
+    let near = || {
+        bind(
+            &channel(),
+            any(),
+            Some(query(Some(vector(&[1.0, 0.0])), &[])),
+        )
+    };
+    let join = JoinOp {
+        space: SPACE,
+        binds: vec![near(), near()],
+        body: body_of("twice"),
+        persistent: false,
+        peek: false,
+        guard: None,
+        authority: CostAuthority::default(),
+        introduction_authority: CostAuthority::default(),
+        reissued_ords: None,
+    };
+    let x = send(vector(&[1.0, 0.1]), &[], "x", true);
+    let id = record_id(&x);
+    let script = vec![SpaceOp::Join(join), SpaceOp::Produce(x)];
+    let group = vec![data(), data()];
+    let play = play().await;
+    let play_rig = Rig::over(play.clone(), COSINE).await;
+    // The checkpoint empties the event log of the creation, so the log below holds the script.
+    play.create_checkpoint()
+        .await
+        .expect("a checkpoint after the creation");
+    let parked = play_rig
+        .run(script[0].clone())
+        .await
+        .expect("the join parks");
+    assert!(
+        parked.fires.is_empty(),
+        "the join parks on the empty collection"
+    );
+    assert_eq!(
+        play.get_waiting_continuations(group.clone()).await.len(),
+        1,
+        "the join waits on the group of the collection twice"
+    );
+    let outcome = play_rig
+        .run(script[1].clone())
+        .await
+        .expect("the persistent send commits");
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("twice", vec![
+            vector(&[1.0, 0.1]),
+            vector(&[1.0, 0.1])
+        ])],
+        "the persistent send binds both binds"
+    );
+    let held: Vec<(Blake2b256Hash, bool)> = play_rig
+        .sourced_records()
+        .await
+        .into_iter()
+        .map(|(source, (_, _, persistent))| (source, persistent))
+        .collect();
+    assert_eq!(
+        held,
+        vec![(id.clone(), true)],
+        "the collection holds the persistent record once"
+    );
+    assert!(
+        play.get_waiting_continuations(group).await.is_empty(),
+        "the join leaves"
+    );
+    // Retired by decision 90 (C6, step D): only the replay half read this binding, and that half
+    // retires.
+    let Checkpoint { log, .. } = play.create_checkpoint().await.expect("a checkpoint");
+    let joined: Vec<COMM> = comms(&log)
+        .into_iter()
+        .filter(|comm| comm.consume.channel_hashes.len() == 2)
+        .collect();
+    let [comm] = joined.as_slice() else {
+        panic!("one COMM of the join, not {}", joined.len());
+    };
+    let [first, second] = comm.produces.as_slice() else {
+        panic!("the COMM binds two candidates");
+    };
+    assert_eq!(first, second, "both candidates are the persistent send");
+    assert!(
+        first.persistent && first.hash == id,
+        "the candidates are the produce of the persistent send"
+    );
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). Native replay of VectorDB deploys:
+    // `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+    // `space_native_vectordb_denial_replay`.
+}
+
 // ─── Replay ──────────────────────────────────────────────────────────────────────────────
 
-/// A script with single mode, list mode, a peek, a guard and a cascade.
-fn replay_script() -> Vec<SpaceOp> {
+// Retired by decision 90 (C6, step D): `replay_script` and `space_vectordb_replay_equal` ran
+// through the rigged replay modes, which retire (decision 125). Native replay of VectorDB deploys:
+// `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+// `space_native_vectordb_denial_replay`. The text before:
+// ```
+// /// A script with single mode, list mode, a peek, a guard and a cascade.
+// fn replay_script() -> Vec<SpaceOp> {
+//     vec![
+//         SpaceOp::Produce(doc_send("img", &[10.0, 1.0], "r1")),
+//         SpaceOp::Produce(doc_send("doc", &[10.0, 2.0], "r2")),
+//         SpaceOp::Produce(doc_send("doc", &[10.0, 3.0], "r3")),
+//         SpaceOp::Consume(receive(
+//             "docs",
+//             literal(list(vec![string("doc"), string("doc")])),
+//             Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+//         )),
+//         SpaceOp::Consume(peeking(receive(
+//             "peek",
+//             any(),
+//             Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(3))])),
+//         ))),
+//         SpaceOp::Consume(receive(
+//             "img",
+//             literal(string("img")),
+//             Some(query(Some(vector(&[1.0, 0.0])), &[])),
+//         )),
+//         SpaceOp::Produce(vector_send(&[1.0, 0.0], "x1")),
+//         SpaceOp::Consume(receive(
+//             "pair",
+//             pair(),
+//             Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+//         )),
+//         SpaceOp::Produce(vector_send(&[1.0, 0.5], "x2")),
+//     ]
+// }
+//
+// /// Replay stages the transactions of play: equal outcomes, every recorded COMM paired, and the
+// /// root of play.
+// #[tokio::test]
+// async fn space_vectordb_replay_equal() {
+//     let (play, replay) = play_and_replay().await;
+//     let play_rig = Rig::over(play.clone(), COSINE).await;
+//     let start = play
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint after the creation")
+//         .root;
+//     let mut played = Vec::new();
+//     for op in replay_script() {
+//         played.push(play_rig.run(op).await.expect("the script plays"));
+//     }
+//     assert!(
+//         played.iter().any(|outcome| outcome.fires.len() == 2),
+//         "the cascade fires"
+//     );
+//     let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+//     replay
+//         .rig_and_reset(start, log)
+//         .await
+//         .expect("the replay rigs the play log");
+//     let replay_rig = Rig {
+//         host: play.clone(),
+//         env: env_over(replay.clone(), &budget()),
+//     };
+//     let mut replayed = Vec::new();
+//     for op in replay_script() {
+//         replayed.push(replay_rig.run(op).await.expect("the script replays"));
+//     }
+//     assert_eq!(replayed, played);
+//     replay
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired");
+//     assert_eq!(
+//         replay.create_checkpoint().await.expect("a checkpoint").root,
+//         root
+//     );
+// }
+// ```
+
+/// Added by decision 102 (plan v4 C5.3): two records of one score for the query `[1, 0]` on the
+/// collection, a record on the second collection, and a join that binds the collection once in
+/// single mode and the second collection once.
+fn tie_script() -> Vec<SpaceOp> {
+    let join = JoinOp {
+        space: SPACE,
+        binds: vec![
+            bind(
+                &channel(),
+                any(),
+                Some(query(Some(vector(&[1.0, 0.0])), &[])),
+            ),
+            bind(&other(), any(), None),
+        ],
+        body: body_of("tie"),
+        persistent: false,
+        peek: false,
+        guard: None,
+        authority: CostAuthority::default(),
+        introduction_authority: CostAuthority::default(),
+        reissued_ords: None,
+    };
     vec![
-        SpaceOp::Produce(doc_send("img", &[10.0, 1.0], "r1")),
-        SpaceOp::Produce(doc_send("doc", &[10.0, 2.0], "r2")),
-        SpaceOp::Produce(doc_send("doc", &[10.0, 3.0], "r3")),
-        SpaceOp::Consume(receive(
-            "docs",
-            literal(list(vec![string("doc"), string("doc")])),
-            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
-        )),
-        SpaceOp::Consume(peeking(receive(
-            "peek",
-            any(),
-            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(3))])),
-        ))),
-        SpaceOp::Consume(receive(
-            "img",
-            literal(string("img")),
-            Some(query(Some(vector(&[1.0, 0.0])), &[])),
-        )),
-        SpaceOp::Produce(vector_send(&[1.0, 0.0], "x1")),
-        SpaceOp::Consume(receive(
-            "pair",
-            pair(),
-            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
-        )),
-        SpaceOp::Produce(vector_send(&[1.0, 0.5], "x2")),
+        SpaceOp::Produce(doc_send("a", &[1.0, 0.0], "tie-a")),
+        SpaceOp::Produce(doc_send("b", &[1.0, 0.0], "tie-b")),
+        SpaceOp::Produce(on_other(doc_send("o", &[0.0, 1.0], "tie-o"))),
+        SpaceOp::Join(join),
     ]
 }
 
-/// Replay stages the transactions of play: equal outcomes, every recorded COMM paired, and the
-/// root of play.
+/// Added by decision 102 (plan v4 C5.3, rules CR-1 and CR-4): a join that names a VectorDB
+/// collection once binds it in single mode, and two records tie on the score. Play picks the
+/// tie at random, so over [`PICK_RUNS`] runs it binds each record in some run, which misses with
+/// probability 2^-63. Native replay follows the recorded COMM through its row of the operation
+/// journal (decision 90, C6, step D), which `space_native_vectordb_replay_equal` certifies.
 #[tokio::test]
-async fn space_vectordb_replay_equal() {
-    let (play, replay) = play_and_replay().await;
-    let play_rig = Rig::over(play.clone(), COSINE).await;
-    let start = play
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let mut played = Vec::new();
-    for op in replay_script() {
-        played.push(play_rig.run(op).await.expect("the script plays"));
+async fn space_join_engine_similarity_tie_follows_the_recorded_record() {
+    let with_a = vec![delivery("tie", vec![string("a"), string("o")])];
+    let with_b = vec![delivery("tie", vec![string("b"), string("o")])];
+    let (mut bound_a, mut bound_b) = (false, false);
+    for _ in 0..PICK_RUNS {
+        let play = play().await;
+        let play_rig = Rig::over(play.clone(), COSINE).await;
+        // Retired by decision 90 (C6, step D): only the replay half read this root, and that half
+        // retires.
+        let script = tie_script();
+        let mut played = Vec::with_capacity(script.len());
+        for op in script.iter().cloned() {
+            played.push(play_rig.run(op).await.expect("the script plays"));
+        }
+        let fires = fired(played.last().expect("the join runs"));
+        assert!(
+            fires == with_a || fires == with_b,
+            "the join binds one tied record: {fires:?}"
+        );
+        bound_a |= fires == with_a;
+        bound_b |= fires == with_b;
+        // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+        // which retire (decision 125). Native replay of VectorDB deploys:
+        // `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+        // `space_native_vectordb_denial_replay`.
     }
     assert!(
-        played.iter().any(|outcome| outcome.fires.len() == 2),
-        "the cascade fires"
-    );
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-    replay
-        .rig_and_reset(start, log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_rig = Rig {
-        host: play.clone(),
-        env: env_over(replay.clone(), &budget()),
-    };
-    let mut replayed = Vec::new();
-    for op in replay_script() {
-        replayed.push(replay_rig.run(op).await.expect("the script replays"));
-    }
-    assert_eq!(replayed, played);
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
+        bound_a && bound_b,
+        "play binds each tied record in some run"
     );
 }
 
@@ -1862,53 +2431,63 @@ fn failure(message: impl Into<String>) -> TestCaseError { TestCaseError::fail(me
 /// The fires of an operation: the body name and the bound values of each fire, in order.
 type Fires = Vec<(String, Vec<Par>)>;
 
-/// The result of one generated operation: its fires and its causes, or its error code.
-type Step = Result<(Fires, Vec<ReissueCause>), String>;
+// Retired by decision 90 (C6, step D): the generated program that returned this type retires with
+// `run_program` (decision 125). The text before:
+// ```
+// /// The result of one generated operation: its fires and its causes, or its error code.
+// type Step = Result<(Fires, Vec<ReissueCause>), String>;
+// ```
 
-/// Runs the generated program `program` on `rig`, each operation to its end.
-async fn run_program(rig: &Rig, program: &[VdbOp]) -> Vec<Step> {
-    let mut steps = Vec::with_capacity(program.len());
-    for (index, op) in program.iter().enumerate() {
-        steps.push(
-            rig.run_all(space_op(op, index))
-                .await
-                .map_err(|error| error.code().to_string()),
-        );
-    }
-    steps
-}
-
-/// The driver and the engine fire the same continuations with the same values, and leave the
-/// same records and waiters (design v3 4.6).
-#[test]
-fn prop_vectordb_driver_and_engine_agree() {
-    check(pure_config(), arb_program(), |program| {
-        tokio_runtime().block_on(async {
-            let driver = Rig::new(COSINE).await;
-            let engine = Rig::joined(COSINE).await;
-            let by_driver = run_program(&driver, &program).await;
-            let by_engine = run_program(&engine, &program).await;
-            let fires = |steps: &[Step]| -> Vec<Result<Fires, String>> {
-                steps
-                    .iter()
-                    .map(|step| step.clone().map(|(fires, _)| fires))
-                    .collect()
-            };
-            if fires(&by_driver) != fires(&by_engine) {
-                return Err(failure(format!(
-                    "fires differ:\n  driver {by_driver:?}\n  engine {by_engine:?}"
-                )));
-            }
-            if driver.records().await != engine.records().await {
-                return Err(failure("the records differ"));
-            }
-            if driver.waiters().await != engine.waiters().await {
-                return Err(failure("the waiters differ"));
-            }
-            Ok(())
-        })
-    });
-}
+// Retired by decision 90 (C6, step D): `run_program` and `prop_vectordb_driver_and_engine_agree`
+// ran through the rigged replay modes, which retire (decision 125). Native replay of VectorDB
+// deploys: `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+// `space_native_vectordb_denial_replay`. The text before:
+// ```
+// /// Runs the generated program `program` on `rig`, each operation to its end.
+// async fn run_program(rig: &Rig, program: &[VdbOp]) -> Vec<Step> {
+//     let mut steps = Vec::with_capacity(program.len());
+//     for (index, op) in program.iter().enumerate() {
+//         steps.push(
+//             rig.run_all(space_op(op, index))
+//                 .await
+//                 .map_err(|error| error.code().to_string()),
+//         );
+//     }
+//     steps
+// }
+//
+// /// The driver and the engine fire the same continuations with the same values, and leave the
+// /// same records and waiters (design v3 4.6).
+// #[test]
+// fn prop_vectordb_driver_and_engine_agree() {
+//     check(pure_config(), arb_program(), |program| {
+//         tokio_runtime().block_on(async {
+//             let driver = Rig::new(COSINE).await;
+//             let engine = Rig::joined(COSINE).await;
+//             let by_driver = run_program(&driver, &program).await;
+//             let by_engine = run_program(&engine, &program).await;
+//             let fires = |steps: &[Step]| -> Vec<Result<Fires, String>> {
+//                 steps
+//                     .iter()
+//                     .map(|step| step.clone().map(|(fires, _)| fires))
+//                     .collect()
+//             };
+//             if fires(&by_driver) != fires(&by_engine) {
+//                 return Err(failure(format!(
+//                     "fires differ:\n  driver {by_driver:?}\n  engine {by_engine:?}"
+//                 )));
+//             }
+//             if driver.records().await != engine.records().await {
+//                 return Err(failure("the records differ"));
+//             }
+//             if driver.waiters().await != engine.waiters().await {
+//                 return Err(failure("the waiters differ"));
+//             }
+//             Ok(())
+//         })
+//     });
+// }
+// ```
 
 /// The query of the policy `policy` of a parked waiter.
 fn query_of_policy(policy: &WaiterPolicy) -> Option<QueryParams> {
@@ -2083,47 +2662,53 @@ fn prop_vectordb_list_is_ordered_and_complete() {
     });
 }
 
-/// Replay stages the transactions of play for every generated program: equal outcomes, every
-/// recorded COMM paired, and the root of play.
-#[test]
-fn prop_vectordb_replay_equal() {
-    check(pure_config(), arb_program(), |program| {
-        tokio_runtime().block_on(async {
-            let (play, replay) = play_and_replay().await;
-            let play_rig = Rig::over(play.clone(), COSINE).await;
-            let start = play
-                .create_checkpoint()
-                .await
-                .expect("a checkpoint after the creation")
-                .root;
-            let played = run_program(&play_rig, &program).await;
-            let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-            replay
-                .rig_and_reset(start, log)
-                .await
-                .expect("the replay rigs the play log");
-            let replay_rig = Rig {
-                host: play.clone(),
-                env: env_over(replay.clone(), &budget()),
-            };
-            let replayed = run_program(&replay_rig, &program).await;
-            if replayed != played {
-                return Err(failure(format!(
-                    "replay differs:\n  play {played:?}\n  replay {replayed:?}"
-                )));
-            }
-            replay
-                .check_replay_data()
-                .await
-                .map_err(|error| failure(format!("an unpaired COMM: {error:?}")))?;
-            let replay_root = replay.create_checkpoint().await.expect("a checkpoint").root;
-            match replay_root == root {
-                true => Ok(()),
-                false => Err(failure("the roots differ")),
-            }
-        })
-    });
-}
+// Retired by decision 90 (C6, step D): `prop_vectordb_replay_equal` ran through the rigged replay
+// modes, which retire (decision 125). Native replay of VectorDB deploys:
+// `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+// `space_native_vectordb_denial_replay`. The text before:
+// ```
+// /// Replay stages the transactions of play for every generated program: equal outcomes, every
+// /// recorded COMM paired, and the root of play.
+// #[test]
+// fn prop_vectordb_replay_equal() {
+//     check(pure_config(), arb_program(), |program| {
+//         tokio_runtime().block_on(async {
+//             let (play, replay) = play_and_replay().await;
+//             let play_rig = Rig::over(play.clone(), COSINE).await;
+//             let start = play
+//                 .create_checkpoint()
+//                 .await
+//                 .expect("a checkpoint after the creation")
+//                 .root;
+//             let played = run_program(&play_rig, &program).await;
+//             let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+//             replay
+//                 .rig_and_reset(start, log)
+//                 .await
+//                 .expect("the replay rigs the play log");
+//             let replay_rig = Rig {
+//                 host: play.clone(),
+//                 env: env_over(replay.clone(), &budget()),
+//             };
+//             let replayed = run_program(&replay_rig, &program).await;
+//             if replayed != played {
+//                 return Err(failure(format!(
+//                     "replay differs:\n  play {played:?}\n  replay {replayed:?}"
+//                 )));
+//             }
+//             replay
+//                 .check_replay_data()
+//                 .await
+//                 .map_err(|error| failure(format!("an unpaired COMM: {error:?}")))?;
+//             let replay_root = replay.create_checkpoint().await.expect("a checkpoint").root;
+//             match replay_root == root {
+//                 true => Ok(()),
+//                 false => Err(failure("the roots differ")),
+//             }
+//         })
+//     });
+// }
+// ```
 
 /// The cause of the re-issue of `outcome`, or `None`.
 fn cause_of(outcome: &SpaceOutcome) -> Option<ReissueCause> {
@@ -2974,12 +3559,29 @@ async fn space_vector_discipline_restart_keeps_values_ties_and_order() {
     );
 }
 
+/// Added by decision 102 (plan v2 pins): the plays of the tie of
+/// `space_hash_collision_tie_duplicates_are_interchangeable` in each order of the sends and in
+/// each view. Each play selects the tied value [1, -5] with probability 1/3. So the 3 · 2 ·
+/// `PICK_RUNS` = 384 selections never select it with probability (2/3)^384, about 2.4·10^-68,
+/// and never select [1, 5] with probability (1/3)^384, about 6·10^-184.
+const PICK_RUNS: usize = 64;
+
 /// Two byte-identical sends store two records with one source hash and one digest, so the order
 /// of DR-75 keeps them by index, and a third record ties with them on its score (tracker leaf
 /// `rrs-spaces-determinism-collision-ties`). In each of three orders of the sends, one rig
 /// selects from its hot store, in the order of the sends, and a second rig selects after a
-/// checkpoint and a reset, from the history. Every order and both views select the same value
-/// and log the same COMM, the roots are equal, and replay reproduces play.
+/// checkpoint and a reset, from the history.
+///
+/// Changed by decision 102 (plan v2 pins): play picks among tied records at random (rule CR-1).
+/// So each selection takes one of the tied values, [1, 5] or [1, -5]. The duplicates are
+/// interchangeable: a selected value gives one fire, one COMM and one root after the take, in
+/// every order of the sends, in both views and in every run. Every order stores one entry set,
+/// so the root before the take is the same. The test repeats the orders and the views
+/// [`PICK_RUNS`] times, and over the runs it must select both values. That assertion misses with
+/// probability (2/3)^384 + (1/3)^384, about 2.4·10^-68.
+///
+/// The text before: "Every order and both views select the same value and log the same COMM, the
+/// roots are equal, and replay reproduces play."
 #[tokio::test]
 async fn space_hash_collision_tie_duplicates_are_interchangeable() {
     let shape = Shape {
@@ -2995,92 +3597,162 @@ async fn space_hash_collision_tie_duplicates_are_interchangeable() {
         [other, duplicate, duplicate],
     ];
     let take = || receive("take", any(), Some(query(Some(ints(&[1, 0])), &[])));
-    let mut results = Vec::new();
-    for order in orders {
-        let hot = Rig::new(shape).await;
-        let cold = Rig::new(shape).await;
-        for op in order {
-            hot.send(op()).await;
-            cold.send(op()).await;
+    // Changed by decision 102 (plan v2 pins): play picks among the tied records at random, so
+    // the two views and the three orders can select different values. The test maps each
+    // selected value to its fire, its COMM and its root, and it repeats the runs. The old lines
+    // follow.
+    // let mut results = Vec::new();
+    // for order in orders {
+    //     let hot = Rig::new(shape).await;
+    //     let cold = Rig::new(shape).await;
+    //     for op in order {
+    //         hot.send(op()).await;
+    //         cold.send(op()).await;
+    //     }
+    //     hot.log().await;
+    //     let first = fired(&hot.receive(take()).await);
+    //     let comm = comms(&hot.log().await);
+    //     let after = root_of(&hot).await;
+    //     let stored = root_of(&cold).await;
+    //     cold.host
+    //         .reset(&stored)
+    //         .await
+    //         .expect("the reset to the checkpoint");
+    //     cold.log().await;
+    //     let again = fired(&cold.receive(take()).await);
+    //     assert_eq!(
+    //         again, first,
+    //         "the view of the history selects as the hot store does"
+    //     );
+    //     assert_eq!(comms(&cold.log().await), comm);
+    //     assert_eq!(root_of(&cold).await, after);
+    //     results.push((stored, first, comm, after));
+    // }
+    // for result in &results[1..] {
+    //     assert_eq!(
+    //         result, &results[0],
+    //         "the order of the sends does not matter"
+    //     );
+    // }
+    // let winner = match record_id(&duplicate()) < record_id(&other()) {
+    //     true => ints(&[1, 5]),
+    //     false => ints(&[1, -5]),
+    // };
+    // assert_eq!(
+    //     results[0].1,
+    //     vec![delivery("take", vec![winner])],
+    //     "the tie goes to the lower source hash"
+    // );
+    let tied = [vec![delivery("take", vec![ints(&[1, 5])])], vec![delivery(
+        "take",
+        vec![ints(&[1, -5])],
+    )]];
+    let mut by_value: Vec<(Fires, Vec<COMM>, Blake2b256Hash)> = Vec::with_capacity(tied.len());
+    let mut entry_root: Option<Blake2b256Hash> = None;
+    for _ in 0..PICK_RUNS {
+        for order in orders {
+            let hot = Rig::new(shape).await;
+            let cold = Rig::new(shape).await;
+            for op in order {
+                hot.send(op()).await;
+                cold.send(op()).await;
+            }
+            hot.log().await;
+            let first = fired(&hot.receive(take()).await);
+            let comm = comms(&hot.log().await);
+            let after = root_of(&hot).await;
+            let stored = root_of(&cold).await;
+            cold.host
+                .reset(&stored)
+                .await
+                .expect("the reset to the checkpoint");
+            cold.log().await;
+            let again = fired(&cold.receive(take()).await);
+            let again_comm = comms(&cold.log().await);
+            let again_after = root_of(&cold).await;
+            match &entry_root {
+                Some(root) => assert_eq!(
+                    root, &stored,
+                    "every order of the sends stores one entry set"
+                ),
+                None => entry_root = Some(stored),
+            }
+            for selection in [(first, comm, after), (again, again_comm, again_after)] {
+                assert!(
+                    tied.contains(&selection.0),
+                    "the take selects one of the tied values: {:?}",
+                    selection.0
+                );
+                match by_value.iter().find(|known| known.0 == selection.0) {
+                    Some(known) => assert_eq!(
+                        known, &selection,
+                        "a selected value gives one fire, one COMM and one root in every order and view"
+                    ),
+                    None => by_value.push(selection),
+                }
+            }
         }
-        hot.log().await;
-        let first = fired(&hot.receive(take()).await);
-        let comm = comms(&hot.log().await);
-        let after = root_of(&hot).await;
-        let stored = root_of(&cold).await;
-        cold.host
-            .reset(&stored)
-            .await
-            .expect("the reset to the checkpoint");
-        cold.log().await;
-        let again = fired(&cold.receive(take()).await);
-        assert_eq!(
-            again, first,
-            "the view of the history selects as the hot store does"
-        );
-        assert_eq!(comms(&cold.log().await), comm);
-        assert_eq!(root_of(&cold).await, after);
-        results.push((stored, first, comm, after));
     }
-    for result in &results[1..] {
-        assert_eq!(
-            result, &results[0],
-            "the order of the sends does not matter"
-        );
-    }
-    let winner = match record_id(&duplicate()) < record_id(&other()) {
-        true => ints(&[1, 5]),
-        false => ints(&[1, -5]),
-    };
     assert_eq!(
-        results[0].1,
-        vec![delivery("take", vec![winner])],
-        "the tie goes to the lower source hash"
+        by_value.len(),
+        tied.len(),
+        "over {PICK_RUNS} runs the take selects each tied value"
     );
 
-    let (play, replay) = play_and_replay().await;
-    let play_rig = Rig::over(play.clone(), shape).await;
-    let start = play
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let script = || {
-        vec![
-            SpaceOp::Produce(duplicate()),
-            SpaceOp::Produce(other()),
-            SpaceOp::Produce(duplicate()),
-            SpaceOp::Consume(take()),
-            SpaceOp::Consume(take()),
-        ]
-    };
-    let mut played = Vec::new();
-    for op in script() {
-        played.push(play_rig.run(op).await.expect("the script plays"));
-    }
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-    replay
-        .rig_and_reset(start, log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_rig = Rig {
-        host: play.clone(),
-        env: env_over(replay.clone(), &budget()),
-    };
-    let mut replayed = Vec::new();
-    for op in script() {
-        replayed.push(replay_rig.run(op).await.expect("the script replays"));
-    }
-    assert_eq!(replayed, played);
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
-    );
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). Native replay of VectorDB deploys:
+    // `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+    // `space_native_vectordb_denial_replay`. The text before:
+    // ```
+    // let (play, replay) = play_and_replay().await;
+    // let play_rig = Rig::over(play.clone(), shape).await;
+    // let start = play
+    //     .create_checkpoint()
+    //     .await
+    //     .expect("a checkpoint after the creation")
+    //     .root;
+    // let script = || {
+    //     vec![
+    //         SpaceOp::Produce(duplicate()),
+    //         SpaceOp::Produce(other()),
+    //         SpaceOp::Produce(duplicate()),
+    //         SpaceOp::Consume(take()),
+    //         SpaceOp::Consume(take()),
+    //     ]
+    // };
+    // let mut played = Vec::new();
+    // for op in script() {
+    //     played.push(play_rig.run(op).await.expect("the script plays"));
+    // }
+    // let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+    // replay
+    //     .rig_and_reset(start, log)
+    //     .await
+    //     .expect("the replay rigs the play log");
+    // let replay_rig = Rig {
+    //     host: play.clone(),
+    //     env: env_over(replay.clone(), &budget()),
+    // };
+    // let mut replayed = Vec::new();
+    // for op in script() {
+    //     replayed.push(replay_rig.run(op).await.expect("the script replays"));
+    // }
+    // assert_eq!(replayed, played);
+    // replay
+    //     .check_replay_data()
+    //     .await
+    //     .expect("every recorded COMM is paired");
+    // assert_eq!(
+    //     replay.create_checkpoint().await.expect("a checkpoint").root,
+    //     root
+    // );
+    // ```
 }
+
+// Retired by decision 90 (C6, step D): `in_debug_order` and `play_then_replay` ran through the
+// rigged replay modes, which retire (decision 125). Native replay of VectorDB deploys:
+// `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+// `space_native_vectordb_denial_replay`.
 
 /// Forced equal source hashes (tracker leaf `rrs-spaces-determinism-collision-ties`): the hash
 /// of a source produce cannot collide in a test, so the records are built with one forced
@@ -3251,69 +3923,76 @@ async fn rspace_list_random_state_zero_one_and_two_members() {
     );
 }
 
-/// Replay reproduces the list deliveries of play with their random states (tracker leaf
-/// `rrs-rspace-interface-list-random-state`, the replay case): a parked list waiter, a list of
-/// one and a list of two, with equal outcomes, every COMM paired and the root of play.
-#[tokio::test]
-async fn rspace_list_random_state_replay_reproduces_the_merged_states() {
-    let (play, replay) = play_and_replay().await;
-    let play_rig = Rig::over(play.clone(), COSINE).await;
-    let start = play
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let list_of_two = |name: &str| {
-        receive(
-            name,
-            any(),
-            Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
-        )
-    };
-    let script = || {
-        vec![
-            SpaceOp::Consume(list_of_two("zero")),
-            SpaceOp::Produce(vector_send(&[1.0, 0.0], "one")),
-            SpaceOp::Produce(vector_send(&[1.0, 1.0], "far")),
-            SpaceOp::Produce(vector_send(&[1.0, 0.5], "near")),
-            SpaceOp::Consume(list_of_two("two")),
-        ]
-    };
-    let mut played = Vec::new();
-    for op in script() {
-        played.push(play_rig.run(op).await.expect("the script plays"));
-    }
-    assert_eq!(
-        played
-            .iter()
-            .map(|outcome| outcome.fires.len())
-            .collect::<Vec<_>>(),
-        vec![0, 1, 0, 0, 1],
-        "the first send fires the parked waiter with one member, the last receive takes two"
-    );
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-    replay
-        .rig_and_reset(start, log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_rig = Rig {
-        host: play.clone(),
-        env: env_over(replay.clone(), &budget()),
-    };
-    let mut replayed = Vec::new();
-    for op in script() {
-        replayed.push(replay_rig.run(op).await.expect("the script replays"));
-    }
-    assert_eq!(
-        replayed, played,
-        "the outcomes hold the random states of the deliveries"
-    );
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
-    );
-}
+// Retired by decision 90 (C6, step D):
+// `rspace_list_random_state_replay_reproduces_the_merged_states` ran through the rigged replay
+// modes, which retire (decision 125). Native replay of VectorDB deploys:
+// `space_native_vectordb_replay_equal`, `space_native_vectordb_errors_reproduce`,
+// `space_native_vectordb_denial_replay`. The text before:
+// ```
+// /// Replay reproduces the list deliveries of play with their random states (tracker leaf
+// /// `rrs-rspace-interface-list-random-state`, the replay case): a parked list waiter, a list of
+// /// one and a list of two, with equal outcomes, every COMM paired and the root of play.
+// #[tokio::test]
+// async fn rspace_list_random_state_replay_reproduces_the_merged_states() {
+//     let (play, replay) = play_and_replay().await;
+//     let play_rig = Rig::over(play.clone(), COSINE).await;
+//     let start = play
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint after the creation")
+//         .root;
+//     let list_of_two = |name: &str| {
+//         receive(
+//             name,
+//             any(),
+//             Some(query(Some(vector(&[1.0, 0.0])), &[("k", int(2))])),
+//         )
+//     };
+//     let script = || {
+//         vec![
+//             SpaceOp::Consume(list_of_two("zero")),
+//             SpaceOp::Produce(vector_send(&[1.0, 0.0], "one")),
+//             SpaceOp::Produce(vector_send(&[1.0, 1.0], "far")),
+//             SpaceOp::Produce(vector_send(&[1.0, 0.5], "near")),
+//             SpaceOp::Consume(list_of_two("two")),
+//         ]
+//     };
+//     let mut played = Vec::new();
+//     for op in script() {
+//         played.push(play_rig.run(op).await.expect("the script plays"));
+//     }
+//     assert_eq!(
+//         played
+//             .iter()
+//             .map(|outcome| outcome.fires.len())
+//             .collect::<Vec<_>>(),
+//         vec![0, 1, 0, 0, 1],
+//         "the first send fires the parked waiter with one member, the last receive takes two"
+//     );
+//     let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+//     replay
+//         .rig_and_reset(start, log)
+//         .await
+//         .expect("the replay rigs the play log");
+//     let replay_rig = Rig {
+//         host: play.clone(),
+//         env: env_over(replay.clone(), &budget()),
+//     };
+//     let mut replayed = Vec::new();
+//     for op in script() {
+//         replayed.push(replay_rig.run(op).await.expect("the script replays"));
+//     }
+//     assert_eq!(
+//         replayed, played,
+//         "the outcomes hold the random states of the deliveries"
+//     );
+//     replay
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired");
+//     assert_eq!(
+//         replay.create_checkpoint().await.expect("a checkpoint").root,
+//         root
+//     );
+// }
+// ```

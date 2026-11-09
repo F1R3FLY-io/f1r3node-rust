@@ -2,10 +2,24 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
+// Added by G3 (DR-135, S4): the owner part of an attempt.
+use rspace_plus_plus::rspace::errors::RSpaceError;
+
 use super::index::{NativeIndex, OccurrenceKey, PreparedInsert};
 use super::*;
+// Added by G3 (DR-135, S4).
+// Changed by G3 (DR-135, G-4): the owner part keeps the draws of each part.
+// use crate::rust::interpreter::accounting::authority::ResourceMultiset;
 use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativeAttemptStage, NativeBudgetAttempt, NativeBudgetOccurrence,
+};
+// Added by G3 (DR-135, S4).
+// Changed by G3 (DR-135, G-4): the owner part keeps the draws of each part.
+// use crate::rust::interpreter::accounting::owner_funding::{
+//     OwnerCharge, OwnerShortfall, OwnerTableEntry, UnlistedRule,
+// };
+use crate::rust::interpreter::accounting::owner_funding::{
+    OwnerCharge, OwnerDraws, OwnerShortfall, OwnerTableEntry, UnlistedRule,
 };
 
 #[derive(Clone, Debug)]
@@ -26,6 +40,10 @@ pub struct NativeBudgetRecording {
     /// journal rows, interned once each (C7b, DR-86). Occurrences and journal
     /// rows name their nodes.
     pub paths: Arc<NativePathTrie>,
+    /// Added by G3 (DR-135, S4): the owner table T of the run: each listed
+    /// purse, by the signature that locates it, with its budget, in
+    /// ascending custody order (R3). Empty without owner funding.
+    pub owner_table: Arc<[OwnerTableEntry]>,
 }
 
 /// An occurrence as the producer records it: the session, a copy of the
@@ -43,6 +61,12 @@ pub(super) struct RecordedAttempt {
     pub(super) occurrence: RecordedOccurrence,
     pub(super) observation: Arc<ByteObservation>,
     pub(super) granted: bool,
+    /// Added by G3 (DR-135, S4): the owner of the introduction could not pay
+    /// (R8).
+    pub(super) owner_refused: bool,
+    /// Added by G3 (DR-135, S4 review): the restorations that a peek COMM
+    /// paid for (R9).
+    pub(super) restorations: Arc<[Arc<ByteObservation>]>,
 }
 
 #[derive(Clone, Debug)]
@@ -76,6 +100,13 @@ pub(in crate::rust::interpreter::accounting) struct NativeObservationPreparation
     pub(super) occurrence_key: OccurrenceKey,
     pub(super) observation: Arc<ByteObservation>,
     pub(super) charge: Option<PreparedNativePhloCharge>,
+    /// Added by G3 (DR-135, S4): the owner charge of the observation, when
+    /// the run has owner funding and the meter charge did not overflow (R4).
+    pub(super) owner: Option<OwnerCharge>,
+    /// Added by G3 (DR-135, S4 review): the introductions of the data that a
+    /// peek COMM restores (R9). The COMM attempt records them, so the fold
+    /// charges them at the COMM, as play does.
+    pub(super) restorations: Arc<[Arc<ByteObservation>]>,
     pub(super) ticket: NativePreparationTicket,
 }
 
@@ -131,6 +162,19 @@ impl NativePreparationTicket {
 
 pub(super) fn recording_error(message: &str) -> InterpreterError {
     InterpreterError::ReduceError(message.to_owned())
+}
+
+/// Added by G3 (DR-135, G-4): the owner part of an attempt, which play
+/// decides before the bound (R4, R9).
+enum OwnerPart {
+    /// No owner funding, or no owner charge.
+    None,
+    /// The draws of the charge, by part. A grant draws the total, bills the
+    /// main part and reserves the restorations.
+    Draws(OwnerDraws),
+    /// The introduction of a reserved restoration: it draws nothing, and a
+    /// grant bills the reservation.
+    Reserved,
 }
 
 impl NativeRuntimeConfig {
@@ -212,9 +256,41 @@ impl NativeRuntimeConfig {
             (prepared.occurrence.stage, prepared.observation.event_id),
             index,
         )?;
-        let decision = match &prepared.charge {
-            Some(charge) => self.reservation.reserve(charge),
-            None => Err(NativePhloExecutionError::Overflow),
+        // Added by G3 (DR-135, S4): the owner part is decided first, in the
+        // same critical section as the bound (R4, §6.1). A shortfall refuses
+        // the attempt before the bound decides.
+        // Changed by G3 (DR-135, G-4): the owner part keeps the draws of each
+        // part, or names a reserved restoration.
+        // let owner_draws = match self.owner_draws(prepared) {
+        //     Ok(draws) => draws,
+        //     Err(OwnerShortfall) => {
+        //         return self.record_owner_refusal(prepared, key, occurrence, slot, index);
+        //     }
+        // };
+        let owner_part = match self.owner_part(prepared) {
+            Ok(part) => part,
+            Err(OwnerShortfall) => {
+                return self.record_owner_refusal(prepared, key, occurrence, slot, index);
+            }
+        };
+        // Changed by G3 (DR-135, S11): the bound counts only the client part
+        // of the charge. The owner shares at a price of 1 or more of a granted
+        // owner part leave it: the main shares of a charge with draws, or the
+        // shares of a reserved restoration (item 13). The replaced lines
+        // follow.
+        // let decision = match &prepared.charge {
+        //     Some(charge) => self.reservation.reserve(charge),
+        //     None => Err(NativePhloExecutionError::Overflow),
+        // };
+        let owner_usage = match (&owner_part, prepared.owner.as_ref()) {
+            (OwnerPart::Draws(_) | OwnerPart::Reserved, Some(owner)) => owner.priced_usage().ok(),
+            _ => Some(0),
+        };
+        let decision = match (&prepared.charge, owner_usage) {
+            (Some(charge), Some(owner_usage)) => self
+                .reservation
+                .reserve_with_owner_usage(charge, owner_usage),
+            _ => Err(NativePhloExecutionError::Overflow),
         };
         // Added by DR-113: the class of an exhaustion follows the bound source.
         let source = self.reservation.bound_source();
@@ -228,11 +304,67 @@ impl NativeRuntimeConfig {
             // return decision.map_err(native_error);
             return decision.map_err(|error| native_error(error, source));
         }
+        // Added by G3 (DR-135, S4): a grant deducts the owner draws and
+        // reserves the restorations of a peek COMM (R9). The deduction is
+        // checked before any commit.
+        // Changed by G3 (DR-135, G-4): a grant draws the total, bills the main
+        // part and reserves the restorations with their draws. The grant of a
+        // reserved restoration bills its reservation. A denial bills nothing
+        // and leaves every reservation as it is.
+        // if let (true, Some(draws), Some(charge), Some(owners)) = (
+        //     decision.is_ok(),
+        //     owner_draws.as_ref(),
+        //     prepared.owner.as_ref(),
+        //     self.reservation.owners_mut(),
+        // ) {
+        //     owners
+        //         .apply(draws, charge)
+        //         .map_err(|error| recording_error(&error.to_string()))?;
+        //     owners.reserve_restorations(charge);
+        // }
+        if let (true, Some(charge), Some(owners)) = (
+            decision.is_ok(),
+            prepared.owner.as_ref(),
+            self.reservation.owners_mut(),
+        ) {
+            match &owner_part {
+                OwnerPart::None => {}
+                OwnerPart::Draws(draws) => owners
+                    .grant(draws, charge)
+                    .map_err(|error| recording_error(&error.to_string()))?,
+                OwnerPart::Reserved => {
+                    let billed = owners
+                        .bill_reservation(&prepared.observation.event_id, charge)
+                        .map_err(|error| recording_error(&error.to_string()))?;
+                    if !billed {
+                        return Err(recording_error(
+                            "a reserved restoration has no reservation to bill",
+                        ));
+                    }
+                }
+            }
+        }
         self.recording.occurrences.commit(key);
+        // Changed by G3 (DR-135, S4): the attempt records its owner decision.
+        // self.recording.attempts.push(RecordedAttempt {
+        //     occurrence,
+        //     observation: Arc::clone(&prepared.observation),
+        //     granted: decision.is_ok(),
+        // });
+        // Changed by G3 (DR-135, S4 review): a COMM attempt records the
+        // restorations that its owner charge paid for.
+        // self.recording.attempts.push(RecordedAttempt {
+        //     occurrence,
+        //     observation: Arc::clone(&prepared.observation),
+        //     granted: decision.is_ok(),
+        //     owner_refused: false,
+        // });
         self.recording.attempts.push(RecordedAttempt {
             occurrence,
             observation: Arc::clone(&prepared.observation),
             granted: decision.is_ok(),
+            owner_refused: false,
+            restorations: Arc::clone(&prepared.restorations),
         });
         if decision.is_ok() {
             self.recording.accepted.commit(accepted);
@@ -247,6 +379,105 @@ impl NativeRuntimeConfig {
         // Changed by DR-113: exhaustion takes the class of the bound source.
         // decision.map_err(native_error)
         decision.map_err(|error| native_error(error, source))
+    }
+
+    // Changed by G3 (DR-135, G-4): `owner_part` keeps the draws of each part
+    // and takes no reservation before the bound decides.
+    // /// Added by G3 (DR-135, S4): the owner draws of an attempt, or none
+    // /// without owner funding, for the introduction of a restoration that a
+    // /// granted peek COMM paid for (R9), or without an owner charge. A
+    // /// restoration takes its reservation also when its charge overflows, as
+    // /// the fold skips every restoration attempt. Play gives an unlisted purse
+    // /// 0 and notes it (SA8).
+    // fn owner_draws(
+    //     &mut self,
+    //     prepared: &NativeObservationPreparation,
+    // ) -> Result<Option<ResourceMultiset<[u8; 32]>>, OwnerShortfall> {
+    //     let (Some(binding), Some(owners)) = (self.owner.as_ref(), self.reservation.owners_mut())
+    //     else {
+    //         return Ok(None);
+    //     };
+    //     if prepared.occurrence.stage == NativeAttemptStage::ProduceIntroduction
+    //         && owners.take_reservation(&prepared.observation.event_id)
+    //     {
+    //         return Ok(None);
+    //     }
+    //     let Some(charge) = prepared.owner.as_ref() else {
+    //         return Ok(None);
+    //     };
+    //     owners
+    //         .allocate(charge, UnlistedRule::Play, Some(binding.notes()))
+    //         .map(Some)
+    // }
+
+    /// Added by G3 (DR-135, G-4): the owner part of an attempt: none without
+    /// owner funding or without an owner charge (an overflowing charge has
+    /// none, and the bound denies it). The introduction of a restoration that
+    /// a granted peek COMM reserved with an equal charge draws nothing (R9).
+    /// Otherwise the draws of each part, under the Play rule: an unlisted
+    /// purse gets 0 and is noted (SA8). No reservation is taken before the
+    /// bound decides.
+    fn owner_part(
+        &self,
+        prepared: &NativeObservationPreparation,
+    ) -> Result<OwnerPart, OwnerShortfall> {
+        let (Some(binding), Some(owners)) = (self.owner.as_ref(), self.reservation.owners()) else {
+            return Ok(OwnerPart::None);
+        };
+        let Some(charge) = prepared.owner.as_ref() else {
+            return Ok(OwnerPart::None);
+        };
+        if prepared.occurrence.stage == NativeAttemptStage::ProduceIntroduction
+            && owners.is_reserved_for(&prepared.observation.event_id, charge)
+        {
+            return Ok(OwnerPart::Reserved);
+        }
+        owners
+            .allocate_parts(charge, UnlistedRule::Play, Some(binding.notes()))
+            .map(OwnerPart::Draws)
+    }
+
+    /// Added by G3 (DR-135, S4): an owner that cannot pay refuses the
+    /// attempt. A COMM refusal records its source at the position of the
+    /// next attempt and leaves the COMM stage open, so the operation may try
+    /// another tuple (R7). An introduction refusal is an attempt that is not
+    /// granted, with nothing stored (R8).
+    fn record_owner_refusal(
+        &mut self,
+        prepared: &NativeObservationPreparation,
+        key: PreparedInsert<OccurrenceKey, ()>,
+        occurrence: RecordedOccurrence,
+        slot: Option<usize>,
+        index: usize,
+    ) -> Result<(), InterpreterError> {
+        if prepared.occurrence.stage == NativeAttemptStage::Comm {
+            self.record_comm_refusal(slot, index);
+            prepared.ticket.published.set(true);
+            return Err(InterpreterError::RSpaceError(RSpaceError::CommRefused));
+        }
+        self.recording.occurrences.commit(key);
+        self.recording.attempts.push(RecordedAttempt {
+            occurrence,
+            observation: Arc::clone(&prepared.observation),
+            granted: false,
+            owner_refused: true,
+            // Added by G3 (DR-135, S4 review): an introduction restores
+            // nothing.
+            restorations: Arc::from([]),
+        });
+        self.publish_operation_link(
+            slot,
+            prepared.occurrence.stage,
+            NativeObservationLink::Attempt(index),
+            false,
+        );
+        if let Some(owners) = self.reservation.owners_mut() {
+            owners.refuse(prepared.observation.event_id);
+        }
+        prepared.ticket.published.set(true);
+        Err(InterpreterError::RSpaceError(
+            RSpaceError::IntroductionRefused,
+        ))
     }
 
     pub(super) fn record_retry(
@@ -340,6 +571,10 @@ impl NativeRuntimeConfig {
                 },
                 observation: Arc::clone(&row.observation),
                 granted: row.granted,
+                // Added by G3 (DR-135, S4).
+                owner_refused: row.owner_refused,
+                // Added by G3 (DR-135, S4 review).
+                restorations: Arc::clone(&row.restorations),
             });
         }
         let mut retries = Vec::with_capacity(self.recording.retries.len());
@@ -355,12 +590,24 @@ impl NativeRuntimeConfig {
                 fresh_before: row.fresh_before,
             });
         }
+        // Added by G3 (DR-135, S4): the owner table of the run (R3).
+        let owner_table = match self.reservation.owners() {
+            Some(owners) => {
+                let entries = owners.table().entries();
+                let mut table = Vec::with_capacity(entries.len());
+                table.extend(entries.iter().map(|(_, entry)| entry.clone()));
+                Arc::from(table)
+            }
+            None => Arc::from([]),
+        };
         Ok(NativeBudgetRecording {
             session: self.session,
             attempts: attempts.into(),
             retries: retries.into(),
             used: self.reservation.used(),
             paths: Arc::new(paths.trie),
+            // Added by G3 (DR-135, S4).
+            owner_table,
         })
     }
 }

@@ -204,7 +204,11 @@ proptest! {
             let source = Consume::create(&channels, &patterns, &9u8, false);
             let expected = space.prepare_native_consume_candidate(&channels, &patterns, &9, &source, &BTreeSet::new(), None);
             let keys = channel_keys(&channels);
-            let actual = with_reader(&space, |reader| space.prepare_consume_candidate(&channels, &keys, &patterns, &9, &source, &BTreeSet::new(), None, reader)).unwrap();
+            // Changed by G3 (DR-135, S6): no owner checks.
+            // let actual = with_reader(&space, |reader|
+            // space.prepare_consume_candidate(&channels, &keys, &patterns, &9,
+            // &source, &BTreeSet::new(), None, reader)).unwrap();
+            let actual = with_reader(&space, |reader| space.prepare_consume_candidate(&channels, &keys, &patterns, &9, &source, &BTreeSet::new(), None, None, reader)).unwrap();
             assert_eq!(actual.is_some(), expected.is_some());
             if let (Some(actual), Some(expected)) = (actual, expected) {
                 same_data(&actual.data, &expected.data);
@@ -234,7 +238,13 @@ proptest! {
             let keys = operation_keys(&[channels.clone()]);
             // Changed by D-D5 (DR-107): the selection owns the incoming datum.
             // let actual = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels.clone()], &keys, None, reader)).unwrap().unwrap().0;
-            let actual = with_reader(&space, |reader| space.prepare_produce_candidate(&1, Datum::create(&1u8, incoming, persistent), vec![channels.clone()], &keys, None, reader)).map(matched).expect("candidate selection").expect("a matched selection").0;
+            // Changed by G3 (DR-135, S6): no owner checks.
+            // let actual = with_reader(&space, |reader|
+            // space.prepare_produce_candidate(&1, Datum::create(&1u8,
+            // incoming, persistent), vec![channels.clone()], &keys, None,
+            // reader)).map(matched).expect("candidate selection").expect("a
+            // matched selection").0;
+            let actual = with_reader(&space, |reader| space.prepare_produce_candidate(&1, Datum::create(&1u8, incoming, persistent), vec![channels.clone()], &keys, None, None, reader)).map(matched).expect("candidate selection").expect("a matched selection").0;
             same_data(&actual.candidate.data_candidates, &expected.candidate.data_candidates);
             for candidate in &actual.candidate.data_candidates {
                 if candidate.datum_index == INCOMING_INDEX {
@@ -244,7 +254,13 @@ proptest! {
             assert_eq!(bincode::serialize(&actual.comm).unwrap(), bincode::serialize(&expected.comm).unwrap());
             let identity = Logical(expected.comm);
             // let selected = with_reader(&space, &meter, |reader| space.prepare_metered_produce_candidate(&1, &incoming, persistent, &source, vec![channels], &keys, Some(&identity), reader)).unwrap().unwrap().0;
-            let selected = with_reader(&space, |reader| space.prepare_produce_candidate(&1, Datum::create(&1u8, incoming, persistent), vec![channels], &keys, Some(&identity), reader)).map(matched).expect("candidate selection").expect("a matched selection").0;
+            // Changed by G3 (DR-135, S6): no owner checks.
+            // let selected = with_reader(&space, |reader|
+            // space.prepare_produce_candidate(&1, Datum::create(&1u8,
+            // incoming, persistent), vec![channels], &keys, Some(&identity),
+            // reader)).map(matched).expect("candidate selection").expect("a
+            // matched selection").0;
+            let selected = with_reader(&space, |reader| space.prepare_produce_candidate(&1, Datum::create(&1u8, incoming, persistent), vec![channels], &keys, Some(&identity), None, reader)).map(matched).expect("candidate selection").expect("a matched selection").0;
             same_data(&selected.candidate.data_candidates, &actual.candidate.data_candidates);
             assert_eq!(state(&space), before);
         });
@@ -312,6 +328,8 @@ async fn produce_preserves_legacy_selection_after_failed_probes() {
             Datum::create(&1u8, 6u8, false),
             joins.clone(),
             &keys,
+            None,
+            // Added by G3 (DR-135, S6): no owner checks.
             None,
             reader,
         )
@@ -398,6 +416,8 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
                 &source,
                 &BTreeSet::new(),
                 Some(&Logical(changed)),
+                // Added by G3 (DR-135, S6): no owner checks.
+                None,
                 reader
             ))
             .unwrap()
@@ -428,7 +448,10 @@ async fn exact_identity_rejection_and_counter_overflow_preserve_state() {
         source: trigger.clone(),
     };
     let result = with_reader(&space, |reader| {
-        space.prepare_produce_candidate(&1, incoming, input, &keys, None, reader)
+        // Changed by G3 (DR-135, S6): no owner checks.
+        // space.prepare_produce_candidate(&1, incoming, input, &keys, None,
+        // reader)
+        space.prepare_produce_candidate(&1, incoming, input, &keys, None, None, reader)
     });
     assert!(matches!(result, Err(RSpaceError::InterpreterError(_))));
     assert_eq!(state(&space), before);
@@ -643,7 +666,9 @@ proptest! {
         let continuation = if commits { 9u8 } else { 255u8 };
         with_channel_data(&channels, &stored, incoming, |space, data, positions| {
             let actual = space
-                .match_data(&channels, positions, &patterns, &continuation, data)
+                // Changed by G3 (DR-135, S6): no owner checks.
+                // .match_data(&channels, positions, &patterns, &continuation, data)
+                .match_data(&channels, positions, &patterns, &continuation, data, None)
                 .expect("current selection");
             let expected = legacy_match_data(space, &channels, &patterns, &continuation, data);
             assert_eq!(actual.is_some(), expected.is_some());
@@ -683,7 +708,9 @@ async fn repeated_channel_consume_selects_one_datum_for_each_pattern() {
     let peeks = BTreeSet::new();
     let selection = with_reader(&space, |reader| {
         space.prepare_consume_candidate(
-            &channels, &keys, &patterns, &9, &source, &peeks, None, reader,
+            // Changed by G3 (DR-135, S6): no owner checks.
+            // &channels, &keys, &patterns, &9, &source, &peeks, None, reader,
+            &channels, &keys, &patterns, &9, &source, &peeks, None, None, reader,
         )
     })
     .expect("consume selection")
@@ -709,6 +736,8 @@ async fn match_data_rejects_inconsistent_positions() {
             &["a".to_string()],
             &"k".to_string(),
             &data,
+            // Added by G3 (DR-135, S6): no owner checks.
+            None,
         )
     };
     assert!(matches!(run(&[0]), Ok(Some(_))));
@@ -1012,7 +1041,10 @@ async fn string_selection(
     let address = incoming.a.as_ptr() as usize;
     let (selection, bytes) = measure_allocations(|| {
         with_string_reader(&space, |reader| {
-            space.prepare_produce_candidate(&channel, incoming, joins, &keys, None, reader)
+            // Changed by G3 (DR-135, S6): no owner checks.
+            // space.prepare_produce_candidate(&channel, incoming, joins,
+            // &keys, None, reader)
+            space.prepare_produce_candidate(&channel, incoming, joins, &keys, None, None, reader)
         })
     });
     (selection.expect("candidate selection"), bytes, address)
@@ -1064,6 +1096,8 @@ fn warm_string_selection(
             joins.to_vec(),
             keys,
             None,
+            // Added by G3 (DR-135, S6): no owner checks.
+            None,
             reader,
         )
     })
@@ -1113,6 +1147,8 @@ async fn stored_produce_stores_the_incoming_datum() {
                     identity
                         .as_ref()
                         .map(|identity| identity as &dyn NativeCandidateIdentity),
+                    // Added by G3 (DR-135, S6): no owner checks.
+                    None,
                     reader,
                 )
             })
@@ -1191,6 +1227,8 @@ async fn matched_selection_without_the_trigger_drops_the_value() {
             vec![vec![1]],
             &keys,
             Some(&identity),
+            // Added by G3 (DR-135, S6): no owner checks.
+            None,
             reader,
         )
     })
@@ -1344,6 +1382,8 @@ proptest! {
                         joins.clone(),
                         &keys,
                         identity,
+                        // Added by G3 (DR-135, S6): no owner checks.
+                        None,
                         reader,
                     )
                 })
@@ -1388,4 +1428,63 @@ proptest! {
                 assert_eq!(state(&space), before);
             });
     }
+}
+
+/// Added by G3 (DR-135, S6): the owner checks of a replay with owner
+/// funding. They admit every item and name no refusal, so only R6 acts.
+struct OwnDatum;
+
+impl NativeOwnerFilter<u8, u8, u8, u8> for OwnDatum {
+    fn admit_item(&self, _: &u8, _: bool, _: usize, _: &u8, _: bool) -> Result<bool> { Ok(true) }
+
+    fn names_refusal_for(&self, _: &Consume) -> bool { false }
+
+    fn requires_own_datum(&self) -> bool { true }
+}
+
+/// Added by G3 (DR-135, S6, R6): a produce keeps its own datum under owner
+/// funding. A recorded COMM in which a produce matched a stored datum on a
+/// channel that the join names once, and dropped its own datum, replays on
+/// dev. With the owner checks the selection gives the datum back, so the
+/// Matched row is a mismatch.
+#[tokio::test]
+async fn a_matched_produce_without_its_own_datum_is_rejected_under_owner_funding() {
+    let space = space().await;
+    put(&space, 1, 7, false);
+    let consume = waiting(&space, &[1], vec![0], 9);
+    let keys = channel_keys(&[1]);
+    let stored = with_reader(&space, |reader| {
+        space.prepare_consume_candidate(
+            &[1],
+            &keys,
+            &[0],
+            &9,
+            &consume,
+            &BTreeSet::new(),
+            None,
+            None,
+            reader,
+        )
+    })
+    .expect("consume selection")
+    .expect("the stored datum matches");
+    let identity = Logical(stored.comm);
+    let joins = operation_keys(&[vec![1]]);
+    let select = |owner: Option<&dyn NativeOwnerFilter<u8, u8, u8, u8>>| {
+        with_reader(&space, |reader| {
+            space.prepare_produce_candidate(
+                &1,
+                Datum::create(&1u8, 8u8, false),
+                vec![vec![1]],
+                &joins,
+                Some(&identity),
+                owner,
+                reader,
+            )
+        })
+        .map(matched)
+        .expect("candidate selection")
+    };
+    assert!(select(None).is_some(), "dev replays the produce that drops its own datum");
+    assert!(select(Some(&OwnDatum)).is_none(), "the owner checks require the produce's own datum");
 }

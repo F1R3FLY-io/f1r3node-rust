@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "scope": "bounded-harness-segment-writer-stop",
+  "phase": "pre_pr216_merge",
+  "status": "change-verified-pending-acceptance",
+  "claim_ids": [
+    "CLAIM-CASPER-SOAK-001"
+  ],
+  "change": {
+    "task": "PR #811, fixture assertion fix after the acceptance of casper-soak-writer-stop-20261021-01",
+    "commit": "ba666491aeafbfdf52576a1fa624fb82821974b6",
+    "origin": "Under set -e, a command that starts with ! never stops the script. Three assertions of the fixture used that form, so they could not fail: the two checks that the fake pytest process is gone after the guardian stop and after the deadline stop, and the check that a no-op hygiene pass prints no disk usage snapshot. The first of them dates from d5767eb78. This package covers the fixture change from the digest accepted at 32798242d to the digest at ba666491a.",
+    "commits": [
+      {
+        "commit": "ba666491a",
+        "files": ["fixture"],
+        "change": "Each of the three assertions is an explicit if with a failure message. The two process checks use the live_pid helper of the fixture, so an exited process that is not yet reaped counts as gone."
+      }
+    ],
+    "unchanged": "The driver, host_control.rs, and the claim document are unchanged since the acceptance at 32798242d. Only these three assertions of the fixture change."
+  },
+  "source_digests_before_change": {
+    "scripts/bench/test-run-merge-recovery-soak.sh": "320127860c51ab6b1439f568b41d660fdddf04fa52bb3a1ab51c2b4f23949ac7"
+  },
+  "source_digests": {
+    "scripts/bench/test-run-merge-recovery-soak.sh": "3ff8305f3323e950c9a474b57dd24936de10461d6a5b6318cf129aef6ee953ba"
+  },
+  "unchanged_source_digests": {
+    "scripts/run-merge-recovery-soak.sh": "8486972f4b7ea2c2ba3433d0dc1c3b2cdd1efa58de01feebbe7e6726548b2758",
+    "scripts/casper-soak/src/host_control.rs": "3c4c637574f6624f4e1d08518cee22eb8a99e76383f1fc92d0f489db6ed540a8"
+  },
+  "evidence_before_change": {
+    "scripts/bench/test-run-merge-recovery-soak.sh": {
+      "path": "docs/casper/cbc-evidence/runs/casper-soak-writer-stop-acceptance-20261021-01/report.json",
+      "sha256": "982fc077d124845f51132e013284af25a846e84fca7f3ff0a783a99699434756"
+    }
+  },
+  "claim_digests": {
+    "docs/claims/casper-soak-harness.md": "6488e5e5eb570f61998281cb2221e63fe6bbe6b0a4b8bde8dc22d80090886c7e"
+  },
+  "tiers": {
+    "binding": "passed",
+    "construction": "not-applicable",
+    "refutation": "bounded-safety-pass"
+  },
+  "verification": {
+    "fixture_local": {
+      "command": "bash scripts/bench/test-run-merge-recovery-soak.sh",
+      "environment": "rust:bookworm container on arm64, run as a non-root user with a non-dumpable same-user process present, with a 12 GB tmpfs /tmp.",
+      "tree": "ba666491a",
+      "exit": 0
+    },
+    "assertion_controls": {
+      "method": "Each control edits a scratch copy of the fixture so that the asserted condition is false. The new form must fail at its message. The old ! form, with the same edit, shows that the assertion could not fail.",
+      "results": {
+        "guardian-new": "failed: the fake pytest process survived the guardian stop",
+        "deadline-new": "failed: the fake pytest process survived the deadline stop",
+        "disk-usage-new": "failed: a no-op hygiene pass printed a disk usage snapshot",
+        "guardian-old": "passed: the old ! form could not fail",
+        "disk-usage-old": "passed: the old ! form could not fail"
+      }
+    },
+    "static": {
+      "shellcheck": "The three SC2251 findings are gone. No new findings."
+    }
+  },
+  "hosted": {
+    "repository": "F1R3FLY-io/f1r3node-rust",
+    "tested_sha": "ba666491aeafbfdf52576a1fa624fb82821974b6",
+    "soak_harness_tests": {
+      "run_id": 39667325925,
+      "job_id": 119456370473,
+      "steps": {
+        "Verify soak fail-closed driver": "success",
+        "Verify isolated disk admission and emergency scenarios": "success",
+        "Verify the disk admission failure report and bounded-command liveness": "success"
+      }
+    },
+    "claims_and_bindings": {
+      "run_id": 39667325461,
+      "job": "Casper driver binding fixtures",
+      "job_id": 119457608205,
+      "steps": {
+        "Check model, claim-audit, and interruption regressions": "success",
+        "Audit Casper claim identities and discharge evidence": "success",
+        "Check isolated driver bindings and actual case counts": "success"
+      }
+    }
+  },
+  "acceptance_request": {
+    "acceptor": "jltatbeach",
+    "where": "PR #811 comment",
+    "scope": "One acceptance covers the fixture change of ba666491a. The acceptance of casper-soak-writer-stop-20261021-01 stays in force for the driver, host_control.rs, and the guarantee."
+  },
+  "expected_gate_state": "check-casper-claims passes because it reports CLAIM-CASPER-SOAK-001 as pending. The fixture ledger keeps the digest 32012786 until a maintainer accepts this package.",
+  "claim_discharge": "pending",
+  "node_execution": false,
+  "waiver": null,
+  "soak": "pending",
+  "verified_at": "2026-10-21"
+}

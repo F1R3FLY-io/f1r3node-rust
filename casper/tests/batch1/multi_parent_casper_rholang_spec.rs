@@ -1,10 +1,16 @@
 // See casper/src/test/scala/coop/rchain/casper/batch1/MultiParentCasperRholangSpec.scala
 
 use casper::rust::util::rholang::tools::Tools;
-use casper::rust::util::{construct_deploy, proto_util, rspace_util};
-use crypto::rust::signatures::secp256k1::Secp256k1;
-use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+use casper::rust::util::{proto_util, rspace_util};
+// Changed by DR-134 (DR-66 item 1): offered deploys name their channels from
+// their identity.
+// use crypto::rust::signatures::secp256k1::Secp256k1;
+// use crypto::rust::signatures::signatures_alg::SignaturesAlg;
+use models::rust::deploy_envelope::DeployEnvelope;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -29,18 +35,27 @@ async fn multi_parent_casper_should_create_blocks_based_on_deploys() {
         .create_block_unsafe(std::slice::from_ref(&deploy))
         .await
         .unwrap();
+    // Changed by DR-134 (DR-66 item 1): offered deploys compare by identity.
+    // let deploys: Vec<_> = block
+    //     .body
+    //     .deploys
+    //     .iter()
+    //     .map(|pd| &pd.as_legacy().expect("legacy fixture").deploy)
+    //     .collect();
     let deploys: Vec<_> = block
         .body
         .deploys
         .iter()
-        .map(|pd| &pd.as_legacy().expect("legacy fixture").deploy)
+        .map(|pd| pd.identity_bytes().to_vec())
         .collect();
     let parents = proto_util::parent_hashes(&block);
 
     assert_eq!(parents.len(), 1);
     assert_eq!(parents[0], standalone_node.genesis.block_hash);
     assert_eq!(deploys.len(), 1);
-    assert_eq!(deploys[0], &deploy);
+    // Changed by DR-134 (DR-66 item 1).
+    // assert_eq!(deploys[0], &deploy);
+    assert_eq!(deploys[0], deploy.sig.to_vec());
 
     let data =
         rspace_util::get_data_at_public_channel_block(&block, 0, &standalone_node.runtime_manager)
@@ -80,10 +95,14 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
         )
     }
 
-    fn calculate_unforgeable_name(timestamp: i64) -> String {
-        let secp256k1 = Secp256k1;
-        let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
-        let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+    // Changed by DR-134 (DR-66 item 1): an offered deploy seeds its names from
+    // its identity (`Tools::user_envelope_rng`).
+    // fn calculate_unforgeable_name(timestamp: i64) -> String {
+    //     let secp256k1 = Secp256k1;
+    //     let public_key = secp256k1.to_public(&construct_deploy::DEFAULT_SEC);
+    //     let unforgeable_id = Tools::unforgeable_name_rng(&public_key, timestamp).next();
+    fn calculate_unforgeable_name(deploy: &DeployEnvelope) -> String {
+        let unforgeable_id = Tools::user_envelope_rng(deploy).next();
         let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
         hex::encode(unforgeable_id_u8)
     }
@@ -106,7 +125,9 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
 
     let registry_id = rspace_util::get_data_at_private_channel(
         &block0,
-        &calculate_unforgeable_name(register_deploy.data.time_stamp),
+        // Changed by DR-134 (DR-66 item 1).
+        // &calculate_unforgeable_name(register_deploy.data.time_stamp),
+        &calculate_unforgeable_name(&register_deploy.envelope),
         &standalone_node.runtime_manager,
     )
     .await;
@@ -128,7 +149,9 @@ new out, rl(`rho:registry:lookup`), helloCh in {{
 
     let data = rspace_util::get_data_at_private_channel(
         &block1,
-        &calculate_unforgeable_name(call_deploy.data.time_stamp),
+        // Changed by DR-134 (DR-66 item 1).
+        // &calculate_unforgeable_name(call_deploy.data.time_stamp),
+        &calculate_unforgeable_name(&call_deploy.envelope),
         &standalone_node.runtime_manager,
     )
     .await;

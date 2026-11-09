@@ -9,6 +9,7 @@ use crate::CHECKS;
 pub struct Report {
     pub errors: Vec<String>,
     pub encountered: BTreeSet<String>,
+    pub yanked_present: BTreeSet<String>,
 }
 
 fn advisory(

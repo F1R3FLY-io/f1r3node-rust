@@ -1,0 +1,1127 @@
+{
+  "captured_at_revision": "merge of 702496775 with decision 112",
+  "entries": {
+    "casper/src/main/resources/AuthKey.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "1efbcb600220c8748dca984febfbfe9b1cf5b6489bc7f5d10feffb39a93ec4ff",
+      "source_blake2b256": "155f6db44ae9a2aa98c66227d5b3ae79508797e88ef497fe1eaadb838bbbf565",
+      "stable_hash": "4b7d4098bd03baa348de55320a3a120224672e3e2bf3113da8df68767a845571"
+    },
+    "casper/src/main/resources/Buffer.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "9163d1aeeedb4eef59877c7e696eb9521a7089c73312c60239a8b5064fd8469e",
+      "source_blake2b256": "3eedd3c5e8bcdd254df72b998f7b9c6489da9c284270762fb6021650c76d6a1a",
+      "stable_hash": "026ae1979f19ea4b4efb66b8e65a60d4f20f7819abe87cb7d9d869def62616a9"
+    },
+    "casper/src/main/resources/Dir.rho": {
+      "outcome": "error",
+      "source_blake2b256": "d8230d3557c7e12db6c327678171e320917bb8a5c76fd0b8df1d17ad85a4d62c"
+    },
+    "casper/src/main/resources/Either.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "2abf9488429187b133bfb44d919ddc4949346750c2318eaeeb485cf53d380b8a",
+      "source_blake2b256": "c3883297da1b71bbb48f086cea518f915c1b08eb01144e115fc5bfb86cf5a151",
+      "stable_hash": "2560e40b262820b38a40b4748411107c850ad4f3e469489276b25231b9a3ab7b"
+    },
+    "casper/src/main/resources/File.rho": {
+      "outcome": "error",
+      "source_blake2b256": "a2c556810e4224b3ea6fa8b0ca721e5be65260f6811d64b13de5391e7d19d09a"
+    },
+    "casper/src/main/resources/Fs.rho": {
+      "outcome": "error",
+      "source_blake2b256": "d767c54beb88ccd2ff2f5fc93599fd4a7618cbeb97d645138e4930b943cc2499"
+    },
+    "casper/src/main/resources/ListOps.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "370e6488f859555a4854674441acc7c13c53fd82507c42bf3d3d9f985cb5dab8",
+      "source_blake2b256": "ed72b1408de9a48491b3eac532466d5a1ddca8b2103fc71158c41be86fbe9571",
+      "stable_hash": "76a3457c138b038d4eb589f069d97d1ad68d4f14c3bc6bbb21269935acd5b928"
+    },
+    "casper/src/main/resources/MakeMint.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "4aead78016e5d3b3f3566c98abbcc1789fa369995f80f527e782b349bd6cb6c0",
+      "source_blake2b256": "ea1947271faec7eeefd8b8e6888a48dc86d18058a98cbecd3398fe48e44bdd98",
+      "stable_hash": "8cedc3fc197454f447de00b51b2eba3a4439206b91f2eebc4dbc7d1e160b1293"
+    },
+    "casper/src/main/resources/MultiSigSystemVault.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "63fa9085f2dfa631382d5a63404aee84bcba53a666c64a1596475cba996a90b6",
+      "source_blake2b256": "f114b243acd7524f21eed93fe0046943763f1a88dabb6da4613a2dd5f86a8b1b",
+      "stable_hash": "21ab4263a07b5778f734ba6ca052011d7013f730362854159ce4f10a72f8f038"
+    },
+    "casper/src/main/resources/NonNegativeNumber.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "abd83f2e53ffff5d013dee8fea68c71f5f515361df2f0909cf4176e9967e8d03",
+      "source_blake2b256": "a581a2e9bee409f03dfe12272277faa3e4d34b41c87aa96447ed258ecac0a1ec",
+      "stable_hash": "acbf37d57d6f827e96570028dec7c9724c373ff4b9befc895743f8e3e5dcf127"
+    },
+    "casper/src/main/resources/PoS.rhox": {
+      "outcome": "ok",
+      "prost_blake2b256": "09831a3d44a413ace2914d324b2745fafdad105cdfbef31de0a9ce12366fd5f3",
+      "source_blake2b256": "d2bdbfe5e3aaa6239e6e0fee8ff8313d87227ef6ce7b8d71ee5e2bcd90fe22b4",
+      "stable_hash": "3fe20805262a5fb604c90f51d580037af816e12e69ff6f1fb3de2078730cde13"
+    },
+    "casper/src/main/resources/Registry.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "bbb7a80a0a7e1aef076df5be3f6189e2ce7cc1614bf5d28d1eb25ee3e5a09d32",
+      "source_blake2b256": "58bf4eca0710d45e7ca8b6fd478fb5c94875a501316782e8f3453e1997123afd",
+      "stable_hash": "f1d833b926c9c49eb5b10f8e2d9664814a37d6a873fb9f80ca092f62d7112fa4"
+    },
+    "casper/src/main/resources/RegistryRealLifeTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e236f08caaadf01ae471fe80efb75a1809d6c7434c6328a9d6a69e32b2b8d9b9",
+      "source_blake2b256": "3257967a82aeb6f97299f21a8c020afcfed064f077bb88cbba4d842c5cafecd2",
+      "stable_hash": "a335aaf651f34aab862c7eb96c8f8c1d1959557d10861c441188674c1ca51288"
+    },
+    "casper/src/main/resources/Stack.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "dcf5e706756a5e2673a887170881fff5829c1eaf742b456ce28dd47f84c47a9f",
+      "source_blake2b256": "1840b1204bd1e06393c5db659ee79fa0802d5839cc5ec591254347960f4d2649",
+      "stable_hash": "99272e4a10eddbc12a0617e2de1d2eaf4c46164d25b785641f9f9b0c7fa9ffe6"
+    },
+    "casper/src/main/resources/Stdin.rho": {
+      "outcome": "error",
+      "source_blake2b256": "598b3422f535542418a0ae287b5f5a18cf0f963dd181b62fe681cb6868938064"
+    },
+    "casper/src/main/resources/Stdout.rho": {
+      "outcome": "error",
+      "source_blake2b256": "a0453a15cdc91df5438d55a5def93be27ad26a9457272b2fb96fea39dc907285"
+    },
+    "casper/src/main/resources/Stream.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "36baf2c47adead2fb29be3caf23844b7dfde8ade18cac4ba73a8084d6a169326",
+      "source_blake2b256": "727a8cb8ec8a4b66ff214c20dfb15131ec25ca39fcdc65983865e29bac9167c4",
+      "stable_hash": "3ff996a87c06645fe2f8e39f36a28647569f77bc4e8ed7c392d1eb5c125c72ce"
+    },
+    "casper/src/main/resources/SystemVault.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "36e0cef3da4716b0c0ec20ae717782bf2edfd71e22edfff8042f3981c9c82873",
+      "source_blake2b256": "852e97e26419811dd30d069a32ab74d70b65dd34aebe864dda32897c028efa55",
+      "stable_hash": "db3fcb872d4428bfb0134e1c527f33ef7d37bf284929a76c222ac485e3211745"
+    },
+    "casper/src/main/resources/TokenMetadata.rhox": {
+      "outcome": "ok",
+      "prost_blake2b256": "56c783f1394e83c6a3a59f8a696397ef741d2ee81ad8c0637e8b4acf5a5b7f60",
+      "source_blake2b256": "42a16b00f8e177abb18d166e2cc91911a0a31abaff1dae61c1c5e8d04aa4a54f",
+      "stable_hash": "168bb72df04655d2946bb21eb33c569dc2c9d1c81a9987406fceeefb643514a0"
+    },
+    "casper/src/main/resources/VersionedRegistry.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "51af628bef2eba366b3a3139df89919ccf5d9414cfd37f79cab5a6360e75b4a7",
+      "source_blake2b256": "3ed9996624d7ca2bd9bc27292ea7f33c0d7524febc14d892d6b50ba720876523",
+      "stable_hash": "eb62460a84317a5906101c857b9db9f76f12590c8106860f86216a55eed1598f"
+    },
+    "casper/src/main/resources/match_example.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "ea1ddc2bbb5643a4d0f93ef4fb49dae1560b7b91fa94873450e44e80d03860a6",
+      "source_blake2b256": "85ae1eb9d4da77f48feb3ccdd991b20755d35796a9bb30c5a4434f5c03c0cc93",
+      "stable_hash": "f9a0bd404c3de37459936a887bee3f07d3e17a36e0c2d99dd28d23db6b7bd684"
+    },
+    "casper/src/test/resources/ActiveValidatorsCapTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "b9f4260e4b45d23a8eefff53030a98fc5346f314fc31218e5dd0f96676bc0b7a",
+      "source_blake2b256": "08fcb2b365f795eb9a5dca906fb0000f7190663b752fd65778d830c0010598b5",
+      "stable_hash": "befab69ecb18f47407bfc1df016e7ff61cc50527b4cc1c89ed7b4f5938fba0ba"
+    },
+    "casper/src/test/resources/AuthKeyTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "8bb70d66ca684d9df62973fe2806516cb97817150b8f0d9f73ceb01e364c1d25",
+      "source_blake2b256": "f19d42247e830ad78fb4eea0cf938387963bcbac0708b561e151e58284f29b3d",
+      "stable_hash": "081f32cf4e3366af4d5a42eb2caf2db542bc51384805f8662bcdfdcbffa96f93"
+    },
+    "casper/src/test/resources/BlockDataContractTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "54eb29f61932f4adba76e9d092f4284d30ba4dce99827b42bc2cf87c5755b17a",
+      "source_blake2b256": "a1545e9540d046fa7565dae632a7f105b6e138358af5750e2173eeeb7460e278",
+      "stable_hash": "9f094b462fc75fb2a4c68da2b1cee739c7fc8cbf2e3c02a1f74962a6071dd23e"
+    },
+    "casper/src/test/resources/EitherTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "aa9d6f76ee1d9318f0b9faa8ccea33365ce3df984cb35fc288879350853cc856",
+      "source_blake2b256": "656864556a8db1367db84ca1d2d3c7f4db065a62729a6d76269ae89a22dc2caa",
+      "stable_hash": "241ff8b55d7a0eaf3b68c348c9a86c0e458c46374280577191ad2694dfa202c6"
+    },
+    "casper/src/test/resources/FailingResultCollectorTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a7d996f414afbaaf9a494a2d522865dfa4a5a85c4f468695fa03f7141c73dbe4",
+      "source_blake2b256": "19380cc836156cd88208baef7a94ec3d967b75302a2d8948731185f7ba2d3a33",
+      "stable_hash": "088a61f795a58cfe756cc3479c242eb0e4ccddc377b02c22a45ac9047f80795c"
+    },
+    "casper/src/test/resources/ListOpsTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "1c0a0fa712d76feadca8d3099f940e20e164fcbe9ffe8d4d2b49310998c0a060",
+      "source_blake2b256": "296eb4472d29b440dc511094c29404c90b768029eda188df9c580d4fd2a1d9fb",
+      "stable_hash": "76fd0612a7a810953786e380b4d068241b3a749a9488b806e3022d85768c672e"
+    },
+    "casper/src/test/resources/MakeMintTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "6445eb720bcccdf9b890eed47472f8db5f427747af106af6a323b3fe7b5b5cd4",
+      "source_blake2b256": "d7e6901fd8081d60ce4b4c05207db2a8488603310b337064933b0a8f403fe093",
+      "stable_hash": "bb0d4bbc733e18717ffd2a62fb396a8292f937652c1c712043970c8b5057c8b7"
+    },
+    "casper/src/test/resources/MultiSigSystemVaultTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "0bb3274ca31b8dbaba104a0624c0d805f2fb92eadf19101284cda2a0e8ef7aa9",
+      "source_blake2b256": "8d6bca791a43349a35c1505b6f2546b0c14cf880229c65fc4666ba5595b357cf",
+      "stable_hash": "6b0876064d6e0c1c92f53b359fc5325d8263977f9f75da2d1d2de23a5dba62e3"
+    },
+    "casper/src/test/resources/NonNegativeNumberTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "b64acc3ee2abb540d1941f1bc26d866d7469bf9c4a1f75c9c3cba994998e48ec",
+      "source_blake2b256": "139b8cc3efb3de3c4e81b90c6738c767878f9a46623cf40b1cd7ea1acb134de5",
+      "stable_hash": "574597c5c57e6b664f95aaa42b4ad2cd78b07d42cbc002dc4a34356128f3923f"
+    },
+    "casper/src/test/resources/PoSTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "eb1a44eb16abc690c4583c04e18a6d67018023e9925ad8bf09d1a40bfe102bdc",
+      "source_blake2b256": "a47f27226afa03401f395c8bf7d8d99bc0ed40c3d7c1655d75264cb534c4bb2f",
+      "stable_hash": "a4fdd7ad43d67a1e43917d8a31f0de0efe49c62691d18da777e2255ac5ae6859"
+    },
+    "casper/src/test/resources/RegistryOpsTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "5cd9e67c2d3050720e39bfaec4e88b796a8fedac53f79e0448ce4ed305c496fc",
+      "source_blake2b256": "ad0e71d79a825d8e628531bcf991ee64a83ace160eed1f4dded6304af22748c5",
+      "stable_hash": "1c65cab299ec4e7a36c94f241050a67449f5556bb999e1a62f9be6f6a1ea2e4c"
+    },
+    "casper/src/test/resources/RegistryTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "8b0b0e710b62e3ab65fddddf5e900599db53562523826ac18a59b2066876fb01",
+      "source_blake2b256": "86ac97277bd50fbea60203f047e584f223b7ee74ec0914002cec621e9eb1e21a",
+      "stable_hash": "5884d769bca21d8d9fb20f05e1c63da4ddc8ff5d6632c696399a64cacc30a8fb"
+    },
+    "casper/src/test/resources/RhoSpecContract.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e56798f79d4578d9a1b02293adcf11401d67e4c5fc41630d01440593cf221bec",
+      "source_blake2b256": "a29b225345aedd306568503e19bfcc4c82d57c81c3e7128a92d7db9247d83701",
+      "stable_hash": "96f4bd38a60d3f50301160dd7de5a89338be43743108213096e3b8b13b7133f1"
+    },
+    "casper/src/test/resources/RhoSpecContractTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "af643c3ff8bee186067588844f6376f6d9cc11db9834b777d9d7f96aff9bdff8",
+      "source_blake2b256": "3c5ac1bf9309e0898fc4d75a2709ba895b8a4f1d555bf5ca63c1f2ee75459453",
+      "stable_hash": "b00ceec4041666aa80231bfa0c66f413759aa5928a65956721303eff54cf9b63"
+    },
+    "casper/src/test/resources/StackTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "1c1f204d415881a0f5690aebce6b24c91b6bd99d4f59f721acaa9f5cb7dadd3f",
+      "source_blake2b256": "6e6d95d095d1c3506cbc82c8d5b159d65dfcc2a800e21a2d7f85e1a709903e37",
+      "stable_hash": "2ceeb07d7a5267c780066284f2a2a005d36ae8ac6b1107085535d476217eb257"
+    },
+    "casper/src/test/resources/StringEscapeSpec.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "9135aef040d6638e84e3e3c0361aabefd39e09f4db4bf98c0af15eeea4d96e34",
+      "source_blake2b256": "ef5df3393037f36cb40b87f8bf8f6692f2311216ead8ec0a3fdc5fe5b18642bb",
+      "stable_hash": "c54184f58dcc35942c189fb88aea5bb267be40e8e1a82bd175afbb076366d62b"
+    },
+    "casper/src/test/resources/SystemVaultTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "7003c3e4e0913ffc3a376c275919a148ab7a764b213ed9f2408fdf5cb10c5df0",
+      "source_blake2b256": "4bce5d53f7819154f55988a33bc14cf956a45be3f9878840926e49206bd7bc05",
+      "stable_hash": "8c507a887811c1504f72af83cc20da6d527de7fdea7f7c4bf0fc46079cb5c9fe"
+    },
+    "casper/src/test/resources/TimeoutResultCollectorTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "source_blake2b256": "03f6256fdb219baceb3fe4ca4897aca70680a58510672458b4c8615cc7ddfa9e",
+      "stable_hash": "73ba67daa69b361d084fc225c5e7433d14de3192e2588e94ce9130981ca1248d"
+    },
+    "casper/src/test/resources/TokenMetadataTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "f339b04007cf36f3b7983e3087b10a2fa8d6a97ca4725c9c3a0fc0367c690884",
+      "source_blake2b256": "19a4163bbde85942d8a90ccff4bda36d0d6370596b8560c45b74bc1e8e665142",
+      "stable_hash": "e2b22da914e84424f178ff98fab53679622db991ea0d127634f32f2717656b8b"
+    },
+    "casper/src/test/resources/TreeHashMapTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "ac12516ac4f2a680ac37bc52d0411c279f3b5cee2b8f0273af7ddfcf990fbcc6",
+      "source_blake2b256": "90639afb49a4cd1094f764254cfa5c270230c759a978b86c00a5b147bdf85fe4",
+      "stable_hash": "980097984f4a39d8d5d16b5a61a6eb5a912bdd2ee16b9b9c9cbbf0ddb2ff3dd5"
+    },
+    "casper/src/test/resources/VaultAddressTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e29d93057756d7bb77dd701b32551a832001371f837b0813b9aa5dc197905dda",
+      "source_blake2b256": "1781c68efb9fb4750244d4d730d98f46954b3afa7435091b300fd6e1a93323cf",
+      "stable_hash": "270c9223517f2623dd92a8e07346849f4aa5cce3303b784d2d1661f1c7278557"
+    },
+    "casper/src/test/resources/VersionedRegistryTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "4df5da243b6950c2d6691280ee5ab07c226d3706db9ac71c090b9b94c5780738",
+      "source_blake2b256": "04b0e5c14f5ca1d3a8a79bbe0f480f20e0e9341383f6e0983b3ff34c0d38cacd",
+      "stable_hash": "c138ea30beda0224bd52989f5eafe86e35d8a87b8034401e24262c9fea120d50"
+    },
+    "casper/tests/resources/bridge-v2.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "0af6bf47d22d2f3708bcb2d825626c8a87ec1849a35b31f1f2ebbeb7424743d5",
+      "source_blake2b256": "04f5523021bd8a84892ce4652172246fcc3e09da693fc40bcc9c25c4db040bc5",
+      "stable_hash": "f0b4ac60e17d9c11e5826e45f63d943ad0846558ed049cb58a3bc6c49c9783ce"
+    },
+    "casper/tests/resources/bridge.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "297db9ff6eb61599684cf7910d54a67050c0dd509941d0ddf51bdfa6f94c0610",
+      "source_blake2b256": "e98f5a24c2b4e1a95e4ac3da91598bf4894e50b9cad10d83c26111563fb0a5f1",
+      "stable_hash": "e9be75c617764200fde3d011075fa0140b2b2d0bf69ab071a9b697cb7e71aa2c"
+    },
+    "docker/resources/hello_world_again.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "8310c47c225563ecc369f78fff447e3f245d59e9c9e522ec7690bbcf73496048",
+      "source_blake2b256": "fc91e8c225a30ba519dfde81a58fd736a3b7a12c10ae6db8e3283e2b1892206d",
+      "stable_hash": "5866aa5ee71b38296049fca4708d78aa6b468af1e280611f1dd92e4ab8c7f615"
+    },
+    "docker/resources/nil.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8",
+      "source_blake2b256": "d7f8208cca703e2587b965a50a619dc253474d453b877d48259d53525e6a7d47",
+      "stable_hash": "73ba67daa69b361d084fc225c5e7433d14de3192e2588e94ce9130981ca1248d"
+    },
+    "docker/resources/simpleInsertTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e1239cd7df89b45051369191968fb174b610ae02d3bf07b2b443b22a993b5d27",
+      "source_blake2b256": "ce39231a7ef2114bb034af62cff9cfa20a7ab9053253d3c58ea7911a589ce0ce",
+      "stable_hash": "1d755a2f61f96b5693f5dd18571cbe82d5555e24be974a7922373afaf31bcc93"
+    },
+    "docker/resources/simpleLookupTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "41576fe1fb55c07a1530fb924d4f59ef979e4cac409371a6b0b4167343f4ce28",
+      "source_blake2b256": "5bb8fb14fcaeb714e0abceee5c27be167a58a8e0bac51b8d34b7eb930ecdbad9",
+      "stable_hash": "0d581a42d7ccfa472d457f4a454b633fa5a5b18b8ed1cb3f8355e55d36a75468"
+    },
+    "examples/cost_accounting_demo.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "24468f3dbc3909e42aaed0804f9217ee60b5142ccc7c702a6eb614f7cce120d5",
+      "source_blake2b256": "30041915e6abe4642e915e3af22c512878c5af90b254f57c01339ff261a36276",
+      "stable_hash": "2765c170cbe315b9be03e43cae8702e321eb89523c44fc84abfb94bdc50eae42"
+    },
+    "examples/hello_world.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "47a0bd4d16e3409beaba2b6b1623b2a64516e3fe76916abe8099df61d97e2453",
+      "source_blake2b256": "3b2703fce7ab0f3daf52a8c6abe7b388f99547745432770547bad712fcb0d74a",
+      "stable_hash": "31cc902b31eb911f62836c4d385169fbb9ff4435258d61436e4823a6c9fd51ee"
+    },
+    "examples/multi_sig_treasury.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "8ddf72c841af334372358e3eb653e52ae561c3e09572333ea0975709a9e24ba4",
+      "source_blake2b256": "a792aa6d081085135b20e504d24be3c721879e13f42aea42802327aee39fc401",
+      "stable_hash": "96b04c5edca47e7aa560d4c29d145905db3ff33613be20896d01d9a3a20926d3"
+    },
+    "examples/where_match_fallthrough.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "7a859807cc3a5719b462e2ad08e6b1136a222c3a48d299881fbb1c8b6301a0ea",
+      "source_blake2b256": "bd2dc872fcd51e583da901cb06a458b476b2f51776747858b1d0dea777427051",
+      "stable_hash": "84cc5302351ac96ca403798d7b8bbc581702d160159f53beb6d67e4013824b9b"
+    },
+    "examples/where_receive_guard.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "4e711851837eb4c79c8120d41a303a1ce706de71d488179c185279c56f1af7be",
+      "source_blake2b256": "2bb242ea053d207241a656dc47ce59cdf58873dcbc6c5f96568ac2808793e304",
+      "stable_hash": "ba77788b880ea92e16eac9e5f3ce2ba2e70e30a4eee25b241e09c93127b1fadf"
+    },
+    "rholang/examples/EvalTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "439f7e286766d4146fc4b73c83b4ea85ea7d7147399d6a16582e77ed6ee30131",
+      "source_blake2b256": "b72cfece0bbbaaa88f53f6b3d94b39e766b67a4d4705e951960e25a161f9d2fe",
+      "stable_hash": "5ed82d2c5e9f34c315d5d0ea1e0e6a9d0a2d0363a7ffb7f3015985b2696035bc"
+    },
+    "rholang/examples/block-data.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a27fb1e3aa968676e22213efd5b76db2b5c597c29b321451ca548c961ae87af9",
+      "source_blake2b256": "db18aff3e0c17db154dce56017e192d2d959d1f877c78ea27ad975a83356b76b",
+      "stable_hash": "a32ea5e17b1c198a379ae55843a8c6acff8dfc63fe50c6940e83484f37bd367f"
+    },
+    "rholang/examples/bond/bond.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "55e1c9dd7b5438a59e51a284076b8c851a0ec98699a17f3dc57015bb12f1916f",
+      "source_blake2b256": "de9a69659be5dcee3a48a2725f5c03f9b0ce532b99d60e7d28b2d1943e5635a9",
+      "stable_hash": "3dafd62bc315c2cd2e08e5713f9113ce0fa487ab4e49ba5b259e34b4d5c612c1"
+    },
+    "rholang/examples/dupe.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "818cb61eb1533180d71e22680b9ebd8ab0eb96a103f227a52556b825084f7891",
+      "source_blake2b256": "a9639d6118e3caae02228d734bcc24164e63d50684c771d01b95e5d211bf585a",
+      "stable_hash": "de3aa359fcc89e23dbbf62a6ffb036507de9b6c6f44e9aa5edb04c17d67c0ec1"
+    },
+    "rholang/examples/fileinteract.rho": {
+      "outcome": "error",
+      "source_blake2b256": "bf2323b87cf275940ff381e2eb2942aede3142c7168c27ec4b85979af33305c8"
+    },
+    "rholang/examples/fileio_buffer_loop.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "d5b17e643ad4528d89875ac4812efbf015c2f18c3246fadaffc5b3cead4b3038",
+      "source_blake2b256": "18a4cd0192698dfd163d9620333a9b32228fb2a993e48ba922d03ce63d85031d",
+      "stable_hash": "9d8d6900ac52caf98adfbbdf87e999880cc5ef97789d037171f3f1b7a150d26f"
+    },
+    "rholang/examples/fileio_chown_consensus.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "46776b6129328d1041de7a4ba7b76cec415587fcf5b3edaffed4f16c6ad9b9bc",
+      "source_blake2b256": "3b9e125cb8c77bb6015b46f9c4bd3e59b3c99e648bf31814c8fa9b6c4407fe3c",
+      "stable_hash": "15f95b9e74cccec29af019976a0e7d37eebca1473126200bf505ec452e13bf5b"
+    },
+    "rholang/examples/fileio_cross_fs_isolation.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e990759ce8a5ca5b1309e55cd513e0996eb337bc4799c6a9e4820c9a4c1db5e7",
+      "source_blake2b256": "810939b552cbfc7dcda868966bbe8042ba37ab646c95be1e9a7190468661844b",
+      "stable_hash": "94e36fc0e96d9ffef787373b2728c96976372a8823a0cc46d786362eb6a8bcd4"
+    },
+    "rholang/examples/fileio_lockrange.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "c7b7c54cb192a7061537d41bf3c090d260f5e0a4d87cd78282c1b49bec00e3c1",
+      "source_blake2b256": "63a76eff02f3721dd5a070ab2500b70860a438533ec89075e88a57a479d910b7",
+      "stable_hash": "7714140a60c2bba2626e9a1f6233bca8e699674b0ebc0f685ad18cce4fb913ad"
+    },
+    "rholang/examples/fileio_membrane.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a7b9b28b86fc2811a44ff631082084f1ffe09574b0d80a40642cd0c84e49ba95",
+      "source_blake2b256": "2a14ba0a8c7b5a84548c8439dcb53986cabf3cbe660bf3cfd5a685dc888093d3",
+      "stable_hash": "0baeb8f3eebcad4ad07449617d78eca9a1bad2bf7c335ec7547929a18ee79808"
+    },
+    "rholang/examples/fileio_parallel.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "bb41582c6df9406c9f425f4dfe7f2b46e579fcfdab7b3cdd894472adef829b4e",
+      "source_blake2b256": "712685e8f679803aac769edafd4c71c702e18c8e24552af70b5774bfd17aa461",
+      "stable_hash": "64ebc01981da6e4b83cb0b6ca3358d6ad881a2f6a2f8e68d6208e809b6b5a933"
+    },
+    "rholang/examples/fileio_readonly_forwarder.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "76e314faa975068103e47e36fe31fdb8ad514741e306656ad75b74164701b345",
+      "source_blake2b256": "14ad55e6886b45416712b8f9556e65cee78b3caf52d6317c8fc916fc3a44bbf5",
+      "stable_hash": "1e96970df0959136347336a4872f67ad90f9c1b406e88ead1633c2b4906f7742"
+    },
+    "rholang/examples/fileio_rows.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "dc37b767299f76ac9ea7ee527e107ea5d1135dbd2d1f31b6371e5a8aab48214c",
+      "source_blake2b256": "269d3bf602346f6b7d545583afd20768ad3b9d401c29a62bb2d2ffac674c5c4f",
+      "stable_hash": "e74123d71bb9a620bb4b2b753df5e8ad75fda387f38969ced97bc40e370b8806"
+    },
+    "rholang/examples/fileio_static.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "273731ac87d0c468eac3309cb473c29780d4a82b514c61a1bffd0c1afb55da33",
+      "source_blake2b256": "81d6057488b9299290570d91914cd4079d3d41e6fce495eae36dfcf5fce55476",
+      "stable_hash": "bada590a2fa471b42efc79e37efbc0400f97061d2c1ec3775ade1a1e433837f0"
+    },
+    "rholang/examples/fileio_stdio.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "13a2e121444f500de392b46992d85aec475e34214c1506be7bdca9c2c849c0cb",
+      "source_blake2b256": "a6c84ba48d23c8fe519dfd76bbec5fe59718cbcac76c71667b0ddc5786820f8b",
+      "stable_hash": "4d0f7778d8f170611324050f98d0fd20fab140fdd306015dba4679113f6f8690"
+    },
+    "rholang/examples/filestore.rho": {
+      "outcome": "error",
+      "source_blake2b256": "11142ec2e4803ebb467071a60a0d0981698cbc8c55b2c777f100db37c152f6a2"
+    },
+    "rholang/examples/fuseMap.rho": {
+      "outcome": "error",
+      "source_blake2b256": "6bbffefb137dee969f57ba85fe14b577940ef212b3994e680ba320676c53ebd8"
+    },
+    "rholang/examples/fuseRead.rho": {
+      "outcome": "error",
+      "source_blake2b256": "fb94ba6795bfb4055e6a357649ab4671eb5f5625d9b981f2d8a53b3bc5db08ea"
+    },
+    "rholang/examples/fuseWrite.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "52b9cb5f855379f3dd54ee8366aeab8cf22f95ea2d847290a23bbec83a7b8c65",
+      "source_blake2b256": "34130dbd9348c86ee0b482275908b96d2c5935daeb9d5ae7322f4fdf1bff93fa",
+      "stable_hash": "4b618f6885ccbbca41c0acbf52604d32e14f6a317a301c01880e24749dd1ebd5"
+    },
+    "rholang/examples/hello_world_again.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "8310c47c225563ecc369f78fff447e3f245d59e9c9e522ec7690bbcf73496048",
+      "source_blake2b256": "fc91e8c225a30ba519dfde81a58fd736a3b7a12c10ae6db8e3283e2b1892206d",
+      "stable_hash": "5866aa5ee71b38296049fca4708d78aa6b468af1e280611f1dd92e4ab8c7f615"
+    },
+    "rholang/examples/linking/v0.1/LinkedArrayAndMapExample.rho": {
+      "outcome": "error",
+      "source_blake2b256": "86911008dc9f9d52f01f864e7f5bb839bc8bde076791090628b8415501f1f4df"
+    },
+    "rholang/examples/linking/v0.1/packages/BalanceMap.rho": {
+      "outcome": "error",
+      "source_blake2b256": "c7675735a2dbe01e9108e88b5009e4304d9a9f4ae1b7a61b0f21162b22a3df8b"
+    },
+    "rholang/examples/linking/v0.1/packages/IArrayApi.rho": {
+      "outcome": "error",
+      "source_blake2b256": "c630326f2c4206064756aa64f219dbef9e01136a90a41e36e35d627d2fb31bb2"
+    },
+    "rholang/examples/linking/v0.1/packages/IMapApi.rho": {
+      "outcome": "error",
+      "source_blake2b256": "6cd3baaef7f464a8c4246dd0573e156165b5701a17546118894734ba96a3d6b0"
+    },
+    "rholang/examples/linking/v0.1/packages/LinkedListApi.rho": {
+      "outcome": "error",
+      "source_blake2b256": "d256c4a2662285ed62c527ed3eadeb333e7f868fa0a78390b6443d4023f61cfb"
+    },
+    "rholang/examples/linking/v0.1/packages/MakeBrandPair.rho": {
+      "outcome": "error",
+      "source_blake2b256": "6fccb527be232b8480b3f1b251887a05e6c1f9057b2a2575844a07a0144ff505"
+    },
+    "rholang/examples/linking/v0.1/packages/MakeMint.rho": {
+      "outcome": "error",
+      "source_blake2b256": "ad62e35137b81ca1cad573162d6e9d646c37b0990801ce1d0acc53fa590e0afc"
+    },
+    "rholang/examples/linking/v0.1/packages/NonNegativeNumber.rho": {
+      "outcome": "error",
+      "source_blake2b256": "d4b592fbbdd397c54f50ea58018da057037635c53c811accfba492c3724c2c94"
+    },
+    "rholang/examples/linking/v0.1/packages/TestSet.rho": {
+      "outcome": "error",
+      "source_blake2b256": "d5fe2f9bf65943571b67b1dae94bda10f49c4c10c73575d5564db262309ac856"
+    },
+    "rholang/examples/linking/v0.1/packages/X.rho": {
+      "outcome": "error",
+      "source_blake2b256": "8e67f0106be9022b55f099651c029aed5528296caf3ae29dbcc0e6ecd544039a"
+    },
+    "rholang/examples/linking/v0.1/packages/Y.rho": {
+      "outcome": "error",
+      "source_blake2b256": "09807029c8c49bab6376c1af8da85bd9274bb0c072aff3dcb45afbbe10237cad"
+    },
+    "rholang/examples/linking/v0.1/tests/BalanceMap_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "49302ca95c51dfd679e0d4336a11054c3d5f2c6cb8ad33ba61319fca08c2ddab"
+    },
+    "rholang/examples/linking/v0.1/tests/IArray_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "6221eecf4eadd202110a983dcb80492e5f32dc1f525a11eefb17c825ce254f95"
+    },
+    "rholang/examples/linking/v0.1/tests/IMap_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "97f9d84da9ce8c3ad0fd2af8457c7509d313fec28d583f29a24137db8685e0c8"
+    },
+    "rholang/examples/linking/v0.1/tests/LeftBrace_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "cf3b0a21bb1bb92d3d273582bb6caa29a77c90c5c92c5c75c1d600e464874693"
+    },
+    "rholang/examples/linking/v0.1/tests/LinkedList_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "2b1269171e8d4805d37125a01b4bbabede132fb2358c6e74c53d16bcdbe5a84f"
+    },
+    "rholang/examples/linking/v0.1/tests/MakeMint_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "d59bb4a7dd2f15c5955b6ff74561c12f0ec8708bf4513984e533084b40bd71e9"
+    },
+    "rholang/examples/linking/v0.1/tests/NonNegativeNumber_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "da16f18816051e43902192c334bde3bad8c4a262f251ba596e19ad8abb775c98"
+    },
+    "rholang/examples/linking/v0.1/tests/RightBrace_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "64aa46983091496593dccea1ca21ba35f16b247390f2d59387160efb9f6239b3"
+    },
+    "rholang/examples/linking/v0.1/tests/SealUnsealTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "301961c073d3a8c22757bcdcfad3fdac36552599727899ffd5bd6d2d0b93fe86"
+    },
+    "rholang/examples/linking/v0.1/tests/XY_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "99f266143b191edcc0062c104ec8c0e04aa25c86474249d802fbb8a6687fff0c"
+    },
+    "rholang/examples/linking/v0.2/packages/LinkedList.rho": {
+      "outcome": "error",
+      "source_blake2b256": "40e360f16a7012077b4f786f177446bf061af46657706c4a066f7e7c2c4070e2"
+    },
+    "rholang/examples/linking/v0.2/packages/MakeBrandPair.rho": {
+      "outcome": "error",
+      "source_blake2b256": "dfb8b0fd18a74b38dc76da58f958e6cefe7e50ea255fccf885d7b99397fd8d62"
+    },
+    "rholang/examples/linking/v0.2/packages/MakeMint.rho": {
+      "outcome": "error",
+      "source_blake2b256": "42272ec1c3744a1bdd214d3a9b580ac23a68076d1789be17dfc1d58435198433"
+    },
+    "rholang/examples/linking/v0.2/packages/NamedFields.rho": {
+      "outcome": "error",
+      "source_blake2b256": "c87cb6792c0a39add3ba0f0272ed16cb2fc829afcc1ecbcf6e12f9c3b2345364"
+    },
+    "rholang/examples/linking/v0.2/packages/NonNegativeNumber.rho": {
+      "outcome": "error",
+      "source_blake2b256": "dae84d512b5cb396c31204ab668644394f5bd700eb9c02f30270ff20e040bb2c"
+    },
+    "rholang/examples/linking/v0.2/packages/RhoClass.rho": {
+      "outcome": "error",
+      "source_blake2b256": "b9e35ec60731cf38c42f0787c63441ce4c53bd6d5011b6fce26d2b6c8e92bc48"
+    },
+    "rholang/examples/linking/v0.2/packages/TestSet.rho": {
+      "outcome": "error",
+      "source_blake2b256": "45b9f9ec4d3afa48d196abc16bd6de099d236a4eb4c09dd565ce3cbbc68ec42a"
+    },
+    "rholang/examples/linking/v0.2/tests/LinkedListTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "b9bf9d261a7ab37f42b6f2782a576e7988280bf85080dc1ecfa12b8784c65464"
+    },
+    "rholang/examples/linking/v0.2/tests/MakeBrandPairTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "abd2b162fa247aa63263eb9bc212b4be398effecf66c132ec802f9354e7793ed"
+    },
+    "rholang/examples/linking/v0.2/tests/MakeMintTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "42361574c959ac81c28c598ba97c54b6554d04697b31b57857cde26f16517434"
+    },
+    "rholang/examples/linking/v0.2/tests/NamedFieldsTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "418fe1ca3b186ecdef2291c3da26112b2e570f5cc70d2d352ddcd83e7a79c9d4"
+    },
+    "rholang/examples/linking/v0.2/tests/NonNegativeNumberTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "c412a5f74995ef719f5b2eed724e36ceda8a53ce832444154d60f42a15275fa2"
+    },
+    "rholang/examples/longfast.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a7b6ea8c64e3119744e4c3a26d766a0c21604a976db3b2351e292203755d6d6b",
+      "source_blake2b256": "881f85e108a6b06d9eb3422836b14bc47266fba1f6856ee1f3827b7042aff63f",
+      "stable_hash": "243b639d15b37532356c213c4e14839fd2d043b7aeb7d912bad2e7979a899428"
+    },
+    "rholang/examples/longslow.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "1280af9649872b8ad12bfcffc2f3fa72c6ab33b501d2fb5d44e3d5438a86d6ad",
+      "source_blake2b256": "2506ba706bdccb706180c44020102a5dd4a1196dc4e335229e07fed7527002fa",
+      "stable_hash": "fcd94f2b44d166aa0c20223fa9da4511c29b3779e474b48bb1ffc19e45ba960b"
+    },
+    "rholang/examples/loopback.rho": {
+      "outcome": "error",
+      "source_blake2b256": "996e8ed204edef66e9ba4c24ab1cfdbb053992bf2c61297936dd7593dca95224"
+    },
+    "rholang/examples/numeric-types.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "174e7befd2fc7010f104cea2d2bb3587dda2de889af8ed44745b841a6bac898a",
+      "source_blake2b256": "aae47753c0b2bd41679a543eab028c1a2b66c7c85b1e3d5ac8c9c929179dc7be",
+      "stable_hash": "7d8e9d2c50bbe8eaaeadb25f19f28a8a7f919d056e34a0037ccfb669321d613d"
+    },
+    "rholang/examples/old/HelloWorld.rho": {
+      "outcome": "error",
+      "source_blake2b256": "3dbe5c351682b8aacd31563f28d4bcc25ab782fd5835083bbfcb18e419f6110c"
+    },
+    "rholang/examples/old/ListProcTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "db1bed399b4e03a6e6cbcc5acfce069472fccf6084809fc2e101466064dfe019"
+    },
+    "rholang/examples/old/MethodTest.rho": {
+      "outcome": "error",
+      "source_blake2b256": "a54a04b17961478b64d985d2f3846e683c925f7c9b08bd1bfed3979c1db5a77e"
+    },
+    "rholang/examples/old/auction_end.rho": {
+      "outcome": "error",
+      "source_blake2b256": "bc0c5443d84e64be4986588d970fbe489a5d235f5de85c5269883dbb6808a728"
+    },
+    "rholang/examples/old/log_time.rho": {
+      "outcome": "error",
+      "source_blake2b256": "c6f8e6bd4dd5a0b576b681349dc88dcdcfcb6f9d10292946aa6f9edb6dd942d0"
+    },
+    "rholang/examples/old/regular/Cell1.rho": {
+      "outcome": "error",
+      "source_blake2b256": "61de2bba839f12e282b8f221a861cf908ddf5b9a24fcb47c5b37d2d66c155f12"
+    },
+    "rholang/examples/old/regular/Cell2.rho": {
+      "outcome": "panic",
+      "source_blake2b256": "fa50cff981c78f43fb9801d30530fb3f4430486224aae24c97f4fa91039c37ee"
+    },
+    "rholang/examples/old/regular/Cell3.rho": {
+      "outcome": "error",
+      "source_blake2b256": "bc7f4174bf4b9d4fa2757bb2a2c10cf6b11f65f367d692e7af8ed78cb1374e60"
+    },
+    "rholang/examples/old/regular/token.rho": {
+      "outcome": "error",
+      "source_blake2b256": "e08ba72331e99112dcbcb9a617f478bfbb529c069251c2e42f22e6e98a52d49e"
+    },
+    "rholang/examples/old/sugar/Cell1.rho": {
+      "outcome": "error",
+      "source_blake2b256": "5f6e405843b47a7708ff042c1b2893fb3cebf7b74f8faee0f7e663f90fa86e01"
+    },
+    "rholang/examples/old/sugar/Cell2.rho": {
+      "outcome": "panic",
+      "source_blake2b256": "31786174721b5b83976a328abdc3dcc28f83c01440ff0f62f49c8f026676b3a2"
+    },
+    "rholang/examples/old/sugar/Cell3.rho": {
+      "outcome": "error",
+      "source_blake2b256": "7f30d6832693540ab857ae2e28c8bd6eb8721a1c74ecba65f58fc5451edf8ff7"
+    },
+    "rholang/examples/pathmap-demo.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "041526f1993ddbb3de6f6db1fd03bb9ad75552db782e6f30c0dccdeaef875209",
+      "source_blake2b256": "21aa4116bb127ce0654872fb1ac194c08b67f165084b6b057cdf0ca526d44354",
+      "stable_hash": "45c3191afb09f82ae6f928f0075e92850f07508a36d881a281830db63d595c0e"
+    },
+    "rholang/examples/pathmap-immutability-test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "aa9d1e5416ed7c11aacf22db4c04d2d8d7d22e8ca84c53709eed67202ba64ab3",
+      "source_blake2b256": "9b9eeb1864ac4d7c7a0bc6a016ca1808f7472aca1dd612d580721412370c5f2c",
+      "stable_hash": "6b3a4711d665eed72643b5add1ae1d09bbe9d077212e1b2c359e1204cd474fd1"
+    },
+    "rholang/examples/performance/loop_recursive.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "28f4481dde996cfc417de1085670a5de8c417557435fe1432b0e1542f30af018",
+      "source_blake2b256": "e5026d0f41b408e014cafee15d2de21c3b748fa684bcccc9d683fd942c19ada4",
+      "stable_hash": "e10d86e2676504ce32fcaf5419ba567b00be050f7cce143b984b52e6dabc97cf"
+    },
+    "rholang/examples/shortfast.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "36675ec91e185198173403050cf335c0b9f21bc230d384b3913ff062dc5ec1b6",
+      "source_blake2b256": "5f5e7d3486e309d56d1e6fe774994876dc6075b6d2e6a9ae5b0e5dbf56e06f23",
+      "stable_hash": "25c1e8f12160d9acde170614c87207b24cb20c04c0df3951cf7eb8a3f60b1f73"
+    },
+    "rholang/examples/shortslow.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "b57da68f95d8bb1a34d38927d16e015718915a22b07f158b851be38e598c1071",
+      "source_blake2b256": "aa427f2ac724b66698ade1d2c2161511f6e2964d43e3c75f7e02f19c77999005",
+      "stable_hash": "f22b72266946ea02a5537b13676df2200749f3dbe0fbdf3bf09e5c705ff2037c"
+    },
+    "rholang/examples/simpleInsertCall.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "d867e06bb7638cb12cef4f8f406a1345e16f9eea46becedc26d081c7598ec270",
+      "source_blake2b256": "86c9b5c19ce21030091c06e7ebc71a78734b28ca38d1110a5005f86a6c2bd368",
+      "stable_hash": "678a5384aa5d29638c2fc2d61b057784aeb3460ea5ac1514d3229dd42828a45b"
+    },
+    "rholang/examples/simpleInsertTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e1239cd7df89b45051369191968fb174b610ae02d3bf07b2b443b22a993b5d27",
+      "source_blake2b256": "ce39231a7ef2114bb034af62cff9cfa20a7ab9053253d3c58ea7911a589ce0ce",
+      "stable_hash": "1d755a2f61f96b5693f5dd18571cbe82d5555e24be974a7922373afaf31bcc93"
+    },
+    "rholang/examples/simpleLookupTest.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "41576fe1fb55c07a1530fb924d4f59ef979e4cac409371a6b0b4167343f4ce28",
+      "source_blake2b256": "5bb8fb14fcaeb714e0abceee5c27be167a58a8e0bac51b8d34b7eb930ecdbad9",
+      "stable_hash": "0d581a42d7ccfa472d457f4a454b633fa5a5b18b8ed1cb3f8355e55d36a75468"
+    },
+    "rholang/examples/stderr.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "4952e6fb352cb7d721e74a9898813e54d9355e13a85d205c516b861538e0479f",
+      "source_blake2b256": "4c18ccb92ce94358da82b4e7cec78127f597b6b38906de775b0fa91a94dc48f7",
+      "stable_hash": "08db6e60e7b91d809c7e2f62613273c28efb025ecb10dfa8e43937a0a328476a"
+    },
+    "rholang/examples/stderrAck.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "67d14e0150d4b6a28f6aab8568a285cb7f327e758771f407cb5b439cb32161a8",
+      "source_blake2b256": "b0cdc6cb812d62e54855a97193da8f3e230edcc4b3c908a337a32eb7e9fb35f2",
+      "stable_hash": "7a906223cd9b97049b49540d757760d690a2a4cef2bf44d572474e062628d899"
+    },
+    "rholang/examples/stdout.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "041eb136d6181c39a93d0c746c227e8ddeb22f24f57c471e51ecc7609d2de105",
+      "source_blake2b256": "fc2c61bddeed319fdb288c46cbd408954d8dfeabd6590db122bf0dc9b2624989",
+      "stable_hash": "d83fe3421050cf7485131419ced17eb08314389e9677bd0b60bec5323338d339"
+    },
+    "rholang/examples/stdoutAck.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "fdbd4297805ecfdbc88c2371be3fbe53946635a9d48697132be5a4371846940e",
+      "source_blake2b256": "e73764a9c5929fe2c4fc0f737e33d3fbfd0fb3e93b73e54f1881f4a6bfa39e5c",
+      "stable_hash": "61f09a03f26e31c883aca5a63e204338cf8189dad53d788ddebf1dcd9feb0b3b"
+    },
+    "rholang/examples/system-contract/chroma-db/01-create-collection.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a846feee264cb55beaca21b597a3da8c4c47b43d1ec61f7c825702b32bb91ce3",
+      "source_blake2b256": "0463f9996b5aeb4a5c6f35b402f0eaa14dcdc829267d4d554cdfea3aaa1358f6",
+      "stable_hash": "f80d75a9a53beed516e7e8f6ed77bbef457f5cd1621a1ae2a2e1cb3fc8463464"
+    },
+    "rholang/examples/system-contract/chroma-db/02-create-collection-meta.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "430d6bab884c478e7cdcf4519801f4c2ba62f3f0712f7568874c1624aa805e11",
+      "source_blake2b256": "0aa7e9dffa12f62ed4689e555cb66b7b16a1ed20302397075dac2b6ff45894e3",
+      "stable_hash": "a3b95530b807473948fa8a9a0b2d0839567140e5350f18ef1ae35f9714b8c203"
+    },
+    "rholang/examples/system-contract/chroma-db/03-get-collection-meta.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "40f0312b709965455979bb8e97a1b5b79506d77c4b76ee1a88b7cb3b3da252fb",
+      "source_blake2b256": "1fc142e583286f22fa8af2dee73fee882739c7f71321c8bc5357d8d503695e9b",
+      "stable_hash": "fc2982b983c8d5c169b32b2f2011d0e926e44ca1a5ae8ee9905739ca5bd4a487"
+    },
+    "rholang/examples/system-contract/chroma-db/04-upsert-entries.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "b2ae4a5e6c87cc15fbc31afc9749b54692a8427de80a629be6cb2bb94f2587f8",
+      "source_blake2b256": "31f6497462536ddb137a2a4a345f30446a53c344aebcfb5d946d5916831fbfd5",
+      "stable_hash": "01a244caa34ced0568b3c2c8b538a63e377c657e68c99f6015713e577c078b4e"
+    },
+    "rholang/examples/system-contract/chroma-db/05-query-entries.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "bb8d937237d3740e8d32e6edab939d1138693bf6b0187537ef13202639d10574",
+      "source_blake2b256": "392bb4e591307f89de8a471c9a3832e9af795c7abec3ae35d3b541e9be23bb2a",
+      "stable_hash": "5dae1425ffad0a84d225363eb9f27b1992434f41a51f91c20cdc2263786be3a9"
+    },
+    "rholang/examples/system-contract/chroma-db/06-delete-entries.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "28edab66bf41aa6a538a0b200f40504aefbdf6a82b5b715d68248c70a7b21dd7",
+      "source_blake2b256": "07dc7c534ffd27e4bc1b226d8d0a35317d5c932a2bacd82f5e0a6ac327e7870b",
+      "stable_hash": "2b7a40ffb71b6e2a0cd9a8460ea31c1bb16ae3e7740ad2eb73e6020950bf9257"
+    },
+    "rholang/examples/system-contract/chroma-db/07-unified-example.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "7818bcb3bf21797720f96801ba5aa47f1bde2044fc792c4d7512426867c9ff5e",
+      "source_blake2b256": "72d88cbf8642fbe2994db2ee46d5f049b0ce7337a9b1ebfc04db4137f840fbee",
+      "stable_hash": "f4b19ccbafc1f4685d9a4d64b7ba4ff36832ee9c180395ccba31c4233a0917e4"
+    },
+    "rholang/examples/test-ollama-sequential.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a68be7bc206a4f2d91deadf2640411fef23c2185d07b43bfdbf6d5023ee1c2af",
+      "source_blake2b256": "50b05ebf862c2259307bf87b8028b9e65bf24f140f58e347755a36080ff5223e",
+      "stable_hash": "ec1f1f73684a01bee5547db0e3a9eeb25d7405962d662a44781f48484460f5a3"
+    },
+    "rholang/examples/test-ollama-simple.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "99500a2718f3653218c87e9c1683696b74a6de48cfcf55100fc27a1451afdb65",
+      "source_blake2b256": "2f44c2e8102fca721d84c9418a399489c9a3a538c81648181e95c589859fb8b1",
+      "stable_hash": "c4af1584550e2098ef234d0ae44ac447c425f7da2b64c92684b0feaa381bd253"
+    },
+    "rholang/examples/tut-ai.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "439f7e286766d4146fc4b73c83b4ea85ea7d7147399d6a16582e77ed6ee30131",
+      "source_blake2b256": "b72cfece0bbbaaa88f53f6b3d94b39e766b67a4d4705e951960e25a161f9d2fe",
+      "stable_hash": "5ed82d2c5e9f34c315d5d0ea1e0e6a9d0a2d0363a7ffb7f3015985b2696035bc"
+    },
+    "rholang/examples/tut-bytearray-methods.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "cea0748c5351dca08427f84915c46fe42be6f2cefbaa7752ed80bd4908e9021d",
+      "source_blake2b256": "7cac33b79404bc9431c93b447de0cd111e4858373057eb1482ee1060b66538b4",
+      "stable_hash": "6ab2c8bddbd3a27943421d13cc7c141bd150b0b375b6571ba06e418b93c82074"
+    },
+    "rholang/examples/tut-hash-functions.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "b52f56977d6c4d340bed22d08ccd14f488344046eab39aa8d11bebe5cb1577cd",
+      "source_blake2b256": "4b6e3b0388ed6c5357296422f514820359f7dc9a5cffb056b9c24363412ce488",
+      "stable_hash": "625523f92507a58a1d10071e93960793b26c4e6fa94e0a858ff359f0a3ff2115"
+    },
+    "rholang/examples/tut-hello-again.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "f02cc36dbc5bf800b26bf6675087982a84c083dce8dcd63af81c288b592de6a3",
+      "source_blake2b256": "8b71315c7d3e3415d7a06d37ac1e8fcfb7a1f4522b7dbd75463a1bd504373f77",
+      "stable_hash": "88590f2620115b60b9f5a827cc345108c2ac2e58d1f82dbc0ad286869cc8c5dd"
+    },
+    "rholang/examples/tut-hello.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "f739f0f8c03d31af05c9bf8e01e40878c20daa51206bf5cf10cc19a0ec4549aa",
+      "source_blake2b256": "e4ef2efe5074b70598e44400c8adb8a93379a4a3f754cb54e588fec5d2af5780",
+      "stable_hash": "7069b630bb3371cb068e90e231d09555ba13993bf69ed4417a06c09b16ca8652"
+    },
+    "rholang/examples/tut-lists-methods.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "70d9c948a9957e7d7c859a00f426492bfb0ce2e319f95d4e6a3fa11f551d38f1",
+      "source_blake2b256": "347b01510c9049302a9e4324b561d80185270f958d4bf4f0c91b469abd96c6e0",
+      "stable_hash": "bf76f16adfb041b386bceefdf57bbc5879ce59c339332f79464fc10ef5982795"
+    },
+    "rholang/examples/tut-maps-methods.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "7c3928877ae7981b73d11a3a2f3a898cf8922851d565e55c7852fc08e41edf1d",
+      "source_blake2b256": "3f092eab0d823f02a3bc1c811fb07d2040565acb30d4a35095824a6e12074961",
+      "stable_hash": "910d79efbf14db632489cd7ac861edebd838468efc15ad9d3ab1a7a38398e087"
+    },
+    "rholang/examples/tut-ollama.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "33f7c0e9c396f025144530223086895f9a685b0d51e04bff3ecc38c424bdc85c",
+      "source_blake2b256": "6eba3ea5e0afa8b8b18321625548040b67c666c8ce52dafa3a6f4c652b7aff16",
+      "stable_hash": "0583afa16627be886aef9ace1b8ed0178780bc44b93e4293e3fb9cf0afeb8500"
+    },
+    "rholang/examples/tut-parens.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "7e68e99547eec1c3ac669797298eafa1e6c7b40ba314243b69fbe440cd53efa2",
+      "source_blake2b256": "ca4e81399086c3721ba89ddd3ef7e44c644463d46950da801302a52fef0308b1",
+      "stable_hash": "c9ff39934270e2810cc2db04c918ef7c52fc9beacbdbd41f67f5b00033d8b3e8"
+    },
+    "rholang/examples/tut-pathmap-all-methods.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "45527e96f4e95a18084afce1768d1eadb7982ff321f18231efcbebe032096a51",
+      "source_blake2b256": "77ad060930dc911f1462ed300432453debc711257f5122608df054fcc3aadd39",
+      "stable_hash": "34e9aca2c0433b6a9b85d6ad507a033046b6a8f5d418e396ff9bd71c66b30c60"
+    },
+    "rholang/examples/tut-pathmap-zippers.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "dd38972c2c92e293c1ae38a193980eef9032534c3f0571aa9603ca6678bc47b7",
+      "source_blake2b256": "b1f9c0599a0d1ef9f9e1950ca5d53244f514eb09f5aea010bea1176ec052c1df",
+      "stable_hash": "8ab299afd9a8fe814b88bd93e29de6ca0702083155ddb671625ff8720f1ad68d"
+    },
+    "rholang/examples/tut-philosophers.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e9ea8a95a6222c5bf2a8f197521a4a138901c8f0f22f6c0173cb51a2e5e94805",
+      "source_blake2b256": "503803d5de066c0fd53b8a545140762a7e2b81dc0751c791d7208944ae52fd57",
+      "stable_hash": "8132a64e0e1a1ed7c7b65c9d36fc46725b67c0115975549d66ff63e69e980ccb"
+    },
+    "rholang/examples/tut-prime.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "56b157a5c4dceac3efa17e4187961a55fdc8e9cce468c03149c8e4c233559b21",
+      "source_blake2b256": "d845403acbc77ecba4e91a564adc6310425522fa4cf742ca9ff156db1b4d023b",
+      "stable_hash": "eed566c6a8df25e0cf53578e738361f4e3833a555484480700a66c423dd48a07"
+    },
+    "rholang/examples/tut-rcon-or.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "12c4aa80f475b98ecfbed5e8d39cd244ebe771f2fbdbaae656b333968cd00ebb",
+      "source_blake2b256": "e258bbfd77e601d9f55cac329fe596451e3631cce971983b15ac00d6915d1fc9",
+      "stable_hash": "49e0aceffaa897d2e7aa845dff67c4bd1e1f5c73e867b4e57d8681bd90be3390"
+    },
+    "rholang/examples/tut-rcon.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e2b683e0d404e73839acec6ad973a8b7f6c9554cb97e79e41387f1563ec2413d",
+      "source_blake2b256": "8e313a1a42434d23ea325464ec503b05f617b7fff17515c8184ea298fcba0c9f",
+      "stable_hash": "27fac92a43633542911771566dad91e684d158148310ff3aebfb3f1e2a771c35"
+    },
+    "rholang/examples/tut-registry-split2.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "b1336d956abf46b5c219144a4cf627390be05f9f87bd60a338af649abe427dd4",
+      "source_blake2b256": "34e0f4743912aaf2a9fbcd8e87ab2ea1b9db3676f69abd3a26ec9af175a7d0e0",
+      "stable_hash": "4e1aa174dbe96e06cd102e1451b5db607134f1f763b0ee39e1feee8fd5ff8df4"
+    },
+    "rholang/examples/tut-registry.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e1bec974a01363bf19d6c3db408d852f21b8e84fa4455b74f41a55987cf4c252",
+      "source_blake2b256": "212e0ff1ed4a650df6dfb4849a113d154067984cd543875db2ee7c032064a758",
+      "stable_hash": "aac47cca1641e15d5216eaf6651f8f9c995671ea5c44bc1225b26e5d3d2d81fd"
+    },
+    "rholang/examples/tut-sets-methods.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "29782b0fa26f295f71f8f3ec455bfe9bd56ea75cb244b5884581403388facfd9",
+      "source_blake2b256": "01067d804695d503e6622fd5734d1a640d8061f22490a349e628e5e3ec28b702",
+      "stable_hash": "7645fdc2f62ae9a442a5ceb6f01f024bccb71a2404d841771ab736de47022a17"
+    },
+    "rholang/examples/tut-strings-methods.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "302cef3311d5f12fd07e8fa1261c72b143f620a45a2a10274505326bbf267554",
+      "source_blake2b256": "1dfc6d1661e8556d0bdbf7dc3ec347fe5583fa9325891839f96f57634c9a62ce",
+      "stable_hash": "f1d1d8dc1fb475a0a0179d089878052692aa91fb54955527dc2f45f59e3acc23"
+    },
+    "rholang/examples/tut-tuples-methods.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "b05648751869840898cd0dced3c083f57b634aeab90bf1f001bf0f47a5324cc8",
+      "source_blake2b256": "21f0830d2fb1b1228cfd4343a4853d3ed68d8aa39dc35f2bdee9aebabdf346ab",
+      "stable_hash": "9deb9ab1b78b97b6aa1b931ed037b63ef365e5c6f9df2b28d8e42a2994b2852d"
+    },
+    "rholang/examples/user-crud-example.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "9a59058b550ca7b4663ebc164a782cfe7ed36e6d2c05d5c31e0fbfe002e002c2",
+      "source_blake2b256": "f1ae92e3b62fbc23c967c29e7f8a3ba7804b122108aae4b5cb2cf9c418bba763",
+      "stable_hash": "5e10fbf4cc5bd5a932434388b2c74f2268423a177c93d7a05fbc3f1049fd0118"
+    },
+    "rholang/examples/vault_demo/1.know_ones_vaultaddress.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "dcd2fea93e0d1164305adfd8248c53310e2a8cd1c506b9eeee419ae0771bf063",
+      "source_blake2b256": "d4985a5f4e4bc18359a8448f6beecc742a9b3eaa8a63dfaab40e9283c4848a01",
+      "stable_hash": "6a6c3fface899eba2d67e48e60c00d62452cdc05b6e10fb6d0f0adbc9f2b05d6"
+    },
+    "rholang/examples/vault_demo/2.check_balance.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "0bc3f50543169be2a35ef337b79777670df10b2239a04869c9d401dd7663e6c9",
+      "source_blake2b256": "7a048e173bbbf8a0dbca7d2511bdd286204632b362112cd1749f225e5085aba1",
+      "stable_hash": "17570976dbdb325e797ecf2cb4be7c6d7f74f6568e5d37f81511d59583e2ccd2"
+    },
+    "rholang/examples/vault_demo/3.transfer_funds.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "9c45da274d3b678f6ec99e024fd43fe42ac369f11ffe01140bfb90c050bc7bef",
+      "source_blake2b256": "611e4669615a3fdd7a14400d910fc11bfcca3d977d84a181fef56ea678e7b5f7",
+      "stable_hash": "a7fbf5cf3de457a4af116c06ab1bf73151bc200262c109d688ce1a84bac71ffb"
+    },
+    "rholang/examples/zipper-navigation-demo.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "f23496e3dd4c790d55eeac7aa816efe0dc6449159f2c116a051d97c541a147b6",
+      "source_blake2b256": "6ca104632ad3853bd42d389f6057cb771713a835a0b836cf0e6ea1a7808c8407",
+      "stable_hash": "e4905b841dd0c73240e9f2706e5ad2f7dbd94f603f0b74930e9ae5645b7e6a32"
+    },
+    "rholang/src/main/k/rholang/tests/Free-Variables/Finding-free-vars-with-logical-and-between processes.rho": {
+      "outcome": "error",
+      "source_blake2b256": "432edefc8c14681fc76e96b73037d53a7ddee523788aefae8a24f5d41563b013"
+    },
+    "rholang/src/main/k/rholang/tests/Free-Variables/Finding-free-vars-with-logical-and-between-channels.rho": {
+      "outcome": "error",
+      "source_blake2b256": "e652820f32dc83c7841847285ea8586fc912070ca8d43298c3b9c80e07dfe8c0"
+    },
+    "rholang/src/main/k/rholang/tests/Free-Variables/Finding-free-vars-with-logical-or-between processes.rho": {
+      "outcome": "error",
+      "source_blake2b256": "a2e42968f153d39af350eda6011a722618a1592e1b43f3cd8feac808ff7ddee9"
+    },
+    "rholang/src/main/k/rholang/tests/Free-Variables/Finding-free-vars-with-logical-or-between-channels.rho": {
+      "outcome": "error",
+      "source_blake2b256": "0d35e6becca9c6be663eb81d13ed52264610174b91eff5f8ea2b08306247fbf2"
+    },
+    "rholang/src/main/k/rholang/tests/Free-Variables/Free-vars-in-matching.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "3aec4e5d9039ec2c7940c460b7b0d423f9b0ceb8bbfdeb6b1c20f5596c1ea77a",
+      "source_blake2b256": "d6d7df926b608d924c4b6a78690d2474f06ff62817017f2c7ddc5aec11e8849f",
+      "stable_hash": "bb0cab182578cdda061e6a59a43a8ae71043f481fb0c6fc06fe510fbce1b732b"
+    },
+    "rholang/src/main/k/rholang/tests/Free-Variables/Free-vars-in-the-TF-matching.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "cf86d0e969761299646ed23f709bd065b57a3acbec7f6633b37e470f792695f5",
+      "source_blake2b256": "fe8a13325d016b862775252a44d1da750a17befbb2accbb4f37fbbf677a43e39",
+      "stable_hash": "b95ea6887f2efb13eb8588de247af51ba4a9ae9ec63ba2d9d4f4ec7d436daf1a"
+    },
+    "rholang/src/main/k/rholang/tests/Global-Program-Structure/Free-variable-in-program.rho": {
+      "outcome": "error",
+      "source_blake2b256": "cadd2c99433791453d863955a43e6281f618b850cf41e4dc4e764735cbaaa070"
+    },
+    "rholang/src/main/k/rholang/tests/Global-Program-Structure/Logical-and-in-program.rho": {
+      "outcome": "error",
+      "source_blake2b256": "9f1151b17cb2b9c78c87f162e23027c364e0b84ed62be97ea15100f014232f32"
+    },
+    "rholang/src/main/k/rholang/tests/Global-Program-Structure/Logical-or-in-program.rho": {
+      "outcome": "error",
+      "source_blake2b256": "83ab1b3ce46e19789d23d09aa72c30d03a90cf59b6bbcfc44eaf81db5e945b57"
+    },
+    "rholang/src/main/k/rholang/tests/Global-Program-Structure/Other-instances-of-HigherProc.rho": {
+      "outcome": "error",
+      "source_blake2b256": "b785ccad082c27398e9fe66582c3c1c4b385f9bd71075a98333112509368869f"
+    },
+    "rholang/src/main/k/rholang/tests/Process-Functionality/ground-processes.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "930a15b934cdf72ead6e83bf1c9d6fbdba48f42a5ba5a79f8fabf8625b6e0f81",
+      "source_blake2b256": "e84fa2ad7dc7f949462710ff6ec85577c11dcbc70478334d8795b280fa76a84a",
+      "stable_hash": "7768717c602c95cae5b38946fc5c4b520563808dc8e155ac9daf453b94e3cde6"
+    },
+    "rholang/src/main/k/rholang/tests/Process-Functionality/new.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "3d64e363ff94b5a74018b5e231de3103017285018a375a7424065116f5562250",
+      "source_blake2b256": "3ef735eccf0868e76d26e5539ad0dd8e81a2d124211c070c08143c2e0cc0ea13",
+      "stable_hash": "f2ddce9c9235f4ae209edbddc8a609744c0a048fa5338e3fc7dc18d5f1ea392b"
+    },
+    "rholang/src/main/k/rholang/tests/Process-Functionality/parallel-processes.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "256042c2436bc7b2840753a435caed3c7bc00841febd92c0476b570410f7a16c",
+      "source_blake2b256": "fc28973c29964869fcbab01aa52a4f6b45d3f7cf58e75d3cc0f23a16e14d14e0",
+      "stable_hash": "95397e393f30a4929dd3a03b787ad3b0cfbb20157524054b3afc7f39aaa54b97"
+    },
+    "rholang/src/main/k/rholang/tests/Process-Functionality/sends-and-receives-separate-into-in-and-out-cells.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "9ac3714b6a48e950eb68086afe9f223ab3166cfea9a3cf8063057c5bd69ea539",
+      "source_blake2b256": "3da8831204a5a6a693a7934131e4f223a228bcf7a73ec45f1ab3e11ca505b067",
+      "stable_hash": "947f7698ba7def105e3b82a8a71dbab3d660ceefe0a6a67290c462c38e94e286"
+    },
+    "rholang/src/main/k/rholang/tests/Process-Functionality/simple-match.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "046dedb4761422e46150ff792fb9928fde1d7f766b6c00099d2dce827914222e",
+      "source_blake2b256": "9467638bcd4186fed95d6ca0ffe80e7259d48a868fcd3c99287fc4e22670ca5a",
+      "stable_hash": "cc77bc09a8f8cf25a98f774576c6bc6c29612e8e54cbfa4444c52bac59825b46"
+    },
+    "rholang/src/main/k/rholang/tests/Sending-Receiving/infinite-sends-and-receives.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e8e38a7892c9143ef8dc51d01cabf52d41ba1d2ce031e4d4c10b9379a281926a",
+      "source_blake2b256": "97a99198a29267b0fbc7048591b9c5c7d437cef0dcfe4fa74ae1f12b4c22e9d1",
+      "stable_hash": "d65c01902574c63c734318c651cbfbfe9094715840580a27bafd545067d5a78d"
+    },
+    "rholang/src/main/k/rholang/tests/Sending-Receiving/logical-and-within-patterns.rho": {
+      "outcome": "error",
+      "source_blake2b256": "708942488e4c82c9989dc962c3f22e1b87376eb49c05a4fb7909dba36394c8f7"
+    },
+    "rholang/src/main/k/rholang/tests/Sending-Receiving/logical-or-within-patterns.rho": {
+      "outcome": "error",
+      "source_blake2b256": "9477ef7b42c4adc64d9e8f8f88503b243604a5c9b1739a1be319940786d0d190"
+    },
+    "rholang/src/main/k/rholang/tests/Sending-Receiving/persistent-receives.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "fc4ab5a9758f394fdb8ecfcd2436d2ff5657bbaf56eec40b8e7d868443c7cac6",
+      "source_blake2b256": "42559d83b47a2f0ed80ae2b28200aed719938b7bfd5b46c472ed393bbc4cd545",
+      "stable_hash": "c26fe4d9687199299e4ec55e3418508ba60f728247381b495ebe56b9d7a0ac4f"
+    },
+    "rholang/src/main/k/rholang/tests/Sending-Receiving/persistent-sends.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a18e540dd93368151bbc334434951852146d5f6a16a02ecfc036946494872927",
+      "source_blake2b256": "4a0f8b9dfbcc74a808d2baecf585281b36b8b651beae80879b4033cb8ee44219",
+      "stable_hash": "fb60e9e66ba2b762a7a98cf78f9e75cb9e0fea9c5abbc74a655bd1427d5c0310"
+    },
+    "rholang/src/main/k/rholang/tests/Sending-Receiving/sending-and-receiving-arities.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "1632cf5919aa244d5ff6de13c045fe138a95affcedebd03fae2a35a3c267beb8",
+      "source_blake2b256": "351c4b614721311d0b9a2fc0e0610a5bbf676efa481b6723677a298dd255628f",
+      "stable_hash": "9b11cd5678a533640d40d6eff241a770091a3821b46b37b46d8a5fcbed2e4aea"
+    },
+    "rholang/src/main/k/rholang/tests/Sending-Receiving/std-send-and-receive.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "d53aa3910620a770703bce2ef062365f165d1a399d29b98589e7cdc50b801abf",
+      "source_blake2b256": "3b59cc8ba4a3b18522994849449f9923c4ae35dad4dc799d4a2f967f0a67b407",
+      "stable_hash": "c07e49844fd76acdb711b985e803abd481dfa346d118a41c51b99519d46d96f4"
+    },
+    "rholang/src/main/k/rholang/tests/Std-Pattern-Matching/match-within-a-match.rho": {
+      "outcome": "error",
+      "source_blake2b256": "2d00687ddfe60823625cc45129b6d51ef4769f43659d8ca2847d13d92c4db15b"
+    },
+    "rholang/src/main/k/rholang/tests/Std-Pattern-Matching/matching-parallel-processes.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "55868d6dbae7099a91face6081cbbae264feebc2d2bebe6816a75b34de8e073c",
+      "source_blake2b256": "5e28bd05d0c52b338399dd0078d237f90dbc73a4b30251865f64fba8e5d0f0d6",
+      "stable_hash": "d35c8ba0a13bec17b210262252aae36510d36534cfd4b2e53e57132e935f1718"
+    },
+    "rholang/src/main/k/rholang/tests/Std-Pattern-Matching/matching-with-the-new-construct.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "3a68a2d621441cac0ebfdfe251b8b26dcdacbe7f377bfe73390f66fc055a66fe",
+      "source_blake2b256": "9204f6a5221788d36d5e96b31ea3a57b8d3ef2ee19993a757a119564a84a1ff8",
+      "stable_hash": "17d5e5b848a3c3d6760c5ac1b8c45857f312c29e5ceabae0e1902b93c35281b7"
+    },
+    "rholang/src/main/k/rholang/tests/Wildcards-vs-Variables/Wildcard-matching-2.rho": {
+      "outcome": "error",
+      "source_blake2b256": "04dc4220cffb078e2eb365249db89bbd89d8ee1e8ab732a913e4ddcf814667c5"
+    },
+    "rholang/src/main/k/rholang/tests/Wildcards-vs-Variables/Wildcard-matching.rho": {
+      "outcome": "error",
+      "source_blake2b256": "3db56046d497c1e374c10046b0630f3123843ce7352c00e4d3a410a4290fda34"
+    },
+    "rholang/src/main/k/rholang/tests/Wildcards-vs-Variables/Wildcard-placement.rho": {
+      "outcome": "error",
+      "source_blake2b256": "cd03eee1f523deb5bc4ab126e44464fc67bef0a563cfa776f2fb36cdbde9b36e"
+    },
+    "rholang/src/test/resources/failure_tests/unbound_name_test.rho": {
+      "outcome": "error",
+      "source_blake2b256": "e346e9d2a66ba45c87215db1db171a310864c10cb726c419dc497a1e7b3c7558"
+    },
+    "rholang/src/test/resources/tests/mercury-tut/coat_check_test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "0933e15be253a51528b550585e0b209e7429c9b4d22268f1adbd8eedcbf82c72",
+      "source_blake2b256": "6bedb6aa1049def3144b7730f5f7c45f08351ee76f9ce423122cc02de5011d7a",
+      "stable_hash": "03c363b8ae263f84b59d93f1d1bb4223dd264e308017c34190202ac86f2fef81"
+    },
+    "rholang/src/test/resources/tests/mercury-tut/contract_test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "6d23d9a23f263856db05133ae723bc9dfcc8f6fe87c32d94bab22f9f6aec3181",
+      "source_blake2b256": "123c81d6046a3b09eaf29354c3f67cf270f6ddcfcc363a0024c7d5616182933d",
+      "stable_hash": "3d24c0c81b4c5cc3c4048259f8f32818286a54adad0889e1dc1a771895da5293"
+    },
+    "rholang/src/test/resources/tests/mercury-tut/convenience_methods_test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "6bea7bf062904eda5bd1d577e4cdec63883eaa99c586b5abb41418c14941bda4",
+      "source_blake2b256": "bddeaab836953778552ba12fefdf602a84e925f79d26a4e8bfd09200480af822",
+      "stable_hash": "b261aa095028dd446d6e5842075709c501c9f5826d5153e2c2b54a395b73e016"
+    },
+    "rholang/src/test/resources/tests/mercury-tut/deadlock_test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "3ae0de6e092b87172545ccf849dc044beb2065fe897db5e5d7a3a926ecd4e125",
+      "source_blake2b256": "0a7e84bce42075bff8974f6e0d1ed794cc6f945677fffd9a5eab39c708d85097",
+      "stable_hash": "bc2a7d4f46fedceadc7afbe7553fcd4c1653d4f01b0cc3ff45e11cf45f5fb949"
+    },
+    "rholang/src/test/resources/tests/mercury-tut/iteration_test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "41433bd1f4da928b2ea865dafe10b0e1741e6220ff64cec0d749c418a4d4b1fc",
+      "source_blake2b256": "00825df5ce604814d6388c75e5c41cd64de4fac6db419cfc827e65764d7552d1",
+      "stable_hash": "1f70a78de85eeb55d0a2962778a368e3aec493c44cf5b03b70bc95b37cbeac00"
+    },
+    "rholang/src/test/resources/tests/mercury-tut/mutable_state_test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "a35bc07cb1f3eb448d9fe832aacbd5f7b932b5d10dfb8df7a83090bfe5777286",
+      "source_blake2b256": "d46a9adad9db79fd506f8f32459db1cae2b8027a50dcefc88c2b754a6d5912ea",
+      "stable_hash": "63063a43e009f3664331c70f11067a02d952df16fd26292997b60019ba810cd9"
+    },
+    "rholang/src/test/resources/tests/mercury-tut/receiving_test.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e4521a864be9eeea3dd13da826b5c6e18714305906f6633c8d896fd9dd70e626",
+      "source_blake2b256": "9c6a64ee3c06b185c98273e210fbecc2106011d3d834cce73a8ceb2d7d99bfd0",
+      "stable_hash": "71e242c83aa9b52e5af8035f23b246a323cb8801cf67a7a7e839ca47e1efb6ea"
+    },
+    "rholang/src/test/resources/tests/test-matches.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "8404de15f3c714fb89fc63c3d1d1f780e139526ebdc3f6c91cc58dd6cfbb11ff",
+      "source_blake2b256": "f8a5bad6320decad30fec3d6172b926d114b972e19ce374510de5e40cac358e0",
+      "stable_hash": "842006c0d8d244c12bd42c1c365b1a393f762a1f437570ae54ad07c3d4ee721a"
+    },
+    "rholang/src/test/resources/tests/tut-coat-check.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "48b92ac769829890439afacdca62e53970e00c027e094baf7f68d09c1ddff384",
+      "source_blake2b256": "11ab876bd2fcf30c59c1fb16a861eaf5ea619b71e2c351bcdf482dbf30d64050",
+      "stable_hash": "3ad5a2d34858b6716eea99704216ad9a1baf7d17cb35fdfa64a5308b69ec78f4"
+    },
+    "rholang/src/test/resources/tests/tut-iterate.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "e77928f834c550409a939112c942b3ff829281323c904a43c18c0e0a31c276c3",
+      "source_blake2b256": "d338a62171b6b8c02e4933ffd7aa143646ac83919e2f398d233aafe607de086a",
+      "stable_hash": "f84861e1a1e2427b348e8872fb1d98a2511ef53b71dc4a2feedfad5b323a5d37"
+    },
+    "rholang/src/test/resources/tests/tut-make-cell.rho": {
+      "outcome": "ok",
+      "prost_blake2b256": "8eec8dbcc108ddce1be5add26a2e44fe76eb252cc76fd31625660d3061bf0887",
+      "source_blake2b256": "3f7ad55a4cda4b7ccd974949548a43f21817653dfeade27843a22b870b79f71e",
+      "stable_hash": "09f5d04a1203d1465822b6a44910923570e4861e2acaffcf4618a2d5206f45da"
+    }
+  },
+  "name": "ordinary_source_normalization_v2",
+  "rule": "every entry with outcome ok must normalize to identical prost and stable hashes under the current parser",
+  "template_values": [
+    "initialBonds={}",
+    "posMultiSigPublicKeys=[]",
+    "resourcePolicyGetter=",
+    "*=0"
+  ]
+}

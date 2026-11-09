@@ -845,6 +845,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -855,6 +856,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         new_send_par(
@@ -893,6 +895,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             },
             ReceiveBind {
                 patterns: vec![
@@ -903,6 +906,7 @@ fn matching_a_receive_with_a_free_variable_in_the_channel_and_a_free_variable_in
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             },
         ],
         new_freevar_par(1, Vec::new()),
@@ -2055,6 +2059,7 @@ fn matching_a_target_with_var_ref_and_a_pattern_with_a_var_ref_should_ignore_loc
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             }],
             vector_par(Vec::new(), false),
             false,
@@ -2087,6 +2092,7 @@ fn matching_a_target_with_var_ref_and_a_pattern_with_a_var_ref_should_ignore_loc
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             }],
             vector_par(Vec::new(), false),
             false,

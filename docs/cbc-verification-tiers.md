@@ -23,7 +23,8 @@ not extract the executable.
 ## Scope
 
 This division of labor applies to the Rust-facing subsystems that
-[`.gitattributes`](../.gitattributes) marks `cbc=mandatory`. Those subsystems
+the owner `.gitattributes` files mark `cbc=mandatory`, for example
+[`casper/.gitattributes`](../casper/.gitattributes). Those subsystems
 are consensus, finality, merging, replay, block storage, the interpreter, and
 cryptography. Unbounded correctness claims require construction-tier proofs.
 Mandatory verification also covers bounded-by-design properties, as specified

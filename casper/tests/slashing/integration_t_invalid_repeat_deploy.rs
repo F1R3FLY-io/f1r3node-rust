@@ -23,16 +23,20 @@
 //      repeat_deploy fires first.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
-use casper::rust::util::construct_deploy;
-use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::ProcessedDeploy;
+// Changed by DR-134 (DR-66 item 1): the repeated deploy is b1's offered copy.
+// use models::rhoapi::PCost;
+// use models::rust::casper::protocol::casper_message::ProcessedDeploy;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::{
     canonical_validator_order, production_snapshot_at, propose_with_block_mutation,
 };
 use super::observer::SlashingObserver;
+// Changed by DR-134 (DR-66 item 1): the deploy goes through TestNode::deploy.
+// use casper::rust::casper::Casper;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -53,7 +57,9 @@ async fn integration_t_invalid_repeat_deploy() {
 
     // Step 1: nodes[0] proposes b1 normally with d1.
     let d1 = construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("d1");
-    nodes[0].casper.deploy(d1.clone()).expect("deploy d1");
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits both formats.
+    // nodes[0].casper.deploy(d1.clone()).expect("deploy d1");
+    nodes[0].deploy(d1.clone()).expect("deploy d1");
     let b1 = nodes[0].create_block_unsafe(&[]).await.expect("create b1");
     // nodes[0] processes b1 back into its own DAG so the snapshot
     // for proposing b2 sees b1 as the parent (not genesis). Without
@@ -74,15 +80,27 @@ async fn integration_t_invalid_repeat_deploy() {
     // checkpoint-computation; then mutator REPLACES body.deploys
     // with a ProcessedDeploy wrapping the original d1.
     let d2 = construct_deploy::basic_deploy_data(20, None, Some(shard_id.clone())).expect("d2");
-    let d1_processed = ProcessedDeploy {
-        deploy: d1.clone(),
-        cost: PCost { cost: 0 },
-        deploy_log: Vec::new(),
-        is_failed: false,
-        system_deploy_error: None,
-    };
+    // Changed by DR-134 (DR-66 item 1): an offered deploy is repeated by
+    // copying its processed form from b1.
+    // let d1_processed = ProcessedDeploy {
+    //     deploy: d1.clone(),
+    //     cost: PCost { cost: 0 },
+    //     deploy_log: Vec::new(),
+    //     is_failed: false,
+    //     system_deploy_error: None,
+    // };
+    // let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {
+    //     b.body.deploys = vec![d1_processed.into()];
+    // })
+    let d1_processed = b1
+        .body
+        .deploys
+        .iter()
+        .find(|deploy| deploy.identity_bytes() == d1.sig.as_ref())
+        .cloned()
+        .expect("b1 carries d1");
     let mutated = propose_with_block_mutation(&mut nodes[0], vec![d2], move |b| {
-        b.body.deploys = vec![d1_processed.into()];
+        b.body.deploys = vec![d1_processed];
     })
     .await
     .expect("propose_with_block_mutation");

@@ -105,6 +105,9 @@ fn offered_processed_wire_preserves_signed_envelope_and_rejects_changed_cost() {
         phlo_limit: 10,
         phlo_price: 2,
         fee_rev: 1,
+        // Added by G3 (DR-135, S7): no owner funding.
+        owner_phlo: 0,
+        owner_rev: 0,
         failure_class: NativeCostFailureClass::Success,
         budget_recording: b"budget",
         operation_journal: b"journal",

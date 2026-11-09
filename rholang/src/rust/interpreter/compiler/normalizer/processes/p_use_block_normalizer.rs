@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 
 use models::rhoapi::Par;
-use models::rust::reified::builders::{push_process_expr, use_block};
+// Changed by decision 112: the use block is a Par field. The text before:
+// use models::rust::reified::builders::{push_process_expr, use_block};
+use models::rust::reified::builders::{push_use_block, use_block};
 use rholang_parser::ast::{AnnProc, Name};
 use rholang_parser::RholangParser;
 
@@ -14,7 +16,9 @@ use crate::rust::interpreter::compiler::normalize::normalize_ann_proc;
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::errors::InterpreterError;
 
-/// Normalizes `use space { body }` to the USE tuple `(USE, s, P)` in `Par.exprs`. The space is
+// Changed by decision 112: the use block is a Par field. The text before:
+// /// Normalizes `use space { body }` to the USE tuple `(USE, s, P)` in `Par.exprs`. The space is
+/// Normalizes `use space { body }` to one `UseBlock` of `Par.use_blocks`. The space is
 /// a name and the body a process, both in the current scope, the space first.
 pub fn normalize_p_use_block<'ast>(
     space: &Name<'ast>,
@@ -43,7 +47,9 @@ pub fn normalize_p_use_block<'ast>(
         parser,
     )?;
     Ok(ProcVisitOutputs {
-        par: push_process_expr(input.par, use_block(space_result.par, body_result.par)),
+        // Changed by decision 112: the use block is a Par field. The text before:
+        // par: push_process_expr(input.par, use_block(space_result.par, body_result.par)),
+        par: push_use_block(input.par, use_block(space_result.par, body_result.par)),
         free_map: body_result.free_map,
     })
 }

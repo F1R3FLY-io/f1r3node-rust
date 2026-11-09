@@ -84,21 +84,39 @@ use std::collections::BTreeMap;
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par};
-use rspace_plus_plus::rspace::trace::event::Produce;
+// Added by decision 124 (plan v4 C7.11, ruling RADD 1.4): the tail read of a head row.
+use rspace_plus_plus::rspace::space_store_handle::TailRead;
+// Changed by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): the book reader of a lane
+// receive names the consume of the receive. The text before:
+// use rspace_plus_plus::rspace::trace::event::Produce;
+use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 use serde::Serialize;
 
 use crate::rust::interpreter::reified::costs::FireStep;
 use crate::rust::interpreter::spaces::agent::{
     ConsumeOp, ProduceOp, QueryParams, SettleOp, SpaceOp, SpaceReissue,
 };
+// Added by decision 128 (kind routing): the lanes window owns the level and the lane
+// (`disciplines::lanes`). The priority queue is the one discipline of that window, and it keeps
+// their names here.
+pub use crate::rust::interpreter::spaces::disciplines::lanes::{Lane, Level};
 use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::factory::defaults::PRIORITIES_PARAM;
+// Changed by decision 102 (plan v4 C7.22): the offer names the datum that a fire offers.
+// use crate::rust::interpreter::spaces::generic::{
+//     open_plan, peek_set, Cx, Discipline, Held, JoinWindow, OfferFire, OpView, Ordered, ParDatum,
+//     ParWaiter, ReceiveFire, Side, StoredMatch,
+// };
+// Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the view of the priority queue
+// reads the store through `StoreView`.
 use crate::rust::interpreter::spaces::generic::{
-    open_plan, peek_set, Cx, Discipline, Held, JoinWindow, OfferFire, OpView, Ordered, ParDatum,
-    ParWaiter, ReceiveFire, Side, StoredMatch,
+    open_plan, peek_set, Cx, Discipline, Held, JoinWindow, OfferFire, Offered, OpView, Ordered,
+    ParDatum, ParWaiter, ReceiveFire, Side, StoreView, StoredMatch,
 };
 use crate::rust::interpreter::spaces::record;
+// Added by decision 124 (plan v2 C7.10): the reader skips inert machinery waiters.
+use crate::rust::interpreter::spaces::settle::machinery_shape;
 use crate::rust::interpreter::spaces::settle::{
     self, Bound, BoundRecord, FirePlan, InFlight, SettleView,
 };
@@ -111,82 +129,90 @@ pub const PRIORITY_PARAM: &str = record::PRIORITY_KEY;
 /// The named send params and the named query params of a priority queue.
 const PRIORITY_PARAMS: &[&str] = &[PRIORITY_PARAM];
 
-/// The level of a record of a priority queue. The derived order puts the priority levels in
-/// ascending order and the unprioritized level after them (F6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Level {
-    /// The level `p ≥ 0` of a send with `priority = p`.
-    Priority(i64),
-    /// The level of a send without a priority.
-    Unprioritized,
-}
+// Changed by decision 128 (kind routing): the lanes window owns this item (`disciplines::lanes`),
+// and the re-export above keeps its name here. The text before:
+// ```
+// /// The level of a record of a priority queue. The derived order puts the priority levels in
+// /// ascending order and the unprioritized level after them (F6).
+// #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+// pub enum Level {
+//     /// The level `p ≥ 0` of a send with `priority = p`.
+//     Priority(i64),
+//     /// The level of a send without a priority.
+//     Unprioritized,
+// }
+//
+// impl Level {
+//     /// The level of the priority slot `slot` of a datum record: `Some(p)` is the level `p`, and
+//     /// `None` is the unprioritized level.
+//     pub const fn of_slot(slot: Option<i64>) -> Self {
+//         match slot {
+//             Some(level) => Level::Priority(level),
+//             None => Level::Unprioritized,
+//         }
+//     }
+//
+//     /// The priority slot of the level.
+//     pub const fn slot(self) -> Option<i64> {
+//         match self {
+//             Level::Priority(level) => Some(level),
+//             Level::Unprioritized => None,
+//         }
+//     }
+//
+//     /// The waiter lanes whose heads a datum of this level meets in a produce plan: the waiter
+//     /// queue of the level for a priority level, and the unrestricted queue (decision 38). The
+//     /// unprioritized level has no waiter queue of its own.
+//     pub const fn candidate_lanes(self) -> [Option<Lane>; 2] {
+//         match self {
+//             Level::Priority(level) => [Some(Lane::Level(level)), Some(Lane::Any)],
+//             Level::Unprioritized => [None, Some(Lane::Any)],
+//         }
+//     }
+// }
+// ```
 
-impl Level {
-    /// The level of the priority slot `slot` of a datum record: `Some(p)` is the level `p`, and
-    /// `None` is the unprioritized level.
-    pub const fn of_slot(slot: Option<i64>) -> Self {
-        match slot {
-            Some(level) => Level::Priority(level),
-            None => Level::Unprioritized,
-        }
-    }
-
-    /// The priority slot of the level.
-    pub const fn slot(self) -> Option<i64> {
-        match self {
-            Level::Priority(level) => Some(level),
-            Level::Unprioritized => None,
-        }
-    }
-
-    /// The waiter lanes whose heads a datum of this level meets in a produce plan: the waiter
-    /// queue of the level for a priority level, and the unrestricted queue (decision 38). The
-    /// unprioritized level has no waiter queue of its own.
-    pub const fn candidate_lanes(self) -> [Option<Lane>; 2] {
-        match self {
-            Level::Priority(level) => [Some(Lane::Level(level)), Some(Lane::Any)],
-            Level::Unprioritized => [None, Some(Lane::Any)],
-        }
-    }
-}
-
-/// The lane of a waiting continuation of a priority queue (decision 38).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Lane {
-    /// The waiter queue of the level `p`: a receive with `priority = p`.
-    Level(i64),
-    /// The unrestricted waiter queue: a receive without a priority.
-    Any,
-}
-
-impl Lane {
-    /// The lane of the policy slot `slot` of a parked continuation: `Some(p)` is the waiter queue
-    /// of the level `p`, and `None` is the unrestricted queue.
-    pub const fn of_slot(slot: Option<i64>) -> Self {
-        match slot {
-            Some(level) => Lane::Level(level),
-            None => Lane::Any,
-        }
-    }
-
-    /// The policy slot of the lane.
-    pub const fn slot(self) -> Option<i64> {
-        match self {
-            Lane::Level(level) => Some(level),
-            Lane::Any => None,
-        }
-    }
-
-    /// True when a waiter of this lane sees the records of `level`. A level lane sees its own
-    /// level only, and the unrestricted lane sees every level (decision 38).
-    pub const fn sees(self, level: Level) -> bool {
-        match (self, level) {
-            (Lane::Any, _) => true,
-            (Lane::Level(own), Level::Priority(other)) => own == other,
-            (Lane::Level(_), Level::Unprioritized) => false,
-        }
-    }
-}
+// Changed by decision 128 (kind routing): the lanes window owns this item (`disciplines::lanes`),
+// and the re-export above keeps its name here. The text before:
+// ```
+// /// The lane of a waiting continuation of a priority queue (decision 38).
+// #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+// pub enum Lane {
+//     /// The waiter queue of the level `p`: a receive with `priority = p`.
+//     Level(i64),
+//     /// The unrestricted waiter queue: a receive without a priority.
+//     Any,
+// }
+//
+// impl Lane {
+//     /// The lane of the policy slot `slot` of a parked continuation: `Some(p)` is the waiter queue
+//     /// of the level `p`, and `None` is the unrestricted queue.
+//     pub const fn of_slot(slot: Option<i64>) -> Self {
+//         match slot {
+//             Some(level) => Lane::Level(level),
+//             None => Lane::Any,
+//         }
+//     }
+//
+//     /// The policy slot of the lane.
+//     pub const fn slot(self) -> Option<i64> {
+//         match self {
+//             Lane::Level(level) => Some(level),
+//             Lane::Any => None,
+//         }
+//     }
+//
+//     /// True when a waiter of this lane sees the records of `level`. A level lane sees its own
+//     /// level only, and the unrestricted lane sees every level (decision 38).
+//     pub const fn sees(self, level: Level) -> bool {
+//         match (self, level) {
+//             (Lane::Any, _) => true,
+//             (Lane::Level(own), Level::Priority(other)) => own == other,
+//             (Lane::Level(_), Level::Unprioritized) => false,
+//         }
+//     }
+// }
+// ```
 
 /// The head of one lane of a side in the staged view: its index in the view of its channel, its
 /// order, and the number of entries of its lane.
@@ -233,6 +259,9 @@ impl Discipline for PriorityQueueDiscipline {
     /// A join bind sees, for each level that its lane sees, the first records of the level
     /// (P5c, decision 38).
     const JOIN_WINDOW: JoinWindow = JoinWindow::Lanes;
+    /// Added by decision 124 (plan v4 C7.11, ruling RADD2 1.4): the priority queue settles
+    /// (P5b).
+    const SETTLES: bool = true;
 
     /// The head of one lane: the entry with the least `(ord, bincode bytes)`, the rule of the
     /// queue discipline. The plans of the priority queue apply it to each lane.
@@ -330,6 +359,30 @@ impl Discipline for PriorityQueueDiscipline {
     ) -> Result<Option<SpaceReissue>, SpaceError> {
         settle::settle_job(&PriorityQueueView::new(self), cx, op)
     }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): the first step of the
+    /// settle of the priority queue after the unit of a deviating head row, over the store view
+    /// `view` with the fire count `fired` (ADD A2.8). A deviating head row stores or parks, so
+    /// nothing is in flight after its unit.
+    fn tail_read<V: StoreView>(&self, view: &mut V, fired: usize) -> Result<TailRead, SpaceError> {
+        settle::tail_read(
+            &PriorityQueueView::new(self),
+            view,
+            &InFlight::none(),
+            fired,
+        )
+    }
+
+    // Added by decision 128 (kind routing): the steps of the lanes window. Each one calls the
+    // function of this module with the same argument.
+
+    fn send_level(params: &BTreeMap<String, Par>) -> Result<Level, SpaceError> {
+        self::send_level(params)
+    }
+
+    fn receive_lane(query: &Option<QueryParams>) -> Result<Lane, SpaceError> {
+        self::receive_lane(query)
+    }
 }
 
 impl PriorityQueueDiscipline {
@@ -378,15 +431,53 @@ impl PriorityQueueDiscipline {
     }
 
     /// The heads of the levels of the records of the collection in the staged view.
-    fn record_heads(&self, cx: &mut Cx<'_, '_>) -> Result<BTreeMap<Level, LaneHead>, SpaceError> {
-        let records = cx.data()?;
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+    // the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+    // fn record_heads(&self, cx: &mut Cx<'_, '_>)
+    // -> Result<BTreeMap<Level, LaneHead>, SpaceError> {
+    fn record_heads<V: StoreView>(
+        &self,
+        view: &mut V,
+    ) -> Result<BTreeMap<Level, LaneHead>, SpaceError> {
+        // let records = cx.data()?;
+        let records = view.data()?;
         self.lane_heads(Side::Data, records, record_slots)
     }
 
     /// The heads of the lanes of the waiting continuations of the collection in the staged view.
-    fn waiter_heads(&self, cx: &mut Cx<'_, '_>) -> Result<BTreeMap<Lane, LaneHead>, SpaceError> {
-        let waiters = cx.waiters()?;
-        self.lane_heads(Side::Waiters, waiters, waiter_slots)
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+    // the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+    // fn waiter_heads(&self, cx: &mut Cx<'_, '_>) -> Result<BTreeMap<Lane, LaneHead>, SpaceError> {
+    fn waiter_heads<V: StoreView>(
+        &self,
+        view: &mut V,
+    ) -> Result<BTreeMap<Lane, LaneHead>, SpaceError> {
+        // Changed by decision 124 (plan v2 C7.10, decision 100): the lane heads skip each inert
+        // machinery waiter, and each head keeps its index in the staged view. The text before:
+        // ```
+        // let waiters = cx.waiters()?;
+        // self.lane_heads(Side::Waiters, waiters, waiter_slots)
+        // ```
+        // let waiters = cx.waiters()?;
+        let waiters = view.waiters()?;
+        let mut live = Vec::<&ParWaiter>::with_capacity(waiters.len());
+        let mut positions = Vec::<usize>::with_capacity(waiters.len());
+        for (position, waiter) in waiters.iter().enumerate() {
+            match machinery_shape(waiter) {
+                true => {}
+                false => {
+                    live.push(waiter);
+                    positions.push(position);
+                }
+            }
+        }
+        let mut heads = self.lane_heads(Side::Waiters, &live, live_waiter_slots)?;
+        for head in heads.values_mut() {
+            head.index = *positions.get(head.index).ok_or(SpaceError::Inconsistent(
+                "a lane head is not an entry of its side",
+            ))?;
+        }
+        Ok(heads)
     }
 
     /// True when the element of an operation reaches the head of its lane, whose head is `head`
@@ -418,12 +509,17 @@ impl PriorityQueueDiscipline {
     /// of its record in flight (`flight`). That record counts as the head of its level when its
     /// order is the least of the level: it was the head when the settle lifted it, and the settle
     /// stores no record while one is in flight.
-    fn record_head_list(
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+    // the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+    // fn record_head_list(
+    fn record_head_list<V: StoreView>(
         &self,
-        cx: &mut Cx<'_, '_>,
+        // cx: &mut Cx<'_, '_>,
+        view: &mut V,
         flight: Option<(Level, i64)>,
     ) -> Result<Vec<RecordHead>, SpaceError> {
-        let stored = self.record_heads(cx)?;
+        // let stored = self.record_heads(cx)?;
+        let stored = self.record_heads(view)?;
         let length = stored.len().checked_add(1).ok_or(SpaceError::Inconsistent(
             "a collection holds too many levels",
         ))?;
@@ -482,9 +578,13 @@ impl PriorityQueueDiscipline {
     /// payload matches `pattern`: its position in `heads` and the values of the match. The
     /// payload of each head is decoded at most once (`payloads`). The guard is not part of this
     /// test (decision 38: the caller checks the guard once on the result).
-    fn first_match(
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+    // the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+    // fn first_match(
+    fn first_match<V: StoreView>(
         &self,
-        cx: &mut Cx<'_, '_>,
+        // cx: &mut Cx<'_, '_>,
+        view: &mut V,
         lane: Lane,
         pattern: &BindPattern,
         heads: &[RecordHead],
@@ -500,9 +600,11 @@ impl PriorityQueueDiscipline {
                 .ok_or(SpaceError::Inconsistent("a level head has no payload slot"))?;
             let payload = match slot {
                 Some(payload) => payload,
-                None => slot.insert(head_payload(cx, head.at, in_flight)?),
+                // None => slot.insert(head_payload(cx, head.at, in_flight)?),
+                None => slot.insert(head_payload(view, head.at, in_flight)?),
             };
-            if let Some(matched) = cx.bind(pattern, payload) {
+            // if let Some(matched) = cx.bind(pattern, payload) {
+            if let Some(matched) = view.bind(pattern, payload) {
                 return Ok(Some((position, matched)));
             }
         }
@@ -513,12 +615,17 @@ impl PriorityQueueDiscipline {
     /// `data`, in ascending order and without the refused lanes, that matches the datum (the
     /// pattern, then the guard). Each head that refuses marks its lane in `refused`. Only the
     /// tested heads are copied.
+    /// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): a head whose pair with
+    /// the produce `source` the book holds refuses too, before its pattern and its guard.
     fn offer_target(
         &self,
         cx: &mut Cx<'_, '_>,
         lanes: &[Option<Lane>; 2],
         refused: &mut [bool; 2],
         data: &ListParWithRandom,
+        // Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): the produce of the
+        // datum, whose pair with a lane head the book can hold.
+        source: &Produce,
     ) -> Result<Option<(ParWaiter, ListParWithRandom)>, SpaceError> {
         let heads = self.waiter_heads(cx)?;
         let mut candidates: [Option<(usize, LaneHead)>; 2] = [None, None];
@@ -551,6 +658,18 @@ impl PriorityQueueDiscipline {
                     "a waiting continuation of a collection has several binds",
                 ));
             };
+            // Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): a lane head whose
+            // pair with the datum the book holds refuses, as a head whose guard refuses, so its
+            // lane is marked.
+            match cx.booked(source, &waiter.source) {
+                false => {}
+                true => {
+                    if let Some(mark) = refused.get_mut(slot) {
+                        *mark = true;
+                    }
+                    continue;
+                }
+            }
             match cx.matches(pattern, data, &waiter.continuation, Held::InFlight)? {
                 Some(matched) => return Ok(Some((waiter, matched))),
                 None => {
@@ -576,6 +695,11 @@ fn waiter_slots(waiter: &ParWaiter) -> Result<(i64, Lane), SpaceError> {
     Ok((ord, Lane::of_slot(slot)))
 }
 
+/// Added by decision 124 (plan v2 C7.10): [`waiter_slots`] of a live waiter of a lane scan.
+fn live_waiter_slots(waiter: &&ParWaiter) -> Result<(i64, Lane), SpaceError> {
+    waiter_slots(waiter)
+}
+
 /// The head of the lane `lane` in `heads`.
 fn lookup_head<'h, K: Ord>(heads: &'h BTreeMap<K, LaneHead>, lane: &K) -> Option<&'h LaneHead> {
     heads.get(lane)
@@ -583,14 +707,19 @@ fn lookup_head<'h, K: Ord>(heads: &'h BTreeMap<K, LaneHead>, lane: &K) -> Option
 
 /// The payload of the head record at `at`, decoded from the staged view or from the record in
 /// flight.
-fn head_payload(
-    cx: &mut Cx<'_, '_>,
+// Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+// the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+// fn head_payload(
+fn head_payload<V: StoreView>(
+    // cx: &mut Cx<'_, '_>,
+    view: &mut V,
     at: HeadAt,
     in_flight: &InFlight,
 ) -> Result<ListParWithRandom, SpaceError> {
     match at {
         HeadAt::Stored(index) => {
-            let records = cx.data()?;
+            // let records = cx.data()?;
+            let records = view.data()?;
             let stored = records.get(index).ok_or(SpaceError::Inconsistent(
                 "a level head is not a record of the collection",
             ))?;
@@ -602,6 +731,41 @@ fn head_payload(
                 "a level head is in flight, but no record is in flight",
             )),
         },
+    }
+}
+
+/// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): true when the book holds the
+/// pair of the level head at `position` of `heads` and the consume `continuation`, the source of
+/// a stored waiter or of a lane receive. The head is a stored record or the record in flight of
+/// a settle. Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads go through the
+/// view `view`, so the tail read of a head row runs it over the store of the commit.
+fn head_booked<V: StoreView>(
+    view: &mut V,
+    heads: &[RecordHead],
+    position: usize,
+    in_flight: &InFlight,
+    continuation: &Consume,
+) -> Result<bool, SpaceError> {
+    match heads.get(position).map(|head| head.at) {
+        Some(HeadAt::Stored(index)) => {
+            let source = {
+                let records = view.data()?;
+                let stored = records.get(index).ok_or(SpaceError::Inconsistent(
+                    "a level head is not a record of the collection",
+                ))?;
+                stored.source.clone()
+            };
+            Ok(view.booked(&source, continuation))
+        }
+        Some(HeadAt::InFlight) => match in_flight.record() {
+            Some(lifted) => Ok(view.booked(&lifted.datum.source, continuation)),
+            None => Err(SpaceError::Inconsistent(
+                "a level head is in flight, but no record is in flight",
+            )),
+        },
+        None => Err(SpaceError::Inconsistent(
+            "a matched position is not a level head",
+        )),
     }
 }
 
@@ -636,8 +800,12 @@ fn stored_match<'a>(
 }
 
 /// A copy of the record at the index `index` of the staged view.
-fn stored_record(cx: &mut Cx<'_, '_>, index: usize) -> Result<ParDatum, SpaceError> {
-    let records = cx.data()?;
+// Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+// the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+// fn stored_record(cx: &mut Cx<'_, '_>, index: usize) -> Result<ParDatum, SpaceError> {
+fn stored_record<V: StoreView>(view: &mut V, index: usize) -> Result<ParDatum, SpaceError> {
+    // let records = cx.data()?;
+    let records = view.data()?;
     let stored = records.get(index).ok_or(SpaceError::Inconsistent(
         "a level head is not a record of the collection",
     ))?;
@@ -746,19 +914,41 @@ fn offer_pq(
     let lanes = level.candidate_lanes();
     let mut refused = [false; 2];
     loop {
+        // Changed by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): the pick reads the
+        // book with the produce of the datum. The text before:
+        // ```
+        // let Some((waiter, matched)) =
+        //     discipline.offer_target(cx, &lanes, &mut refused, &op.data)?
+        // else {
+        // ```
         let Some((waiter, matched)) =
-            discipline.offer_target(cx, &lanes, &mut refused, &op.data)?
+            discipline.offer_target(cx, &lanes, &mut refused, &op.data, &source)?
         else {
             cx.store(record, op.persistent)?;
             return discipline.settle_after(cx, OpView::Produce(&op));
         };
         let spent = !op.persistent && waiter.peeks.is_empty();
         let stays = waiter.persist;
-        let fire = OfferFire {
+        // Changed by decision 124 (plan v4 C7.9 and C7.11, rulings D-1 and RADD 1.4): the fire
+        // carries the head search of the priority queue, which the lines after the literal set
+        // with the fire count before this fire. The text before:
+        // let fire = OfferFire {
+        let mut fire = OfferFire {
             persistent: op.persistent,
             waiter,
             matched,
+            // Added by decision 102 (plan v4 C7.22): the datum of the produce is in flight.
+            offered: Offered::InFlight,
+            search: None,
         };
+        let fires_before = cx.rounds().fired();
+        fire.search = cx.head_offer_search::<PriorityQueueDiscipline>(
+            cx.data_channel(),
+            &fire,
+            &source,
+            &record,
+            fires_before,
+        );
         match cx.rounds().after_fire(spent, stays) {
             FireStep::Continue => {
                 let (data, removed) = (record.clone(), record.clone());
@@ -812,6 +1002,9 @@ fn receive_pq(
         cx.park(&op, continuation, peeks)?;
         return discipline.settle_after(cx, OpView::Consume(&op));
     }
+    // Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): the identity of the
+    // consume, for the pairs of the book.
+    let source = cx.receive_source(&op, &continuation);
     loop {
         let heads = discipline.record_head_list(cx, None)?;
         let mut payloads = Vec::<Option<ListParWithRandom>>::with_capacity(heads.len());
@@ -828,6 +1021,16 @@ fn receive_pq(
             cx.park(&op, continuation, peeks)?;
             return discipline.settle_after(cx, OpView::Consume(&op));
         };
+        // Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): a level head whose
+        // pair with the consume the book holds parks the continuation, as a guard refusal does
+        // (decision 38).
+        match head_booked(cx, &heads, position, &InFlight::none(), &source)? {
+            false => {}
+            true => {
+                cx.park(&op, continuation, peeks)?;
+                return discipline.settle_after(cx, OpView::Consume(&op));
+            }
+        }
         // Decision 38: the guard is checked once, on the first level head that matches the
         // pattern, and a refusal parks the continuation. The theory of the space then checks the
         // stored head (P7, TH-6), and a refusal parks it too.
@@ -836,6 +1039,9 @@ fn receive_pq(
             cx.park(&op, continuation, peeks)?;
             return discipline.settle_after(cx, OpView::Consume(&op));
         }
+        // Added by decision 124 (L6, CR30 D-b): the fire takes the lease of the stored datum
+        // that the check proved.
+        cx.lease_stored(stored.as_slice().len());
         let index = match heads.get(position).map(|head| head.at) {
             Some(HeadAt::Stored(index)) => index,
             Some(HeadAt::InFlight) | None => {
@@ -860,23 +1066,42 @@ fn receive_pq(
             matched,
             view_index,
         };
+        // Added by decision 124 (plan v4 C7.9 and C7.11, rulings D-1 and RADD 1.4): the head
+        // search of the fire, of the priority queue, with the fire count before this fire. Each
+        // arm below passes it to `fire_receive`.
+        let fires_before = cx.rounds().fired();
+        let search = cx.head_receive_search::<PriorityQueueDiscipline>(
+            &op,
+            &continuation,
+            &fire,
+            fires_before,
+        );
         match cx.rounds().after_fire(spent, stays) {
             FireStep::Continue => {
                 let fired = continuation.clone();
-                cx.fire_receive(&op, fire, fired, peeks.clone())?;
+                // Changed by decision 124 (plan v4 C7.9, ruling D-1): the fire takes its search.
+                // The text before:
+                // cx.fire_receive(&op, fire, fired, peeks.clone())?;
+                cx.fire_receive(&op, fire, fired, peeks.clone(), search)?;
                 if let Some(reissue) = restore_peeked(discipline, cx, restored)? {
                     return Ok(Some(reissue));
                 }
             }
             FireStep::Done => {
-                cx.fire_receive(&op, fire, continuation, peeks)?;
+                // Changed by decision 124 (plan v4 C7.9, ruling D-1): the fire takes its search.
+                // The text before:
+                // cx.fire_receive(&op, fire, continuation, peeks)?;
+                cx.fire_receive(&op, fire, continuation, peeks, search)?;
                 if let Some(reissue) = restore_peeked(discipline, cx, restored)? {
                     return Ok(Some(reissue));
                 }
                 return discipline.settle_after(cx, OpView::Consume(&op));
             }
             FireStep::Reissue(cause) => {
-                cx.fire_receive(&op, fire, continuation, peeks)?;
+                // Changed by decision 124 (plan v4 C7.9, ruling D-1): the fire takes its search.
+                // The text before:
+                // cx.fire_receive(&op, fire, continuation, peeks)?;
+                cx.fire_receive(&op, fire, continuation, peeks, search)?;
                 if let Some(reissue) = restore_peeked(discipline, cx, restored)? {
                     return Ok(Some(reissue));
                 }
@@ -930,19 +1155,29 @@ struct Chosen {
 }
 
 impl SettleView for PriorityQueueView<'_> {
+    /// Added by decision 124 (plan v4 C7.11, ruling RADD 1.4): the settle offer of a priority
+    /// queue builds its head search with the priority queue discipline.
+    type Discipline = PriorityQueueDiscipline;
+
     /// The fireable waiter-lane head with the least order, and the record that it fires. A head
     /// of a waiter lane is fireable when the first level head that it sees and whose payload
     /// matches its pattern passes its guard (decision 38). A record in flight counts as the head
     /// of its level. An empty side plans nothing and reads nothing.
-    fn next_fire(
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+    // the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+    // fn next_fire(
+    fn next_fire<V: StoreView>(
         &self,
-        cx: &mut Cx<'_, '_>,
+        // cx: &mut Cx<'_, '_>,
+        view: &mut V,
         in_flight: &InFlight,
     ) -> Result<Option<FirePlan>, SpaceError> {
-        if cx.side_len(Side::Waiters)? == 0 {
+        // if cx.side_len(Side::Waiters)? == 0 {
+        if view.waiters()?.is_empty() {
             return Ok(None);
         }
-        if !in_flight.is_some() && cx.side_len(Side::Data)? == 0 {
+        // if !in_flight.is_some() && cx.side_len(Side::Data)? == 0 {
+        if !in_flight.is_some() && view.data()?.is_empty() {
             return Ok(None);
         }
         let flight = match in_flight.record() {
@@ -952,14 +1187,17 @@ impl SettleView for PriorityQueueView<'_> {
             }
             None => None,
         };
-        let heads = self.discipline.record_head_list(cx, flight)?;
-        let waiter_heads = self.discipline.waiter_heads(cx)?;
+        // let heads = self.discipline.record_head_list(cx, flight)?;
+        let heads = self.discipline.record_head_list(view, flight)?;
+        // let waiter_heads = self.discipline.waiter_heads(cx)?;
+        let waiter_heads = self.discipline.waiter_heads(view)?;
         let mut payloads = Vec::<Option<ListParWithRandom>>::with_capacity(heads.len());
         payloads.resize(heads.len(), None);
         let mut chosen: Option<Chosen> = None;
         for (lane, head) in &waiter_heads {
             let waiter = {
-                let waiters = cx.waiters()?;
+                // let waiters = cx.waiters()?;
+                let waiters = view.waiters()?;
                 let stored = waiters.get(head.index).ok_or(SpaceError::Inconsistent(
                     "a lane head is not an entry of its side",
                 ))?;
@@ -971,7 +1209,8 @@ impl SettleView for PriorityQueueView<'_> {
                 ));
             };
             let found = self.discipline.first_match(
-                cx,
+                // cx,
+                view,
                 *lane,
                 pattern,
                 &heads,
@@ -981,8 +1220,19 @@ impl SettleView for PriorityQueueView<'_> {
             let Some((position, matched)) = found else {
                 continue;
             };
+            // Added by decision 124 (plan v4 C7.8, rule CR-20): a lane head whose pair the book
+            // holds is not fireable, as a lane head whose guard refuses (decision 38).
+            match head_booked(view, &heads, position, in_flight, &waiter.source)? {
+                false => {}
+                true => continue,
+            }
             let stored = stored_match(&heads, &payloads, position, &matched)?;
-            if !cx.admits(&waiter.continuation, &matched, stored.as_slice())? {
+            // if !cx.admits(&waiter.continuation, &matched, stored.as_slice())? {
+            if !view.admits_all(
+                &waiter.continuation,
+                std::slice::from_ref(&matched),
+                stored.as_slice(),
+            )? {
                 continue;
             }
             let older = match &chosen {
@@ -1010,14 +1260,16 @@ impl SettleView for PriorityQueueView<'_> {
         let record = match heads.get(position).map(|head| head.at) {
             Some(HeadAt::InFlight) => BoundRecord::InFlight,
             Some(HeadAt::Stored(index)) => BoundRecord::Stored {
-                datum: stored_record(cx, index)?,
+                // datum: stored_record(cx, index)?,
+                datum: stored_record(view, index)?,
                 view_index: i32::try_from(index)
                     .map_err(|_| SpaceError::Inconsistent("a record index exceeds i32"))?,
             },
             None => return Err(SpaceError::Inconsistent("a settle fire has no level head")),
         };
         let mut group = Vec::<Par>::with_capacity(1);
-        group.push(cx.data_channel().clone());
+        // group.push(cx.data_channel().clone());
+        group.push(view.data_channel()?.clone());
         let mut bound = Vec::<Bound>::with_capacity(1);
         bound.push(Bound { record, matched });
         Ok(Some(FirePlan {
@@ -1550,5 +1802,176 @@ mod tests {
                 loser.0.to_string()
             )]);
         }
+    }
+
+    // ── Decision 124: the ord of a re-issue, the inert machinery waiters and the book ───────
+
+    // Added by decision 124 (plan v2 C7.10, plan v4 C7.8, ruling OP-F13): the check of the inert
+    // machinery waiters parks a `K_retire`, and the checks of the book read the COMMs of the
+    // event log on the data channel.
+    use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
+    use rspace_plus_plus::rspace::hashing::stable_hash_provider;
+    use rspace_plus_plus::rspace::trace::event::{Event, COMM};
+
+    use crate::rust::interpreter::spaces::disciplines::scan::{
+        retire_continuation, retire_pattern,
+    };
+
+    // Disabled by decision 132: the user withdrew plan v2 C7.12, so a re-issued element that
+    // is not persistent takes a fresh ord again (decision 43, `pq_reissue_takes_level_fifo_place`
+    // of `PriorityQueue.v`). This test pinned the rule of C7.12.
+
+    /// Added by decision 124 (plan v2 C7.10, decision 100): a `K_retire` and a `K_lift` that sit
+    /// in the store before a send are inert machinery waiters. The lane heads of the offer skip
+    /// both, so neither fires and both stay.
+    #[tokio::test]
+    async fn readers_skip_an_inert_machinery_waiter() {
+        let (space, env) = fixture().await;
+        let random = Blake2b512Random::create_from_bytes(b"inert machinery");
+        let member = Produce::create(channels().data(), &send(1, None).data, false);
+        let retire = retire_continuation(&member.hash, &random, None);
+        let lift = settle::lift_continuation(0, 0, &random, None);
+        let waiters = [(retire_pattern(), retire), (settle::lift_pattern(), lift)];
+        for (pattern, continuation) in waiters {
+            space
+                .consume(
+                    vec![channels().data().clone()],
+                    vec![pattern],
+                    continuation,
+                    false,
+                    Default::default(),
+                )
+                .await
+                .expect("an inert machinery waiter parks");
+        }
+        let outcome = run(&env, SpaceOp::Produce(send(1, None))).await;
+        assert!(outcome.fires.is_empty(), "the send fires no inert waiter");
+        assert_eq!(
+            space
+                .get_waiting_continuations(vec![channels().data().clone()])
+                .await
+                .len(),
+            2,
+            "both inert waiters stay"
+        );
+    }
+
+    /// Added by decision 124 (plan v4 C7.8, rule CR-20): the settle skips a lane head whose pair
+    /// the book holds. The record 1 waits at level 1, and the unrestricted waiters b (only 0) and
+    /// u (only 1) wait, u behind b. The book holds the pair of the record 1 and u. The send of 0
+    /// at level 0 fires b and exposes u, and the settle leaves the record 1 and u in place.
+    #[tokio::test]
+    async fn priority_queue_view_skips_a_booked_lane_head() {
+        let (space, env) = fixture().await;
+        run(&env, SpaceOp::Produce(send(1, Some(1)))).await;
+        run(&env, SpaceOp::Consume(receive("b", Some(0), None))).await;
+        run(&env, SpaceOp::Consume(receive("u", Some(1), None))).await;
+        let record = match space.get_data(channels().data()).await.as_slice() {
+            [stored] => stored.source.hash.clone(),
+            other => panic!("the record 1 is stored alone, not {} records", other.len()),
+        };
+        let waiter = space
+            .get_waiting_continuations(vec![channels().data().clone()])
+            .await
+            .into_iter()
+            .find(|waiter| {
+                let decoded = record::unwrap_pq_continuation(&waiter.continuation)
+                    .expect("a continuation record");
+                body_name(&decoded.continuation) == "u"
+            })
+            .expect("u waits")
+            .source
+            .hash;
+        env.volatile.book_pairs([(record, waiter)]);
+        let outcome = run(&env, SpaceOp::Produce(send(0, Some(0)))).await;
+        assert_eq!(fired_names(&outcome), vec!["b"]);
+        assert_eq!(records(&space).await, vec![(0, Some(1), vec![int(1)])]);
+        assert_eq!(parked_names(&space).await, vec![(2, None, "u".to_string())]);
+    }
+
+    /// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): the COMMs of `log` on the
+    /// data channel of the collection. Each operation of a priority queue also takes and puts
+    /// its counter, so `log` holds a COMM on the counter channel for each operation.
+    fn data_comms(log: &[Event]) -> Vec<&COMM> {
+        let data = stable_hash_provider::hash(channels().data());
+        log.iter()
+            .filter_map(|event| match event {
+                Event::Comm(comm) => match comm.consume.channel_hashes.as_slice() {
+                    [channel] if *channel == data => Some(comm),
+                    _ => None,
+                },
+                Event::IoEvent(_) => None,
+            })
+            .collect()
+    }
+
+    /// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): the pair of the one COMM
+    /// on the data channel of the probe log `log`: the hash of its first produce and the hash of
+    /// its consume.
+    fn probe_pair(log: &[Event]) -> (Blake2b256Hash, Blake2b256Hash) {
+        match data_comms(log).as_slice() {
+            [comm] => match comm.produces.first() {
+                Some(produce) => (produce.hash.clone(), comm.consume.hash.clone()),
+                None => panic!("the COMM of the probe binds a record: {comm:?}"),
+            },
+            other => panic!("the probe fires once on the data channel: {other:?}"),
+        }
+    }
+
+    /// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): a lane offer refuses a
+    /// lane head whose pair with the datum the book holds. A probe space parks the receive r and
+    /// sends 1, and its COMM on the data channel gives the pair. A fresh space parks r, books the
+    /// pair and sends 1: the send stores its datum, and r stays parked.
+    #[tokio::test]
+    async fn priority_queue_offer_refuses_a_booked_lane_head() {
+        let (probe, env) = fixture().await;
+        run(&env, SpaceOp::Consume(receive("r", Some(1), None))).await;
+        run(&env, SpaceOp::Produce(send(1, None))).await;
+        let pair = probe_pair(&probe.take_event_log().await);
+        let (space, env) = fixture().await;
+        run(&env, SpaceOp::Consume(receive("r", Some(1), None))).await;
+        env.volatile.book_pairs([pair]);
+        run(&env, SpaceOp::Produce(send(1, None))).await;
+        let log = space.take_event_log().await;
+        assert!(data_comms(&log).is_empty(), "the booked pair does not fire");
+        assert_eq!(
+            records(&space).await,
+            vec![(1, None, vec![int(1)])],
+            "the send stores its datum"
+        );
+        assert_eq!(
+            parked_names(&space).await,
+            vec![(0, None, "r".to_string())],
+            "the receive stays parked"
+        );
+    }
+
+    /// Added by decision 124 (plan v4 C7.8, rule CR-20, ruling OP-F13): a lane receive parks when
+    /// the book holds the pair of the level head that it matches and its consume, as when its
+    /// guard refuses. A probe space stores 1 and runs the receive r, and its COMM on the data
+    /// channel gives the pair. A fresh space stores 1, books the pair and runs r: r parks, and
+    /// the record stays.
+    #[tokio::test]
+    async fn priority_queue_receive_parks_on_a_booked_level_head() {
+        let (probe, env) = fixture().await;
+        run(&env, SpaceOp::Produce(send(1, None))).await;
+        run(&env, SpaceOp::Consume(receive("r", Some(1), None))).await;
+        let pair = probe_pair(&probe.take_event_log().await);
+        let (space, env) = fixture().await;
+        run(&env, SpaceOp::Produce(send(1, None))).await;
+        env.volatile.book_pairs([pair]);
+        run(&env, SpaceOp::Consume(receive("r", Some(1), None))).await;
+        let log = space.take_event_log().await;
+        assert!(data_comms(&log).is_empty(), "the booked pair does not fire");
+        assert_eq!(
+            parked_names(&space).await,
+            vec![(1, None, "r".to_string())],
+            "the receive parks its continuation"
+        );
+        assert_eq!(
+            records(&space).await,
+            vec![(0, None, vec![int(1)])],
+            "the record stays stored"
+        );
     }
 }

@@ -549,7 +549,9 @@ fn the_out_of_range_indices_are_the_first_invalid_index_of_each_oneof() {
     assert_eq!(COST_VALUE_VARIANT_COUNT, UNF_INSTANCE_VARIANT_COUNT);
     assert_eq!(
         OUT_OF_RANGE_INDICES,
-        [2, 3, 6, 9, 42, u32::MAX],
+        // Changed by decision 112: `ExprInstance` has two more arms. The text before:
+        // [2, 3, 6, 9, 42, u32::MAX],
+        [2, 3, 6, 9, 44, u32::MAX],
         "the arm counts of this branch's oneofs"
     );
 }

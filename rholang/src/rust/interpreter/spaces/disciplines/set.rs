@@ -3,10 +3,36 @@
 //! A set is a bag whose records form classes. Two records are members of one class when their
 //! payloads have equal set keys (F5). So equal values form one class, whatever their random
 //! states, their cost authorities and their cost stacks. The store keeps every record. Only the
-//! view of a set removes the duplicates: a receive binds a whole class, and a fire of a send
+//! view of a set removes the duplicates: a receive takes a whole class, and a fire of a send
 //! removes the stored members of its class.
 //!
 //! The plans are the scan driver of [`super::scan`] with the class key of this module:
+//!
+//! * A receive takes the first record in its pick order whose payload its pattern binds. Play
+//!   shuffles the canonical order of DR-75, and replay puts first the records that the recorded
+//!   row names (rules CR-1 and CR-4). Every member of the class of that record binds the pattern
+//!   too. The receive checks its guard once, on the first member of the class in DR-75 order
+//!   (decision 37, decision 41, decision 119 G1). The members have equal payloads, so each
+//!   member gives the same verdict.
+//! * A receive that does not peek fires one consume over `[D]` with the first member of the
+//!   class in DR-75 order, and the outcome dispatches it (decision 119 G1, decision 101). Then
+//!   RETIRE-CLASS retires each other member that is not persistent, in DR-75 order, with a
+//!   single-channel `K_retire` COMM. So a class with a persistent member stays in the set.
+//! * A send fires the first waiter in its pick order whose pattern binds the datum and whose
+//!   guard admits it (rules CR-1 and CR-4). After a fire of a waiter that does not peek, the
+//!   send retires the stored members of its class that are not persistent. Each retire is a
+//!   single-channel `K_retire` COMM (decision 37). Only a guarded waiter that parked while a
+//!   stored member passes its guard causes this case (readiness review S3).
+//! * A peek binds the record of its pick alone on `[D]`. Its fire removes that record when it
+//!   is not persistent, and RESTORE-SCAN sends the record again (decision 45, Rule E). A peek
+//!   retires nothing. A fire of the second send on a waiter that does not peek retires the class.
+//!
+//! Changed by decision 102 (rules CR-1, CR-4, CR-12 and CR-13, decision 119 G1, decision 101).
+//! The text before:
+//!
+//! ```text
+//! view of a set removes the duplicates: a receive binds a whole class, and a fire of a send
+//! removes the stored members of its class.
 //!
 //! * A receive takes the first record in the canonical order of DR-75 whose payload its pattern
 //!   binds. It checks its guard once, on that record (decision 37, decision 41). Every member of
@@ -17,13 +43,10 @@
 //!   representative only (F3, F20). The fire removes every member that is not persistent, so a
 //!   class with a persistent member stays in the set.
 //! * A send fires the first waiter in canonical order whose pattern binds the datum and whose
-//!   guard admits it. After a fire of a waiter that does not peek, the send retires the stored
-//!   members of its class that are not persistent. Each retire is a single-channel `K_retire`
-//!   COMM (decision 37). Only a guarded waiter that parked while a stored member passes its
-//!   guard causes this case (readiness review S3).
+//!   guard admits it. [...]
 //! * A peek binds the representative alone on `[D]`. Its fire removes a representative that is
-//!   not persistent, and RESTORE-SCAN sends the record again (decision 45, Rule E). A peek
-//!   retires nothing. A fire of the second send on a waiter that does not peek retires the class.
+//!   not persistent, and RESTORE-SCAN sends the record again (decision 45, Rule E). [...]
+//! ```
 //!
 //! A set has no counter and no params. Every record and every parked continuation has the `ord`
 //! 0, so a re-issued element keeps its record and its identity (decision 43). Waiters are equal
@@ -76,6 +99,8 @@ impl Discipline for SetDiscipline {
     const SEND_PARAMS: &'static [&'static str] = &[];
     /// A join bind sees one representative for each class, and it claims its whole class (P5c).
     const JOIN_WINDOW: JoinWindow = JoinWindow::Classes;
+    /// Added by decision 102 (plan v4 C4.3, rule CR-1): a set picks at random in play.
+    const RANDOM_PICKS: bool = true;
 
     /// The entry with the least `(ord, bincode bytes)`, as for the queue and the bag. Every
     /// entry of a set has the `ord` 0. Only the head driver uses a head. A set does not use the
@@ -109,8 +134,11 @@ impl Discipline for SetDiscipline {
         scan::offer(self, cx, op, ord)
     }
 
-    /// RECEIVE-SCAN of the scan driver ([`scan::receive`]). It fires over `[D; n]` for a class,
-    /// or over the representative alone for a peek. RESTORE-SCAN follows a peek fire.
+    /// RECEIVE-SCAN of the scan driver ([`scan::receive`]). It fires one bind over `[D]` with the
+    /// first member of the class in DR-75 order, and RETIRE-CLASS retires the other members. A
+    /// peek fires the record of its pick alone, and RESTORE-SCAN follows. Changed by decision
+    /// 102 (decision 119 G1, decision 101). The text before: "It fires over `[D; n]` for a
+    /// class, or over the representative alone for a peek."
     fn receive(
         &self,
         cx: &mut Cx<'_, '_>,
@@ -204,7 +232,9 @@ mod tests {
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
     use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;
-    use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+    // Changed by decision 102 (decision 119 G1): the test names the DR-75 order of the members.
+    // use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+    use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
@@ -525,10 +555,25 @@ mod tests {
         let [fire] = outcome.fires.as_slice() else {
             panic!("one fire: {outcome:?}");
         };
+        // Changed by decision 102 (decision 119 G1, decision 101): the fire binds the first
+        // member of the class in DR-75 order, and one `K_retire` row retires the other member.
+        // The text before:
+        // assert_eq!(
+        //     fire.results.len(),
+        //     1,
+        //     "the representative alone is dispatched"
+        // );
+        let [result] = fire.results.as_slice() else {
+            panic!("the fire binds one member: {fire:?}");
+        };
+        let first = [send(1, 1), send(1, 2)]
+            .iter()
+            .map(|op| record::wrap_datum(0, &op.data))
+            .min_by_key(|record| Produce::create(&data(), record, false).hash)
+            .expect("two members");
         assert_eq!(
-            fire.results.len(),
-            1,
-            "the representative alone is dispatched"
+            result.removed_datum, first,
+            "the first member in DR-75 order is dispatched"
         );
         let log = space.take_event_log().await;
         let widths: Vec<usize> = log
@@ -539,7 +584,13 @@ mod tests {
                 Event::IoEvent(IOEvent::Produce(_)) => None,
             })
             .collect();
-        assert_eq!(widths, vec![2, 2], "one consume and one COMM over [D; 2]");
+        // Changed by decision 102 (decision 101). The text before:
+        // assert_eq!(widths, vec![2, 2], "one consume and one COMM over [D; 2]");
+        assert_eq!(
+            widths,
+            vec![1, 1, 1, 1],
+            "the fire over [D], then one K_retire row over [D]"
+        );
         assert_eq!(stored(&space).await, vec![(0, vec![int(2)])]);
         let outcome = run(&env, SpaceOp::Consume(receive("w", any()))).await;
         assert_eq!(outcome.fires.len(), 1);

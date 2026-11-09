@@ -19,7 +19,11 @@ use crate::rust::interpreter::compiler::normalizer::cost_accounting::sig::{
 };
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::compiler::normalizer::processes::reified_syntax::{
-    alloc_desugared_send, check_query_source, normalize_bind_source,
+    // Changed by decision 112: the query is a field of the bind. The text before:
+    // alloc_desugared_send, check_query_source, normalize_bind_source,
+    alloc_desugared_send,
+    check_query_source,
+    normalize_bind_query,
 };
 use crate::rust::interpreter::compiler::normalizer::processes::utils::fail_on_invalid_connective;
 use crate::rust::interpreter::compiler::normalizer::remainder_normalizer_matcher::normalize_match_name;
@@ -343,7 +347,13 @@ pub fn normalize_p_input<'ast>(
             parser: &'ast rholang_parser::RholangParser<'ast>,
         ) -> Result<
             (
-                Vec<(Par, Option<CostSignature>)>,
+                // Changed by decision 112: the query is a field of the bind. The text before:
+                // Vec<(Par, Option<CostSignature>)>,
+                Vec<(
+                    Par,
+                    Option<models::rhoapi::QuerySpec>,
+                    Option<CostSignature>,
+                )>,
                 FreeMap<VarSort>,
                 BitSet,
                 bool,
@@ -370,8 +380,18 @@ pub fn normalize_p_input<'ast>(
                 )?;
 
                 current_known_free = updated_known_free;
-                let (par, query_known_free) = normalize_bind_source(
-                    par,
+                // Changed by decision 112: the query is a field of the bind. The text before:
+                // ```
+                // let (par, query_known_free) = normalize_bind_source(
+                //     par,
+                //     query,
+                //     &input.bound_map_chain,
+                //     current_known_free,
+                //     env,
+                //     parser,
+                // )?;
+                // ```
+                let (query_spec, query_known_free) = normalize_bind_query(
                     query,
                     &input.bound_map_chain,
                     current_known_free,
@@ -384,6 +404,12 @@ pub fn normalize_p_input<'ast>(
                     par.locally_free(par.clone(), input.bound_map_chain.depth() as i32),
                 );
                 connective_used = connective_used || par.clone().connective_used(par.clone());
+                if let Some(query) = &query_spec {
+                    for value in query.payload.iter().chain(query.named.values()) {
+                        locally_free = union(locally_free, value.locally_free.clone());
+                        connective_used = connective_used || value.connective_used;
+                    }
+                }
                 let signature = match signature {
                     Some(signature) => {
                         let (signature, updated_known_free) = signature_to_wire(
@@ -401,7 +427,9 @@ pub fn normalize_p_input<'ast>(
                     }
                     None => None,
                 };
-                vector_par.push((par, signature));
+                // Changed by decision 112: the query is a field of the bind. The text before:
+                // vector_par.push((par, signature));
+                vector_par.push((par, query_spec, signature));
             }
 
             Ok((
@@ -490,7 +518,9 @@ pub fn normalize_p_input<'ast>(
                 .into_iter()
                 .zip(sources_par)
                 .into_iter()
-                .map(|((a, b, c, _), (e, signature))| (a, b, e, c, signature))
+                // Changed by decision 112: the query is a field of the bind. The text before:
+                // .map(|((a, b, c, _), (e, signature))| (a, b, e, c, signature))
+                .map(|((a, b, c, _), (e, query, signature))| (a, b, e, c, signature, query))
                 .collect(),
         )?;
 
@@ -498,13 +528,29 @@ pub fn normalize_p_input<'ast>(
             receive_binds_and_free_maps.into_iter().unzip();
 
         // Channel duplicate check
-        let channels: Vec<Par> = receive_binds
+        // Changed by decision 112: the check compares the channel with its query, as the QUERY
+        // tuple did. The text before:
+        // ```
+        // let channels: Vec<Par> = receive_binds
+        //     .clone()
+        //     .into_iter()
+        //     .map(|rb| rb.source.unwrap())
+        //     .collect();
+        //
+        // let channels_set: HashSet<Par> = channels.clone().into_iter().collect();
+        // ```
+        let channels: Vec<(Par, Option<models::rhoapi::QuerySpec>)> = receive_binds
             .clone()
             .into_iter()
-            .map(|rb| rb.source.unwrap())
+            .map(|rb| {
+                (
+                    rb.source.expect("a normalized bind has a source"),
+                    rb.query_spec,
+                )
+            })
             .collect();
-
-        let channels_set: HashSet<Par> = channels.clone().into_iter().collect();
+        let channels_set: HashSet<(Par, Option<models::rhoapi::QuerySpec>)> =
+            channels.clone().into_iter().collect();
         let has_same_channels = channels.len() > channels_set.len();
 
         if has_same_channels {
@@ -694,6 +740,7 @@ mod tests {
                 remainder: None,
                 free_count: 2,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(new_send_par(
                 new_boundvar_par(1, create_bit_vector(&[1]), false),
@@ -798,6 +845,7 @@ mod tests {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(Par::default()),
             persistent: false,
@@ -910,6 +958,7 @@ mod tests {
                 remainder: None,
                 free_count: 2,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some({
                 let mut inner_par = Par::default();
@@ -923,6 +972,7 @@ mod tests {
                         remainder: None,
                         free_count: 2,
                         cost_signature: None,
+                        query_spec: None,
                     }],
                     body: Some({
                         let mut par = Par::default().with_sends(vec![

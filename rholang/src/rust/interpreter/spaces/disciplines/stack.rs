@@ -48,11 +48,18 @@
 use std::cmp::Ordering;
 
 use models::rhoapi::Par;
+// Added by decision 124 (plan v4 C7.11, ruling RADD 1.4): the tail read of a head row.
+use rspace_plus_plus::rspace::space_store_handle::TailRead;
 use serde::Serialize;
 
 use crate::rust::interpreter::spaces::agent::{SettleOp, SpaceReissue};
 use crate::rust::interpreter::spaces::errors::SpaceError;
-use crate::rust::interpreter::spaces::generic::{Cx, Discipline, Held, OpView, Ordered, Side};
+// Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the view of the stack reads the
+// store through `StoreView` and composes its head reads. The text before:
+// use crate::rust::interpreter::spaces::generic::{Cx, Discipline, Held, OpView, Ordered, Side};
+use crate::rust::interpreter::spaces::generic::{
+    datum_ord, head_waiter_of, Cx, Discipline, Held, OpView, Ordered, Side, StoreView, StoredMatch,
+};
 use crate::rust::interpreter::spaces::record;
 use crate::rust::interpreter::spaces::settle::{
     self, Bound, BoundRecord, FirePlan, InFlight, SettleView,
@@ -66,6 +73,8 @@ impl Discipline for StackDiscipline {
     const NAME: &'static str = "stack";
     const USES_COUNTER: bool = true;
     const SEND_PARAMS: &'static [&'static str] = &[];
+    /// Added by decision 124 (plan v4 C7.11, ruling RADD2 1.4): the stack settles (P5b).
+    const SETTLES: bool = true;
 
     /// The entry with the greatest `(ord, bincode bytes)`, on both sides.
     fn head<T: Serialize>(
@@ -124,6 +133,14 @@ impl Discipline for StackDiscipline {
     ) -> Result<Option<SpaceReissue>, SpaceError> {
         settle::settle_job(&StackView::new(self), cx, op)
     }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): the first step of the
+    /// settle of the stack after the unit of a deviating head row, over the store view `view`
+    /// with the fire count `fired` (ADD A2.8). A deviating head row stores or parks, so nothing
+    /// is in flight after its unit.
+    fn tail_read<V: StoreView>(&self, view: &mut V, fired: usize) -> Result<TailRead, SpaceError> {
+        settle::tail_read(&StackView::new(self), view, &InFlight::none(), fired)
+    }
 }
 
 /// The settle order of a stack: the top pair of its collection.
@@ -138,23 +155,34 @@ impl<'d> StackView<'d> {
 }
 
 impl SettleView for StackView<'_> {
+    /// Added by decision 124 (plan v4 C7.11, ruling RADD 1.4): the settle offer of a stack
+    /// builds its head search with the stack discipline.
+    type Discipline = StackDiscipline;
+
     /// The top waiter and the top record, when the top waiter matches the payload of the top
     /// record and its guard admits the match (decision 37: a head-only collection tests only its
     /// top). A record in flight was the top record when the settle lifted it, and a settle stores
     /// no record while one is in flight, so the record in flight is still the top record. An
     /// empty side plans nothing and reads nothing.
-    fn next_fire(
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+    // the view `view` in place of `cx`. The comment above a changed line keeps its text before.
+    // fn next_fire(
+    fn next_fire<V: StoreView>(
         &self,
-        cx: &mut Cx<'_, '_>,
+        // cx: &mut Cx<'_, '_>,
+        view: &mut V,
         in_flight: &InFlight,
     ) -> Result<Option<FirePlan>, SpaceError> {
-        if cx.side_len(Side::Waiters)? == 0 {
+        // if cx.side_len(Side::Waiters)? == 0 {
+        if view.waiters()?.is_empty() {
             return Ok(None);
         }
-        if !in_flight.is_some() && cx.side_len(Side::Data)? == 0 {
+        // if !in_flight.is_some() && cx.side_len(Side::Data)? == 0 {
+        if !in_flight.is_some() && view.data()?.is_empty() {
             return Ok(None);
         }
-        let Some(waiter) = cx.head_waiter(self.discipline)? else {
+        // let Some(waiter) = cx.head_waiter(self.discipline)? else {
+        let Some(waiter) = head_waiter_of(self.discipline, view.waiters()?)? else {
             return Ok(None);
         };
         let [pattern] = waiter.patterns.as_slice() else {
@@ -168,7 +196,12 @@ impl SettleView for StackView<'_> {
                 record::unwrap_datum(&lifted.datum.a)?.datum,
             ),
             None => {
-                let Some((index, top)) = cx.head_datum(self.discipline)? else {
+                // let Some((index, top)) = cx.head_datum(self.discipline)? else {
+                let records = view.data()?;
+                let head = Cx::scan_head(self.discipline, Side::Data, records, datum_ord)?;
+                let Some((index, top)) = head
+                    .and_then(|(index, _)| records.get(index).map(|datum| (index, datum.clone())))
+                else {
                     return Ok(None);
                 };
                 let view_index = i32::try_from(index)
@@ -183,17 +216,51 @@ impl SettleView for StackView<'_> {
                 )
             }
         };
+        // Added by decision 124 (plan v4 C7.8, rule CR-20): the top pair does not fire again
+        // when the book holds it, so the stack owes no fire.
+        let source = match (&record, in_flight.record()) {
+            (BoundRecord::Stored { datum, .. }, _) => &datum.source,
+            (BoundRecord::InFlight, Some(lifted)) => &lifted.datum.source,
+            (BoundRecord::InFlight, None) => {
+                return Err(SpaceError::Inconsistent(
+                    "a settle plan binds the element in flight, but none is in flight",
+                ))
+            }
+        };
+        match view.booked(source, &waiter.source) {
+            false => {}
+            true => return Ok(None),
+        }
         // The theory of the space checks a stored top record, and not the record in flight
         // (P7, TH-6).
         let held = match record {
             BoundRecord::Stored { .. } => Held::Stored,
             BoundRecord::InFlight => Held::InFlight,
         };
-        let Some(matched) = cx.matches(pattern, &payload, &waiter.continuation, held)? else {
+        // let Some(matched) = cx.matches(pattern, &payload, &waiter.continuation, held)? else {
+        let Some(matched) = view.bind(pattern, &payload) else {
             return Ok(None);
         };
+        let admitted = match held {
+            Held::Stored => {
+                view.admits_all(&waiter.continuation, std::slice::from_ref(&matched), &[
+                    StoredMatch {
+                        payload: &payload,
+                        captures: &matched,
+                    },
+                ])?
+            }
+            Held::InFlight => {
+                view.admits_all(&waiter.continuation, std::slice::from_ref(&matched), &[])?
+            }
+        };
+        match admitted {
+            true => {}
+            false => return Ok(None),
+        }
         let mut group = Vec::<Par>::with_capacity(1);
-        group.push(cx.data_channel().clone());
+        // group.push(cx.data_channel().clone());
+        group.push(view.data_channel()?.clone());
         let mut bound = Vec::<Bound>::with_capacity(1);
         bound.push(Bound { record, matched });
         Ok(Some(FirePlan {
@@ -634,5 +701,49 @@ mod tests {
             "produce K"
         ]);
         assert_eq!(space.get_data(channels().data()).await.len(), 1);
+    }
+
+    /// Added by decision 124 (plan v4 C7.8, rule CR-20): the stack owes no fire for a top pair
+    /// that the book holds. W2(1) and W(2) park, h(1) is stored under the top waiter W, and the
+    /// book holds the pair of h and W2. The send d(2) fires W, and the settle after the plan
+    /// leaves the exposed top pair h and W2 in place.
+    #[tokio::test]
+    async fn stack_view_owes_no_fire_for_a_booked_top_pair() {
+        let (space, env) = fixture().await;
+        run(&env, SpaceOp::Consume(receive("w2", exactly(1)))).await;
+        run(&env, SpaceOp::Consume(receive("w", exactly(2)))).await;
+        run(&env, SpaceOp::Produce(send(1))).await;
+        let record = match space.get_data(channels().data()).await.as_slice() {
+            [h] => h.source.hash.clone(),
+            other => panic!("h is stored alone, not {} records", other.len()),
+        };
+        let waiter = space
+            .get_waiting_continuations(vec![channels().data().clone()])
+            .await
+            .into_iter()
+            .find(|waiter| waiter.patterns.as_slice() == [exactly(1)])
+            .expect("W2 waits")
+            .source
+            .hash;
+        env.volatile.book_pairs([(record, waiter)]);
+        let outcome = run(&env, SpaceOp::Produce(send(2))).await;
+        assert_eq!(
+            outcome.fires.len(),
+            1,
+            "the plan fires w, and the settle fires nothing"
+        );
+        assert_eq!(
+            space.get_data(channels().data()).await.len(),
+            1,
+            "h stays stored"
+        );
+        assert_eq!(
+            space
+                .get_waiting_continuations(vec![channels().data().clone()])
+                .await
+                .len(),
+            1,
+            "W2 stays parked"
+        );
     }
 }

@@ -1,17 +1,40 @@
-// A program can take a marker of the Reified syntax out of its own quoted
-// code, because a marker is an ordinary name in a term. The marker gives no
-// capability beyond the syntax itself: the node accepts a marker tuple only in
-// the exact form that the normalizer writes. The deploy sends a quoted send
-// with a params section as data, takes the marker of the params section out of
-// it, and builds a params tuple with empty sections, which the normalizer
-// never writes. The factory call with that tuple aborts the deploy with
-// Malformed.
+// Changed by decision 112 (ruling 9): the params of a send are a field of the send, so a program
+// cannot take a params tuple out of its quoted code. The text before:
+// ```
+// // A program can take a marker of the Reified syntax out of its own quoted
+// // code, because a marker is an ordinary name in a term. The marker gives no
+// // capability beyond the syntax itself: the node accepts a marker tuple only in
+// // the exact form that the normalizer writes. The deploy sends a quoted send
+// // with a params section as data, takes the marker of the params section out of
+// // it, and builds a params tuple with empty sections, which the normalizer
+// // never writes. The factory call with that tuple aborts the deploy with
+// // Malformed.
+// new factory(`rho:space:hashmap:queue`), ret, code in {
+//   code!(@"x"!(1; k=1)) |
+//   for (@sent <- code) {
+//     match sent {
+//       @"x"!(1, (marker, positional, named)) => {
+//         factory!(*ret, "default", (marker, [], {}))
+//       }
+//     }
+//   }
+// }
+// ```
+// The params of a send are a field of the send, so a program cannot take a
+// params tuple out of its own quoted code. A former marker of the Reified
+// syntax is an ordinary name and gives no capability. The deploy sends a quoted
+// send with a params section as data and tries to take a params tuple out of
+// it. The pattern does not match, because the quoted send holds no params in
+// its data, and the wildcard case reports on a result channel.
 new factory(`rho:space:hashmap:queue`), ret, code in {
   code!(@"x"!(1; k=1)) |
   for (@sent <- code) {
     match sent {
       @"x"!(1, (marker, positional, named)) => {
         factory!(*ret, "default", (marker, [], {}))
+      }
+      _ => {
+        @"rrs.example.forged-params"!("no marker tuple")
       }
     }
   }

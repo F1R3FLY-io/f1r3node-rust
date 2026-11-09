@@ -9,7 +9,8 @@
 //!
 //! | Test | Property |
 //! |---|---|
-//! | `space_lfs_export_import` | The source plays block 1 of `support::blocks` and the creations of the five stored families of P7 over one LMDB store. Its root R1 holds a durable space of each of the 26 families, the stored spaces with records and waiters, VectorDB records and an agent space. The test exports R1 in pages, validates each page, and imports the pages into a fresh LMDB store. Every space channel of block 1 holds the same records and waiters on both stores. Block 2 and the touches of the stored families then give the same record for each deploy on both stores, and native replay certifies each deploy of block 2 on the imported store. A page with one changed data byte fails the validation. |
+//! | `space_lfs_export_import` | The source plays block 1 of `support::blocks` and the creations of the five stored families of P7 over one LMDB store. Its root R1 holds a durable space of each of the 26 families, the stored spaces with records and waiters, VectorDB records and an agent space. The test exports R1 in pages, validates each page, and imports the pages into a fresh LMDB store. Every space channel of block 1 holds the same records and waiters on both stores. Block 2 and the touches of the stored families then play on both stores, and native replay certifies each deploy of both stores on the imported store. A page with one changed data byte fails the validation. The test runs on each racing runtime (decisions 93 and 111). |
+// Changed by decisions 93 and 111: native replay certifies the deploys of both stores.
 //!
 //! `temp`, `seq` and HashSet spaces never reach a root: each deploy sweeps them (QF-8), and the
 //! sweep leaves no volatile channel after any deploy of the test (`play_recorded`).
@@ -29,9 +30,13 @@ use support::family_programs::STORED_FAMILIES;
 use support::native::{
     committed_evidence, footprint_channels, is_space_channel, NativeChain, AMPLE_LIMIT,
 };
-use support::process::{
-    assert_same_record, certify_record, play_recorded, run_directory, DeployRecord,
-};
+// Changed by decision 93 (decision 111): native replay certifies the records of both stores. The
+// old import follows.
+// use support::process::{
+//     assert_same_record, certify_record, play_recorded, run_directory, DeployRecord,
+// };
+use support::process::{certify_record, play_recorded, run_directory, DeployRecord};
+use support::props::{racing_runtime, RACING_WORKERS};
 
 /// The number of history items in one page of the export. The root of block 1 needs more than
 /// one page, so the test pages the export as a peer does (`export_import_tests.rs`).
@@ -56,15 +61,18 @@ fn export_pages(history: &RhoHistoryRepository, root: &Blake2b256Hash) -> Export
     };
     let mut start_path = vec![(root.clone(), None)];
     loop {
+        // Changed by decision 90: the base export returns a `Result`, and the validation takes
+        // the items by reference.
         let (history_page, data_page) = RSpaceExporterItems::get_history_and_data(
             exporter.clone(),
             start_path.clone(),
             0,
             PAGE_SIZE,
-        );
+        )
+        .expect("the export page reads");
         RSpaceImporterInstance::validate_state_items(
-            history_page.items.clone(),
-            data_page.items.clone(),
+            &history_page.items,
+            &data_page.items,
             start_path,
             PAGE_SIZE,
             0,
@@ -139,10 +147,25 @@ async fn play_block(
     (records, channels)
 }
 
-/// The LFS export and import of space state (amendment A19).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_lfs_export_import() {
-    let directory = run_directory("lfs");
+/// The LFS export and import of space state (amendment A19), on each racing runtime (decisions
+/// 93 and 111).
+#[test]
+fn space_lfs_export_import() {
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(lfs_run(workers));
+    }
+}
+
+/// Added by decisions 93 and 111: one run of [`space_lfs_export_import`] on the racing runtime
+/// with `workers` workers.
+// Changed by decisions 93 and 111: the test runs on each racing runtime. The old header follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_lfs_export_import() {
+async fn lfs_run(workers: usize) {
+    // Changed by decision 111: each racing runtime has its own run directory. The old line
+    // follows.
+    // let directory = run_directory("lfs");
+    let directory = run_directory(&format!("lfs-{workers}"));
     let mut source = NativeChain::open(&directory.join("source"), None).await;
     let (first, channels) = play_block(&mut source, &first_block()).await;
     let r1 = first.last().expect("block 1 has deploys").post();
@@ -169,10 +192,11 @@ async fn space_lfs_export_import() {
 
     // Negative control: the whole export validates as one page, and the same page with one
     // changed byte in a data item fails the validation.
+    // Changed by decision 90: the base validation takes the items by reference.
     let whole = |data: Vec<(Blake2b256Hash, Vec<u8>)>| {
         RSpaceImporterInstance::validate_state_items(
-            export.history.clone(),
-            data,
+            &export.history,
+            &data,
             vec![(r1.clone(), None)],
             i32::try_from(export.history.len() + 1).expect("the item count fits i32"),
             0,
@@ -221,10 +245,17 @@ async fn space_lfs_export_import() {
     let block = second_block();
     let (on_source, _) = play_block(&mut source, &block).await;
     let (on_target, _) = play_block(&mut target, &block).await;
-    for (own, imported) in on_source.iter().zip(&on_target) {
-        assert_same_record(own, imported);
-    }
+    // Changed by decision 93 (decision 111): racing evaluation gives the two stores other records,
+    // so native replay certifies the records of both stores on the imported store. The old
+    // comparison follows.
+    // for (own, imported) in on_source.iter().zip(&on_target) {
+    //     assert_same_record(own, imported);
+    // }
     for (record, deploy) in on_target.iter().zip(&block) {
+        certify_record(&mut target, record, deploy.limit).await;
+    }
+    // Added by decision 93 (decision 111): the imported store certifies the block of the source.
+    for (record, deploy) in on_source.iter().zip(&block) {
         certify_record(&mut target, record, deploy.limit).await;
     }
     std::fs::remove_dir_all(&directory).expect("remove the run directory");

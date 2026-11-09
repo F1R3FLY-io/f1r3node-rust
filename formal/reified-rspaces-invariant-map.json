@@ -13,7 +13,36 @@
     "SharedQueueRaces": "CounterConflict: two branches that use one queue race in check #1. It restates the Rocq headlines Q21, Q22 and Q24, which their own property tests cover. TLC checks it in MC_CounterConflict. With stacks, MC_CounterConflict_Stacks checks it too, and it restates the P5 headline shared_collection_race (R63).",
     "FirstOpsRace": "CounterConflict: two branches that open queues of one space race on S(sid). It restates the Rocq headline Q23, which its own property test covers. TLC checks it in MC_CounterConflict. With stacks, MC_CounterConflict_Stacks checks it too, and it restates the P5 headline shared_collection_race (R63).",
     "OutcomeTypeOK": "The type invariant of OutcomeSpec of NativeReplay.tla. TLC checks it in its configurations. It is not a property of the backend.",
-    "ScheduleTypeOK": "The type invariant of ScheduleSpec of NativeReplay.tla. TLC checks it in its configurations. It is not a property of the backend."
+    "AllowedChoice": "SpaceOwnerRows: an accepted match passes its items at the fold and its guard verdict (V4-3). At a ranked site, the earlier candidate outside the tie fails its pattern or its items (CR-34). Decision 124 (CR-34') gives the row by the search of play over the ranked order, and the condition is unchanged for the two candidates of this model. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "ContinueIsHonest": "SpaceOwnerRows: over edited records only, an accepted record follows no row after a unit that fails CanContinue(U). The group rows are part of the unit. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "HostParity": "SpaceOwnerRows: each committed row has the effect of the host operation of its actual outcome. A row that commits after a deviating unit was staged against a view that the commit did not meet. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "ItemFailedPairNotRefired": "SpaceOwnerRows: no staging of play proposes a pair from the ibook of play. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "LedgerIsFold": "SpaceOwnerRows: the ledger is the fold of all the attempts. The operator is copied from LedgerIsFold of NativeOwnerRefusal.tla. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "NoAlternativeFire": "SpaceOwnerRows: a reachability witness. SpaceOwnerAlternativeReachable.cfg must violate it, so an honest record fires a later candidate and replays.",
+    "NoLostRecord": "SpaceOwnerRows: a lifted record is restored or re-offered. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "NoRandomPickCompletion": "SpaceOwnerRows: a reachability witness. SpaceOwnerRandomPickReachable.cfg must violate it, so play stages c2, which is second in DR-75 order, and replay completes.",
+    "NoRankedAlternative": "SpaceOwnerRows: a reachability witness. SpaceOwnerRankedSkipReachable.cfg must violate it, so an honest ranked deviation replays (N1).",
+    "NoStopReissue": "SpaceOwnerRows: a reachability witness. SpaceOwnerStopReissueReachable.cfg must violate it, so a stop re-issue commits and replays.",
+    "NoWideOrderStore": "SpaceOwnerRows: a reachability witness (V4-18). SpaceOwnerWideOrderStoreReachable.cfg must violate it, so H2 is reached. Play stages no fire and the datum stores, while the DR-75 tuple of a wide waiter passes its guard. Replay skips the waiter by base E3-a, because its commit may veto (decision 124, L3, X7), and accepts the honest record.",
+    "NoWideStoredDeviation": "SpaceOwnerRows: a reachability witness (V4-18). SpaceOwnerWideStoredDeviationReachable.cfg must violate it, so H1 is reached. Play stages a wide waiter, its commit stores, and replay accepts the honest record. Replay skips the waiter on the Stored row by base E3-a, because its commit may veto (decision 124, L3, X7), so it stages no fire of the waiter.",
+    "OneCounter": "SpaceOwnerRows: the put and the anchor draw on the payer only. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "RefusedPairNotRefired": "SpaceOwnerRows: no staging proposes a pair from book. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "RefusedTupleKeepsMembers": "SpaceOwnerRows: a refused class fire leaves every member stored. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "SeqClaimsAgree": "SpaceOwnerRows: play and replay store the same claims, the claims of the committed rows. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "SpentClassRetired": "SpaceOwnerRows: after a committed class fire, the second member of the fired class is retired, or its refused retire parks inert. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "StopIsHonest": "SpaceOwnerRows: an accepted cut after unit U needs CanStop(U). TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "TxnPlayReplayAgree": "SpaceOwnerRows: for an honest record, replay accepts. Its book writes (refused and item-failed) and its re-issues equal those of play. Replay follows exactly the rows and anchors of the record, so its rows equal them. The deviation mark is not compared. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "TxnStoredClaimIsHonest": "SpaceOwnerRows: an accepted Stored row at a non-vetoing site (a send) has a true refusal or an item failure for every allowed candidate. Every candidate whose commit may veto is exempt (decision 124, L3, X7), as the base Stored check skips it (E3-a, R17). TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+    "NoFailureVerdict": "SpaceReplayOrder: a reachability witness: no job ends with the verdict occupied. SpaceReplayFailureVerdictReachable.cfg must violate it, so the invariants do not hold only because replay never ends.",
+    "NoHonestCompletion": "SpaceReplayOrder: a reachability witness: replay is never quiet with every row complete and no stop. SpaceReplayCascadeCompletionReachable.cfg and SpaceReplayCompletionReachable.cfg must violate it, so the invariants do not hold only because replay never ends.",
+    "NoRestagedCommit": "SpaceReplayOrder: a reachability witness (decision 102, plan v4, M3). SpaceReplayRestageReachable.cfg must violate it, so replay ends a job whose play committed after the R-A restage.",
+    "NoReturnAfterDeviation": "SpaceReplayOrder: a reachability witness (decision 122, plan v4, M3). SpaceReplayMarkFreeReturnReachable.cfg must violate it, so replay ends a deviating job by the Return branch of its Tail.",
+    "CanStepIsEnabled": "JoinScopeLock: CanStep(i) is the enabledness of Step(i), so NoDeadlock is not vacuous. TLC checks it in the safe configuration MC_JoinScopeLock.cfg and in the controls CoverageByHostUseUnsafe.cfg, EscalationRebeginUnsafe.cfg, PhaseAAfterPhaseBUnsafe.cfg, PhaseAWithoutConfigUnsafe.cfg and PhaseBSplitUnsafe.cfg.",
+    "MutualExclusion": "JoinScopeLock: two processes that hold all their locks touch disjoint channels. TLC checks it in the safe configuration MC_JoinScopeLock.cfg and in the controls CoverageByHostUseUnsafe.cfg, EscalationRebeginUnsafe.cfg, PhaseAAfterPhaseBUnsafe.cfg, PhaseAWithoutConfigUnsafe.cfg and PhaseBSplitUnsafe.cfg.",
+    "HistIsCausalPast": "SpaceCoordination: the history of each participant is the set of the uses in its causal past, computed independently from the event log (program order and COMMs). TLC checks it in the safe configuration MC_SpaceCoordination.cfg and in the controls ClaimsNeedContextUnsafe.cfg, NoInheritUnsafe.cfg, NoMergeUnsafe.cfg, QualifierSupportUnsafe.cfg, SeqGuardToctouUnsafe.cfg, SeqScanSkippedUnsafe.cfg and UseBalanceUnsafe.cfg.",
+    "NoTwoUseChain": "SpaceCoordination: a reachability witness (decision 91). TwoUseChainReachable.cfg must refute exactly this invariant, so a chain of two uses of one channel is admitted, and SeqCausalChain does not hold vacuously.",
+    "NoFreeClassTwice": "JoinCascade: the witness of rule (a) (decisions 103 and 118, C6 arbitration), an alias of pOk. FreeClassTwiceReachable.cfg replaces PersistentTwice with FreeClassTwice and must violate it, so a fire binds a non-persistent member and a persistent member of one set class.",
+    "NoPersistentTwice": "JoinCascade: the witness of decisions 103 and 118. JoinPersistentTwiceReachable.cfg must violate it, so a fire binds a persistent record at two positions."
   },
   "phases": {
     "P1": {
@@ -22,9 +51,11 @@
       "test_status": "required",
       "test_files": [
         "rspace++/tests/reified_space_store_handle_props.rs",
-        "rholang/tests/reified_space_store_handle_par.rs"
+        "rholang/tests/reified_space_store_handle_par.rs",
+        "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+        "rholang/tests/reified_native_spaces.rs"
       ],
-      "expected_properties": 26,
+      "expected_properties": 23,
       "formal": {
         "H1": {
           "kind": "rocq",
@@ -57,8 +88,7 @@
           "name": "verify_sound_complete",
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
-            "prop_space_txn_replay_divergence_typed_at_commit",
-            "prop_space_txn_replay_requires_trigger_event"
+            "prop_native_space_replay_fails_closed"
           ]
         },
         "H5": {
@@ -66,7 +96,6 @@
           "name": "replay_pairs_each_comm_once",
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
-            "prop_space_txn_replay_pairs_play_log",
             "prop_space_txn_repeated_channel_groups_equal_host",
             "prop_space_txn_peek_restore"
           ]
@@ -125,7 +154,6 @@
           "name": "reporting_trace_is_replay_trace",
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
-            "prop_space_txn_reporting_equals_replay",
             "prop_space_txn_peek_restore"
           ]
         },
@@ -183,7 +211,7 @@
           "name": "directive_fails_closed",
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
-            "prop_space_txn_replay_directive_fails_closed"
+            "prop_native_space_replay_fails_closed"
           ]
         },
         "H20": {
@@ -216,7 +244,7 @@
           "name": "replay_reproduces_play_run",
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "tests": [
-            "prop_space_txn_replay_reproduces_play_rejection"
+            "prop_native_space_replay_denial_keeps_prefix"
           ]
         },
         "T1": {
@@ -224,9 +252,9 @@
           "name": "ReplayPrefixEqual",
           "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
           "tests": [
-            "prop_space_txn_replay_pairs_play_log",
             "prop_space_txn_cross_replay_with_host",
-            "prop_space_txn_repeated_channel_groups_equal_host"
+            "prop_space_txn_repeated_channel_groups_equal_host",
+            "prop_native_space_replay_reproduces_play"
           ]
         },
         "T2": {
@@ -242,7 +270,7 @@
           "name": "PairedOnce",
           "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
           "tests": [
-            "prop_space_txn_replay_divergence_typed_at_commit"
+            "prop_native_space_replay_reproduces_play"
           ]
         },
         "T4": {
@@ -266,7 +294,7 @@
           "name": "ReplayOutcomeEqual",
           "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
           "tests": [
-            "prop_space_txn_replay_reproduces_play_rejection"
+            "prop_native_space_replay_denial_keeps_prefix"
           ]
         },
         "H28": {
@@ -284,7 +312,7 @@
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "statement": "With a hash premise (the root is a function of the content of a store, and a reset to the root of a store rebuilds that store), a two-block reset-and-replay trace gives the events, statuses, stores and roots of play (P9, amendment A10, leaf 9080; from H23).",
           "tests": [
-            "prop_space_txn_two_block_replay_preserves_roots"
+            "space_native_vectordb_replay_equal"
           ]
         }
       },
@@ -308,15 +336,6 @@
         },
         {
           "number": 3,
-          "test": "prop_space_txn_replay_pairs_play_log",
-          "file": "rspace++/tests/reified_space_store_handle_props.rs",
-          "covers": [
-            "H5",
-            "T1"
-          ]
-        },
-        {
-          "number": 4,
           "test": "prop_space_txn_cross_replay_with_host",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -324,16 +343,7 @@
           ]
         },
         {
-          "number": 5,
-          "test": "prop_space_txn_replay_divergence_typed_at_commit",
-          "file": "rspace++/tests/reified_space_store_handle_props.rs",
-          "covers": [
-            "H4",
-            "T3"
-          ]
-        },
-        {
-          "number": 6,
+          "number": 4,
           "test": "prop_space_txn_view_equals_committed_store",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -341,7 +351,7 @@
           ]
         },
         {
-          "number": 7,
+          "number": 5,
           "test": "prop_space_txn_joins_lockstep",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -349,7 +359,7 @@
           ]
         },
         {
-          "number": 8,
+          "number": 6,
           "test": "prop_sweep_volatile_exact_and_root_neutral",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -360,7 +370,7 @@
           ]
         },
         {
-          "number": 9,
+          "number": 7,
           "test": "prop_sub_orders_contiguous_and_disjoint",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -368,7 +378,7 @@
           ]
         },
         {
-          "number": 10,
+          "number": 8,
           "test": "prop_space_txn_abort_inert",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -376,7 +386,7 @@
           ]
         },
         {
-          "number": 11,
+          "number": 9,
           "test": "prop_event_coverage_holds_for_generated_commits",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -385,7 +395,7 @@
           ]
         },
         {
-          "number": 12,
+          "number": 10,
           "test": "prop_space_txn_peek_restore",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -395,15 +405,7 @@
           ]
         },
         {
-          "number": 13,
-          "test": "prop_space_txn_reporting_equals_replay",
-          "file": "rspace++/tests/reified_space_store_handle_props.rs",
-          "covers": [
-            "H12"
-          ]
-        },
-        {
-          "number": 14,
+          "number": 11,
           "test": "prop_root_leaf_record_count_matches_history",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -411,7 +413,7 @@
           ]
         },
         {
-          "number": 15,
+          "number": 12,
           "test": "prop_counter_timing_play_equals_replay",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -419,15 +421,7 @@
           ]
         },
         {
-          "number": 16,
-          "test": "prop_space_txn_replay_requires_trigger_event",
-          "file": "rspace++/tests/reified_space_store_handle_props.rs",
-          "covers": [
-            "H4"
-          ]
-        },
-        {
-          "number": 17,
+          "number": 13,
           "test": "prop_space_txn_non_canonical_inputs_fail_closed",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -437,7 +431,7 @@
           ]
         },
         {
-          "number": 18,
+          "number": 14,
           "test": "prop_space_txn_reads_root_neutral",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -445,15 +439,7 @@
           ]
         },
         {
-          "number": 19,
-          "test": "prop_space_txn_replay_directive_fails_closed",
-          "file": "rspace++/tests/reified_space_store_handle_props.rs",
-          "covers": [
-            "H19"
-          ]
-        },
-        {
-          "number": 20,
+          "number": 15,
           "test": "prop_space_txn_parent_order_single_commit",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -461,7 +447,7 @@
           ]
         },
         {
-          "number": 21,
+          "number": 16,
           "test": "prop_space_txn_store_identity_ignores_ord_only_fields",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -469,7 +455,7 @@
           ]
         },
         {
-          "number": 22,
+          "number": 17,
           "test": "prop_space_txn_rejects_uncovered_channels",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -477,7 +463,7 @@
           ]
         },
         {
-          "number": 23,
+          "number": 18,
           "test": "prop_space_txn_par_identity_ignores_locally_free",
           "file": "rholang/tests/reified_space_store_handle_par.rs",
           "covers": [
@@ -485,7 +471,7 @@
           ]
         },
         {
-          "number": 24,
+          "number": 19,
           "test": "prop_space_txn_repeated_channel_groups_equal_host",
           "file": "rspace++/tests/reified_space_store_handle_props.rs",
           "covers": [
@@ -497,18 +483,36 @@
           ]
         },
         {
-          "number": 25,
-          "test": "prop_space_txn_replay_reproduces_play_rejection",
-          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "number": 20,
+          "test": "prop_native_space_replay_fails_closed",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "covers": [
+            "H4",
+            "H19"
+          ]
+        },
+        {
+          "number": 21,
+          "test": "prop_native_space_replay_denial_keeps_prefix",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
           "covers": [
             "H23",
             "T6"
           ]
         },
         {
-          "number": 26,
-          "test": "prop_space_txn_two_block_replay_preserves_roots",
-          "file": "rspace++/tests/reified_space_store_handle_props.rs",
+          "number": 22,
+          "test": "prop_native_space_replay_reproduces_play",
+          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "covers": [
+            "T1",
+            "T3"
+          ]
+        },
+        {
+          "number": 23,
+          "test": "space_native_vectordb_replay_equal",
+          "file": "rholang/tests/reified_native_spaces.rs",
           "covers": [
             "H29"
           ]
@@ -632,10 +636,7 @@
           "rule": "FR-10",
           "covers": [
             "H1",
-            "H4",
-            "H5",
             "H11",
-            "H12",
             "T1"
           ]
         },
@@ -677,15 +678,6 @@
           ]
         },
         {
-          "test": "space_store_handle_replay_reproduces_play_rejection",
-          "file": "rspace++/tests/reified_space_store_handle.rs",
-          "rule": "decision 36",
-          "covers": [
-            "H23",
-            "T6"
-          ]
-        },
-        {
           "test": "space_queue_out_of_phlo_sweep_replays_equal",
           "file": "rholang/tests/reified_queue_replay.rs",
           "rule": "decision 36",
@@ -705,51 +697,51 @@
       ]
     },
     "P2": {
-      "title": "P2: the marker-tuple wire encoding of the Reified RSpaces syntax (Encoding.v)",
+      "title": "P2: the protobuf-field wire encoding of the Reified RSpaces syntax (SyntaxFields.v)",
       "design": "p2-design-report-2 §5 (-fv: the 12 headline theorems, -invariant-pbt: one test for each theorem, with 4 and 5 sharing reified_markers_disjoint)",
       "test_status": "required",
       "test_files": [
         "models/tests/reified_encoding.rs",
         "rholang/tests/reified_marker_recognition.rs"
       ],
-      "expected_properties": 11,
+      "expected_properties": 13,
       "formal": {
         "E1": {
           "kind": "rocq",
-          "name": "decode_encode",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "field_decode_encode",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "reified_encoding_roundtrip"
           ]
         },
         "E2": {
           "kind": "rocq",
-          "name": "encode_injective",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "field_encode_injective",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "reified_encoding_injective"
           ]
         },
         "E3": {
           "kind": "rocq",
-          "name": "decode_sound",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "field_decode_sound",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "reified_decode_accepts_only_canonical_image"
           ]
         },
         "E4": {
           "kind": "rocq",
-          "name": "markers_pairwise_distinct",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "field_numbers_distinct",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "reified_markers_disjoint"
           ]
         },
         "E5": {
           "kind": "rocq",
-          "name": "markers_disjoint_reserved",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "field_numbers_avoid_reserved",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "reified_markers_disjoint"
           ]
@@ -757,57 +749,73 @@
         "E6": {
           "kind": "rocq",
           "name": "named_params_canonical",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "reified_params_canonical_key_order"
           ]
         },
         "E7": {
           "kind": "rocq",
-          "name": "recognize_complete",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "construct_has_one_carrier",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "marker_tuple_recognized_only_in_specified_positions"
           ]
         },
         "E8": {
           "kind": "rocq",
-          "name": "marker_forging_grants_no_capability",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "former_marker_tuple_is_ordinary",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
-            "marker_forging_grants_no_capability"
+            "former_marker_tuple_is_ordinary"
           ]
         },
         "E9": {
           "kind": "rocq",
-          "name": "marker_inert_elsewhere",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "fields_inert_outside_process_position",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
-            "marker_inert_elsewhere"
+            "fields_inert_outside_process_position"
           ]
         },
         "E10": {
           "kind": "rocq",
-          "name": "schedule_unchanged_marker_free",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "schedule_unchanged_field_free",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
-            "term_schedule_unchanged_for_marker_free_pars"
+            "term_schedule_unchanged_for_field_free_pars"
           ]
         },
         "E11": {
           "kind": "rocq",
-          "name": "decode_commutes_with_subst",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "fields_commute_with_subst",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
             "reified_decode_commutes_with_substitution"
           ]
         },
         "E12": {
           "kind": "rocq",
-          "name": "plan_nil_annotation_not_injective",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
+          "name": "absent_annotation_not_nil",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
           "tests": [
-            "reified_plan_nil_encoding_counterexample"
+            "absent_annotation_is_not_nil"
+          ]
+        },
+        "E13": {
+          "kind": "rocq",
+          "name": "prost_bytes_unchanged_field_free",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+          "tests": [
+            "ordinary_prost_unchanged"
+          ]
+        },
+        "E14": {
+          "kind": "rocq",
+          "name": "bincode_growth_field_free",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+          "tests": [
+            "ordinary_bincode_grows_by_the_formula"
           ]
         }
       },
@@ -857,21 +865,21 @@
         },
         {
           "number": 7,
-          "test": "marker_forging_grants_no_capability",
+          "test": "former_marker_tuple_is_ordinary",
           "covers": [
             "E8"
           ]
         },
         {
           "number": 8,
-          "test": "marker_inert_elsewhere",
+          "test": "fields_inert_outside_process_position",
           "covers": [
             "E9"
           ]
         },
         {
           "number": 9,
-          "test": "term_schedule_unchanged_for_marker_free_pars",
+          "test": "term_schedule_unchanged_for_field_free_pars",
           "covers": [
             "E10"
           ]
@@ -885,9 +893,23 @@
         },
         {
           "number": 11,
-          "test": "reified_plan_nil_encoding_counterexample",
+          "test": "absent_annotation_is_not_nil",
           "covers": [
             "E12"
+          ]
+        },
+        {
+          "number": 12,
+          "test": "ordinary_prost_unchanged",
+          "covers": [
+            "E13"
+          ]
+        },
+        {
+          "number": 13,
+          "test": "ordinary_bincode_grows_by_the_formula",
+          "covers": [
+            "E14"
           ]
         }
       ]
@@ -950,7 +972,7 @@
         "rholang/tests/reified_native_fail_closed.rs",
         "rholang/tests/reified_legacy_charges.rs"
       ],
-      "expected_properties": 87,
+      "expected_properties": 82,
       "formal": {
         "Q1": {
           "kind": "rocq",
@@ -1246,7 +1268,8 @@
           "file": "formal/rocq/reified_rspaces/theories/HeadOnlyDisciplines.v",
           "statement": "A head that does not match blocks the entries behind it.",
           "tests": [
-            "prop_queue_head_blocks"
+            "prop_queue_head_blocks",
+            "prop_agent_outcome_independent_of_unread_payloads"
           ]
         },
         "Q34": {
@@ -1437,7 +1460,7 @@
           "kind": "rocq",
           "name": "persistent_op_call_aborts",
           "file": "formal/rocq/reified_rspaces/theories/SpaceFactory.v",
-          "statement": "A persistent send to an op that takes calls, or to a handle, aborts before the call (A21).",
+          "statement": "A persistent send to an op that takes calls, or to a handle, aborts before the call (A21). A persistent send to a recorded op (embed or ann) passes A21, and base rule P2 fails it at its fire (decision 106).",
           "tests": [
             "prop_persistent_op_call_aborts"
           ]
@@ -1454,101 +1477,29 @@
         },
         "Q56": {
           "kind": "rocq",
-          "name": "refresh_strict_decode_erase",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
-          "statement": "I-20: after the refresh, the strict decode is the decode of Encoding.v, and it accepts only derived flags.",
+          "name": "decode_ignores_flags",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+          "statement": "I-20: no decoder reads a derived flag of a holder. The decoders read the fields of the new messages, which have no flags, and the two holder paths (the sole expression of a Par and the New of a space annotation) do not read a flag. So a stale flag never rejects a legal construct.",
           "tests": [
-            "marker_forging_grants_no_capability"
+            "former_marker_tuple_is_ordinary"
           ]
         },
         "Q57": {
           "kind": "rocq",
-          "name": "connective_marker_tuple_recognized",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
-          "statement": "I-20: a canonical marker tuple with connective_used = true is recognized.",
+          "name": "decode_ignores_flags",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+          "statement": "I-20: no decoder reads a derived flag of a holder. The decoders read the fields of the new messages, which have no flags, and the two holder paths (the sole expression of a Par and the New of a space annotation) do not read a flag. So a stale flag never rejects a legal construct.",
           "tests": [
             "reified_encoding_roundtrip"
           ]
         },
         "Q58": {
           "kind": "rocq",
-          "name": "refreshed_decode_commutes_with_subst",
-          "file": "formal/rocq/reified_rspaces/theories/Encoding.v",
-          "statement": "I-20: the refresh makes the strict decode of a substituted tuple commute with substitution.",
+          "name": "decode_ignores_flags",
+          "file": "formal/rocq/reified_rspaces/theories/SyntaxFields.v",
+          "statement": "I-20: no decoder reads a derived flag of a holder. The decoders read the fields of the new messages, which have no flags, and the two holder paths (the sole expression of a Par and the New of a space annotation) do not read a flag. So a stale flag never rejects a legal construct.",
           "tests": [
             "reified_decode_commutes_with_substitution"
-          ]
-        },
-        "Q59": {
-          "kind": "rocq",
-          "name": "operation_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42: every collection operation reserves each read and copy before it makes it (DR-88 prefix coverage), the reads of the outcome after the commit included.",
-          "tests": [
-            "prop_agent_reservation_cut_rejects_without_effect"
-          ]
-        },
-        "Q60": {
-          "kind": "rocq",
-          "name": "reservations_precede_commit",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42: the work after the commit reserves nothing.",
-          "tests": [
-            "prop_agent_reservation_cut_rejects_without_effect"
-          ]
-        },
-        "Q61": {
-          "kind": "rocq",
-          "name": "cut_rejects_before_commit",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42: a budget below the reservations of an operation is exceeded by a staged reservation, so the operation fails before the commit and has no effect.",
-          "tests": [
-            "prop_agent_reservation_cut_rejects_without_effect"
-          ]
-        },
-        "Q62": {
-          "kind": "rocq",
-          "name": "scan_charge_permutation_invariant",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42: the charge of a head scan does not depend on the list order of its side.",
-          "tests": [
-            "prop_queue_plan_permutation_invariant"
-          ]
-        },
-        "Q63": {
-          "kind": "rocq",
-          "name": "operation_charge_permutation_invariant",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42: the charge of an operation does not depend on the list order of the staged view.",
-          "tests": [
-            "prop_queue_plan_permutation_invariant"
-          ]
-        },
-        "Q64": {
-          "kind": "rocq",
-          "name": "scan_charge_independent_of_unread_payloads",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42: the payloads of the entries that a scan does not copy do not change its charge.",
-          "tests": [
-            "prop_agent_charge_independent_of_unread_payloads"
-          ]
-        },
-        "Q65": {
-          "kind": "rocq",
-          "name": "p4_scan_covered_only_if_free",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42 (negative control): the P4 scan, which reserved nothing for its own decodes and copies, satisfies prefix coverage only when that work is zero.",
-          "tests": [
-            "prop_agent_reserves_its_own_work_beyond_the_matcher"
-          ]
-        },
-        "Q66": {
-          "kind": "rocq",
-          "name": "unprepaid_trace_uncovered",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "Decision 42 (negative control): without the prepaid reservations, the reads of the outcome after the commit break prefix coverage.",
-          "tests": [
-            "prop_agent_reservation_cut_rejects_without_effect"
           ]
         },
         "Q67": {
@@ -1774,35 +1725,6 @@
           "statement": "Decision 45 (Rule E): the staged operations of a plan, with the re-store after each peek fire of a record that is not persistent, give the records of the logical plan under the Rule E effects of the substrate, up to list order.",
           "tests": [
             "prop_queue_restore_realizes_plan"
-          ]
-        },
-        "Q79": {
-          "kind": "rocq",
-          "name": "legacy_rebracket_eq_host",
-          "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
-          "statement": "Decision 45 (Option P): a space job that stages its operations through the legacy chain makes the legacy log of the host program of the same operations, with the same remaining budget, status and applied operations, for every charge rule, call acceptance and budget. The status names the stop point, and a stop at a pre-charge or a post-charge of operation i applies exactly the operations of the host program.",
-          "tests": [
-            "prop_legacy_charges_equal_charging_rspace",
-            "prop_legacy_chain_log_is_host_order"
-          ]
-        },
-        "Q80": {
-          "kind": "rocq",
-          "name": "legacy_replay_stops_with_play",
-          "file": "formal/rocq/reified_rspaces/theories/LegacyCharges.v",
-          "statement": "Decision 45 (Option P): replay stages the operations of play and pairs each operation whose body play applied (decision 36). Then replay makes the legacy log, the remaining budget, the status and the applied operations of play, and it never diverges.",
-          "tests": [
-            "prop_legacy_replay_stops_with_play"
-          ]
-        },
-        "U13": {
-          "kind": "tla",
-          "name": "LegacyChargesFollowHost",
-          "file": "formal/tlaplus/reified_rspaces/CheckpointReplay.tla",
-          "statement": "Decision 45 (Option P): in a legacy deploy, whenever play has no open transaction, play has the legacy log, the remaining budget and the stop point of the equivalent host program: the same host operations ran, and the deploy failed exactly when the program failed. A completed replay has the legacy state of that program.",
-          "tests": [
-            "prop_legacy_chain_log_is_host_order",
-            "prop_legacy_replay_stops_with_play"
           ]
         }
       },
@@ -2093,9 +2015,7 @@
           "test": "prop_queue_plan_permutation_invariant",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
-            "Q36",
-            "Q62",
-            "Q63"
+            "Q36"
           ]
         },
         {
@@ -2343,7 +2263,7 @@
         },
         {
           "number": 67,
-          "test": "marker_forging_grants_no_capability",
+          "test": "former_marker_tuple_is_ordinary",
           "file": "rholang/tests/reified_marker_recognition.rs",
           "covers": [
             "Q56"
@@ -2367,33 +2287,6 @@
         },
         {
           "number": 70,
-          "test": "prop_agent_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_p4_props.rs",
-          "covers": [
-            "Q59",
-            "Q60",
-            "Q61",
-            "Q66"
-          ]
-        },
-        {
-          "number": 71,
-          "test": "prop_agent_charge_independent_of_unread_payloads",
-          "file": "rholang/tests/reified_p4_props.rs",
-          "covers": [
-            "Q64"
-          ]
-        },
-        {
-          "number": 72,
-          "test": "prop_agent_reserves_its_own_work_beyond_the_matcher",
-          "file": "rholang/tests/reified_p4_props.rs",
-          "covers": [
-            "Q65"
-          ]
-        },
-        {
-          "number": 73,
           "test": "reified_native_play_runs_a_space_deploy",
           "file": "rholang/tests/reified_native_fail_closed.rs",
           "covers": [
@@ -2401,7 +2294,7 @@
           ]
         },
         {
-          "number": 74,
+          "number": 71,
           "test": "reified_native_replay_reproduces_a_space_deploy",
           "file": "rholang/tests/reified_native_fail_closed.rs",
           "covers": [
@@ -2409,7 +2302,7 @@
           ]
         },
         {
-          "number": 75,
+          "number": 72,
           "test": "reified_native_host_program_plays_and_replays_unchanged",
           "file": "rholang/tests/reified_native_fail_closed.rs",
           "covers": [
@@ -2417,7 +2310,7 @@
           ]
         },
         {
-          "number": 76,
+          "number": 73,
           "test": "prop_queue_reissue_keeps_first_round_ord",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2428,7 +2321,7 @@
           ]
         },
         {
-          "number": 77,
+          "number": 74,
           "test": "prop_queue_shadow_invariant_with_inflight",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2439,7 +2332,7 @@
           ]
         },
         {
-          "number": 78,
+          "number": 75,
           "test": "prop_queue_fifo_with_reentries",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2448,7 +2341,7 @@
           ]
         },
         {
-          "number": 79,
+          "number": 76,
           "test": "prop_queue_reentry_head_blocks",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2459,7 +2352,7 @@
           ]
         },
         {
-          "number": 80,
+          "number": 77,
           "test": "prop_queue_reentry_permutation_invariant",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2467,7 +2360,7 @@
           ]
         },
         {
-          "number": 81,
+          "number": 78,
           "test": "prop_fresh_ord_reissue_loses_first_round_place",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2475,7 +2368,7 @@
           ]
         },
         {
-          "number": 82,
+          "number": 79,
           "test": "prop_queue_nonpersistent_reissue_fresh_ord",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2483,7 +2376,7 @@
           ]
         },
         {
-          "number": 83,
+          "number": 80,
           "test": "prop_queue_persistent_reissue_charged_once",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2492,7 +2385,7 @@
           ]
         },
         {
-          "number": 84,
+          "number": 81,
           "test": "prop_queue_restore_realizes_plan",
           "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
@@ -2500,54 +2393,15 @@
           ]
         },
         {
-          "number": 85,
-          "test": "prop_legacy_charges_equal_charging_rspace",
-          "file": "rholang/tests/reified_legacy_charges.rs",
+          "number": 82,
+          "test": "prop_agent_outcome_independent_of_unread_payloads",
+          "file": "rholang/tests/reified_p4_props.rs",
           "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "number": 86,
-          "test": "prop_legacy_chain_log_is_host_order",
-          "file": "rholang/tests/reified_legacy_charges.rs",
-          "covers": [
-            "Q79",
-            "U13"
-          ]
-        },
-        {
-          "number": 87,
-          "test": "prop_legacy_replay_stops_with_play",
-          "file": "rholang/tests/reified_legacy_charges.rs",
-          "covers": [
-            "Q80",
-            "U13"
+            "Q33"
           ]
         }
       ],
       "witness_tests": [
-        {
-          "test": "reified_marker_flags_change_derived_flags_only",
-          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "covers": [
-            "Q56"
-          ]
-        },
-        {
-          "test": "reified_marker_flags_use_body_with_connective_send_is_canonical",
-          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "covers": [
-            "Q57"
-          ]
-        },
-        {
-          "test": "reified_marker_flags_variable_bound_to_connective_is_canonical",
-          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "covers": [
-            "Q58"
-          ]
-        },
         {
           "test": "space_already_exists_aborts",
           "file": "rholang/src/rust/interpreter/reified/factory.rs",
@@ -2612,27 +2466,6 @@
           ]
         },
         {
-          "test": "space_counter_bump_cut_budget_rejects_without_effect",
-          "file": "rholang/src/rust/interpreter/spaces/counter.rs",
-          "covers": [
-            "Q61"
-          ]
-        },
-        {
-          "test": "space_matching_reserves_only_what_the_matcher_reads",
-          "file": "rholang/src/rust/interpreter/spaces/matching.rs",
-          "covers": [
-            "Q59"
-          ]
-        },
-        {
-          "test": "scan_meter_copy_equals_clone_backing_copy_and_cleanup",
-          "file": "rholang/src/rust/interpreter/reified/costs.rs",
-          "covers": [
-            "Q59"
-          ]
-        },
-        {
           "test": "space_queue_peek_restores_the_head_record",
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
           "covers": [
@@ -2645,84 +2478,12 @@
           "covers": [
             "Q78"
           ]
-        },
-        {
-          "test": "legacy_charges_of_a_store_and_a_park",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "test": "legacy_charges_of_a_produce_fire_follow_handle_result",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "test": "legacy_charges_of_a_consume_fire_refund_the_consume",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "test": "legacy_charges_of_a_continuation_without_a_body_fail_closed",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "test": "legacy_chain_is_active_only_in_a_metered_legacy_deploy",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79",
-            "Q80"
-          ]
-        },
-        {
-          "test": "legacy_chain_charges_in_host_order",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "test": "legacy_chain_pre_charge_stops_before_its_operation",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "test": "legacy_chain_tail_fails_after_the_commit",
-          "file": "rholang/src/rust/interpreter/reified/legacy_charges.rs",
-          "covers": [
-            "Q79"
-          ]
-        },
-        {
-          "test": "space_queue_legacy_replay_equal",
-          "file": "rholang/tests/reified_queue_replay.rs",
-          "covers": [
-            "Q79",
-            "Q80"
-          ]
-        },
-        {
-          "test": "space_queue_legacy_out_of_phlo_sweep_replays_equal",
-          "file": "rholang/tests/reified_queue_replay.rs",
-          "covers": [
-            "Q80"
-          ]
         }
       ]
     },
     "P5": {
       "title": "P5 wave W2: the engine (Match.v, GenericRSpace.v and the engine headline of AgentReadCoverage.v), the bag (DataCollection.v, ContinuationCollection.v), the cell (CellDiscipline.v), the Array and Vector stores with the allocator (OuterStorage.v, VectorStore.v, HashMapStore.v, and the allocator race of CounterConflict.tla), the pure PathMap layer (PathMapPrefix.v), the P5 families (SpaceFactory.v), the routing of receive queries (SpaceRefs.v), and the stack with one fire count for each transaction (StackDiscipline.v, StackDiscipline.tla, decision 49), and for P5 wave W3 the PathMap engine of Phase 1 (PathMapPrefix.v headlines R97-R107, PathMapPrefix.tla invariants V23-V25), and the joins of one space (JoinCascade.v R108-R124, the join rows R125-R126 of RecordEnvelope.v and CounterConflict.v, JoinCascade.tla V26-V34) with the set merges of CounterConflict.v (R127-R128), and for P6 step 8 the VectorDB params of SpaceFactory.v (R130: the schema, the value rules and gate 9 of the two VectorDB families) and the VectorDB merges of CounterConflict.v (R66 for the VectorDB family, and R131: the soft bound of capacity of decision 71)",
-      "design": "P5 design v3 (decision 48) and the W2 batch reports. R# are Rocq headlines and V# are TLA+ invariants. V1-V8 are the invariants of GenericRSpace.tla, V9-V10 the allocator invariants of CounterConflict.tla. The properties of the engine run the real bag, queue and cell disciplines and a probe of the set. witness_tests lists deterministic tests of the W2 code. V11-V15 are the invariants of StackDiscipline.tla, with TxnFiresBounded (decision 49). V23-V25 are the invariants of PathMapPrefix.tla. Six PathMap properties are pending, with no file yet: Phase 2 of the PathMap engine writes them in rholang/tests/reified_pathmap.rs, and that change adds the file and removes the status (decision 51). R108-R126 and V26-V34 are the rows of the JOINS-FORMAL batch (fragments/JOINS-FORMAL/invariant-map-rows.json), and the JOINS-TESTS batch writes their properties in rholang/tests/reified_join_props.rs. R127-R128 are F24 and F25 of the P5 design v2. The engine anchor prop_join_engine_agrees_with_drivers_without_joins covers the two search headlines, because on a join-free collection the engine must make the choices of the drivers.",
+      "design": "P5 design v3 (decision 48) and the W2 batch reports. R# are Rocq headlines and V# are TLA+ invariants. V1-V8 are the invariants of GenericRSpace.tla, V9-V10 the allocator invariants of CounterConflict.tla. The properties of the engine run the real bag, queue and cell disciplines and a probe of the set. witness_tests lists deterministic tests of the W2 code. V11-V15 are the invariants of StackDiscipline.tla, with TxnFiresBounded (decision 49). V23-V25 are the invariants of PathMapPrefix.tla. Six PathMap properties are pending, with no file yet: Phase 2 of the PathMap engine writes them in rholang/tests/reified_pathmap.rs, and that change adds the file and removes the status (decision 51). R108-R126 and V26-V34 are the rows of the JOINS-FORMAL batch (fragments/JOINS-FORMAL/invariant-map-rows.json), and the JOINS-TESTS batch writes their properties in rholang/tests/reified_join_props.rs. R127-R128 are F24 and F25 of the P5 design v2. The engine anchor prop_join_engine_agrees_with_drivers_without_joins covers the two search headlines, because on a join-free collection the engine must make the choices of the drivers. Decision 90 (C6, step D) disables pattern_enforcement_qualifiers_fail_closed, because no factory refuses seq.",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
@@ -2748,7 +2509,7 @@
         "rholang/tests/reified_set.rs",
         "rholang/tests/reified_stack.rs"
       ],
-      "expected_properties": 148,
+      "expected_properties": 139,
       "formal": {
         "R1": {
           "kind": "rocq",
@@ -2840,15 +2601,6 @@
             "prop_allocator_identities_unique"
           ]
         },
-        "R11": {
-          "kind": "rocq",
-          "name": "alloc_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
-          "statement": "An allocation reserves every read before it makes it, reserves nothing after the commit, and reads exactly what it reserves (decision 42).",
-          "tests": [
-            "prop_alloc_trace_covered"
-          ]
-        },
         "R12": {
           "kind": "rocq",
           "name": "vector_index_is_counter",
@@ -2882,7 +2634,6 @@
           "file": "formal/rocq/reified_rspaces/theories/HashMapStore.v",
           "statement": "The records of each key and every order-free iteration of the HashMap store do not depend on the order of the puts.",
           "tests": [
-            "prop_canonical_iteration_bag_any_insertion_order",
             "prop_canonical_iteration_ordered_any_list_order",
             "prop_hashmap_iteration_permutation_invariant"
           ]
@@ -2898,9 +2649,9 @@
         },
         "R17": {
           "kind": "rocq",
-          "name": "query_source_routes_inner_channel",
+          "name": "query_bind_routes_its_channel",
           "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
-          "statement": "A receive whose source is a QUERY tuple reads from the inner channel of the query under the read rule of a receive source. The default space refuses a query with QuerySpecUnsupported, a user agent refuses it with QuerySpecUnsupportedOnAgentSpace (P8 step 3), and a QUERY tuple never becomes a host channel.",
+          "statement": "A receive bind with a query in its query_spec field reads from the channel of the bind under the read rule of a receive source. The route of the channel decides the result. A native space gets the query. The default space refuses it with QuerySpecUnsupported, and a user agent refuses it with QuerySpecUnsupportedOnAgentSpace (P8 step 3). A bind with a well-formed query never becomes a consume of the host, and a bind without a query keeps the receive of P4 (decision 112).",
           "tests": [
             "prop_query_bind_routes_inner_channel",
             "prop_query_source_routes_inner_channel"
@@ -2959,7 +2710,6 @@
           "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
           "statement": "A prefix of a path is exactly a prefix key that is a byte prefix of the path key.",
           "tests": [
-            "prop_metered_keys_equal_unmetered_keys",
             "prop_path_keys_are_injective",
             "prop_prefix_key_iff_prefix",
             "prop_segments_are_a_prefix_code"
@@ -3020,7 +2770,7 @@
           "statement": "The visit order of the records is sorted by source key, holds the records, and does not depend on the list order of the store.",
           "tests": [
             "prop_bag_visit_order_canonical",
-            "prop_canonical_iteration_bag_any_insertion_order"
+            "prop_candidate_tie_bytes_select_in_any_arrival_order"
           ]
         },
         "R30": {
@@ -3065,19 +2815,9 @@
           "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
           "statement": "A peek receive that settles stages exactly the host program: the fire, then the second send of the removed record, which is offered to the waiters first and registers the authority of the record. When no waiter takes the record, the record is stored again, so the peek leaves the multiset of records as it was.",
           "tests": [
-            "prop_bag_legacy_charges_equal_host",
+            "prop_bag_observer_calls_equal_host",
             "prop_bag_restore_registers_the_record_authority",
-            "prop_set_legacy_charges_equal_host"
-          ]
-        },
-        "R35": {
-          "kind": "rocq",
-          "name": "scan_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
-          "statement": "Every prefix of the trace of a scan of the driver, the reads after the commit included, reads at most what it reserved (decision 42).",
-          "tests": [
-            "prop_bag_reservation_cut_rejects_without_effect",
-            "prop_candidate_serialize_failure_cut_is_exact"
+            "prop_set_observer_calls_equal_host"
           ]
         },
         "R36": {
@@ -3113,8 +2853,7 @@
           "file": "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
           "statement": "The waiter order is sorted by key, holds the waiters, and does not depend on the list order of the store. A send fires the first waiter in that order that fits, so every earlier waiter fails its pattern or its guard (decision 37, the produce side).",
           "tests": [
-            "prop_bag_waiter_visit_order_canonical",
-            "prop_canonical_iteration_bag_any_insertion_order"
+            "prop_bag_waiter_visit_order_canonical"
           ]
         },
         "R40": {
@@ -3199,17 +2938,6 @@
           "statement": "Decision 43 for a collection without a counter (bag and set). 1. Every order is 0, and a re-issued order other than 0 is Inconsistent. 2. Every round of a re-issued scan produce stages the element of its first round: the same record bytes, persistence and authority, so the same produce identity. 3.",
           "tests": [
             "prop_engine_scan_reissue_keeps_identity"
-          ]
-        },
-        "R49": {
-          "kind": "rocq",
-          "name": "engine_primitives_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-          "statement": "The staging primitives of the S1 engine reserve each read, copy and growth of the staged list before they make it, reserve nothing after the commit, and fail before the commit under a cut budget (decision 42).",
-          "tests": [
-            "prop_candidate_serialize_failure_cut_is_exact",
-            "prop_cell_reservation_cut_rejects_without_effect",
-            "prop_engine_primitives_reserve_before_they_read"
           ]
         },
         "V1": {
@@ -3312,7 +3040,8 @@
           "statement": "The top of each side is an entry of that side with the greatest (ord, rank), and a side has a top exactly when it is not empty.",
           "tests": [
             "prop_canonical_iteration_ordered_any_list_order",
-            "prop_stack_head_is_max_ord"
+            "prop_stack_head_is_max_ord",
+            "prop_candidate_tie_bytes_select_in_any_arrival_order"
           ]
         },
         "R51": {
@@ -3406,16 +3135,6 @@
           "tests": [
             "prop_stack_lifo_order_any_schedule",
             "prop_stack_no_pending_match_any_schedule"
-          ]
-        },
-        "R61": {
-          "kind": "rocq",
-          "name": "settle_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
-          "statement": "A settle reserves its reads before it makes them: its trace satisfies prefix coverage, the reads of the outcome after the commit included (decision 42, DR-88).",
-          "tests": [
-            "prop_candidate_serialize_failure_cut_is_exact",
-            "prop_stack_reservation_cut_rejects_without_effect"
           ]
         },
         "R62": {
@@ -3553,7 +3272,7 @@
           "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
           "statement": "The consume over [D; n] of a class and every K_retire consume meet the staging rules of the substrate: one pattern for each channel, a canonical group, lined-up candidates, stored candidates, distinct claims. The class fire dispatches one result and a retire none (F9, F20).",
           "tests": [
-            "prop_set_legacy_charges_equal_host",
+            "prop_set_observer_calls_equal_host",
             "prop_set_retire_comm_lines_up"
           ]
         },
@@ -3583,15 +3302,6 @@
           "statement": "The membership test answers key equality for every hash function, so a hash collision never makes two classes one. It compares the full keys exactly when the hashes are equal (DR-90).",
           "tests": [
             "prop_set_membership_full_compare_on_equal_hash"
-          ]
-        },
-        "R74": {
-          "kind": "rocq",
-          "name": "set_key_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
-          "statement": "Every prefix of the trace of a set key and of a membership test reads at most what it reserved, so a cut budget rejects an operation before its commit (decision 42).",
-          "tests": [
-            "prop_set_key_trace_covered"
           ]
         },
         "R75": {
@@ -3755,15 +3465,6 @@
           "statement": "A peek of a level head that is not persistent stores the record again at its order and level, the record is the head of its level again, and the settle after the plan stages nothing (Rule E).",
           "tests": [
             "prop_pq_no_pending_match_any_schedule"
-          ]
-        },
-        "R93": {
-          "kind": "rocq",
-          "name": "level_scan_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
-          "statement": "The level scans of a priority queue reserve their reads before they make them (decision 42, DR-88): the trace of a transaction satisfies prefix coverage, with the reads after the commit.",
-          "tests": [
-            "prop_pq_reservation_cut_rejects_without_effect"
           ]
         },
         "R94": {
@@ -3940,15 +3641,6 @@
             "prop_pathmap_token_orders_reenter_at_their_place"
           ]
         },
-        "R107": {
-          "kind": "rocq",
-          "name": "prefix_scan_trace_covered",
-          "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
-          "statement": "The prefix scan reserves each unit of work before it reads, and the outcome after the commit reads nothing that the scan did not reserve (decision 42).",
-          "tests": [
-            "prop_pathmap_reservation_cut_rejects_without_effect"
-          ]
-        },
         "V23": {
           "kind": "tla",
           "name": "NoMatchRemains",
@@ -3992,7 +3684,7 @@
           "kind": "rocq",
           "name": "join_produce_search_agrees_with_head",
           "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
-          "statement": "When GREEDY on the state with x stored binds x at p*, SEARCH-PRODUCE completes at a position p <= p* with that assignment at p*, and when HEAD's greedy (x at index 0) binds x both fire the same assignment.",
+          "statement": "When GREEDY on the state with x stored binds x at p*, SEARCH-PRODUCE completes at a position p <= p* with that assignment at p*, and when HEAD's greedy (x at index 0) binds x both fire the same assignment. `join_produce_search_agrees_with_head` is a theorem of the search before decision 118. The GREEDY part of `prop_join_produce_search_agrees_with_head` runs for a non-persistent x only, and the allowed set checks a persistent x.",
           "tests": [
             "prop_join_engine_agrees_with_drivers_without_joins",
             "prop_join_produce_search_agrees_with_head"
@@ -4004,7 +3696,7 @@
           "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
           "statement": "Every produce-side join fire binds its incoming record at exactly one position, after at most m_W(c_x) attempts (decision 28).",
           "tests": [
-            "prop_join_incoming_binds_once"
+            "prop_join_incoming_held"
           ]
         },
         "R111": {
@@ -4022,7 +3714,7 @@
           "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
           "statement": "The binds of one fire bind pairwise distinct records (distinct classes for a set), persistent records included.",
           "tests": [
-            "prop_join_repeated_channel_distinct_records"
+            "prop_join_nonpersistent_record_binds_once"
           ]
         },
         "R113": {
@@ -4171,20 +3863,20 @@
         },
         "V28": {
           "kind": "tla",
-          "name": "DistinctRecordsPerBind",
+          "name": "NonPersistentBoundOnce",
           "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
-          "statement": "The stored records of one fire are pairwise distinct, and of distinct classes on a set.",
+          "statement": "A non-persistent stored record fills at most one position of a fire, on every discipline. On a set, two positions of one class need a persistent member of that class.",
           "tests": [
-            "prop_join_repeated_channel_distinct_records"
+            "prop_join_nonpersistent_record_binds_once"
           ]
         },
         "V29": {
           "kind": "tla",
-          "name": "IncomingBoundOnce",
+          "name": "IncomingHeld",
           "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
-          "statement": "A produce-side fire binds its incoming record at exactly one position.",
+          "statement": "A produce-side fire binds its incoming record, and it binds a non-persistent incoming record at exactly one position.",
           "tests": [
-            "prop_join_incoming_binds_once"
+            "prop_join_incoming_held"
           ]
         },
         "V30": {
@@ -4230,6 +3922,33 @@
           "statement": "Each staging of a join transaction on a collection follows a bump of its counter in the same transaction (queue, stack).",
           "tests": [
             "prop_cascade_bumps_touched_counters"
+          ]
+        },
+        "V35": {
+          "kind": "tla",
+          "name": "NoStaleScope",
+          "file": "formal/tlaplus/reified_rspaces/JoinScopeLock.tla",
+          "statement": "A transaction stages only with the scope of the current state (decision 94). TLC checks it in the safe configuration MC_JoinScopeLock.cfg and in the controls CoverageByHostUseUnsafe.cfg, EscalationRebeginUnsafe.cfg, PhaseAAfterPhaseBUnsafe.cfg, PhaseAWithoutConfigUnsafe.cfg and PhaseBSplitUnsafe.cfg.",
+          "tests": [
+            "prop_racing_jobs_equal_a_serial_order"
+          ]
+        },
+        "V36": {
+          "kind": "tla",
+          "name": "NoFalseRefusal",
+          "file": "formal/tlaplus/reified_rspaces/JoinScopeLock.tla",
+          "statement": "The coverage check passes for every channel that a transaction with a current scope touches (decision 94). TLC checks it in the safe configuration MC_JoinScopeLock.cfg and in the controls CoverageByHostUseUnsafe.cfg, EscalationRebeginUnsafe.cfg, PhaseAAfterPhaseBUnsafe.cfg, PhaseAWithoutConfigUnsafe.cfg and PhaseBSplitUnsafe.cfg. SpaceCoordination.tla also defines an invariant of this name (decision 91): the history of a refused use misses the last use of its channel. TLC checks that invariant in the safe configuration MC_SpaceCoordination.cfg and in the controls ClaimsNeedContextUnsafe.cfg, NoInheritUnsafe.cfg, NoMergeUnsafe.cfg, QualifierSupportUnsafe.cfg, SeqGuardToctouUnsafe.cfg, SeqScanSkippedUnsafe.cfg and UseBalanceUnsafe.cfg.",
+          "tests": [
+            "prop_racing_jobs_equal_a_serial_order"
+          ]
+        },
+        "N7": {
+          "kind": "tla",
+          "name": "NoDeadlock",
+          "file": "formal/tlaplus/reified_rspaces/JoinScopeLock.tla",
+          "statement": "Every state has a process that can step, or every process ended (an explicit CanStep, as in NativeReplay.tla). This row maps the NoDeadlock of JoinScopeLock.tla (decision 94). TLC checks it in the safe configuration MC_JoinScopeLock.cfg and in the controls CoverageByHostUseUnsafe.cfg, EscalationRebeginUnsafe.cfg, PhaseAAfterPhaseBUnsafe.cfg, PhaseAWithoutConfigUnsafe.cfg and PhaseBSplitUnsafe.cfg. Decision 90 (DR-132) disabled the other NoDeadlock, the invariant of ScheduleSpec of NativeReplay.tla, because DR-132 removed the deterministic scheduler that ScheduleSpec models. That operator is a comment now, and MC_NativeReplay_Schedule.cfg, MC_NativeReplay_Schedule_NativeKey.cfg, NoInvalidateUnsafe.cfg, NoSpaceKeyUnsafe.cfg and WaitUnderLocksUnsafe.cfg name it only on commented lines.",
+          "tests": [
+            "prop_racing_jobs_equal_a_serial_order"
           ]
         },
         "R127": {
@@ -4362,14 +4081,6 @@
         },
         {
           "number": 11,
-          "test": "prop_alloc_trace_covered",
-          "file": "rholang/tests/reified_array_vector.rs",
-          "covers": [
-            "R11"
-          ]
-        },
-        {
-          "number": 12,
           "test": "prop_vector_index_is_counter",
           "file": "rholang/tests/reified_array_vector.rs",
           "covers": [
@@ -4377,7 +4088,7 @@
           ]
         },
         {
-          "number": 13,
+          "number": 12,
           "test": "prop_vector_gensym_distinct",
           "file": "rholang/tests/reified_array_vector.rs",
           "covers": [
@@ -4385,7 +4096,7 @@
           ]
         },
         {
-          "number": 14,
+          "number": 13,
           "test": "prop_vector_gensym_monotonic",
           "file": "rholang/tests/reified_array_vector.rs",
           "covers": [
@@ -4393,7 +4104,7 @@
           ]
         },
         {
-          "number": 15,
+          "number": 14,
           "test": "prop_hashmap_iteration_permutation_invariant",
           "file": "rholang/tests/reified_array_vector.rs",
           "covers": [
@@ -4401,7 +4112,7 @@
           ]
         },
         {
-          "number": 16,
+          "number": 15,
           "test": "prop_hashmap_get_put_other",
           "file": "rholang/tests/reified_array_vector.rs",
           "covers": [
@@ -4409,7 +4120,7 @@
           ]
         },
         {
-          "number": 17,
+          "number": 16,
           "test": "prop_query_bind_routes_inner_channel",
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
           "covers": [
@@ -4417,7 +4128,7 @@
           ]
         },
         {
-          "number": 18,
+          "number": 17,
           "test": "prop_query_source_routes_inner_channel",
           "file": "rholang/tests/reified_hooks_p5.rs",
           "covers": [
@@ -4425,7 +4136,7 @@
           ]
         },
         {
-          "number": 19,
+          "number": 18,
           "test": "prop_registered_families_complete",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
@@ -4433,7 +4144,7 @@
           ]
         },
         {
-          "number": 20,
+          "number": 19,
           "test": "prop_factory_config_names_its_family",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
@@ -4442,7 +4153,7 @@
           ]
         },
         {
-          "number": 21,
+          "number": 20,
           "test": "prop_aliases_bind_family_capability",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
@@ -4450,7 +4161,7 @@
           ]
         },
         {
-          "number": 22,
+          "number": 21,
           "test": "prop_constructor_params_validated",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
@@ -4458,7 +4169,7 @@
           ]
         },
         {
-          "number": 23,
+          "number": 22,
           "test": "prop_priorities_validated",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
@@ -4466,7 +4177,7 @@
           ]
         },
         {
-          "number": 24,
+          "number": 23,
           "test": "prop_array_size_validated",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
@@ -4474,7 +4185,7 @@
           ]
         },
         {
-          "number": 25,
+          "number": 24,
           "test": "prop_prefix_key_iff_prefix",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
           "covers": [
@@ -4482,7 +4193,7 @@
           ]
         },
         {
-          "number": 26,
+          "number": 25,
           "test": "prop_segments_are_a_prefix_code",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
           "covers": [
@@ -4490,7 +4201,7 @@
           ]
         },
         {
-          "number": 27,
+          "number": 26,
           "test": "prop_path_keys_are_injective",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
           "covers": [
@@ -4498,15 +4209,7 @@
           ]
         },
         {
-          "number": 28,
-          "test": "prop_metered_keys_equal_unmetered_keys",
-          "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
-          "covers": [
-            "R23"
-          ]
-        },
-        {
-          "number": 29,
+          "number": 27,
           "test": "prop_reroot_ident",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
           "covers": [
@@ -4514,7 +4217,7 @@
           ]
         },
         {
-          "number": 30,
+          "number": 28,
           "test": "prop_reroot_compose",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
           "covers": [
@@ -4522,7 +4225,7 @@
           ]
         },
         {
-          "number": 31,
+          "number": 29,
           "test": "prop_head_adapter_roundtrip",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
           "covers": [
@@ -4530,7 +4233,7 @@
           ]
         },
         {
-          "number": 32,
+          "number": 30,
           "test": "prop_prefixed_maps_keep_their_order",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs",
           "covers": [
@@ -4538,7 +4241,7 @@
           ]
         },
         {
-          "number": 33,
+          "number": 31,
           "test": "prop_reroot_injective",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
           "covers": [
@@ -4546,7 +4249,7 @@
           ]
         },
         {
-          "number": 34,
+          "number": 32,
           "test": "prop_unit_shift",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs",
           "covers": [
@@ -4554,7 +4257,7 @@
           ]
         },
         {
-          "number": 35,
+          "number": 33,
           "test": "prop_candidate_order_total",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs",
           "covers": [
@@ -4562,7 +4265,7 @@
           ]
         },
         {
-          "number": 36,
+          "number": 34,
           "test": "prop_bag_visit_order_canonical",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4570,7 +4273,7 @@
           ]
         },
         {
-          "number": 37,
+          "number": 35,
           "test": "prop_bag_consume_first_spatial_match",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4578,7 +4281,7 @@
           ]
         },
         {
-          "number": 38,
+          "number": 36,
           "test": "prop_bag_persistent_match_not_removed",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4586,7 +4289,7 @@
           ]
         },
         {
-          "number": 39,
+          "number": 37,
           "test": "prop_bag_multiplicity_preserved",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4594,7 +4297,7 @@
           ]
         },
         {
-          "number": 40,
+          "number": 38,
           "test": "prop_bag_removal_keeps_equal_duplicate",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4602,15 +4305,15 @@
           ]
         },
         {
-          "number": 41,
-          "test": "prop_bag_legacy_charges_equal_host",
+          "number": 39,
+          "test": "prop_bag_observer_calls_equal_host",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
             "R34"
           ]
         },
         {
-          "number": 42,
+          "number": 40,
           "test": "prop_bag_restore_registers_the_record_authority",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4618,15 +4321,7 @@
           ]
         },
         {
-          "number": 43,
-          "test": "prop_bag_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_bag.rs",
-          "covers": [
-            "R35"
-          ]
-        },
-        {
-          "number": 44,
+          "number": 41,
           "test": "prop_bag_waiter_removal_by_record_identity",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4634,7 +4329,7 @@
           ]
         },
         {
-          "number": 45,
+          "number": 42,
           "test": "prop_bag_equal_pattern_waiters_stay_distinct",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4642,7 +4337,7 @@
           ]
         },
         {
-          "number": 46,
+          "number": 43,
           "test": "prop_bag_park_byte_identity_idempotent",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4650,7 +4345,7 @@
           ]
         },
         {
-          "number": 47,
+          "number": 44,
           "test": "prop_bag_waiter_visit_order_canonical",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4658,7 +4353,7 @@
           ]
         },
         {
-          "number": 48,
+          "number": 45,
           "test": "prop_head_waiter_unique",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
@@ -4666,7 +4361,7 @@
           ]
         },
         {
-          "number": 49,
+          "number": 46,
           "test": "prop_engine_match_is_the_injected_matcher",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4674,7 +4369,7 @@
           ]
         },
         {
-          "number": 50,
+          "number": 47,
           "test": "prop_engine_guard_checked_once_as_the_host_checks_it",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4682,7 +4377,7 @@
           ]
         },
         {
-          "number": 51,
+          "number": 48,
           "test": "prop_engine_wildcard_matcher_breaks_pattern_enforcement",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4690,7 +4385,7 @@
           ]
         },
         {
-          "number": 52,
+          "number": 49,
           "test": "prop_engine_consume_fires_only_matching",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4698,7 +4393,7 @@
           ]
         },
         {
-          "number": 53,
+          "number": 50,
           "test": "prop_engine_produce_fires_only_matching",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4706,7 +4401,7 @@
           ]
         },
         {
-          "number": 54,
+          "number": 51,
           "test": "prop_engine_no_guard_free_pending_match",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4715,7 +4410,7 @@
           ]
         },
         {
-          "number": 55,
+          "number": 52,
           "test": "prop_engine_peek_restore_equals_host_reproduce",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4723,7 +4418,7 @@
           ]
         },
         {
-          "number": 56,
+          "number": 53,
           "test": "prop_engine_scan_reissue_keeps_identity",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4731,23 +4426,7 @@
           ]
         },
         {
-          "number": 57,
-          "test": "prop_engine_primitives_reserve_before_they_read",
-          "file": "rholang/tests/reified_engine_props.rs",
-          "covers": [
-            "R49"
-          ]
-        },
-        {
-          "number": 58,
-          "test": "prop_cell_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_cell.rs",
-          "covers": [
-            "R49"
-          ]
-        },
-        {
-          "number": 59,
+          "number": 54,
           "test": "prop_engine_fires_enforce_patterns",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4755,7 +4434,7 @@
           ]
         },
         {
-          "number": 60,
+          "number": 55,
           "test": "prop_engine_conserves_records",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4763,7 +4442,7 @@
           ]
         },
         {
-          "number": 61,
+          "number": 56,
           "test": "prop_engine_spends_each_record_once",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4771,7 +4450,7 @@
           ]
         },
         {
-          "number": 62,
+          "number": 57,
           "test": "prop_engine_fire_removes_present_records_atomically",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4779,7 +4458,7 @@
           ]
         },
         {
-          "number": 63,
+          "number": 58,
           "test": "prop_engine_set_class_retired",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4787,7 +4466,7 @@
           ]
         },
         {
-          "number": 64,
+          "number": 59,
           "test": "prop_engine_cell_capacity",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4795,7 +4474,7 @@
           ]
         },
         {
-          "number": 65,
+          "number": 60,
           "test": "prop_engine_peek_restores_record",
           "file": "rholang/tests/reified_engine_props.rs",
           "covers": [
@@ -4803,7 +4482,7 @@
           ]
         },
         {
-          "number": 66,
+          "number": 61,
           "test": "prop_no_duplicate_index",
           "file": "rholang/tests/reified_array_vector.rs",
           "covers": [
@@ -4811,7 +4490,7 @@
           ]
         },
         {
-          "number": 67,
+          "number": 62,
           "test": "prop_allocations_race",
           "file": "rholang/tests/reified_array_vector.rs",
           "covers": [
@@ -4819,7 +4498,7 @@
           ]
         },
         {
-          "number": 68,
+          "number": 63,
           "test": "prop_stack_head_is_max_ord",
           "file": "rholang/tests/reified_stack.rs",
           "covers": [
@@ -4827,7 +4506,7 @@
           ]
         },
         {
-          "number": 69,
+          "number": 64,
           "test": "prop_stack_lifo_order_any_schedule",
           "file": "rholang/tests/reified_stack.rs",
           "covers": [
@@ -4840,7 +4519,7 @@
           ]
         },
         {
-          "number": 70,
+          "number": 65,
           "test": "prop_stack_no_pending_match_any_schedule",
           "file": "rholang/tests/reified_stack.rs",
           "covers": [
@@ -4852,7 +4531,7 @@
           ]
         },
         {
-          "number": 71,
+          "number": 66,
           "test": "prop_stack_settle_bounded_any_schedule",
           "file": "rholang/tests/reified_stack.rs",
           "covers": [
@@ -4861,7 +4540,7 @@
           ]
         },
         {
-          "number": 72,
+          "number": 67,
           "test": "prop_stack_plan_permutation_invariant",
           "file": "rholang/tests/reified_stack.rs",
           "covers": [
@@ -4869,15 +4548,7 @@
           ]
         },
         {
-          "number": 73,
-          "test": "prop_stack_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_stack.rs",
-          "covers": [
-            "R61"
-          ]
-        },
-        {
-          "number": 74,
+          "number": 68,
           "test": "prop_stack_reissue_keeps_ord_any_schedule",
           "file": "rholang/tests/reified_stack.rs",
           "covers": [
@@ -4887,7 +4558,7 @@
           ]
         },
         {
-          "number": 75,
+          "number": 69,
           "test": "prop_stack_txn_fires_bounded_at_the_cap",
           "file": "rholang/tests/reified_stack.rs",
           "covers": [
@@ -4896,7 +4567,7 @@
           ]
         },
         {
-          "number": 76,
+          "number": 70,
           "test": "prop_cell_ops_race_on_counter",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -4904,7 +4575,7 @@
           ]
         },
         {
-          "number": 77,
+          "number": 71,
           "test": "prop_crossed_stacks_without_removal_counters_fabricate",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -4912,7 +4583,7 @@
           ]
         },
         {
-          "number": 78,
+          "number": 72,
           "test": "prop_crossed_stacks_race",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -4920,7 +4591,7 @@
           ]
         },
         {
-          "number": 79,
+          "number": 73,
           "test": "prop_bag_writes_commute",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -4928,7 +4599,7 @@
           ]
         },
         {
-          "number": 80,
+          "number": 74,
           "test": "prop_merged_stack_state_is_serial",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -4936,17 +4607,7 @@
           ]
         },
         {
-          "number": 81,
-          "test": "prop_canonical_iteration_bag_any_insertion_order",
-          "file": "rholang/tests/reified_determinism.rs",
-          "covers": [
-            "R29",
-            "R39",
-            "R15"
-          ]
-        },
-        {
-          "number": 82,
+          "number": 75,
           "test": "prop_canonical_iteration_ordered_any_list_order",
           "file": "rholang/tests/reified_determinism.rs",
           "covers": [
@@ -4956,17 +4617,7 @@
           ]
         },
         {
-          "number": 83,
-          "test": "prop_candidate_serialize_failure_cut_is_exact",
-          "file": "rholang/tests/reified_determinism.rs",
-          "covers": [
-            "R35",
-            "R61",
-            "R49"
-          ]
-        },
-        {
-          "number": 84,
+          "number": 76,
           "test": "prop_pattern_enforcement_any_wired_family",
           "file": "rholang/tests/reified_pattern_enforcement.rs",
           "covers": [
@@ -4977,7 +4628,7 @@
           ]
         },
         {
-          "number": 85,
+          "number": 77,
           "test": "prop_set_key_injective",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -4985,7 +4636,7 @@
           ]
         },
         {
-          "number": 86,
+          "number": 78,
           "test": "prop_set_view_dedups_equal_pars",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -4993,7 +4644,7 @@
           ]
         },
         {
-          "number": 87,
+          "number": 79,
           "test": "prop_set_consume_retires_class",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -5001,7 +4652,7 @@
           ]
         },
         {
-          "number": 88,
+          "number": 80,
           "test": "prop_set_retire_comm_lines_up",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -5009,7 +4660,7 @@
           ]
         },
         {
-          "number": 89,
+          "number": 81,
           "test": "prop_set_produce_fire_retires_stored_class",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -5017,7 +4668,7 @@
           ]
         },
         {
-          "number": 90,
+          "number": 82,
           "test": "prop_set_peek_restores_representative_only",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -5025,7 +4676,7 @@
           ]
         },
         {
-          "number": 91,
+          "number": 83,
           "test": "prop_set_membership_full_compare_on_equal_hash",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -5033,15 +4684,7 @@
           ]
         },
         {
-          "number": 92,
-          "test": "prop_set_key_trace_covered",
-          "file": "rholang/tests/reified_set.rs",
-          "covers": [
-            "R74"
-          ]
-        },
-        {
-          "number": 93,
+          "number": 84,
           "test": "prop_set_class_retired_any_schedule",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
@@ -5051,8 +4694,8 @@
           ]
         },
         {
-          "number": 94,
-          "test": "prop_set_legacy_charges_equal_host",
+          "number": 85,
+          "test": "prop_set_observer_calls_equal_host",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
             "R34",
@@ -5060,7 +4703,7 @@
           ]
         },
         {
-          "number": 95,
+          "number": 86,
           "test": "prop_pq_level_order",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5069,7 +4712,7 @@
           ]
         },
         {
-          "number": 96,
+          "number": 87,
           "test": "prop_pq_fifo_order_any_schedule",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5083,7 +4726,7 @@
           ]
         },
         {
-          "number": 97,
+          "number": 88,
           "test": "prop_pq_no_pending_match_any_schedule",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5095,7 +4738,7 @@
           ]
         },
         {
-          "number": 98,
+          "number": 89,
           "test": "prop_pq_oldest_first_any_schedule",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5105,7 +4748,7 @@
           ]
         },
         {
-          "number": 99,
+          "number": 90,
           "test": "prop_pq_settle_bounded_any_schedule",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5113,7 +4756,7 @@
           ]
         },
         {
-          "number": 100,
+          "number": 91,
           "test": "prop_pq_txn_fires_bounded_at_the_cap",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5122,7 +4765,7 @@
           ]
         },
         {
-          "number": 101,
+          "number": 92,
           "test": "prop_pq_plan_permutation_invariant",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5130,15 +4773,7 @@
           ]
         },
         {
-          "number": 102,
-          "test": "prop_pq_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_priority_queue.rs",
-          "covers": [
-            "R93"
-          ]
-        },
-        {
-          "number": 103,
+          "number": 93,
           "test": "prop_pq_reissue_keeps_ord_any_schedule",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5148,7 +4783,7 @@
           ]
         },
         {
-          "number": 104,
+          "number": 94,
           "test": "prop_pq_priority_domain",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5156,7 +4791,7 @@
           ]
         },
         {
-          "number": 105,
+          "number": 95,
           "test": "prop_pq_no_level_storage",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5164,7 +4799,7 @@
           ]
         },
         {
-          "number": 106,
+          "number": 96,
           "test": "prop_pq_record_slots_roundtrip",
           "file": "rholang/tests/reified_priority_queue.rs",
           "covers": [
@@ -5173,7 +4808,7 @@
           ]
         },
         {
-          "number": 107,
+          "number": 97,
           "test": "prop_marker_record_roundtrip",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
           "covers": [
@@ -5181,7 +4816,7 @@
           ]
         },
         {
-          "number": 108,
+          "number": 98,
           "test": "prop_vehicle_carries_payload",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
           "covers": [
@@ -5189,7 +4824,7 @@
           ]
         },
         {
-          "number": 109,
+          "number": 99,
           "test": "prop_path_element_rules",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
           "covers": [
@@ -5197,7 +4832,7 @@
           ]
         },
         {
-          "number": 110,
+          "number": 100,
           "test": "prop_candidates_cover_the_prefix_in_key_order",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
           "covers": [
@@ -5207,7 +4842,7 @@
           ]
         },
         {
-          "number": 111,
+          "number": 101,
           "test": "prop_marker_invariant_preserved",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
           "covers": [
@@ -5217,7 +4852,7 @@
           ]
         },
         {
-          "number": 112,
+          "number": 102,
           "test": "prop_waiter_prefixes_are_most_specific_first",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
           "covers": [
@@ -5227,7 +4862,7 @@
           ]
         },
         {
-          "number": 113,
+          "number": 103,
           "test": "prop_rerooted_datum_is_reroot_of_each_argument",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
           "covers": [
@@ -5235,7 +4870,7 @@
           ]
         },
         {
-          "number": 114,
+          "number": 104,
           "test": "prop_pathmap_delivery_is_single_channel",
           "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
@@ -5243,7 +4878,7 @@
           ]
         },
         {
-          "number": 115,
+          "number": 105,
           "test": "prop_pathmap_no_match_remains_any_schedule",
           "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
@@ -5252,7 +4887,7 @@
           ]
         },
         {
-          "number": 116,
+          "number": 106,
           "test": "prop_pathmap_head_cascade_leaves_no_fireable_head",
           "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
@@ -5260,7 +4895,7 @@
           ]
         },
         {
-          "number": 117,
+          "number": 107,
           "test": "prop_pathmap_token_orders_reenter_at_their_place",
           "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
@@ -5268,15 +4903,7 @@
           ]
         },
         {
-          "number": 118,
-          "test": "prop_pathmap_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_pathmap.rs",
-          "covers": [
-            "R107"
-          ]
-        },
-        {
-          "number": 119,
+          "number": 108,
           "test": "prop_pathmap_merge_detects_prefix_contact",
           "file": "rholang/tests/reified_pathmap.rs",
           "covers": [
@@ -5284,7 +4911,7 @@
           ]
         },
         {
-          "number": 120,
+          "number": 109,
           "test": "prop_bind_permutation_restores_order",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5292,7 +4919,7 @@
           ]
         },
         {
-          "number": 121,
+          "number": 110,
           "test": "prop_cascade_bumps_touched_counters",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5301,7 +4928,7 @@
           ]
         },
         {
-          "number": 122,
+          "number": 111,
           "test": "prop_cascade_measure_decreases",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5309,7 +4936,7 @@
           ]
         },
         {
-          "number": 123,
+          "number": 112,
           "test": "prop_cascade_order_independent",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5317,7 +4944,7 @@
           ]
         },
         {
-          "number": 124,
+          "number": 113,
           "test": "prop_cascade_restores_inv_any_schedule",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5325,7 +4952,7 @@
           ]
         },
         {
-          "number": 125,
+          "number": 114,
           "test": "prop_cascade_terminates_any_schedule",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5333,7 +4960,7 @@
           ]
         },
         {
-          "number": 126,
+          "number": 115,
           "test": "prop_continuation_v2_roundtrip",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5341,7 +4968,7 @@
           ]
         },
         {
-          "number": 127,
+          "number": 116,
           "test": "prop_greedy_join_limit",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5349,7 +4976,7 @@
           ]
         },
         {
-          "number": 128,
+          "number": 117,
           "test": "prop_join_engine_agrees_with_drivers_without_joins",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5358,7 +4985,7 @@
           ]
         },
         {
-          "number": 129,
+          "number": 118,
           "test": "prop_join_fires_heads_only",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5367,8 +4994,8 @@
           ]
         },
         {
-          "number": 130,
-          "test": "prop_join_incoming_binds_once",
+          "number": 119,
+          "test": "prop_join_incoming_held",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
             "R110",
@@ -5376,7 +5003,7 @@
           ]
         },
         {
-          "number": 131,
+          "number": 120,
           "test": "prop_join_ops_race_on_every_counter",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5384,7 +5011,7 @@
           ]
         },
         {
-          "number": 132,
+          "number": 121,
           "test": "prop_join_produce_search_agrees_with_head",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5392,7 +5019,7 @@
           ]
         },
         {
-          "number": 133,
+          "number": 122,
           "test": "prop_join_reissue_keeps_bind_ords",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5401,8 +5028,8 @@
           ]
         },
         {
-          "number": 134,
-          "test": "prop_join_repeated_channel_distinct_records",
+          "number": 123,
+          "test": "prop_join_nonpersistent_record_binds_once",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
             "R112",
@@ -5410,7 +5037,7 @@
           ]
         },
         {
-          "number": 135,
+          "number": 124,
           "test": "prop_join_search_is_head_greedy",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5418,7 +5045,7 @@
           ]
         },
         {
-          "number": 136,
+          "number": 125,
           "test": "prop_join_set_bind_retires_class",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5426,7 +5053,7 @@
           ]
         },
         {
-          "number": 137,
+          "number": 126,
           "test": "prop_join_txn_fires_bounded_at_the_cap",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5435,7 +5062,7 @@
           ]
         },
         {
-          "number": 138,
+          "number": 127,
           "test": "prop_lift_reoffer_equals_direct_comm",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5443,7 +5070,7 @@
           ]
         },
         {
-          "number": 139,
+          "number": 128,
           "test": "prop_no_record_lost_any_schedule",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5451,7 +5078,7 @@
           ]
         },
         {
-          "number": 140,
+          "number": 129,
           "test": "prop_peek_join_restores_stored_candidates",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5459,7 +5086,7 @@
           ]
         },
         {
-          "number": 141,
+          "number": 130,
           "test": "prop_plan_then_lock_covers_every_staged_channel",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5467,7 +5094,7 @@
           ]
         },
         {
-          "number": 142,
+          "number": 131,
           "test": "prop_quiescent_no_pending_match_any_schedule",
           "file": "rholang/tests/reified_join_props.rs",
           "covers": [
@@ -5475,7 +5102,7 @@
           ]
         },
         {
-          "number": 143,
+          "number": 132,
           "test": "prop_set_retirements_race",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -5483,7 +5110,7 @@
           ]
         },
         {
-          "number": 144,
+          "number": 133,
           "test": "prop_unordered_set_writes_commute",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -5491,7 +5118,7 @@
           ]
         },
         {
-          "number": 145,
+          "number": 134,
           "test": "prop_pathmap_token_race",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -5499,7 +5126,7 @@
           ]
         },
         {
-          "number": 146,
+          "number": 135,
           "test": "prop_vectordb_params_validated",
           "file": "rholang/tests/reified_families.rs",
           "covers": [
@@ -5507,7 +5134,7 @@
           ]
         },
         {
-          "number": 147,
+          "number": 136,
           "test": "prop_vectordb_writes_commute",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -5515,11 +5142,30 @@
           ]
         },
         {
-          "number": 148,
+          "number": 137,
           "test": "prop_vectordb_capacity_soft_bound",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
             "R131"
+          ]
+        },
+        {
+          "number": 138,
+          "test": "prop_candidate_tie_bytes_select_in_any_arrival_order",
+          "file": "rholang/tests/reified_determinism.rs",
+          "covers": [
+            "R29",
+            "R50"
+          ]
+        },
+        {
+          "number": 139,
+          "test": "prop_racing_jobs_equal_a_serial_order",
+          "file": "rholang/tests/reified_join_props.rs",
+          "covers": [
+            "V35",
+            "V36",
+            "N7"
           ]
         }
       ],
@@ -5718,7 +5364,7 @@
           ]
         },
         {
-          "test": "space_disciplines_bag_legacy_charges_equal_host",
+          "test": "space_disciplines_bag_observer_calls_equal_host",
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
             "R34"
@@ -5729,13 +5375,6 @@
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
             "R34"
-          ]
-        },
-        {
-          "test": "space_disciplines_bag_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_bag.rs",
-          "covers": [
-            "R35"
           ]
         },
         {
@@ -5751,13 +5390,6 @@
           "file": "rholang/tests/reified_bag.rs",
           "covers": [
             "R39"
-          ]
-        },
-        {
-          "test": "engine_set_retirement_grows_the_staged_list_with_reserved_work",
-          "file": "rholang/tests/reified_engine_props.rs",
-          "covers": [
-            "R49"
           ]
         },
         {
@@ -5904,27 +5536,6 @@
           ]
         },
         {
-          "test": "space_stack_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_stack.rs",
-          "covers": [
-            "R61"
-          ]
-        },
-        {
-          "test": "space_settle_reissue_copies_are_reserved_first",
-          "file": "rholang/src/rust/interpreter/spaces/settle.rs",
-          "covers": [
-            "R61"
-          ]
-        },
-        {
-          "test": "space_stack_head_scan_reserves_its_comparisons_and_tie_encodes",
-          "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
-          "covers": [
-            "R61"
-          ]
-        },
-        {
           "test": "space_settle_reissued_operation_keeps_the_first_round_ord_of_a_persistent_operation",
           "file": "rholang/src/rust/interpreter/spaces/settle.rs",
           "covers": [
@@ -5946,7 +5557,7 @@
           ]
         },
         {
-          "test": "space_stack_precedes_is_a_greater_ord_and_reserves_one_comparison",
+          "test": "space_stack_precedes_is_a_greater_ord",
           "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
           "covers": [
             "R58"
@@ -5983,21 +5594,6 @@
           "covers": [
             "R1",
             "R15"
-          ]
-        },
-        {
-          "test": "space_candidate_serialize_failure_bag",
-          "file": "rholang/tests/reified_determinism.rs",
-          "covers": [
-            "R35"
-          ]
-        },
-        {
-          "test": "space_candidate_serialize_failure_ordered",
-          "file": "rholang/tests/reified_determinism.rs",
-          "covers": [
-            "R61",
-            "R49"
           ]
         },
         {
@@ -6053,13 +5649,6 @@
           "file": "rholang/tests/reified_pattern_enforcement.rs",
           "covers": [
             "R18",
-            "R20"
-          ]
-        },
-        {
-          "test": "pattern_enforcement_qualifiers_fail_closed",
-          "file": "rholang/tests/reified_pattern_enforcement.rs",
-          "covers": [
             "R20"
           ]
         },
@@ -6212,21 +5801,7 @@
           ]
         },
         {
-          "test": "space_set_discipline_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_set.rs",
-          "covers": [
-            "R74"
-          ]
-        },
-        {
-          "test": "space_set_discipline_failed_canonicalization_rejects_before_staging",
-          "file": "rholang/tests/reified_set.rs",
-          "covers": [
-            "R74"
-          ]
-        },
-        {
-          "test": "space_set_discipline_legacy_charges_equal_host",
+          "test": "space_set_discipline_observer_calls_equal_host",
           "file": "rholang/tests/reified_set.rs",
           "covers": [
             "R34",
@@ -6245,22 +5820,6 @@
           "file": "rholang/tests/reified_set.rs",
           "covers": [
             "R68"
-          ]
-        },
-        {
-          "test": "space_set_discipline_replay_equal",
-          "file": "rholang/tests/reified_set.rs",
-          "covers": [
-            "R70",
-            "R71",
-            "R72"
-          ]
-        },
-        {
-          "test": "space_set_discipline_rejected_replay_root_unchanged",
-          "file": "rholang/tests/reified_set.rs",
-          "covers": [
-            "R70"
           ]
         },
         {
@@ -6421,13 +5980,6 @@
           ]
         },
         {
-          "test": "space_disciplines_pq_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_priority_queue.rs",
-          "covers": [
-            "R93"
-          ]
-        },
-        {
           "test": "the_marker_decoder_is_strict",
           "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
           "covers": [
@@ -6506,27 +6058,6 @@
           ]
         },
         {
-          "test": "the_planner_reserves_its_work",
-          "file": "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs",
-          "covers": [
-            "R107"
-          ]
-        },
-        {
-          "test": "metered_forms_equal_the_plain_forms_and_reject_a_cut_budget",
-          "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
-          "covers": [
-            "R107"
-          ]
-        },
-        {
-          "test": "the_metered_builders_reserve_their_work",
-          "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
-          "covers": [
-            "R107"
-          ]
-        },
-        {
           "test": "pathmap_segment_codec_matches_epm1_vectors",
           "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
           "covers": [
@@ -6568,7 +6099,7 @@
           ]
         },
         {
-          "test": "space_joins_repeated_channel_distinct_records",
+          "test": "space_joins_persistent_record_binds_two_positions",
           "file": "rholang/tests/reified_joins.rs",
           "covers": [
             "R112"
@@ -6660,7 +6191,7 @@
           ]
         },
         {
-          "test": "space_joins_escalation_relocks_once",
+          "test": "space_joins_phase_b_locks_the_closure_once",
           "file": "rholang/tests/reified_joins.rs",
           "covers": [
             "R121"
@@ -6783,13 +6314,6 @@
           ]
         },
         {
-          "test": "pathmap_reservation_cut_rejects_without_effect",
-          "file": "rholang/tests/reified_pathmap.rs",
-          "covers": [
-            "R107"
-          ]
-        },
-        {
           "test": "space_collection_conflicts_vectordb_writes_merge",
           "file": "rholang/tests/reified_merge_p5.rs",
           "covers": [
@@ -6811,9 +6335,10 @@
       "test_status": "required",
       "test_files": [
         "rspace++/src/rspace/replay_rspace/native_session/space.rs",
-        "rholang/src/rust/interpreter/reified/schedule.rs"
+        "rholang/tests/reified_native_spaces.rs",
+        "rholang/tests/reified_native_owner_rows.rs"
       ],
-      "expected_properties": 5,
+      "expected_properties": 9,
       "formal": {
         "N1": {
           "kind": "rocq",
@@ -6842,15 +6367,6 @@
             "prop_native_space_replay_fails_closed"
           ]
         },
-        "N4": {
-          "kind": "rocq",
-          "name": "view_charge_cache_independent",
-          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
-          "statement": "A view load charges its key and its value only: a hit and a miss load the same value and charge the same amount, so a warm load and a cold load reserve the same work (H27, P5 of design v2).",
-          "tests": [
-            "prop_view_charge_cache_independent"
-          ]
-        },
         "N5": {
           "kind": "tla",
           "name": "NativeReplayOutcomeEqual",
@@ -6861,25 +6377,6 @@
             "prop_native_space_replay_fails_closed"
           ]
         },
-        "N6": {
-          "kind": "tla",
-          "name": "NoBlockedReadiness",
-          "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
-          "statement": "With an honest journal, no space row finds a predecessor that is not complete: the key [2]||sid (I-11) keeps the transactions of one space in one conflict group in operation order, also without the native key [2, 0].",
-          "tests": [
-            "prop_space_key_keeps_one_space_in_one_group"
-          ]
-        },
-        "N7": {
-          "kind": "tla",
-          "name": "NoDeadlock",
-          "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
-          "statement": "Until every intent ends, some intent can step: a space transaction never waits under its stripes (P1), a host operation waits before it takes its stripes (F4), and a failed space row closes the epoch, so no operation waits forever for it, also with a footprint-consistent forged journal.",
-          "tests": [
-            "prop_native_space_replay_denial_keeps_prefix",
-            "prop_native_space_replay_fails_closed"
-          ]
-        },
         "N8": {
           "kind": "rocq",
           "name": "two_block_native_replay_preserves_roots",
@@ -6887,6 +6384,52 @@
           "statement": "With the hash premise that a reset to the root of a store rebuilds that store, a two-block trace of native replay over the rows of native play gives the observer calls, the stores, the roots and the statuses of play (H30, P9, amendment A10, leaf 9080; from H24).",
           "tests": [
             "prop_native_space_replay_reproduces_play"
+          ]
+        },
+        "N9": {
+          "kind": "tla",
+          "name": "NoStall",
+          "file": "formal/tlaplus/reified_rspaces/SpaceReplayOrder.tla",
+          "statement": "The replay of an honest journal never declares a stall (decision 92). TLC checks it in the safe configurations MC_SpaceReplayOrder.cfg, MC_SpaceReplayOrder_CapFail.cfg, MC_SpaceReplayOrder_Cascade.cfg, MC_SpaceReplayOrder_CascadeVeto.cfg, MC_SpaceReplayOrder_Deviate.cfg, MC_SpaceReplayOrder_ErrStop.cfg, MC_SpaceReplayOrder_K8.cfg, MC_SpaceReplayOrder_OfferStore.cfg, MC_SpaceReplayOrder_Pick.cfg, MC_SpaceReplayOrder_RaFirst.cfg, MC_SpaceReplayOrder_Reoffer0.cfg, MC_SpaceReplayOrder_Reoffers.cfg, MC_SpaceReplayOrder_SeqPick.cfg, MC_SpaceReplayOrder_TailQuiet.cfg and MC_SpaceReplayOrder_TailRet.cfg, the witness configurations SpaceReplayCascadeCompletionReachable.cfg, SpaceReplayCompletionReachable.cfg, SpaceReplayFailureVerdictReachable.cfg, SpaceReplayMarkFreeReturnReachable.cfg and SpaceReplayRestageReachable.cfg and in the controls AnchorAppendedUnsafe.cfg, AnchorOnlyErrorCutUnsafe.cfg, AnchorOnlyRecordEndUnsafe.cfg, CanonicalStagingUnsafe.cfg, CascadeRandomWindowUnsafe.cfg, DeviationRowsUnsafe.cfg, EmptyFilterFailsUnsafe.cfg, FollowErrorFailsUnsafe.cfg, MarkedFinishUnsafe.cfg, MarkedSettleUnsafe.cfg, NoAnchorRowlessUnsafe.cfg, NoCanonicalRestageUnsafe.cfg, NoFootprintKeyUnsafe.cfg, OfferStoreSourceUnsafe.cfg, ReissueOwnFirstUnsafe.cfg, ReofferOwnFirstUnsafe.cfg, RestageDropsAnchorUnsafe.cfg, SeqPickAbortUnsafe.cfg and UnknownSourceFailsUnsafe.cfg.",
+          "tests": [
+            "space_racing_replay_never_stalls"
+          ]
+        },
+        "N10": {
+          "kind": "tla",
+          "name": "NoFailClosed",
+          "file": "formal/tlaplus/reified_rspaces/SpaceReplayOrder.tla",
+          "statement": "The replay of an honest journal never fails closed (decision 92). TLC checks it in the safe configurations MC_SpaceReplayOrder.cfg, MC_SpaceReplayOrder_CapFail.cfg, MC_SpaceReplayOrder_Cascade.cfg, MC_SpaceReplayOrder_CascadeVeto.cfg, MC_SpaceReplayOrder_Deviate.cfg, MC_SpaceReplayOrder_ErrStop.cfg, MC_SpaceReplayOrder_K8.cfg, MC_SpaceReplayOrder_OfferStore.cfg, MC_SpaceReplayOrder_Pick.cfg, MC_SpaceReplayOrder_RaFirst.cfg, MC_SpaceReplayOrder_Reoffer0.cfg, MC_SpaceReplayOrder_Reoffers.cfg, MC_SpaceReplayOrder_SeqPick.cfg, MC_SpaceReplayOrder_TailQuiet.cfg and MC_SpaceReplayOrder_TailRet.cfg, the witness configurations SpaceReplayCascadeCompletionReachable.cfg, SpaceReplayCompletionReachable.cfg, SpaceReplayFailureVerdictReachable.cfg, SpaceReplayMarkFreeReturnReachable.cfg and SpaceReplayRestageReachable.cfg and in the controls AnchorAppendedUnsafe.cfg, AnchorOnlyErrorCutUnsafe.cfg, AnchorOnlyRecordEndUnsafe.cfg, CanonicalStagingUnsafe.cfg, CascadeRandomWindowUnsafe.cfg, DeviationRowsUnsafe.cfg, EmptyFilterFailsUnsafe.cfg, FollowErrorFailsUnsafe.cfg, MarkedFinishUnsafe.cfg, MarkedSettleUnsafe.cfg, NoAnchorRowlessUnsafe.cfg, NoCanonicalRestageUnsafe.cfg, NoFootprintKeyUnsafe.cfg, OfferStoreSourceUnsafe.cfg, ReissueOwnFirstUnsafe.cfg, ReofferOwnFirstUnsafe.cfg, RestageDropsAnchorUnsafe.cfg, SeqPickAbortUnsafe.cfg and UnknownSourceFailsUnsafe.cfg.",
+          "tests": [
+            "space_racing_replay_never_fails_closed"
+          ]
+        },
+        "N11": {
+          "kind": "tla",
+          "name": "Agreement",
+          "file": "formal/tlaplus/reified_rspaces/SpaceReplayOrder.tla",
+          "statement": "Each job ends with its verdict of play. When replay is quiet and every row is complete, the space is in its final state of play (decisions 92 and 122). TLC checks it in the safe configurations MC_SpaceReplayOrder.cfg, MC_SpaceReplayOrder_CapFail.cfg, MC_SpaceReplayOrder_Cascade.cfg, MC_SpaceReplayOrder_CascadeVeto.cfg, MC_SpaceReplayOrder_Deviate.cfg, MC_SpaceReplayOrder_ErrStop.cfg, MC_SpaceReplayOrder_K8.cfg, MC_SpaceReplayOrder_OfferStore.cfg, MC_SpaceReplayOrder_Pick.cfg, MC_SpaceReplayOrder_RaFirst.cfg, MC_SpaceReplayOrder_Reoffer0.cfg, MC_SpaceReplayOrder_Reoffers.cfg, MC_SpaceReplayOrder_SeqPick.cfg, MC_SpaceReplayOrder_TailQuiet.cfg and MC_SpaceReplayOrder_TailRet.cfg, the witness configurations SpaceReplayCascadeCompletionReachable.cfg, SpaceReplayCompletionReachable.cfg, SpaceReplayFailureVerdictReachable.cfg, SpaceReplayMarkFreeReturnReachable.cfg and SpaceReplayRestageReachable.cfg and in the controls AnchorAppendedUnsafe.cfg, AnchorOnlyErrorCutUnsafe.cfg, AnchorOnlyRecordEndUnsafe.cfg, CanonicalStagingUnsafe.cfg, CascadeRandomWindowUnsafe.cfg, DeviationRowsUnsafe.cfg, EmptyFilterFailsUnsafe.cfg, FollowErrorFailsUnsafe.cfg, MarkedFinishUnsafe.cfg, MarkedSettleUnsafe.cfg, NoAnchorRowlessUnsafe.cfg, NoCanonicalRestageUnsafe.cfg, NoFootprintKeyUnsafe.cfg, OfferStoreSourceUnsafe.cfg, ReissueOwnFirstUnsafe.cfg, ReofferOwnFirstUnsafe.cfg, RestageDropsAnchorUnsafe.cfg, SeqPickAbortUnsafe.cfg and UnknownSourceFailsUnsafe.cfg.",
+          "tests": [
+            "space_racing_replay_agrees_with_play"
+          ]
+        },
+        "N12": {
+          "kind": "tla",
+          "name": "ExactRows",
+          "file": "formal/tlaplus/reified_rspaces/SpaceReplayOrder.tla",
+          "statement": "When replay is quiet, every row is complete. Replay is quiet when every job has ended or is absent (decisions 92 and 122). TLC checks it in the safe configurations MC_SpaceReplayOrder.cfg, MC_SpaceReplayOrder_CapFail.cfg, MC_SpaceReplayOrder_Cascade.cfg, MC_SpaceReplayOrder_CascadeVeto.cfg, MC_SpaceReplayOrder_Deviate.cfg, MC_SpaceReplayOrder_ErrStop.cfg, MC_SpaceReplayOrder_K8.cfg, MC_SpaceReplayOrder_OfferStore.cfg, MC_SpaceReplayOrder_Pick.cfg, MC_SpaceReplayOrder_RaFirst.cfg, MC_SpaceReplayOrder_Reoffer0.cfg, MC_SpaceReplayOrder_Reoffers.cfg, MC_SpaceReplayOrder_SeqPick.cfg, MC_SpaceReplayOrder_TailQuiet.cfg and MC_SpaceReplayOrder_TailRet.cfg, the witness configurations SpaceReplayCascadeCompletionReachable.cfg, SpaceReplayCompletionReachable.cfg, SpaceReplayFailureVerdictReachable.cfg, SpaceReplayMarkFreeReturnReachable.cfg and SpaceReplayRestageReachable.cfg and in the controls AnchorAppendedUnsafe.cfg, AnchorOnlyErrorCutUnsafe.cfg, AnchorOnlyRecordEndUnsafe.cfg, CanonicalStagingUnsafe.cfg, CascadeRandomWindowUnsafe.cfg, DeviationRowsUnsafe.cfg, EmptyFilterFailsUnsafe.cfg, FollowErrorFailsUnsafe.cfg, MarkedFinishUnsafe.cfg, MarkedSettleUnsafe.cfg, NoAnchorRowlessUnsafe.cfg, NoCanonicalRestageUnsafe.cfg, NoFootprintKeyUnsafe.cfg, OfferStoreSourceUnsafe.cfg, ReissueOwnFirstUnsafe.cfg, ReofferOwnFirstUnsafe.cfg, RestageDropsAnchorUnsafe.cfg, SeqPickAbortUnsafe.cfg and UnknownSourceFailsUnsafe.cfg.",
+          "tests": [
+            "space_racing_replay_completes_every_row"
+          ]
+        },
+        "N13": {
+          "kind": "tla",
+          "name": "TxnRefusalNeedsShortfall",
+          "file": "formal/tlaplus/reified_rspaces/SpaceOwnerRows.tla",
+          "statement": "Every accepted refusal passes its items at the fold and falls short at its position. TLC checks it in the safe configurations MC_SpaceOwnerRows_Class.cfg, MC_SpaceOwnerRows_Consume.cfg, MC_SpaceOwnerRows_Head.cfg, MC_SpaceOwnerRows_ProduceAdversary.cfg, MC_SpaceOwnerRows_ProduceRacer.cfg, MC_SpaceOwnerRows_ProduceSeq.cfg, MC_SpaceOwnerRows_ProduceWide.cfg and MC_SpaceOwnerRows_Ranked.cfg, the witness configurations SpaceOwnerAlternativeReachable.cfg, SpaceOwnerRandomPickReachable.cfg, SpaceOwnerRankedSkipReachable.cfg, SpaceOwnerStopReissueReachable.cfg, SpaceOwnerWideOrderStoreReachable.cfg and SpaceOwnerWideStoredDeviationReachable.cfg and in the controls SpaceOwnerCascadeIgnoresBookUnsafe.cfg, SpaceOwnerContinueAfterDeviationUnsafe.cfg, SpaceOwnerGuardedSearchUnsafe.cfg, SpaceOwnerMarkedFinishUnsafe.cfg, SpaceOwnerNoBookUnsafe.cfg, SpaceOwnerNoItemBookUnsafe.cfg, SpaceOwnerOwnerPaidPutUnsafe.cfg, SpaceOwnerParkWithoutSearchUnsafe.cfg, SpaceOwnerPartialClassFireUnsafe.cfg, SpaceOwnerPlainLiftUnsafe.cfg, SpaceOwnerReplayBookOnMarkConsumeUnsafe.cfg, SpaceOwnerReplayBookOnMarkUnsafe.cfg, SpaceOwnerRowStopUnsafe.cfg, SpaceOwnerSearchBookUnsafe.cfg, SpaceOwnerStagedClaimsUnsafe.cfg, SpaceOwnerStagedRetiresUnsafe.cfg, SpaceOwnerUncheckedContinueUnsafe.cfg, SpaceOwnerUncheckedGuardUnsafe.cfg, SpaceOwnerUncheckedRefusalUnsafe.cfg, SpaceOwnerUncheckedStopUnsafe.cfg, SpaceOwnerUncheckedStoredUnsafe.cfg, SpaceOwnerUnfilteredPickUnsafe.cfg, SpaceOwnerVetoExcuseUnsafe.cfg, SpaceOwnerWideItemBookOnReturnUnsafe.cfg, SpaceOwnerWideSendSearchUnsafe.cfg and SpaceOwnerWideStopByGuardUnsafe.cfg.",
+          "tests": [
+            "forged_refusal_with_no_shortfall_fails_closed",
+            "forged_refusal_for_a_candidate_that_fails_its_items_fails_closed"
           ]
         }
       },
@@ -6906,8 +6449,7 @@
           "test": "prop_native_space_replay_denial_keeps_prefix",
           "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
           "covers": [
-            "N2",
-            "N7"
+            "N2"
           ]
         },
         {
@@ -6916,24 +6458,55 @@
           "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
           "covers": [
             "N3",
-            "N5",
-            "N7"
+            "N5"
           ]
         },
         {
           "number": 4,
-          "test": "prop_view_charge_cache_independent",
-          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
+          "test": "space_racing_replay_never_stalls",
+          "file": "rholang/tests/reified_native_spaces.rs",
           "covers": [
-            "N4"
+            "N9"
           ]
         },
         {
           "number": 5,
-          "test": "prop_space_key_keeps_one_space_in_one_group",
-          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
+          "test": "space_racing_replay_never_fails_closed",
+          "file": "rholang/tests/reified_native_spaces.rs",
           "covers": [
-            "N6"
+            "N10"
+          ]
+        },
+        {
+          "number": 6,
+          "test": "space_racing_replay_agrees_with_play",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "covers": [
+            "N11"
+          ]
+        },
+        {
+          "number": 7,
+          "test": "space_racing_replay_completes_every_row",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "covers": [
+            "N12"
+          ]
+        },
+        {
+          "number": 8,
+          "test": "forged_refusal_with_no_shortfall_fails_closed",
+          "file": "rholang/tests/reified_native_owner_rows.rs",
+          "covers": [
+            "N13"
+          ]
+        },
+        {
+          "number": 9,
+          "test": "forged_refusal_for_a_candidate_that_fails_its_items_fails_closed",
+          "file": "rholang/tests/reified_native_owner_rows.rs",
+          "covers": [
+            "N13"
           ]
         }
       ],
@@ -6967,8 +6540,7 @@
           "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
           "rule": "decision 47 (R4 step 9)",
           "covers": [
-            "N3",
-            "N7"
+            "N3"
           ]
         },
         {
@@ -6993,32 +6565,7 @@
           "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
           "rule": "decision 47 (P1)",
           "covers": [
-            "N3",
-            "N7"
-          ]
-        },
-        {
-          "test": "native_space_replay_view_charges_equal_play",
-          "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
-          "rule": "decision 47 (P5)",
-          "covers": [
-            "N4"
-          ]
-        },
-        {
-          "test": "space_native_single_conflict_group",
-          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
-          "rule": "decision 47 (DR-78, DR-79)",
-          "covers": [
-            "N6"
-          ]
-        },
-        {
-          "test": "space_native_space_key_groups",
-          "file": "rholang/src/rust/interpreter/reified/schedule.rs",
-          "rule": "decision 47 (I-11)",
-          "covers": [
-            "N6"
+            "N3"
           ]
         },
         {
@@ -7070,8 +6617,7 @@
           "file": "rholang/tests/reified_native_spaces.rs",
           "rule": "decision 47 (section 6)",
           "covers": [
-            "N3",
-            "N7"
+            "N3"
           ]
         },
         {
@@ -7079,7 +6625,7 @@
           "file": "rholang/tests/reified_native_spaces.rs",
           "rule": "decision 47 (the epoch closure of c6cb371ba)",
           "covers": [
-            "N7"
+            "N3"
           ]
         },
         {
@@ -7093,8 +6639,8 @@
       ]
     },
     "P6": {
-      "title": "P6 steps 2, 8b, 8c and 8d: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break), the VectorDB discipline of one collection (VectorDbDiscipline.v S21-S25) the replay of its transactions (S26, the H23 theorem of EventCorrelation.v), and its TLA+ model VectorDb.tla (W1-W4: no pending match, atomic list fires, conservation of peeked records, the measure of the tail), the replies of rho:lang:vector (VectorOps.v S27-S28: the widest kind with one rounding, the midpoint test of the nearest root), and the ChromaDB mirror of a VectorDB space (ChromaMirror.tla W5-W12: consensus independent of the mirror, recorded answers, the checks of ann in both modes, publication on success with exact net writes and no wait, and the reconciler).",
-      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.7 and 4.9, and 5 (Rocq and TLA+). witness_tests lists the deterministic tests, the reference vectors of the Sage leg included.",
+      "title": "P6 steps 2, 8b, 8c and 8d: the exact numeric core of the VectorDB family (Similarity.v S1-S20: the squared forms, the bounds, the kernel laws, Cauchy-Schwarz, the score orders, the binary metrics and the selection order with the kappa tie-break), the VectorDB discipline of one collection (VectorDbDiscipline.v S21-S25) the replay of its transactions (S26, the H23 theorem of EventCorrelation.v), and its TLA+ model VectorDb.tla (W1-W4: no pending match, atomic list fires, conservation of peeked records, the measure of the tail), the replies of rho:lang:vector (VectorOps.v S27-S28: the widest kind with one rounding, the midpoint test of the nearest root), and the ChromaDB mirror of a VectorDB space (ChromaMirror.tla W5, W6, W9, W10, W13 and W14: consensus independent of the mirror, recorded answers, exact net writes, publication that never waits, no publication in replay, and one publication per commit of a play).",
+      "design": "P6 design v3 (.reified-rspaces-work/p6/design-v3.md), sections 4.1, 4.3 to 4.7 and 4.9, and 5 (Rocq and TLA+). witness_tests lists the deterministic tests, the reference vectors of the Sage leg included. Decisions 98, 104 and 114 (the oracle mode of DR-114 and of File I/O, merge 2 of feature/cost-accounted-rho at 702496775) retire W7 (EqualHostWork), W8 (PublishOnlyOnSuccess), W11 (ReconciledEqualsFinalizedView) and W12 (WatermarkHonest), and add W13 (ReplayNeverPublishes) and W14 (OnePublicationPerCommit).",
       "test_status": "required",
       "test_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",
@@ -7102,10 +6648,10 @@
         "rholang/tests/reified_vector_ops.rs",
         "rholang/src/rust/interpreter/spaces/mirror.rs",
         "rholang/src/rust/interpreter/reified/vectordb_services.rs",
-        "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-        "rholang/tests/reified_vectordb_chroma.rs"
+        "rholang/tests/reified_vectordb_chroma.rs",
+        "rholang/tests/reified_native_spaces.rs"
       ],
-      "expected_properties": 35,
+      "expected_properties": 31,
       "formal": {
         "S1": {
           "kind": "rocq",
@@ -7301,7 +6847,7 @@
           "file": "formal/rocq/reified_rspaces/theories/VectorDbDiscipline.v",
           "statement": "A removal keeps the order of each similarity window, so a greedy search of single-mode binds that fails before a removal fails after it. The search of one bind is the selection of the driver (design v3 4.6).",
           "tests": [
-            "prop_vectordb_driver_and_engine_agree"
+            "prop_vectordb_no_pending_match"
           ]
         },
         "S22": {
@@ -7346,7 +6892,7 @@
           "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
           "statement": "Replay stages the operations of play, pairs each recorded COMM once, and reproduces the run of play: its observer calls, its effects and its status (H23, decision 36). The VectorDB plans stage through the substrate, so their transactions replay this way.",
           "tests": [
-            "prop_vectordb_replay_equal"
+            "space_native_vectordb_replay_equal"
           ]
         },
         "W1": {
@@ -7417,65 +6963,46 @@
           "kind": "tla",
           "name": "AdvisoryRecorded",
           "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-          "statement": "Replay uses the recorded answer of ann and never asks its own mirror (decision 57).",
+          "statement": "Replay uses the recorded answer of ann and never asks its own mirror (decision 57), and it makes no check against consensus state (decision 104).",
           "tests": [
             "prop_vectordb_services_replay_reproduces_the_recorded_outputs"
-          ]
-        },
-        "W7": {
-          "kind": "tla",
-          "name": "EqualHostWork",
-          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-          "statement": "Play and replay make the same checks of an ann call, so they reserve the same host work for them (decision 67).",
-          "tests": [
-            "prop_vectordb_services_replay_reproduces_the_recorded_outputs"
-          ]
-        },
-        "W8": {
-          "kind": "tla",
-          "name": "PublishOnlyOnSuccess",
-          "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-          "statement": "Every published write comes from a deploy whose final result has no errors, and the clear at the start of a root evaluation drops the journal of an exploratory evaluation (M1, decision 66).",
-          "tests": [
-            "prop_mirror_tracks_the_published_deploys"
           ]
         },
         "W9": {
           "kind": "tla",
           "name": "NetWritesExact",
           "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-          "statement": "A published batch upserts exactly the records that its deploy added and deletes exactly the records that it removed, so a Rule E pair writes nothing.",
+          "statement": "A published batch of a play upserts exactly the records that its commit added and deletes exactly the records that it removed, so a Rule E pair writes nothing (decision 98).",
           "tests": [
             "prop_mirror_capture_net_writes_are_the_change",
-            "prop_mirror_journal_keeps_the_last_write",
-            "prop_mirror_tracks_the_published_deploys"
+            "prop_mirror_tracks_the_writes_of_every_play"
           ]
         },
         "W10": {
           "kind": "tla",
           "name": "PublishNeverWaits",
           "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-          "statement": "A publication never waits for the writer: a full queue marks the collection dirty (decision 58).",
+          "statement": "A publication never waits for the writer (decision 58): a batch that finds the queue full is dropped (decision 114).",
           "tests": [
             "prop_mirror_writer_applies_the_accepted_batches"
           ]
         },
-        "W11": {
+        "W13": {
           "kind": "tla",
-          "name": "ReconciledEqualsFinalizedView",
+          "name": "ReplayNeverPublishes",
           "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-          "statement": "After a reconciler pass that finishes, the mirror holds the finalized view on every registered channel (decision 66).",
+          "statement": "Replay, reporting and native replay publish nothing, as no base replay calls a service (decision 98, DR-114).",
           "tests": [
-            "prop_mirror_reconcile_repairs_the_finalized_view"
+            "prop_mirror_tracks_the_writes_of_every_play"
           ]
         },
-        "W12": {
+        "W14": {
           "kind": "tla",
-          "name": "WatermarkHonest",
+          "name": "OnePublicationPerCommit",
           "file": "formal/tlaplus/reified_rspaces/ChromaMirror.tla",
-          "statement": "The watermark of a collection never passes the block of the last reconciler pass that finished.",
+          "statement": "A commit of a play publishes its net writes at most once, at the commit, whatever the final result of its deploy (decision 98, DR-114).",
           "tests": [
-            "prop_mirror_reconciler_watermarks_follow_finished_repairs"
+            "prop_mirror_tracks_the_writes_of_every_play"
           ]
         }
       },
@@ -7619,24 +7146,17 @@
         },
         {
           "number": 17,
-          "test": "prop_vectordb_driver_and_engine_agree",
-          "file": "rholang/tests/reified_vectordb.rs",
-          "covers": [
-            "S21"
-          ]
-        },
-        {
-          "number": 18,
           "test": "prop_vectordb_no_pending_match",
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
             "S22",
             "S23",
-            "W1"
+            "W1",
+            "S21"
           ]
         },
         {
-          "number": 19,
+          "number": 18,
           "test": "prop_vectordb_list_is_ordered_and_complete",
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
@@ -7644,15 +7164,7 @@
           ]
         },
         {
-          "number": 20,
-          "test": "prop_vectordb_replay_equal",
-          "file": "rholang/tests/reified_vectordb.rs",
-          "covers": [
-            "S26"
-          ]
-        },
-        {
-          "number": 21,
+          "number": 19,
           "test": "prop_vectordb_transactions_are_bounded",
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
@@ -7661,7 +7173,7 @@
           ]
         },
         {
-          "number": 22,
+          "number": 20,
           "test": "prop_vectordb_records_are_conserved",
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
@@ -7670,7 +7182,7 @@
           ]
         },
         {
-          "number": 23,
+          "number": 21,
           "test": "prop_vectordb_list_fires_are_atomic",
           "file": "rholang/tests/reified_vectordb.rs",
           "covers": [
@@ -7678,7 +7190,7 @@
           ]
         },
         {
-          "number": 24,
+          "number": 22,
           "test": "prop_vector_ops_agree_with_an_exact_oracle",
           "file": "rholang/tests/reified_vector_ops.rs",
           "covers": [
@@ -7686,7 +7198,7 @@
           ]
         },
         {
-          "number": 25,
+          "number": 23,
           "test": "prop_vector_ops_float_inputs_give_floats",
           "file": "rholang/tests/reified_vector_ops.rs",
           "covers": [
@@ -7694,7 +7206,7 @@
           ]
         },
         {
-          "number": 26,
+          "number": 24,
           "test": "prop_vector_ops_dot_laws",
           "file": "rholang/tests/reified_vector_ops.rs",
           "covers": [
@@ -7702,7 +7214,7 @@
           ]
         },
         {
-          "number": 27,
+          "number": 25,
           "test": "prop_vector_ops_distance_laws",
           "file": "rholang/tests/reified_vector_ops.rs",
           "covers": [
@@ -7710,7 +7222,7 @@
           ]
         },
         {
-          "number": 28,
+          "number": 26,
           "test": "prop_vector_ops_roots_are_correctly_rounded",
           "file": "rholang/tests/reified_vector_ops.rs",
           "covers": [
@@ -7718,7 +7230,7 @@
           ]
         },
         {
-          "number": 29,
+          "number": 27,
           "test": "prop_mirror_capture_net_writes_are_the_change",
           "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
           "covers": [
@@ -7726,15 +7238,7 @@
           ]
         },
         {
-          "number": 30,
-          "test": "prop_mirror_journal_keeps_the_last_write",
-          "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
-          "covers": [
-            "W9"
-          ]
-        },
-        {
-          "number": 31,
+          "number": 28,
           "test": "prop_mirror_writer_applies_the_accepted_batches",
           "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
           "covers": [
@@ -7742,38 +7246,30 @@
           ]
         },
         {
-          "number": 32,
-          "test": "prop_mirror_reconciler_watermarks_follow_finished_repairs",
-          "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-          "covers": [
-            "W12"
-          ]
-        },
-        {
-          "number": 33,
-          "test": "prop_mirror_tracks_the_published_deploys",
+          "number": 29,
+          "test": "prop_mirror_tracks_the_writes_of_every_play",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
           "covers": [
-            "W8",
-            "W9"
+            "W9",
+            "W13",
+            "W14"
           ]
         },
         {
-          "number": 34,
-          "test": "prop_mirror_reconcile_repairs_the_finalized_view",
-          "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "covers": [
-            "W11"
-          ]
-        },
-        {
-          "number": 35,
+          "number": 30,
           "test": "prop_vectordb_services_replay_reproduces_the_recorded_outputs",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
           "covers": [
             "W5",
-            "W6",
-            "W7"
+            "W6"
+          ]
+        },
+        {
+          "number": 31,
+          "test": "space_native_vectordb_replay_equal",
+          "file": "rholang/tests/reified_native_spaces.rs",
+          "covers": [
+            "S26"
           ]
         }
       ],
@@ -7919,14 +7415,6 @@
           ]
         },
         {
-          "test": "space_vectordb_replay_equal",
-          "file": "rholang/tests/reified_vectordb.rs",
-          "rule": "decision 36",
-          "covers": [
-            "S26"
-          ]
-        },
-        {
           "test": "space_vectordb_guard_refusal_parks_until_a_worse_record_passes",
           "file": "rholang/tests/reified_vectordb.rs",
           "rule": "decision 37 (one guard check)",
@@ -7936,7 +7424,7 @@
         {
           "test": "mirror_never_blocks_deploy",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "rule": "design v3 4.9 and decision 58 (no mirror write in a transaction, publication never waits)",
+          "rule": "design v3 4.9, decision 58 (no mirror write in a transaction, publication never waits) and decision 114 (a full queue drops the batch)",
           "covers": [
             "W5",
             "W10"
@@ -7945,50 +7433,51 @@
         {
           "test": "vectordb_ann_replay_equal",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "rule": "decision 57 (the answers of ann are recorded)",
+          "rule": "decision 57 (the answers of ann are recorded) and decision 104 (replay delivers the record and makes no check)",
           "covers": [
             "W6"
           ]
         },
         {
-          "test": "mirror_journal_drops_failed_deploy",
+          "test": "mirror_publishes_the_commits_of_a_failed_deploy",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "rule": "M1 (decision 66)",
+          "rule": "decision 98 (a play publishes at each commit, whatever the final result of its deploy)",
           "covers": [
-            "W8"
+            "W14"
           ]
         },
         {
-          "test": "mirror_exploratory_evaluation_publishes_nothing",
+          "test": "mirror_exploratory_evaluation_publishes_its_commits",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "rule": "M1 and the clear at the start of a root evaluation (FR-5')",
+          "rule": "decision 98 (an exploratory evaluation plays on the services of the node, as the base dry run does)",
           "covers": [
-            "W8"
+            "W9",
+            "W14"
           ]
         },
         {
           "test": "mirror_rule_e_coalesces",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "rule": "Rule E (decision 45) and the net writes of the capture (step 7b)",
+          "rule": "Rule E (decision 45) and the net writes of each commit (step 7b, decision 98)",
           "covers": [
             "W9"
           ]
         },
         {
-          "test": "mirror_journal_keeps_the_last_write_of_a_deploy",
+          "test": "mirror_publishes_each_commit_of_a_deploy_in_order",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "rule": "the journal keeps the last write of each record (step 7b)",
+          "rule": "decision 98 (each commit publishes its own net writes, in the order of the commits)",
           "covers": [
-            "W9"
+            "W9",
+            "W14"
           ]
         },
         {
-          "test": "mirror_reconcile_removes_orphans",
+          "test": "mirror_replay_publishes_nothing",
           "file": "rholang/tests/reified_vectordb_chroma.rs",
-          "rule": "the reconciler (design v3 4.9, decision 66)",
+          "rule": "decision 98 (no replay publishes, DR-114)",
           "covers": [
-            "W11",
-            "W12"
+            "W13"
           ]
         }
       ]
@@ -8001,14 +7490,13 @@
         "rholang/src/rust/interpreter/reified/runtime.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
         "rholang/tests/reified_hashset.rs",
-        "rholang/tests/reified_rehydrate.rs",
         "rholang/tests/reified_restart_rehydrate.rs",
         "rholang/tests/reified_seq.rs",
         "rholang/tests/reified_temp_seq.rs",
         "rholang/tests/reified_theory.rs",
         "rholang/tests/reified_volatile_sweep.rs"
       ],
-      "expected_properties": 17,
+      "expected_properties": 15,
       "formal": {
         "V1": {
           "kind": "rocq",
@@ -8039,11 +7527,11 @@
         },
         "V4": {
           "kind": "tla",
-          "name": "SeqExclusive",
+          "name": "SeqCausalChain",
           "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
-          "statement": "For each channel of a seq space, the admitted uses form one prefix chain of participant paths (design v3 SQ-3, SQ-4, decision 73).",
+          "statement": "For each channel of a seq space, each admitted use happened before the next one (design v3 SQ-3, SQ-4, decision 91).",
           "tests": [
-            "prop_seq_claim_chain"
+            "prop_seq_claim_causal_chain"
           ]
         },
         "V5": {
@@ -8059,7 +7547,7 @@
           "kind": "tla",
           "name": "QualifierSupport",
           "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
-          "statement": "Gate 3 creates a HashSet space only with seq, and a seq space only in native execution (design v3 QT-4, QT-5).",
+          "statement": "The factory creates a HashSet space only with seq, and a seq space only in native execution (design v3 QT-4, decision 90, C6).",
           "tests": [
             "prop_seq_qualifier_support"
           ]
@@ -8079,7 +7567,7 @@
           "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
           "statement": "The claim of a channel of a seq space is its last admitted use (design v3 SQ-4).",
           "tests": [
-            "prop_seq_claim_chain"
+            "prop_seq_claim_causal_chain"
           ]
         },
         "V9": {
@@ -8162,24 +7650,6 @@
           "tests": [
             "prop_theory_gate"
           ]
-        },
-        "V18": {
-          "kind": "rocq",
-          "name": "view_charge_cache_independent",
-          "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
-          "statement": "A view load charges its key and its value only, so a warm load and a cold load reserve the same work (H27 of decision 47, rule NE-2). No Reified state outlives an evaluation (F18), so the first operation on a space after a restart reads the keys and the values of a warm runtime and pays the same: the outcome and the cost vector are equal (design v3 RH-1 and RH-4).",
-          "tests": [
-            "prop_attach_warm_cold_cost_equal"
-          ]
-        },
-        "V19": {
-          "kind": "tla",
-          "name": "ScanViewPerWindow",
-          "file": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
-          "statement": "Every send of one scheduling window reads one book of seq spaces, so the charge of the SQ-2 scan is a function of the deploy: the creation job records a seq space after its commit, and the scheduler runs no participant during a job (decision 83, P7 design v3 VR-2).",
-          "tests": [
-            "prop_seq_gate_constant_per_window"
-          ]
         }
       },
       "properties": [
@@ -8201,7 +7671,7 @@
         },
         {
           "number": 3,
-          "test": "prop_seq_claim_chain",
+          "test": "prop_seq_claim_causal_chain",
           "file": "rholang/tests/reified_seq.rs",
           "covers": [
             "V4",
@@ -8304,22 +7774,6 @@
           "covers": [
             "V17"
           ]
-        },
-        {
-          "number": 16,
-          "test": "prop_attach_warm_cold_cost_equal",
-          "file": "rholang/tests/reified_rehydrate.rs",
-          "covers": [
-            "V18"
-          ]
-        },
-        {
-          "number": 17,
-          "test": "prop_seq_gate_constant_per_window",
-          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
-          "covers": [
-            "V19"
-          ]
         }
       ],
       "witness_tests": [
@@ -8351,14 +7805,6 @@
           "test": "reified_sweep_runs_at_each_entry_point_of_the_reducer",
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
           "rule": "VR-4 (inj, inj_with_observation and inj_with_host_work)",
-          "covers": [
-            "V1"
-          ]
-        },
-        {
-          "test": "reified_sweep_runs_at_each_entry_point_of_the_reporting_replay",
-          "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-          "rule": "VR-4 (reporting replay of inj, inj_with_observation and inj_with_host_work)",
           "covers": [
             "V1"
           ]
@@ -8424,7 +7870,7 @@
         {
           "test": "reducer_qualifier_matrix",
           "file": "rholang/tests/reified_temp_seq.rs",
-          "rule": "QT-1, QT-4 and QT-5 (native execution accepts seq, legacy execution refuses it)",
+          "rule": "QT-1 and QT-4 (gate 3 takes every qualifier that the family supports, decision 90, C6)",
           "covers": [
             "V6"
           ]
@@ -8505,7 +7951,7 @@
         {
           "test": "space_theory_admission",
           "file": "rholang/tests/reified_theory.rs",
-          "rule": "TH-4 to TH-6 on every family program (free Nat() delivers as no theory, free String() refuses)",
+          "rule": "TH-4 to TH-6 on every family program (free Nat() and no theory deliver an allowed label set, free String() refuses)",
           "covers": [
             "V10",
             "V11",
@@ -8622,24 +8068,6 @@
           ]
         },
         {
-          "test": "theory_admission_reserves_one_unit_per_checked_value",
-          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-          "rule": "TH-5 and TH-8: one unit per checked value, none for a receive or without a theory",
-          "covers": [
-            "V10",
-            "V11"
-          ]
-        },
-        {
-          "test": "theory_match_reserves_one_unit_per_stored_datum",
-          "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-          "rule": "TH-6 and TH-8: one unit per stored datum after an admitting guard, none after a refusing guard",
-          "covers": [
-            "V12",
-            "V16"
-          ]
-        },
-        {
           "test": "theory_admission_precedes_any_staging",
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
           "rule": "TH-5: the admission runs before any staging or bump (the control of the mutant admission after the bump)",
@@ -8659,49 +8087,43 @@
           "test": "space_lazy_attach",
           "file": "rholang/tests/reified_rehydrate.rs",
           "rule": "RH-1: block 2 on a restarted runtime gives the outcome and the cost vector of the warm runtime, for the queue, set, priority queue, VectorDB and PathMap families",
-          "covers": [
-            "V18"
-          ]
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         },
         {
           "test": "space_checkpoint_reset",
           "file": "rholang/tests/reified_rehydrate.rs",
           "rule": "RH-2: a reset restores the state of block 1, block 2 then reaches its root and cost vector again, and a restarted runtime reads the state of block 1",
-          "covers": [
-            "V18"
-          ]
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         },
         {
           "test": "space_attach_cost",
           "file": "rholang/tests/reified_rehydrate.rs",
           "rule": "RH-4: the pinned cost vectors of a handle call and a send, warm and cold; the accounting observer receives the cost of each COMM",
-          "covers": [
-            "V18"
-          ]
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         },
         {
           "test": "space_attach_warm_cold_cost_equal",
           "file": "rholang/tests/reified_rehydrate.rs",
-          "rule": "RH-1 and RH-4 on the 24 families",
-          "covers": [
-            "V18"
-          ]
+          "rule": "RH-1 and RH-4 on the 24 families, when the warm play and the cold play log the same events in any order",
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         },
         {
           "test": "reducer_attach_costs",
           "file": "rholang/tests/reified_rehydrate.rs",
           "rule": "DG-4: one cost vector for each entry of a missing space, for any space id and on two runtimes; RH-4 for the handle calls through a stored handle",
-          "covers": [
-            "V18"
-          ]
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         },
         {
           "test": "reified_handle_persisted_restart_replay",
           "file": "rholang/tests/reified_rehydrate.rs",
           "rule": "QF-2 and RH-1: a stored handle serves three calls after a restart, and native replay from the history of the root reproduces the play",
-          "covers": [
-            "V18"
-          ]
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         },
         {
           "test": "reducer_dangling_handle",
@@ -8714,9 +8136,9 @@
         {
           "test": "reducer_space_costs",
           "file": "rholang/tests/reified_rehydrate.rs",
-          "rule": "child metering: parallel space work on a current-thread and on a multi-thread runtime",
+          "rule": "child metering: parallel space work on each racing runtime",
           "covers": [],
-          "unmodeled": "The deterministic job order of native execution (decision 47) makes native play independent of the schedule of the tokio runtime. The models of that order are in the section D47. This test checks the consequence for parallel space work: equal outcomes and cost vectors under two schedules."
+          "unmodeled": "Racing evaluation makes the outcome of native play depend on the schedule (decisions 92 and 93). SpaceReplayOrder.tla models the replay of every play order. This test checks each run: it certifies, and it reaches an allowed outcome."
         },
         {
           "test": "reified_factory_ephemeral_staging",
@@ -8736,10 +8158,9 @@
         {
           "test": "space_restart_rehydrate_three_processes",
           "file": "rholang/tests/reified_restart_rehydrate.rs",
-          "rule": "M-5: block 1, block 2 after a restart, and the certification of block 2 in three processes; the warm run gives the same roots, cost vectors, evidence and logs",
-          "covers": [
-            "V18"
-          ]
+          "rule": "M-5 on each racing runtime: block 1, block 2 after a restart, and the certification of block 2 in three processes. The parent certifies every record of the children from the empty root",
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         },
         {
           "test": "pattern_enforcement_temp_rows",
@@ -8777,17 +8198,15 @@
           "test": "prepare_create_records_ephemeral_spaces_after_commit",
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
           "rule": "VR-2 and decision 83 (the creation job records an ephemeral space after its commit; a durable space and a failed creation record nothing)",
-          "covers": [
-            "V19"
-          ]
+          "covers": [],
+          "unmodeled": "Decision 90 (DR-132) retired ScanViewPerWindow with the scheduling windows, and no successor entry binds this test. The test still checks that the creation job records an ephemeral space after its commit, and that a durable space and a failed creation record nothing (VR-2, decision 83)."
         },
         {
-          "test": "seq_scan_charge_is_schedule_independent",
-          "file": "rholang/tests/reified_seq.rs",
-          "rule": "decision 83 (sends beside a seq creation give one play and one replay host-work vector over 24 runs)",
-          "covers": [
-            "V19"
-          ]
+          "test": "prop_attach_warm_cold_cost_equal",
+          "file": "rholang/tests/reified_rehydrate.rs",
+          "rule": "NE-2 and design v3 RH-1, RH-4 (decision 93)",
+          "covers": [],
+          "unmodeled": "Decisions 89 and 96 retired the Rocq headline of the cost of a view load (view_charge_cache_independent, H27 of decision 47), and no successor headline binds this test. The test still checks rehydration on the running node (design v3 RH-1 and RH-4)."
         }
       ]
     },

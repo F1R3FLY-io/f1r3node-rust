@@ -10,8 +10,9 @@ use block_storage::rust::casperbuffer::casper_buffer_key_value_storage::CasperBu
 use block_storage::rust::dag::block_dag_key_value_storage::{
     BlockDagKeyValueStorage, DeployId, KeyValueDagRepresentation,
 };
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
-use block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, KeyValueRejectedDeployBuffer,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
@@ -27,7 +28,7 @@ use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
-use crate::rust::engine::multi_parent_casper::MultiParentCasperImpl;
+use crate::rust::engine::multi_parent_casper::{FinalizedBondCache, MultiParentCasperImpl};
 use crate::rust::errors::CasperError;
 use crate::rust::estimator::Estimator;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -100,6 +101,8 @@ pub trait Casper {
     fn dag_contains(&self, hash: &BlockHash) -> bool;
 
     fn buffer_contains(&self, hash: &BlockHash) -> bool;
+
+    fn buffer_waits_on_dependency(&self, hash: &BlockHash) -> bool { self.buffer_contains(hash) }
 
     fn get_approved_block(&self) -> Result<&BlockMessage, CasperError>;
 
@@ -198,6 +201,17 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
 
+    fn is_local_validator_bonded(
+        &self,
+        dag: &KeyValueDagRepresentation,
+    ) -> Result<bool, CasperError> {
+        let metadata = dag.lookup_unsafe(&dag.last_finalized_block())?;
+        Ok(self
+            .get_validator()
+            .map(|id| metadata.weight_map.contains_key(&id.public_key.bytes))
+            .unwrap_or(false))
+    }
+
     fn block_store(&self) -> &KeyValueBlockStore;
 
     /// The shard's genesis block hash when this node holds or has learned it.
@@ -244,7 +258,19 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     ///
     /// Default returns an empty Vec — used by `NoopEngine` and other
     /// engine states where `with_casper()` returns `None`.
-    async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    ///
+    /// Changed by DR-134 (DR-66): an entry is a legacy deploy or an offered
+    /// envelope; on protocol 6 the pool holds only offered envelopes.
+    // async fn list_pending_deploys(&self) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+    async fn list_pending_deploys(
+        &self,
+    ) -> Result<
+        Vec<(
+            block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate,
+            bool,
+        )>,
+        CasperError,
+    > {
         Ok(Vec::new())
     }
 }
@@ -450,6 +476,15 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
     let offered_funded_active = adopted_resource_policy
         .as_ref()
         .is_some_and(|policy| policy.offered_funded_v6_active());
+    // Added by DR-134 (DR-66 item 5): only a protocol-6 genesis with the active
+    // offered-funded policy is supported, so Casper does not start without it.
+    if !offered_funded_active {
+        return Err(
+            crate::rust::util::rholang::costacc::offered_only::protocol_6_genesis_required(),
+        );
+    }
+    let finalized_bond_cache =
+        FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
 
     Ok(MultiParentCasperImpl {
         observer: std::sync::OnceLock::new(),
@@ -469,6 +504,7 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
         ),
         casper_buffer_storage,
         validator_id,
+        finalized_bond_cache,
         casper_shard_conf,
         approved_block,
         offered_funded_active,
@@ -516,6 +552,14 @@ pub struct CasperSnapshot {
 }
 
 impl CasperSnapshot {
+    pub fn is_validator_bonded(&self, validator: &[u8]) -> Result<bool, CasperError> {
+        let Some(parent) = self.parents.first() else {
+            return Ok(false);
+        };
+        let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
+        Ok(metadata.weight_map.contains_key(validator))
+    }
+
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
         Self {
             dag,
@@ -571,7 +615,7 @@ pub struct CasperShardConf {
     pub max_parent_depth: i32,
     pub synchrony_constraint_threshold: f32,
     pub height_constraint_threshold: i64,
-    // Validators will try to put deploy in a block only for next `deployLifespan` blocks.
+    // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
     // Required to enable protection from re-submitting duplicate deploys
     pub deploy_lifespan: i64,
     /// Wall-clock ceiling on user-deploy execution per proposed block

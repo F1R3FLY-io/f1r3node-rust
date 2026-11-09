@@ -8,7 +8,9 @@
    hashmap:bag and pathmap:bag. A factory call carries one constructor list
    [q?][FREE?][PARAMS?]. The space id is a draw of the random state of the
    call (I-19). A persistent send to an op that takes calls aborts before the
-   call (decision 32, A21). A creation whose config channel C(sid) already
+   call (decision 32, A21). Changed by decision 106: a persistent send to a
+   recorded op (embed or ann) passes A21, and base rule P2 fails it at its
+   fire, before any service call. A creation whose config channel C(sid) already
    holds a record aborts with SpaceAlreadyExists in play and in replay
    alike, so no call repeats (the restatement of readiness review §4).
 
@@ -25,41 +27,46 @@
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
-   outer, inner, qualifier  models/src/rust/space_factory_urn.rs:45-51, 95-103,
-                            153-161
+   outer, inner, qualifier  models/src/rust/space_factory_urn.rs:63, 156,
+                            247-255
    outer_name, inner_name, outer_of_name, inner_of_name
-                            models/src/rust/space_factory_urn.rs:64-72, 75-79,
-                            118-128, 131-135
-   family_base, ordinal     models/src/rust/space_factory_urn.rs:82-90, 138-148
+                            models/src/rust/space_factory_urn.rs:105, 108-112,
+                            206, 209-213
+   family_base, ordinal     models/src/rust/space_factory_urn.rs:128-137, 231-242
    is_supported_pair, supports_qualifier
-                            models/src/rust/space_factory_urn.rs:267-276,
-                            280-289
+                            models/src/rust/space_factory_urn.rs:365-376,
+                            382-394
    family_index, from_family_index, all_families
-                            models/src/rust/space_factory_urn.rs:293-298,
-                            301-303, 306-313
+                            models/src/rust/space_factory_urn.rs:408-417,
+                            420-422, 425-432
    urn_prefix, aliases, parse_urn
-                            models/src/rust/space_factory_urn.rs:32, 35, 38,
-                            225-263
+                            models/src/rust/space_factory_urn.rs:38, 41, 44,
+                            319-357
    family_of_names          rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:282-300 (family_of)
+                            constructor.rs:291-309 (family_of)
    factory_op               rholang/src/rust/interpreter/spaces/factory/urn.rs:
                             255-259, 263-265 (the factory channel and the
                             capability that getSpaceAgent replies)
    validate_qualifier, durability_of
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:87-178, 181-186
+                            constructor.rs:104-187, 190-195
    parse_elements, to_elements, qual_of
-                            models/src/rust/space_factory_urn.rs:368-398,
-                            405-417, 428-438 (parse_elements, to_elements,
+                            models/src/rust/space_factory_urn.rs:492-522,
+                            529-541, 552-562 (parse_elements, to_elements,
                             qualifier_of)
    derive_space_id          rholang/src/rust/interpreter/spaces/types/id.rs:
                             13-22, rholang/src/rust/interpreter/spaces/
-                            namespace.rs:425-450, 454-456 (RandomPurpose and
+                            namespace.rs:425-450, 459-461 (RandomPurpose and
                             derive)
-   check_persistent_send    rholang/src/rust/interpreter/reified/
-                            system_channels.rs:104, 108, 114-129
+   check_persistent_send, is_recorded_op
+                            rholang/src/rust/interpreter/reified/
+                            system_channels.rs:152-170, with the arm of
+                            is_recorded_process at 162 (is_recorded_op in
+                            the model). Changed by decision 106: a
+                            persistent send to a recorded process passes
+                            here. Decision 127 names the process.
    prepare_create           rholang/src/rust/interpreter/spaces/generic.rs:
-                            2904-3028
+                            2899-3023
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -98,15 +105,17 @@
                                           0 to 31, one each
     2. aliases_map_to_family              URNs and aliases parse to their
                                           families
-    3. qualifier_matrix                   HashSet takes only seq, native
-                                          execution creates default, temp
-                                          and seq spaces, and legacy
-                                          execution refuses seq (P7, QT-5)
+    3. qualifier_matrix                   HashSet takes only seq, and gate 3
+                                          creates default, temp and seq
+                                          spaces of every other store
+                                          (changed by decision 90, C6)
     4. constructor_parse_canonical        parse ∘ to_elements = id
     5. constructor_parse_sound            to_elements ∘ parse = id
     6. sid_derivation_deterministic       the sid is a 32-byte draw of the
                                           call alone
-    7. persistent_op_call_aborts          `!!` on a call op or a handle aborts
+    7. persistent_op_call_aborts          `!!` on a call op or a handle aborts,
+                                          but not on a recorded op (changed
+                                          by decision 106)
     8. space_already_exists_is_deterministic_abort
                                           a second creation of a sid aborts,
                                           in play and replay alike
@@ -355,53 +364,91 @@ Qed.
 
 (* ── 3. Qualifiers ─────────────────────────────────────────────────────── *)
 
-Inductive qual_check : Type := QualOk | QualBadArgument | QualUnavailable.
+(* Changed by decision 90 (C6, step D): spaces have one execution model,
+   native funded execution (decision 69). A factory call outside native
+   execution fails with RuntimeUnavailable before every gate (SpaceRefs.v,
+   ensure_available), so gate 3 reads no execution model. It refuses only
+   a qualifier that the store does not take. Before, the result type of
+   gate 3, the execution model, gate 3 and headline 3 were:
 
-(* The execution model of a factory call (constructor.rs Execution, P7 step 2,
-   design v3 QT-5). *)
-Inductive execution : Type := Legacy | Native.
+   Inductive qual_check : Type := QualOk | QualBadArgument | QualUnavailable.
 
-(* FactoryConstructor::validate_in, step 3: the family takes the qualifier.
-   Native execution accepts every qualifier (P7 steps 1 and 2, design v3
-   QT-1). Legacy execution refuses seq, because the Seq rules need the job
-   order of native execution (QT-5). *)
-Definition validate_qualifier (f : family) (q : qualifier) (e : execution) : qual_check :=
-  if negb (supports_qualifier f q) then QualBadArgument
-  else match q, e with QSeq, Legacy => QualUnavailable | _, _ => QualOk end.
+   (* The execution model of a factory call (constructor.rs Execution, P7 step 2,
+      design v3 QT-5). *)
+   Inductive execution : Type := Legacy | Native.
+
+   (* FactoryConstructor::validate_in, step 3: the family takes the qualifier.
+      Native execution accepts every qualifier (P7 steps 1 and 2, design v3
+      QT-1). Legacy execution refuses seq, because the Seq rules need the job
+      order of native execution (QT-5). *)
+   Definition validate_qualifier (f : family) (q : qualifier) (e : execution) : qual_check :=
+     if negb (supports_qualifier f q) then QualBadArgument
+     else match q, e with QSeq, Legacy => QualUnavailable | _, _ => QualOk end.
+
+   (* Headline 3. HashSet takes only seq, every other store takes every
+      qualifier. Gate 3 accepts a supported qualifier in native execution
+      (P7 steps 1 and 2, design v3 QT-1), and legacy execution refuses seq
+      with QualifierUnavailable (QT-5), so a HashSet family can create a space
+      only in native execution. A default space is durable, and a temp or seq
+      space is ephemeral. *)
+   Theorem qualifier_matrix :
+     (forall f q, supports_qualifier f q = true <-> (f_outer f <> HashSet \/ q = QSeq)) /\
+     (forall f q e, validate_qualifier f q e = QualOk <->
+                      (supports_qualifier f q = true /\ (q = QSeq -> e = Native))) /\
+     (forall f q e, validate_qualifier f q e = QualUnavailable <->
+                      (supports_qualifier f q = true /\ q = QSeq /\ e = Legacy)) /\
+     (forall f q, f_outer f = HashSet -> validate_qualifier f q Legacy <> QualOk) /\
+     (forall q, durability_of q = Durable <-> q = QDefault).
+   Proof.
+     split; [| split; [| split; [| split]]].
+     - intros [[] i] []; cbn; split; intros H;
+         solve [ reflexivity | left; discriminate | right; reflexivity | discriminate H
+               | destruct H as [H | H]; [contradiction H; reflexivity | discriminate H] ].
+     - intros [[] i] [] []; cbn; split; intros H;
+         solve [ reflexivity | discriminate H
+               | split; [reflexivity | intros Hq; solve [discriminate Hq | reflexivity]]
+               | destruct H as [H1 H2]; solve [discriminate H1 | discriminate (H2 eq_refl)] ].
+     - intros [[] i] [] []; cbn; split; intros H;
+         solve [ reflexivity | discriminate H
+               | split; [reflexivity | split; reflexivity]
+               | destruct H as [H1 [H2 H3]]; solve [discriminate H1 | discriminate H2 | discriminate H3] ].
+     - intros [o i] q Ho. cbn in Ho. subst o. destruct q; cbn; discriminate.
+     - intros []; cbn; split; intros H; solve [reflexivity | discriminate H].
+   Qed.
+*)
+
+Inductive qual_check : Type := QualOk | QualBadArgument.
+
+(* FactoryConstructor::validate, step 3: the family takes the qualifier.
+   Every store takes every qualifier but HashSet, which takes only seq (P7
+   steps 1 to 3, design v3 QT-1, HS-6). *)
+Definition validate_qualifier (f : family) (q : qualifier) : qual_check :=
+  if negb (supports_qualifier f q) then QualBadArgument else QualOk.
 
 Inductive durability : Type := Durable | Ephemeral.
 
 Definition durability_of (q : qualifier) : durability :=
   match q with QDefault => Durable | QTemp | QSeq => Ephemeral end.
 
-(* Headline 3. HashSet takes only seq, every other store takes every
-   qualifier. Gate 3 accepts a supported qualifier in native execution
-   (P7 steps 1 and 2, design v3 QT-1), and legacy execution refuses seq
-   with QualifierUnavailable (QT-5), so a HashSet family can create a space
-   only in native execution. A default space is durable, and a temp or seq
-   space is ephemeral. *)
+(* Headline 3. HashSet takes only seq, and every other store takes every
+   qualifier. Gate 3 accepts exactly the qualifiers that the store takes,
+   and it reads no execution model (changed by decision 90, C6). So a
+   HashSet family creates only seq spaces. A default space is durable, and
+   a temp or seq space is ephemeral. *)
 Theorem qualifier_matrix :
   (forall f q, supports_qualifier f q = true <-> (f_outer f <> HashSet \/ q = QSeq)) /\
-  (forall f q e, validate_qualifier f q e = QualOk <->
-                   (supports_qualifier f q = true /\ (q = QSeq -> e = Native))) /\
-  (forall f q e, validate_qualifier f q e = QualUnavailable <->
-                   (supports_qualifier f q = true /\ q = QSeq /\ e = Legacy)) /\
-  (forall f q, f_outer f = HashSet -> validate_qualifier f q Legacy <> QualOk) /\
+  (forall f q, validate_qualifier f q = QualOk <-> supports_qualifier f q = true) /\
+  (forall f q, validate_qualifier f q = QualBadArgument <-> supports_qualifier f q = false) /\
+  (forall f q, f_outer f = HashSet -> validate_qualifier f q = QualOk -> q = QSeq) /\
   (forall q, durability_of q = Durable <-> q = QDefault).
 Proof.
   split; [| split; [| split; [| split]]].
   - intros [[] i] []; cbn; split; intros H;
       solve [ reflexivity | left; discriminate | right; reflexivity | discriminate H
             | destruct H as [H | H]; [contradiction H; reflexivity | discriminate H] ].
-  - intros [[] i] [] []; cbn; split; intros H;
-      solve [ reflexivity | discriminate H
-            | split; [reflexivity | intros Hq; solve [discriminate Hq | reflexivity]]
-            | destruct H as [H1 H2]; solve [discriminate H1 | discriminate (H2 eq_refl)] ].
-  - intros [[] i] [] []; cbn; split; intros H;
-      solve [ reflexivity | discriminate H
-            | split; [reflexivity | split; reflexivity]
-            | destruct H as [H1 [H2 H3]]; solve [discriminate H1 | discriminate H2 | discriminate H3] ].
-  - intros [o i] q Ho. cbn in Ho. subst o. destruct q; cbn; discriminate.
+  - intros [[] i] []; cbn; split; intros H; solve [reflexivity | discriminate H].
+  - intros [[] i] []; cbn; split; intros H; solve [reflexivity | discriminate H].
+  - intros [o i] q Ho. cbn in Ho. subst o. destruct q; cbn; intros H; solve [reflexivity | discriminate H].
   - intros []; cbn; split; intros H; solve [reflexivity | discriminate H].
 Qed.
 
@@ -712,29 +759,93 @@ Definition sink_op : nat := 50.
 Definition is_factory_op (op : nat) : bool := op <=? native_engine_factory.
 Definition is_call_op (op : nat) : bool := (op <=? ann_op) || ((handle_op <=? op) && (op <=? sink_op)).
 
+(* Changed by decision 106: a persistent send to embed or ann passes A21, and
+   base rule P2 fails it at its fire, before any service call (reduce.rs,
+   DR-114). Before, the check, headline 7 and its theorem were:
+
+   Definition check_persistent_send (c : chan_id) (persistent : bool) : send_check :=
+     if negb persistent then SendOk else
+     match c with
+     | IdOp op => if is_factory_op op then PersistentFactoryCall
+                  else if is_call_op op then PersistentOpCall else SendOk
+     | IdHandle => PersistentHandleCall
+     | IdOther => SendOk
+     end.
+
+   (* Headline 7. A persistent send aborts on every op that takes calls
+      ([E0, 00..25] and [E0, 30..32]: the factories, the engine factory,
+      getSpaceAgent, assertEqual, vector, embed, ann, HANDLE_OP, the matcher and
+      the sink) and on every handle, before the call runs, so no call repeats.
+      Markers
+      (0xD0..0xD4) and the agent tag (0xFF) take no calls, and a send that is
+      not persistent never aborts here. *)
+   Theorem persistent_op_call_aborts :
+     (forall c, check_persistent_send c false = SendOk) /\
+     (forall op, op <= 32 -> check_persistent_send (IdOp op) true = PersistentFactoryCall) /\
+     (forall op, (33 <= op <= 37 \/ 48 <= op <= 50) -> check_persistent_send (IdOp op) true = PersistentOpCall) /\
+     check_persistent_send IdHandle true = PersistentHandleCall /\
+     (forall op, (38 <= op <= 47 \/ 51 <= op) -> check_persistent_send (IdOp op) true = SendOk) /\
+     (forall op, is_call_op op = true -> check_persistent_send (IdOp op) true <> SendOk) /\
+     (forall m, In m [208; 209; 210; 211; 212; 255] -> check_persistent_send (IdOp m) true = SendOk).
+   Proof.
+     split; [intros c; reflexivity |].
+     split.
+     { intros op H. cbn. unfold is_factory_op, native_engine_factory.
+       replace (op <=? 32) with true by (symmetry; apply Nat.leb_le; exact H). reflexivity. }
+     split.
+     { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, ann_op, handle_op, sink_op.
+       replace (op <=? 32) with false by (symmetry; apply Nat.leb_gt; lia).
+       destruct H as [H | H].
+       - replace (op <=? 37) with true by (symmetry; apply Nat.leb_le; lia). reflexivity.
+       - replace (op <=? 37) with false by (symmetry; apply Nat.leb_gt; lia).
+         replace (48 <=? op) with true by (symmetry; apply Nat.leb_le; lia).
+         replace (op <=? 50) with true by (symmetry; apply Nat.leb_le; lia). reflexivity. }
+     split; [reflexivity |].
+     split.
+     { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, ann_op, handle_op, sink_op.
+       replace (op <=? 32) with false by (symmetry; apply Nat.leb_gt; lia).
+       replace (op <=? 37) with false by (symmetry; apply Nat.leb_gt; lia).
+       destruct H as [H | H].
+       - replace (48 <=? op) with false by (symmetry; apply Nat.leb_gt; lia). reflexivity.
+       - replace (op <=? 50) with false by (symmetry; apply Nat.leb_gt; lia).
+         rewrite andb_false_r. reflexivity. }
+     split.
+     { intros op H. cbn. destruct (is_factory_op op); [discriminate |]. rewrite H. discriminate. }
+     intros m Hm. repeat (destruct Hm as [<- | Hm]; [reflexivity |]). destruct Hm.
+   Qed.
+*)
+
+(* Added by decision 106: the recorded ops, embed and ann. Base rule P2 judges
+   a persistent send to them at its fire (reduce.rs), so A21 lets it pass. *)
+Definition is_recorded_op (op : nat) : bool := (op =? embed_op) || (op =? ann_op).
+
 Definition check_persistent_send (c : chan_id) (persistent : bool) : send_check :=
   if negb persistent then SendOk else
   match c with
   | IdOp op => if is_factory_op op then PersistentFactoryCall
+               else if is_recorded_op op then SendOk
                else if is_call_op op then PersistentOpCall else SendOk
   | IdHandle => PersistentHandleCall
   | IdOther => SendOk
   end.
 
-(* Headline 7. A persistent send aborts on every op that takes calls
-   ([E0, 00..25] and [E0, 30..32]: the factories, the engine factory,
-   getSpaceAgent, assertEqual, vector, embed, ann, HANDLE_OP, the matcher and
+(* Headline 7. A persistent send aborts on every op that takes calls and is
+   not recorded ([E0, 00..23] and [E0, 30..32]: the factories, the engine
+   factory, getSpaceAgent, assertEqual, vector, HANDLE_OP, the matcher and
    the sink) and on every handle, before the call runs, so no call repeats.
-   Markers
+   A persistent send to a recorded op (embed and ann, [E0, 24..25]) passes
+   here, and base rule P2 fails it at its fire (decision 106). Markers
    (0xD0..0xD4) and the agent tag (0xFF) take no calls, and a send that is
    not persistent never aborts here. *)
 Theorem persistent_op_call_aborts :
   (forall c, check_persistent_send c false = SendOk) /\
   (forall op, op <= 32 -> check_persistent_send (IdOp op) true = PersistentFactoryCall) /\
-  (forall op, (33 <= op <= 37 \/ 48 <= op <= 50) -> check_persistent_send (IdOp op) true = PersistentOpCall) /\
+  (forall op, (33 <= op <= 35 \/ 48 <= op <= 50) -> check_persistent_send (IdOp op) true = PersistentOpCall) /\
+  (forall op, 36 <= op <= 37 -> check_persistent_send (IdOp op) true = SendOk) /\
   check_persistent_send IdHandle true = PersistentHandleCall /\
   (forall op, (38 <= op <= 47 \/ 51 <= op) -> check_persistent_send (IdOp op) true = SendOk) /\
-  (forall op, is_call_op op = true -> check_persistent_send (IdOp op) true <> SendOk) /\
+  (forall op, is_call_op op = true -> is_recorded_op op = false ->
+              check_persistent_send (IdOp op) true <> SendOk) /\
   (forall m, In m [208; 209; 210; 211; 212; 255] -> check_persistent_send (IdOp m) true = SendOk).
 Proof.
   split; [intros c; reflexivity |].
@@ -742,24 +853,35 @@ Proof.
   { intros op H. cbn. unfold is_factory_op, native_engine_factory.
     replace (op <=? 32) with true by (symmetry; apply Nat.leb_le; exact H). reflexivity. }
   split.
-  { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, ann_op, handle_op, sink_op.
+  { intros op H. cbn.
+    unfold is_factory_op, is_recorded_op, is_call_op, native_engine_factory, embed_op, ann_op,
+      handle_op, sink_op.
     replace (op <=? 32) with false by (symmetry; apply Nat.leb_gt; lia).
+    replace (op =? 36) with false by (symmetry; apply Nat.eqb_neq; lia).
+    replace (op =? 37) with false by (symmetry; apply Nat.eqb_neq; lia).
     destruct H as [H | H].
     - replace (op <=? 37) with true by (symmetry; apply Nat.leb_le; lia). reflexivity.
     - replace (op <=? 37) with false by (symmetry; apply Nat.leb_gt; lia).
       replace (48 <=? op) with true by (symmetry; apply Nat.leb_le; lia).
       replace (op <=? 50) with true by (symmetry; apply Nat.leb_le; lia). reflexivity. }
+  split.
+  { intros op H. assert (op = 36 \/ op = 37) as [-> | ->] by lia; reflexivity. }
   split; [reflexivity |].
   split.
-  { intros op H. cbn. unfold is_factory_op, is_call_op, native_engine_factory, ann_op, handle_op, sink_op.
+  { intros op H. cbn.
+    unfold is_factory_op, is_recorded_op, is_call_op, native_engine_factory, embed_op, ann_op,
+      handle_op, sink_op.
     replace (op <=? 32) with false by (symmetry; apply Nat.leb_gt; lia).
+    replace (op =? 36) with false by (symmetry; apply Nat.eqb_neq; lia).
+    replace (op =? 37) with false by (symmetry; apply Nat.eqb_neq; lia).
     replace (op <=? 37) with false by (symmetry; apply Nat.leb_gt; lia).
     destruct H as [H | H].
     - replace (48 <=? op) with false by (symmetry; apply Nat.leb_gt; lia). reflexivity.
     - replace (op <=? 50) with false by (symmetry; apply Nat.leb_gt; lia).
       rewrite andb_false_r. reflexivity. }
   split.
-  { intros op H. cbn. destruct (is_factory_op op); [discriminate |]. rewrite H. discriminate. }
+  { intros op Hcall Hrec. cbn. destruct (is_factory_op op); [discriminate |].
+    rewrite Hrec, Hcall. discriminate. }
   intros m Hm. repeat (destruct Hm as [<- | Hm]; [reflexivity |]). destruct Hm.
 Qed.
 
@@ -880,34 +1002,39 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    sys_channel, body_ref    rholang/src/rust/interpreter/reified/
-                            system_channels.rs:33, 37-41, 45
+                            system_channels.rs:33, 47-51, 45
    p4_rows, p4_others       rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:38-39 (REGISTERED_FAMILIES),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:52-56, 59-63, 66-70, 73-77,
+                            system_channels.rs:62-66, 59-63, 66-70, 73-77,
                             80-85 (P4_SYSTEM_CHANNELS)
    p5_rows                  rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:50-143 (P5_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:132-290 (the factories)
+                            system_channels.rs:168-326 (the factories)
    alias_rows               rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:191-200 (P5_ALIAS_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:310-314, 318-322, 345-371
+                            system_channels.rs:310-314, 354-358, 345-371
    p6_rows, p6_others       rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:148-157 (P6_FAMILY_ROWS),
+                            urn.rs:152-161 (P6_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
-                            system_channels.rs:293-297, 300-304, 383-384
+                            system_channels.rs:329-333, 336-340, 383-384
                             (the VectorDB factories, P6_SYSTEM_CHANNELS),
-                            384-388, 392-396, 407-411, 421 (P6_PROCESSES)
+                            384-388, 392-396, 407-411, 421 (P6_PROCESSES).
+                            Changed by decision 113: P6_PROCESSES is a cfg
+                            pair (system_channels.rs:488-493 in the tree
+                            of the decision). p6_rows states the build with
+                            the feature chromadb. The default build
+                            registers the row of rho:lang:vector alone.
    p7_rows                  rholang/src/rust/interpreter/spaces/factory/
-                            urn.rs:162-187 (P7_FAMILY_ROWS),
+                            urn.rs:166-191 (P7_FAMILY_ROWS),
                             rholang/src/rust/interpreter/reified/
                             system_channels.rs:429-468 (the HashSet
                             factories), 479-486 (P7_SYSTEM_CHANNELS)
    schema_of, required_of, vectordb_params, vectordb_required
                             rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:99, 102, 107-156, 160-162, 167-169
+                            defaults.rs:117-118, 122, 133-189, 193-195, 200-202
    wired                    families::Family::of_urn, through
                             rholang/src/rust/interpreter/spaces/factory/
                             urn.rs:203 (is_wired)
@@ -918,36 +1045,36 @@ Print Assumptions space_already_exists_is_deterministic_abort.
    definitions, binds       rholang/src/rust/interpreter/
                             reified/system_processes.rs:101-172 (definitions),
                             rholang/src/rust/
-                            interpreter/system_processes.rs:493-501 (to_urn_map)
+                            interpreter/system_processes.rs:515-523 (to_urn_map)
    get_space_agent_of       rholang/src/rust/interpreter/
                             reified/system_processes.rs:260-298 (get_space_agent),
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:282-300 (family_of), urn.rs:263-265
+                            constructor.rs:291-309 (family_of), urn.rs:263-265
                             (factory_capability)
    rule, rule_of, canonical, max_capacity, max_dimensions
                             rholang/src/rust/interpreter/spaces/factory/
-                            defaults.rs:63-81 (the names and the bounds),
+                            defaults.rs:68-86 (the names and the bounds),
                             153-168, 172-183, 188-228 (ParamRule)
    metric_names             rholang/src/rust/interpreter/tensor/exact.rs:
-                            77-84, 87-89, 92-101 (Metric::ALL, parse, name)
+                            74-81, 84-86, 89-98 (Metric::ALL, parse, name)
    suggest, least, within, suggestion_bound
                             rholang/src/rust/interpreter/spaces/factory/
                             defaults.rs:51, 268-277, 282-309
    validate_params, canonical_all
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:87-178 (validate), 191-205
+                            constructor.rs:104-187 (validate), 274-288
                             (canonical_params)
    lookup, mirror_metric, indexed_metrics, check_mirror, validate_factory
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:171 (the call of gate 9 in
-                            validate), 155-186 (check_mirror)
+                            constructor.rs:180 (the call of gate 9 in
+                            validate), 238-269 (check_mirror)
    builtin_theories, theory_gate (P7 step 4, TH-4)
                             rholang/src/rust/interpreter/spaces/theory/
                             builtin.rs:30 (BUILTIN_NAMES), and
                             rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:205-216 (theory_gate)
+                            constructor.rs:240-251 (theory_gate)
    validate_from_gate3      rholang/src/rust/interpreter/spaces/factory/
-                            constructor.rs:148-151 (gate 4 after gate 3 and
+                            constructor.rs:157-160 (gate 4 after gate 3 and
                             before the params gates)
 
    ─────────────────────────────────────────────────────────────────────────
@@ -2497,11 +2624,86 @@ Section Params.
   | G3Theory (t : theory_check)
   | G3Params (e : perror).
 
-  (* constructor.rs validate_in after the parse: gate 3 (the qualifier), gate
-     4 (the theory), then the gates of validate_factory (5 to 9). *)
-  Definition validate_from_gate3 (f : family) (q : qualifier) (e : execution)
+  (* Changed by decision 90 (C6, step D): gate 3 reads no execution model
+     (section 3), so validate_from_gate3 and headline 15 take none. Before,
+     the definition and the theorem were:
+
+     (* constructor.rs validate_in after the parse: gate 3 (the qualifier), gate
+        4 (the theory), then the gates of validate_factory (5 to 9). *)
+     Definition validate_from_gate3 (f : family) (q : qualifier) (e : execution)
+         (free : option (bytes * nat)) (pos : list pvalue) (named : list (bytes * pvalue)) : gate3_result :=
+       match validate_qualifier f q e with
+       | QualOk =>
+           match theory_gate free with
+           | TBadArgument => G3Theory TBadArgument
+           | TUnknown n s => G3Theory (TUnknown n s)
+           | t =>
+               match validate_factory f q pos named with
+               | POk ps => G3Ok (match t with TBuiltin n => Some n | _ => None end) ps
+               | PErr err => G3Params err
+               end
+           end
+       | c => G3Qualifier c
+       end.
+
+     (* Headline 15 (TH-4). Gate 4 passes a call without a theory, and a
+        builtin name without arguments, whose identity the config keeps. A
+        builtin with arguments fails with BadConstructorArgument. Another name
+        fails with UnknownTheory and the least builtin within two edits. Gate 4
+        runs after gate 3 and before the gates of the params: a refused
+        qualifier wins, a refused theory wins over every params error, and an
+        accepted theory leaves the params gates unchanged. *)
+     Theorem theory_gate_validated :
+       theory_gate None = TNone /\
+       (forall name nargs, theory_gate (Some (name, nargs)) = TBuiltin name <->
+          In name builtin_theories /\ nargs = 0) /\
+       (forall name n, In name builtin_theories -> theory_gate (Some (name, S n)) = TBadArgument) /\
+       (forall name nargs, ~ In name builtin_theories ->
+          theory_gate (Some (name, nargs)) = TUnknown name (suggest name builtin_theories)) /\
+       (forall f q e free pos named, validate_qualifier f q e <> QualOk ->
+          validate_from_gate3 f q e free pos named = G3Qualifier (validate_qualifier f q e)) /\
+       (forall f q e free pos named, validate_qualifier f q e = QualOk ->
+          (theory_gate free = TBadArgument \/ exists n s, theory_gate free = TUnknown n s) ->
+          validate_from_gate3 f q e free pos named = G3Theory (theory_gate free)) /\
+       (forall f q e name pos named, validate_qualifier f q e = QualOk -> In name builtin_theories ->
+          validate_from_gate3 f q e (Some (name, 0)) pos named =
+          match validate_factory f q pos named with
+          | POk ps => G3Ok (Some name) ps
+          | PErr err => G3Params err
+          end).
+     Proof.
+       split; [reflexivity |].
+       split.
+       { intros name nargs. cbn [theory_gate]. destruct (mem name builtin_theories) eqn:Mm.
+         - apply mem_spec in Mm. destruct nargs as [| n]; split; intros H.
+           + split; [exact Mm | reflexivity].
+           + reflexivity.
+           + discriminate H.
+           + destruct H as [_ H]. discriminate H.
+         - split; intros H; [discriminate H |]. destruct H as [Hin _].
+           apply mem_spec in Hin. rewrite Hin in Mm. discriminate Mm. }
+       split.
+       { intros name n Hin. cbn [theory_gate]. apply mem_spec in Hin. rewrite Hin. reflexivity. }
+       split.
+       { intros name nargs Hn. cbn [theory_gate]. destruct (mem name builtin_theories) eqn:Mm.
+         - apply mem_spec in Mm. contradiction (Hn Mm).
+         - reflexivity. }
+       split.
+       { intros f q e free pos named Hq. unfold validate_from_gate3.
+         destruct (validate_qualifier f q e); [contradiction (Hq eq_refl) | reflexivity | reflexivity]. }
+       split.
+       { intros f q e free pos named Hq Ht. unfold validate_from_gate3. rewrite Hq.
+         destruct Ht as [Ht | [n [s Ht]]]; rewrite Ht; reflexivity. }
+       intros f q e name pos named Hq Hin. unfold validate_from_gate3. rewrite Hq.
+       cbn [theory_gate]. apply mem_spec in Hin. rewrite Hin. reflexivity.
+     Qed.
+  *)
+
+  (* constructor.rs validate after the parse: gate 3 (the qualifier), gate 4
+     (the theory), then the gates of validate_factory (5 to 9). *)
+  Definition validate_from_gate3 (f : family) (q : qualifier)
       (free : option (bytes * nat)) (pos : list pvalue) (named : list (bytes * pvalue)) : gate3_result :=
-    match validate_qualifier f q e with
+    match validate_qualifier f q with
     | QualOk =>
         match theory_gate free with
         | TBadArgument => G3Theory TBadArgument
@@ -2529,13 +2731,13 @@ Section Params.
     (forall name n, In name builtin_theories -> theory_gate (Some (name, S n)) = TBadArgument) /\
     (forall name nargs, ~ In name builtin_theories ->
        theory_gate (Some (name, nargs)) = TUnknown name (suggest name builtin_theories)) /\
-    (forall f q e free pos named, validate_qualifier f q e <> QualOk ->
-       validate_from_gate3 f q e free pos named = G3Qualifier (validate_qualifier f q e)) /\
-    (forall f q e free pos named, validate_qualifier f q e = QualOk ->
+    (forall f q free pos named, validate_qualifier f q <> QualOk ->
+       validate_from_gate3 f q free pos named = G3Qualifier (validate_qualifier f q)) /\
+    (forall f q free pos named, validate_qualifier f q = QualOk ->
        (theory_gate free = TBadArgument \/ exists n s, theory_gate free = TUnknown n s) ->
-       validate_from_gate3 f q e free pos named = G3Theory (theory_gate free)) /\
-    (forall f q e name pos named, validate_qualifier f q e = QualOk -> In name builtin_theories ->
-       validate_from_gate3 f q e (Some (name, 0)) pos named =
+       validate_from_gate3 f q free pos named = G3Theory (theory_gate free)) /\
+    (forall f q name pos named, validate_qualifier f q = QualOk -> In name builtin_theories ->
+       validate_from_gate3 f q (Some (name, 0)) pos named =
        match validate_factory f q pos named with
        | POk ps => G3Ok (Some name) ps
        | PErr err => G3Params err
@@ -2558,12 +2760,12 @@ Section Params.
       - apply mem_spec in Mm. contradiction (Hn Mm).
       - reflexivity. }
     split.
-    { intros f q e free pos named Hq. unfold validate_from_gate3.
-      destruct (validate_qualifier f q e); [contradiction (Hq eq_refl) | reflexivity | reflexivity]. }
+    { intros f q free pos named Hq. unfold validate_from_gate3.
+      destruct (validate_qualifier f q); [contradiction (Hq eq_refl) | reflexivity]. }
     split.
-    { intros f q e free pos named Hq Ht. unfold validate_from_gate3. rewrite Hq.
+    { intros f q free pos named Hq Ht. unfold validate_from_gate3. rewrite Hq.
       destruct Ht as [Ht | [n [s Ht]]]; rewrite Ht; reflexivity. }
-    intros f q e name pos named Hq Hin. unfold validate_from_gate3. rewrite Hq.
+    intros f q name pos named Hq Hin. unfold validate_from_gate3. rewrite Hq.
     cbn [theory_gate]. apply mem_spec in Hin. rewrite Hin. reflexivity.
   Qed.
 End Params.

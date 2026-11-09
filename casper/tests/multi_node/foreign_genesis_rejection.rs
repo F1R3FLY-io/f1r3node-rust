@@ -7,12 +7,14 @@
 // the stale TTL expires, but it never enters the main DAG.
 
 use casper::rust::casper::Casper;
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
 use lazy_static::lazy_static;
 use rspace_plus_plus::rspace::history::Either;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 

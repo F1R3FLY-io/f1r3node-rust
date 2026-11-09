@@ -38,20 +38,20 @@
    be, u64_be, LENGTH_BYTES set.rs:74 and 223-227 (u64_be, the 8 big-endian
                             bytes of u64::to_be_bytes)
    frame, key_of_encodings,
-   canonical_bytes, set_key set.rs:176-194 (set_key: the count field, then
+   canonical_bytes, set_key set.rs:204-222 (set_key: the count field, then
                             the length field and the bytes of each element)
                             and 188-208 (canonical_bytes: bincode of the
                             sorted Par, metered sort and encode)
    rkey, same, class_val    set.rs:160-165 (ScanDiscipline::class_key) and
-                            scan.rs:884-899 (same_class)
+                            scan.rs:878-893 (same_class)
    canon, first_match       space_store_handle.rs canonical_data_order
-                            (DR-75) and scan.rs:570-590 (first_bound_record)
+                            (DR-75) and scan.rs:564-584 (first_bound_record)
    view, dedup              the classes in the order of their first members:
-                            scan.rs:597-653 (class_of: the representative
+                            scan.rs:591-647 (class_of: the representative
                             is the first member in canonical order)
    receive_choice           scan.rs:229-321 (receive: the first spatial
                             match, Cx::admits once, then park)
-   class_of, remove_all     scan.rs:597-653 (class_of) and 643-670
+   class_of, remove_all     scan.rs:591-647 (class_of) and 643-670
                             (fire_class: the consume over [D; n] that
                             removes each non-persistent member)
    staged, class_fire,
@@ -59,21 +59,21 @@
                             staging rules of space_store_handle.rs
                             (check_arity, canonical_group_key,
                             check_lined_up, check_stored_candidates,
-                            claim_positions); scan.rs:658-685 and 794-879
+                            claim_positions); scan.rs:652-679 and 788-873
    op, on_records           the staged operations of the driver (Cx::store_on,
                             Cx::park, Cx::fire_offer_on,
                             Cx::fire_receive_group, Cx::retire)
-   retire_class             scan.rs:794-879 (retire_class: K_retire of each
+   retire_class             scan.rs:788-873 (retire_class: K_retire of each
                             stored non-persistent member in canonical order)
-   fits, offer_pass         scan.rs:408-499 (offer_scan with
+   fits, offer_pass         scan.rs:408-493 (offer_scan with
                             first_admitting_waiter at 519-550 and
                             retiring_of at 491-513)
    peek_group, peek_plan    scan.rs:229-321 (receive: a peek binds [r]),
                             694-704 (restore_in) and 715-747 (restore_scan)
-   same_class               scan.rs:884-899 (same_class: metered_hash, then
+   same_class               scan.rs:878-893 (same_class: metered_hash, then
                             the full compare only on equal hashes)
-   key_trace                set.rs:176-220 (the reserved buffers, the
-                            metered sort and encode) and scan.rs:884-899
+   key_trace                set.rs:204-250 (the reserved buffers, the
+                            metered sort and encode) and scan.rs:878-893
                             (the reserved hash and comparisons)
 
    ─────────────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@
      the payload through val, so the members of one class bind a pattern
      alike. The Rust driver does not assume this: class_of binds each member
      again and fails closed with Inconsistent when a member does not bind
-     (scan.rs:640-644).
+     (scan.rs:634-638).
    - A set has no counter, so every ord is 0 (decision 43), and the model
      needs no ord. rounds counts the fires that FIRE_ROUND_CAP still allows
      after the next fire (I-21).
@@ -104,6 +104,9 @@
      feature/cost-accounted-rho), as DataCollection.v does: a self-metered
      step reserves its units and then reads them, and a trace is covered when
      every prefix reads at most what it reserved.
+     Changed by decision 96 (decision 89, DR-131): AgentReadCoverage.v is
+     deleted, and section 8 goes with the host-work metering, as in
+     DataCollection.v.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. set_key_injective                  F6: the key of two payloads is
@@ -144,6 +147,9 @@
     8. set_key_trace_covered              decision 42: the trace of a set key
                                           and of a membership test reads after
                                           it reserves
+                                          Decision 96 (decision 89, DR-131)
+                                          disables this headline with the
+                                          host-work metering.
 
    The negative controls of the SET batch (16, fragment
    target/verification/reified-rspaces/p5/fragments/SET/rocq/set_controls.py)
@@ -1289,6 +1295,8 @@ Section Membership.
   Qed.
 End Membership.
 
+(* Disabled by decision 96 (decision 89, DR-131): set_key_trace_covered goes
+   with the host-work metering. The section stays below as a comment.
 (* ── 8. Metering of the set key and of the membership test (decision 42) ── *)
 
 (* The metering rule of DR-88, restated from AgentReadCoverage.v and DataCollection.v: a
@@ -1408,6 +1416,7 @@ Proof.
   apply covered_app; [apply step_covered | apply step_balanced |].
   exact Hcc.
 Qed.
+*)
 
 Print Assumptions set_key_injective.
 Print Assumptions set_view_dedups_equal_pars.
@@ -1416,4 +1425,7 @@ Print Assumptions set_retire_comm_lines_up.
 Print Assumptions set_produce_fire_retires_stored_class.
 Print Assumptions set_peek_restores_representative_only.
 Print Assumptions set_membership_full_compare_on_equal_hash.
+(* Disabled by decision 96 (decision 89, DR-131): set_key_trace_covered goes
+   with the host-work metering.
 Print Assumptions set_key_trace_covered.
+*)

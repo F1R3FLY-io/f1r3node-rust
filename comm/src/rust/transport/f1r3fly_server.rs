@@ -6,9 +6,12 @@
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use futures::task::AtomicWaker;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -375,6 +378,7 @@ pub struct F1r3flyServerConnection {
     inner: F1r3flyServerTlsTransport<tokio::net::TcpStream>,
     peer_addr: SocketAddr,
     peer_certificates: Option<Vec<Vec<u8>>>,
+    closer: ConnectionCloser,
 }
 
 /// Custom connection info that includes F1r3fly certificate data
@@ -382,6 +386,37 @@ pub struct F1r3flyServerConnection {
 pub struct F1r3flyConnectInfo {
     pub tcp_info: TcpConnectInfo,
     pub peer_certificates: Option<Vec<Vec<u8>>>,
+    pub closer: ConnectionCloser,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ConnectionCloser(Arc<ConnectionCloserState>);
+
+#[derive(Debug, Default)]
+struct ConnectionCloserState {
+    closed: AtomicBool,
+    waker: AtomicWaker,
+}
+
+impl ConnectionCloser {
+    pub fn close(&self) {
+        self.0.closed.store(true, Ordering::Release);
+        self.0.waker.wake();
+    }
+
+    pub fn is_closed(&self) -> bool { self.0.closed.load(Ordering::Acquire) }
+
+    fn poll_closed(&self, cx: &Context<'_>) -> Poll<io::Error> {
+        self.0.waker.register(cx.waker());
+        if self.is_closed() {
+            Poll::Ready(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "Connection closed by the receiver",
+            ))
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
 impl F1r3flyServerConnection {
@@ -403,6 +438,7 @@ impl F1r3flyServerConnection {
             inner: transport,
             peer_addr,
             peer_certificates,
+            closer: ConnectionCloser::default(),
         }
     }
 }
@@ -413,6 +449,9 @@ impl AsyncRead for F1r3flyServerConnection {
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
+        if let Poll::Ready(error) = self.closer.poll_closed(cx) {
+            return Poll::Ready(Err(error));
+        }
         Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
@@ -423,6 +462,9 @@ impl AsyncWrite for F1r3flyServerConnection {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
+        if let Poll::Ready(error) = self.closer.poll_closed(cx) {
+            return Poll::Ready(Err(error));
+        }
         Pin::new(&mut self.inner).poll_write(cx, buf)
     }
 
@@ -448,6 +490,7 @@ impl Connected for F1r3flyServerConnection {
                 remote_addr: Some(self.peer_addr),
             },
             peer_certificates: self.peer_certificates.clone(),
+            closer: self.closer.clone(),
         }
     }
 }

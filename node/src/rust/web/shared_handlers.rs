@@ -413,6 +413,10 @@ fn classify_interpreter_error(ie: &InterpreterError) -> (StatusCode, &'static st
         | BundlePermissionError(_)
         | ValueTypeError(_)
         | TermStructureError(_)
+        // Added by Reified RSpaces (user decision of 2026-10-25): the user
+        // variant of space errors keeps the status of its reduce error.
+        | SpaceUserError(_)
+        | BitmaskBitsCleared { .. }
         | IfConditionTypeError { .. }
         | MethodNotDefined { .. }
         | MethodArgumentNumberMismatch { .. }
@@ -981,6 +985,8 @@ mod tests {
                 InterpreterError::BundlePermissionError("boom".to_string()),
                 InterpreterError::ValueTypeError("boom".to_string()),
                 InterpreterError::TermStructureError("boom".to_string()),
+                // Added by Reified RSpaces (user decision of 2026-10-25).
+                InterpreterError::SpaceUserError("reified:CellOccupied: boom".to_string()),
             ] {
                 let (status, kind) = classify(CasperError::InterpreterError(err));
                 assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);

@@ -2,8 +2,10 @@
 //!
 //! Ported from `feature/f1r3lang-mettail-only`
 //! (`e5102e945:models/tests/par_corpus/mod.rs`) to this branch's schema:
+// Changed by decision 112: `ExprInstance` has two more arms. The text before:
+// //! - `ExprInstance` has 42 arms here, with the five numeric arms `GUint64`,
 //!
-//! - `ExprInstance` has 42 arms here, with the five numeric arms `GUint64`,
+//! - `ExprInstance` has 44 arms here, with the five numeric arms `GUint64`,
 //!   `GInt32`, `GUint32`, `GUint16` and `GUint8`.
 //! - `EPathMap` is a plain generated message (`ps`, `locally_free`,
 //!   `connective_used`, `remainder`) with derived serde. `EZipper` has no
@@ -28,11 +30,14 @@
 //!
 //! A random generator reaches few arms of the schema. A decoder arm that no
 //! test reaches is an arm that no test checks, so the corpus has three layers:
+// Changed by decision 112: `ExprInstance` has two more arms, in the row EXHAUSTIVE of the
+// table below. The text before:
+// //!   EXHAUSTIVE   one value of every ExprInstance (42),      the reached arms are
 //!
 //! ```text
 //!   layer        what it covers                            check against vacuity
 //!   ──────────── ───────────────────────────────────────── ─────────────────────────
-//!   EXHAUSTIVE   one value of every ExprInstance (42),      the reached arms are
+//!   EXHAUSTIVE   one value of every ExprInstance (44),      the reached arms are
 //!                ConnectiveInstance (9) and cost signature  compared with the full
 //!                (6) arm, every Par field, every root type  alphabets
 //!
@@ -64,14 +69,18 @@ use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::var::{VarInstance, WildcardMsg};
+// Changed by G3 (DR-135): the corpus also builds the caller of a region.
+// use models::rhoapi::{
+//     BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
 use models::rhoapi::{
-    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostRegion, CostSignature,
-    CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte,
-    EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap,
-    EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GAuthorityId,
-    GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate, GSysAuthToken,
-    GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match, MatchCase, New,
-    Par, ParWithRandom, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostCaller, CostRegion,
+    CostSignature, CostSignatureCompound, CostSignedTerm, CostStack, EAnd, EDiv, EEq, EFree, EGt,
+    EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq,
+    ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, EZipper, Expr,
+    GAuthorityId, GBigRational, GDeployId, GDeployerId, GFixedPoint, GPrincipalId, GPrivate,
+    GSysAuthToken, GUnforgeable, If, KeyValuePair, ListBindPatterns, ListParWithRandom, Match,
+    MatchCase, New, Par, ParWithRandom, QuerySpec, Receive, ReceiveBind, Send, SendParams,
+    SpaceAnnotation, TaggedContinuation, UseBlock, Var, VarRef,
 };
 use models::rust::rholang::record_decoder::{
     connective_instance_variant_index, cost_value_variant_index, expr_instance_variant_index,
@@ -152,12 +161,41 @@ pub fn cost_authority() -> CostAuthority {
             CostRegion {
                 instance_id: vec![1, 2, 3],
                 signature: Some(compound_signature()),
+                // Added by G3 (DR-135): an unpriced region without a caller.
+                price: 0,
+                caller: None,
             },
             CostRegion {
                 instance_id: Vec::new(),
                 signature: None,
+                // Added by G3 (DR-135): the widest price, and a caller with no
+                // signature.
+                price: u64::MAX,
+                caller: Some(CostCaller {
+                    signature: None,
+                    price: 0,
+                }),
+            },
+            // Added by G3 (DR-135): a priced region whose caller quotes a
+            // `Par`, so the caller's signature is a machine value (SA3).
+            CostRegion {
+                instance_id: vec![9; 32],
+                signature: Some(unit_signature()),
+                price: 3,
+                caller: Some(quoting_caller()),
             },
         ],
+    }
+}
+
+/// Added by G3 (DR-135): a caller whose signature quotes a `Par` with every
+/// field, at a price whose eight bytes all differ.
+pub fn quoting_caller() -> CostCaller {
+    CostCaller {
+        signature: Some(CostSignature {
+            value: Some(CostValue::Quote(all_par_fields())),
+        }),
+        price: 0x0102_0304_0506_0708,
     }
 }
 
@@ -348,6 +386,20 @@ pub fn every_expr_instance() -> Vec<(&'static str, ExprInstance)> {
         ("GUint32", ExprInstance::GUint32(u32::MAX)),
         ("GUint16", ExprInstance::GUint16(0xBEEF)),
         ("GUint8", ExprInstance::GUint8(0xA5)),
+        (
+            "EFreeBody",
+            ExprInstance::EFreeBody(EFree {
+                theory: "Nat".to_string(),
+                args: vec![gint(103), gint(104)],
+            }),
+        ),
+        (
+            "EParamsBody",
+            ExprInstance::EParamsBody(SendParams {
+                positional: vec![gint(105)],
+                named: BTreeMap::from([("limit".to_string(), gint(106))]),
+            }),
+        ),
     ]
 }
 
@@ -468,6 +520,10 @@ pub fn all_par_fields() -> Par {
                 persistent: true,
                 locally_free: vec![0x11, 0x12],
                 connective_used: true,
+                params: Some(SendParams {
+                    positional: vec![gint(201)],
+                    named: BTreeMap::from([("limit".to_string(), gint(202))]),
+                }),
             },
             Send {
                 chan: None,
@@ -475,6 +531,7 @@ pub fn all_par_fields() -> Par {
                 persistent: false,
                 locally_free: vec![],
                 connective_used: false,
+                params: None,
             },
         ],
         receives: vec![Receive {
@@ -485,6 +542,10 @@ pub fn all_par_fields() -> Par {
                     remainder: some_var(),
                     free_count: -7,
                     cost_signature: Some(compound_signature()),
+                    query_spec: Some(QuerySpec {
+                        payload: vec![gint(203)],
+                        named: BTreeMap::from([("k".to_string(), gint(204))]),
+                    }),
                 },
                 ReceiveBind {
                     patterns: vec![],
@@ -492,6 +553,7 @@ pub fn all_par_fields() -> Par {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 },
             ],
             body: Some(gint(7)),
@@ -515,6 +577,12 @@ pub fn all_par_fields() -> Par {
                     m
                 },
                 locally_free: vec![0x31],
+                space_types: vec![
+                    SpaceAnnotation {
+                        space: Some(gint(205)),
+                    },
+                    SpaceAnnotation { space: None },
+                ],
             },
             New {
                 bind_count: 0,
@@ -522,6 +590,7 @@ pub fn all_par_fields() -> Par {
                 uri: vec![],
                 injections: BTreeMap::new(),
                 locally_free: vec![],
+                space_types: vec![],
             },
         ],
         exprs: {
@@ -593,10 +662,15 @@ pub fn all_par_fields() -> Par {
             CostSignedTerm {
                 body: Some(gint(24)),
                 signature: Some(unit_signature()),
+                // Added by G3 (DR-135, S3b): a held term, so the corpus holds
+                // a held price.
+                held_price: Some(25),
             },
             CostSignedTerm {
                 body: None,
                 signature: None,
+                // Added by G3 (DR-135, S3b): no held price.
+                held_price: None,
             },
         ],
         cost_stacks: vec![
@@ -607,6 +681,16 @@ pub fn all_par_fields() -> Par {
                     .collect(),
             },
             CostStack { cells: vec![] },
+        ],
+        use_blocks: vec![
+            UseBlock {
+                space: Some(gint(206)),
+                body: Some(gint(207)),
+            },
+            UseBlock {
+                space: None,
+                body: None,
+            },
         ],
     }
 }
@@ -643,6 +727,7 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                     persistent: false,
                     locally_free: vec![level as u8],
                     connective_used: false,
+                    params: None,
                 }],
                 ..Default::default()
             },
@@ -654,6 +739,7 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                         remainder: None,
                         free_count: 1,
                         cost_signature: None,
+                        query_spec: None,
                     }],
                     body: None,
                     persistent: false,
@@ -676,6 +762,7 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                         m
                     },
                     locally_free: vec![],
+                    space_types: vec![],
                 }],
                 ..Default::default()
             },
@@ -726,6 +813,9 @@ pub fn deep_mixed_par(depth: usize) -> Par {
                 cost_signed_terms: vec![CostSignedTerm {
                     body: Some(p),
                     signature: None,
+                    // Added by G3 (DR-135, S3b): the held price follows the
+                    // body in the stream, so a deep chain interleaves both.
+                    held_price: Some(level as u64),
                 }],
                 ..Default::default()
             },
@@ -805,6 +895,7 @@ pub fn par_corpus() -> Vec<(String, Par)> {
                 persistent: i % 2 == 0,
                 locally_free: vec![i as u8],
                 connective_used: i % 3 == 0,
+                params: None,
             })
             .collect(),
         ..Default::default()
@@ -957,12 +1048,20 @@ pub fn reached_arms<'a>(roots: impl IntoIterator<Item = &'a Par>) -> ReachedArms
             for send in &par.sends {
                 pars.extend(send.chan.iter());
                 pars.extend(send.data.iter());
+                if let Some(params) = &send.params {
+                    pars.extend(params.positional.iter());
+                    pars.extend(params.named.values());
+                }
             }
             for receive in &par.receives {
                 for bind in &receive.binds {
                     pars.extend(bind.patterns.iter());
                     pars.extend(bind.source.iter());
                     signatures.extend(bind.cost_signature.iter());
+                    if let Some(query) = &bind.query_spec {
+                        pars.extend(query.payload.iter());
+                        pars.extend(query.named.values());
+                    }
                 }
                 pars.extend(receive.body.iter());
                 pars.extend(receive.condition.iter());
@@ -970,6 +1069,11 @@ pub fn reached_arms<'a>(roots: impl IntoIterator<Item = &'a Par>) -> ReachedArms
             for new in &par.news {
                 pars.extend(new.p.iter());
                 pars.extend(new.injections.values());
+                pars.extend(
+                    new.space_types
+                        .iter()
+                        .flat_map(|annotation| annotation.space.iter()),
+                );
             }
             for expr in &par.exprs {
                 if let Some(instance) = &expr.expr_instance {
@@ -1017,6 +1121,10 @@ pub fn reached_arms<'a>(roots: impl IntoIterator<Item = &'a Par>) -> ReachedArms
             }
             for stack in &par.cost_stacks {
                 signatures.extend(stack.cells.iter());
+            }
+            for block in &par.use_blocks {
+                pars.extend(block.space.iter());
+                pars.extend(block.body.iter());
             }
         } else if let Some(signature) = signatures.pop() {
             if let Some(value) = &signature.value {
@@ -1077,6 +1185,11 @@ fn push_expr_operands<'a>(instance: &'a ExprInstance, pars: &mut Vec<&'a Par>) {
         ExprInstance::EPathmapBody(map) => pars.extend(map.ps.iter()),
         ExprInstance::EZipperBody(zipper) => {
             pars.extend(zipper.pathmap.iter().flat_map(|map| map.ps.iter()))
+        }
+        ExprInstance::EFreeBody(free) => pars.extend(free.args.iter()),
+        ExprInstance::EParamsBody(params) => {
+            pars.extend(params.positional.iter());
+            pars.extend(params.named.values());
         }
         ExprInstance::GBool(_)
         | ExprInstance::GInt(_)
@@ -1175,6 +1288,7 @@ fn random_send(depth: usize) -> BoxedStrategy<Send> {
                 persistent,
                 locally_free,
                 connective_used,
+                params: None,
             },
         )
         .boxed()
@@ -1217,6 +1331,7 @@ fn random_receive(depth: usize) -> BoxedStrategy<Receive> {
                     remainder,
                     free_count,
                     cost_signature: None,
+                    query_spec: None,
                 }),
             0..=2,
         ),
@@ -1263,6 +1378,7 @@ fn random_new(depth: usize) -> BoxedStrategy<New> {
             uri,
             injections,
             locally_free,
+            space_types: Vec::new(),
         })
         .boxed()
 }

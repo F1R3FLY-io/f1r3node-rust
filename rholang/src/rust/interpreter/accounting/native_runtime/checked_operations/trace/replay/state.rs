@@ -19,6 +19,9 @@ pub(super) enum LedgerError {
     Serial,
     Checkpoint,
     Incomplete,
+    /// Added by DR-132 (D2-B): every live task of the evaluation waited on a
+    /// recorded operation, so replay rejects the block.
+    Stalled,
 }
 
 pub(super) struct ReplayState {
@@ -30,6 +33,11 @@ pub(super) struct ReplayState {
     closed: bool,
     used: u64,
     total: u64,
+    /// Added by DR-132 (D2-B): the number of changes that can make a waiter
+    /// ready. A waiter counts its park once for each version.
+    version: u64,
+    /// Added by DR-132 (D2-B): replay declared a stall.
+    stalled: bool,
 }
 
 impl ReplayState {
@@ -38,10 +46,15 @@ impl ReplayState {
         slot: usize,
         predecessors: impl IntoIterator<Item = usize>,
     ) -> Result<bool, LedgerError> {
-        if self.closed {
-            return Err(LedgerError::Closed);
-        }
-        if self.slots.get(slot) != Some(&SlotState::Available) {
+        // Changed by DR-132 (D2-B): a stalled replay reports the stall.
+        // if self.closed {
+        //     return Err(LedgerError::Closed);
+        // }
+        self.open()?;
+        // Changed by DR-132: the state of the slot comes from `slot`, which
+        // the selection by source also reads.
+        // if self.slots.get(slot) != Some(&SlotState::Available) {
+        if self.slot(slot) != Some(SlotState::Available) {
             return Err(LedgerError::Unavailable);
         }
         Ok(!self.boundary
@@ -50,16 +63,60 @@ impl ReplayState {
                 .all(|slot| self.slots.get(slot) == Some(&SlotState::Completed)))
     }
 
-    pub(super) fn invalidate(&mut self) { self.closed = true; }
+    // Changed by DR-132 (D2-B): an invalidation is a change, so each waiter
+    // checks again and meets the closed replay.
+    // pub(super) fn invalidate(&mut self) { self.closed = true; }
+    pub(super) fn invalidate(&mut self) {
+        self.closed = true;
+        self.bump();
+    }
+
+    /// Added by DR-132 (D2-B): the error of a replay that no operation or
+    /// boundary may use. A stall comes before the closed state that it sets.
+    pub(super) fn open(&self) -> Result<(), LedgerError> {
+        if self.stalled {
+            return Err(LedgerError::Stalled);
+        }
+        if self.closed {
+            return Err(LedgerError::Closed);
+        }
+        Ok(())
+    }
+
+    /// Added by DR-132 (D2-B): the current version.
+    pub(super) fn version(&self) -> u64 { self.version }
+
+    /// Added by DR-132 (D2-B): no boundary is open and no slot is reserved,
+    /// so an evaluation may begin.
+    pub(super) fn quiescent(&self) -> bool { !self.boundary && self.reserved == 0 }
+
+    /// Added by DR-132 (D2-B): replay declared a stall. No operation or
+    /// boundary may run again, and every waiter must check again.
+    pub(super) fn stall(&mut self) {
+        self.closed = true;
+        self.stalled = true;
+        self.bump();
+    }
+
+    /// Added by DR-132 (D2-B): a change that can make a waiter ready. A
+    /// registration from 2^64 changes earlier cannot exist, so the wrap is
+    /// harmless.
+    fn bump(&mut self) { self.version = self.version.wrapping_add(1); }
+
+    /// Added by DR-132: the state of `slot`. Native replay selects the slot of
+    /// a live operation by its recorded source, under this state.
+    pub(super) fn slot(&self, slot: usize) -> Option<SlotState> { self.slots.get(slot).copied() }
 
     pub(super) fn reserve_ready(
         &mut self,
         slot: usize,
         predecessors: impl IntoIterator<Item = usize>,
     ) -> Result<Option<u64>, LedgerError> {
-        if self.closed {
-            return Err(LedgerError::Closed);
-        }
+        // Changed by DR-132 (D2-B): a stalled replay reports the stall.
+        // if self.closed {
+        //     return Err(LedgerError::Closed);
+        // }
+        self.open()?;
         if self.boundary {
             return Err(LedgerError::Busy);
         }
@@ -84,13 +141,17 @@ impl ReplayState {
             closed: false,
             used: 0,
             total,
+            version: 0,
+            stalled: false,
         }
     }
 
     pub(super) fn reserve(&mut self, slot: usize) -> Result<u64, LedgerError> {
-        if self.closed {
-            return Err(LedgerError::Closed);
-        }
+        // Changed by DR-132 (D2-B): a stalled replay reports the stall.
+        // if self.closed {
+        //     return Err(LedgerError::Closed);
+        // }
+        self.open()?;
         if self.boundary {
             return Err(LedgerError::Busy);
         }
@@ -109,6 +170,8 @@ impl ReplayState {
         assert_eq!(self.slots[slot], SlotState::Reserved(serial));
         self.slots[slot] = SlotState::Available;
         self.reserved -= 1;
+        // Added by DR-132 (D2-B): the slot is open again for its source.
+        self.bump();
     }
 
     pub(super) fn publish(&mut self, slot: usize, serial: u64, usage: u64) {
@@ -127,12 +190,16 @@ impl ReplayState {
         self.used = next;
         self.slots[slot] = SlotState::Completed;
         self.reserved -= 1;
+        // Added by DR-132 (D2-B): the successors of the slot may be ready.
+        self.bump();
     }
 
     pub(super) fn begin_boundary(&mut self) -> Result<(), LedgerError> {
-        if self.closed {
-            return Err(LedgerError::Closed);
-        }
+        // Changed by DR-132 (D2-B): a stalled replay reports the stall.
+        // if self.closed {
+        //     return Err(LedgerError::Closed);
+        // }
+        self.open()?;
         if self.boundary || self.reserved != 0 {
             return Err(LedgerError::Busy);
         }
@@ -143,6 +210,8 @@ impl ReplayState {
     pub(super) fn end_boundary(&mut self) {
         assert!(self.boundary);
         self.boundary = false;
+        // Added by DR-132 (D2-B): readiness returns after the boundary.
+        self.bump();
     }
 
     pub(super) fn checkpoint(&self) -> (usize, u64) {
@@ -185,9 +254,11 @@ impl ReplayState {
     }
 
     pub(super) fn check_complete(&self) -> Result<(), LedgerError> {
-        if self.closed {
-            return Err(LedgerError::Closed);
-        }
+        // Changed by DR-132 (D2-B): a stalled replay reports the stall.
+        // if self.closed {
+        //     return Err(LedgerError::Closed);
+        // }
+        self.open()?;
         if self.boundary {
             return Err(LedgerError::Busy);
         }
@@ -196,9 +267,11 @@ impl ReplayState {
 
     pub(super) fn check_complete_at_boundary(&self) -> Result<(), LedgerError> {
         assert!(self.boundary && self.reserved == 0);
-        if self.closed {
-            return Err(LedgerError::Closed);
-        }
+        // Changed by DR-132 (D2-B): a stalled replay reports the stall.
+        // if self.closed {
+        //     return Err(LedgerError::Closed);
+        // }
+        self.open()?;
         self.complete_slots()
     }
 
@@ -344,6 +417,59 @@ mod tests {
         );
         state.restore(0);
         state.end_boundary();
+    }
+
+    /// Added by DR-132 (D2-B): each change that can make a waiter ready
+    /// bumps the version, and nothing else does.
+    #[test]
+    fn every_readiness_change_bumps_the_version() {
+        let mut state = ReplayState::new(vec![SlotState::Available; 2], Vec::with_capacity(2), 2);
+        assert_eq!(state.version(), 0);
+        assert!(state.quiescent());
+        let serial = state
+            .reserve_ready(0, [])
+            .expect("the ledger is open")
+            .expect("slot 0 has no predecessor");
+        assert_eq!(state.version(), 0, "a reservation only lowers readiness");
+        assert!(!state.quiescent());
+        state.cancel(0, serial);
+        assert_eq!(state.version(), 1);
+        let serial = state.reserve(0).expect("the cancelled slot reserves again");
+        state.publish(0, serial, 1);
+        assert_eq!(state.version(), 2);
+        assert!(!state.ready(1, [0, 1]).expect("the ledger is open"));
+        assert_eq!(state.version(), 2, "a check changes nothing");
+        state
+            .begin_boundary()
+            .expect("a quiescent ledger begins a boundary");
+        assert_eq!(state.version(), 2, "a boundary only lowers readiness");
+        assert!(!state.quiescent());
+        state.end_boundary();
+        assert_eq!(state.version(), 3);
+        state.invalidate();
+        assert_eq!(state.version(), 4);
+        assert_eq!(state.open(), Err(LedgerError::Closed));
+    }
+
+    /// Added by DR-132 (D2-B): a stall closes the replay for every operation,
+    /// boundary and completion check, and reports itself before the closed
+    /// state.
+    #[test]
+    fn a_stall_closes_every_entry_and_reports_itself() {
+        let mut state = ReplayState::new(vec![SlotState::Available; 2], Vec::with_capacity(2), 2);
+        let serial = state.reserve(0).expect("slot 0 reserves");
+        state.publish(0, serial, 1);
+        let version = state.version();
+        state.stall();
+        assert_eq!(state.version(), version + 1);
+        assert_eq!(state.open(), Err(LedgerError::Stalled));
+        assert_eq!(state.ready(1, [0]), Err(LedgerError::Stalled));
+        assert_eq!(state.reserve_ready(1, [0]), Err(LedgerError::Stalled));
+        assert_eq!(state.reserve(1), Err(LedgerError::Stalled));
+        assert_eq!(state.begin_boundary(), Err(LedgerError::Stalled));
+        assert_eq!(state.check_complete(), Err(LedgerError::Stalled));
+        state.invalidate();
+        assert_eq!(state.open(), Err(LedgerError::Stalled));
     }
 
     #[test]

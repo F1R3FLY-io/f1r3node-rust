@@ -35,7 +35,10 @@ fn walk(
             estimator.pop(count)?;
         }
     }
-    for new in &par.news {
+    // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+    // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+    // for new in &par.news {
+    for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
         let count = estimator.push_new(new, resolving)?;
         if let Some(body) = new.p.as_ref() {
             walk(estimator, body, scope, resolving)?;
@@ -106,7 +109,10 @@ fn fold(estimator: &Estimator<'_>, tables: &Tables, par: &Par, next: &mut usize)
             acc = add(acc, child);
         }
     }
-    for new in &par.news {
+    // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+    // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+    // for new in &par.news {
+    for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
         if let Some(body) = new.p.as_ref() {
             let child = fold(estimator, tables, body, next);
             acc = add(acc, child);
@@ -160,7 +166,9 @@ pub(super) fn analyze(
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
-    let mut estimator = Estimator::new(funding, &core)?;
+    // Changed by G3 (DR-135): the estimator takes the price of the regions.
+    // let mut estimator = Estimator::new(funding, &core)?;
+    let mut estimator = Estimator::new(funding, schedule.actual_price, &core)?;
     estimator.measure(resolved)?;
     let shallow = estimator.signatures_fit();
     let plan = match shallow {
@@ -200,7 +208,9 @@ pub(super) fn analyze_iteratively(
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the estimator takes the price of the regions.
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, schedule.actual_price, &core)?;
         estimator.measure(resolved)?;
         let shallow = estimator.signatures_fit();
         let plan = match shallow {
@@ -236,7 +246,10 @@ pub(super) fn estimator_levels(
 ) -> Result<Vec<(usize, usize)>, InterpreterError> {
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the estimator takes the price of the
+        // regions. The levels of pass 1 do not depend on it.
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, 0, &core)?;
         estimator.measure(program)?;
         estimator.walk(program)?;
         Ok(estimator.levels)
@@ -268,17 +281,30 @@ fn par_holds_variable(par: &Par) -> bool {
     par.sends
         .iter()
         .any(|send| pars_hold_variable(send.chan.iter().chain(&send.data)))
+        || par.sends.iter().any(|send| {
+            send.params.iter().any(|params| {
+                pars_hold_variable(params.positional.iter().chain(params.named.values()))
+            })
+        })
         || par.receives.iter().any(|receive| {
             receive.binds.iter().any(|bind| {
                 bind.remainder.is_some()
                     || pars_hold_variable(bind.patterns.iter().chain(&bind.source))
                     || bind.cost_signature.iter().any(signature_holds_variable)
+                    || bind.query_spec.iter().any(|query| {
+                        pars_hold_variable(query.payload.iter().chain(query.named.values()))
+                    })
             }) || pars_hold_variable(receive.body.iter().chain(&receive.condition))
         })
         || par
             .news
             .iter()
             .any(|new| pars_hold_variable(new.p.iter().chain(new.injections.values())))
+        || par.news.iter().any(|new| {
+            new.space_types
+                .iter()
+                .any(|annotation| pars_hold_variable(&annotation.space))
+        })
         || par.exprs.iter().any(expr_holds_variable)
         || par.matches.iter().any(|matched| {
             pars_hold_variable(&matched.target)
@@ -323,6 +349,10 @@ fn par_holds_variable(par: &Par) -> bool {
             .cost_stacks
             .iter()
             .any(|stack| stack.cells.iter().any(signature_holds_variable))
+        || par
+            .use_blocks
+            .iter()
+            .any(|block| pars_hold_variable(block.space.iter().chain(&block.body)))
 }
 
 fn expr_holds_variable(expr: &Expr) -> bool {
@@ -371,6 +401,10 @@ fn expr_holds_variable(expr: &Expr) -> bool {
             .pathmap
             .as_ref()
             .is_some_and(|pathmap| pathmap.remainder.is_some() || pars_hold_variable(&pathmap.ps)),
+        Some(ExprInstance::EFreeBody(free)) => pars_hold_variable(&free.args),
+        Some(ExprInstance::EParamsBody(params)) => {
+            pars_hold_variable(params.positional.iter().chain(params.named.values()))
+        }
         Some(
             ExprInstance::GBool(_)
             | ExprInstance::GInt(_)
@@ -402,7 +436,10 @@ pub(super) fn peak_binders(
 ) -> Result<(usize, usize), InterpreterError> {
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the estimator takes the price of the
+        // regions. The binder counts do not depend on it.
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, 0, &core)?;
         let counts = estimator.measure(program)?;
         estimator.walk(program)?;
         Ok((counts.peak_binders, estimator.observed_peak))

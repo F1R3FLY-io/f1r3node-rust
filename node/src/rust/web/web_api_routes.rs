@@ -395,11 +395,11 @@ async fn pending_deploys_logic(
     get,
     path = "/api/balance/{address}",
     params(
-        ("address" = String, Path, description = "REV wallet address (Base58-encoded, starts with `1111`)"),
+        ("address" = String, Path, description = "Native-token wallet address (Base58-encoded, starts with `1111`)"),
         ("block_hash" = Option<String>, Query, description = "Block hash to query against; defaults to the last-finalized block"),
     ),
     responses(
-        (status = 200, description = "REV balance for the address", body = BalanceResponse),
+        (status = 200, description = "Native-token balance for the address", body = BalanceResponse),
         (status = 400, description = "Invalid block hash or node is not read-only (`invalid_hash`, `readonly_node_required`)", body = ApiErrorResponse),
         (status = 404, description = "Specified block not found (`block_not_found`)", body = ApiErrorResponse),
         (status = 422, description = "Exploratory deploy execution failed (`rholang_execution_error`, `out_of_phlogistons`)", body = ApiErrorResponse),
@@ -667,6 +667,14 @@ mod tests {
             },
             valid_after_block_number: if is_full { Some(0) } else { None },
             transfers: if is_full { Some(vec![]) } else { None },
+            parameters: if is_full {
+                vec![models::rust::deploy_parameters::DeployParameter {
+                    name: "amount".into(),
+                    value: models::rust::deploy_parameters::RholangValue::Int(42),
+                }]
+            } else {
+                Vec::new()
+            },
         }
     }
 
@@ -905,6 +913,12 @@ mod tests {
 
         // Full view includes deploy execution details
         assert_eq!(json["deployer"], "0487def456");
+        assert_eq!(
+            json["parameters"],
+            serde_json::json!([
+                {"name": "amount", "value": {"type": "int", "value": 42}}
+            ])
+        );
         assert!(json.get("term").is_some());
         assert!(json.get("phloPrice").is_some());
         assert!(json.get("phloLimit").is_some());
@@ -935,6 +949,7 @@ mod tests {
         assert_eq!(json["isFinalized"], true);
 
         // Full-only fields omitted
+        assert!(json.get("parameters").is_none());
         assert!(json.get("deployer").is_none());
         assert!(json.get("term").is_none());
         assert!(json.get("phloPrice").is_none());
@@ -985,6 +1000,9 @@ mod tests {
         assert_eq!(json["deploys"][0]["deployer"], "0487def456");
         assert_eq!(json["deploys"][1]["deployer"], "0499abc789");
         assert_eq!(json["deploys"][0]["sigAlgorithm"], "secp256k1");
+        for deploy in json["deploys"].as_array().unwrap() {
+            assert!(deploy.get("parameters").is_none());
+        }
     }
 
     #[tokio::test]
@@ -1071,7 +1089,9 @@ mod router_tests {
         }
     }
 
-    fn block_info() -> BlockInfoSerde { BlockInfoSerde::from(models::casper::BlockInfo::default()) }
+    fn block_info() -> BlockInfoSerde {
+        BlockInfoSerde::try_from(models::casper::BlockInfo::default()).unwrap()
+    }
 
     struct CannedWebApi {
         is_ready: bool,
@@ -1197,7 +1217,7 @@ mod router_tests {
             }
             Ok(BalanceResponse {
                 address,
-                balance: 1000,
+                balance: "1000".to_string(),
                 block_number: 5,
                 block_hash: "aa".to_string(),
             })
@@ -1541,7 +1561,7 @@ mod router_tests {
     async fn query_routes_answer() {
         let (status, json) = get_response("/balance/wallet-address").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(json["balance"], 1000);
+        assert_eq!(json["balance"], "1000");
 
         let (status, json) = get_response("/registry/rho:id:abc").await;
         assert_eq!(status, StatusCode::OK);

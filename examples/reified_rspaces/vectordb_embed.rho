@@ -1,5 +1,5 @@
 // rho:vectordb:embed embeds a text with the embedding model of the node. It
-// replies [true, vector, model], or [false, code, detail] for an error. The
+// replies [true, vector, model], or [false, code, message] for an error. The
 // node records the reply, so the replay of the block gives the same reply
 // without a call to the model.
 //

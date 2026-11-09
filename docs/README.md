@@ -115,7 +115,6 @@ The Cargo workspace contains 10 crates:
 |----------|-------------|
 | [Implementation Guide](./casper/theory/cost-accounting-impl/) | Cost-accounting design and subsystem ownership; Casper integration is tracked separately |
 | [Parallel Runtime and Shard Isolation](./casper/theory/cost-accounting-impl/parallel-runtime-and-shard-isolation.md) | Node-local root authority, independent validator transitions, and arbitrary-shard resource frames |
-| [Deterministic Host-Work Budget](./casper/theory/host-work-budget.md) | Canonical node-work units, checked limits, rollback, replay, and economic separation. **Removed by DR-131 (`75de2dc39`).** |
 | [Formal Verification Catalog](./casper/theory/cost-accounted-rho-verification.md) | Rocq, TLA+, Apalache, Sage, Verus, Loom, property, and integration evidence |
 | [Conformance Properties](./casper/theory/cost-accounting-conformance-properties.md) | Publication-to-implementation obligation ledger |
 | [Threat Model](./casper/theory/cost-accounting-threat-model.md) | Consensus, replay, custody, resource, and cryptographic failure analysis |
@@ -149,6 +148,7 @@ The native token's name, symbol, and decimals are configured before genesis and 
 | [CbC Verification Tiers](./cbc-verification-tiers.md) | Refutation with TLC, construction with Rocq, binding with Rust tests, and the promotion rule between them |
 | [Consensus-Neutral Execution](./artifacts/f1r3fly-consensus-neutral-sm.md) | Two execution machines, four ordering media, and the verification split by machine and medium |
 | [Release Process](./release-process.md) | Exact-SHA canary, stable release, and Deployment Train strategy |
+| [Task Tracking](./task-tracking.md) | Value streams, user stories, epics, tasks, task claims, and the Smart Assets skills |
 | [RNode API](./rnode-api/) | Protocol Buffer API documentation (legacy Scala reference) |
 | [LFS Requester Architecture](./plans/lfs_tuple_space_requester_concurrency_architecture.md) | LFS tuple space concurrency design |
 | [Whiteblock Test Plan](./whiteblock/whiteblock-test-plan.md) | Network testing plan |

@@ -26,6 +26,52 @@
    of a window that holds every stored record, so it always lies in its
    window.
 
+   (* Changed by decision 103 (decision 118, C6 arbitration): rule (a)
+      replaces the set clause of CR-9, and the search of decision 118 reads
+      a set window with every member of each class. The text before:
+
+   The claim rule of decision 118 (decision 103, plan v2 section 3).
+   Sections 39a to 39j add a second search, its engine and headlines 18 to
+   20 beside the old definitions. A new version of an old definition has
+   the old name with the suffix _f. A pick of a persistent record claims
+   nothing (CR-9, free_in and claim_after). On a set, a pick claims nothing
+   when the class of the record has a persistent member. So one record can
+   bind several positions of a fire. At a position on the collection of x
+   other than its forced position, a persistent x that lies in the window
+   comes first (E1, CR-8, x_ok and prod_list). A non-persistent x stays
+   out. The produce fire holds x at its forced position (CR-11). The retry
+   of x at each of its positions stays, and the set keeps its cascade
+   (CR-10). Headlines 18, 19 and 20 supersede headlines 3, 5 and 9. The old
+   definitions and theorems stay byte-identical, because the negative
+   controls patch their exact text. JoinCascade.v has no PathMap prefix
+   positions. So it does not model the channel check of CR-11 on such a
+   position (code plan C3c), and it adds no such positions.
+   *)
+
+   The claim rule of decision 118 (decision 103, plan v2 section 3, with
+   rule (a) of the C6 arbitration). Sections 39a to 39j add a second
+   search, its engine and headlines 18 to 20 beside the old definitions. A
+   new version of an old definition has the old name with the suffix _f. A
+   later position takes the next unclaimed entry of its list. A pick of a
+   persistent record claims nothing, and no claim blocks it (CR-9, free_in
+   and claim_after). A pick of a non-persistent record claims its record,
+   and on a set also its class. A claimed class blocks a non-persistent
+   member only when the class has no persistent member, and a persistent
+   element in flight of the class counts (tag_f and claimed_f). So only a
+   persistent record can bind several positions of a fire. The set window
+   of the second search holds every member of each class (window_f, win_f
+   and win_in_f). The old window stays for the old search, so headlines 1
+   to 17 do not change. At a position on the collection of x other than
+   its forced position, a persistent x that lies in the window comes first
+   (E1, CR-8, x_ok and prod_list). A non-persistent x stays out. The
+   produce fire holds x at its forced position (CR-11). The retry of x at
+   each of its positions stays, and the set keeps its cascade (CR-10).
+   Headlines 18, 19 and 20 supersede headlines 3, 5 and 9. The old
+   definitions and theorems stay byte-identical, because the negative
+   controls patch their exact text. JoinCascade.v has no PathMap prefix
+   positions. So it does not model the channel check of CR-11 on such a
+   position (code plan C3c), and it adds no such positions.
+
    The engine (plan section 4, amended 2026-10-07). RUN-JOIN is one
    transaction of a join operation. TOUCH bumps the counter of a collection
    before the first staging on it (decision 31). A settle job has no plan:
@@ -67,94 +113,126 @@
      (4329 lines, not yet committed). The line numbers below are the line
      numbers of that tree. The v2 slots are in spaces/record.rs of the same
      tree.
+   - Decision 118 (decision 103): plan v2, sections 0.1 (CR-8 to CR-11)
+     and 3 (the Rocq plan), in .reified-rspaces-work/merge2/
+     base-alignment-review/plan-102-103-c4-v2.md, and the C4 report v2
+     (.reified-rspaces-work/merge2/c4-design-report-v2-2026-10-27.md). The
+     findings F-118-1 to F-118-4 cite spaces/join.rs of the merge 2 working
+     tree (5330 lines).
+   (* Added by decision 103 (decision 118, C6 arbitration): the source of
+      rule (a). *)
+   - The C6 arbitration of decision 118 (decision 103): the decision
+     record .reified-rspaces-work/merge2/base-alignment-review/
+     decision-c6.md, section 3 (rule (a)) and section 5 (the Rocq scope),
+     with arbiter-c6-A.md Q4.2 and arbiter-c6-B.md Q4 in the same
+     directory.
 
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code (rholang/src/rust/interpreter)
    ─────────────────────────────────────────────────────────────────────────
-   shape, window, win,        spaces/join.rs:1693-1788 (KeyedSource::window:
+   shape, window, win,        spaces/join.rs:1679-1774 (KeyedSource::window:
    win_in, wsel               the first m entries, the first m of each
                               level, every record, with the element in
                               flight placed, and the claims of a set) and
                               720-847 (the trait JoinSource)
-   lane_of, sees, visible     spaces/join.rs:4932-4940 (visible) and
+   lane_of, sees, visible     spaces/join.rs:4912-4920 (visible) and
                               spaces/disciplines/priority_queue.rs
                               (receive_lane, send_level, Lane::sees)
-   lanes_on, lane_queue,      spaces/join.rs:1891-1928 and 1930-1993
+   lanes_on, lane_queue,      spaces/join.rs:1877-1914 and 1916-1979
    at_head, heads_ok,         (KeyedSource::at_head, at_head_incoming) and
    park_view                  2284-2303 (Engine::all_at_head)
    gle, gpairs, gorder        spaces/join.rs:476-500 (group_order, FR-1')
-   restore, in_bind_order     spaces/record.rs:1936 (restore_bind_order) and
-                              spaces/join.rs:3216-3279 (admits: the values
+   restore, in_bind_order     spaces/record.rs:1990 (restore_bind_order) and
+                              spaces/join.rs:5596-5668 (admits: the values
                               in the bind order of the slots)
-   guard_ok                   spaces/join.rs:3216-3279 (admits: the guard
+   guard_ok                   spaces/join.rs:5596-5668 (admits: the guard
                               once, admits_all)
-   tag, claimed, try_cands,   spaces/join.rs:3095-3208 (Engine::search: the
+   tag, claimed, try_cands,   spaces/join.rs:3081-3194 (Engine::search: the
    fill, slots_cons, greedy,  first unclaimed entry of the window that the
    receive_decision           lane sees and the pattern binds, with no
                               backtracking), 1392-1411 (KeyedSource::claim)
                               and 3516-3535 (is_claimed)
-   forced, slots_prod,        spaces/join.rs:3284-3396 (search_produce: the
+   forced, slots_prod,        spaces/join.rs:3270-3382 (search_produce: the
    incoming_positions,        heads, x in its window, the positions of the
    in_win, x_in_win,          collection of x in group order) and the
    search_at, search_produce  Scan and Classes arm of 1298-1390 (x at the
                               end of the window)
-   staged, apply, jst, stage  spaces/join.rs:2518-2548 (Engine: bumps,
+   staged, apply, jst, stage  spaces/join.rs:2504-2534 (Engine: bumps,
                               dirty, work, own and stop) and the stagings
                               of Cx in spaces/generic.rs
-   cascades                   spaces/join.rs:2611-2616 (Engine::cascades)
-   touch, touch_all,          spaces/join.rs:2625-2654 and 2657-2669 (TOUCH)
+   cascades                   spaces/join.rs:2597-2602 (Engine::cascades)
+   touch, touch_all,          spaces/join.rs:2611-2640 and 2643-2655 (TOUCH)
    touch_scope                and 1181-1198 (KeyedSource::touch)
-   store                      spaces/join.rs:3691-3711 (store)
-   is_inc, sends_at,          spaces/join.rs:3598-3639 (second_sends: the
+   store                      spaces/join.rs:3671-3691 (store)
+   is_inc, sends_at,          spaces/join.rs:3578-3619 (second_sends: the
    np_results,                element in flight whether or not it is
    push_second_sends          persistent, and the removed records that are
                               not persistent) and 2606-2611 (push_work)
-   retire_positions,          spaces/join.rs:2258-2292 and 2297-2310
+   retire_positions,          spaces/join.rs:2244-2278 and 2283-2296
    class_members,             (retire_classes, class_claims) and
-   retire_class,              spaces/disciplines/scan.rs:819 (retire_class_on)
+   retire_class,              spaces/disciplines/scan.rs:813 (retire_class_on)
    retire_set_binds
    fire_tail                  the tails of offer, receive and
                               lift_and_reoffer (second sends or retires)
-   after_fire, cap            reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,
+   after_fire, cap            reified/costs.rs:17, 71-82 (FIRE_ROUND_CAP,
                               FireRounds::after_fire), called by offer,
                               receive and lift_and_reoffer
-   fire_dirty                 spaces/join.rs:2672 and 877-883 (mark_dirty
+   fire_dirty                 spaces/join.rs:2658 and 863-869 (mark_dirty
                               and mark, on the collections of the group)
-   offer_cands, fires_with,   spaces/join.rs:3717-3875 (offer), 1413-1445
+   offer_cands, fires_with,   spaces/join.rs:3697-3855 (offer), 1413-1445
    offer_pick, offer1, offer  (KeyedSource::offer_order) and 1618-1697
                               (union_order)
-   class_pers, rcv_stays      spaces/join.rs:3948-4010 (class_candidates:
+   class_pers, rcv_stays      spaces/join.rs:6783-6841 (class_first:
                               the class stays when one member is
-                              persistent) and 2977 (the step of a
+                              persistent) and 6989 (the step of a
                               single-bind fire)
-   receive_sel, receive1,     spaces/join.rs:4017-4210, 4332-4348 and
+   receive_sel, receive1,     spaces/join.rs:3997-4190, 4312-4328 and
    receive, park              3088-3115 (receive, after_receive, park)
-   first_np, reoffer_pos,     spaces/join.rs:4607-4707 and 4716-4768
+   first_np, reoffer_pos,     spaces/join.rs:4587-4687 and 4696-4748
    lift_ops, lift_reoffer     (lift_and_reoffer, lift)
-   fireable, heads_of,        spaces/join.rs:4386-4428 (next_fire) and
+   fireable, heads_of,        spaces/join.rs:4366-4408 (next_fire) and
    find_fire, next_fire_in,   1447-1487 (KeyedSource::cascade_order, with
    next_fire                  union_order for a set)
-   resend_elem, resend,       spaces/join.rs:4471-4503 (drain_and_cascade)
+   resend_elem, resend,       spaces/join.rs:4451-4483 (drain_and_cascade)
    dstep, drain               and 2674-2703 (incoming_of: the own
                               introduction of the record)
-   op, own_of, ords_of,       spaces/join.rs:2776-2814 (carried_ords) and
+   op, own_of, ords_of,       spaces/join.rs:2762-2800 (carried_ords) and
    prod_ord, carried_ord,     3445-3499 (resume)
    carried_ords, reissue_op
-   pending_work, resume_of,   spaces/join.rs:4773-4835 (commit: the own
+   pending_work, resume_of,   spaces/join.rs:4753-4815 (commit: the own
    owes, commit               entries of the work, owed, the seeds),
                               3411-3440 (settle_fields), 3445-3499 (resume)
                               and spaces/agent.rs:244-287 (PendingProduce,
                               CascadeState, SettleOp)
    phase_count, plan_at_cap   the one count of Cx::rounds for the
-                              transaction, and spaces/join.rs:2738 (the
+                              transaction, and spaces/join.rs:2724 (the
                               plan opens below the cap)
-   init, plan, pending_of,    spaces/join.rs:2685-2772 (Engine::run: the
+   init, plan, pending_of,    spaces/join.rs:2671-2758 (Engine::run: the
    run_join                   settle job at 1968, the settle before the
                               plan at 1988) and 598-627 (run_join)
    partners, close_step,      spaces/join.rs:371-404 (classify), 462-584
    close_iter, universe,      (join_scope: the closure) and 183-226
    closure, join_scope,       (JoinScope, covers)
    covers, locked_ok, prepare
+   (* Changed by decision 103 (decision 118, C6 arbitration): the rows of
+      section 39 add the definitions of rule (a). The text before:
+   free_in, claim_after,      no code yet (F-118-1). The code plan C6.1
+   try_cands_f, fill_f,       puts the rule into Engine::search
+   greedy_f, x_ok, prod_list, (spaces/join.rs:2783-2891 of the merge 2
+   prod_slot, slots_prod_f,   tree). That search still claims every pick
+   claims_x, search_at_f,     (2817-2818, 2899) and skips the element in
+   search_produce_f and the   flight at the other positions (2870-2872)
+   engine of section 39e
+   *)
+   free_in, tag_f, claimed_f, no code yet (F-118-1). The code plan C6.1,
+   claim_after, try_cands_f,  with decision-c6.md section 4, puts rule (a)
+   fill_f, window_f, win_f,   into Engine::search (spaces/join.rs:2783-2891
+   win_in_f, slots_cons_f,    of the merge 2 tree), with the record claim
+   greedy_f, x_ok, prod_list, StoredEntry::record and the class test
+   prod_slot, slots_prod_f,   class_free. That search still claims every
+   claims_x, search_at_f,     pick (2817-2818, 2899) and skips the element
+   search_produce_f and the   in flight at the other positions (2870-2872)
+   engine of section 39e
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -178,15 +256,52 @@
      A removal takes the first entry with the identity of the removed entry
      (del_rec, del_wtr). The theorems that need it assume distinct
      identities (WF, start_ok, or a NoDup premise).
+   (* Changed by decision 103 (decision 118, C6 arbitration): the search of
+      decision 118 reads a set window with every member of each class. The
+      text before:
    - The window of a set holds one representative per class, the first
      member in the visit order. The code holds every record and skips a
      claimed class. The two agree when the members of a class bind the same
      patterns, which class_candidates requires of the code.
+   *)
+   - The window of a set for the old search holds one representative per
+     class, the first member in the visit order. The code holds every
+     record and skips a claimed class. The two agree when the members of a
+     class bind the same patterns, which class_candidates requires of the
+     code. The window of a set for the search of decision 118 (window_f)
+     holds every member of each class, as the code does. There the claims
+     of rule (a) skip a non-persistent member of a claimed class with no
+     persistent member.
    - The window of a bag or a set places the element in flight by the
      visit order, and the produce search treats it as always in its window
      (x_in_win), as the code does with x at the end of the window. The
      other binds see the same records: not_x removes x, and the claim of x
      skips its class.
+   (* Changed by decision 103 (decision 118, C6 arbitration): rule (a) rules
+      out F-118-2, and section 39g keeps UI. The text before:
+   - The claim rule of decision 118 lets one record bind several positions
+     of a fire. On a set a non-persistent member of a class with a
+     persistent member can bind two positions, and a peek fire then sends
+     it again twice (F-118-2). So the view can hold two records with one
+     identity, and WF fails. The proofs of section 39g therefore keep the
+     universe invariant UI instead of WF on the head shapes and the set.
+     Every record of the view and of the work lies in the universe of the
+     start (start_univ). The universe has distinct identities (id_inj), and
+     the waiters keep distinct identities. The bag keeps WF, because its
+     second sends carry distinct identities (headline 19).
+   *)
+   - The claim rule of decision 118 lets a persistent record bind several
+     positions of a fire. Under the first claim rule of decision 118, a
+     non-persistent member of a set class with a persistent member could
+     also bind two positions, and a peek fire then sent it again twice
+     (F-118-2). Rule (a) of the C6 arbitration rules this out (headline
+     19). The proofs of section 39g keep the universe invariant UI on the
+     head shapes and the set. UI does not ask for distinct identities in
+     the view, and its proofs hold under both rules. Every record of the
+     view and of the work lies in the universe of the start (start_univ).
+     The universe has distinct identities (id_inj), and the waiters keep
+     distinct identities. The bag keeps WF, because its second sends carry
+     distinct identities (headline 19).
    - A single-bind set fire ([D; n], plan 4.7) is a fire and then K_retire
      stagings, so the view effect is the same. Its partner stays when a
      member of the class is persistent (rcv_stays, class_candidates).
@@ -206,7 +321,8 @@
    - Premises of the headlines: wf_op (a receive has a bind) for headline
      14, wf_waiter (no receive both peeks and persists) and nonempty binds
      for headline 7, distinct identities for headlines 6 and 10, and
-     start_ok for headline 9.
+     start_ok for headlines 9 and 20. Headline 19 assumes distinct
+     identities, and a fresh x for SEARCH-PRODUCE.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. join_search_is_head_greedy         the consume-side search is GREEDY
@@ -222,14 +338,19 @@
     3. join_incoming_binds_once           a produce-side fire binds its
                                           incoming record at exactly one
                                           position, after at most m_W(c_x)
-                                          attempts
+                                          attempts. Superseded by decision
+                                          103 (decision 118):
+                                          join_incoming_held (headline 18)
     4. join_fires_heads_only              every fire is at the head of each
                                           lane of its group and binds
                                           records of its windows
     5. join_repeated_channel_distinct_records
                                           the binds of one fire bind
                                           distinct records (distinct
-                                          classes for a set)
+                                          classes for a set). Superseded
+                                          by decision 103 (decision 118):
+                                          join_nonpersistent_bound_once
+                                          (headline 19)
     6. join_set_bind_retires_class        after a set fire that does not
                                           peek, no non-persistent member of
                                           a bound class stays stored, and a
@@ -246,7 +367,10 @@
     9. cascade_restores_inv               head shapes and set: CI at each
                                           end, and INV_head at an end with
                                           no stop (and no work). Bag:
-                                          INV_scan at each end
+                                          INV_scan at each end. Superseded
+                                          by decision 103 (decision 118):
+                                          cascade_restores_inv_pers
+                                          (headline 20)
    10. cascade_order_independent          single-head disciplines: two
                                           fireable waiters that do not peek
                                           have disjoint groups, and their
@@ -285,6 +409,58 @@
    17. greedy_join_can_miss_assignment    a computed negative result: GREEDY
                                           parks while an assignment exists
                                           (decision 37 until P12)
+   18. join_incoming_held                 decision 118: a produce-side fire
+                                          holds x at the position of the
+                                          search. A non-persistent x binds
+                                          exactly one position, and a
+                                          persistent x binds at least one.
+                                          Each position with the identity
+                                          of x binds x on a bind of its
+                                          collection, after at most
+                                          m_W(c_x) attempts
+   (* Changed by decision 103 (decision 118, C6 arbitration): rule (a)
+      restates headline 19. The text before:
+   19. join_nonpersistent_bound_once      decision 118: two positions of a
+                                          fire bind one tag only when the
+                                          pick is free (a persistent
+                                          record, or a set class with a
+                                          persistent member). A persistent
+                                          record at both binds of [c, c]
+                                          fires, and the old search parks
+   *)
+   19. join_nonpersistent_bound_once      decision 118 with rule (a) of
+                                          the C6 arbitration: two
+                                          positions of a fire bind one
+                                          identity only when the record is
+                                          persistent. On a set, two
+                                          positions bind members of one
+                                          class only when the class has a
+                                          persistent member in the view of
+                                          the search (x stored for
+                                          SEARCH-PRODUCE). A persistent
+                                          record at both binds of [c, c]
+                                          fires. On a set, the window
+                                          [a1, a2] of one class with only
+                                          a2 persistent fires with a1 and
+                                          a2. The old search parks both
+   20. cascade_restores_inv_pers          decision 118: headline 9, whole,
+                                          over the new search (CR-10).
+                                          Head shapes and set: CI_f at each
+                                          end, and INV_head_f at an end
+                                          with no stop (and no work). Bag:
+                                          INV_scan_f at each end
+
+   The lemma versions of decision 118 (no headline). The statement of
+   cascade_order_independent reads fireable, and the statement of
+   cascade_terminates reads dstep and drain. Both depend on the search. So
+   section 39i proves cascade_order_independent_f and cascade_terminates_f
+   with the same statements over fireable_f, dstep_f and drain_f.
+   ref_fill_mono covers the old claim rule only. ref_fill_f_mono extends it
+   to each claim rule fr when the claim tag decides keep, and headline 20
+   uses it on the bag. Headlines 1 and 2 are not redone. Headline 20 needs
+   only fill_f_ref (the analog of part 1 of headline 1), greedy_f_scan (part
+   2 on the bag) and dom_fill in greedy_store_scan_f (the role of part 1 of
+   headline 2).
 
    Not restated (the single-collection headlines that this module cites)
    - StackDiscipline.v: stack_settle_terminates,
@@ -292,6 +468,8 @@
      stack_lifo, stack_head_blocks, stack_reentry_at_lifo_place,
      stack_reissue_keeps_ord, stack_peek_restore_needs_no_settle,
      settle_trace_covered, stack_settle_keeps_unspent_records.
+     Changed by decision 96 (decision 89, DR-131): settle_trace_covered
+     goes with the host-work metering.
    - GenericRSpace.v: consume_fires_only_matching,
      produce_fires_only_matching, unordered_no_pending_match,
      peek_restore_equals_host_reproduce, scan_reissue_identity_stable.
@@ -403,6 +581,22 @@
                                   reverted) → peek_join_restores_stored_candidates
    jc-backtracking                the search backtracks at a dead end
                                   → greedy_join_can_miss_assignment
+   Added by decision 103 (decision 118, C6 arbitration): the four controls
+   of the engine of decision 118 (sections 39a to 39j).
+   jc118-e1-non-persistent-first  a non-persistent incoming record comes
+                                  first at another position of its
+                                  collection (E1 of decision 118 reverted)
+                                  → prod_list_mem or join_incoming_held
+   jc118-old-claim-rule           GREEDY claims every pick (the claim rule
+                                  before decision 118)
+                                  → join_nonpersistent_bound_once
+   jc118-free-member-unclaimed    a non-persistent member of a set class
+                                  with a persistent member claims nothing
+                                  (the claim rule before the C6
+                                  arbitration) → join_nonpersistent_bound_once
+   jc118-set-no-cascade           the engine of decision 118 does not
+                                  cascade on a joined set collection (CR-10
+                                  reverted) → cascade_restores_inv_pers
 
    ─────────────────────────────────────────────────────────────────────────
    Failed strategies (do not try them again)
@@ -7250,6 +7444,3744 @@ Section Join.
       intros Hh. exact (proj2 (CI_run_join Hcov fuel o scope v0 (Hcas Hh) Hst (Hci Hh)) Hstop).
   Qed.
 
+
+  (* ── 39a. The claim rule of decision 118 (decision 103) ─────────────── *)
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): rule (a)
+     replaces the set clause of CR-9. A pick of a non-persistent member of a
+     set class with a persistent member claimed nothing, so that member
+     could bind two positions (F-118-2), and the code refuses that fire at
+     staging (FR-1'). The text before:
+
+  (* Decision 118 (plan v2 section 3, CR-9). A persistent stored record is
+     never claimed, so it can bind several positions. A set class with a
+     persistent member is never claimed. free_in v e is true when a pick of
+     e leaves the claims unchanged. On a set the test reads the class of e
+     in v. Another shape reads the persistence of e. *)
+  Definition free_in (v : view) (e : rec) : bool :=
+    match sh with
+    | Classes => class_pers (r_coll e) (class_key e) v
+    | Head | Lanes | Scan => r_pers e
+    end.
+  *)
+
+  (* Decision 118 (plan v2 section 3, CR-9) with rule (a) of the C6
+     arbitration (decision-c6.md, section 3). A later position takes the
+     next unclaimed entry of its list.
+     - A persistent entry claims nothing, and no claim blocks it. So a
+       persistent record can bind several positions.
+     - A non-persistent entry claims its record. On a set it also claims
+       its class.
+     - A claimed class blocks a non-persistent member only when the class
+       has no persistent member. A persistent element in flight of the
+       class counts as a member.
+     free_in v e is true when a pick of e leaves the claims unchanged, that
+     is when e is persistent. The view v stays an argument, so the callers
+     do not change. tag_f gives the claim of a non-persistent pick. *)
+  Definition free_in (v : view) (e : rec) : bool := r_pers e.
+
+  (* Added by decision 103 (decision 118, C6 arbitration): the claim tag of
+     rule (a) in the view v of the search.
+     - On a set, a member of a class with a persistent member in v gets the
+       tag of its record, (r_coll e, 2 r_id e + 1). A claimed class blocks
+       no member of such a class, so the model does not push that class.
+     - On a set, a member of a class with no persistent member gets the tag
+       of its class, (r_coll e, 2 class_key e). Every member of that class
+       is non-persistent, and the class tag blocks each of them, so the
+       model does not push the record tag.
+     - Another shape gets tag e, the record.
+     A second field is odd for a record and even for a class, so a record
+     tag never equals a class tag, and the claims stay a list of pairs. The
+     produce search reads tag_f in the view with x stored, so a persistent
+     x of a class counts as a persistent member. *)
+  Definition tag_f (v : view) (e : rec) : nat * nat :=
+    match sh with
+    | Classes =>
+        if class_pers (r_coll e) (class_key e) v then (r_coll e, S (2 * r_id e)) else (r_coll e, 2 * class_key e)
+    | Head | Lanes | Scan => tag e
+    end.
+
+  (* Added by decision 103 (decision 118, C6 arbitration): the skip test of
+     rule (a). An entry is skipped when its tag by tg is claimed. *)
+  Definition claimed_f (tg : rec -> nat * nat) (C : list (nat * nat)) (e : rec) : bool := tmem (tg e) C.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the tag
+     function tg gives the tag of a pick. The text before:
+
+  (* The claims after a pick of e: the tag of e joins the claims only when
+     the pick is not free. *)
+  Definition claim_after (fr : rec -> bool) (C : list (nat * nat)) (e : rec) : list (nat * nat) :=
+    if fr e then C else tag e :: C.
+  *)
+
+  (* The claims after a pick of e: the tag tg e joins the claims only when
+     the pick is not free. *)
+  Definition claim_after (tg : rec -> nat * nat) (fr : rec -> bool) (C : list (nat * nat)) (e : rec)
+      : list (nat * nat) :=
+    if fr e then C else tg e :: C.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the search
+     takes the tag function tg, tests claimed_f tg and claims with
+     claim_after tg. The text before:
+
+  (* try_cands with the claim rule fr: the first unclaimed candidate that
+     matches, and the claims after its pick. *)
+  Fixpoint try_cands_f (fr : rec -> bool) (g : Gd) (p : P) (C : list (nat * nat))
+      (k : list (nat * nat) -> option (list (rec * M))) (cs : list rec)
+      : option (list (rec * M)) :=
+    match cs with
+    | [] => None
+    | e :: more =>
+        if claimed C e then try_cands_f fr g p C k more else
+        match pick_match g p e with
+        | None => try_cands_f fr g p C k more
+        | Some m =>
+            match k (claim_after fr C e) with
+            | Some sg => Some ((e, m) :: sg)
+            | None => on_dead_end (try_cands_f fr g p C k more)
+            end
+        end
+    end.
+
+  Fixpoint fill_f (fr : rec -> bool) (g : Gd) (C : list (nat * nat)) (ss : list slot)
+      : option (list (rec * M)) :=
+    match ss with
+    | [] => Some []
+    | Forced e m :: rest =>
+        match fill_f fr g C rest with Some sg => Some ((e, m) :: sg) | None => None end
+    | Pick cs p :: rest => try_cands_f fr g p C (fun C' => fill_f fr g C' rest) cs
+    end.
+  *)
+
+  (* try_cands with the tag function tg and the claim rule fr: the first
+     candidate that is not claimed by tg and that matches, and the claims
+     after its pick. *)
+  Fixpoint try_cands_f (tg : rec -> nat * nat) (fr : rec -> bool) (g : Gd) (p : P) (C : list (nat * nat))
+      (k : list (nat * nat) -> option (list (rec * M))) (cs : list rec)
+      : option (list (rec * M)) :=
+    match cs with
+    | [] => None
+    | e :: more =>
+        if claimed_f tg C e then try_cands_f tg fr g p C k more else
+        match pick_match g p e with
+        | None => try_cands_f tg fr g p C k more
+        | Some m =>
+            match k (claim_after tg fr C e) with
+            | Some sg => Some ((e, m) :: sg)
+            | None => on_dead_end (try_cands_f tg fr g p C k more)
+            end
+        end
+    end.
+
+  Fixpoint fill_f (tg : rec -> nat * nat) (fr : rec -> bool) (g : Gd) (C : list (nat * nat)) (ss : list slot)
+      : option (list (rec * M)) :=
+    match ss with
+    | [] => Some []
+    | Forced e m :: rest =>
+        match fill_f tg fr g C rest with Some sg => Some ((e, m) :: sg) | None => None end
+    | Pick cs p :: rest => try_cands_f tg fr g p C (fun C' => fill_f tg fr g C' rest) cs
+    end.
+
+  (* Added by decision 103 (decision 118, C6 arbitration): the windows of
+     the search of decision 118. The Classes window holds every record of
+     the collection in the visit order (DR-75), as the code does
+     (KeyedSource::window, spaces/join.rs:1604-1621). It does not hold one
+     representative per class: a claimed class must still show the
+     persistent members and the unclaimed records of a class with a
+     persistent member. Example: the members a1 (not persistent) and a2
+     (persistent) of one class, and the binds [c, c]. Rule (a) binds a2 at
+     the second position, and a window with a1 only would park. The other
+     shapes keep window. The old search keeps window, so headlines 1 to 17
+     do not change. *)
+  Definition window_f (m : nat) (l : list rec) : list rec :=
+    match sh with
+    | Classes => l
+    | Head | Lanes | Scan => window m l
+    end.
+
+  Definition win_f (W : wtr) (c : nat) (v : view) : list rec := window_f (mult W c) (rorder (recs_of c v)).
+
+  Definition win_in_f (W : wtr) (x : rec) (c : nat) (v : view) : list rec :=
+    window_f (mult W c) (rorder (if c =? r_coll x then x :: recs_of c v else recs_of c v)).
+
+  Definition slots_cons_f (W : wtr) (v : view) : list slot :=
+    map (fun ib => Pick (visible (snd ib) (win_f W (b_coll (snd ib)) v)) (b_pat (snd ib))) (gpairs W).
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the tag
+     function tag_f v and the windows of slots_cons_f. The text before:
+
+  (* GREEDY with the claim rule of decision 118 over the view of the search. *)
+  Definition greedy_f (W : wtr) (v : view) : option (list (rec * M)) :=
+    fill_f (free_in v) (w_guard W) [] (slots_cons W v).
+  *)
+
+  (* GREEDY with the claim rule of decision 118 (rule (a)) over the view of
+     the search. *)
+  Definition greedy_f (W : wtr) (v : view) : option (list (rec * M)) :=
+    fill_f (tag_f v) (free_in v) (w_guard W) [] (slots_cons_f W v).
+
+  Definition receive_decision_f (W : wtr) (v : view) : option (list (rec * M)) :=
+    match greedy_f W v with
+    | Some sg => if guard_ok W sg then Some sg else None
+    | None => None
+    end.
+
+  (* E1 (decision 118, CR-8). At a position on the collection of x other
+     than the forced position, a persistent x that lies in the window of
+     the position comes first. A non-persistent x stays out. *)
+  Definition x_ok (W : wtr) (x : rec) (b : bnd) (v : view) : bool :=
+    (b_coll b =? r_coll x) && sees (lane_of b) (r_lvl x) && x_in_win W x (b_coll b) v.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the list reads
+     the window win_in_f of the search of decision 118. The text before:
+
+  Definition prod_list (W : wtr) (x : rec) (b : bnd) (v : view) : list rec :=
+    if r_pers x && x_ok W x b v
+    then x :: not_x x (visible b (win_in W x (b_coll b) v))
+    else not_x x (visible b (win_in W x (b_coll b) v)).
+  *)
+
+  Definition prod_list (W : wtr) (x : rec) (b : bnd) (v : view) : list rec :=
+    if r_pers x && x_ok W x b v
+    then x :: not_x x (visible b (win_in_f W x (b_coll b) v))
+    else not_x x (visible b (win_in_f W x (b_coll b) v)).
+
+  (* The slot of a group position in SEARCH-PRODUCE: the produce fire holds
+     x at the position p (decision 118, CR-11). *)
+  Definition prod_slot (W : wtr) (x : rec) (p : nat) (v : view) (kib : nat * (nat * bnd)) : slot :=
+    match forced W x p (fst kib) (snd (snd kib)) with
+    | Some m => Forced x m
+    | None => Pick (prod_list W x (snd (snd kib)) v) (b_pat (snd (snd kib)))
+    end.
+
+  Definition slots_prod_f (W : wtr) (x : rec) (p : nat) (v : view) : list slot :=
+    map (prod_slot W x p v) (enum 0 (gpairs W)).
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the claim of x
+     uses the tag tag_f of rule (a), over the view with x stored. The text
+     before:
+
+  (* The claims at the start of SEARCH-PRODUCE: the claim of x by the rule,
+     over the view with x stored. *)
+  Definition claims_x (x : rec) (v : view) : list (nat * nat) := claim_after (free_in (store_view x v)) [] x.
+  *)
+
+  (* The claims at the start of SEARCH-PRODUCE: the claim of x by rule (a),
+     over the view with x stored. A persistent x claims nothing. *)
+  Definition claims_x (x : rec) (v : view) : list (nat * nat) :=
+    claim_after (tag_f (store_view x v)) (free_in (store_view x v)) [] x.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the fill takes
+     the tag function tag_f of rule (a) over the view with x stored. The
+     text before:
+
+  Fixpoint search_at_f (W : wtr) (x : rec) (v : view) (ks : list (nat * (nat * bnd)))
+      : option (nat * list (rec * M)) :=
+    match ks with
+    | [] => None
+    | kib :: rest =>
+        let b := snd (snd kib) in
+        if sees (lane_of b) (r_lvl x) && x_in_win W x (b_coll b) v then
+          match spatial (b_pat b) (r_val x) with
+          | None => search_at_f W x v rest
+          | Some _ =>
+              match fill_f (free_in (store_view x v)) (w_guard W) (claims_x x v) (slots_prod_f W x (fst kib) v) with
+              | Some sg => Some (fst kib, sg)
+              | None => search_at_f W x v rest
+              end
+          end
+        else search_at_f W x v rest
+    end.
+  *)
+
+  Fixpoint search_at_f (W : wtr) (x : rec) (v : view) (ks : list (nat * (nat * bnd)))
+      : option (nat * list (rec * M)) :=
+    match ks with
+    | [] => None
+    | kib :: rest =>
+        let b := snd (snd kib) in
+        if sees (lane_of b) (r_lvl x) && x_in_win W x (b_coll b) v then
+          match spatial (b_pat b) (r_val x) with
+          | None => search_at_f W x v rest
+          | Some _ =>
+              match fill_f (tag_f (store_view x v)) (free_in (store_view x v)) (w_guard W) (claims_x x v)
+                      (slots_prod_f W x (fst kib) v) with
+              | Some sg => Some (fst kib, sg)
+              | None => search_at_f W x v rest
+              end
+          end
+        else search_at_f W x v rest
+    end.
+
+  Definition search_produce_f (W : wtr) (x : rec) (v : view) : option (nat * list (rec * M)) :=
+    search_at_f W x v (incoming_positions W x).
+
+  (* ── 39b. Generic facts of the search of decision 118 ─────────────────── *)
+
+  Definition is_pick (s : slot) : bool := match s with Pick _ _ => true | Forced _ _ => false end.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the lemma takes
+     the tag function tg of the search. The text before:
+
+  (* A pick of try_cands_f binds a candidate of its list, and the slots after
+     it are filled with the claims after the pick. *)
+  Lemma try_cands_f_some :
+    forall fr g p C k cs sg,
+      try_cands_f fr g p C k cs = Some sg ->
+      exists e m sg', sg = (e, m) :: sg' /\ In e cs /\ pick_match g p e = Some m /\ k (claim_after fr C e) = Some sg'.
+  Proof.
+    intros fr g p C k cs. induction cs as [| e more IH]; intros sg H; cbn [try_cands_f] in H; [discriminate |].
+    repeat match type of H with
+           | context [if ?b then _ else _] => let E := fresh "E" in destruct b eqn:E
+           | context [match ?o with Some _ => _ | None => _ end] => let E := fresh "E" in destruct o eqn:E
+           end.
+    all: first
+      [ discriminate
+      | match type of H with
+        | Some (_ :: _) = Some _ =>
+            injection H as <-; eexists _, _, _; split; [reflexivity |];
+            split; [left; reflexivity | split; eassumption]
+        | try_cands_f _ _ _ _ _ _ = Some _ =>
+            destruct (IH _ H) as (e' & m' & s' & -> & Hin & Hp & Hk);
+            exists e', m', s'; split; [reflexivity | split; [right; exact Hin | split; assumption]]
+        | on_dead_end (try_cands_f ?a ?b ?c ?d ?k0 ?l) = Some _ =>
+            destruct (on_dead_end_cases _ (try_cands_f a b c d k0 l)) as [Ed | Ed]; rewrite Ed in H;
+            [discriminate |
+             destruct (IH _ H) as (e' & m' & s' & -> & Hin & Hp & Hk);
+             exists e', m', s'; split; [reflexivity | split; [right; exact Hin | split; assumption]]]
+        end ].
+  Qed.
+  *)
+
+  (* A pick of try_cands_f binds a candidate of its list that is not claimed
+     by tg, and the slots after it are filled with the claims after the
+     pick. *)
+  Lemma try_cands_f_some :
+    forall tg fr g p C k cs sg,
+      try_cands_f tg fr g p C k cs = Some sg ->
+      exists e m sg', sg = (e, m) :: sg' /\ In e cs /\ claimed_f tg C e = false /\ pick_match g p e = Some m /\
+        k (claim_after tg fr C e) = Some sg'.
+  Proof.
+    intros tg fr g p C k cs. induction cs as [| e more IH]; intros sg H; cbn [try_cands_f] in H; [discriminate |].
+    repeat match type of H with
+           | context [if ?b then _ else _] => let E := fresh "E" in destruct b eqn:E
+           | context [match ?o with Some _ => _ | None => _ end] => let E := fresh "E" in destruct o eqn:E
+           end.
+    all: first
+      [ discriminate
+      | match type of H with
+        | Some (_ :: _) = Some _ =>
+            injection H as <-; eexists _, _, _; split; [reflexivity |];
+            split; [left; reflexivity | split; [eassumption | split; eassumption]]
+        | try_cands_f _ _ _ _ _ _ _ = Some _ =>
+            destruct (IH _ H) as (e' & m' & s' & -> & Hin & Hc & Hp & Hk);
+            exists e', m', s'; split; [reflexivity | split; [right; exact Hin | split; [exact Hc | split; assumption]]]
+        | on_dead_end (try_cands_f ?a ?b ?c ?d ?d2 ?k0 ?l) = Some _ =>
+            destruct (on_dead_end_cases _ (try_cands_f a b c d d2 k0 l)) as [Ed | Ed]; rewrite Ed in H;
+            [discriminate |
+             destruct (IH _ H) as (e' & m' & s' & -> & Hin & Hc & Hp & Hk);
+             exists e', m', s'; split; [reflexivity | split; [right; exact Hin | split; [exact Hc | split; assumption]]]]
+        end ].
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): fill_f takes the
+     tag function tg. The lemma takes tg as an implicit argument, so a use
+     with five arguments does not change. The text before:
+
+  Lemma fill_f_shape : forall fr g ss C sg, fill_f fr g C ss = Some sg -> slots_rel ss sg.
+  Proof.
+    intros fr g ss. induction ss as [| s rest IH]; intros C sg H; cbn [fill_f] in H.
+    - injection H as <-. exact I.
+    - destruct s as [L p | e m].
+      + apply try_cands_f_some in H as (e & m & sg' & -> & Hin & _ & Hk).
+        split; [exact Hin | exact (IH _ _ Hk)].
+      + destruct (fill_f fr g C rest) eqn:Hf; [| discriminate].
+        injection H as <-. split; [reflexivity | exact (IH _ _ Hf)].
+  Qed.
+  *)
+
+  Lemma fill_f_shape : forall {tg} fr g ss C sg, fill_f tg fr g C ss = Some sg -> slots_rel ss sg.
+  Proof.
+    intros tg fr g ss. induction ss as [| s rest IH]; intros C sg H; cbn [fill_f] in H.
+    - injection H as <-. exact I.
+    - destruct s as [L p | e m].
+      + apply try_cands_f_some in H as (e & m & sg' & -> & Hin & _ & _ & Hk).
+        split; [exact Hin | exact (IH _ _ Hk)].
+      + destruct (fill_f tg fr g C rest) eqn:Hf; [| discriminate].
+        injection H as <-. split; [reflexivity | exact (IH _ _ Hf)].
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the fill of the
+     search takes the tag function tag_f over the view with x stored. The
+     text before:
+
+  Lemma search_at_f_some :
+    forall W x v ks p sg,
+      search_at_f W x v ks = Some (p, sg) ->
+      exists i b m,
+        In (p, (i, b)) ks /\ sees (lane_of b) (r_lvl x) = true /\ x_in_win W x (b_coll b) v = true /\
+        spatial (b_pat b) (r_val x) = Some m /\
+        fill_f (free_in (store_view x v)) (w_guard W) (claims_x x v) (slots_prod_f W x p v) = Some sg.
+  Proof.
+    intros W x v ks. induction ks as [| kib rest IH]; intros p sg H; cbn [search_at_f] in H; [discriminate |].
+    destruct kib as [k [i b]]. cbn [fst snd] in H.
+    destruct (sees (lane_of b) (r_lvl x) && x_in_win W x (b_coll b) v) eqn:Ec.
+    - apply andb_true_iff in Ec as [Es Ew].
+      destruct (spatial (b_pat b) (r_val x)) as [m |] eqn:Em.
+      + destruct (fill_f (free_in (store_view x v)) (w_guard W) (claims_x x v) (slots_prod_f W x k v)) as [sg' |] eqn:Ef.
+        * injection H as <- <-. exists i, b, m. split; [left; reflexivity | repeat split; assumption].
+        * destruct (IH _ _ H) as (i' & b' & m' & Hin & Hrest). exists i', b', m'. split; [right; exact Hin | exact Hrest].
+      + destruct (IH _ _ H) as (i' & b' & m' & Hin & Hrest). exists i', b', m'. split; [right; exact Hin | exact Hrest].
+    - destruct (IH _ _ H) as (i' & b' & m' & Hin & Hrest). exists i', b', m'. split; [right; exact Hin | exact Hrest].
+  Qed.
+  *)
+
+  Lemma search_at_f_some :
+    forall W x v ks p sg,
+      search_at_f W x v ks = Some (p, sg) ->
+      exists i b m,
+        In (p, (i, b)) ks /\ sees (lane_of b) (r_lvl x) = true /\ x_in_win W x (b_coll b) v = true /\
+        spatial (b_pat b) (r_val x) = Some m /\
+        fill_f (tag_f (store_view x v)) (free_in (store_view x v)) (w_guard W) (claims_x x v)
+          (slots_prod_f W x p v) = Some sg.
+  Proof.
+    intros W x v ks. induction ks as [| kib rest IH]; intros p sg H; cbn [search_at_f] in H; [discriminate |].
+    destruct kib as [k [i b]]. cbn [fst snd] in H.
+    destruct (sees (lane_of b) (r_lvl x) && x_in_win W x (b_coll b) v) eqn:Ec.
+    - apply andb_true_iff in Ec as [Es Ew].
+      destruct (spatial (b_pat b) (r_val x)) as [m |] eqn:Em.
+      + destruct (fill_f (tag_f (store_view x v)) (free_in (store_view x v)) (w_guard W) (claims_x x v)
+                    (slots_prod_f W x k v)) as [sg' |] eqn:Ef.
+        * injection H as <- <-. exists i, b, m. split; [left; reflexivity | repeat split; assumption].
+        * destruct (IH _ _ H) as (i' & b' & m' & Hin & Hrest). exists i', b', m'. split; [right; exact Hin | exact Hrest].
+      + destruct (IH _ _ H) as (i' & b' & m' & Hin & Hrest). exists i', b', m'. split; [right; exact Hin | exact Hrest].
+    - destruct (IH _ _ H) as (i' & b' & m' & Hin & Hrest). exists i', b', m'. split; [right; exact Hin | exact Hrest].
+  Qed.
+
+  Lemma enum0_nth_fst :
+    forall (X : Type) (l : list X) k k' y, nth_error (enum 0 l) k = Some (k', y) -> k' = k /\ nth_error l k = Some y.
+  Proof.
+    intros X l k k' y H. rewrite enum_nth_error in H. destruct (nth_error l k) as [y0 |]; [| discriminate].
+    cbn [option_map] in H. injection H as <- <-. split; reflexivity.
+  Qed.
+
+  Lemma slots_prod_f_nth :
+    forall W x p v k kib, nth_error (enum 0 (gpairs W)) k = Some kib ->
+      nth_error (slots_prod_f W x p v) k = Some (prod_slot W x p v kib).
+  Proof. intros W x p v k kib H. unfold slots_prod_f. rewrite nth_error_map, H. reflexivity. Qed.
+
+  Lemma slots_rel_nth_inv :
+    forall ss sg k rm, slots_rel ss sg -> nth_error sg k = Some rm -> exists s, nth_error ss k = Some s.
+  Proof.
+    intros ss sg k rm H Hk. pose proof (slots_rel_length _ _ H) as Hl.
+    destruct (nth_error ss k) as [s |] eqn:E; [exists s; reflexivity |].
+    apply nth_error_None in E. assert (k < length sg) by (apply nth_error_Some; rewrite Hk; discriminate). lia.
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): prod_list reads
+     the window win_in_f, so the statement reads it too. The proof does not
+     change. The text before:
+
+  (* A pick of the produce search binds x (only a persistent x) or a stored
+     record of the window with another identity. *)
+  Lemma prod_list_mem :
+    forall W x b v e, In e (prod_list W x b v) ->
+      (e = x /\ r_pers x = true /\ x_ok W x b v = true) \/
+      (In e (visible b (win_in W x (b_coll b) v)) /\ r_id e <> r_id x).
+  *)
+
+  (* A pick of the produce search binds x (only a persistent x) or a stored
+     record of the window with another identity. *)
+  Lemma prod_list_mem :
+    forall W x b v e, In e (prod_list W x b v) ->
+      (e = x /\ r_pers x = true /\ x_ok W x b v = true) \/
+      (In e (visible b (win_in_f W x (b_coll b) v)) /\ r_id e <> r_id x).
+  Proof.
+    intros W x b v e H. unfold prod_list in H. destruct (r_pers x && x_ok W x b v) eqn:E.
+    - apply andb_true_iff in E as [E1 E2]. destruct H as [<- | H]; [left; split; [reflexivity | split; assumption] |].
+      right. split; [exact (not_x_incl _ _ _ H) | exact (not_x_excludes _ _ _ H)].
+    - right. split; [exact (not_x_incl _ _ _ H) | exact (not_x_excludes _ _ _ H)].
+  Qed.
+
+  (* A filter holds at most one entry when its entries sit at one position. *)
+  Lemma filter_le_one :
+    forall (X : Type) (f : X -> bool) (l : list X),
+      (forall k1 k2 a1 a2, nth_error l k1 = Some a1 -> nth_error l k2 = Some a2 -> f a1 = true -> f a2 = true -> k1 = k2) ->
+      length (filter f l) <= 1.
+  Proof.
+    intros X f l. induction l as [| a l IH]; intros H; [cbn; lia |]. cbn [filter]. destruct (f a) eqn:Ea.
+    - cbn [length]. destruct (filter f l) as [| b r] eqn:Ef; [cbn; lia |]. exfalso.
+      assert (Hb : In b (filter f l)) by (rewrite Ef; left; reflexivity).
+      apply filter_In in Hb as [Hb Hfb]. apply In_nth_error in Hb as [k Hk].
+      pose proof (H 0 (S k) a b eq_refl Hk Ea Hfb) as E. discriminate.
+    - apply IH. intros k1 k2 a1 a2 H1 H2 F1 F2.
+      assert (S k1 = S k2) by exact (H (S k1) (S k2) a1 a2 H1 H2 F1 F2). lia.
+  Qed.
+
+  (* ── 39c. Headline 18: the produce fire holds the incoming record ─────── *)
+
+  (* Headline 18 (decision 103, decision 118, CR-11). Every produce-side
+     fire of the search of decision 118 holds its incoming record x at the
+     position p that the search returns. A non-persistent x binds exactly one
+     position. A persistent x binds at least one position, and it can bind
+     more. Each position that binds the identity of x binds x itself, on a
+     bind of the collection of x. The search tries at most m_W(c_x)
+     positions. This headline supersedes join_incoming_binds_once
+     (headline 3). *)
+  Theorem join_incoming_held :
+    forall W x v p sg,
+      search_produce_f W x v = Some (p, sg) ->
+      (exists m, nth_error sg p = Some (x, m)) /\
+      1 <= length (filter (is_x x) sg) /\
+      (r_pers x = false -> length (filter (is_x x) sg) = 1) /\
+      (forall k e m, nth_error sg k = Some (e, m) -> r_id e = r_id x ->
+         e = x /\ exists ib, In (k, ib) (incoming_positions W x)) /\
+      length (incoming_positions W x) <= mult W (r_coll x).
+  Proof.
+    intros W x v p sg H. unfold search_produce_f in H.
+    apply search_at_f_some in H as (i & b & m & Hin & _ & _ & Hm & Hf).
+    pose proof (fill_f_shape _ _ _ _ _ Hf) as Hr.
+    pose proof (incoming_base_sub W) as [Hsub Hnd].
+    assert (Hin' : In (p, (i, b)) (enum 0 (gpairs W))).
+    { unfold incoming_positions in Hin. apply filter_In in Hin as [Hin _]. exact (Hsub _ Hin). }
+    pose proof (enum_gpairs_nth W p i b Hin') as Hnth.
+    (* the slot of the position p holds x *)
+    assert (Hsp : nth_error (slots_prod_f W x p v) p = Some (Forced x m)).
+    { rewrite (slots_prod_f_nth W x p v p (p, (i, b)) Hnth). unfold prod_slot. cbn [fst snd]. unfold forced.
+      rewrite Nat.eqb_refl, Hm. reflexivity. }
+    destruct (slots_rel_nth_some _ _ _ _ Hr Hsp) as [rmp Hrmp].
+    pose proof (slots_rel_nth _ _ _ _ _ Hr Hsp Hrmp) as Hxp. cbn in Hxp. subst rmp.
+    (* each slot is x held at p or a pick from the E1 list *)
+    assert (Hslot : forall k s, nth_error (slots_prod_f W x p v) k = Some s ->
+                      exists i0 b0, nth_error (enum 0 (gpairs W)) k = Some (k, (i0, b0)) /\
+                        ((k = p /\ exists m0, s = Forced x m0) \/ (k <> p /\ s = Pick (prod_list W x b0 v) (b_pat b0)))).
+    { intros k s Hk. unfold slots_prod_f in Hk. rewrite nth_error_map in Hk.
+      destruct (nth_error (enum 0 (gpairs W)) k) as [[k' [i0 b0]] |] eqn:Ek; [| discriminate].
+      cbn [option_map] in Hk. injection Hk as <-. destruct (enum0_nth_fst _ _ _ _ _ Ek) as [-> _].
+      exists i0, b0. split; [reflexivity |]. unfold prod_slot. cbn [fst snd]. unfold forced.
+      destruct (Nat.eqb_spec k p) as [-> | Ne].
+      - rewrite Hnth in Ek. injection Ek as <- <-. rewrite Hm. left. split; [reflexivity | exists m; reflexivity].
+      - right. split; [exact Ne | reflexivity]. }
+    assert (Hpos : forall k e m0, nth_error sg k = Some (e, m0) -> r_id e = r_id x ->
+                     e = x /\ exists ib, In (k, ib) (incoming_positions W x)).
+    { intros k e m0 Hk He. destruct (slots_rel_nth_inv _ _ _ _ Hr Hk) as [s Hs].
+      pose proof (slots_rel_nth _ _ _ _ _ Hr Hs Hk) as Hm0.
+      destruct (Hslot k s Hs) as (i0 & b0 & Ek & [[-> [m1 ->]] | [Ne ->]]).
+      - cbn in Hm0. injection Hm0 as -> _. split; [reflexivity |]. exists (i, b). exact Hin.
+      - cbn [fst] in Hm0. destruct (prod_list_mem W x b0 v e Hm0) as [(-> & _ & Hok) | [_ Hne]]; [| contradiction].
+        split; [reflexivity |]. exists (i0, b0). unfold incoming_positions. apply filter_In. split.
+        + unfold incoming_base. exact (nth_error_In _ _ Ek).
+        + cbn [fst snd]. unfold x_ok in Hok. apply andb_true_iff in Hok as [Hok _]. apply andb_true_iff in Hok as [Hok _].
+          exact Hok. }
+    assert (Hge : 1 <= length (filter (is_x x) sg)).
+    { apply nth_error_In in Hrmp. destruct (filter (is_x x) sg) eqn:Ef; [| cbn [length]; lia].
+      exfalso. assert (Hi : In (x, m) (filter (is_x x) sg)).
+      { apply filter_In. split; [exact Hrmp | cbn [is_x fst]; apply Nat.eqb_refl]. }
+      rewrite Ef in Hi. exact Hi. }
+    split; [exists m; exact Hrmp |]. split; [exact Hge |]. split; [| split; [exact Hpos |]].
+    - intros Hnp.
+      (* a non-persistent x is held at p and binds no other position *)
+      assert (Hat : forall k rm, nth_error sg k = Some rm -> is_x x rm = true -> k = p).
+      { intros k [e m0] Hk Hx. cbn [is_x fst] in Hx. apply Nat.eqb_eq in Hx.
+        destruct (slots_rel_nth_inv _ _ _ _ Hr Hk) as [s Hs].
+        pose proof (slots_rel_nth _ _ _ _ _ Hr Hs Hk) as Hm0.
+        destruct (Hslot k s Hs) as (i0 & b0 & _ & [[-> _] | [_ ->]]); [reflexivity |].
+        cbn [fst] in Hm0. destruct (prod_list_mem W x b0 v e Hm0) as [(_ & Hp & _) | [_ Hne]].
+        - rewrite Hnp in Hp. discriminate.
+        - contradiction. }
+      assert (Hle : length (filter (is_x x) sg) <= 1).
+      { apply filter_le_one. intros k1 k2 a1 a2 H1 H2 F1 F2. rewrite (Hat k1 a1 H1 F1), (Hat k2 a2 H2 F2). reflexivity. }
+      lia.
+    - unfold incoming_positions. rewrite <- positions_on_count.
+      apply filter_length_incl; [exact Hnd | exact Hsub].
+  Qed.
+
+  (* ── 39d. Headline 19: a claimed record or class binds one position ─── *)
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the claims read
+     the tag function tg of the search. The text before:
+
+  Lemma claim_after_mono : forall fr C e e0, claimed C e0 = true -> claimed (claim_after fr C e) e0 = true.
+  Proof.
+    intros fr C e e0 H. unfold claim_after. destruct (fr e); [exact H |].
+    unfold claimed in *. cbn [tmem existsb]. unfold tmem in H. rewrite H, orb_true_r. reflexivity.
+  Qed.
+  *)
+
+  Lemma claim_after_mono :
+    forall tg fr C e e0, claimed_f tg C e0 = true -> claimed_f tg (claim_after tg fr C e) e0 = true.
+  Proof.
+    intros tg fr C e e0 H. unfold claim_after. destruct (fr e); [exact H |].
+    unfold claimed_f in *. cbn [tmem existsb]. unfold tmem in H. rewrite H, orb_true_r. reflexivity.
+  Qed.
+
+  Lemma tag_other : sh <> Classes -> forall e, tag e = (r_coll e, r_id e).
+  Proof. unfold tag. destruct sh; intros H e; [reflexivity | reflexivity | reflexivity | exfalso; apply H; reflexivity]. Qed.
+
+  Lemma tag_classes_eq : sh = Classes -> forall e e', tag e = tag e' -> r_coll e = r_coll e' /\ class_key e = class_key e'.
+  Proof. intros H e e' Ht. unfold tag in Ht. rewrite H in Ht. injection Ht as E1 E2. split; assumption. Qed.
+
+  Lemma tag_ids : sh <> Classes -> forall e e', tag e = tag e' -> r_coll e = r_coll e' /\ r_id e = r_id e'.
+  Proof.
+    intros Hsh e e' Ht. rewrite (tag_other Hsh e), (tag_other Hsh e') in Ht. injection Ht as E1 E2. split; assumption.
+  Qed.
+
+  (* Disabled by decision 103 (decision 118, C6 arbitration): free_in is
+     r_pers e on every shape, so this statement is false on a set (a
+     non-persistent member of a class with a persistent member is not free).
+     tag_f_classes takes its role. The text before:
+
+  Lemma free_in_classes : sh = Classes -> forall u e, free_in u e = class_pers (r_coll e) (class_key e) u.
+  Proof. intros H u e. unfold free_in. rewrite H. reflexivity. Qed.
+  *)
+
+  Lemma free_in_other : sh <> Classes -> forall u e, free_in u e = r_pers e.
+  Proof. unfold free_in. destruct sh; intros H u e; [reflexivity | reflexivity | reflexivity | exfalso; apply H; reflexivity]. Qed.
+
+  Lemma shape_classes_dec : sh = Classes \/ sh <> Classes.
+  Proof. destruct sh; [right; discriminate | right; discriminate | right; discriminate | left; reflexivity]. Qed.
+
+  (* Disabled by decision 103 (decision 118, C6 arbitration): free_in is
+     r_pers e, and two members of one set class have one tag but can differ
+     in persistence, so this statement is false on a set. Headline 19 no
+     longer compares the free tests of two records (tag_f_eq and
+     class_pers_mem take this role). The text before:
+
+  (* On a set the free test reads the class of the record only, so two
+     records with one tag have one free test. *)
+  Lemma free_in_tag : forall u e e', tag e = tag e' -> (sh <> Classes -> e = e') -> free_in u e = free_in u e'.
+  Proof.
+    intros u e e' Ht He. destruct shape_classes_dec as [Hc | Hc].
+    - rewrite (free_in_classes Hc u e), (free_in_classes Hc u e').
+      destruct (tag_classes_eq Hc e e' Ht) as [E1 E2]. rewrite E1, E2. reflexivity.
+    - rewrite (He Hc). reflexivity.
+  Qed.
+  *)
+
+  (* Added by decision 103 (decision 118, C6 arbitration): the facts of the
+     tag tag_f of rule (a) and of the windows of the search of decision 118
+     that headline 19 and the later sections use. *)
+
+  (* tag_f is tag on a shape other than a set. *)
+  Lemma tag_f_other : sh <> Classes -> forall u e, tag_f u e = tag e.
+  Proof.
+    unfold tag_f. destruct sh; intros H u e; [reflexivity | reflexivity | reflexivity | exfalso; apply H; reflexivity].
+  Qed.
+
+  (* On a set, tag_f gives the record tag to a member of a class with a
+     persistent member in u, and the class tag to another member. *)
+  Lemma tag_f_classes :
+    sh = Classes -> forall u e,
+      tag_f u e = if class_pers (r_coll e) (class_key e) u then (r_coll e, S (2 * r_id e)) else (r_coll e, 2 * class_key e).
+  Proof. intros H u e. unfold tag_f. rewrite H. reflexivity. Qed.
+
+  (* On a set, two members of one class with no persistent member in u
+     have one tag: the tag of the class. *)
+  Lemma tag_f_eq :
+    forall u e e', sh = Classes -> r_coll e = r_coll e' -> class_key e = class_key e' ->
+      class_pers (r_coll e) (class_key e) u = false -> tag_f u e = tag_f u e'.
+  Proof.
+    intros u e e' Hsh Ec Ek Hp. rewrite (tag_f_classes Hsh u e), (tag_f_classes Hsh u e').
+    rewrite <- Ec, <- Ek, Hp. reflexivity.
+  Qed.
+
+  (* A persistent record of the view makes its class persistent. *)
+  Lemma class_pers_mem :
+    forall u e, In e (v_recs u) -> r_pers e = true -> class_pers (r_coll e) (class_key e) u = true.
+  Proof.
+    intros u e Hin Hp. unfold class_pers. apply existsb_exists. exists e. split.
+    - unfold recs_of. apply filter_In. split; [exact Hin | apply Nat.eqb_refl].
+    - cbv beta. rewrite Hp, Nat.eqb_refl. reflexivity.
+  Qed.
+
+  Lemma window_f_incl : forall m l, incl (window_f m l) l.
+  Proof.
+    intros m l. unfold window_f. destruct sh; [apply window_incl | apply window_incl | apply window_incl | apply incl_refl].
+  Qed.
+
+  Lemma window_f_other : sh <> Classes -> forall m l, window_f m l = window m l.
+  Proof.
+    unfold window_f. destruct sh; intros H m l; [reflexivity | reflexivity | reflexivity | exfalso; apply H; reflexivity].
+  Qed.
+
+  Lemma win_f_other : sh <> Classes -> forall W c v, win_f W c v = win W c v.
+  Proof. intros H W c v. unfold win_f, win. exact (window_f_other H _ _). Qed.
+
+  Lemma win_in_f_other : sh <> Classes -> forall W x c v, win_in_f W x c v = win_in W x c v.
+  Proof. intros H W x c v. unfold win_in_f, win_in. exact (window_f_other H _ _). Qed.
+
+  Lemma slots_cons_f_other : sh <> Classes -> forall W v, slots_cons_f W v = slots_cons W v.
+  Proof.
+    intros H W v. unfold slots_cons_f, slots_cons. apply map_ext. intros ib. rewrite (win_f_other H). reflexivity.
+  Qed.
+
+  Lemma win_in_f_mem :
+    forall W x c v e,
+      In e (win_in_f W x c v) -> (e = x /\ c = r_coll x) \/ (In e (v_recs v) /\ r_coll e = c).
+  Proof.
+    intros W x c v e H. unfold win_in_f in H. apply window_f_incl in H.
+    apply (Permutation_in _ (rorder_perm _)) in H.
+    destruct (c =? r_coll x) eqn:E.
+    - destruct H as [<- | H]; [left; split; [reflexivity | apply Nat.eqb_eq in E; exact E] |].
+      right. unfold recs_of in H. apply filter_In in H as [Hi Hc]. apply Nat.eqb_eq in Hc. split; assumption.
+    - right. unfold recs_of in H. apply filter_In in H as [Hi Hc]. apply Nat.eqb_eq in Hc. split; assumption.
+  Qed.
+
+  (* On a set a bind has no lane, so it sees every record of a list. *)
+  Lemma visible_classes : sh = Classes -> forall b l, visible b l = l.
+  Proof.
+    intros H b l. unfold visible, lane_of. rewrite H. cbn [sees].
+    induction l as [| a l IH]; [reflexivity |]. cbn [filter]. rewrite IH. reflexivity.
+  Qed.
+
+  (* On a set the old window keeps the first member of each class of the
+     new window. *)
+  Lemma win_classes : sh = Classes -> forall W c v, win W c v = wsel 1 class_key [] (win_f W c v).
+  Proof. intros H W c v. unfold win, win_f, window, window_f. rewrite H. reflexivity. Qed.
+
+  (* A visible new window of one record is the visible old window. *)
+  Lemma win_single : forall W c v b r, visible b (win_f W c v) = [r] -> visible b (win W c v) = [r].
+  Proof.
+    intros W c v b r H. destruct shape_classes_dec as [Hcl | Hcl].
+    - rewrite (visible_classes Hcl) in H. rewrite (visible_classes Hcl), (win_classes Hcl), H. reflexivity.
+    - rewrite <- (win_f_other Hcl). exact H.
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): GREEDY reads the
+     windows of slots_cons_f. The text before:
+
+  (* A fire of GREEDY with the claim rule binds stored records of the
+     collections of its group. *)
+  Lemma greedy_f_colls :
+    forall W v sg, greedy_f W v = Some sg -> forall e, In e (map fst sg) -> In e (v_recs v) /\ In (r_coll e) (colls W).
+  Proof.
+    intros W v sg H e He. unfold greedy_f in H. pose proof (fill_f_shape _ _ _ _ _ H) as Hr.
+    apply in_map_iff in He as ([e0 m] & <- & Hin). apply In_nth_error in Hin as [i Hi]. cbn [fst].
+    unfold slots_cons in Hr.
+    assert (Hlen : i < length (gpairs W)).
+    { rewrite <- (length_map (fun ib : nat * bnd => Pick (visible (snd ib) (win W (b_coll (snd ib)) v)) (b_pat (snd ib))) (gpairs W)).
+      rewrite <- (slots_rel_length _ _ Hr). apply nth_error_Some. rewrite Hi. discriminate. }
+    destruct (nth_error (gpairs W) i) as [ib |] eqn:Hg; [| apply nth_error_None in Hg; lia].
+    pose proof (slots_rel_nth _ _ i _ _ Hr (eq_trans (nth_error_map _ _ _) (f_equal _ Hg)) Hi) as Hm. cbn [fst] in Hm.
+    apply visible_incl in Hm. unfold win in Hm. apply window_incl in Hm.
+    apply (Permutation_in _ (rorder_perm _)) in Hm. unfold recs_of in Hm. apply filter_In in Hm as [Hm Hc].
+    apply Nat.eqb_eq in Hc. split; [exact Hm |]. rewrite Hc. exact (bind_coll _ _ (gpairs_binds _ _ (nth_error_In _ _ Hg))).
+  Qed.
+  *)
+
+  (* A fire of GREEDY with the claim rule binds stored records of the
+     collections of its group. *)
+  Lemma greedy_f_colls :
+    forall W v sg, greedy_f W v = Some sg -> forall e, In e (map fst sg) -> In e (v_recs v) /\ In (r_coll e) (colls W).
+  Proof.
+    intros W v sg H e He. unfold greedy_f in H. pose proof (fill_f_shape _ _ _ _ _ H) as Hr.
+    apply in_map_iff in He as ([e0 m] & <- & Hin). apply In_nth_error in Hin as [i Hi]. cbn [fst].
+    unfold slots_cons_f in Hr.
+    assert (Hlen : i < length (gpairs W)).
+    { rewrite <- (length_map (fun ib : nat * bnd => Pick (visible (snd ib) (win_f W (b_coll (snd ib)) v)) (b_pat (snd ib)))
+                    (gpairs W)).
+      rewrite <- (slots_rel_length _ _ Hr). apply nth_error_Some. rewrite Hi. discriminate. }
+    destruct (nth_error (gpairs W) i) as [ib |] eqn:Hg; [| apply nth_error_None in Hg; lia].
+    pose proof (slots_rel_nth _ _ i _ _ Hr (eq_trans (nth_error_map _ _ _) (f_equal _ Hg)) Hi) as Hm. cbn [fst] in Hm.
+    apply visible_incl in Hm. unfold win_f in Hm. apply window_f_incl in Hm.
+    apply (Permutation_in _ (rorder_perm _)) in Hm. unfold recs_of in Hm. apply filter_In in Hm as [Hm Hc].
+    apply Nat.eqb_eq in Hc. split; [exact Hm |]. rewrite Hc. exact (bind_coll _ _ (gpairs_binds _ _ (nth_error_In _ _ Hg))).
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): prod_list reads
+     the window win_in_f, so the proof uses win_in_f_mem. The statement does
+     not change. The text before:
+
+  (* The records of a produce fire of the search of decision 118: x, or a
+     stored record of a collection of W with another identity. *)
+  Lemma slots_prod_f_colls :
+    forall W x p v sg, slots_rel (slots_prod_f W x p v) sg ->
+      forall e, In e (map fst sg) -> e = x \/ (In e (v_recs v) /\ In (r_coll e) (colls W) /\ r_id e <> r_id x).
+  Proof.
+    intros W x p v sg Hr e He. apply in_map_iff in He as ([e0 m0] & <- & Hin). apply In_nth_error in Hin as [i Hi].
+    cbn [fst]. destruct (slots_rel_nth_inv _ _ _ _ Hr Hi) as [s Es].
+    pose proof (slots_rel_nth _ _ _ _ _ Hr Es Hi) as Hm. unfold slots_prod_f in Es. rewrite nth_error_map in Es.
+    destruct (nth_error (enum 0 (gpairs W)) i) as [[k [i0 b]] |] eqn:Ee; [| discriminate]. cbn [option_map] in Es.
+    injection Es as <-. unfold prod_slot in Hm. cbn [fst snd] in Hm.
+    destruct (forced W x p k b); [left; injection Hm as -> _; reflexivity |].
+    cbn [fst] in Hm. destruct (prod_list_mem W x b v e0 Hm) as [(-> & _ & _) | [Hm' Hne]]; [left; reflexivity |].
+    apply visible_incl in Hm'.
+    destruct (win_in_mem W x (b_coll b) v e0 Hm') as [[-> _] | [Hv Hc]]; [left; reflexivity | right; split; [exact Hv |]].
+    split; [| exact Hne].
+    rewrite Hc. apply bind_coll. apply nth_error_In in Ee. apply (enum_nth _ _ 0) in Ee as [_ Ee]. rewrite Nat.sub_0_r in Ee.
+    exact (gpairs_binds W (i0, b) (nth_error_In _ _ Ee)).
+  Qed.
+  *)
+
+  (* The records of a produce fire of the search of decision 118: x, or a
+     stored record of a collection of W with another identity. *)
+  Lemma slots_prod_f_colls :
+    forall W x p v sg, slots_rel (slots_prod_f W x p v) sg ->
+      forall e, In e (map fst sg) -> e = x \/ (In e (v_recs v) /\ In (r_coll e) (colls W) /\ r_id e <> r_id x).
+  Proof.
+    intros W x p v sg Hr e He. apply in_map_iff in He as ([e0 m0] & <- & Hin). apply In_nth_error in Hin as [i Hi].
+    cbn [fst]. destruct (slots_rel_nth_inv _ _ _ _ Hr Hi) as [s Es].
+    pose proof (slots_rel_nth _ _ _ _ _ Hr Es Hi) as Hm. unfold slots_prod_f in Es. rewrite nth_error_map in Es.
+    destruct (nth_error (enum 0 (gpairs W)) i) as [[k [i0 b]] |] eqn:Ee; [| discriminate]. cbn [option_map] in Es.
+    injection Es as <-. unfold prod_slot in Hm. cbn [fst snd] in Hm.
+    destruct (forced W x p k b); [left; injection Hm as -> _; reflexivity |].
+    cbn [fst] in Hm. destruct (prod_list_mem W x b v e0 Hm) as [(-> & _ & _) | [Hm' Hne]]; [left; reflexivity |].
+    apply visible_incl in Hm'.
+    destruct (win_in_f_mem W x (b_coll b) v e0 Hm') as [[-> _] | [Hv Hc]]; [left; reflexivity | right; split; [exact Hv |]].
+    split; [| exact Hne].
+    rewrite Hc. apply bind_coll. apply nth_error_In in Ee. apply (enum_nth _ _ 0) in Ee as [_ Ee]. rewrite Nat.sub_0_r in Ee.
+    exact (gpairs_binds W (i0, b) (nth_error_In _ _ Ee)).
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): rule (a)
+     restates headline 19. Parts 1 and 2 no longer state that two positions
+     with one tag bind a free pick. They state that one identity at two
+     positions is a persistent record, and that one set class at two
+     positions has a persistent member. Part 3 reads the window win_f of
+     the search of decision 118, and the new part 4 is the set witness. The
+     text before:
+
+  (* Headline 19 (decision 103, decision 118, CR-9). In a fire of the search
+     of decision 118, two positions that bind one tag bind a free record:
+     a persistent record, or on a set a member of a class with a persistent
+     member in the view of the search (the view with x stored for
+     SEARCH-PRODUCE). So on a head shape and on a bag a non-persistent
+     record binds at most one position. On a set a class with no persistent
+     member binds at most one position. A non-persistent member of a class
+     with a persistent member can bind several positions (F-118-2). The
+     identities of the view are distinct, and the incoming record is fresh.
+     A persistent record can bind several positions: the binds [c, c] over
+     the window [r] with r persistent fire with r at both positions, and
+     GREEDY with the old claim rule parks this waiter. This headline
+     supersedes join_repeated_channel_distinct_records (headline 5) for the
+     claim rule of decision 118. *)
+  Theorem join_nonpersistent_bound_once :
+    (forall W v sg i j ei mi ej mj,
+       NoDup (map r_id (v_recs v)) -> greedy_f W v = Some sg -> i <> j ->
+       nth_error sg i = Some (ei, mi) -> nth_error sg j = Some (ej, mj) -> tag ei = tag ej -> free_in v ei = true) /\
+    (forall W x v p sg i j ei mi ej mj,
+       NoDup (map r_id (v_recs v)) -> ~ In (r_id x) (map r_id (v_recs v)) ->
+       search_produce_f W x v = Some (p, sg) -> i <> j ->
+       nth_error sg i = Some (ei, mi) -> nth_error sg j = Some (ej, mj) -> tag ei = tag ej ->
+       free_in (store_view x v) ei = true) /\
+    (forall W v c b0 b1 r m0 m1,
+       w_binds W = [b0; b1] -> b_coll b0 = c -> b_coll b1 = c -> w_guard W = no_guard ->
+       visible b0 (win W c v) = [r] -> visible b1 (win W c v) = [r] -> r_pers r = true ->
+       spatial (b_pat b0) (r_val r) = Some m0 -> spatial (b_pat b1) (r_val r) = Some m1 ->
+       greedy_f W v = Some [(r, m0); (r, m1)] /\ greedy W v = None).
+  Proof.
+    (* A pick never binds a claimed tag, and it claims its tag unless the
+       pick is free. *)
+    assert (Htc : forall fr g p C k cs sg,
+              try_cands_f fr g p C k cs = Some sg ->
+              exists e m sg', sg = (e, m) :: sg' /\ claimed C e = false /\ k (claim_after fr C e) = Some sg').
+    { intros fr g p C k cs. induction cs as [| e more IH]; intros sg H; cbn [try_cands_f] in H; [discriminate |].
+      destruct (claimed C e) eqn:Ec; [exact (IH _ H) |].
+      destruct (pick_match g p e) as [m |]; [| exact (IH _ H)].
+      destruct (k (claim_after fr C e)) as [s |] eqn:Ek.
+      - injection H as <-. exists e, m, s. split; [reflexivity | split; [exact Ec | exact Ek]].
+      - destruct (on_dead_end_cases _ (try_cands_f fr g p C k more)) as [Ed | Ed]; rewrite Ed in H;
+          [discriminate | exact (IH _ H)]. }
+    (* Over one fill: a pick binds a record that is unclaimed at the start,
+       and a pick of the tag of an earlier pick follows a free pick. *)
+    assert (Hfill : forall fr g ss C sg,
+              fill_f fr g C ss = Some sg ->
+              (forall j s ej mj, nth_error ss j = Some s -> nth_error sg j = Some (ej, mj) -> is_pick s = true ->
+                 claimed C ej = false) /\
+              (forall i j si sj ei mi ej mj, i < j -> nth_error ss i = Some si -> nth_error ss j = Some sj ->
+                 is_pick si = true -> is_pick sj = true ->
+                 nth_error sg i = Some (ei, mi) -> nth_error sg j = Some (ej, mj) -> tag ei = tag ej -> fr ei = true)).
+    { intros fr g ss. induction ss as [| s rest IH]; intros C sg H; cbn [fill_f] in H.
+      - injection H as <-. split; [intros j s ej mj Hs; destruct j; discriminate |].
+        intros i j si sj ei mi ej mj _ Hs; destruct i; discriminate.
+      - destruct s as [L p | e m].
+        + apply Htc in H as (e & m & sg' & -> & Ec & Hk).
+          destruct (IH _ _ Hk) as [Ha Hb]. split.
+          * intros [| j] s ej mj Hs Hj Hp; cbn [nth_error] in Hs, Hj.
+            -- injection Hj as -> _. exact Ec.
+            -- destruct (claimed C ej) eqn:E; [| reflexivity].
+               pose proof (Ha j s ej mj Hs Hj Hp) as Hc. rewrite (claim_after_mono fr C e ej E) in Hc. discriminate.
+          * intros [| i] [| j] si sj ei mi ej mj Hij Hsi Hsj Hpi Hpj Hi Hj Ht; cbn [nth_error] in Hsi, Hsj, Hi, Hj;
+              try lia.
+            -- injection Hi as -> _. destruct (fr ei) eqn:Efr; [reflexivity | exfalso].
+               pose proof (Ha j sj ej mj Hsj Hj Hpj) as Hc. unfold claim_after in Hc. rewrite Efr in Hc.
+               unfold claimed in Hc. cbn [tmem existsb] in Hc. rewrite Ht in Hc.
+               assert (Et : tag_eqb (tag ej) (tag ej) = true) by (apply tag_eqb_spec; reflexivity).
+               rewrite Et in Hc. discriminate.
+            -- exact (Hb i j si sj ei mi ej mj ltac:(lia) Hsi Hsj Hpi Hpj Hi Hj Ht).
+        + destruct (fill_f fr g C rest) as [sg' |] eqn:Hf; [| discriminate]. injection H as <-.
+          destruct (IH _ _ Hf) as [Ha Hb]. split.
+          * intros [| j] s ej mj Hs Hj Hp; cbn [nth_error] in Hs, Hj; [injection Hs as <-; discriminate Hp |].
+            exact (Ha j s ej mj Hs Hj Hp).
+          * intros [| i] [| j] si sj ei mi ej mj Hij Hsi Hsj Hpi Hpj Hi Hj Ht; cbn [nth_error] in Hsi, Hsj, Hi, Hj;
+              try lia.
+            -- injection Hsi as <-. discriminate Hpi.
+            -- exact (Hb i j si sj ei mi ej mj ltac:(lia) Hsi Hsj Hpi Hpj Hi Hj Ht). }
+    split; [| split].
+    - (* GREEDY: every slot is a pick *)
+      intros W v sg i j ei mi ej mj Hnd H Hij Hi Hj Ht. unfold greedy_f in H.
+      destruct (Hfill _ _ _ _ _ H) as [_ Hb]. pose proof (fill_f_shape _ _ _ _ _ H) as Hr.
+      assert (Hpk : forall k s, nth_error (slots_cons W v) k = Some s -> is_pick s = true).
+      { intros k s Hs. unfold slots_cons in Hs. rewrite nth_error_map in Hs.
+        destruct (nth_error (gpairs W) k); [injection Hs as <-; reflexivity | discriminate]. }
+      destruct (slots_rel_nth_inv _ _ _ _ Hr Hi) as [si Hsi]. destruct (slots_rel_nth_inv _ _ _ _ Hr Hj) as [sj Hsj].
+      assert (Hsame : free_in v ej = free_in v ei).
+      { apply free_in_tag; [exact (eq_sym Ht) |]. intros Hsh.
+        destruct (tag_ids Hsh ei ej Ht) as [_ Eid].
+        assert (Hei : In ei (map fst sg)) by (apply in_map_iff; exists (ei, mi); split; [reflexivity | exact (nth_error_In _ _ Hi)]).
+        assert (Hej : In ej (map fst sg)) by (apply in_map_iff; exists (ej, mj); split; [reflexivity | exact (nth_error_In _ _ Hj)]).
+        exact (nodup_map_inj _ _ r_id _ ej ei Hnd (proj1 (greedy_f_colls W v sg H ej Hej))
+                 (proj1 (greedy_f_colls W v sg H ei Hei)) (eq_sym Eid)). }
+      destruct (Nat.lt_trichotomy i j) as [Hlt | [-> | Hgt]].
+      + exact (Hb i j si sj ei mi ej mj Hlt Hsi Hsj (Hpk _ _ Hsi) (Hpk _ _ Hsj) Hi Hj Ht).
+      + contradiction.
+      + rewrite <- Hsame. exact (Hb j i sj si ej mj ei mi Hgt Hsj Hsi (Hpk _ _ Hsj) (Hpk _ _ Hsi) Hj Hi (eq_sym Ht)).
+    - (* SEARCH-PRODUCE: x held at p, and picks elsewhere *)
+      intros W x v p sg i j ei mi ej mj Hnd Hfresh H Hij Hi Hj Ht. unfold search_produce_f in H.
+      apply search_at_f_some in H as (i0 & b0 & m0 & _ & _ & _ & _ & Hf).
+      destruct (Hfill _ _ _ _ _ Hf) as [Ha Hb]. pose proof (fill_f_shape _ _ _ _ _ Hf) as Hr.
+      assert (Hcls : forall k s e m, nth_error (slots_prod_f W x p v) k = Some s -> nth_error sg k = Some (e, m) ->
+                       is_pick s = false -> k = p /\ e = x).
+      { intros k s e m Hs Hk Hp. unfold slots_prod_f in Hs. rewrite nth_error_map in Hs.
+        destruct (nth_error (enum 0 (gpairs W)) k) as [[k' [i1 b1]] |] eqn:Ek; [| discriminate].
+        cbn [option_map] in Hs. injection Hs as <-. destruct (enum0_nth_fst _ _ _ _ _ Ek) as [-> _].
+        unfold prod_slot in Hp. cbn [fst snd] in Hp.
+        destruct (forced W x p k b1) as [m1 |] eqn:Ef; [| discriminate Hp].
+        unfold forced in Ef. destruct (k =? p) eqn:Ekp; [| discriminate Ef]. apply Nat.eqb_eq in Ekp. subst k.
+        split; [reflexivity |].
+        assert (Hs2 : nth_error (slots_prod_f W x p v) p = Some (Forced x m1)).
+        { rewrite (slots_prod_f_nth W x p v p (p, (i1, b1)) Ek). unfold prod_slot. cbn [fst snd]. unfold forced.
+          rewrite Nat.eqb_refl, Ef. reflexivity. }
+        pose proof (slots_rel_nth _ _ _ _ _ Hr Hs2 Hk) as Hx. cbn in Hx. injection Hx as -> _. reflexivity. }
+      (* the records that carry one tag carry one free test *)
+      assert (Hrec : forall k e m, nth_error sg k = Some (e, m) -> e = x \/ (In e (v_recs v) /\ r_id e <> r_id x)).
+      { intros k e m Hk. assert (He : In e (map fst sg)) by (apply in_map_iff; exists (e, m); split; [reflexivity | exact (nth_error_In _ _ Hk)]).
+        destruct (slots_prod_f_colls W x p v sg Hr e He) as [-> | (Hv & _ & Hne)]; [left; reflexivity | right; split; assumption]. }
+      assert (Hsame : free_in (store_view x v) ej = free_in (store_view x v) ei).
+      { apply free_in_tag; [exact (eq_sym Ht) |]. intros Hsh.
+        destruct (tag_ids Hsh ei ej Ht) as [_ Eid].
+        destruct (Hrec i ei mi Hi) as [-> | [Hvi Hni]]; destruct (Hrec j ej mj Hj) as [-> | [Hvj Hnj]]; try reflexivity.
+        - exfalso. exact (Hnj (eq_sym Eid)).
+        - exfalso. exact (Hni Eid).
+        - exact (nodup_map_inj _ _ r_id _ ej ei Hnd Hvj Hvi (eq_sym Eid)). }
+      (* the claims at the start: the claim of x unless x is free *)
+      assert (Hx0 : forall e, claimed (claims_x x v) e = false -> tag e = tag x -> free_in (store_view x v) x = true).
+      { intros e Hc Hte. unfold claims_x, claim_after in Hc. destruct (free_in (store_view x v) x) eqn:Efr; [reflexivity |].
+        unfold claimed in Hc. cbn [tmem existsb] in Hc. rewrite Hte in Hc.
+        assert (Et : tag_eqb (tag x) (tag x) = true) by (apply tag_eqb_spec; reflexivity). rewrite Et in Hc. discriminate. }
+      destruct (slots_rel_nth_inv _ _ _ _ Hr Hi) as [si Hsi]. destruct (slots_rel_nth_inv _ _ _ _ Hr Hj) as [sj Hsj].
+      destruct (is_pick si) eqn:Epi; destruct (is_pick sj) eqn:Epj.
+      + destruct (Nat.lt_trichotomy i j) as [Hlt | [-> | Hgt]].
+        * exact (Hb i j si sj ei mi ej mj Hlt Hsi Hsj Epi Epj Hi Hj Ht).
+        * contradiction.
+        * rewrite <- Hsame. exact (Hb j i sj si ej mj ei mi Hgt Hsj Hsi Epj Epi Hj Hi (eq_sym Ht)).
+      + destruct (Hcls j sj ej mj Hsj Hj Epj) as [_ ->].
+        pose proof (Ha i si ei mi Hsi Hi Epi) as Hc. rewrite <- Hsame. exact (Hx0 ei Hc Ht).
+      + destruct (Hcls i si ei mi Hsi Hi Epi) as [_ ->].
+        pose proof (Ha j sj ej mj Hsj Hj Epj) as Hc. exact (Hx0 ej Hc (eq_sym Ht)).
+      + destruct (Hcls i si ei mi Hsi Hi Epi) as [-> _]. destruct (Hcls j sj ej mj Hsj Hj Epj) as [-> _]. contradiction.
+    - (* a persistent record binds both binds of [c, c] *)
+      intros W v c b0 b1 r m0 m1 Hb Hc0 Hc1 Hg Hw0 Hw1 Hp H0 H1.
+      assert (Hgp : gpairs W = [(0, b0); (1, b1)]).
+      { unfold gpairs. rewrite Hb. cbn [enum isort fold_right ins]. unfold gle. cbn [snd fst].
+        rewrite Hc0, Hc1, Nat.ltb_irrefl, Nat.eqb_refl. reflexivity. }
+      assert (Hs : slots_cons W v = [Pick [r] (b_pat b0); Pick [r] (b_pat b1)]).
+      { unfold slots_cons. rewrite Hgp. cbn [map snd]. rewrite Hc0, Hc1, Hw0, Hw1. reflexivity. }
+      assert (Hfree : free_in v r = true).
+      { destruct shape_classes_dec as [Hcl | Hcl]; [| rewrite (free_in_other Hcl); exact Hp].
+        rewrite (free_in_classes Hcl).
+        assert (Hr : In r (win W c v)) by (apply (visible_incl b0); rewrite Hw0; left; reflexivity).
+        unfold win in Hr. apply window_incl in Hr. apply (Permutation_in _ (rorder_perm _)) in Hr.
+        unfold recs_of in Hr. apply filter_In in Hr as [Hr Hcr].
+        unfold class_pers. apply existsb_exists. exists r. split.
+        - unfold recs_of. apply filter_In. split; [exact Hr | apply Nat.eqb_refl].
+        - cbv beta. rewrite Hp, Nat.eqb_refl. reflexivity. }
+      split.
+      + unfold greedy_f. rewrite Hs, Hg. cbn [fill_f try_cands_f].
+        replace (claimed [] r) with false by reflexivity.
+        rewrite pick_match_no_guard, H0. unfold claim_after. rewrite Hfree. cbn [fill_f try_cands_f].
+        replace (claimed [] r) with false by reflexivity. rewrite pick_match_no_guard, H1. reflexivity.
+      + unfold greedy. rewrite Hs, Hg. cbn [fill try_cands].
+        replace (claimed [] r) with false by reflexivity.
+        rewrite pick_match_no_guard, H0. cbn [fill try_cands].
+        rewrite claimed_self. cbn [try_cands]. unfold on_dead_end. reflexivity.
+  Qed.
+  *)
+
+  (* Headline 19 (decision 103, decision 118, CR-9, rule (a) of the C6
+     arbitration). In a fire of the search of decision 118, two positions
+     that bind one identity bind a persistent record. On a set, two
+     positions that bind members of one class need a persistent member of
+     that class in the view of the search. For SEARCH-PRODUCE that view is
+     the view with x stored, so a persistent x of the class counts. So a
+     non-persistent record binds at most one position on every shape, and
+     on a set a class with no persistent member binds at most one position.
+     Rule (a) rules out F-118-2: a non-persistent member of a class with a
+     persistent member claims its record, so it binds one position only.
+     The identities of the view are distinct, and the incoming record is
+     fresh. Part 3 is a witness: the binds [c, c] over the window [r] with
+     r persistent fire with r at both positions. Part 4 is a witness on a
+     set: the binds [c, c] over the window [a1, a2] of one class, with a1
+     not persistent and a2 persistent, fire with a1 and then a2. GREEDY with
+     the old claim rule parks both waiters. This headline supersedes
+     join_repeated_channel_distinct_records (headline 5) for the claim rule
+     of decision 118. *)
+  Theorem join_nonpersistent_bound_once :
+    (forall W v sg i j ei mi ej mj,
+       NoDup (map r_id (v_recs v)) -> greedy_f W v = Some sg -> i <> j ->
+       nth_error sg i = Some (ei, mi) -> nth_error sg j = Some (ej, mj) ->
+       (r_id ei = r_id ej -> r_pers ei = true) /\
+       (sh = Classes -> r_coll ei = r_coll ej -> class_key ei = class_key ej ->
+          class_pers (r_coll ei) (class_key ei) v = true)) /\
+    (forall W x v p sg i j ei mi ej mj,
+       NoDup (map r_id (v_recs v)) -> ~ In (r_id x) (map r_id (v_recs v)) ->
+       search_produce_f W x v = Some (p, sg) -> i <> j ->
+       nth_error sg i = Some (ei, mi) -> nth_error sg j = Some (ej, mj) ->
+       (r_id ei = r_id ej -> r_pers ei = true) /\
+       (sh = Classes -> r_coll ei = r_coll ej -> class_key ei = class_key ej ->
+          class_pers (r_coll ei) (class_key ei) (store_view x v) = true)) /\
+    (forall W v c b0 b1 r m0 m1,
+       w_binds W = [b0; b1] -> b_coll b0 = c -> b_coll b1 = c -> w_guard W = no_guard ->
+       visible b0 (win_f W c v) = [r] -> visible b1 (win_f W c v) = [r] -> r_pers r = true ->
+       spatial (b_pat b0) (r_val r) = Some m0 -> spatial (b_pat b1) (r_val r) = Some m1 ->
+       greedy_f W v = Some [(r, m0); (r, m1)] /\ greedy W v = None) /\
+    (forall W v c b0 b1 a1 a2 m0 m1,
+       sh = Classes -> w_binds W = [b0; b1] -> b_coll b0 = c -> b_coll b1 = c -> w_guard W = no_guard ->
+       win_f W c v = [a1; a2] -> r_id a1 <> r_id a2 -> class_key a1 = class_key a2 ->
+       r_pers a1 = false -> r_pers a2 = true ->
+       spatial (b_pat b0) (r_val a1) = Some m0 -> spatial (b_pat b1) (r_val a2) = Some m1 ->
+       greedy_f W v = Some [(a1, m0); (a2, m1)] /\ greedy W v = None).
+  Proof.
+    (* A pick never binds a claimed tag, and it claims its tag unless the
+       pick is free. *)
+    assert (Htc : forall tg fr g p C k cs sg,
+              try_cands_f tg fr g p C k cs = Some sg ->
+              exists e m sg', sg = (e, m) :: sg' /\ claimed_f tg C e = false /\ k (claim_after tg fr C e) = Some sg').
+    { intros tg fr g p C k cs. induction cs as [| e more IH]; intros sg H; cbn [try_cands_f] in H; [discriminate |].
+      destruct (claimed_f tg C e) eqn:Ec; [exact (IH _ H) |].
+      destruct (pick_match g p e) as [m |]; [| exact (IH _ H)].
+      destruct (k (claim_after tg fr C e)) as [s |] eqn:Ek.
+      - injection H as <-. exists e, m, s. split; [reflexivity | split; [exact Ec | exact Ek]].
+      - destruct (on_dead_end_cases _ (try_cands_f tg fr g p C k more)) as [Ed | Ed]; rewrite Ed in H;
+          [discriminate | exact (IH _ H)]. }
+    (* Over one fill: a pick binds a record that is unclaimed at the start,
+       and a pick of the tag of an earlier pick follows a free pick. *)
+    assert (Hfill : forall tg fr g ss C sg,
+              fill_f tg fr g C ss = Some sg ->
+              (forall j s ej mj, nth_error ss j = Some s -> nth_error sg j = Some (ej, mj) -> is_pick s = true ->
+                 claimed_f tg C ej = false) /\
+              (forall i j si sj ei mi ej mj, i < j -> nth_error ss i = Some si -> nth_error ss j = Some sj ->
+                 is_pick si = true -> is_pick sj = true ->
+                 nth_error sg i = Some (ei, mi) -> nth_error sg j = Some (ej, mj) -> tg ei = tg ej -> fr ei = true)).
+    { intros tg fr g ss. induction ss as [| s rest IH]; intros C sg H; cbn [fill_f] in H.
+      - injection H as <-. split; [intros j s ej mj Hs; destruct j; discriminate |].
+        intros i j si sj ei mi ej mj _ Hs; destruct i; discriminate.
+      - destruct s as [L p | e m].
+        + apply Htc in H as (e & m & sg' & -> & Ec & Hk).
+          destruct (IH _ _ Hk) as [Ha Hb]. split.
+          * intros [| j] s ej mj Hs Hj Hp; cbn [nth_error] in Hs, Hj.
+            -- injection Hj as -> _. exact Ec.
+            -- destruct (claimed_f tg C ej) eqn:E; [| reflexivity].
+               pose proof (Ha j s ej mj Hs Hj Hp) as Hc. rewrite (claim_after_mono tg fr C e ej E) in Hc. discriminate.
+          * intros [| i] [| j] si sj ei mi ej mj Hij Hsi Hsj Hpi Hpj Hi Hj Ht; cbn [nth_error] in Hsi, Hsj, Hi, Hj;
+              try lia.
+            -- injection Hi as -> _. destruct (fr ei) eqn:Efr; [reflexivity | exfalso].
+               pose proof (Ha j sj ej mj Hsj Hj Hpj) as Hc. unfold claim_after in Hc. rewrite Efr in Hc.
+               unfold claimed_f in Hc. cbn [tmem existsb] in Hc. rewrite Ht in Hc.
+               assert (Et : tag_eqb (tg ej) (tg ej) = true) by (apply tag_eqb_spec; reflexivity).
+               rewrite Et in Hc. discriminate.
+            -- exact (Hb i j si sj ei mi ej mj ltac:(lia) Hsi Hsj Hpi Hpj Hi Hj Ht).
+        + destruct (fill_f tg fr g C rest) as [sg' |] eqn:Hf; [| discriminate]. injection H as <-.
+          destruct (IH _ _ Hf) as [Ha Hb]. split.
+          * intros [| j] s ej mj Hs Hj Hp; cbn [nth_error] in Hs, Hj; [injection Hs as <-; discriminate Hp |].
+            exact (Ha j s ej mj Hs Hj Hp).
+          * intros [| i] [| j] si sj ei mi ej mj Hij Hsi Hsj Hpi Hpj Hi Hj Ht; cbn [nth_error] in Hsi, Hsj, Hi, Hj;
+              try lia.
+            -- injection Hsi as <-. discriminate Hpi.
+            -- exact (Hb i j si sj ei mi ej mj ltac:(lia) Hsi Hsj Hpi Hpj Hi Hj Ht). }
+    split; [| split; [| split]].
+    - (* GREEDY: every slot is a pick *)
+      intros W v sg i j ei mi ej mj Hnd H Hij Hi Hj. unfold greedy_f in H.
+      destruct (Hfill _ _ _ _ _ _ H) as [_ Hb]. pose proof (fill_f_shape _ _ _ _ _ H) as Hr.
+      assert (Hpk : forall k s, nth_error (slots_cons_f W v) k = Some s -> is_pick s = true).
+      { intros k s Hs. unfold slots_cons_f in Hs. rewrite nth_error_map in Hs.
+        destruct (nth_error (gpairs W) k); [injection Hs as <-; reflexivity | discriminate]. }
+      destruct (slots_rel_nth_inv _ _ _ _ Hr Hi) as [si Hsi]. destruct (slots_rel_nth_inv _ _ _ _ Hr Hj) as [sj Hsj].
+      assert (Hei : In ei (v_recs v)).
+      { refine (proj1 (greedy_f_colls W v sg H ei _)).
+        apply in_map_iff. exists (ei, mi). split; [reflexivity | exact (nth_error_In _ _ Hi)]. }
+      assert (Hej : In ej (v_recs v)).
+      { refine (proj1 (greedy_f_colls W v sg H ej _)).
+        apply in_map_iff. exists (ej, mj). split; [reflexivity | exact (nth_error_In _ _ Hj)]. }
+      (* two picks with one tag: one of them is free *)
+      assert (Hor : tag_f v ei = tag_f v ej -> free_in v ei = true \/ free_in v ej = true).
+      { intros Ht. destruct (Nat.lt_trichotomy i j) as [Hlt | [-> | Hgt]].
+        - left. exact (Hb i j si sj ei mi ej mj Hlt Hsi Hsj (Hpk _ _ Hsi) (Hpk _ _ Hsj) Hi Hj Ht).
+        - contradiction.
+        - right. exact (Hb j i sj si ej mj ei mi Hgt Hsj Hsi (Hpk _ _ Hsj) (Hpk _ _ Hsi) Hj Hi (eq_sym Ht)). }
+      split.
+      + (* part 1: one identity at two positions is a persistent record *)
+        intros Eid. assert (Ee : ei = ej) by exact (nodup_map_inj _ _ r_id _ ei ej Hnd Hei Hej Eid). subst ej.
+        destruct (Hor eq_refl) as [F | F]; exact F.
+      + (* part 2: one set class at two positions has a persistent member *)
+        intros Hcl Ec Ek. destruct (class_pers (r_coll ei) (class_key ei) v) eqn:Ecp; [reflexivity | exfalso].
+        assert (Npi : r_pers ei = false).
+        { destruct (r_pers ei) eqn:Ep; [| reflexivity]. rewrite (class_pers_mem v ei Hei Ep) in Ecp. discriminate. }
+        assert (Npj : r_pers ej = false).
+        { destruct (r_pers ej) eqn:Ep; [| reflexivity].
+          rewrite Ec, Ek, (class_pers_mem v ej Hej Ep) in Ecp. discriminate. }
+        destruct (Hor (tag_f_eq v ei ej Hcl Ec Ek Ecp)) as [F | F].
+        * change (r_pers ei = true) in F. rewrite Npi in F. discriminate.
+        * change (r_pers ej = true) in F. rewrite Npj in F. discriminate.
+    - (* SEARCH-PRODUCE: x held at p, and picks elsewhere *)
+      intros W x v p sg i j ei mi ej mj Hnd Hfresh H Hij Hi Hj. unfold search_produce_f in H.
+      apply search_at_f_some in H as (i0 & b0 & m0 & _ & _ & _ & _ & Hf).
+      destruct (Hfill _ _ _ _ _ _ Hf) as [Ha Hb]. pose proof (fill_f_shape _ _ _ _ _ Hf) as Hr.
+      assert (Hcls : forall k s e m, nth_error (slots_prod_f W x p v) k = Some s -> nth_error sg k = Some (e, m) ->
+                       is_pick s = false -> k = p /\ e = x).
+      { intros k s e m Hs Hk Hp. unfold slots_prod_f in Hs. rewrite nth_error_map in Hs.
+        destruct (nth_error (enum 0 (gpairs W)) k) as [[k' [i1 b1]] |] eqn:Ek; [| discriminate].
+        cbn [option_map] in Hs. injection Hs as <-. destruct (enum0_nth_fst _ _ _ _ _ Ek) as [-> _].
+        unfold prod_slot in Hp. cbn [fst snd] in Hp.
+        destruct (forced W x p k b1) as [m1 |] eqn:Ef; [| discriminate Hp].
+        unfold forced in Ef. destruct (k =? p) eqn:Ekp; [| discriminate Ef]. apply Nat.eqb_eq in Ekp. subst k.
+        split; [reflexivity |].
+        assert (Hs2 : nth_error (slots_prod_f W x p v) p = Some (Forced x m1)).
+        { rewrite (slots_prod_f_nth W x p v p (p, (i1, b1)) Ek). unfold prod_slot. cbn [fst snd]. unfold forced.
+          rewrite Nat.eqb_refl, Ef. reflexivity. }
+        pose proof (slots_rel_nth _ _ _ _ _ Hr Hs2 Hk) as Hx. cbn in Hx. injection Hx as -> _. reflexivity. }
+      (* each position binds x or a stored record of v with another identity *)
+      assert (Hrec : forall k e m, nth_error sg k = Some (e, m) -> e = x \/ (In e (v_recs v) /\ r_id e <> r_id x)).
+      { intros k e m Hk. assert (He : In e (map fst sg)) by (apply in_map_iff; exists (e, m); split; [reflexivity | exact (nth_error_In _ _ Hk)]).
+        destruct (slots_prod_f_colls W x p v sg Hr e He) as [-> | (Hv & _ & Hne)]; [left; reflexivity | right; split; assumption]. }
+      (* each bound record lies in the view with x stored *)
+      assert (Hin : forall k e m, nth_error sg k = Some (e, m) -> In e (x :: v_recs v)).
+      { intros k e m Hk. destruct (Hrec k e m Hk) as [-> | [Hv _]]; [left; reflexivity | right; exact Hv]. }
+      (* a pick binds x only when x is persistent (E1) *)
+      assert (Hpx : forall k s m, nth_error (slots_prod_f W x p v) k = Some s -> nth_error sg k = Some (x, m) ->
+                      is_pick s = true -> r_pers x = true).
+      { intros k s m Hs Hk Hp. pose proof (slots_rel_nth _ _ _ _ _ Hr Hs Hk) as Hm.
+        unfold slots_prod_f in Hs. rewrite nth_error_map in Hs.
+        destruct (nth_error (enum 0 (gpairs W)) k) as [[k' [i1 b1]] |]; [| discriminate].
+        cbn [option_map] in Hs. injection Hs as <-. unfold prod_slot in Hp, Hm. cbn [fst snd] in Hp, Hm.
+        destruct (forced W x p k' b1) as [m1 |]; [discriminate Hp |].
+        cbn [fst] in Hm. destruct (prod_list_mem W x b1 v x Hm) as [(_ & Hpx & _) | [_ Hne]]; [exact Hpx |].
+        exfalso. exact (Hne eq_refl). }
+      (* the claims at the start: x claims its tag when x is not persistent *)
+      assert (Hx0 : forall e, claimed_f (tag_f (store_view x v)) (claims_x x v) e = false ->
+                      tag_f (store_view x v) e = tag_f (store_view x v) x -> r_pers x = true).
+      { intros e Hc Hte. unfold claims_x, claim_after in Hc.
+        destruct (free_in (store_view x v) x) eqn:Efr; [exact Efr |].
+        unfold claimed_f in Hc. cbn [tmem existsb] in Hc. rewrite Hte in Hc.
+        assert (Et : tag_eqb (tag_f (store_view x v) x) (tag_f (store_view x v) x) = true)
+          by (apply tag_eqb_spec; reflexivity).
+        rewrite Et in Hc. discriminate. }
+      destruct (slots_rel_nth_inv _ _ _ _ Hr Hi) as [si Hsi]. destruct (slots_rel_nth_inv _ _ _ _ Hr Hj) as [sj Hsj].
+      (* two picks with one tag: one of them is free *)
+      assert (Hor : tag_f (store_view x v) ei = tag_f (store_view x v) ej -> is_pick si = true -> is_pick sj = true ->
+                    free_in (store_view x v) ei = true \/ free_in (store_view x v) ej = true).
+      { intros Ht Epi Epj. destruct (Nat.lt_trichotomy i j) as [Hlt | [-> | Hgt]].
+        - left. exact (Hb i j si sj ei mi ej mj Hlt Hsi Hsj Epi Epj Hi Hj Ht).
+        - contradiction.
+        - right. exact (Hb j i sj si ej mj ei mi Hgt Hsj Hsi Epj Epi Hj Hi (eq_sym Ht)). }
+      split.
+      + (* part 1: one identity at two positions is a persistent record *)
+        intros Eid. destruct (is_pick si) eqn:Epi; destruct (is_pick sj) eqn:Epj.
+        * destruct (Hrec i ei mi Hi) as [-> | [Hvi Hni]]; destruct (Hrec j ej mj Hj) as [-> | [Hvj Hnj]].
+          -- exact (Hpx i si mi Hsi Hi Epi).
+          -- exfalso. exact (Hnj (eq_sym Eid)).
+          -- exfalso. exact (Hni Eid).
+          -- assert (Ee : ei = ej) by exact (nodup_map_inj _ _ r_id _ ei ej Hnd Hvi Hvj Eid). subst ej.
+             destruct (Hor eq_refl eq_refl eq_refl) as [F | F]; exact F.
+        * destruct (Hcls j sj ej mj Hsj Hj Epj) as [_ ->].
+          destruct (Hrec i ei mi Hi) as [-> | [_ Hni]]; [exact (Hpx i si mi Hsi Hi Epi) | exfalso; exact (Hni Eid)].
+        * destruct (Hcls i si ei mi Hsi Hi Epi) as [_ ->].
+          destruct (Hrec j ej mj Hj) as [-> | [_ Hnj]]; [exact (Hpx j sj mj Hsj Hj Epj) | exfalso; exact (Hnj (eq_sym Eid))].
+        * destruct (Hcls i si ei mi Hsi Hi Epi) as [-> _]. destruct (Hcls j sj ej mj Hsj Hj Epj) as [-> _]. contradiction.
+      + (* part 2: one set class at two positions has a persistent member in
+           the view with x stored *)
+        intros Hcl Ec Ek.
+        destruct (class_pers (r_coll ei) (class_key ei) (store_view x v)) eqn:Ecp; [reflexivity | exfalso].
+        assert (Npi : r_pers ei = false).
+        { destruct (r_pers ei) eqn:Ep; [| reflexivity].
+          rewrite (class_pers_mem (store_view x v) ei (Hin i ei mi Hi) Ep) in Ecp. discriminate. }
+        assert (Npj : r_pers ej = false).
+        { destruct (r_pers ej) eqn:Ep; [| reflexivity].
+          rewrite Ec, Ek, (class_pers_mem (store_view x v) ej (Hin j ej mj Hj) Ep) in Ecp. discriminate. }
+        pose proof (tag_f_eq (store_view x v) ei ej Hcl Ec Ek Ecp) as Ht.
+        destruct (is_pick si) eqn:Epi; destruct (is_pick sj) eqn:Epj.
+        * destruct (Hor Ht eq_refl eq_refl) as [F | F].
+          -- change (r_pers ei = true) in F. rewrite Npi in F. discriminate.
+          -- change (r_pers ej = true) in F. rewrite Npj in F. discriminate.
+        * (* j holds x, so x is not persistent and its claim blocks ei *)
+          destruct (Hcls j sj ej mj Hsj Hj Epj) as [_ ->].
+          rewrite (Hx0 ei (Ha i si ei mi Hsi Hi Epi) Ht) in Npj. discriminate.
+        * (* i holds x, so x is not persistent and its claim blocks ej *)
+          destruct (Hcls i si ei mi Hsi Hi Epi) as [_ ->].
+          rewrite (Hx0 ej (Ha j sj ej mj Hsj Hj Epj) (eq_sym Ht)) in Npi. discriminate.
+        * destruct (Hcls i si ei mi Hsi Hi Epi) as [-> _]. destruct (Hcls j sj ej mj Hsj Hj Epj) as [-> _]. contradiction.
+    - (* part 3: a persistent record binds both binds of [c, c] *)
+      intros W v c b0 b1 r m0 m1 Hb Hc0 Hc1 Hg Hw0 Hw1 Hp H0 H1.
+      assert (Hgp : gpairs W = [(0, b0); (1, b1)]).
+      { unfold gpairs. rewrite Hb. cbn [enum isort fold_right ins]. unfold gle. cbn [snd fst].
+        rewrite Hc0, Hc1, Nat.ltb_irrefl, Nat.eqb_refl. reflexivity. }
+      assert (Hs : slots_cons_f W v = [Pick [r] (b_pat b0); Pick [r] (b_pat b1)]).
+      { unfold slots_cons_f. rewrite Hgp. cbn [map snd]. rewrite Hc0, Hc1, Hw0, Hw1. reflexivity. }
+      assert (Ho : slots_cons W v = [Pick [r] (b_pat b0); Pick [r] (b_pat b1)]).
+      { unfold slots_cons. rewrite Hgp. cbn [map snd].
+        rewrite Hc0, Hc1, (win_single W c v b0 r Hw0), (win_single W c v b1 r Hw1). reflexivity. }
+      assert (Hfree : free_in v r = true) by exact Hp.
+      split.
+      + unfold greedy_f. rewrite Hs, Hg. cbn [fill_f try_cands_f].
+        replace (claimed_f (tag_f v) [] r) with false by reflexivity.
+        rewrite pick_match_no_guard, H0. unfold claim_after. rewrite Hfree. cbn [fill_f try_cands_f].
+        replace (claimed_f (tag_f v) [] r) with false by reflexivity. rewrite pick_match_no_guard, H1. reflexivity.
+      + unfold greedy. rewrite Ho, Hg. cbn [fill try_cands].
+        replace (claimed [] r) with false by reflexivity.
+        rewrite pick_match_no_guard, H0. cbn [fill try_cands].
+        rewrite claimed_self. cbn [try_cands]. unfold on_dead_end. reflexivity.
+    - (* part 4: on a set, a non-persistent member a1 and a persistent
+         member a2 of one class bind the binds [c, c] *)
+      intros W v c b0 b1 a1 a2 m0 m1 Hcl Hb Hc0 Hc1 Hg Hw Hne Hk Hp1 Hp2 H0 H1.
+      assert (Hgp : gpairs W = [(0, b0); (1, b1)]).
+      { unfold gpairs. rewrite Hb. cbn [enum isort fold_right ins]. unfold gle. cbn [snd fst].
+        rewrite Hc0, Hc1, Nat.ltb_irrefl, Nat.eqb_refl. reflexivity. }
+      assert (Hva : forall a, In a [a1; a2] -> In a (v_recs v) /\ r_coll a = c).
+      { intros a Ha. rewrite <- Hw in Ha. unfold win_f in Ha. apply window_f_incl in Ha.
+        apply (Permutation_in _ (rorder_perm _)) in Ha. unfold recs_of in Ha. apply filter_In in Ha as [Ha Hc].
+        apply Nat.eqb_eq in Hc. split; assumption. }
+      destruct (Hva a1 ltac:(left; reflexivity)) as [Hv1 Hr1].
+      destruct (Hva a2 ltac:(right; left; reflexivity)) as [Hv2 Hr2].
+      (* a2 makes the class persistent, so both members get record tags *)
+      assert (Hcp : class_pers c (class_key a1) v = true).
+      { rewrite <- Hr2, Hk. exact (class_pers_mem v a2 Hv2 Hp2). }
+      assert (T1 : tag_f v a1 = (c, S (2 * r_id a1))).
+      { rewrite (tag_f_classes Hcl v a1), Hr1, Hcp. reflexivity. }
+      assert (T2 : tag_f v a2 = (c, S (2 * r_id a2))).
+      { rewrite (tag_f_classes Hcl v a2), Hr2, <- Hk, Hcp. reflexivity. }
+      assert (Hs : slots_cons_f W v = [Pick [a1; a2] (b_pat b0); Pick [a1; a2] (b_pat b1)]).
+      { unfold slots_cons_f. rewrite Hgp. cbn [map snd]. rewrite Hc0, Hc1, !(visible_classes Hcl), Hw. reflexivity. }
+      (* the old window holds a1 only, the representative of the class *)
+      assert (Ew : wsel 1 class_key [] [a1; a2] = [a1]).
+      { cbn [wsel count_occ]. rewrite <- Hk.
+        destruct (Nat.eq_dec (class_key a1) (class_key a1)) as [_ | N]; [reflexivity | exfalso; exact (N eq_refl)]. }
+      assert (Ho : slots_cons W v = [Pick [a1] (b_pat b0); Pick [a1] (b_pat b1)]).
+      { unfold slots_cons. rewrite Hgp. cbn [map snd].
+        rewrite Hc0, Hc1, !(visible_classes Hcl), (win_classes Hcl), Hw, Ew. reflexivity. }
+      split.
+      + assert (Ec0 : claimed_f (tag_f v) [] a1 = false) by reflexivity.
+        assert (Hca : claim_after (tag_f v) (free_in v) [] a1 = [tag_f v a1]).
+        { unfold claim_after. assert (Hf1 : free_in v a1 = false) by exact Hp1. rewrite Hf1. reflexivity. }
+        assert (Ec11 : claimed_f (tag_f v) [tag_f v a1] a1 = true).
+        { unfold claimed_f. apply tmem_spec. left. reflexivity. }
+        assert (Ec12 : claimed_f (tag_f v) [tag_f v a1] a2 = false).
+        { unfold claimed_f. apply tmem_false. intros [E | []]. rewrite T1, T2 in E.
+          apply (f_equal snd) in E. cbn [snd] in E. lia. }
+        unfold greedy_f. rewrite Hs, Hg. cbn [fill_f try_cands_f].
+        rewrite Ec0, (pick_match_no_guard (b_pat b0) a1), H0, Hca, Ec11, Ec12, (pick_match_no_guard (b_pat b1) a2), H1.
+        reflexivity.
+      + unfold greedy. rewrite Ho, Hg. cbn [fill try_cands].
+        replace (claimed [] a1) with false by reflexivity.
+        rewrite pick_match_no_guard, H0. cbn [fill try_cands].
+        rewrite claimed_self. cbn [try_cands]. unfold on_dead_end. reflexivity.
+  Qed.
+
+  (* ── 39e. The engine with the search of decision 118 ──────────────── *)
+
+  (* The engine of sections 17 to 19 with the search of decision 118. The
+     functions that do not search stay: TOUCH, STORE, PARK, the fire tail,
+     LIFT-AND-REOFFER and COMMIT. CASCADES_F has the value of CASCADES: the
+     head shapes and the set cascade (CR-10, JN-10). *)
+  Definition cascades_f : bool := match sh with Head | Lanes | Classes => true | Scan => false end.
+
+  Definition fires_with_f (W : wtr) (x : rec) (v : view) : option (nat * list (rec * M)) :=
+    if heads_ok (heads_required W x) W v then
+      match search_produce_f W x v with
+      | Some (p, sg) => if guard_ok W sg then Some (p, sg) else None
+      | None => None
+      end
+    else None.
+
+  Fixpoint offer_pick_f (x : rec) (v : view) (ws : list wtr) : option (wtr * nat * list (rec * M)) :=
+    match ws with
+    | [] => None
+    | W :: rest =>
+        match fires_with_f W x v with
+        | Some (p, sg) => Some (W, p, sg)
+        | None => offer_pick_f x v rest
+        end
+    end.
+
+  Definition offer1_f (own : list nat) (j : jst) (x : elem) : jst * bool :=
+    match offer_pick_f (e_rec x) (j_view j) (offer_cands (e_rec x) (j_view j)) with
+    | None => (store own j x, false)
+    | Some (W, p, sg) =>
+        let j1 := touch_all own j (colls W) in
+        let j2 := stage j1 (SFire W sg (Some (p, e_auth x))) in
+        let j3 := add_dirty (fire_dirty W (r_coll (e_rec x))) (with_fired (S (j_fired j)) j2) in
+        let st := after_fire (S (j_fired j)) (negb (r_pers (e_rec x)) && negb (w_peek W)) (w_pers W) in
+        let j4 := fire_tail W sg (Some p) (e_own x) true j3 in
+        if w_peek W then (j4, false) else
+        match st with
+        | FDone => ((if e_own x then set_own OSpent j4 else j4), false)
+        | FContinue => (j4, true)
+        | FDivergent => (own_flight x j4, false)
+        | FRoundCap => (set_stop CRoundCap (own_flight x j4), false)
+        end
+    end.
+
+  Fixpoint offer_f (fuel : nat) (own : list nat) (j : jst) (x : elem) : jst :=
+    match fuel with
+    | 0 => set_stop CRoundCap (own_flight x j)
+    | S f => match offer1_f own j x with (j', true) => offer_f f own j' x | (j', false) => j' end
+    end.
+
+  Definition receive_sel_f (v : view) (W : wtr) : option (list (rec * M)) :=
+    if heads_ok (colls W) W (park_view W v) then receive_decision_f W v else None.
+
+  Definition receive1_f (j : jst) (W : wtr) : jst * bool :=
+    match receive_sel_f (j_view j) W with
+    | None => (park j W, false)
+    | Some sg =>
+        let j2 := stage j (SFire W sg None) in
+        let j3 := add_dirty (fire_dirty W (hd 0 (colls W))) (with_fired (S (j_fired j)) j2) in
+        let st := after_fire (S (j_fired j)) (negb (w_pers W)) (rcv_stays W sg (j_view j)) in
+        let j4 := fire_tail W sg None false false j3 in
+        match st with
+        | FDone => (set_own OSpent j4, false)
+        | FContinue => (j4, true)
+        | FDivergent => (set_own OFlight j4, false)
+        | FRoundCap => (set_stop CRoundCap (set_own OFlight j4), false)
+        end
+    end.
+
+  Fixpoint receive_f (fuel : nat) (j : jst) (W : wtr) : jst :=
+    match fuel with
+    | 0 => set_stop CRoundCap (set_own OFlight j)
+    | S f => match receive1_f j W with (j', true) => receive_f f j' W | (j', false) => j' end
+    end.
+
+  Definition fireable_f (W : wtr) (v : view) : option (list (rec * M)) :=
+    if heads_ok (colls W) W v then receive_decision_f W v else None.
+
+  Fixpoint find_fire_f (ws : list wtr) (v : view) : option (wtr * list (rec * M)) :=
+    match ws with
+    | [] => None
+    | W :: r => match fireable_f W v with Some sg => Some (W, sg) | None => find_fire_f r v end
+    end.
+
+  Fixpoint next_fire_in_f (cs : list nat) (v : view) : option (wtr * list (rec * M)) :=
+    match cs with
+    | [] => None
+    | c :: r => match find_fire_f (heads_of c v) v with Some f => Some f | None => next_fire_in_f r v end
+    end.
+
+  Definition next_fire_f (dirty : list nat) (v : view) : option (wtr * list (rec * M)) :=
+    next_fire_in_f (isort Nat.leb (nodup Nat.eq_dec dirty)) v.
+
+  Definition resend_f (own : list nat) (opauth : A) (j : jst) (q : pend) : jst :=
+    offer_f (S (length (v_wtrs (j_view j)))) own j (resend_elem opauth q).
+
+  Definition dstep_f (own : list nat) (opauth : A) (j : jst) : jst * bool :=
+    match j_stop j with
+    | Some _ => (j, false)
+    | None =>
+        match j_work j with
+        | q :: rest =>
+            if cap <=? j_fired j then (set_stop CRoundCap j, false)
+            else (resend_f own opauth (with_work rest j) q, true)
+        | [] =>
+            if cascades_f then
+              match next_fire_f (j_dirty j) (j_view j) with
+              | None => (j, false)
+              | Some (W, sg) =>
+                  if cap <=? j_fired j then (set_stop CRoundCap j, false)
+                  else (lift_reoffer own j W sg, true)
+              end
+            else (j, false)
+        end
+    end.
+
+  Fixpoint drain_f (fuel : nat) (own : list nat) (opauth : A) (j : jst) : jst :=
+    match fuel with
+    | 0 => set_stop CRoundCap j
+    | S f => match dstep_f own opauth j with (j', true) => drain_f f own opauth j' | (j', false) => j' end
+    end.
+
+  Definition plan_f (fuel : nat) (o : op) (v0 : view) (j : jst) : jst :=
+    match o with
+    | OProduce x c a => offer_f fuel (own_of o) j (mkElem (with_ord x (prod_ord v0 x c)) a true)
+    | OReceive W c a => receive_f fuel j (with_ords W (ords_of v0 W c))
+    | OSettle _ _ _ _ _ => j
+    end.
+
+  (* RUN-JOIN with the search of decision 118. COMMIT reads the state at
+     the end, so it stays. *)
+  Definition run_join_f (fuel : nat) (o : op) (scope : list nat) (v0 : view) : jst * option op :=
+    let own := own_of o in
+    let opauth := auth_of o in
+    let j1 := with_work (pending_of o) (touch_all own (init v0) own) in
+    if is_settle o then
+      let j3 := drain_f fuel own opauth (with_dirty scope j1) in (j3, commit o v0 j3)
+    else
+      let j3 := if cascades_f then drain_f fuel own opauth (with_dirty scope j1) else j1 in
+      match j_stop j3 with
+      | Some _ => (j3, commit o v0 j3)
+      | None =>
+          let j4 := with_dirty [] j3 in
+          if plan_at_cap (j_fired j4)
+          then (set_stop CRoundCap j4, commit o v0 (set_stop CRoundCap j4))
+          else
+            let j5 := plan_f fuel o v0 (with_fired (phase_count (j_fired j4)) j4) in
+            let j6 := drain_f fuel own opauth (with_fired (phase_count (j_fired j5)) j5) in
+            (j6, commit o v0 j6)
+      end.
+
+  (* ── 39f. The frame and the selections of the search of decision 118 ─ *)
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): free_in reads
+     the persistence of the record only, so the frame holds by conversion.
+     The old proof fails with No such goal after try reflexivity. The text
+     before:
+
+  Lemma free_in_frame : forall u u' e, recs_of (r_coll e) u' = recs_of (r_coll e) u -> free_in u' e = free_in u e.
+  Proof. intros u u' e H. unfold free_in. destruct sh; try reflexivity. unfold class_pers. rewrite H. reflexivity. Qed.
+  *)
+
+  Lemma free_in_frame : forall u u' e, recs_of (r_coll e) u' = recs_of (r_coll e) u -> free_in u' e = free_in u e.
+  Proof. intros u u' e _. reflexivity. Qed.
+
+  (* Added by decision 103 (decision 118, C6 arbitration): the tag of rule
+     (a) reads the records of the collection of the record only. *)
+  Lemma tag_f_frame : forall u u' e, recs_of (r_coll e) u' = recs_of (r_coll e) u -> tag_f u' e = tag_f u e.
+  Proof. intros u u' e H. unfold tag_f. destruct sh; try reflexivity; unfold class_pers; rewrite H; reflexivity. Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the search takes
+     the tag function, so the extension lemmas compare two tag functions as
+     well as two claim rules. The text before:
+
+  Lemma try_cands_f_ext :
+    forall fr1 fr2 g p C k1 k2 L, (forall e, In e L -> fr1 e = fr2 e) -> (forall C', k1 C' = k2 C') ->
+      try_cands_f fr1 g p C k1 L = try_cands_f fr2 g p C k2 L.
+  Proof.
+    intros fr1 fr2 g p C k1 k2 L. induction L as [| e more IH]; intros Hf Hk; [reflexivity |]. cbn [try_cands_f].
+    rewrite (IH (fun a Ha => Hf a (or_intror Ha)) Hk). unfold claim_after. rewrite (Hf e (or_introl eq_refl)), Hk.
+    reflexivity.
+  Qed.
+
+  Lemma fill_f_ext :
+    forall fr1 fr2 g ss C, (forall e, In e (pick_lists ss) -> fr1 e = fr2 e) -> fill_f fr1 g C ss = fill_f fr2 g C ss.
+  Proof.
+    intros fr1 fr2 g ss. induction ss as [| s rest IH]; intros C Hf; [reflexivity |].
+    assert (Hr : forall e, In e (pick_lists rest) -> fr1 e = fr2 e).
+    { intros e He. apply Hf. unfold pick_lists in *. cbn [flat_map]. apply in_or_app. right. exact He. }
+    destruct s as [L p | e m]; cbn [fill_f].
+    - apply try_cands_f_ext; [| intros C'; exact (IH C' Hr)].
+      intros e He. apply Hf. unfold pick_lists. cbn [flat_map]. apply in_or_app. left. exact He.
+    - rewrite (IH C Hr). reflexivity.
+  Qed.
+  *)
+
+  Lemma try_cands_f_ext :
+    forall tg1 tg2 fr1 fr2 g p C k1 k2 L,
+      (forall e, In e L -> fr1 e = fr2 e) -> (forall e, In e L -> tg1 e = tg2 e) -> (forall C', k1 C' = k2 C') ->
+      try_cands_f tg1 fr1 g p C k1 L = try_cands_f tg2 fr2 g p C k2 L.
+  Proof.
+    intros tg1 tg2 fr1 fr2 g p C k1 k2 L. induction L as [| e more IH]; intros Hf Ht Hk; [reflexivity |].
+    cbn [try_cands_f].
+    rewrite (IH (fun a Ha => Hf a (or_intror Ha)) (fun a Ha => Ht a (or_intror Ha)) Hk).
+    unfold claim_after, claimed_f. rewrite (Hf e (or_introl eq_refl)), (Ht e (or_introl eq_refl)), Hk.
+    reflexivity.
+  Qed.
+
+  Lemma fill_f_ext :
+    forall tg1 tg2 fr1 fr2 g ss C,
+      (forall e, In e (pick_lists ss) -> fr1 e = fr2 e) -> (forall e, In e (pick_lists ss) -> tg1 e = tg2 e) ->
+      fill_f tg1 fr1 g C ss = fill_f tg2 fr2 g C ss.
+  Proof.
+    intros tg1 tg2 fr1 fr2 g ss. induction ss as [| s rest IH]; intros C Hf Ht; [reflexivity |].
+    assert (Hr : forall e, In e (pick_lists rest) -> fr1 e = fr2 e).
+    { intros e He. apply Hf. unfold pick_lists in *. cbn [flat_map]. apply in_or_app. right. exact He. }
+    assert (Hr' : forall e, In e (pick_lists rest) -> tg1 e = tg2 e).
+    { intros e He. apply Ht. unfold pick_lists in *. cbn [flat_map]. apply in_or_app. right. exact He. }
+    destruct s as [L p | e m]; cbn [fill_f].
+    - apply try_cands_f_ext; [| | intros C'; exact (IH C' Hr Hr')].
+      + intros e He. apply Hf. unfold pick_lists. cbn [flat_map]. apply in_or_app. left. exact He.
+      + intros e He. apply Ht. unfold pick_lists. cbn [flat_map]. apply in_or_app. left. exact He.
+    - rewrite (IH C Hr Hr'). reflexivity.
+  Qed.
+
+  Lemma slots_cons_frame :
+    forall W v v', (forall c, In c (colls W) -> recs_of c v' = recs_of c v) -> slots_cons W v' = slots_cons W v.
+  Proof.
+    intros W v v' H. unfold slots_cons. apply map_ext_in. intros ib Hib.
+    unfold win. rewrite (H _ (bind_coll _ _ (gpairs_binds _ _ Hib))). reflexivity.
+  Qed.
+
+  Lemma slots_cons_cands :
+    forall W v e, In e (pick_lists (slots_cons W v)) -> In e (v_recs v) /\ In (r_coll e) (colls W).
+  Proof.
+    intros W v e H. unfold pick_lists, slots_cons in H. apply in_flat_map in H as (s & Hs & He).
+    apply in_map_iff in Hs as (ib & <- & Hib).
+    change (In e (visible (snd ib) (win W (b_coll (snd ib)) v))) in He.
+    apply visible_incl in He. unfold win in He. apply window_incl in He.
+    apply (Permutation_in _ (rorder_perm _)) in He. unfold recs_of in He. apply filter_In in He as [He Hc].
+    apply Nat.eqb_eq in Hc. split; [exact He |]. rewrite Hc. exact (bind_coll _ _ (gpairs_binds _ _ Hib)).
+  Qed.
+
+  (* Added by decision 103 (decision 118, C6 arbitration): the frame and the
+     candidates of the slots of GREEDY over the windows of decision 118. *)
+  Lemma slots_cons_f_frame :
+    forall W v v', (forall c, In c (colls W) -> recs_of c v' = recs_of c v) -> slots_cons_f W v' = slots_cons_f W v.
+  Proof.
+    intros W v v' H. unfold slots_cons_f. apply map_ext_in. intros ib Hib.
+    unfold win_f. rewrite (H _ (bind_coll _ _ (gpairs_binds _ _ Hib))). reflexivity.
+  Qed.
+
+  Lemma slots_cons_f_cands :
+    forall W v e, In e (pick_lists (slots_cons_f W v)) -> In e (v_recs v) /\ In (r_coll e) (colls W).
+  Proof.
+    intros W v e H. unfold pick_lists, slots_cons_f in H. apply in_flat_map in H as (s & Hs & He).
+    apply in_map_iff in Hs as (ib & <- & Hib).
+    change (In e (visible (snd ib) (win_f W (b_coll (snd ib)) v))) in He.
+    apply visible_incl in He. unfold win_f in He. apply window_f_incl in He.
+    apply (Permutation_in _ (rorder_perm _)) in He. unfold recs_of in He. apply filter_In in He as [He Hc].
+    apply Nat.eqb_eq in Hc. split; [exact He |]. rewrite Hc. exact (bind_coll _ _ (gpairs_binds _ _ Hib)).
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): GREEDY reads
+     slots_cons_f and the tag function tag_f, so the frame uses
+     slots_cons_f_frame, slots_cons_f_cands and tag_f_frame. The statement
+     does not change. The text before:
+
+  Lemma greedy_f_frame :
+    forall W v v', (forall c, In c (colls W) -> recs_of c v' = recs_of c v) -> greedy_f W v' = greedy_f W v.
+  Proof.
+    intros W v v' H. unfold greedy_f. rewrite (slots_cons_frame W v v' H). apply fill_f_ext.
+    intros e He. destruct (slots_cons_cands W v e He) as [_ Hc]. apply free_in_frame. exact (H _ Hc).
+  Qed.
+  *)
+
+  Lemma greedy_f_frame :
+    forall W v v', (forall c, In c (colls W) -> recs_of c v' = recs_of c v) -> greedy_f W v' = greedy_f W v.
+  Proof.
+    intros W v v' H. unfold greedy_f. rewrite (slots_cons_f_frame W v v' H). apply fill_f_ext.
+    - intros e He. destruct (slots_cons_f_cands W v e He) as [_ Hc]. apply free_in_frame. exact (H _ Hc).
+    - intros e He. destruct (slots_cons_f_cands W v e He) as [_ Hc]. apply tag_f_frame. exact (H _ Hc).
+  Qed.
+
+  Lemma fireable_f_frame :
+    forall W v v',
+      (forall c, In c (colls W) -> recs_of c v' = recs_of c v /\ waiters_of c v' = waiters_of c v) ->
+      fireable_f W v' = fireable_f W v.
+  Proof.
+    intros W v v' H. unfold fireable_f, heads_ok, receive_decision_f.
+    rewrite (forallb_ext_in _ (fun c => at_head W c v') (fun c => at_head W c v));
+      [| intros c Hc; exact (at_head_frame _ _ _ _ (proj2 (H c Hc)))].
+    rewrite (greedy_f_frame W v v'); [reflexivity | intros c Hc; exact (proj1 (H c Hc))].
+  Qed.
+
+  Lemma fireable_f_some :
+    forall W v sg, fireable_f W v = Some sg -> heads_ok (colls W) W v = true /\ greedy_f W v = Some sg /\ guard_ok W sg = true.
+  Proof.
+    intros W v sg H. unfold fireable_f in H. destruct (heads_ok (colls W) W v); [| discriminate].
+    unfold receive_decision_f in H. destruct (greedy_f W v) as [sg' |]; [| discriminate].
+    destruct (guard_ok W sg') eqn:Eg; [injection H as <-; split; [reflexivity | split; [reflexivity | exact Eg]] | discriminate].
+  Qed.
+
+  Lemma receive_sel_f_some :
+    forall v W sg, receive_sel_f v W = Some sg ->
+      heads_ok (colls W) W (park_view W v) = true /\ greedy_f W v = Some sg /\ guard_ok W sg = true.
+  Proof.
+    intros v W sg H. unfold receive_sel_f in H. destruct (heads_ok (colls W) W (park_view W v)); [| discriminate].
+    unfold receive_decision_f in H. destruct (greedy_f W v) as [sg' |]; [| discriminate].
+    destruct (guard_ok W sg') eqn:Eg; [injection H as <-; split; [reflexivity | split; [reflexivity | exact Eg]] | discriminate].
+  Qed.
+
+  (* A fire of OFFER with the search of decision 118: a stored waiter of the
+     collection of x at the heads of its group, the produce search and the
+     guard. *)
+  Lemma offer_pick_f_sel :
+    forall x v W p sg, offer_pick_f x v (offer_cands x v) = Some (W, p, sg) ->
+      In W (v_wtrs v) /\ In (r_coll x) (colls W) /\ heads_ok (colls W) W v = true /\
+      search_produce_f W x v = Some (p, sg) /\ guard_ok W sg = true.
+  Proof.
+    intros x v W p sg H.
+    assert (G : forall ws, incl ws (waiters_of (r_coll x) v) -> offer_pick_f x v ws = Some (W, p, sg) ->
+                  In W (waiters_of (r_coll x) v) /\ fires_with_f W x v = Some (p, sg)).
+    { induction ws as [| W0 r IH]; intros Hi Hp; [discriminate |]. cbn [offer_pick_f] in Hp.
+      destruct (fires_with_f W0 x v) as [[p0 sg0] |] eqn:Ef.
+      - injection Hp as <- <- <-. split; [exact (Hi W0 (or_introl eq_refl)) | exact Ef].
+      - apply IH; [intros a Ha; exact (Hi a (or_intror Ha)) | exact Hp]. }
+    destruct (G (offer_cands x v)) as [Hw Hf]; [| exact H |].
+    { intros a Ha. unfold offer_cands in Ha.
+      assert (Ha' : In a (worder (r_coll x) (waiters_of (r_coll x) v)))
+        by (destruct sh; try exact Ha; apply filter_In in Ha as [Ha _]; exact Ha).
+      exact (Permutation_in _ (worder_perm _ _) Ha'). }
+    destruct (waiters_of_coll _ _ _ Hw) as [HwIn Hc].
+    unfold fires_with_f in Hf. destruct (heads_ok (heads_required W x) W v) eqn:Eh; [| discriminate].
+    destruct (search_produce_f W x v) as [[p0 sg0] |] eqn:Es; [| discriminate].
+    destruct (guard_ok W sg0) eqn:Eg; [| discriminate]. injection Hf as -> ->.
+    unfold heads_required in Eh. exact (conj HwIn (conj Hc (conj Eh (conj eq_refl Eg)))).
+  Qed.
+
+  Lemma offer_pick_f_none : forall x v ws, offer_pick_f x v ws = None -> forall W, In W ws -> fires_with_f W x v = None.
+  Proof.
+    intros x v ws. induction ws as [| W0 r IH]; intros H W HW; [destruct HW |]. cbn [offer_pick_f] in H.
+    destruct (fires_with_f W0 x v) as [[p sg] |] eqn:E; [discriminate |].
+    destruct HW as [<- | HW]; [exact E | exact (IH H W HW)].
+  Qed.
+
+  (* The shape of a produce fire of the search of decision 118. *)
+  Lemma search_produce_f_rel :
+    forall W x v p sg, search_produce_f W x v = Some (p, sg) -> slots_rel (slots_prod_f W x p v) sg.
+  Proof.
+    intros W x v p sg H. unfold search_produce_f in H. apply search_at_f_some in H as (i & b & m & _ & _ & _ & _ & Hf).
+    exact (fill_f_shape _ _ _ _ _ Hf).
+  Qed.
+
+  (* NEXT-FIRE with the search of decision 118 selects a stored waiter and
+     stored records of its collections. *)
+  Lemma next_fire_f_sel :
+    forall d v W sg, next_fire_f d v = Some (W, sg) ->
+      In W (v_wtrs v) /\ fireable_f W v = Some sg /\ (forall e, In e (map fst sg) -> In e (v_recs v) /\ In (r_coll e) (colls W)).
+  Proof.
+    intros d v W sg H. unfold next_fire_f in H.
+    assert (G : forall cs, next_fire_in_f cs v = Some (W, sg) -> In W (v_wtrs v) /\ fireable_f W v = Some sg).
+    { induction cs as [| c r IH]; intros Hn; [discriminate |]. cbn [next_fire_in_f] in Hn.
+      destruct (find_fire_f (heads_of c v) v) as [[W0 sg0] |] eqn:Ef; [| exact (IH Hn)].
+      injection Hn as <- <-.
+      assert (G2 : forall ws, incl ws (v_wtrs v) -> find_fire_f ws v = Some (W0, sg0) -> In W0 (v_wtrs v) /\ fireable_f W0 v = Some sg0).
+      { induction ws as [| W1 r1 IH1]; intros Hi Hf; [discriminate |]. cbn [find_fire_f] in Hf.
+        destruct (fireable_f W1 v) as [sg1 |] eqn:E1.
+        - injection Hf as <- <-. split; [exact (Hi W1 (or_introl eq_refl)) | exact E1].
+        - apply IH1; [intros y Hy; exact (Hi y (or_intror Hy)) | exact Hf]. }
+      apply (G2 (heads_of c v)); [| exact Ef]. intros y Hy. unfold heads_of in Hy. apply filter_In in Hy as [Hy _].
+      apply (Permutation_in _ (worder_perm _ _)) in Hy. unfold waiters_of in Hy. apply filter_In in Hy as [Hy _]. exact Hy. }
+    destruct (G _ H) as [Hw Hf]. split; [exact Hw | split; [exact Hf |]].
+    intros e He. apply (greedy_f_colls W v sg); [| exact He]. exact (proj1 (proj2 (fireable_f_some W v sg Hf))).
+  Qed.
+
+  (* NEXT-FIRE completeness: when it finds nothing, no stored waiter with a
+     dirty collection is fireable. *)
+  Lemma next_fire_f_none :
+    forall d v W c, next_fire_f d v = None -> In W (v_wtrs v) -> In c (colls W) -> In c d -> fireable_f W v = None.
+  Proof.
+    intros d v W c H HW Hc Hd. destruct (fireable_f W v) as [sg |] eqn:Ef; [exfalso | reflexivity].
+    unfold next_fire_f in H.
+    assert (Hcs : In c (isort Nat.leb (nodup Nat.eq_dec d))).
+    { apply (Permutation_in _ (Permutation_sym (isort_perm _ Nat.leb _))). apply nodup_In. exact Hd. }
+    assert (G : forall cs, next_fire_in_f cs v = None -> In c cs -> find_fire_f (heads_of c v) v = None).
+    { induction cs as [| c0 r IH]; intros Hn Hin; [destruct Hin |]. cbn [next_fire_in_f] in Hn.
+      destruct (find_fire_f (heads_of c0 v) v) as [f |] eqn:Ef0; [discriminate |].
+      destruct Hin as [<- | Hin]; [exact Ef0 | exact (IH Hn Hin)]. }
+    pose proof (G _ H Hcs) as Hf.
+    assert (Hh : In W (heads_of c v)).
+    { unfold heads_of. apply filter_In. split.
+      - apply (Permutation_in _ (Permutation_sym (worder_perm c _))). unfold waiters_of. apply filter_In.
+        split; [exact HW | apply mem_spec; exact Hc].
+      - unfold fireable_f in Ef. destruct (heads_ok (colls W) W v) eqn:Eh; [| discriminate].
+        unfold heads_ok in Eh. exact (proj1 (forallb_forall _ _) Eh c Hc). }
+    assert (G2 : forall ws, find_fire_f ws v = None -> In W ws -> False).
+    { induction ws as [| W1 r1 IH1]; intros Hn Hin; [destruct Hin |]. cbn [find_fire_f] in Hn.
+      destruct (fireable_f W1 v) as [sg1 |] eqn:E1; [discriminate |].
+      destruct Hin as [<- | Hin]; [rewrite Ef in E1; discriminate | exact (IH1 Hn Hin)]. }
+    exact (G2 _ Hf Hh).
+  Qed.
+
+  (* ── 39g. The cascade invariant over the search of decision 118 ─────── *)
+
+  (* INV_head and CI over the search of decision 118. *)
+  Definition INV_head_f (v : view) : Prop := forall W, In W (v_wtrs v) -> fireable_f W v = None.
+
+  Definition CI_f (j : jst) : Prop :=
+    forall W, In W (v_wtrs (j_view j)) -> fireable_f W (j_view j) <> None ->
+      exists c, In c (colls W) /\ In c (j_dirty j).
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): rule (a) rules
+     out F-118-2, and this section keeps UI. The text before:
+
+  (* The records of a transaction come from a universe U: the start view,
+     the pending second sends and the own element. Under decision 118 a set
+     can push one record twice. A non-persistent representative of a class
+     with a persistent member binds two positions of one peek fire. So the
+     live identities can repeat, and WF does not hold on a set. UI holds
+     instead: the records lie in U, the identities of U are distinct, and
+     the waiter identities are distinct. *)
+  *)
+
+  (* The records of a transaction come from a universe U: the start view,
+     the pending second sends and the own element. Under the first claim
+     rule of decision 118 a set could push one record twice: a
+     non-persistent member of a class with a persistent member claimed
+     nothing, so it could bind two positions of one peek fire (F-118-2).
+     Rule (a) of the C6 arbitration rules this out. Such a member claims its
+     record, so it binds one position (headline 19). This section keeps
+     the invariant UI. UI does not ask for distinct identities in the view,
+     and its proofs hold under both rules. The records lie in U, the
+     identities of U are distinct, and the waiter identities are distinct. *)
+  Definition id_inj (U : list rec) : Prop := forall a b, In a U -> In b U -> r_id a = r_id b -> a = b.
+
+  Definition UI (U : list rec) (j : jst) : Prop :=
+    incl (v_recs (j_view j)) U /\ (forall q, In q (j_work j) -> In (p_rec q) U) /\ NoDup (map w_id (v_wtrs (j_view j))).
+
+  Definition own_recs (o : op) (v0 : view) : list rec :=
+    match o with OProduce x c _ => [with_ord x (prod_ord v0 x c)] | OReceive _ _ _ | OSettle _ _ _ _ _ => [] end.
+
+  Definition start_univ (o : op) (v0 : view) : list rec := v_recs v0 ++ map p_rec (pending_of o) ++ own_recs o v0.
+
+  Lemma start_univ_inj : forall o v0, start_ok o v0 -> id_inj (start_univ o v0).
+  Proof.
+    intros o v0 (Nd & _ & Hown) ra rb Ha Hb E. apply (nodup_map_inj _ _ r_id (start_univ o v0) ra rb); [| exact Ha | exact Hb | exact E].
+    unfold start_univ. rewrite !map_app, map_map, app_assoc. apply nodup_app_iff. split; [exact Nd |].
+    destruct o as [x c a0 | W c a0 | key sd pd rs a0]; cbn [own_recs map]; [| split; [constructor | intros i _ []] ..].
+    split; [constructor; [intros [] | constructor] |].
+    intros i Hi [Hx | []]. cbn [with_ord r_id] in Hx. subst i. cbn [pending_of map] in Hi. rewrite app_nil_r in Hi.
+    exact (Hown Hi).
+  Qed.
+
+  Lemma CI_f_ctl : forall j j', CI_f j -> j_view j' = j_view j -> j_dirty j' = j_dirty j -> CI_f j'.
+  Proof. intros j j' H Vj D W HW Hf. rewrite Vj in HW, Hf. rewrite D. exact (H W HW Hf). Qed.
+
+  Lemma INV_head_f_CI_f : forall j, INV_head_f (j_view j) -> CI_f j.
+  Proof. intros j H W HW Hf. exfalso. exact (Hf (H W HW)). Qed.
+
+  Lemma CI_f_change :
+    forall j j' D,
+      CI_f j -> incl (v_wtrs (j_view j')) (v_wtrs (j_view j)) ->
+      (forall c, ~ In c D -> recs_of c (j_view j') = recs_of c (j_view j) /\ waiters_of c (j_view j') = waiters_of c (j_view j)) ->
+      incl D (j_dirty j') -> incl (j_dirty j) (j_dirty j') -> CI_f j'.
+  Proof.
+    intros j j' D H Hw Hf HD Hd W HW Hfr.
+    destruct (existsb (fun c => mem c D) (colls W)) eqn:E.
+    - apply existsb_exists in E as (c & Hc & Hm). apply mem_spec in Hm. exists c. split; [exact Hc | exact (HD c Hm)].
+    - assert (Hn : forall c, In c (colls W) -> ~ In c D).
+      { intros c Hc Hd'. assert (Ht : existsb (fun c => mem c D) (colls W) = true)
+          by (apply existsb_exists; exists c; split; [exact Hc | apply mem_spec; exact Hd']).
+        rewrite E in Ht. discriminate. }
+      rewrite (fireable_f_frame W (j_view j) (j_view j')) in Hfr; [| intros c Hc; exact (Hf c (Hn c Hc))].
+      destruct (H W (Hw W HW) Hfr) as (c & Hc & Hcd). exists c. split; [exact Hc | exact (Hd c Hcd)].
+  Qed.
+
+  (* frame_remove with the records in a universe with distinct identities. *)
+  Lemma frame_remove_u :
+    forall U v v' W R c,
+      id_inj U -> incl (v_recs v) U -> NoDup (map w_id (v_wtrs v)) ->
+      (forall r, In r R -> In r U /\ In (r_coll r) (colls W)) ->
+      (In W (v_wtrs v) \/ ~ In (w_id W) (map w_id (v_wtrs v))) ->
+      v_recs v' = remove_all R (v_recs v) ->
+      v_wtrs v' = (if w_pers W then v_wtrs v else del_wtr (w_id W) (v_wtrs v)) ->
+      ~ In c (colls W) ->
+      recs_of c v' = recs_of c v /\ waiters_of c v' = waiters_of c v.
+  Proof.
+    intros U v v' W R c Hu Hv Hw HR HW Vr Vw Hc. split.
+    - unfold recs_of. rewrite Vr. apply filter_coll_remove_all. intros r e Hr' He E Ec.
+      destruct (HR r Hr') as [Hru Hrc]. assert (e = r) by exact (Hu e r (Hv e He) Hru E). subst e.
+      apply Hc. rewrite <- Ec. exact Hrc.
+    - unfold waiters_of. rewrite Vw. destruct (w_pers W); [reflexivity |].
+      apply filter_mem_del_wtr. intros W' HW' E. apply mem_false. intros Hc'.
+      destruct HW as [HW | HW].
+      + assert (W' = W) by exact (nodup_map_inj _ _ w_id _ W' W Hw HW' HW E). subst W'. exact (Hc Hc').
+      + apply HW. rewrite <- E. apply in_map. exact HW'.
+  Qed.
+
+  Lemma CI_f_touch_all : forall own cs j, CI_f j -> CI_f (touch_all own j cs).
+  Proof.
+    intros own cs j H. destruct (touch_all_spec own cs j) as (bs & _ & Vw & _ & D & _).
+    destruct (bumps_view bs (j_view j)) as [Br Bw].
+    apply (CI_f_change j _ [] H); [rewrite Vw, Bw; apply incl_refl | | intros a [] | rewrite D; apply incl_refl].
+    intros c _. unfold recs_of, waiters_of. rewrite Vw, Br, Bw. split; reflexivity.
+  Qed.
+
+  Lemma CI_f_store : forall own j x, CI_f j -> CI_f (store own j x).
+  Proof.
+    intros own j x H. destruct (store_spec own j x) as (bs & _ & Vw & _ & D & _).
+    destruct (bumps_view bs (j_view j)) as [Br Bw].
+    apply (CI_f_change j _ [r_coll (e_rec x)] H).
+    - rewrite Vw, apply_all_app. cbn [apply_all fold_left apply v_wtrs]. rewrite Bw. apply incl_refl.
+    - intros c Hc. rewrite Vw, apply_all_app. cbn [apply_all fold_left apply]. unfold recs_of, waiters_of.
+      cbn [v_recs v_wtrs filter]. rewrite Br, Bw.
+      destruct (Nat.eqb_spec (r_coll (e_rec x)) c) as [E | E]; [exfalso; apply Hc; left; exact E |].
+      split; reflexivity.
+    - rewrite D. intros a [<- | []]. left. reflexivity.
+    - rewrite D. intros a Ha. right. exact Ha.
+  Qed.
+
+  Lemma fireable_f_park :
+    forall W W' v, w_id W' <> w_id W -> fireable_f W' (park_view W v) <> None -> fireable_f W' v <> None.
+  Proof.
+    intros W W' v Hne H. unfold fireable_f in *.
+    destruct (heads_ok (colls W') W' (park_view W v)) eqn:E; [| exfalso; exact (H eq_refl)].
+    assert (Eh : heads_ok (colls W') W' v = true).
+    { unfold heads_ok in *. apply forallb_forall. intros c Hc. apply (at_head_park W W' c v Hne).
+      exact (proj1 (forallb_forall _ _) E c Hc). }
+    rewrite Eh. unfold receive_decision_f in *.
+    rewrite (greedy_f_frame W' v (park_view W v)) in H by (intros c _; reflexivity). exact H.
+  Qed.
+
+  Lemma CI_f_park :
+    forall j W, CI_f j -> receive_sel_f (j_view j) W = None -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) -> CI_f (park j W).
+  Proof.
+    intros j W H Hs Hf W' HW' Hfr. change (In W' (W :: v_wtrs (j_view j))) in HW'.
+    change (fireable_f W' (park_view W (j_view j)) <> None) in Hfr. change (exists c, In c (colls W') /\ In c (j_dirty j)).
+    destruct HW' as [<- | HW'].
+    - exfalso. apply Hfr. unfold fireable_f. unfold receive_sel_f in Hs.
+      destruct (heads_ok (colls W) W (park_view W (j_view j))); [| reflexivity].
+      unfold receive_decision_f in *. rewrite (greedy_f_frame W (j_view j) (park_view W (j_view j))) by (intros c _; reflexivity).
+      exact Hs.
+    - assert (Hne : w_id W' <> w_id W) by (intros E; apply Hf; rewrite <- E; apply in_map; exact HW').
+      exact (H W' HW' (fireable_f_park W W' (j_view j) Hne Hfr)).
+  Qed.
+
+  Lemma CI_f_fire_tail :
+    forall U W sg inc oi fl j, CI_f j -> id_inj U -> incl (v_recs (j_view j)) U ->
+      (forall e, In e (map fst sg) -> In (r_coll e) (j_dirty j)) -> CI_f (fire_tail W sg inc oi fl j).
+  Proof.
+    intros U W sg inc oi fl j H Hu Hv Hd.
+    destruct (fire_tail_spec W sg inc oi fl j) as (rs & _ & Vj & _ & D & _ & _ & _ & _ & Hrs & _).
+    apply (CI_f_change j _ (map r_coll rs) H).
+    - rewrite Vj. apply incl_refl.
+    - intros c Hc. unfold recs_of, waiters_of. rewrite Vj. cbn [v_recs v_wtrs]. split; [| reflexivity].
+      apply filter_coll_remove_all. intros r e Hr He E Ec. apply Hc.
+      destruct (Hrs r Hr) as (Hrv & _ & _). assert (e = r) by exact (Hu e r (Hv e He) (Hv r Hrv) E).
+      subst e. rewrite <- Ec. apply in_map. exact Hr.
+    - intros a Ha. apply in_map_iff in Ha as (r & <- & Hr). rewrite D.
+      destruct (Hrs r Hr) as (_ & _ & k & e0 & m0 & Hk & Hc). rewrite Hc. apply Hd. apply in_map_iff.
+      exists (e0, m0). split; [reflexivity | exact (nth_error_In _ _ Hk)].
+    - rewrite D. apply incl_refl.
+  Qed.
+
+  Lemma CI_f_quiescent : forall j, CI_f j -> next_fire_f (j_dirty j) (j_view j) = None -> INV_head_f (j_view j).
+  Proof.
+    intros j H Hn W HW. destruct (fireable_f W (j_view j)) as [sg |] eqn:Ef; [| reflexivity].
+    destruct (H W HW) as (c & Hc & Hd); [rewrite Ef; discriminate |].
+    rewrite <- Ef. exact (next_fire_f_none _ _ W c Hn HW Hc Hd).
+  Qed.
+
+  (* The universe of the records: every step keeps the records in U and the
+     waiter identities distinct. A step other than a park adds no waiter. *)
+  Lemma UI_ctl : forall U j j', UI U j -> j_view j' = j_view j -> j_work j' = j_work j -> UI U j'.
+  Proof. intros U j j' (Hv & Hk & Hw) Vj Wj. unfold UI. rewrite Vj, Wj. exact (conj Hv (conj Hk Hw)). Qed.
+
+  Lemma UI_store :
+    forall U own j x, UI U j -> In (e_rec x) U -> UI U (store own j x) /\ v_wtrs (j_view (store own j x)) = v_wtrs (j_view j).
+  Proof.
+    intros U own j x (Hv & Hk & Hw) Hx. destruct (store_spec own j x) as (bs & _ & Vw & _ & _ & Wk & _).
+    destruct (bumps_view bs (j_view j)) as [Br Bw].
+    unfold UI. rewrite Vw, Wk, apply_all_app. cbn [apply_all fold_left apply v_recs v_wtrs]. rewrite Br, Bw.
+    split; [| reflexivity]. split; [| split; [exact Hk | exact Hw]].
+    intros a [<- | Ha]; [exact Hx | exact (Hv a Ha)].
+  Qed.
+
+  Lemma UI_park : forall U j W, UI U j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) -> UI U (park j W).
+  Proof.
+    intros U j W (Hv & Hk & Hw) Hf. unfold UI, park. cbn [set_own stage j_view j_work apply v_recs v_wtrs map].
+    split; [exact Hv | split; [exact Hk | constructor; [exact Hf | exact Hw]]].
+  Qed.
+
+  Lemma UI_fire_tail :
+    forall U W sg inc oi fl j, UI U j -> (forall e, In e (map fst sg) -> In e U) ->
+      UI U (fire_tail W sg inc oi fl j) /\ v_wtrs (j_view (fire_tail W sg inc oi fl j)) = v_wtrs (j_view j).
+  Proof.
+    intros U W sg inc oi fl j (Hv & Hk & Hw) Hsg.
+    destruct (fire_tail_spec W sg inc oi fl j) as (rs & _ & Vj & _ & _ & Pw & _).
+    unfold UI. rewrite Vj. cbn [v_recs v_wtrs]. split; [| reflexivity].
+    split; [intros a Ha; exact (Hv a (remove_all_incl _ _ a Ha)) |]. split; [| exact Hw].
+    intros q Hq. apply (Permutation_in _ Pw) in Hq. apply in_app_or in Hq as [Hq | Hq]; [| exact (Hk q Hq)].
+    destruct (w_peek W); [| destruct Hq]. exact (Hsg _ (proj1 (np_results_spec sg inc oi fl q Hq))).
+  Qed.
+
+  Lemma UI_fire :
+    forall U j bs W sg ainc j3, UI U j ->
+      j_view j3 = apply (apply_all (j_view j) (map SBump bs)) (SFire W sg ainc) -> j_work j3 = j_work j ->
+      UI U j3 /\ incl (v_wtrs (j_view j3)) (v_wtrs (j_view j)).
+  Proof.
+    intros U j bs W sg ainc j3 (Hv & Hk & Hw) V3 W3. destruct (bumps_view bs (j_view j)) as [Br Bw].
+    unfold UI. rewrite V3, W3. cbn [apply v_recs v_wtrs]. rewrite Br, Bw.
+    assert (Hi : incl (if w_pers W then v_wtrs (j_view j) else del_wtr (w_id W) (v_wtrs (j_view j))) (v_wtrs (j_view j)))
+      by (destruct (w_pers W); [apply incl_refl | apply del_wtr_incl]).
+    split; [| exact Hi]. split; [intros a Ha; exact (Hv a (remove_all_incl _ _ a Ha)) |]. split; [exact Hk |].
+    destruct (w_pers W); [exact Hw | apply nodup_wtr_ids_del; exact Hw].
+  Qed.
+
+  Lemma UI_offer1_f :
+    forall U own j x, UI U j -> In (e_rec x) U ->
+      UI U (fst (offer1_f own j x)) /\ incl (v_wtrs (j_view (fst (offer1_f own j x)))) (v_wtrs (j_view j)).
+  Proof.
+    intros U own j x H Hx. unfold offer1_f.
+    destruct (offer_pick_f (e_rec x) (j_view j) (offer_cands (e_rec x) (j_view j))) as [[[W p] sg] |] eqn:Ep.
+    2: { cbn [fst]. destruct (UI_store U own j x H Hx) as [H1 E1]. split; [exact H1 | rewrite E1; apply incl_refl]. }
+    destruct (offer_pick_f_sel _ _ _ _ _ Ep) as (_ & _ & _ & Hsp & _).
+    pose proof (search_produce_f_rel _ _ _ _ _ Hsp) as Hrel.
+    assert (Hsg : forall e, In e (map fst sg) -> In e U).
+    { intros e He. destruct (slots_prod_f_colls W (e_rec x) p (j_view j) sg Hrel e He) as [-> | (Hv & _ & _)];
+        [exact Hx | exact (proj1 H e Hv)]. }
+    destruct (touch_all_spec own (colls W) j) as (bs & _ & V1 & _ & _ & W1 & _).
+    set (j3 := add_dirty (fire_dirty W (r_coll (e_rec x)))
+                 (with_fired (S (j_fired j)) (stage (touch_all own j (colls W)) (SFire W sg (Some (p, e_auth x)))))).
+    destruct (UI_fire U j bs W sg (Some (p, e_auth x)) j3 H) as [H3 I3].
+    { unfold j3. cbn [add_dirty with_dirty with_fired stage j_view]. rewrite V1. reflexivity. }
+    { unfold j3. cbn [add_dirty with_dirty with_fired stage j_work]. exact W1. }
+    destruct (UI_fire_tail U W sg (Some p) (e_own x) true j3 H3 Hsg) as [H4 E4].
+    assert (I4 : incl (v_wtrs (j_view (fire_tail W sg (Some p) (e_own x) true j3))) (v_wtrs (j_view j))) by (rewrite E4; exact I3).
+    destruct (w_peek W); [split; [exact H4 | exact I4] |].
+    destruct (after_fire (S (j_fired j)) (negb (r_pers (e_rec x)) && negb false) (w_pers W));
+      cbn [fst]; unfold own_flight; try destruct (e_own x);
+      (split; [apply (UI_ctl U _ _ H4); reflexivity | exact I4]).
+  Qed.
+
+  Lemma UI_offer_f :
+    forall fuel U own j x, UI U j -> In (e_rec x) U ->
+      UI U (offer_f fuel own j x) /\ incl (v_wtrs (j_view (offer_f fuel own j x))) (v_wtrs (j_view j)).
+  Proof.
+    induction fuel as [| f IH]; intros U own j x H Hx; cbn [offer_f].
+    - unfold own_flight. destruct (e_own x); (split; [apply (UI_ctl U _ _ H); reflexivity | apply incl_refl]).
+    - destruct (UI_offer1_f U own j x H Hx) as [H1 I1]. destruct (offer1_f own j x) as [j' []]; cbn [fst] in H1, I1.
+      + destruct (IH U own j' x H1 Hx) as [H2 I2]. split; [exact H2 | exact (incl_tran I2 I1)].
+      + exact (conj H1 I1).
+  Qed.
+
+  Lemma UI_receive1_f :
+    forall U j W, UI U j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) ->
+      UI U (fst (receive1_f j W)) /\
+      (snd (receive1_f j W) = true -> ~ In (w_id W) (map w_id (v_wtrs (j_view (fst (receive1_f j W)))))).
+  Proof.
+    intros U j W H Hw. unfold receive1_f.
+    destruct (receive_sel_f (j_view j) W) as [sg |] eqn:Er; [| split; [exact (UI_park U j W H Hw) | discriminate]].
+    destruct (receive_sel_f_some _ _ _ Er) as (_ & Hgr & _).
+    assert (Hsg : forall e, In e (map fst sg) -> In e U)
+      by (intros e He; exact (proj1 H e (proj1 (greedy_f_colls W (j_view j) sg Hgr e He)))).
+    set (j3 := add_dirty (fire_dirty W (hd 0 (colls W))) (with_fired (S (j_fired j)) (stage j (SFire W sg None)))).
+    destruct (UI_fire U j [] W sg None j3 H) as [H3 I3]; [reflexivity | reflexivity |].
+    destruct (UI_fire_tail U W sg None false false j3 H3 Hsg) as [H4 E4].
+    assert (Hws : ~ In (w_id W) (map w_id (v_wtrs (j_view (fire_tail W sg None false false j3))))).
+    { rewrite E4. intros Hin. apply Hw. apply in_map_iff in Hin as (W' & E & HW'). rewrite <- E. apply in_map.
+      exact (I3 W' HW'). }
+    destruct (after_fire (S (j_fired j)) (negb (w_pers W)) (rcv_stays W sg (j_view j)));
+      cbn [fst snd]; (split; [apply (UI_ctl U _ _ H4); reflexivity | try discriminate]); intros _; exact Hws.
+  Qed.
+
+  Lemma UI_receive_f :
+    forall fuel U j W, UI U j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) -> UI U (receive_f fuel j W).
+  Proof.
+    induction fuel as [| f IH]; intros U j W H Hw; cbn [receive_f]; [apply (UI_ctl U _ _ H); reflexivity |].
+    destruct (UI_receive1_f U j W H Hw) as [H1 H2]. destruct (receive1_f j W) as [j' []]; cbn [fst snd] in H1, H2;
+      [exact (IH U j' W H1 (H2 eq_refl)) | exact H1].
+  Qed.
+
+  Lemma UI_lift_reoffer :
+    forall U own j W sg, UI U j -> (forall e, In e (map fst sg) -> In e U) ->
+      UI U (lift_reoffer own j W sg) /\ incl (v_wtrs (j_view (lift_reoffer own j W sg))) (v_wtrs (j_view j)).
+  Proof.
+    intros U own j W sg H Hsg. unfold lift_reoffer.
+    destruct (nth_error sg (reoffer_pos sg)) as [[rv mv] |] eqn:Hn; [| split; [exact H | apply incl_refl]].
+    destruct (touch_all_spec own (colls W) j) as (bs & _ & V1 & _ & _ & W1 & _).
+    destruct (stage_all_fields (lift_ops rv) (touch_all own j (colls W))) as (_ & V2 & _ & _ & W2 & _).
+    set (j4 := add_dirty (fire_dirty W (r_coll rv)) (with_fired (S (j_fired j))
+                 (stage (stage_all (touch_all own j (colls W)) (lift_ops rv)) (SFire W sg (Some (reoffer_pos sg, own_auth rv)))))).
+    assert (H4 : UI U j4 /\ incl (v_wtrs (j_view j4)) (v_wtrs (j_view j))).
+    { destruct H as (Hv & Hk & Hw).
+      assert (Hl : forall v0, v_wtrs (apply_all v0 (lift_ops rv)) = v_wtrs v0)
+        by (intros v0; unfold lift_ops; destruct (r_pers rv); reflexivity).
+      assert (Vr : v_recs (j_view j4) =
+                   remove_all ((if r_pers rv then [] else [rv]) ++ removed sg (Some (reoffer_pos sg, own_auth rv))) (v_recs (j_view j))).
+      { unfold j4. cbn [add_dirty with_dirty with_fired stage j_view]. rewrite V2, V1.
+        exact (lift_fire_recs (j_view j) bs W sg (reoffer_pos sg) (own_auth rv) rv mv Hn). }
+      assert (Vw : v_wtrs (j_view j4) = (if w_pers W then v_wtrs (j_view j) else del_wtr (w_id W) (v_wtrs (j_view j)))).
+      { unfold j4. cbn [add_dirty with_dirty with_fired stage j_view apply v_wtrs]. rewrite V2, V1, Hl.
+        rewrite (proj2 (bumps_view bs (j_view j))). reflexivity. }
+      assert (Wk : j_work j4 = j_work j) by (unfold j4; cbn [add_dirty with_dirty with_fired stage j_work]; rewrite W2; exact W1).
+      unfold UI. rewrite Vr, Vw, Wk.
+      assert (Hi : incl (if w_pers W then v_wtrs (j_view j) else del_wtr (w_id W) (v_wtrs (j_view j))) (v_wtrs (j_view j)))
+        by (destruct (w_pers W); [apply incl_refl | apply del_wtr_incl]).
+      split; [| exact Hi]. split; [intros a Ha; exact (Hv a (remove_all_incl _ _ a Ha)) |]. split; [exact Hk |].
+      destruct (w_pers W); [exact Hw | apply nodup_wtr_ids_del; exact Hw]. }
+    destruct H4 as [H4 I4].
+    destruct (UI_fire_tail U W sg (Some (reoffer_pos sg)) false (negb (r_pers rv)) j4 H4 Hsg) as [H5 E5].
+    assert (I5 : incl (v_wtrs (j_view (fire_tail W sg (Some (reoffer_pos sg)) false (negb (r_pers rv)) j4))) (v_wtrs (j_view j)))
+      by (rewrite E5; exact I4).
+    destruct (after_fire (S (j_fired j)) (negb (r_pers rv) && negb (w_peek W)) (w_pers W));
+      (split; [apply (UI_ctl U _ _ H5); reflexivity | exact I5]).
+  Qed.
+
+  Lemma UI_dstep_f :
+    forall U own a j, UI U j -> UI U (fst (dstep_f own a j)) /\ incl (v_wtrs (j_view (fst (dstep_f own a j)))) (v_wtrs (j_view j)).
+  Proof.
+    intros U own a j H. unfold dstep_f. destruct (j_stop j); [split; [exact H | apply incl_refl] |].
+    destruct (j_work j) as [| q rest] eqn:Ew.
+    - destruct cascades_f; [| split; [exact H | apply incl_refl]].
+      destruct (next_fire_f (j_dirty j) (j_view j)) as [[W sg] |] eqn:En; [| split; [exact H | apply incl_refl]].
+      destruct (cap <=? j_fired j); [cbn [fst]; split; [apply (UI_ctl U _ _ H); reflexivity | apply incl_refl] |]. cbn [fst].
+      destruct (next_fire_f_sel _ _ _ _ En) as (_ & _ & Hsg).
+      apply UI_lift_reoffer; [exact H |]. intros e He. exact (proj1 H e (proj1 (Hsg e He))).
+    - destruct (cap <=? j_fired j); [cbn [fst]; split; [apply (UI_ctl U _ _ H); reflexivity | apply incl_refl] |]. cbn [fst].
+      destruct H as (Hv & Hk & Hw).
+      assert (H0 : UI U (with_work rest j)).
+      { unfold UI. cbn [with_work j_view j_work]. split; [exact Hv |]. split; [| exact Hw].
+        intros q0 Hq0. apply Hk. rewrite Ew. right. exact Hq0. }
+      assert (Hq : In (p_rec q) U) by (apply Hk; rewrite Ew; left; reflexivity).
+      unfold resend_f. exact (UI_offer_f _ U own (with_work rest j) (resend_elem a q) H0 Hq).
+  Qed.
+
+  Lemma UI_drain_f :
+    forall fuel U own a j, UI U j -> UI U (drain_f fuel own a j) /\ incl (v_wtrs (j_view (drain_f fuel own a j))) (v_wtrs (j_view j)).
+  Proof.
+    induction fuel as [| f IH]; intros U own a j H; cbn [drain_f];
+      [split; [apply (UI_ctl U _ _ H); reflexivity | apply incl_refl] |].
+    destruct (UI_dstep_f U own a j H) as [H1 I1]. destruct (dstep_f own a j) as [j' []]; cbn [fst] in H1, I1.
+    - destruct (IH U own a j' H1) as [H2 I2]. split; [exact H2 | exact (incl_tran I2 I1)].
+    - exact (conj H1 I1).
+  Qed.
+
+  (* The end of a drain without a stop: no pending work, and NEXT-FIRE finds
+     nothing (a discipline that cascades). *)
+  Lemma dstep_f_false :
+    forall own a j, snd (dstep_f own a j) = false -> j_stop (fst (dstep_f own a j)) = None ->
+      j_work (fst (dstep_f own a j)) = [] /\
+      (cascades_f = true -> next_fire_f (j_dirty (fst (dstep_f own a j))) (j_view (fst (dstep_f own a j))) = None).
+  Proof.
+    intros own a j. unfold dstep_f. destruct (j_stop j) as [c |] eqn:Es; cbn [fst snd].
+    { intros _ H. rewrite Es in H. discriminate. }
+    destruct (j_work j) as [| q rest] eqn:Ew.
+    - destruct cascades_f eqn:Esc; cbn [fst snd]; [| intros _ _; split; [exact Ew | intros H; discriminate]].
+      destruct (next_fire_f (j_dirty j) (j_view j)) as [[W sg] |] eqn:En; cbn [fst snd].
+      + destruct (cap <=? j_fired j); cbn [fst snd]; [intros _ H; cbn in H; discriminate | intros H; discriminate].
+      + intros _ _. split; [exact Ew | intros _; exact En].
+    - destruct (cap <=? j_fired j); cbn [fst snd]; [intros _ H; cbn in H; discriminate | intros H; discriminate].
+  Qed.
+
+  Lemma drain_f_end :
+    forall fuel own a j, j_stop (drain_f fuel own a j) = None ->
+      j_work (drain_f fuel own a j) = [] /\
+      (cascades_f = true -> next_fire_f (j_dirty (drain_f fuel own a j)) (j_view (drain_f fuel own a j)) = None).
+  Proof.
+    induction fuel as [| f IH]; intros own a j H; cbn [drain_f] in H |- *; [cbn in H; discriminate |].
+    pose proof (dstep_f_false own a j) as Hd. revert H Hd.
+    destruct (dstep_f own a j) as [j' []]; cbn [fst snd]; intros H Hd; [exact (IH own a j' H) | exact (Hd eq_refl H)].
+  Qed.
+
+  Lemma run_join_f_work :
+    forall fuel o scope v0, j_stop (fst (run_join_f fuel o scope v0)) = None -> j_work (fst (run_join_f fuel o scope v0)) = [].
+  Proof.
+    intros fuel o scope v0. unfold run_join_f.
+    set (j1 := with_work (pending_of o) (touch_all (own_of o) (init v0) (own_of o))).
+    destruct (is_settle o); [cbn [fst]; intros H; exact (proj1 (drain_f_end _ _ _ _ H)) |].
+    set (j3 := if cascades_f then drain_f fuel (own_of o) (auth_of o) (with_dirty scope j1) else j1).
+    destruct (j_stop j3) eqn:Es; [cbn [fst]; intros H; rewrite Es in H; discriminate |].
+    destruct (plan_at_cap (j_fired (with_dirty [] j3))); [cbn [fst]; intros H; cbn in H; discriminate |].
+    cbn [fst]. intros H. exact (proj1 (drain_f_end _ _ _ _ H)).
+  Qed.
+
+  Section CascadeRuleF.
+    (* The rule of the cascade (plan 4.9) for the engine of decision 118.
+       Headline 20 discharges it from fire_dirty. *)
+    Hypothesis fire_dirty_covers_f : forall W c, incl (colls W) (fire_dirty W c).
+
+    Lemma CI_f_fire :
+      forall U j j3 W R c_in,
+        CI_f j -> id_inj U -> UI U j ->
+        (forall r, In r R -> In r U /\ In (r_coll r) (colls W)) ->
+        (In W (v_wtrs (j_view j)) \/ ~ In (w_id W) (map w_id (v_wtrs (j_view j)))) ->
+        v_recs (j_view j3) = remove_all R (v_recs (j_view j)) ->
+        v_wtrs (j_view j3) = (if w_pers W then v_wtrs (j_view j) else del_wtr (w_id W) (v_wtrs (j_view j))) ->
+        j_dirty j3 = fire_dirty W c_in ++ j_dirty j -> CI_f j3.
+    Proof.
+      intros U j j3 W R c_in H Hu (Hv & _ & Hw) HR HW Vr Vw D.
+      apply (CI_f_change j j3 (colls W) H).
+      - rewrite Vw. destruct (w_pers W); [apply incl_refl | apply del_wtr_incl].
+      - intros c Hc. exact (frame_remove_u U (j_view j) (j_view j3) W R c Hu Hv Hw HR HW Vr Vw Hc).
+      - rewrite D. intros a Ha. apply in_or_app. left. exact (fire_dirty_covers_f W c_in a Ha).
+      - rewrite D. intros a Ha. apply in_or_app. right. exact Ha.
+    Qed.
+
+    Lemma CI_f_offer1 :
+      forall U own j x, CI_f j -> id_inj U -> UI U j -> In (e_rec x) U -> CI_f (fst (offer1_f own j x)).
+    Proof.
+      intros U own j x H Hu Hui Hx. unfold offer1_f.
+      destruct (offer_pick_f (e_rec x) (j_view j) (offer_cands (e_rec x) (j_view j))) as [[[W p] sg] |] eqn:Ep;
+        [| exact (CI_f_store own j x H)].
+      destruct (offer_pick_f_sel _ _ _ _ _ Ep) as (HwIn & Hcx & _ & Hsp & _).
+      pose proof (search_produce_f_rel _ _ _ _ _ Hsp) as Hrel.
+      destruct (touch_all_spec own (colls W) j) as (bs & _ & V1 & _ & D1 & _).
+      destruct (bumps_view bs (j_view j)) as [Br Bw].
+      set (j3 := add_dirty (fire_dirty W (r_coll (e_rec x)))
+                   (with_fired (S (j_fired j)) (stage (touch_all own j (colls W)) (SFire W sg (Some (p, e_auth x)))))).
+      assert (Hcoll : forall e, In e (map fst sg) -> In e U /\ In (r_coll e) (colls W)).
+      { intros e He. destruct (slots_prod_f_colls W (e_rec x) p (j_view j) sg Hrel e He) as [-> | (Hv & Hc & _)];
+          [exact (conj Hx Hcx) | exact (conj (proj1 Hui e Hv) Hc)]. }
+      assert (V3 : v_recs (j_view j3) = remove_all (removed sg (Some (p, e_auth x))) (v_recs (j_view j))).
+      { unfold j3. cbn [add_dirty with_dirty with_fired stage j_view apply v_recs]. rewrite V1, Br. reflexivity. }
+      assert (H3 : CI_f j3).
+      { apply (CI_f_fire U j j3 W (removed sg (Some (p, e_auth x))) (r_coll (e_rec x)) H Hu Hui).
+        - intros r Hr. exact (Hcoll r (removed_incl _ _ _ Hr)).
+        - left. exact HwIn.
+        - exact V3.
+        - unfold j3. cbn [add_dirty with_dirty with_fired stage j_view apply v_wtrs]. rewrite V1, Bw. reflexivity.
+        - unfold j3. cbn [add_dirty with_dirty with_fired stage j_dirty]. rewrite D1. reflexivity. }
+      assert (Hv3 : incl (v_recs (j_view j3)) U) by (rewrite V3; intros a Ha; exact (proj1 Hui a (remove_all_incl _ _ a Ha))).
+      assert (Hd3 : forall e, In e (map fst sg) -> In (r_coll e) (j_dirty j3)).
+      { intros e He. unfold j3. cbn [add_dirty with_dirty with_fired stage j_dirty]. apply in_or_app. left.
+        apply fire_dirty_covers_f. exact (proj2 (Hcoll e He)). }
+      pose proof (CI_f_fire_tail U W sg (Some p) (e_own x) true j3 H3 Hu Hv3 Hd3) as H4.
+      destruct (w_peek W); [exact H4 |].
+      destruct (after_fire (S (j_fired j)) (negb (r_pers (e_rec x)) && negb false) (w_pers W));
+        cbn [fst]; unfold own_flight; try destruct (e_own x); (apply (CI_f_ctl _ _ H4); reflexivity).
+    Qed.
+
+    Lemma CI_f_offer :
+      forall fuel U own j x, CI_f j -> id_inj U -> UI U j -> In (e_rec x) U -> CI_f (offer_f fuel own j x).
+    Proof.
+      induction fuel as [| f IH]; intros U own j x H Hu Hui Hx; cbn [offer_f].
+      - unfold own_flight. destruct (e_own x); (apply (CI_f_ctl _ _ H); reflexivity).
+      - pose proof (CI_f_offer1 U own j x H Hu Hui Hx) as H1. destruct (UI_offer1_f U own j x Hui Hx) as [U1 _].
+        destruct (offer1_f own j x) as [j' []]; cbn [fst] in H1, U1; [exact (IH U own j' x H1 Hu U1 Hx) | exact H1].
+    Qed.
+
+    Lemma CI_f_receive1 :
+      forall U j W, CI_f j -> id_inj U -> UI U j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) -> CI_f (fst (receive1_f j W)).
+    Proof.
+      intros U j W H Hu Hui Hw. unfold receive1_f.
+      destruct (receive_sel_f (j_view j) W) as [sg |] eqn:Er; [| exact (CI_f_park j W H Er Hw)].
+      destruct (receive_sel_f_some _ _ _ Er) as (_ & Hgr & _).
+      set (j3 := add_dirty (fire_dirty W (hd 0 (colls W))) (with_fired (S (j_fired j)) (stage j (SFire W sg None)))).
+      assert (H3 : CI_f j3).
+      { apply (CI_f_fire U j j3 W (removed sg None) (hd 0 (colls W)) H Hu Hui);
+          [| right; exact Hw | reflexivity | reflexivity | reflexivity].
+        intros r Hr. destruct (greedy_f_colls W (j_view j) sg Hgr r (removed_incl _ _ _ Hr)) as [Hv Hc].
+        exact (conj (proj1 Hui r Hv) Hc). }
+      assert (Hv3 : incl (v_recs (j_view j3)) U).
+      { unfold j3. cbn [add_dirty with_dirty with_fired stage j_view apply v_recs]. intros a Ha.
+        exact (proj1 Hui a (remove_all_incl _ _ a Ha)). }
+      assert (Hd3 : forall e, In e (map fst sg) -> In (r_coll e) (j_dirty j3)).
+      { intros e He. unfold j3. cbn [add_dirty with_dirty with_fired stage j_dirty]. apply in_or_app. left.
+        apply fire_dirty_covers_f. exact (proj2 (greedy_f_colls W (j_view j) sg Hgr e He)). }
+      pose proof (CI_f_fire_tail U W sg None false false j3 H3 Hu Hv3 Hd3) as H4.
+      destruct (after_fire (S (j_fired j)) (negb (w_pers W)) (rcv_stays W sg (j_view j)));
+        cbn [fst]; (apply (CI_f_ctl _ _ H4); reflexivity).
+    Qed.
+
+    Lemma CI_f_receive :
+      forall fuel U j W, CI_f j -> id_inj U -> UI U j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) -> CI_f (receive_f fuel j W).
+    Proof.
+      induction fuel as [| f IH]; intros U j W H Hu Hui Hw; cbn [receive_f]; [apply (CI_f_ctl _ _ H); reflexivity |].
+      pose proof (CI_f_receive1 U j W H Hu Hui Hw) as H1. destruct (UI_receive1_f U j W Hui Hw) as [U1 F1].
+      destruct (receive1_f j W) as [j' []]; cbn [fst snd] in H1, U1, F1; [exact (IH U j' W H1 Hu U1 (F1 eq_refl)) | exact H1].
+    Qed.
+
+    Lemma CI_f_lift_reoffer :
+      forall U own j W sg, CI_f j -> id_inj U -> UI U j -> In W (v_wtrs (j_view j)) ->
+        (forall e, In e (map fst sg) -> In e (v_recs (j_view j)) /\ In (r_coll e) (colls W)) ->
+        CI_f (lift_reoffer own j W sg).
+    Proof.
+      intros U own j W sg H Hu Hui HwIn Hsg. unfold lift_reoffer.
+      destruct (nth_error sg (reoffer_pos sg)) as [[rv mv] |] eqn:Hn; [| exact H].
+      destruct (touch_all_spec own (colls W) j) as (bs & _ & V1 & _ & D1 & _).
+      destruct (stage_all_fields (lift_ops rv) (touch_all own j (colls W))) as (_ & V2 & _ & D2 & _).
+      set (R := (if r_pers rv then [] else [rv]) ++ removed sg (Some (reoffer_pos sg, own_auth rv))).
+      set (j4 := add_dirty (fire_dirty W (r_coll rv)) (with_fired (S (j_fired j))
+                   (stage (stage_all (touch_all own j (colls W)) (lift_ops rv)) (SFire W sg (Some (reoffer_pos sg, own_auth rv)))))).
+      assert (Hv4 : v_recs (j_view j4) = remove_all R (v_recs (j_view j))).
+      { unfold j4. cbn [add_dirty with_dirty with_fired stage j_view]. rewrite V2, V1.
+        exact (lift_fire_recs (j_view j) bs W sg (reoffer_pos sg) (own_auth rv) rv mv Hn). }
+      assert (H4 : CI_f j4).
+      { apply (CI_f_fire U j j4 W R (r_coll rv) H Hu Hui).
+        - intros r Hr. assert (Hr' : In r (v_recs (j_view j)) /\ In (r_coll r) (colls W)).
+          { unfold R in Hr. apply in_app_or in Hr as [Hr | Hr].
+            + destruct (r_pers rv); [destruct Hr | destruct Hr as [<- | []]]. apply Hsg. apply in_map_iff. exists (rv, mv).
+              split; [reflexivity | exact (nth_error_In _ _ Hn)].
+            + exact (Hsg r (removed_incl _ _ _ Hr)). }
+          exact (conj (proj1 Hui r (proj1 Hr')) (proj2 Hr')).
+        - left. exact HwIn.
+        - exact Hv4.
+        - unfold j4. cbn [add_dirty with_dirty with_fired stage j_view apply v_wtrs]. rewrite V2, V1.
+          assert (Hl : forall v0, v_wtrs (apply_all v0 (lift_ops rv)) = v_wtrs v0)
+            by (intros v0; unfold lift_ops; destruct (r_pers rv); reflexivity).
+          rewrite Hl, (proj2 (bumps_view bs (j_view j))). reflexivity.
+        - unfold j4. cbn [add_dirty with_dirty with_fired stage j_dirty]. rewrite D2, D1. reflexivity. }
+      assert (Hv4' : incl (v_recs (j_view j4)) U) by (rewrite Hv4; intros a Ha; exact (proj1 Hui a (remove_all_incl _ _ a Ha))).
+      assert (Hd4 : forall e, In e (map fst sg) -> In (r_coll e) (j_dirty j4)).
+      { intros e He. unfold j4. cbn [add_dirty with_dirty with_fired stage j_dirty]. apply in_or_app. left.
+        apply fire_dirty_covers_f. exact (proj2 (Hsg e He)). }
+      pose proof (CI_f_fire_tail U W sg (Some (reoffer_pos sg)) false (negb (r_pers rv)) j4 H4 Hu Hv4' Hd4) as H5.
+      destruct (after_fire (S (j_fired j)) (negb (r_pers rv) && negb (w_peek W)) (w_pers W));
+        try exact H5; (apply (CI_f_ctl _ _ H5); reflexivity).
+    Qed.
+
+    Lemma CI_f_dstep : forall U own a j, CI_f j -> id_inj U -> UI U j -> CI_f (fst (dstep_f own a j)).
+    Proof.
+      intros U own a j H Hu Hui. unfold dstep_f. destruct (j_stop j); [exact H |].
+      destruct (j_work j) as [| q rest] eqn:Ew.
+      - destruct cascades_f; [| exact H].
+        destruct (next_fire_f (j_dirty j) (j_view j)) as [[W sg] |] eqn:En; [| exact H].
+        destruct (cap <=? j_fired j); [cbn [fst]; apply (CI_f_ctl _ _ H); reflexivity |]. cbn [fst].
+        destruct (next_fire_f_sel _ _ _ _ En) as (HwIn & _ & Hsg).
+        exact (CI_f_lift_reoffer U own j W sg H Hu Hui HwIn Hsg).
+      - destruct (cap <=? j_fired j); [cbn [fst]; apply (CI_f_ctl _ _ H); reflexivity |]. cbn [fst].
+        destruct Hui as (Hv & Hk & Hw).
+        assert (H0 : CI_f (with_work rest j)) by (apply (CI_f_ctl _ _ H); reflexivity).
+        assert (U0 : UI U (with_work rest j)).
+        { unfold UI. cbn [with_work j_view j_work]. split; [exact Hv |]. split; [| exact Hw].
+          intros q0 Hq0. apply Hk. rewrite Ew. right. exact Hq0. }
+        assert (Hq : In (p_rec q) U) by (apply Hk; rewrite Ew; left; reflexivity).
+        unfold resend_f. exact (CI_f_offer _ U own (with_work rest j) (resend_elem a q) H0 Hu U0 Hq).
+    Qed.
+
+    Lemma CI_f_drain : forall fuel U own a j, CI_f j -> id_inj U -> UI U j -> CI_f (drain_f fuel own a j).
+    Proof.
+      induction fuel as [| f IH]; intros U own a j H Hu Hui; cbn [drain_f]; [apply (CI_f_ctl _ _ H); reflexivity |].
+      pose proof (CI_f_dstep U own a j H Hu Hui) as H1. destruct (UI_dstep_f U own a j Hui) as [U1 _].
+      destruct (dstep_f own a j) as [j' []]; cbn [fst] in H1, U1; [exact (IH U own a j' H1 Hu U1) | exact H1].
+    Qed.
+
+    (* RUN-JOIN with the search of decision 118 on a discipline that
+       cascades: CI_f holds at its end, and INV_head_f holds at an end with
+       no stop. *)
+    Lemma CI_run_join_f :
+      forall fuel o scope v0,
+        cascades_f = true -> start_ok o v0 ->
+        (forall W, In W (v_wtrs v0) -> fireable_f W v0 <> None -> exists c, In c (colls W) /\ In c scope) ->
+        CI_f (fst (run_join_f fuel o scope v0)) /\
+        (j_stop (fst (run_join_f fuel o scope v0)) = None -> INV_head_f (j_view (fst (run_join_f fuel o scope v0)))).
+    Proof.
+      intros fuel o scope v0 Hcas Hst H0. pose proof Hst as (Nd & Nw & Hown).
+      pose proof (start_univ_inj o v0 Hst) as Hu. set (U := start_univ o v0) in *.
+      unfold run_join_f.
+      set (j1 := with_work (pending_of o) (touch_all (own_of o) (init v0) (own_of o))).
+      destruct (touch_all_spec (own_of o) (own_of o) (init v0)) as (bs & _ & V1 & _).
+      assert (Vr1 : v_recs (j_view j1) = v_recs v0)
+        by (unfold j1; cbn [with_work j_view]; rewrite V1; exact (proj1 (bumps_view bs v0))).
+      assert (Vw1 : v_wtrs (j_view j1) = v_wtrs v0)
+        by (unfold j1; cbn [with_work j_view]; rewrite V1; exact (proj2 (bumps_view bs v0))).
+      set (j2 := with_dirty scope j1).
+      assert (U2 : UI U j2).
+      { unfold UI. change (j_view j2) with (j_view j1). change (j_work j2) with (pending_of o). rewrite Vr1, Vw1.
+        split; [intros ra Ha; unfold U, start_univ; apply in_or_app; left; exact Ha |].
+        split; [| exact Nw]. intros q Hq. unfold U, start_univ. apply in_or_app. right. apply in_or_app. left.
+        apply in_map. exact Hq. }
+      assert (C2 : CI_f j2).
+      { intros W HW Hf. change (j_view j2) with (j_view j1) in HW, Hf. change (j_dirty j2) with scope. rewrite Vw1 in HW.
+        rewrite (fireable_f_frame W v0 (j_view j1)) in Hf
+          by (intros c _; unfold recs_of, waiters_of; rewrite Vr1, Vw1; split; reflexivity).
+        exact (H0 W HW Hf). }
+      pose proof (CI_f_drain fuel U (own_of o) (auth_of o) j2 C2 Hu U2) as C3.
+      destruct (UI_drain_f fuel U (own_of o) (auth_of o) j2 U2) as [U3 I3].
+      set (j3 := drain_f fuel (own_of o) (auth_of o) j2) in *.
+      assert (Q3 : j_stop j3 = None -> j_work j3 = [] /\ INV_head_f (j_view j3)).
+      { intros Hs. destruct (drain_f_end fuel (own_of o) (auth_of o) j2 Hs) as [Hw Hn].
+        split; [exact Hw | exact (CI_f_quiescent j3 C3 (Hn Hcas))]. }
+      destruct (is_settle o); [cbn [fst]; split; [exact C3 | intros Hs; exact (proj2 (Q3 Hs))] |].
+      replace (if cascades_f then j3 else j1) with j3 by (rewrite Hcas; reflexivity).
+      destruct (j_stop j3) eqn:Es3.
+      { cbn [fst]. split; [exact C3 | intros Hs; rewrite Es3 in Hs; discriminate]. }
+      destruct (Q3 eq_refl) as [Wk3 I3h].
+      assert (C4' : CI_f (with_dirty [] j3)) by (apply INV_head_f_CI_f; exact I3h).
+      destruct (plan_at_cap (j_fired (with_dirty [] j3))).
+      { cbn [fst]. split; [apply (CI_f_ctl _ _ C4'); reflexivity | intros Hs; cbn in Hs; discriminate]. }
+      cbn [fst].
+      set (j4 := with_fired (phase_count (j_fired (with_dirty [] j3))) (with_dirty [] j3)).
+      assert (C4 : CI_f j4) by (apply INV_head_f_CI_f; exact I3h).
+      assert (U4 : UI U j4) by (apply (UI_ctl U j3 j4 U3); reflexivity).
+      assert (C5 : CI_f (plan_f fuel o v0 j4) /\ UI U (plan_f fuel o v0 j4)).
+      { destruct o as [x c a | W c a | key sd pd rs a]; cbn [plan_f].
+        - assert (Hx : In (with_ord x (prod_ord v0 x c)) U).
+          { unfold U, start_univ, own_recs. apply in_or_app. right. apply in_or_app. right. left. reflexivity. }
+          set (xe := mkElem (with_ord x (prod_ord v0 x c)) a true).
+          split; [exact (CI_f_offer fuel U (own_of (OProduce x c a)) j4 xe C4 Hu U4 Hx) |
+                  exact (proj1 (UI_offer_f fuel U (own_of (OProduce x c a)) j4 xe U4 Hx))].
+        - assert (Hw : ~ In (w_id W) (map w_id (v_wtrs (j_view j4)))).
+          { intros Hin. apply Hown. apply in_map_iff in Hin as (W' & E & HW'). change (j_view j4) with (j_view j3) in HW'.
+            apply I3 in HW'. change (j_view j2) with (j_view j1) in HW'. rewrite Vw1 in HW'.
+            rewrite <- E. apply in_map. exact HW'. }
+          split; [exact (CI_f_receive fuel U j4 (with_ords W (ords_of v0 W c)) C4 Hu U4 Hw) |
+                  exact (UI_receive_f fuel U j4 (with_ords W (ords_of v0 W c)) U4 Hw)].
+        - split; [exact C4 | exact U4]. }
+      destruct C5 as [C5 U5].
+      set (j5 := plan_f fuel o v0 j4) in *.
+      set (j6 := with_fired (phase_count (j_fired j5)) j5).
+      assert (C6 : CI_f j6) by (apply (CI_f_ctl _ _ C5); reflexivity).
+      assert (U6 : UI U j6) by (apply (UI_ctl U j5 j6 U5); reflexivity).
+      pose proof (CI_f_drain fuel U (own_of o) (auth_of o) j6 C6 Hu U6) as C7.
+      split; [exact C7 |].
+      intros Hs. destruct (drain_f_end fuel (own_of o) (auth_of o) j6 Hs) as [_ Hn].
+      exact (CI_f_quiescent _ C7 (Hn Hcas)).
+    Qed.
+  End CascadeRuleF.
+
+  (* ── 39h. The bag over the search of decision 118 (INV_scan) ────────── *)
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): claim_after
+     takes the tag function. The reference search keeps the tag of the old
+     search, because its first_fit reads the claims with tag. Only the bag
+     uses it, and there tag_f is tag (tag_f_other). The text before:
+
+  (* The reference search with the claim rule fr: the first spatial match
+     for each bind in group order, with no backtracking and no guard during
+     the search. A pick claims its tag only when the pick is not free. *)
+  Fixpoint ref_fill_f (fr : rec -> bool) (C : list (nat * nat)) (ss : list slot) : option (list (rec * M)) :=
+    match ss with
+    | [] => Some []
+    | Forced e m :: rest => option_map (cons (e, m)) (ref_fill_f fr C rest)
+    | Pick L p :: rest =>
+        match first_fit C p L with
+        | Some (e, m) => option_map (cons (e, m)) (ref_fill_f fr (claim_after fr C e) rest)
+        | None => None
+        end
+    end.
+
+  (* With no backtracking, the search of decision 118 is the reference
+     search with its claim rule (the analog of part 1 of headline 1). *)
+  Lemma fill_f_ref : forall fr g ss C, fill_f fr g C ss = ref_fill_f fr C ss.
+  Proof.
+    intros fr g ss. induction ss as [| s rest IH]; intros C; [reflexivity |].
+    destruct s as [L p | e m]; cbn [fill_f ref_fill_f].
+    - induction L as [| e more IHL]; [reflexivity |]. cbn [try_cands_f first_fit].
+      destruct (claimed C e); [exact IHL |]. unfold pick_match.
+      destruct (spatial p (r_val e)) as [m |]; [| exact IHL].
+      rewrite IH. destruct (ref_fill_f fr (claim_after fr C e) rest); reflexivity.
+    - rewrite IH. destruct (ref_fill_f fr C rest); reflexivity.
+  Qed.
+
+  Lemma ref_fill_f_match : forall fr ss C sg, ref_fill_f fr C ss = Some sg -> slots_match ss sg.
+  Proof.
+    intros fr. induction ss as [| s rest IH]; intros C sg H; cbn [ref_fill_f] in H.
+    - injection H as <-. reflexivity.
+    - destruct s as [L p | e m].
+      + destruct (first_fit C p L) as [[e m] |] eqn:Ef; [| discriminate].
+        destruct (ref_fill_f fr (claim_after fr C e) rest) as [sg' |] eqn:Hr; [| discriminate].
+        injection H as <-. destruct (first_fit_some _ _ _ _ _ Ef) as (Hi & _ & Hs).
+        cbn [slots_match]. split; [split; assumption | exact (IH _ _ Hr)].
+      + destruct (ref_fill_f fr C rest) as [sg' |] eqn:Hr; [| discriminate].
+        injection H as <-. cbn [slots_match]. split; [split; reflexivity | exact (IH _ _ Hr)].
+  Qed.
+  *)
+
+  (* The reference search with the claim rule fr: the first spatial match
+     for each bind in group order, with no backtracking and no guard during
+     the search. A pick claims its tag only when the pick is not free. *)
+  Fixpoint ref_fill_f (fr : rec -> bool) (C : list (nat * nat)) (ss : list slot) : option (list (rec * M)) :=
+    match ss with
+    | [] => Some []
+    | Forced e m :: rest => option_map (cons (e, m)) (ref_fill_f fr C rest)
+    | Pick L p :: rest =>
+        match first_fit C p L with
+        | Some (e, m) => option_map (cons (e, m)) (ref_fill_f fr (claim_after tag fr C e) rest)
+        | None => None
+        end
+    end.
+
+  (* Added by decision 103 (decision 118, C6 arbitration): claim_after_mono
+     for the tag of the reference search, stated with claimed. *)
+  Lemma claim_after_mono_tag : forall fr C e e0, claimed C e0 = true -> claimed (claim_after tag fr C e) e0 = true.
+  Proof. intros fr C e e0 H. exact (claim_after_mono tag fr C e e0 H). Qed.
+
+  (* With no backtracking, the search of decision 118 with the tag of the
+     old search is the reference search with its claim rule (the analog of
+     part 1 of headline 1). *)
+  Lemma fill_f_ref : forall fr g ss C, fill_f tag fr g C ss = ref_fill_f fr C ss.
+  Proof.
+    intros fr g ss. induction ss as [| s rest IH]; intros C; [reflexivity |].
+    destruct s as [L p | e m]; cbn [fill_f ref_fill_f].
+    - induction L as [| e more IHL]; [reflexivity |]. cbn [try_cands_f first_fit].
+      change (claimed_f tag C e) with (claimed C e).
+      destruct (claimed C e); [exact IHL |]. unfold pick_match.
+      destruct (spatial p (r_val e)) as [m |]; [| exact IHL].
+      rewrite IH. destruct (ref_fill_f fr (claim_after tag fr C e) rest); reflexivity.
+    - rewrite IH. destruct (ref_fill_f fr C rest); reflexivity.
+  Qed.
+
+  Lemma ref_fill_f_match : forall fr ss C sg, ref_fill_f fr C ss = Some sg -> slots_match ss sg.
+  Proof.
+    intros fr. induction ss as [| s rest IH]; intros C sg H; cbn [ref_fill_f] in H.
+    - injection H as <-. reflexivity.
+    - destruct s as [L p | e m].
+      + destruct (first_fit C p L) as [[e m] |] eqn:Ef; [| discriminate].
+        destruct (ref_fill_f fr (claim_after tag fr C e) rest) as [sg' |] eqn:Hr; [| discriminate].
+        injection H as <-. destruct (first_fit_some _ _ _ _ _ Ef) as (Hi & _ & Hs).
+        cbn [slots_match]. split; [split; assumption | exact (IH _ _ Hr)].
+      + destruct (ref_fill_f fr C rest) as [sg' |] eqn:Hr; [| discriminate].
+        injection H as <-. cbn [slots_match]. split; [split; reflexivity | exact (IH _ _ Hr)].
+  Qed.
+
+  (* A pick that keep accepts stays the pick after the removal of the
+     candidates that keep refuses. *)
+  Lemma first_fit_drop :
+    forall (keep : rec -> bool) C p L e m, first_fit C p L = Some (e, m) -> keep e = true ->
+      first_fit C p (filter keep L) = Some (e, m).
+  Proof.
+    intros keep C p L. induction L as [| e0 more IH]; intros e m H Hk; [discriminate |].
+    cbn [first_fit filter] in H |- *. destruct (keep e0) eqn:Ek; cbn [first_fit].
+    - destruct (claimed C e0); [exact (IH e m H Hk) |].
+      destruct (spatial p (r_val e0)) as [m0 |]; [exact H | exact (IH e m H Hk)].
+    - destruct (claimed C e0); [exact (IH e m H Hk) |].
+      destruct (spatial p (r_val e0)) as [m0 |]; [| exact (IH e m H Hk)].
+      injection H as <- _. rewrite Ek in Hk. discriminate.
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the step of
+     ref_fill_f reads claim_after tag fr, so the proofs of ref_fill_f_drop
+     and ref_fill_f_mono name it, and ref_fill_f_mono uses
+     claim_after_mono_tag. The statements do not change. The text before:
+
+  (* A search whose picks keep accepts finds the same fire after the
+     removal of the candidates that keep refuses. *)
+  Lemma ref_fill_f_drop :
+    forall (fr keep : rec -> bool) ss C sg, ref_fill_f fr C ss = Some sg -> (forall e m, In (e, m) sg -> keep e = true) ->
+      ref_fill_f fr C (map (drop_slot keep) ss) = Some sg.
+  Proof.
+    intros fr keep ss. induction ss as [| s rest IH]; intros C sg H Hk; [exact H |].
+    destruct s as [L p | e m]; cbn [ref_fill_f map drop_slot] in H |- *.
+    - destruct (first_fit C p L) as [[e m] |] eqn:E1; [| discriminate].
+      destruct (ref_fill_f fr (claim_after fr C e) rest) as [sg' |] eqn:E2; [| discriminate].
+      cbn [option_map] in H. injection H as <-.
+      rewrite (first_fit_drop keep C p L e m E1 (Hk e m (or_introl eq_refl))). cbv beta iota.
+      rewrite (IH _ sg' E2 (fun e0 m0 H0 => Hk e0 m0 (or_intror H0))). reflexivity.
+    - destruct (ref_fill_f fr C rest) as [sg' |] eqn:E2; [| discriminate].
+      cbn [option_map] in H. injection H as <-.
+      rewrite (IH _ sg' E2 (fun e0 m0 H0 => Hk e0 m0 (or_intror H0))). reflexivity.
+  Qed.
+
+  (* ref_fill_mono for the claim rule fr of decision 118: when the claim tag
+     decides keep, a search that fails before the removal also fails after
+     it. *)
+  Lemma ref_fill_f_mono :
+    forall (fr keep : rec -> bool), (forall e e', tag e = tag e' -> keep e = keep e') ->
+      forall ss C C',
+        (forall e, claimed C e = true -> claimed C' e = true \/ keep e = false) ->
+        ref_fill_f fr C ss = None -> ref_fill_f fr C' (map (drop_slot keep) ss) = None.
+  Proof.
+    intros fr keep Hk ss. induction ss as [| s rest IH]; intros C C' Hc H; [discriminate |].
+    destruct s as [L p | e m]; cbn [ref_fill_f map drop_slot] in H |- *.
+    - pose proof (first_fit_mono keep C C' p L Hc) as Hm.
+      destruct (first_fit C p L) as [[e m] |] eqn:E1; [| rewrite Hm; reflexivity].
+      destruct (first_fit C' p (filter keep L)) as [[e' m'] |] eqn:E2; [| reflexivity].
+      destruct (ref_fill_f fr (claim_after fr C e) rest) as [sg |] eqn:E3; [discriminate |].
+      rewrite (IH (claim_after fr C e) (claim_after fr C' e')); [reflexivity | | exact E3].
+      intros e0 H0. unfold claim_after in H0. destruct (fr e) eqn:Efe.
+      + destruct (Hc e0 H0) as [H1 | H1]; [left; exact (claim_after_mono fr C' e' e0 H1) | right; exact H1].
+      + unfold claimed in H0. cbn [tmem existsb] in H0. apply orb_true_iff in H0 as [H0 | H0].
+        * apply tag_eqb_spec in H0. destruct Hm as [Hm | [Hm | Hm]].
+          -- right. rewrite (Hk e0 e H0). exact Hm.
+          -- left. apply claim_after_mono. unfold claimed in Hm |- *. rewrite H0. exact Hm.
+          -- subst e'. left. unfold claim_after. rewrite Efe. cbv beta iota. unfold claimed. apply tmem_spec.
+             left. exact (eq_sym H0).
+        * destruct (Hc e0 H0) as [H1 | H1]; [left; exact (claim_after_mono fr C' e' e0 H1) | right; exact H1].
+    - destruct (ref_fill_f fr C rest) as [sg |] eqn:E1; [discriminate |].
+      rewrite (IH C C' Hc E1). reflexivity.
+  Qed.
+  *)
+
+  (* A search whose picks keep accepts finds the same fire after the
+     removal of the candidates that keep refuses. *)
+  Lemma ref_fill_f_drop :
+    forall (fr keep : rec -> bool) ss C sg, ref_fill_f fr C ss = Some sg -> (forall e m, In (e, m) sg -> keep e = true) ->
+      ref_fill_f fr C (map (drop_slot keep) ss) = Some sg.
+  Proof.
+    intros fr keep ss. induction ss as [| s rest IH]; intros C sg H Hk; [exact H |].
+    destruct s as [L p | e m]; cbn [ref_fill_f map drop_slot] in H |- *.
+    - destruct (first_fit C p L) as [[e m] |] eqn:E1; [| discriminate].
+      destruct (ref_fill_f fr (claim_after tag fr C e) rest) as [sg' |] eqn:E2; [| discriminate].
+      cbn [option_map] in H. injection H as <-.
+      rewrite (first_fit_drop keep C p L e m E1 (Hk e m (or_introl eq_refl))). cbv beta iota.
+      rewrite (IH _ sg' E2 (fun e0 m0 H0 => Hk e0 m0 (or_intror H0))). reflexivity.
+    - destruct (ref_fill_f fr C rest) as [sg' |] eqn:E2; [| discriminate].
+      cbn [option_map] in H. injection H as <-.
+      rewrite (IH _ sg' E2 (fun e0 m0 H0 => Hk e0 m0 (or_intror H0))). reflexivity.
+  Qed.
+
+  (* ref_fill_mono for the claim rule fr of decision 118: when the claim tag
+     decides keep, a search that fails before the removal also fails after
+     it. *)
+  Lemma ref_fill_f_mono :
+    forall (fr keep : rec -> bool), (forall e e', tag e = tag e' -> keep e = keep e') ->
+      forall ss C C',
+        (forall e, claimed C e = true -> claimed C' e = true \/ keep e = false) ->
+        ref_fill_f fr C ss = None -> ref_fill_f fr C' (map (drop_slot keep) ss) = None.
+  Proof.
+    intros fr keep Hk ss. induction ss as [| s rest IH]; intros C C' Hc H; [discriminate |].
+    destruct s as [L p | e m]; cbn [ref_fill_f map drop_slot] in H |- *.
+    - pose proof (first_fit_mono keep C C' p L Hc) as Hm.
+      destruct (first_fit C p L) as [[e m] |] eqn:E1; [| rewrite Hm; reflexivity].
+      destruct (first_fit C' p (filter keep L)) as [[e' m'] |] eqn:E2; [| reflexivity].
+      destruct (ref_fill_f fr (claim_after tag fr C e) rest) as [sg |] eqn:E3; [discriminate |].
+      rewrite (IH (claim_after tag fr C e) (claim_after tag fr C' e')); [reflexivity | | exact E3].
+      intros e0 H0. unfold claim_after in H0. destruct (fr e) eqn:Efe.
+      + destruct (Hc e0 H0) as [H1 | H1]; [left; exact (claim_after_mono_tag fr C' e' e0 H1) | right; exact H1].
+      + unfold claimed in H0. cbn [tmem existsb] in H0. apply orb_true_iff in H0 as [H0 | H0].
+        * apply tag_eqb_spec in H0. destruct Hm as [Hm | [Hm | Hm]].
+          -- right. rewrite (Hk e0 e H0). exact Hm.
+          -- left. apply claim_after_mono_tag. unfold claimed in Hm |- *. rewrite H0. exact Hm.
+          -- subst e'. left. unfold claim_after. rewrite Efe. cbv beta iota. unfold claimed. apply tmem_spec.
+             left. exact (eq_sym H0).
+        * destruct (Hc e0 H0) as [H1 | H1]; [left; exact (claim_after_mono_tag fr C' e' e0 H1) | right; exact H1].
+    - destruct (ref_fill_f fr C rest) as [sg |] eqn:E1; [discriminate |].
+      rewrite (IH C C' Hc E1). reflexivity.
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): GREEDY reads
+     slots_cons_f and tag_f. On a bag they are slots_cons and tag
+     (slots_cons_f_other, tag_f_other). The statement does not change. The
+     text before:
+
+  (* On a bag the free test reads the persistence of the record, so GREEDY
+     with the claim rule is the reference search with that rule. *)
+  Lemma greedy_f_scan : sh = Scan -> forall W v, greedy_f W v = ref_fill_f r_pers [] (slots_cons W v).
+  Proof.
+    intros Hsh W v. unfold greedy_f. rewrite <- (fill_f_ref r_pers (w_guard W)). apply fill_f_ext.
+    intros e _. exact (free_in_other (scan_not_classes Hsh) v e).
+  Qed.
+  *)
+
+  (* On a bag the free test reads the persistence of the record, and the
+     tag and the window are the old ones, so GREEDY with the claim rule is
+     the reference search with that rule. *)
+  Lemma greedy_f_scan : sh = Scan -> forall W v, greedy_f W v = ref_fill_f r_pers [] (slots_cons W v).
+  Proof.
+    intros Hsh W v. unfold greedy_f. rewrite (slots_cons_f_other (scan_not_classes Hsh)).
+    rewrite <- (fill_f_ref r_pers (w_guard W)). apply fill_f_ext.
+    - intros e _. exact (free_in_other (scan_not_classes Hsh) v e).
+    - intros e _. exact (tag_f_other (scan_not_classes Hsh) v e).
+  Qed.
+
+  Lemma greedy_f_filter_none :
+    sh = Scan -> forall W v v' (kid : nat -> bool),
+      v_recs v' = filter (fun e => kid (r_id e)) (v_recs v) -> greedy_f W v = None -> greedy_f W v' = None.
+  Proof.
+    intros Hsh W v v' kid Hv Hg. rewrite (greedy_f_scan Hsh) in Hg |- *. rewrite (slots_cons_filter Hsh W v v' kid Hv).
+    assert (Hk : forall e e', tag e = tag e' -> kid (r_id e) = kid (r_id e')).
+    { intros e e' E. unfold tag in E. rewrite Hsh in E. injection E as _ E. rewrite E. reflexivity. }
+    exact (ref_fill_f_mono r_pers (fun e => kid (r_id e)) Hk (slots_cons W v) [] [] (fun e H => or_introl H) Hg).
+  Qed.
+
+  (* INV_scan over the search of decision 118: no waiter without a guard
+     has a match of GREEDY with the claim rule. *)
+  Definition INV_scan_f (v : view) : Prop :=
+    forall W, In W (v_wtrs v) -> w_guard W = no_guard -> greedy_f W v = None.
+
+  Lemma INV_scan_f_ctl : forall v v', INV_scan_f v -> v_recs v' = v_recs v -> v_wtrs v' = v_wtrs v -> INV_scan_f v'.
+  Proof.
+    intros v v' H Vr Vw W HW Hg. rewrite (greedy_f_frame W v v'); [| intros c _; unfold recs_of; rewrite Vr; reflexivity].
+    rewrite Vw in HW. exact (H W HW Hg).
+  Qed.
+
+  Lemma INV_scan_f_filter :
+    sh = Scan -> forall v v' (kid : nat -> bool),
+      INV_scan_f v -> v_recs v' = filter (fun e => kid (r_id e)) (v_recs v) -> incl (v_wtrs v') (v_wtrs v) -> INV_scan_f v'.
+  Proof.
+    intros Hsh v v' kid H Vr Vw W HW Hg. exact (greedy_f_filter_none Hsh W v v' kid Vr (H W (Vw W HW) Hg)).
+  Qed.
+
+  Lemma INV_scan_f_remove :
+    sh = Scan -> forall v v' R,
+      INV_scan_f v -> NoDup (map r_id (v_recs v)) -> v_recs v' = remove_all R (v_recs v) -> incl (v_wtrs v') (v_wtrs v) ->
+      INV_scan_f v'.
+  Proof.
+    intros Hsh v v' R H Hnd Vr Vw. apply (INV_scan_f_filter Hsh v v' (fun i => negb (mem i (map r_id R))) H); [| exact Vw].
+    rewrite Vr. exact (remove_all_filter R _ Hnd).
+  Qed.
+
+  Lemma option_map_ne : forall (X Y : Type) (f : X -> Y) (o : option X), o <> None -> option_map f o <> None.
+  Proof. intros X Y f [a |] H; [discriminate | exfalso; exact (H eq_refl)]. Qed.
+
+  (* The pick of the produce side over the candidates that keep accepts.
+     The produce side claims at most what GREEDY claims on these
+     candidates, so it finds the pick of GREEDY or a candidate that GREEDY
+     claimed. *)
+  Lemma first_fit_dom :
+    forall (keep : rec -> bool) CG CP p L e m,
+      first_fit CG p L = Some (e, m) -> keep e = true ->
+      (forall e0, keep e0 = true -> claimed CP e0 = true -> claimed CG e0 = true) ->
+      exists e' m', first_fit CP p (filter keep L) = Some (e', m') /\ (e' = e \/ claimed CG e' = true).
+  Proof.
+    intros keep CG CP p L. induction L as [| e0 more IH]; intros e m H Hk I1; [discriminate |].
+    cbn [first_fit filter] in H |- *. destruct (keep e0) eqn:Ek.
+    - cbn [first_fit]. destruct (claimed CP e0) eqn:EP.
+      + assert (EG : claimed CG e0 = true) by exact (I1 e0 Ek EP). rewrite EG in H. exact (IH e m H Hk I1).
+      + destruct (spatial p (r_val e0)) as [m0 |] eqn:Es.
+        * exists e0, m0. split; [reflexivity |].
+          destruct (claimed CG e0) eqn:EG; [right; reflexivity | left; injection H as <- _; reflexivity].
+        * destruct (claimed CG e0); exact (IH e m H Hk I1).
+    - destruct (claimed CG e0) eqn:EG; [exact (IH e m H Hk I1) |].
+      destruct (spatial p (r_val e0)) as [m0 |]; [| exact (IH e m H Hk I1)].
+      injection H as <- _. rewrite Ek in Hk. discriminate.
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the step of
+     ref_fill_f reads claim_after tag fr, so the proof names it and uses
+     claim_after_mono_tag. The statement does not change. The text before:
+
+  (* The produce search dominates GREEDY with x stored (decision 118, a
+     bag). The two searches run over slots that agree position by position:
+     GREEDY picks e from L, and the produce side picks from L without x, or
+     from x followed by L without x when x is persistent, or holds x
+     forced. The produce side keeps at most the claims of GREEDY, apart from
+     the tag of x, and a persistent x stays unclaimed. So each pick of the
+     produce side exists, and the produce search succeeds. *)
+  Lemma dom_fill :
+    forall (fr keep : rec -> bool) x, (forall e, keep e = true -> tag e <> tag x) ->
+      forall ssG ssP CG CP sg,
+        ref_fill_f fr CG ssG = Some sg -> length ssP = length ssG ->
+        (forall k sG sP e m, nth_error ssG k = Some sG -> nth_error ssP k = Some sP -> nth_error sg k = Some (e, m) ->
+           exists L p, sG = Pick L p /\
+             ((keep e = true /\ (sP = Pick (filter keep L) p \/ (fr x = true /\ sP = Pick (x :: filter keep L) p))) \/
+              (e = x /\ fr x = true /\ sP = Pick (x :: filter keep L) p) \/
+              (e = x /\ sP = Forced x m))) ->
+        (forall e0, keep e0 = true -> claimed CP e0 = true -> claimed CG e0 = true) ->
+        (fr x = true -> claimed CP x = false) ->
+        ref_fill_f fr CP ssP <> None.
+  Proof.
+    intros fr keep x Htag ssG. induction ssG as [| sG restG IH]; intros ssP CG CP sg H Hl Hrel I1 I2.
+    - destruct ssP as [| sP restP]; [cbn [ref_fill_f]; discriminate | discriminate].
+    - destruct ssP as [| sP restP]; [discriminate |]. cbn [length] in Hl. injection Hl as Hl.
+      destruct sG as [L p | eF mF]; cbn [ref_fill_f] in H.
+      2: { destruct (ref_fill_f fr CG restG) as [sg' |]; [| discriminate]. cbn [option_map] in H. injection H as <-.
+           destruct (Hrel 0 (Forced eF mF) sP eF mF eq_refl eq_refl eq_refl) as (L' & p' & EL & _). discriminate EL. }
+      destruct (first_fit CG p L) as [[e m] |] eqn:E1; [| discriminate].
+      destruct (ref_fill_f fr (claim_after fr CG e) restG) as [sg' |] eqn:E2; [| discriminate].
+      cbn [option_map] in H. injection H as <-.
+      destruct (first_fit_some _ _ _ _ _ E1) as (_ & _ & Hsp).
+      assert (Hrest : forall CP', (forall e0, keep e0 = true -> claimed CP' e0 = true -> claimed (claim_after fr CG e) e0 = true) ->
+                        (fr x = true -> claimed CP' x = false) -> ref_fill_f fr CP' restP <> None).
+      { intros CP' J1 J2. apply (IH restP (claim_after fr CG e) CP' sg' E2 Hl); [| exact J1 | exact J2].
+        intros k sG0 sP0 e0 m0 H1 H2 H3. exact (Hrel (S k) sG0 sP0 e0 m0 H1 H2 H3). }
+      assert (Kplain : keep e = true ->
+                match first_fit CP p (filter keep L) with
+                | Some (e1, m1) => option_map (cons (e1, m1)) (ref_fill_f fr (claim_after fr CP e1) restP)
+                | None => None
+                end <> None).
+      { intros Hk. destruct (first_fit_dom keep CG CP p L e m E1 Hk I1) as (e' & m' & Ef & Hd). rewrite Ef.
+        destruct (first_fit_some _ _ _ _ _ Ef) as (Hin' & _ & _). apply filter_In in Hin' as [_ Hk'].
+        cbv beta iota. apply option_map_ne. apply Hrest.
+        - intros e0 Hk0 Hc0. unfold claim_after in Hc0. destruct (fr e') eqn:Efr.
+          + apply claim_after_mono. exact (I1 e0 Hk0 Hc0).
+          + unfold claimed in Hc0. cbn [tmem existsb] in Hc0. apply orb_true_iff in Hc0 as [Ht | Hc0].
+            * apply tag_eqb_spec in Ht. destruct Hd as [Ee | HcG].
+              -- subst e'. unfold claim_after. rewrite Efr. cbv beta iota. unfold claimed. apply tmem_spec.
+                 left. exact (eq_sym Ht).
+              -- apply claim_after_mono. unfold claimed in HcG |- *. rewrite Ht. exact HcG.
+            * apply claim_after_mono. exact (I1 e0 Hk0 Hc0).
+        - intros Hfx. unfold claim_after. destruct (fr e'); cbv beta iota; [exact (I2 Hfx) |].
+          unfold claimed. apply tmem_false. intros [Ht | Ht]; [exact (Htag e' Hk' Ht) |].
+          pose proof (I2 Hfx) as Hn. unfold claimed in Hn. apply tmem_false in Hn. exact (Hn Ht). }
+      destruct (Hrel 0 (Pick L p) sP e m eq_refl eq_refl eq_refl) as (L' & p' & EL & Hc).
+      injection EL as <- <-.
+      destruct Hc as [[Hk [-> | [Hfx ->]]] | [[Ex [Hfx ->]] | [Ex ->]]].
+      + cbn [ref_fill_f]. exact (Kplain Hk).
+      + cbn [ref_fill_f first_fit]. rewrite (I2 Hfx). cbv beta iota.
+        destruct (spatial p (r_val x)) as [mx |]; cbv beta iota; [| exact (Kplain Hk)].
+        apply option_map_ne. apply Hrest.
+        * intros e0 Hk0 Hc0. unfold claim_after in Hc0. rewrite Hfx in Hc0. apply claim_after_mono. exact (I1 e0 Hk0 Hc0).
+        * intros _. unfold claim_after. rewrite Hfx. exact (I2 Hfx).
+      + subst e. cbn [ref_fill_f first_fit]. rewrite (I2 Hfx), Hsp. cbv beta iota.
+        apply option_map_ne. apply Hrest.
+        * intros e0 Hk0 Hc0. unfold claim_after in Hc0 |- *. rewrite Hfx in Hc0 |- *. exact (I1 e0 Hk0 Hc0).
+        * intros _. unfold claim_after. rewrite Hfx. exact (I2 Hfx).
+      + subst e. cbn [ref_fill_f]. apply option_map_ne. apply Hrest.
+        * intros e0 Hk0 Hc0. apply claim_after_mono. exact (I1 e0 Hk0 Hc0).
+        * exact I2.
+  Qed.
+  *)
+
+  (* The produce search dominates GREEDY with x stored (decision 118, a
+     bag). The two searches run over slots that agree position by position:
+     GREEDY picks e from L, and the produce side picks from L without x, or
+     from x followed by L without x when x is persistent, or holds x
+     forced. The produce side keeps at most the claims of GREEDY, apart from
+     the tag of x, and a persistent x stays unclaimed. So each pick of the
+     produce side exists, and the produce search succeeds. *)
+  Lemma dom_fill :
+    forall (fr keep : rec -> bool) x, (forall e, keep e = true -> tag e <> tag x) ->
+      forall ssG ssP CG CP sg,
+        ref_fill_f fr CG ssG = Some sg -> length ssP = length ssG ->
+        (forall k sG sP e m, nth_error ssG k = Some sG -> nth_error ssP k = Some sP -> nth_error sg k = Some (e, m) ->
+           exists L p, sG = Pick L p /\
+             ((keep e = true /\ (sP = Pick (filter keep L) p \/ (fr x = true /\ sP = Pick (x :: filter keep L) p))) \/
+              (e = x /\ fr x = true /\ sP = Pick (x :: filter keep L) p) \/
+              (e = x /\ sP = Forced x m))) ->
+        (forall e0, keep e0 = true -> claimed CP e0 = true -> claimed CG e0 = true) ->
+        (fr x = true -> claimed CP x = false) ->
+        ref_fill_f fr CP ssP <> None.
+  Proof.
+    intros fr keep x Htag ssG. induction ssG as [| sG restG IH]; intros ssP CG CP sg H Hl Hrel I1 I2.
+    - destruct ssP as [| sP restP]; [cbn [ref_fill_f]; discriminate | discriminate].
+    - destruct ssP as [| sP restP]; [discriminate |]. cbn [length] in Hl. injection Hl as Hl.
+      destruct sG as [L p | eF mF]; cbn [ref_fill_f] in H.
+      2: { destruct (ref_fill_f fr CG restG) as [sg' |]; [| discriminate]. cbn [option_map] in H. injection H as <-.
+           destruct (Hrel 0 (Forced eF mF) sP eF mF eq_refl eq_refl eq_refl) as (L' & p' & EL & _). discriminate EL. }
+      destruct (first_fit CG p L) as [[e m] |] eqn:E1; [| discriminate].
+      destruct (ref_fill_f fr (claim_after tag fr CG e) restG) as [sg' |] eqn:E2; [| discriminate].
+      cbn [option_map] in H. injection H as <-.
+      destruct (first_fit_some _ _ _ _ _ E1) as (_ & _ & Hsp).
+      assert (Hrest : forall CP', (forall e0, keep e0 = true -> claimed CP' e0 = true -> claimed (claim_after tag fr CG e) e0 = true) ->
+                        (fr x = true -> claimed CP' x = false) -> ref_fill_f fr CP' restP <> None).
+      { intros CP' J1 J2. apply (IH restP (claim_after tag fr CG e) CP' sg' E2 Hl); [| exact J1 | exact J2].
+        intros k sG0 sP0 e0 m0 H1 H2 H3. exact (Hrel (S k) sG0 sP0 e0 m0 H1 H2 H3). }
+      assert (Kplain : keep e = true ->
+                match first_fit CP p (filter keep L) with
+                | Some (e1, m1) => option_map (cons (e1, m1)) (ref_fill_f fr (claim_after tag fr CP e1) restP)
+                | None => None
+                end <> None).
+      { intros Hk. destruct (first_fit_dom keep CG CP p L e m E1 Hk I1) as (e' & m' & Ef & Hd). rewrite Ef.
+        destruct (first_fit_some _ _ _ _ _ Ef) as (Hin' & _ & _). apply filter_In in Hin' as [_ Hk'].
+        cbv beta iota. apply option_map_ne. apply Hrest.
+        - intros e0 Hk0 Hc0. unfold claim_after in Hc0. destruct (fr e') eqn:Efr.
+          + apply claim_after_mono_tag. exact (I1 e0 Hk0 Hc0).
+          + unfold claimed in Hc0. cbn [tmem existsb] in Hc0. apply orb_true_iff in Hc0 as [Ht | Hc0].
+            * apply tag_eqb_spec in Ht. destruct Hd as [Ee | HcG].
+              -- subst e'. unfold claim_after. rewrite Efr. cbv beta iota. unfold claimed. apply tmem_spec.
+                 left. exact (eq_sym Ht).
+              -- apply claim_after_mono_tag. unfold claimed in HcG |- *. rewrite Ht. exact HcG.
+            * apply claim_after_mono_tag. exact (I1 e0 Hk0 Hc0).
+        - intros Hfx. unfold claim_after. destruct (fr e'); cbv beta iota; [exact (I2 Hfx) |].
+          unfold claimed. apply tmem_false. intros [Ht | Ht]; [exact (Htag e' Hk' Ht) |].
+          pose proof (I2 Hfx) as Hn. unfold claimed in Hn. apply tmem_false in Hn. exact (Hn Ht). }
+      destruct (Hrel 0 (Pick L p) sP e m eq_refl eq_refl eq_refl) as (L' & p' & EL & Hc).
+      injection EL as <- <-.
+      destruct Hc as [[Hk [-> | [Hfx ->]]] | [[Ex [Hfx ->]] | [Ex ->]]].
+      + cbn [ref_fill_f]. exact (Kplain Hk).
+      + cbn [ref_fill_f first_fit]. rewrite (I2 Hfx). cbv beta iota.
+        destruct (spatial p (r_val x)) as [mx |]; cbv beta iota; [| exact (Kplain Hk)].
+        apply option_map_ne. apply Hrest.
+        * intros e0 Hk0 Hc0. unfold claim_after in Hc0. rewrite Hfx in Hc0. apply claim_after_mono_tag. exact (I1 e0 Hk0 Hc0).
+        * intros _. unfold claim_after. rewrite Hfx. exact (I2 Hfx).
+      + subst e. cbn [ref_fill_f first_fit]. rewrite (I2 Hfx), Hsp. cbv beta iota.
+        apply option_map_ne. apply Hrest.
+        * intros e0 Hk0 Hc0. unfold claim_after in Hc0 |- *. rewrite Hfx in Hc0 |- *. exact (I1 e0 Hk0 Hc0).
+        * intros _. unfold claim_after. rewrite Hfx. exact (I2 Hfx).
+      + subst e. cbn [ref_fill_f]. apply option_map_ne. apply Hrest.
+        * intros e0 Hk0 Hc0. apply claim_after_mono_tag. exact (I1 e0 Hk0 Hc0).
+        * exact I2.
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the fill of the
+     search takes the tag function tag_f over the view with x stored. The
+     text before:
+
+  (* SEARCH-AT with the search of decision 118 fails only when every tried
+     position of its list fails its checks or its fill. *)
+  Lemma search_at_f_none :
+    forall W x v ks, search_at_f W x v ks = None ->
+      forall k i b m, In (k, (i, b)) ks -> sees (lane_of b) (r_lvl x) = true -> x_in_win W x (b_coll b) v = true ->
+        spatial (b_pat b) (r_val x) = Some m ->
+        fill_f (free_in (store_view x v)) (w_guard W) (claims_x x v) (slots_prod_f W x k v) = None.
+  Proof.
+    intros W x v ks. induction ks as [| [k' [i' b']] rest IH]; intros H k i b m Hin Hs Hw Hm; [destruct Hin |].
+    cbn [search_at_f fst snd] in H. destruct Hin as [Ek | Hin].
+    - injection Ek as <- <- <-. rewrite Hs, Hw, Hm in H. cbn [andb] in H.
+      destruct (fill_f (free_in (store_view x v)) (w_guard W) (claims_x x v) (slots_prod_f W x k' v)); [discriminate | reflexivity].
+    - assert (Hr : search_at_f W x v rest = None).
+      { destruct (sees (lane_of b') (r_lvl x) && x_in_win W x (b_coll b') v); [| exact H].
+        destruct (spatial (b_pat b') (r_val x)); [| exact H].
+        destruct (fill_f (free_in (store_view x v)) (w_guard W) (claims_x x v) (slots_prod_f W x k' v)); [discriminate | exact H]. }
+      exact (IH Hr k i b m Hin Hs Hw Hm).
+  Qed.
+  *)
+
+  (* SEARCH-AT with the search of decision 118 fails only when every tried
+     position of its list fails its checks or its fill. *)
+  Lemma search_at_f_none :
+    forall W x v ks, search_at_f W x v ks = None ->
+      forall k i b m, In (k, (i, b)) ks -> sees (lane_of b) (r_lvl x) = true -> x_in_win W x (b_coll b) v = true ->
+        spatial (b_pat b) (r_val x) = Some m ->
+        fill_f (tag_f (store_view x v)) (free_in (store_view x v)) (w_guard W) (claims_x x v) (slots_prod_f W x k v) = None.
+  Proof.
+    intros W x v ks. induction ks as [| [k' [i' b']] rest IH]; intros H k i b m Hin Hs Hw Hm; [destruct Hin |].
+    cbn [search_at_f fst snd] in H. destruct Hin as [Ek | Hin].
+    - injection Ek as <- <- <-. rewrite Hs, Hw, Hm in H. cbn [andb] in H.
+      destruct (fill_f (tag_f (store_view x v)) (free_in (store_view x v)) (w_guard W) (claims_x x v)
+                  (slots_prod_f W x k' v)); [discriminate | reflexivity].
+    - assert (Hr : search_at_f W x v rest = None).
+      { destruct (sees (lane_of b') (r_lvl x) && x_in_win W x (b_coll b') v); [| exact H].
+        destruct (spatial (b_pat b') (r_val x)); [| exact H].
+        destruct (fill_f (tag_f (store_view x v)) (free_in (store_view x v)) (w_guard W) (claims_x x v)
+                    (slots_prod_f W x k' v)); [discriminate | exact H]. }
+      exact (IH Hr k i b m Hin Hs Hw Hm).
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): the search reads
+     tag_f, slots_cons_f and win_in_f, which are tag, slots_cons and win_in
+     on a bag, and headline 19 part 1 now concludes r_pers. The statement
+     does not change. The text before:
+
+  (* A bag: when the produce search of x fails and GREEDY fails without x,
+     GREEDY fails with x stored (decision 118). A fire of GREEDY with x
+     stored that binds no record with the identity of x exists without x
+     (ref_fill_f_drop). A fire that binds x at a position k0 makes the
+     produce search succeed at k0 (dom_fill). *)
+  Lemma greedy_store_scan_f :
+    sh = Scan -> forall W x v, NoDup (map r_id (v_recs v)) -> (forall e, In e (v_recs v) -> r_id e <> r_id x) ->
+      search_produce_f W x v = None -> greedy_f W v = None -> greedy_f W (store_view x v) = None.
+  Proof.
+    intros Hsh W x v Hnd Hfresh Hsp Hg. destruct (greedy_f W (store_view x v)) as [sg |] eqn:E; [exfalso | reflexivity].
+    pose proof E as E'. rewrite (greedy_f_scan Hsh) in E'.
+    destruct (existsb (fun rm => r_id (fst rm) =? r_id x) sg) eqn:Ex.
+    - apply existsb_exists in Ex as ([e0 m0] & Hin0 & Ex0). cbn [fst] in Ex0. apply Nat.eqb_eq in Ex0.
+      apply In_nth_error in Hin0 as [k0 Hk0].
+      (* a bound record with the identity of x is x *)
+      assert (Hrec : forall k e m, nth_error sg k = Some (e, m) -> r_id e = r_id x -> e = x).
+      { intros k e m Hk Ei. assert (He : In e (map fst sg)) by (apply in_map_iff; exists (e, m); split; [reflexivity | exact (nth_error_In _ _ Hk)]).
+        destruct (greedy_f_colls W (store_view x v) sg E e He) as [He' _]. cbn [store_view v_recs] in He'.
+        destruct He' as [<- | He']; [reflexivity | exfalso; exact (Hfresh e He' Ei)]. }
+      pose proof (Hrec k0 e0 m0 Hk0 Ex0) as ->.
+      pose proof (ref_fill_f_match _ _ _ _ E') as Hmatch.
+      pose proof (slots_match_length _ _ Hmatch) as Hlen.
+      assert (Hlg : length (slots_cons W (store_view x v)) = length (gpairs W)) by (unfold slots_cons; apply length_map).
+      destruct (nth_error (gpairs W) k0) as [[i0 b0] |] eqn:Eg0.
+      2: { apply nth_error_None in Eg0. assert (k0 < length sg) by (apply nth_error_Some; rewrite Hk0; discriminate). lia. }
+      assert (Hsc : forall k i b, nth_error (gpairs W) k = Some (i, b) ->
+                      nth_error (slots_cons W (store_view x v)) k = Some (Pick (visible b (win W (b_coll b) (store_view x v))) (b_pat b))).
+      { intros k i b Hk. unfold slots_cons. rewrite nth_error_map, Hk. reflexivity. }
+      assert (Hen : forall k i b, nth_error (gpairs W) k = Some (i, b) -> nth_error (enum 0 (gpairs W)) k = Some (k, (i, b))).
+      { intros k i b Hk. rewrite enum_nth_error, Hk. reflexivity. }
+      destruct (slots_match_nth _ _ _ _ _ Hmatch (Hsc k0 i0 b0 Eg0) Hk0) as [Hin0 Hm0]. cbn [fst snd] in Hin0, Hm0.
+      (* x lies in a window of a bind on its collection, and the lane of the bind sees x *)
+      assert (Hcx : forall b, In x (visible b (win W (b_coll b) (store_view x v))) ->
+                      b_coll b = r_coll x /\ sees (lane_of b) (r_lvl x) = true).
+      { intros b Hb. unfold visible in Hb. apply filter_In in Hb as [Hb Hl]. split; [| exact Hl].
+        rewrite win_store in Hb. destruct (win_in_mem W x (b_coll b) v x Hb) as [[_ Hc] | [Hv' _]]; [exact Hc |].
+        exfalso. exact (Hfresh x Hv' eq_refl). }
+      destruct (Hcx b0 Hin0) as [Hc0 Hl0].
+      assert (Hxw : forall c, x_in_win W x c v = true) by (intros c; unfold x_in_win; rewrite Hsh; reflexivity).
+      assert (Hinc : In (k0, (i0, b0)) (incoming_positions W x)).
+      { unfold incoming_positions. apply filter_In. split; [unfold incoming_base; exact (nth_error_In _ _ (Hen k0 i0 b0 Eg0)) |].
+        cbn [fst snd]. apply Nat.eqb_eq. exact Hc0. }
+      unfold search_produce_f in Hsp.
+      pose proof (search_at_f_none W x v _ Hsp k0 i0 b0 m0 Hinc Hl0 (Hxw _) Hm0) as Hpf.
+      rewrite (fill_f_ext (free_in (store_view x v)) r_pers) in Hpf
+        by (intros e _; exact (free_in_other (scan_not_classes Hsh) _ e)).
+      rewrite fill_f_ref in Hpf.
+      refine (dom_fill r_pers (fun e => negb (r_id e =? r_id x)) x _ (slots_cons W (store_view x v)) (slots_prod_f W x k0 v)
+                [] (claims_x x v) sg E' _ _ _ _ Hpf).
+      + intros e Hk Et. cbv beta in Hk. apply negb_true_iff, Nat.eqb_neq in Hk.
+        rewrite (tag_other (scan_not_classes Hsh) e), (tag_other (scan_not_classes Hsh) x) in Et.
+        injection Et as _ Et. exact (Hk Et).
+      + unfold slots_prod_f, slots_cons. rewrite !length_map, enum_length. reflexivity.
+      + intros k sG sP e m HG HP Hk.
+        destruct (nth_error (gpairs W) k) as [[i b] |] eqn:Eg;
+          [| unfold slots_cons in HG; rewrite nth_error_map, Eg in HG; discriminate].
+        rewrite (Hsc k i b Eg) in HG. injection HG as <-.
+        rewrite (slots_prod_f_nth W x k0 v k (k, (i, b)) (Hen k i b Eg)) in HP. injection HP as <-.
+        destruct (slots_match_nth _ _ _ _ _ Hmatch (Hsc k i b Eg) Hk) as [Hin Hm]. cbn [fst snd] in Hin, Hm.
+        exists (visible b (win W (b_coll b) (store_view x v))), (b_pat b). split; [reflexivity |].
+        unfold prod_slot. cbn [fst snd]. unfold forced.
+        destruct (Nat.eqb_spec k k0) as [-> | Ne].
+        * (* the position k0 holds x forced *)
+          rewrite Hk0 in Hk. injection Hk as <- <-. rewrite Eg0 in Eg. injection Eg as <- <-. rewrite Hm0.
+          right. right. split; reflexivity.
+        * cbv beta iota. unfold prod_list. rewrite <- win_store.
+          destruct (Nat.eqb_spec (r_id e) (r_id x)) as [Ei | Ei].
+          -- (* x again: two positions bind x, so x is persistent (headline 19) *)
+             pose proof (Hrec k e m Hk Ei) as ->.
+             assert (Hp : r_pers x = true).
+             { rewrite <- (free_in_other (scan_not_classes Hsh) (store_view x v) x).
+               apply (proj1 join_nonpersistent_bound_once W (store_view x v) sg k k0 x m x m0);
+                 [| exact E | exact Ne | exact Hk | exact Hk0 | reflexivity].
+               cbn [store_view v_recs map]. constructor; [| exact Hnd].
+               intros Hin'. apply in_map_iff in Hin' as (e' & Ee & He'). exact (Hfresh e' He' Ee). }
+             destruct (Hcx b Hin) as [Hc Hl].
+             assert (Hok : x_ok W x b v = true) by (unfold x_ok; rewrite Hc, Nat.eqb_refl, Hl, Hxw; reflexivity).
+             rewrite Hp, Hok. cbn [andb]. right. left. split; [reflexivity | split; reflexivity].
+          -- (* another record *)
+             left. split; [first [reflexivity | apply negb_true_iff, Nat.eqb_neq; exact Ei] |].
+             destruct (r_pers x && x_ok W x b v) eqn:Eo.
+             ++ right. apply andb_true_iff in Eo as [Ep _]. split; [exact Ep | reflexivity].
+             ++ left. reflexivity.
+      + intros e0 Hk Hc. exfalso. cbv beta in Hk. unfold claims_x, claim_after in Hc.
+        destruct (free_in (store_view x v) x); cbv beta iota in Hc; [unfold claimed, tmem in Hc; cbn in Hc; discriminate Hc |].
+        unfold claimed in Hc. apply tmem_spec in Hc as [Ht | []].
+        apply negb_true_iff, Nat.eqb_neq in Hk.
+        rewrite (tag_other (scan_not_classes Hsh) e0), (tag_other (scan_not_classes Hsh) x) in Ht.
+        injection Ht as _ Ht. exact (Hk (eq_sym Ht)).
+      + intros Hp. unfold claims_x, claim_after. rewrite (free_in_other (scan_not_classes Hsh) (store_view x v) x), Hp.
+        reflexivity.
+    - (* no bound record has the identity of x: the same fire exists without x *)
+      assert (Hv : v_recs v = filter (fun e => (fun i => negb (i =? r_id x)) (r_id e)) (v_recs (store_view x v))).
+      { cbn [store_view v_recs filter]. rewrite Nat.eqb_refl. cbn [negb]. symmetry. apply forallb_filter_id.
+        apply forallb_forall. intros e He. apply negb_true_iff, Nat.eqb_neq. exact (Hfresh e He). }
+      pose proof (slots_cons_filter Hsh W (store_view x v) v _ Hv) as Hs. cbv beta in Hs.
+      rewrite (greedy_f_scan Hsh), Hs in Hg.
+      rewrite (ref_fill_f_drop r_pers (fun e => negb (r_id e =? r_id x)) _ [] sg E') in Hg; [discriminate |].
+      intros e m Hin. apply negb_true_iff, Nat.eqb_neq. intros Ei.
+      assert (Ht : existsb (fun rm => r_id (fst rm) =? r_id x) sg = true)
+        by (apply existsb_exists; exists (e, m); split; [exact Hin | apply Nat.eqb_eq; exact Ei]).
+      rewrite Ex in Ht. discriminate.
+  Qed.
+  *)
+
+  (* A bag: when the produce search of x fails and GREEDY fails without x,
+     GREEDY fails with x stored (decision 118). A fire of GREEDY with x
+     stored that binds no record with the identity of x exists without x
+     (ref_fill_f_drop). A fire that binds x at a position k0 makes the
+     produce search succeed at k0 (dom_fill). *)
+  Lemma greedy_store_scan_f :
+    sh = Scan -> forall W x v, NoDup (map r_id (v_recs v)) -> (forall e, In e (v_recs v) -> r_id e <> r_id x) ->
+      search_produce_f W x v = None -> greedy_f W v = None -> greedy_f W (store_view x v) = None.
+  Proof.
+    intros Hsh W x v Hnd Hfresh Hsp Hg. destruct (greedy_f W (store_view x v)) as [sg |] eqn:E; [exfalso | reflexivity].
+    pose proof E as E'. rewrite (greedy_f_scan Hsh) in E'.
+    destruct (existsb (fun rm => r_id (fst rm) =? r_id x) sg) eqn:Ex.
+    - apply existsb_exists in Ex as ([e0 m0] & Hin0 & Ex0). cbn [fst] in Ex0. apply Nat.eqb_eq in Ex0.
+      apply In_nth_error in Hin0 as [k0 Hk0].
+      (* a bound record with the identity of x is x *)
+      assert (Hrec : forall k e m, nth_error sg k = Some (e, m) -> r_id e = r_id x -> e = x).
+      { intros k e m Hk Ei. assert (He : In e (map fst sg)) by (apply in_map_iff; exists (e, m); split; [reflexivity | exact (nth_error_In _ _ Hk)]).
+        destruct (greedy_f_colls W (store_view x v) sg E e He) as [He' _]. cbn [store_view v_recs] in He'.
+        destruct He' as [<- | He']; [reflexivity | exfalso; exact (Hfresh e He' Ei)]. }
+      pose proof (Hrec k0 e0 m0 Hk0 Ex0) as ->.
+      pose proof (ref_fill_f_match _ _ _ _ E') as Hmatch.
+      pose proof (slots_match_length _ _ Hmatch) as Hlen.
+      assert (Hlg : length (slots_cons W (store_view x v)) = length (gpairs W)) by (unfold slots_cons; apply length_map).
+      destruct (nth_error (gpairs W) k0) as [[i0 b0] |] eqn:Eg0.
+      2: { apply nth_error_None in Eg0. assert (k0 < length sg) by (apply nth_error_Some; rewrite Hk0; discriminate). lia. }
+      assert (Hsc : forall k i b, nth_error (gpairs W) k = Some (i, b) ->
+                      nth_error (slots_cons W (store_view x v)) k = Some (Pick (visible b (win W (b_coll b) (store_view x v))) (b_pat b))).
+      { intros k i b Hk. unfold slots_cons. rewrite nth_error_map, Hk. reflexivity. }
+      assert (Hen : forall k i b, nth_error (gpairs W) k = Some (i, b) -> nth_error (enum 0 (gpairs W)) k = Some (k, (i, b))).
+      { intros k i b Hk. rewrite enum_nth_error, Hk. reflexivity. }
+      destruct (slots_match_nth _ _ _ _ _ Hmatch (Hsc k0 i0 b0 Eg0) Hk0) as [Hin0 Hm0]. cbn [fst snd] in Hin0, Hm0.
+      (* x lies in a window of a bind on its collection, and the lane of the bind sees x *)
+      assert (Hcx : forall b, In x (visible b (win W (b_coll b) (store_view x v))) ->
+                      b_coll b = r_coll x /\ sees (lane_of b) (r_lvl x) = true).
+      { intros b Hb. unfold visible in Hb. apply filter_In in Hb as [Hb Hl]. split; [| exact Hl].
+        rewrite win_store in Hb. destruct (win_in_mem W x (b_coll b) v x Hb) as [[_ Hc] | [Hv' _]]; [exact Hc |].
+        exfalso. exact (Hfresh x Hv' eq_refl). }
+      destruct (Hcx b0 Hin0) as [Hc0 Hl0].
+      assert (Hxw : forall c, x_in_win W x c v = true) by (intros c; unfold x_in_win; rewrite Hsh; reflexivity).
+      assert (Hinc : In (k0, (i0, b0)) (incoming_positions W x)).
+      { unfold incoming_positions. apply filter_In. split; [unfold incoming_base; exact (nth_error_In _ _ (Hen k0 i0 b0 Eg0)) |].
+        cbn [fst snd]. apply Nat.eqb_eq. exact Hc0. }
+      unfold search_produce_f in Hsp.
+      pose proof (search_at_f_none W x v _ Hsp k0 i0 b0 m0 Hinc Hl0 (Hxw _) Hm0) as Hpf.
+      rewrite (fill_f_ext (tag_f (store_view x v)) tag (free_in (store_view x v)) r_pers) in Hpf
+        by (intros e _; first [exact (free_in_other (scan_not_classes Hsh) _ e) | exact (tag_f_other (scan_not_classes Hsh) _ e)]).
+      rewrite fill_f_ref in Hpf.
+      refine (dom_fill r_pers (fun e => negb (r_id e =? r_id x)) x _ (slots_cons W (store_view x v)) (slots_prod_f W x k0 v)
+                [] (claims_x x v) sg E' _ _ _ _ Hpf).
+      + intros e Hk Et. cbv beta in Hk. apply negb_true_iff, Nat.eqb_neq in Hk.
+        rewrite (tag_other (scan_not_classes Hsh) e), (tag_other (scan_not_classes Hsh) x) in Et.
+        injection Et as _ Et. exact (Hk Et).
+      + unfold slots_prod_f, slots_cons. rewrite !length_map, enum_length. reflexivity.
+      + intros k sG sP e m HG HP Hk.
+        destruct (nth_error (gpairs W) k) as [[i b] |] eqn:Eg;
+          [| unfold slots_cons in HG; rewrite nth_error_map, Eg in HG; discriminate].
+        rewrite (Hsc k i b Eg) in HG. injection HG as <-.
+        rewrite (slots_prod_f_nth W x k0 v k (k, (i, b)) (Hen k i b Eg)) in HP. injection HP as <-.
+        destruct (slots_match_nth _ _ _ _ _ Hmatch (Hsc k i b Eg) Hk) as [Hin Hm]. cbn [fst snd] in Hin, Hm.
+        exists (visible b (win W (b_coll b) (store_view x v))), (b_pat b). split; [reflexivity |].
+        unfold prod_slot. cbn [fst snd]. unfold forced.
+        destruct (Nat.eqb_spec k k0) as [-> | Ne].
+        * (* the position k0 holds x forced *)
+          rewrite Hk0 in Hk. injection Hk as <- <-. rewrite Eg0 in Eg. injection Eg as <- <-. rewrite Hm0.
+          right. right. split; reflexivity.
+        * cbv beta iota. unfold prod_list. rewrite (win_in_f_other (scan_not_classes Hsh)), <- win_store.
+          destruct (Nat.eqb_spec (r_id e) (r_id x)) as [Ei | Ei].
+          -- (* x again: two positions bind x, so x is persistent (headline 19) *)
+             pose proof (Hrec k e m Hk Ei) as ->.
+             assert (Hp : r_pers x = true).
+             { refine (proj1 (proj1 join_nonpersistent_bound_once W (store_view x v) sg k k0 x m x m0 _ E Ne Hk Hk0) eq_refl).
+               cbn [store_view v_recs map]. constructor; [| exact Hnd].
+               intros Hin'. apply in_map_iff in Hin' as (e' & Ee & He'). exact (Hfresh e' He' Ee). }
+             destruct (Hcx b Hin) as [Hc Hl].
+             assert (Hok : x_ok W x b v = true) by (unfold x_ok; rewrite Hc, Nat.eqb_refl, Hl, Hxw; reflexivity).
+             rewrite Hp, Hok. cbn [andb]. right. left. split; [reflexivity | split; reflexivity].
+          -- (* another record *)
+             left. split; [first [reflexivity | apply negb_true_iff, Nat.eqb_neq; exact Ei] |].
+             destruct (r_pers x && x_ok W x b v) eqn:Eo.
+             ++ right. apply andb_true_iff in Eo as [Ep _]. split; [exact Ep | reflexivity].
+             ++ left. reflexivity.
+      + intros e0 Hk Hc. exfalso. cbv beta in Hk. unfold claims_x, claim_after in Hc.
+        destruct (free_in (store_view x v) x); cbv beta iota in Hc; [unfold claimed, tmem in Hc; cbn in Hc; discriminate Hc |].
+        unfold claimed in Hc. apply tmem_spec in Hc as [Ht | []].
+        apply negb_true_iff, Nat.eqb_neq in Hk.
+        rewrite (tag_f_other (scan_not_classes Hsh) _ x), (tag_other (scan_not_classes Hsh) e0), (tag_other (scan_not_classes Hsh) x) in Ht.
+        injection Ht as _ Ht. exact (Hk (eq_sym Ht)).
+      + intros Hp. unfold claims_x, claim_after. rewrite (free_in_other (scan_not_classes Hsh) (store_view x v) x), Hp.
+        reflexivity.
+    - (* no bound record has the identity of x: the same fire exists without x *)
+      assert (Hv : v_recs v = filter (fun e => (fun i => negb (i =? r_id x)) (r_id e)) (v_recs (store_view x v))).
+      { cbn [store_view v_recs filter]. rewrite Nat.eqb_refl. cbn [negb]. symmetry. apply forallb_filter_id.
+        apply forallb_forall. intros e He. apply negb_true_iff, Nat.eqb_neq. exact (Hfresh e He). }
+      pose proof (slots_cons_filter Hsh W (store_view x v) v _ Hv) as Hs. cbv beta in Hs.
+      rewrite (greedy_f_scan Hsh), Hs in Hg.
+      rewrite (ref_fill_f_drop r_pers (fun e => negb (r_id e =? r_id x)) _ [] sg E') in Hg; [discriminate |].
+      intros e m Hin. apply negb_true_iff, Nat.eqb_neq. intros Ei.
+      assert (Ht : existsb (fun rm => r_id (fst rm) =? r_id x) sg = true)
+        by (apply existsb_exists; exists (e, m); split; [exact Hin | apply Nat.eqb_eq; exact Ei]).
+      rewrite Ex in Ht. discriminate.
+  Qed.
+
+  (* A bag: OFFER with the search of decision 118 stores x only when no
+     waiter of its collection fires. *)
+  Lemma INV_scan_f_store :
+    sh = Scan -> forall x v, INV_scan_f v -> NoDup (map r_id (v_recs v)) -> (forall e, In e (v_recs v) -> r_id e <> r_id x) ->
+      offer_pick_f x v (offer_cands x v) = None -> INV_scan_f (store_view x v).
+  Proof.
+    intros Hsh x v H Hnd Hfresh Hp W HW Hg. cbn [store_view v_wtrs] in HW.
+    destruct (mem (r_coll x) (colls W)) eqn:Ec.
+    - assert (Hc : In W (offer_cands x v)).
+      { unfold offer_cands. rewrite Hsh. apply (Permutation_in _ (Permutation_sym (worder_perm _ _))).
+        unfold waiters_of. apply filter_In. split; [exact HW | exact Ec]. }
+      pose proof (offer_pick_f_none x v _ Hp W Hc) as Hf.
+      assert (Hs : search_produce_f W x v = None).
+      { unfold fires_with_f in Hf. rewrite (heads_ok_scan Hsh) in Hf.
+        destruct (search_produce_f W x v) as [[p sg] |]; [| reflexivity].
+        unfold guard_ok in Hf. rewrite Hg, no_guard_admits in Hf. discriminate. }
+      exact (greedy_store_scan_f Hsh W x v Hnd Hfresh Hs (H W HW Hg)).
+    - rewrite (greedy_f_frame W v (store_view x v)); [exact (H W HW Hg) |].
+      intros c Hc. rewrite recs_of_store. destruct (Nat.eqb_spec c (r_coll x)) as [-> | E]; [| reflexivity].
+      exfalso. apply mem_false in Ec. exact (Ec Hc).
+  Qed.
+
+  (* A bag: RECEIVE with the search of decision 118 parks W only when GREEDY
+     finds no match for it. *)
+  Lemma INV_scan_f_park :
+    sh = Scan -> forall W v, INV_scan_f v -> receive_sel_f v W = None -> INV_scan_f (park_view W v).
+  Proof.
+    intros Hsh W v H Hs W' HW' Hg.
+    rewrite (greedy_f_frame W' v (park_view W v)) by (intros c _; reflexivity).
+    cbn [park_view v_wtrs] in HW'. destruct HW' as [<- | HW']; [| exact (H W' HW' Hg)].
+    unfold receive_sel_f in Hs. rewrite (heads_ok_scan Hsh) in Hs. unfold receive_decision_f in Hs.
+    destruct (greedy_f W v) as [sg |]; [| reflexivity]. unfold guard_ok in Hs. rewrite Hg, no_guard_admits in Hs. discriminate.
+  Qed.
+
+  Lemma INV_scan_f_fire_tail :
+    sh = Scan -> forall W sg inc oi fl j3 v R,
+      INV_scan_f v -> NoDup (map r_id (v_recs v)) ->
+      v_recs (j_view j3) = remove_all R (v_recs v) -> incl (v_wtrs (j_view j3)) (v_wtrs v) ->
+      INV_scan_f (j_view (fire_tail W sg inc oi fl j3)).
+  Proof.
+    intros Hsh W sg inc oi fl j3 v R H Hnd Vr Vw.
+    destruct (fire_tail_spec W sg inc oi fl j3) as (rs & _ & V4 & _ & _ & _ & _ & _ & _ & _ & Hrs).
+    rewrite (Hrs (or_intror (scan_not_classes Hsh))) in V4. rewrite V4.
+    apply (INV_scan_f_remove Hsh v _ R H Hnd); [exact Vr | exact Vw].
+  Qed.
+
+  Lemma scan_no_cascade_f : sh = Scan -> cascades_f = false.
+  Proof. intros Hsh. unfold cascades_f. rewrite Hsh. reflexivity. Qed.
+
+  (* The identities of the second sends, from the positions of the sends:
+     two sends at distinct positions carry distinct identities. *)
+  Lemma sends_nodup_gen :
+    forall (f : nat * (rec * M) -> bool) (sg : list (rec * M)),
+      (forall k1 k2 e1 m1 e2 m2, nth_error sg k1 = Some (e1, m1) -> nth_error sg k2 = Some (e2, m2) ->
+         f (k1, (e1, m1)) = true -> f (k2, (e2, m2)) = true -> r_id e1 = r_id e2 -> k1 = k2) ->
+      NoDup (map (fun krm : nat * (rec * M) => r_id (fst (snd krm))) (filter f (enum 0 sg))).
+  Proof.
+    intros f sg H. apply nodup_map_inj_on; [apply NoDup_filter; apply (NoDup_map_inv fst); apply enum_NoDup |].
+    intros [k1 [e1 m1]] [k2 [e2 m2]] H1 H2 E. apply filter_In in H1 as [H1 F1]. apply filter_In in H2 as [H2 F2].
+    apply (enum_nth _ sg 0) in H1 as [_ N1]. apply (enum_nth _ sg 0) in H2 as [_ N2]. rewrite Nat.sub_0_r in N1, N2.
+    cbn [fst snd] in E. pose proof (H k1 k2 e1 m1 e2 m2 N1 N2 F1 F2 E) as ->. rewrite N1 in N2. injection N2 as <- <-.
+    reflexivity.
+  Qed.
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): prod_list reads
+     the window win_in_f, so the proof uses win_in_f_mem. The statement
+     does not change. The text before:
+
+  (* The records of a produce fire of the search of decision 118 at a
+     position other than the position of x: a persistent x, or a stored
+     record of a collection of W with another identity. *)
+  Lemma prod_fire_recs :
+    forall W x v p sg, search_produce_f W x v = Some (p, sg) ->
+      forall k e m, nth_error sg k = Some (e, m) -> k <> p ->
+        (e = x /\ r_pers x = true) \/ (In e (v_recs v) /\ In (r_coll e) (colls W) /\ r_id e <> r_id x).
+  Proof.
+    intros W x v p sg H k e m Hk Hne. pose proof (search_produce_f_rel _ _ _ _ _ H) as Hr.
+    destruct (slots_rel_nth_inv _ _ _ _ Hr Hk) as [s Hs].
+    pose proof (slots_rel_nth _ _ _ _ _ Hr Hs Hk) as Hm. unfold slots_prod_f in Hs. rewrite nth_error_map in Hs.
+    destruct (nth_error (enum 0 (gpairs W)) k) as [[k' [i0 b]] |] eqn:Ee; [| discriminate]. cbn [option_map] in Hs.
+    injection Hs as <-. destruct (enum0_nth_fst _ _ _ _ _ Ee) as [-> Eg].
+    unfold prod_slot in Hm. cbn [fst snd] in Hm. unfold forced in Hm.
+    revert Hm. destruct (Nat.eqb_spec k p) as [Ekp | _]; [exfalso; exact (Hne Ekp) |]. intros Hm.
+    cbn [fst] in Hm. destruct (prod_list_mem W x b v e Hm) as [(-> & Hp & _) | [Hm' Hne']]; [left; split; [reflexivity | exact Hp] |].
+    apply visible_incl in Hm'.
+    destruct (win_in_mem W x (b_coll b) v e Hm') as [[-> _] | [Hv Hc]]; [exfalso; exact (Hne' eq_refl) |].
+    right. split; [exact Hv |]. split; [| exact Hne'].
+    rewrite Hc. apply bind_coll. exact (gpairs_binds W (i0, b) (nth_error_In _ _ Eg)).
+  Qed.
+  *)
+
+  (* The records of a produce fire of the search of decision 118 at a
+     position other than the position of x: a persistent x, or a stored
+     record of a collection of W with another identity. *)
+  Lemma prod_fire_recs :
+    forall W x v p sg, search_produce_f W x v = Some (p, sg) ->
+      forall k e m, nth_error sg k = Some (e, m) -> k <> p ->
+        (e = x /\ r_pers x = true) \/ (In e (v_recs v) /\ In (r_coll e) (colls W) /\ r_id e <> r_id x).
+  Proof.
+    intros W x v p sg H k e m Hk Hne. pose proof (search_produce_f_rel _ _ _ _ _ H) as Hr.
+    destruct (slots_rel_nth_inv _ _ _ _ Hr Hk) as [s Hs].
+    pose proof (slots_rel_nth _ _ _ _ _ Hr Hs Hk) as Hm. unfold slots_prod_f in Hs. rewrite nth_error_map in Hs.
+    destruct (nth_error (enum 0 (gpairs W)) k) as [[k' [i0 b]] |] eqn:Ee; [| discriminate]. cbn [option_map] in Hs.
+    injection Hs as <-. destruct (enum0_nth_fst _ _ _ _ _ Ee) as [-> Eg].
+    unfold prod_slot in Hm. cbn [fst snd] in Hm. unfold forced in Hm.
+    revert Hm. destruct (Nat.eqb_spec k p) as [Ekp | _]; [exfalso; exact (Hne Ekp) |]. intros Hm.
+    cbn [fst] in Hm. destruct (prod_list_mem W x b v e Hm) as [(-> & Hp & _) | [Hm' Hne']]; [left; split; [reflexivity | exact Hp] |].
+    apply visible_incl in Hm'.
+    destruct (win_in_f_mem W x (b_coll b) v e Hm') as [[-> _] | [Hv Hc]]; [exfalso; exact (Hne' eq_refl) |].
+    right. split; [exact Hv |]. split; [| exact Hne'].
+    rewrite Hc. apply bind_coll. exact (gpairs_binds W (i0, b) (nth_error_In _ _ Eg)).
+  Qed.
+
+  (* A bag: the second sends of a produce fire of the search of decision
+     118 carry distinct identities. Two stored records that are not
+     persistent bind one position each (headline 19), and x is fresh. *)
+  Lemma prod_sends_nodup :
+    sh = Scan -> forall W x v p sg fl,
+      NoDup (map r_id (v_recs v)) -> ~ In (r_id x) (map r_id (v_recs v)) -> search_produce_f W x v = Some (p, sg) ->
+      NoDup (map (fun krm : nat * (rec * M) => r_id (fst (snd krm))) (filter (sends_at (Some p) fl) (enum 0 sg))).
+  Proof.
+    intros Hsh W x v p sg fl Hnd Hfresh H. apply sends_nodup_gen.
+    intros k1 k2 e1 m1 e2 m2 N1 N2 F1 F2 E.
+    destruct (Nat.eq_dec k1 k2) as [-> | Ne]; [reflexivity | exfalso].
+    unfold sends_at in F1, F2. cbn [fst snd is_inc] in F1, F2.
+    destruct (join_incoming_held W x v p sg H) as ([mx Hxp] & _).
+    assert (Hnp : forall k e m, nth_error sg k = Some (e, m) -> k <> p -> negb (r_pers e) = true ->
+                    In e (v_recs v) /\ r_id e <> r_id x).
+    { intros k e m Hk Hkp Hp. destruct (prod_fire_recs W x v p sg H k e m Hk Hkp) as [[-> Hpx] | (Hv & _ & Hne)].
+      - rewrite Hpx in Hp. discriminate.
+      - split; assumption. }
+    revert F1 F2. destruct (Nat.eqb_spec k1 p) as [-> | N1p]; destruct (Nat.eqb_spec k2 p) as [-> | N2p]; intros F1 F2.
+    - exact (Ne eq_refl).
+    - rewrite Hxp in N1. injection N1 as <- _. destruct (Hnp k2 e2 m2 N2 N2p F2) as [_ Hne]. exact (Hne (eq_sym E)).
+    - rewrite Hxp in N2. injection N2 as <- _. destruct (Hnp k1 e1 m1 N1 N1p F1) as [_ Hne]. exact (Hne E).
+    - destruct (Hnp k1 e1 m1 N1 N1p F1) as [Hv1 _]. destruct (Hnp k2 e2 m2 N2 N2p F2) as [Hv2 _].
+      assert (Ee : e1 = e2) by exact (nodup_map_inj _ _ r_id _ e1 e2 Hnd Hv1 Hv2 E). subst e2.
+      (* Changed by decision 103 (decision 118, C6 arbitration): part 2 of
+         headline 19 concludes r_pers for one identity at two positions.
+         The text before:
+      pose proof (proj1 (proj2 join_nonpersistent_bound_once) W x v p sg k1 k2 e1 m1 e1 m2 Hnd Hfresh H Ne N1 N2 eq_refl) as Hf.
+      rewrite (free_in_other (scan_not_classes Hsh)) in Hf. rewrite Hf in F1. discriminate.
+      *)
+      pose proof (proj1 (proj1 (proj2 join_nonpersistent_bound_once) W x v p sg k1 k2 e1 m1 e1 m2 Hnd Hfresh H Ne N1 N2)
+                    eq_refl) as Hf.
+      rewrite Hf in F1. discriminate.
+  Qed.
+
+  (* A bag: the second sends of a fire of GREEDY with the claim rule carry
+     distinct identities (headline 19). *)
+  Lemma greedy_sends_nodup :
+    sh = Scan -> forall W v sg fl, NoDup (map r_id (v_recs v)) -> greedy_f W v = Some sg ->
+      NoDup (map (fun krm : nat * (rec * M) => r_id (fst (snd krm))) (filter (sends_at None fl) (enum 0 sg))).
+  Proof.
+    intros Hsh W v sg fl Hnd H. apply sends_nodup_gen.
+    intros k1 k2 e1 m1 e2 m2 N1 N2 F1 F2 E.
+    destruct (Nat.eq_dec k1 k2) as [-> | Ne]; [reflexivity | exfalso].
+    unfold sends_at in F1, F2. cbn [fst snd is_inc] in F1, F2.
+    assert (He : forall k e m, nth_error sg k = Some (e, m) -> In e (v_recs v)).
+    { intros k e m Hk. apply (proj1 (greedy_f_colls W v sg H e (in_map fst _ _ (nth_error_In _ _ Hk)))). }
+    assert (Ee : e1 = e2) by exact (nodup_map_inj _ _ r_id _ e1 e2 Hnd (He _ _ _ N1) (He _ _ _ N2) E). subst e2.
+    (* Changed by decision 103 (decision 118, C6 arbitration): part 1 of
+       headline 19 concludes r_pers for one identity at two positions. The
+       text before:
+    pose proof (proj1 join_nonpersistent_bound_once W v sg k1 k2 e1 m1 e1 m2 Hnd H Ne N1 N2 eq_refl) as Hf.
+    rewrite (free_in_other (scan_not_classes Hsh)) in Hf. rewrite Hf in F1. discriminate.
+    *)
+    pose proof (proj1 (proj1 join_nonpersistent_bound_once W v sg k1 k2 e1 m1 e1 m2 Hnd H Ne N1 N2) eq_refl) as Hf.
+    rewrite Hf in F1. discriminate.
+  Qed.
+
+  (* WF_fire_step with the condition on the second sends: their identities
+     are distinct. Under decision 118 a persistent record can bind several
+     positions, so the bound identities of a fire can repeat. *)
+  Lemma WF_fire_step_f :
+    forall j bs W sg ainc oi fl j3,
+      WF j ->
+      (forall r, In r (removed sg ainc) -> In r (v_recs (j_view j))) ->
+      NoDup (map (fun krm : nat * (rec * M) => r_id (fst (snd krm))) (filter (sends_at (option_map fst ainc) fl) (enum 0 sg))) ->
+      (forall p a e m, ainc = Some (p, a) -> nth_error sg p = Some (e, m) -> ~ In (r_id e) (live j)) ->
+      (forall k e m, nth_error sg k = Some (e, m) -> inc_pos ainc k = false -> r_pers e = false -> In e (removed sg ainc)) ->
+      (In W (v_wtrs (j_view j)) \/ ~ In (w_id W) (map w_id (v_wtrs (j_view j)))) ->
+      j_view j3 = apply (apply_all (j_view j) (map SBump bs)) (SFire W sg ainc) -> j_work j3 = j_work j ->
+      WF (fire_tail W sg (option_map fst ainc) oi fl j3).
+  Proof.
+    intros j bs W sg ainc oi fl j3 [H1 H2] Hrem Hnd Hinc Hcov HW V3 W3.
+    destruct (fire_tail_spec W sg (option_map fst ainc) oi fl j3) as (rs & _ & V4 & _ & _ & P4 & _ & _ & _ & Hrs & Hrs0).
+    destruct (bumps_view bs (j_view j)) as [Br Bw].
+    unfold live in H1. apply nodup_app_iff in H1 as (Nr & Nw & Dj).
+    set (R1 := remove_all (removed sg ainc) (v_recs (j_view j))).
+    assert (V3r : v_recs (j_view j3) = R1) by (rewrite V3; cbn [apply v_recs]; rewrite Br; reflexivity).
+    assert (NR1 : NoDup (map r_id R1)) by (apply nodup_ids_remove_all; exact Nr).
+    split.
+    - unfold live. rewrite V4. cbn [v_recs]. rewrite V3r.
+      apply (Permutation_NoDup (Permutation_app_head _ (Permutation_sym (Permutation_map (fun q => r_id (p_rec q)) P4)))).
+      rewrite map_app, W3. destruct (w_peek W) eqn:Ep.
+      + rewrite (Hrs0 (or_introl eq_refl)). cbn [remove_all fold_left].
+        apply nodup_app_iff. split; [exact NR1 |]. split.
+        * apply nodup_app_iff. split; [| split; [exact Nw |]].
+          -- unfold np_results. rewrite map_map. cbn [p_rec]. exact Hnd.
+          -- intros id Hid Hw. apply in_map_iff in Hid as (q & <- & Hq).
+             unfold np_results in Hq. apply in_map_iff in Hq as ([k [e m]] & <- & Hq). apply filter_In in Hq as [Hq Hp].
+             apply (enum_nth _ sg 0) in Hq as [_ Hk]. rewrite Nat.sub_0_r in Hk. cbn [p_rec fst snd] in Hw.
+             destruct (inc_pos ainc k) eqn:Ei.
+             ++ destruct ainc as [[p a] |]; [| discriminate]. cbn [inc_pos] in Ei. apply Nat.eqb_eq in Ei. subst k.
+                apply (Hinc p a e m eq_refl Hk). apply in_or_app. right. exact Hw.
+             ++ unfold sends_at in Hp. cbn [fst snd] in Hp. rewrite is_inc_option_map, Ei in Hp.
+                apply negb_true_iff in Hp. pose proof (Hcov k e m Hk Ei Hp) as Hr. apply Hrem in Hr.
+                exact (Dj (r_id e) (in_map _ _ _ Hr) Hw).
+        * intros id Hid Hin. apply in_app_or in Hin as [Hin | Hin].
+          -- apply in_map_iff in Hin as (q & <- & Hq). unfold np_results in Hq. apply in_map_iff in Hq as ([k [e m]] & <- & Hq).
+             apply filter_In in Hq as [Hq Hp]. apply (enum_nth _ sg 0) in Hq as [_ Hk]. rewrite Nat.sub_0_r in Hk.
+             cbn [p_rec fst snd] in Hid.
+             apply (in_remove_all_ids _ _ _ Nr Hrem) in Hid as [Hid Hnr].
+             destruct (inc_pos ainc k) eqn:Ei.
+             ++ destruct ainc as [[p a] |]; [| discriminate]. cbn [inc_pos] in Ei. apply Nat.eqb_eq in Ei. subst k.
+                apply (Hinc p a e m eq_refl Hk). apply in_or_app. left. exact Hid.
+             ++ unfold sends_at in Hp. cbn [fst snd] in Hp. rewrite is_inc_option_map, Ei in Hp.
+                apply negb_true_iff in Hp. apply Hnr. apply in_map. exact (Hcov k e m Hk Ei Hp).
+          -- apply (in_remove_all_ids _ _ _ Nr Hrem) in Hid as [Hid _]. exact (Dj id Hid Hin).
+      + cbn [app]. apply nodup_app_iff. split; [apply nodup_ids_remove_all; exact NR1 |]. split; [exact Nw |].
+        intros id Hid Hw. apply in_map_iff in Hid as (e & <- & He). apply remove_all_incl, remove_all_incl in He.
+        exact (Dj (r_id e) (in_map _ _ _ He) Hw).
+    - rewrite V4. cbn [v_wtrs]. rewrite V3. cbn [apply v_wtrs]. rewrite Bw.
+      destruct (w_pers W); [exact H2 | apply nodup_wtr_ids_del; exact H2].
+  Qed.
+
+  Lemma WF_offer1_f :
+    sh = Scan -> forall own j x, WF j -> ~ In (r_id (e_rec x)) (live j) ->
+      WF (fst (offer1_f own j x)) /\ (snd (offer1_f own j x) = true -> ~ In (r_id (e_rec x)) (live (fst (offer1_f own j x)))).
+  Proof.
+    intros Hsh own j x H Hx. unfold offer1_f.
+    destruct (offer_pick_f (e_rec x) (j_view j) (offer_cands (e_rec x) (j_view j))) as [[[W p] sg] |] eqn:Ep;
+      [| split; [exact (WF_store own j x H Hx) | discriminate]].
+    destruct (offer_pick_f_sel _ _ _ _ _ Ep) as (HwIn & _ & _ & Hsp & _).
+    destruct (join_incoming_held W (e_rec x) (j_view j) p sg Hsp) as ([mx Hxp] & _).
+    assert (Hxfresh : ~ In (r_id (e_rec x)) (map r_id (v_recs (j_view j)))) by exact (live_fresh_recs j _ Hx).
+    pose proof (prod_sends_nodup Hsh W (e_rec x) (j_view j) p sg true (WF_recs j H) Hxfresh Hsp) as Hnd.
+    destruct (touch_all_spec own (colls W) j) as (bs & T1 & V1 & _ & _ & W1 & _).
+    set (j3 := add_dirty (fire_dirty W (r_coll (e_rec x)))
+                 (with_fired (S (j_fired j)) (stage (touch_all own j (colls W)) (SFire W sg (Some (p, e_auth x)))))).
+    assert (H4 : WF (fire_tail W sg (option_map fst (Some (p, e_auth x))) (e_own x) true j3)).
+    { apply (WF_fire_step_f j bs W sg (Some (p, e_auth x)) (e_own x) true j3 H).
+      - intros r Hr. destruct (removed_pos _ _ _ Hr) as (k & m & Hk & Hi).
+        cbn [inc_pos] in Hi. apply Nat.eqb_neq in Hi.
+        destruct (prod_fire_recs W (e_rec x) (j_view j) p sg Hsp k r m Hk Hi) as [[Er Hp'] | (Hr' & _ & _)]; [| exact Hr'].
+        exfalso. subst r. rewrite (removed_np _ _ _ Hr) in Hp'. discriminate.
+      - exact Hnd.
+      - intros p0 a0 e m E Hk. injection E as <- _. rewrite Hxp in Hk. injection Hk as <- _. exact Hx.
+      - intros k e m Hk Hi Hp. exact (removed_spec sg _ k e m Hk Hi Hp).
+      - left. exact HwIn.
+      - unfold j3. cbn [add_dirty with_dirty with_fired stage j_view]. rewrite V1. reflexivity.
+      - unfold j3. cbn [add_dirty with_dirty with_fired stage j_work]. exact W1. }
+    cbn [option_map fst] in H4.
+    (* the record of a continued offer is persistent: it was neither stored nor pushed *)
+    assert (Hlive : w_peek W = false -> incl (live (fire_tail W sg (Some p) (e_own x) true j3)) (live j)).
+    { intros Epk id Hid. destruct (fire_tail_spec W sg (Some p) (e_own x) true j3) as (rs & _ & V4 & _ & _ & P4 & _).
+      unfold live in Hid |- *. rewrite V4 in Hid. cbn [v_recs] in Hid. rewrite Epk in P4. cbn [app] in P4.
+      apply in_app_or in Hid as [Hid | Hid].
+      - apply in_map_iff in Hid as (e & <- & He). apply remove_all_incl in He.
+        unfold j3 in He. cbn [add_dirty with_dirty with_fired stage j_view apply v_recs] in He. rewrite V1 in He.
+        rewrite (proj1 (bumps_view bs (j_view j))) in He. apply remove_all_incl in He.
+        apply in_or_app. left. apply in_map. exact He.
+      - apply in_or_app. right. apply (Permutation_in _ (Permutation_map _ P4)) in Hid.
+        unfold j3 in Hid. cbn [add_dirty with_dirty with_fired stage j_work] in Hid. rewrite W1 in Hid. exact Hid. }
+    destruct (w_peek W) eqn:Epk; [split; [exact H4 | discriminate] |].
+    destruct (after_fire (S (j_fired j)) (negb (r_pers (e_rec x)) && negb false) (w_pers W)) eqn:Ea;
+      cbn [fst snd]; unfold own_flight; try destruct (e_own x);
+      (split; [exact (WF_same _ _ H4 (Permutation_refl _) (proj2 H4)) | try discriminate]);
+      intros _ Hlv; apply Hx; apply (Hlive eq_refl); exact Hlv.
+  Qed.
+
+  Lemma WF_offer_f :
+    sh = Scan -> forall fuel own j x, WF j -> ~ In (r_id (e_rec x)) (live j) -> WF (offer_f fuel own j x).
+  Proof.
+    intros Hsh fuel. induction fuel as [| f IH]; intros own j x H Hx; cbn [offer_f].
+    - unfold own_flight. destruct (e_own x); exact (WF_same _ _ H (Permutation_refl _) (proj2 H)).
+    - destruct (WF_offer1_f Hsh own j x H Hx) as [H1 H2]. destruct (offer1_f own j x) as [j' []]; cbn [fst snd] in H1, H2;
+        [exact (IH own j' x H1 (H2 eq_refl)) | exact H1].
+  Qed.
+
+  Lemma WF_receive1_f :
+    sh = Scan -> forall j W, WF j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) ->
+      WF (fst (receive1_f j W)) /\ (snd (receive1_f j W) = true -> ~ In (w_id W) (map w_id (v_wtrs (j_view (fst (receive1_f j W)))))).
+  Proof.
+    intros Hsh j W H Hw. unfold receive1_f.
+    destruct (receive_sel_f (j_view j) W) as [sg |] eqn:Er; [| split; [exact (WF_park j W H Hw) | discriminate]].
+    destruct (receive_sel_f_some _ _ _ Er) as (_ & Hgr & _).
+    assert (Hin : forall e, In e (map fst sg) -> In e (v_recs (j_view j))) by (intros e He; exact (proj1 (greedy_f_colls _ _ _ Hgr e He))).
+    pose proof (greedy_sends_nodup Hsh W (j_view j) sg false (WF_recs j H) Hgr) as Hnd.
+    set (j3 := add_dirty (fire_dirty W (hd 0 (colls W))) (with_fired (S (j_fired j)) (stage j (SFire W sg None)))).
+    assert (H4 : WF (fire_tail W sg (option_map fst (@None (nat * A))) false false j3)).
+    { apply (WF_fire_step_f j [] W sg None false false j3 H).
+      - intros r Hr. destruct (removed_pos _ _ _ Hr) as (k & m & Hk & _). exact (Hin r (in_map fst _ _ (nth_error_In _ _ Hk))).
+      - exact Hnd.
+      - intros p0 a0 e m E. discriminate.
+      - intros k e m Hk Hi Hp. exact (removed_spec sg _ k e m Hk Hi Hp).
+      - right. exact Hw.
+      - reflexivity.
+      - reflexivity. }
+    cbn [option_map] in H4.
+    assert (Hws : ~ In (w_id W) (map w_id (v_wtrs (j_view (fire_tail W sg None false false j3))))).
+    { destruct (fire_tail_spec W sg None false false j3) as (rs & _ & V4 & _). rewrite V4. cbn [v_wtrs].
+      unfold j3. cbn [add_dirty with_dirty with_fired stage j_view apply v_wtrs].
+      intros Hin'. apply Hw. destruct (w_pers W); [exact Hin' |].
+      apply in_map_iff in Hin' as (W' & E & HW'). rewrite <- E. apply in_map. exact (del_wtr_incl _ _ W' HW'). }
+    destruct (after_fire (S (j_fired j)) (negb (w_pers W)) (rcv_stays W sg (j_view j)));
+      cbn [fst snd]; (split; [exact (WF_same _ _ H4 (Permutation_refl _) (proj2 H4)) | try discriminate]); intros _; exact Hws.
+  Qed.
+
+  Lemma WF_receive_f :
+    sh = Scan -> forall fuel j W, WF j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) -> WF (receive_f fuel j W).
+  Proof.
+    intros Hsh fuel. induction fuel as [| f IH]; intros j W H Hw; cbn [receive_f];
+      [exact (WF_same _ _ H (Permutation_refl _) (proj2 H)) |].
+    destruct (WF_receive1_f Hsh j W H Hw) as [H1 H2]. destruct (receive1_f j W) as [j' []]; cbn [fst snd] in H1, H2;
+      [exact (IH j' W H1 (H2 eq_refl)) | exact H1].
+  Qed.
+
+  Lemma WF_dstep_f : sh = Scan -> forall own a j, WF j -> WF (fst (dstep_f own a j)).
+  Proof.
+    intros Hsh own a j H. unfold dstep_f. destruct (j_stop j); [exact H |].
+    destruct (j_work j) as [| q rest] eqn:Ew.
+    - rewrite (scan_no_cascade_f Hsh). exact H.
+    - destruct (cap <=? j_fired j); [exact (WF_same _ _ H (Permutation_refl _) (proj2 H)) |]. cbn [fst].
+      destruct (WF_pop j q rest H Ew) as [W0 F0]. unfold resend_f.
+      exact (WF_offer_f Hsh _ own (with_work rest j) (resend_elem a q) W0 F0).
+  Qed.
+
+  Lemma WF_drain_f : sh = Scan -> forall fuel own a j, WF j -> WF (drain_f fuel own a j).
+  Proof.
+    intros Hsh fuel. induction fuel as [| f IH]; intros own a j H; cbn [drain_f];
+      [exact (WF_same _ _ H (Permutation_refl _) (proj2 H)) |].
+    pose proof (WF_dstep_f Hsh own a j H) as H1. destruct (dstep_f own a j) as [j' []]; cbn [fst] in H1;
+      [exact (IH own a j' H1) | exact H1].
+  Qed.
+
+  Lemma INV_scan_f_offer1 :
+    sh = Scan -> forall own j x, INV_scan_f (j_view j) -> WF j -> ~ In (r_id (e_rec x)) (live j) ->
+      INV_scan_f (j_view (fst (offer1_f own j x))).
+  Proof.
+    intros Hsh own j x H Hwf Hx. unfold offer1_f.
+    destruct (offer_pick_f (e_rec x) (j_view j) (offer_cands (e_rec x) (j_view j))) as [[[W p] sg] |] eqn:Ep.
+    - destruct (touch_all_spec own (colls W) j) as (bs & _ & V1 & _).
+      destruct (bumps_view bs (j_view j)) as [Br Bw].
+      set (j3 := add_dirty (fire_dirty W (r_coll (e_rec x)))
+                   (with_fired (S (j_fired j)) (stage (touch_all own j (colls W)) (SFire W sg (Some (p, e_auth x)))))).
+      assert (H4 : INV_scan_f (j_view (fire_tail W sg (Some p) (e_own x) true j3))).
+      { apply (INV_scan_f_fire_tail Hsh W sg (Some p) (e_own x) true j3 (j_view j) (removed sg (Some (p, e_auth x))) H
+                 (WF_recs j Hwf)).
+        - unfold j3. cbn [add_dirty with_dirty with_fired stage j_view apply v_recs]. rewrite V1, Br. reflexivity.
+        - unfold j3. cbn [add_dirty with_dirty with_fired stage j_view apply v_wtrs]. rewrite V1, Bw.
+          destruct (w_pers W); [apply incl_refl | apply del_wtr_incl]. }
+      destruct (w_peek W); [exact H4 |].
+      destruct (after_fire (S (j_fired j)) (negb (r_pers (e_rec x)) && negb false) (w_pers W));
+        cbn [fst]; unfold own_flight; try destruct (e_own x); exact H4.
+    - cbn [fst]. destruct (store_spec own j x) as (bs & _ & Vw & _).
+      destruct (bumps_view bs (j_view j)) as [Br Bw].
+      apply (INV_scan_f_ctl (store_view (e_rec x) (j_view j))).
+      + apply (INV_scan_f_store Hsh (e_rec x) (j_view j) H (WF_recs j Hwf)); [| exact Ep].
+        intros e He E. apply Hx. unfold live. apply in_or_app. left. rewrite <- E. apply in_map. exact He.
+      + rewrite Vw, apply_all_app. cbn [apply_all fold_left apply v_recs store_view]. rewrite Br. reflexivity.
+      + rewrite Vw, apply_all_app. cbn [apply_all fold_left apply v_wtrs store_view]. rewrite Bw. reflexivity.
+  Qed.
+
+  Lemma INV_scan_f_offer :
+    sh = Scan -> forall fuel own j x, INV_scan_f (j_view j) -> WF j -> ~ In (r_id (e_rec x)) (live j) ->
+      INV_scan_f (j_view (offer_f fuel own j x)).
+  Proof.
+    intros Hsh fuel. induction fuel as [| f IH]; intros own j x H Hwf Hx; cbn [offer_f].
+    - unfold own_flight. destruct (e_own x); exact H.
+    - pose proof (INV_scan_f_offer1 Hsh own j x H Hwf Hx) as H1. destruct (WF_offer1_f Hsh own j x Hwf Hx) as [W1 F1].
+      destruct (offer1_f own j x) as [j' []]; cbn [fst snd] in H1, W1, F1; [exact (IH own j' x H1 W1 (F1 eq_refl)) | exact H1].
+  Qed.
+
+  Lemma INV_scan_f_receive1 :
+    sh = Scan -> forall j W, INV_scan_f (j_view j) -> WF j -> INV_scan_f (j_view (fst (receive1_f j W))).
+  Proof.
+    intros Hsh j W H Hwf. unfold receive1_f.
+    destruct (receive_sel_f (j_view j) W) as [sg |] eqn:Er.
+    - set (j3 := add_dirty (fire_dirty W (hd 0 (colls W))) (with_fired (S (j_fired j)) (stage j (SFire W sg None)))).
+      assert (H4 : INV_scan_f (j_view (fire_tail W sg None false false j3))).
+      { apply (INV_scan_f_fire_tail Hsh W sg None false false j3 (j_view j) (removed sg None) H (WF_recs j Hwf));
+          [reflexivity |].
+        unfold j3. cbn [add_dirty with_dirty with_fired stage j_view apply v_wtrs].
+        destruct (w_pers W); [apply incl_refl | apply del_wtr_incl]. }
+      destruct (after_fire (S (j_fired j)) (negb (w_pers W)) (rcv_stays W sg (j_view j)));
+        cbn [fst]; exact H4.
+    - cbn [fst]. unfold park. exact (INV_scan_f_park Hsh W (j_view j) H Er).
+  Qed.
+
+  Lemma INV_scan_f_receive :
+    sh = Scan -> forall fuel j W, INV_scan_f (j_view j) -> WF j -> ~ In (w_id W) (map w_id (v_wtrs (j_view j))) ->
+      INV_scan_f (j_view (receive_f fuel j W)).
+  Proof.
+    intros Hsh fuel. induction fuel as [| f IH]; intros j W H Hwf Hw; cbn [receive_f]; [exact H |].
+    pose proof (INV_scan_f_receive1 Hsh j W H Hwf) as H1. destruct (WF_receive1_f Hsh j W Hwf Hw) as [W1 F1].
+    destruct (receive1_f j W) as [j' []]; cbn [fst snd] in H1, W1, F1; [exact (IH j' W H1 W1 (F1 eq_refl)) | exact H1].
+  Qed.
+
+  Lemma INV_scan_f_dstep :
+    sh = Scan -> forall own a j, INV_scan_f (j_view j) -> WF j -> INV_scan_f (j_view (fst (dstep_f own a j))).
+  Proof.
+    intros Hsh own a j H Hwf. unfold dstep_f. destruct (j_stop j); [exact H |].
+    destruct (j_work j) as [| q rest] eqn:Ew.
+    - rewrite (scan_no_cascade_f Hsh). exact H.
+    - destruct (cap <=? j_fired j); [exact H |]. cbn [fst].
+      destruct (WF_pop j q rest Hwf Ew) as [W0 F0]. unfold resend_f.
+      exact (INV_scan_f_offer Hsh _ own (with_work rest j) (resend_elem a q) H W0 F0).
+  Qed.
+
+  Lemma INV_scan_f_drain :
+    sh = Scan -> forall fuel own a j, INV_scan_f (j_view j) -> WF j -> INV_scan_f (j_view (drain_f fuel own a j)).
+  Proof.
+    intros Hsh fuel. induction fuel as [| f IH]; intros own a j H Hwf; cbn [drain_f]; [exact H |].
+    pose proof (INV_scan_f_dstep Hsh own a j H Hwf) as H1. pose proof (WF_dstep_f Hsh own a j Hwf) as W1.
+    destruct (dstep_f own a j) as [j' []]; cbn [fst] in H1, W1; [exact (IH own a j' H1 W1) | exact H1].
+  Qed.
+
+  (* RUN-JOIN with the search of decision 118 on a bag keeps INV_scan_f at
+     every end. *)
+  Lemma INV_scan_run_join_f :
+    sh = Scan -> forall fuel o scope v0, start_ok o v0 -> INV_scan_f v0 -> INV_scan_f (j_view (fst (run_join_f fuel o scope v0))).
+  Proof.
+    intros Hsh fuel o scope v0 (Nd & Nw & Hown) H0. pose proof (scan_no_cascade_f Hsh) as Hsc.
+    unfold run_join_f.
+    set (j1 := with_work (pending_of o) (touch_all (own_of o) (init v0) (own_of o))).
+    destruct (touch_all_spec (own_of o) (own_of o) (init v0)) as (bs & _ & V1 & _).
+    assert (Vr1 : v_recs (j_view j1) = v_recs v0) by (unfold j1; cbn [with_work j_view]; rewrite V1; exact (proj1 (bumps_view bs v0))).
+    assert (Vw1 : v_wtrs (j_view j1) = v_wtrs v0) by (unfold j1; cbn [with_work j_view]; rewrite V1; exact (proj2 (bumps_view bs v0))).
+    assert (H1 : INV_scan_f (j_view j1)) by exact (INV_scan_f_ctl v0 _ H0 Vr1 Vw1).
+    assert (L1 : live j1 = map r_id (v_recs v0) ++ map (fun q => r_id (p_rec q)) (pending_of o)).
+    { unfold live. change (j_work j1) with (pending_of o). rewrite Vr1. reflexivity. }
+    assert (Wf1 : WF j1) by (split; [rewrite L1; exact Nd | rewrite Vw1; exact Nw]).
+    destruct (is_settle o); [cbn [fst]; apply INV_scan_f_drain; [exact Hsh | exact H1 | exact Wf1] |].
+    replace (if cascades_f then drain_f fuel (own_of o) (auth_of o) (with_dirty scope j1) else j1) with j1
+      by (rewrite Hsc; reflexivity).
+    destruct (j_stop j1); [cbn [fst]; exact H1 |].
+    destruct (plan_at_cap (j_fired (with_dirty [] j1))); [cbn [fst]; exact H1 |].
+    cbn [fst].
+    set (j4 := with_fired (phase_count (j_fired (with_dirty [] j1))) (with_dirty [] j1)).
+    assert (Wf4 : WF j4) by (apply (WF_same j1 j4 Wf1); [apply Permutation_refl | exact (proj2 Wf1)]).
+    assert (H4 : INV_scan_f (j_view j4)) by exact H1.
+    assert (H5 : INV_scan_f (j_view (plan_f fuel o v0 j4)) /\ WF (plan_f fuel o v0 j4)).
+    { destruct o as [x c a | W c a | key sd pd rs a]; cbn [plan_f].
+      - assert (Hx : ~ In (r_id x) (live j4)).
+        { change (live j4) with (live j1). rewrite L1. cbn [pending_of map]. rewrite app_nil_r. exact Hown. }
+        split; [apply INV_scan_f_offer | apply WF_offer_f]; try exact Hsh; try exact H4; try exact Wf4; exact Hx.
+      - assert (Hw : ~ In (w_id W) (map w_id (v_wtrs (j_view j4)))).
+        { change (j_view j4) with (j_view j1). rewrite Vw1. exact Hown. }
+        split; [apply INV_scan_f_receive | apply WF_receive_f]; try exact Hsh; try exact H4; try exact Wf4; exact Hw.
+      - split; [exact H4 | exact Wf4]. }
+    destruct H5 as [H5 W5].
+    apply INV_scan_f_drain; [exact Hsh | exact H5 | exact W5].
+  Qed.
+
+  (* ── 39i. Headlines 7 and 10 over the search of decision 118 ────────── *)
+
+  (* cascade_order_independent (headline 10) over the search of decision
+     118. Its statement reads fireable, so the search of decision 118 needs
+     this version. The proof is the proof of headline 10 with GREEDY of the
+     claim rule. *)
+  Lemma cascade_order_independent_f :
+    sh = Head ->
+    forall v W1 W2 sg1 sg2,
+      NoDup (map r_id (v_recs v)) -> NoDup (map w_id (v_wtrs v)) ->
+      In W1 (v_wtrs v) -> In W2 (v_wtrs v) -> w_id W1 <> w_id W2 ->
+      w_peek W1 = false -> w_peek W2 = false ->
+      fireable_f W1 v = Some sg1 -> fireable_f W2 v = Some sg2 ->
+      (forall c, In c (colls W1) -> ~ In c (colls W2)) /\
+      fireable_f W2 (apply v (SFire W1 sg1 None)) = Some sg2 /\
+      fireable_f W1 (apply v (SFire W2 sg2 None)) = Some sg1 /\
+      apply (apply v (SFire W1 sg1 None)) (SFire W2 sg2 None) =
+        apply (apply v (SFire W2 sg2 None)) (SFire W1 sg1 None).
+  Proof.
+    intros Hsh v W1 W2 sg1 sg2 Hndr Hndw Hw1 Hw2 Hne _ _ H1 H2.
+    assert (Hheads : forall W sg c, fireable_f W v = Some sg -> In c (colls W) -> at_head W c v = true).
+    { intros W sg c H Hc. unfold fireable_f in H. destruct (heads_ok (colls W) W v) eqn:Eh; [| discriminate].
+      unfold heads_ok in Eh. rewrite forallb_forall in Eh. exact (Eh c Hc). }
+    assert (Hgr : forall W sg, fireable_f W v = Some sg -> greedy_f W v = Some sg).
+    { intros W sg H. unfold fireable_f in H. destruct (heads_ok (colls W) W v); [| discriminate].
+      unfold receive_decision_f in H. destruct (greedy_f W v) as [sg' |]; [| discriminate].
+      destruct (guard_ok W sg'); [exact H | discriminate]. }
+    (* a single-head discipline has the one lane None on each collection *)
+    assert (Hlane : forall W c, In c (colls W) -> at_head W c v = true ->
+              match lane_queue c None (v_wtrs v) with W0 :: _ => w_id W0 = w_id W | [] => False end).
+    { intros W c Hc Ha. unfold at_head in Ha. rewrite Hsh in Ha. rewrite forallb_forall in Ha.
+      unfold colls in Hc. apply nodup_In in Hc. apply in_map_iff in Hc as (b & Eb & Hb).
+      assert (HL : In None (lanes_on W c)).
+      { unfold lanes_on. apply in_map_iff. exists b. split; [unfold lane_of; rewrite Hsh; reflexivity |].
+        apply filter_In. split; [exact Hb | rewrite Eb; apply Nat.eqb_refl]. }
+      specialize (Ha None HL). destruct (lane_queue c None (v_wtrs v)) as [| W0 r]; [discriminate |].
+      apply Nat.eqb_eq in Ha. exact Ha. }
+    assert (Hdisj : forall c, In c (colls W1) -> ~ In c (colls W2)).
+    { intros c Hc1 Hc2. pose proof (Hlane W1 c Hc1 (Hheads _ _ _ H1 Hc1)) as L1.
+      pose proof (Hlane W2 c Hc2 (Hheads _ _ _ H2 Hc2)) as L2.
+      destruct (lane_queue c None (v_wtrs v)) as [| W0 r]; [contradiction |]. apply Hne. rewrite <- L1, <- L2. reflexivity. }
+    (* the frame of one fire on the other waiter *)
+    assert (Hframe : forall Wa sga Wb sgb, fireable_f Wa v = Some sga -> fireable_f Wb v = Some sgb -> In Wa (v_wtrs v) ->
+               (forall c, In c (colls Wa) -> ~ In c (colls Wb)) ->
+               fireable_f Wb (apply v (SFire Wa sga None)) = Some sgb).
+    { intros Wa sga Wb sgb Ha Hb HwA Hd. rewrite <- Hb. apply fireable_f_frame. intros c Hc. split.
+      - unfold recs_of. cbn [apply v_recs]. apply filter_coll_remove_all.
+        intros r e Hr He E. apply removed_incl in Hr.
+        destruct (greedy_f_colls Wa v sga (Hgr _ _ Ha) r Hr) as [Hrv Hrc].
+        assert (e = r) by exact (nodup_map_inj _ _ r_id _ e r Hndr He Hrv E). subst e.
+        intros Ec. rewrite Ec in Hrc. exact (Hd c Hrc Hc).
+      - unfold waiters_of. cbn [apply v_wtrs]. destruct (w_pers Wa); [reflexivity |].
+        apply filter_mem_del_wtr. intros W' HW' E.
+        assert (W' = Wa) by exact (nodup_map_inj _ _ w_id _ W' Wa Hndw HW' HwA E). subst W'.
+        apply mem_false. intros Hc'. exact (Hd c Hc' Hc). }
+    split; [exact Hdisj |]. split; [exact (Hframe W1 sg1 W2 sg2 H1 H2 Hw1 Hdisj) |].
+    split; [apply (Hframe W2 sg2 W1 sg1 H2 H1 Hw2); intros c Hc Hc'; exact (Hdisj c Hc' Hc) |].
+    cbn [apply v_recs v_wtrs v_cnt]. f_equal.
+    - rewrite <- !remove_all_app. apply remove_all_perm. apply Permutation_app_comm.
+    - destruct (w_pers W1), (w_pers W2); try reflexivity. apply del_wtr_comm.
+  Qed.
+
+  (* offer1_mu for OFFER with the search of decision 118. *)
+  Lemma offer1_mu_f :
+    forall own j x j' b,
+      (forall W, In W (v_wtrs (j_view j)) -> w_pers W = true -> w_peek W = false) ->
+      NoDup (map w_id (v_wtrs (j_view j))) ->
+      offer1_f own j x = (j', b) ->
+      if b then j_stop j' = j_stop j /\ j_work j' = j_work j /\ np_wtrs (j_view j') < np_wtrs (j_view j) /\
+                incl (v_wtrs (j_view j')) (v_wtrs (j_view j)) /\ NoDup (map w_id (v_wtrs (j_view j')))
+      else j_stop j' <> None \/ lex_lt (mu j') (mux j).
+  Proof.
+    intros own j x j' b Hwf Hndw H. unfold offer1_f in H.
+    destruct (offer_pick_f (e_rec x) (j_view j) (offer_cands (e_rec x) (j_view j))) as [[[W p] sg] |] eqn:Ep.
+    - destruct (offer_pick_f_sel _ _ _ _ _ Ep) as (HwIn & _).
+      destruct (touch_all_spec own (colls W) j) as (bs & T1 & V1 & B1 & D1 & W1 & O1 & S1 & F1 & _).
+      set (j3 := add_dirty (fire_dirty W (r_coll (e_rec x)))
+                   (with_fired (S (j_fired j)) (stage (touch_all own j (colls W)) (SFire W sg (Some (p, e_auth x)))))) in H.
+      destruct (fire_tail_spec W sg (Some p) (e_own x) true j3) as (rs & _ & V4 & _ & _ & P4 & _ & S4 & _ & _).
+      set (j4 := fire_tail W sg (Some p) (e_own x) true j3) in *.
+      assert (Ev3 : j_view j3 = apply (apply_all (j_view j) (map SBump bs)) (SFire W sg (Some (p, e_auth x))))
+        by (unfold j3; cbn [add_dirty with_dirty with_fired stage j_view]; rewrite V1; reflexivity).
+      assert (Ew3 : j_work j3 = j_work j) by (unfold j3; cbn [add_dirty with_dirty with_fired stage j_work]; exact W1).
+      assert (Es3 : j_stop j3 = j_stop j) by (unfold j3; cbn [add_dirty with_dirty with_fired stage j_stop]; exact S1).
+      rewrite Ev3 in V4. rewrite Ew3 in P4. rewrite Es3 in S4.
+      destruct (fire_step_view j bs W sg (Some (p, e_auth x)) rs) as [Hw Hr].
+      assert (Hw4 : np_wtrs (j_view j4) = (if w_pers W then np_wtrs (j_view j)
+                                            else length (filter (fun W0 => negb (w_pers W0)) (del_wtr (w_id W) (v_wtrs (j_view j))))))
+        by (rewrite V4; exact Hw).
+      assert (Hr4 : np_recs (j_view j4) <= np_recs (j_view j)) by (rewrite V4; exact Hr).
+      assert (Hv4 : v_wtrs (j_view j4) = (if w_pers W then v_wtrs (j_view j) else del_wtr (w_id W) (v_wtrs (j_view j)))).
+      { rewrite V4. cbn [v_wtrs apply]. rewrite (proj2 (bumps_view bs (j_view j))). reflexivity. }
+      destruct (w_peek W) eqn:Epk.
+      + injection H as <- <-. right. unfold mu, mux. cbn [lex_lt]. left. rewrite Hw4.
+        destruct (w_pers W) eqn:Eps; [rewrite (Hwf W HwIn Eps) in Epk; discriminate |].
+        unfold np_wtrs. rewrite <- (npw_del_wtr_in _ W Hndw HwIn Eps). lia.
+      + assert (Hk4 : length (j_work j4) = length (j_work j)) by (rewrite (Permutation_length P4); reflexivity).
+        destruct (after_fire (S (j_fired j)) (negb (r_pers (e_rec x)) && negb false) (w_pers W)) eqn:Ea.
+        * assert (Hj : j' = (if e_own x then set_own OSpent j4 else j4) /\ b = false)
+            by (destruct (e_own x); injection H as <- <-; split; reflexivity).
+          destruct Hj as [-> ->]. right.
+          assert (Hm : mu (if e_own x then set_own OSpent j4 else j4) = mu j4) by (destruct (e_own x); reflexivity).
+          rewrite Hm. unfold mu, mux. rewrite Hk4. cbn [lex_lt]. rewrite Hw4.
+          destruct (w_pers W) eqn:Eps.
+          -- right. split; [reflexivity |]. left. lia.
+          -- left. unfold np_wtrs. rewrite <- (npw_del_wtr_in _ W Hndw HwIn Eps). lia.
+        * injection H as <- <-.
+          unfold after_fire in Ea. destruct (negb (r_pers (e_rec x)) && negb false); [discriminate |].
+          destruct (w_pers W) eqn:Eps; [discriminate |].
+          hnf. refine (conj _ (conj _ (conj _ (conj _ _)))).
+          -- exact S4.
+          -- unfold j4, fire_tail. rewrite Epk.
+             destruct (retire_set_binds_spec j3 sg (Some p)) as (_ & _ & _ & _ & _ & Wk & _). rewrite Wk. exact Ew3.
+          -- rewrite Hw4. unfold np_wtrs. rewrite <- (npw_del_wtr_in _ W Hndw HwIn Eps). lia.
+          -- rewrite Hv4. apply del_wtr_incl.
+          -- rewrite Hv4. apply nodup_wtr_ids_del. exact Hndw.
+        * assert (Hj : j' = own_flight x j4 /\ b = false) by (injection H as <- <-; split; reflexivity).
+          destruct Hj as [-> ->]. right.
+          assert (Hm : mu (own_flight x j4) = mu j4) by (unfold own_flight; destruct (e_own x); reflexivity).
+          rewrite Hm. unfold mu, mux. rewrite Hk4. cbn [lex_lt]. rewrite Hw4.
+          unfold after_fire in Ea. destruct (negb (r_pers (e_rec x)) && negb false); [discriminate |].
+          destruct (w_pers W) eqn:Eps; [| destruct (cap <=? S (j_fired j)); discriminate].
+          right. split; [reflexivity |]. left. lia.
+        * injection H as <- <-. left. cbn [set_stop j_stop]. discriminate.
+    - injection H as <- <-. right.
+      destruct (store_spec own j x) as (bs & _ & Vs & _ & _ & Wk & _).
+      unfold mu, mux. rewrite Vs, Wk, apply_all_app.
+      destruct (bumps_view bs (j_view j)) as [Br Bw]. unfold np_recs, np_wtrs.
+      cbn [apply_all fold_left apply v_recs v_wtrs filter]. rewrite Br, Bw. cbn [lex_lt].
+      destruct (negb (r_pers (e_rec x))); cbn [length]; lia.
+  Qed.
+
+  Lemma offer_mu_f :
+    forall fuel own j x,
+      (forall W, In W (v_wtrs (j_view j)) -> w_pers W = true -> w_peek W = false) ->
+      NoDup (map w_id (v_wtrs (j_view j))) ->
+      j_stop (offer_f fuel own j x) <> None \/ lex_lt (mu (offer_f fuel own j x)) (mux j).
+  Proof.
+    induction fuel as [| f IH]; intros own j x Hwf Hndw; cbn [offer_f].
+    - left. unfold own_flight. destruct (e_own x); cbn [set_stop set_own j_stop]; discriminate.
+    - destruct (offer1_f own j x) as [j' b] eqn:E. pose proof (offer1_mu_f own j x j' b Hwf Hndw E) as H.
+      destruct b; [| exact H].
+      destruct H as (Hs & Hw & Hlt & Hi & Hnd').
+      destruct (IH own j' x (fun W HW => Hwf W (Hi W HW)) Hnd') as [H1 | H1]; [left; exact H1 | right].
+      apply (lex_lt_trans _ (mux j') _ H1). unfold mux. rewrite Hw. cbn [lex_lt]. left. exact Hlt.
+  Qed.
+
+  Lemma offer1_fires_f :
+    forall own j x j' b, offer1_f own j x = (j', b) ->
+      fires (j_trace j') + j_fired j = fires (j_trace j) + j_fired j' /\ j_fired j <= j_fired j' <= S (j_fired j) /\
+      (b = true -> j_fired j' < cap).
+  Proof.
+    intros own j x j' b H. unfold offer1_f in H.
+    destruct (offer_pick_f (e_rec x) (j_view j) (offer_cands (e_rec x) (j_view j))) as [[[W p] sg] |].
+    - destruct (touch_all_spec own (colls W) j) as (bs & T1 & _ & _ & _ & _ & _ & _ & F1 & _).
+      set (j3 := add_dirty (fire_dirty W (r_coll (e_rec x)))
+                   (with_fired (S (j_fired j)) (stage (touch_all own j (colls W)) (SFire W sg (Some (p, e_auth x)))))) in H.
+      destruct (fire_tail_spec W sg (Some p) (e_own x) true j3) as (rs & T4 & _ & _ & _ & _ & _ & _ & F4 & _).
+      assert (Ht3 : j_trace j3 = j_trace j ++ map SBump bs ++ [SFire W sg (Some (p, e_auth x))])
+        by (unfold j3; cbn [add_dirty with_dirty with_fired stage j_trace]; rewrite T1, app_assoc; reflexivity).
+      assert (Hf3 : j_fired j3 = S (j_fired j)) by reflexivity.
+      assert (Hres : fires (j_trace (fire_tail W sg (Some p) (e_own x) true j3)) + j_fired j =
+                     fires (j_trace j) + j_fired (fire_tail W sg (Some p) (e_own x) true j3) /\
+                     j_fired (fire_tail W sg (Some p) (e_own x) true j3) = S (j_fired j)).
+      { rewrite T4, Ht3, F4, Hf3, !fires_app, fires_bumps, fires_retires. cbn. lia. }
+      destruct Hres as [Hr1 Hr2].
+      destruct (w_peek W); [injection H as <- <-; split; [exact Hr1 | split; [lia | discriminate]] |].
+      destruct (after_fire (S (j_fired j)) (negb (r_pers (e_rec x)) && negb false) (w_pers W)) eqn:Ea;
+        cbn [fst] in H; unfold own_flight in H; try destruct (e_own x); injection H as <- <-; cbn [set_own set_stop j_trace j_fired];
+        (split; [exact Hr1 | split; [lia | intros Hb]]); try discriminate.
+      all: unfold after_fire in Ea; destruct (negb (r_pers (e_rec x)) && negb false); [discriminate |];
+           destruct (w_pers W); [discriminate |]; destruct (cap <=? S (j_fired j)) eqn:Ec; [discriminate |];
+           apply Nat.leb_gt in Ec; lia.
+    - injection H as <- <-. destruct (store_spec own j x) as (bs & T & _ & _ & _ & _ & _ & _ & F & _).
+      rewrite T, F, !fires_app, fires_bumps.
+      replace (fires [SStore (e_rec x) (e_auth x)]) with 0 by reflexivity. split; [lia | split; [lia | discriminate]].
+  Qed.
+
+  Lemma offer_fires_f :
+    forall fuel own j x, j_fired j < cap ->
+      fires (j_trace (offer_f fuel own j x)) + j_fired j = fires (j_trace j) + j_fired (offer_f fuel own j x) /\
+      j_fired j <= j_fired (offer_f fuel own j x) <= cap.
+  Proof.
+    induction fuel as [| f IH]; intros own j x Hc; cbn [offer_f].
+    - unfold own_flight. destruct (e_own x); cbn [set_own set_stop j_trace j_fired]; split; lia.
+    - destruct (offer1_f own j x) as [j' b] eqn:E. destruct (offer1_fires_f own j x j' b E) as (H1 & H2 & H3).
+      destruct b.
+      + destruct (IH own j' x (H3 eq_refl)) as [H4 H5]. split; lia.
+      + split; lia.
+  Qed.
+
+  Lemma dstep_fires_f :
+    forall own a j, j_fired j <= cap ->
+      fires (j_trace (fst (dstep_f own a j))) + j_fired j = fires (j_trace j) + j_fired (fst (dstep_f own a j)) /\
+      j_fired j <= j_fired (fst (dstep_f own a j)) <= cap.
+  Proof.
+    intros own a j Hc. unfold dstep_f. destruct (j_stop j); [cbn [fst]; split; lia |].
+    destruct (j_work j) as [| q rest].
+    - destruct cascades_f; [| cbn [fst]; split; lia].
+      destruct (next_fire_f (j_dirty j) (j_view j)) as [[W sg] |]; [| cbn [fst]; split; lia].
+      destruct (cap <=? j_fired j) eqn:Ec; [cbn [fst set_stop j_trace j_fired]; split; lia |].
+      apply Nat.leb_gt in Ec. cbn [fst]. destruct (lift_reoffer_fires own j W sg) as [H1 H2]. split; lia.
+    - destruct (cap <=? j_fired j) eqn:Ec; [cbn [fst set_stop j_trace j_fired]; split; lia |].
+      apply Nat.leb_gt in Ec. cbn [fst]. unfold resend_f.
+      destruct (offer_fires_f (S (length (v_wtrs (j_view (with_work rest j))))) own (with_work rest j) (resend_elem a q) Ec)
+        as [H1 H2].
+      cbn [with_work j_trace j_fired] in *. split; lia.
+  Qed.
+
+  (* cascade_terminates (headline 7) over the search of decision 118. Its
+     statement reads dstep and drain, so the search of decision 118 needs
+     this version. The measure does not change: a fire with the claim rule
+     of decision 118 binds one record for each bind, and the rest of the
+     step is the step of headline 7. *)
+  Lemma cascade_terminates_f :
+    (forall own a j j',
+       (forall W, In W (v_wtrs (j_view j)) -> wf_waiter W = true /\ w_binds W <> []) ->
+       NoDup (map r_id (v_recs (j_view j))) -> NoDup (map w_id (v_wtrs (j_view j))) ->
+       dstep_f own a j = (j', true) ->
+       j_stop j' <> None \/ lex_lt (mu j') (mu j)) /\
+    (forall fuel own a j, j_fired j <= cap ->
+       fires (j_trace (drain_f fuel own a j)) + j_fired j <= fires (j_trace j) + cap).
+  Proof.
+    split.
+    - intros own a j j' Hwf Hndr Hndw H.
+      assert (Hpp : forall W, In W (v_wtrs (j_view j)) -> w_pers W = true -> w_peek W = false).
+      { intros W Hw Hp. destruct (Hwf W Hw) as [Hw' _]. unfold wf_waiter in Hw'. rewrite Hp in Hw'.
+        destruct (w_peek W); [discriminate | reflexivity]. }
+      unfold dstep_f in H. destruct (j_stop j) eqn:Es; [discriminate |].
+      destruct (j_work j) as [| q rest] eqn:Ew.
+      + destruct cascades_f; [| discriminate].
+        destruct (next_fire_f (j_dirty j) (j_view j)) as [[W sg] |] eqn:En; [| discriminate].
+        destruct (cap <=? j_fired j); [discriminate |]. injection H as <-.
+        destruct (next_fire_f_sel _ _ _ _ En) as (HwIn & Hf & Hsg).
+        apply lift_reoffer_mu; [exact HwIn | exact (Hpp W HwIn) | exact Hndr | exact Hndw | intros e He; exact (proj1 (Hsg e He)) |].
+        (* a fire binds one record for each bind *)
+        intros E. subst sg. destruct (Hwf W HwIn) as [_ Hb].
+        unfold fireable_f in Hf. destruct (heads_ok (colls W) W (j_view j)); [| discriminate].
+        unfold receive_decision_f in Hf. destruct (greedy_f W (j_view j)) as [sg' |] eqn:Eg; [| discriminate].
+        destruct (guard_ok W sg'); [injection Hf as -> | discriminate].
+        (* Changed by decision 103 (decision 118, C6 arbitration): greedy_f
+           reads slots_cons_f. The text before:
+        unfold greedy_f in Eg. apply fill_f_shape, slots_rel_length in Eg. unfold slots_cons in Eg.
+        *)
+        unfold greedy_f in Eg. apply fill_f_shape, slots_rel_length in Eg. unfold slots_cons_f in Eg.
+        rewrite length_map, (Permutation_length (gpairs_perm W)), enum_length in Eg.
+        destruct (w_binds W); [exact (Hb eq_refl) | discriminate].
+      + destruct (cap <=? j_fired j); [discriminate |]. injection H as <-. unfold resend_f.
+        destruct (offer_mu_f (S (length (v_wtrs (j_view (with_work rest j))))) own (with_work rest j) (resend_elem a q) Hpp Hndw)
+          as [H1 | H1]; [left; exact H1 | right].
+        unfold mux in H1. unfold mu. rewrite Ew. cbn [with_work j_view j_work length] in H1 |- *. exact H1.
+    - induction fuel as [| f IH]; intros own a j Hc; cbn [drain_f]; [cbn [set_stop j_trace]; lia |].
+      destruct (dstep_f own a j) as [j' b] eqn:E. pose proof (dstep_fires_f own a j Hc) as Hd. rewrite E in Hd. cbn [fst] in Hd.
+      destruct Hd as [H1 H2]. destruct b; [specialize (IH own a j' (proj2 H2)); lia | lia].
+  Qed.
+
+  (* ── 39j. Headline 20: the cascade restores the invariant (decision 118) *)
+
+  (* Changed by decision 103 (decision 118, C6 arbitration): rule (a) rules
+     out F-118-2. The proof keeps UI. The statement does not change. The
+     text before:
+
+  (* Headline 20 (decision 103, decision 118, CR-10). The statement of
+     headline 9, whole (V26 stays whole), over the search of decision 118.
+     Let a transaction start with distinct identities and a fresh own
+     element. Head shapes and the set: let every fireable waiter of the
+     start have a collection in the scope. Then every fireable waiter at the
+     end has a dirty collection (CI_f). A transaction that ends with no stop
+     ends with no work and with INV_head_f. The set keeps its cascade
+     (CR-10). Bag: INV_scan_f at the start gives INV_scan_f at the end, with
+     no cascade. On a set a non-persistent member of a class with a
+     persistent member can bind two positions, and a peek fire then sends it
+     again twice (F-118-2). So the proof for the head shapes and the set uses
+     the universe invariant UI instead of WF. The bag keeps WF, because its
+     second sends carry distinct identities (headline 19). This headline
+     supersedes cascade_restores_inv (headline 9). *)
+  *)
+
+  (* Headline 20 (decision 103, decision 118, CR-10). The statement of
+     headline 9, whole (V26 stays whole), over the search of decision 118.
+     Let a transaction start with distinct identities and a fresh own
+     element. Head shapes and the set: let every fireable waiter of the
+     start have a collection in the scope. Then every fireable waiter at the
+     end has a dirty collection (CI_f). A transaction that ends with no stop
+     ends with no work and with INV_head_f. The set keeps its cascade
+     (CR-10). Bag: INV_scan_f at the start gives INV_scan_f at the end, with
+     no cascade. The first claim rule of decision 118 let a non-persistent
+     member of a set class with a persistent member bind two positions, and
+     a peek fire then sent it again twice (F-118-2). Rule (a) of the C6
+     arbitration rules this out (headline 19). The proof for the head
+     shapes and the set keeps the universe invariant UI. UI does not ask for
+     distinct identities in the view, and its proofs hold under both rules.
+     The bag keeps WF, because its second sends carry distinct identities
+     (headline 19). This headline supersedes cascade_restores_inv (headline
+     9). *)
+  Theorem cascade_restores_inv_pers :
+    forall fuel o scope v0,
+      start_ok o v0 ->
+      (sh <> Scan -> forall W, In W (v_wtrs v0) -> fireable_f W v0 <> None -> exists c, In c (colls W) /\ In c scope) ->
+      (sh = Scan -> INV_scan_f v0) ->
+      (sh <> Scan -> CI_f (fst (run_join_f fuel o scope v0))) /\
+      (sh = Scan -> INV_scan_f (j_view (fst (run_join_f fuel o scope v0)))) /\
+      (j_stop (fst (run_join_f fuel o scope v0)) = None ->
+         j_work (fst (run_join_f fuel o scope v0)) = [] /\
+         (sh <> Scan -> INV_head_f (j_view (fst (run_join_f fuel o scope v0))))).
+  Proof.
+    intros fuel o scope v0 Hst Hci Hsc.
+    assert (Hcov : forall W c, incl (colls W) (fire_dirty W c)) by (intros W c a Ha; unfold fire_dirty; exact Ha).
+    (* the head shapes and the set cascade (decisions 11 and 50, CR-10) *)
+    assert (Hcas : sh <> Scan -> cascades_f = true).
+    { intros Hs. unfold cascades_f. destruct sh; [reflexivity | reflexivity | exfalso; exact (Hs eq_refl) | reflexivity]. }
+    split; [| split].
+    - intros Hh. exact (proj1 (CI_run_join_f Hcov fuel o scope v0 (Hcas Hh) Hst (Hci Hh))).
+    - intros Hs. exact (INV_scan_run_join_f Hs fuel o scope v0 Hst (Hsc Hs)).
+    - intros Hstop. split; [exact (run_join_f_work fuel o scope v0 Hstop) |].
+      intros Hh. exact (proj2 (CI_run_join_f Hcov fuel o scope v0 (Hcas Hh) Hst (Hci Hh)) Hstop).
+  Qed.
 End Join.
 
 (* ── 40. A valid parameterization and two computed witnesses ─────────── *)
@@ -7486,3 +11418,6 @@ Print Assumptions plan_then_lock_stable.
 Print Assumptions join_reissue_keeps_bind_ords.
 Print Assumptions peek_join_restores_stored_candidates.
 Print Assumptions greedy_join_can_miss_assignment.
+Print Assumptions join_incoming_held.
+Print Assumptions join_nonpersistent_bound_once.
+Print Assumptions cascade_restores_inv_pers.

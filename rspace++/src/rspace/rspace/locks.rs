@@ -49,7 +49,16 @@ where
             .increment(joins_start.elapsed().as_nanos() as u64);
 
         let phase_b_start = Instant::now();
-        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &join_hashes).await;
+        // Changed by DR-132 (F1): phase B also covers the produce channel, so
+        // every operation holds phase B on its whole recorded footprint. Under
+        // racing evaluation, a produce whose joins another produce had just
+        // removed read no joins and took no phase-B lock. One call takes every
+        // hash, so a stripe collision cannot deadlock.
+        // let phase_b = striped_locks::acquire_locks(&self.phase_b_locks,
+        // &join_hashes).await;
+        let mut phase_b_hashes = join_hashes;
+        phase_b_hashes.push(channel_hash);
+        let phase_b = striped_locks::acquire_locks(&self.phase_b_locks, &phase_b_hashes).await;
         metrics::counter!("rspace.produce.phase_b_wait_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(phase_b_start.elapsed().as_nanos() as u64);
 

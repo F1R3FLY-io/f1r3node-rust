@@ -13,21 +13,37 @@ use std::collections::{BTreeMap, HashMap};
 
 use models::create_bit_vector;
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{ETuple, Expr, New, Par, Send};
+// Changed by decision 112: the Reified syntax is a set of protobuf fields, so the test builds and
+// reads the fields and not marker tuples. The text before:
+// ```
+// use models::rhoapi::{ETuple, Expr, New, Par, Send};
+// use models::rust::reified::builders::{
+//     efree, new_space, push_process_expr, query_spec, send_params, use_block,
+// };
+// use models::rust::reified::encoding::{split_trailing_params, SendParams};
+// ```
+use models::rhoapi::{EFree, Expr, New, Par, Send, SendParams, UseBlock};
 use models::rust::reified::builders::{
-    efree, new_space, push_process_expr, query_spec, send_params, use_block,
+    efree, new_space, push_free, push_use_block, query_spec, send_params, use_block,
 };
-use models::rust::reified::encoding::{split_trailing_params, SendParams};
 use models::rust::reified::params::SendParam;
 use models::rust::reified::validation::{IdentifierPosition, ReifiedSyntaxError};
 use models::rust::rholang::implicits::concatenate_pars;
+use models::rust::utils::union;
 use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;
 use proptest::sample::select;
 use proptest::test_runner::RngSeed;
 use prost::Message;
+// Changed by decision 112: the helper `send_with_params` takes the flags of the params from
+// `bits`. The text before:
+// ```
+// use reified_strategies::{
+//     bound_var, contains_marker, expr_par, gint, gstring, list, new_term, send, sorted, tuple,
+// };
+// ```
 use reified_strategies::{
-    bound_var, contains_marker, expr_par, gint, gstring, list, new_term, send, sorted, tuple,
+    bits, bound_var, contains_marker, expr_par, gint, gstring, list, new_term, send, sorted, tuple,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
 use rholang::rust::interpreter::compiler::normalize::{normalize_ann_proc, ProcVisitInputs};
@@ -81,26 +97,64 @@ fn gdouble(value: f64) -> Par {
     expr_par(ExprInstance::GDouble(value.to_bits()), Vec::new(), false)
 }
 
-/// The process `Par` that holds exactly the marker tuple `tuple`.
-fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
+// Changed by decision 112: a use block is a field of the Par, so the helper pushes a block. A
+// free value and an annotated new have their own forms. The text before:
+// ```
+// /// The process `Par` that holds exactly the marker tuple `tuple`.
+// fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
+// ```
+/// The process `Par` that holds exactly the use block `block`.
+fn process(block: UseBlock) -> Par { push_use_block(Par::default(), block) }
+
+/// The value `Par` of the free theory `free`.
+fn free_value(free: EFree) -> Par { push_free(Par::default(), free) }
 
 fn new_par(new: New) -> Par { prepend_new(Par::default(), new) }
 
-fn persistent_send(chan: Par, data: Vec<Par>) -> Par {
-    let mut par = send(chan, data);
+// Changed by decision 112: the params of a persistent send are a field of the send. The text
+// before:
+// ```
+// fn persistent_send(chan: Par, data: Vec<Par>) -> Par {
+//     let mut par = send(chan, data);
+// ```
+fn persistent_send(chan: Par, data: Vec<Par>, params: SendParams) -> Par {
+    let mut par = send_with_params(chan, data, params);
     for send in &mut par.sends {
         send.persistent = true;
     }
     par
 }
 
-fn params(params: Vec<SendParam>) -> Par {
+// Changed by decision 112: the builder returns the `SendParams` field. The text before:
+// fn params(params: Vec<SendParam>) -> Par {
+fn params(params: Vec<SendParam>) -> SendParams {
     send_params(params)
         .expect("the test params are well formed")
         .expect("the test params are not empty")
 }
 
 fn named(key: &str, value: Par) -> SendParam { SendParam::Named(key.to_owned(), value) }
+
+/// The process `chan!(data…; params)`, with the flags of the normalizer: the values of the params
+/// join the `locally_free` set and the `connective_used` flag of the send and of its `Par`.
+fn send_with_params(chan: Par, data: Vec<Par>, params: SendParams) -> Par {
+    let mut par = send(chan, data);
+    let values: Vec<Par> = params
+        .positional
+        .iter()
+        .chain(params.named.values())
+        .cloned()
+        .collect();
+    let (locally_free, connective_used) = bits(&values);
+    for send in &mut par.sends {
+        send.locally_free = union(send.locally_free.clone(), locally_free.clone());
+        send.connective_used = send.connective_used || connective_used;
+        send.params = Some(params.clone());
+    }
+    par.locally_free = union(par.locally_free, locally_free);
+    par.connective_used = par.connective_used || connective_used;
+    par
+}
 
 fn sole_send(par: &Par) -> &Send {
     match par.sends.as_slice() {
@@ -116,20 +170,46 @@ fn sole_new_body(par: &Par) -> &Par {
     }
 }
 
-fn sole_tuple(par: &Par) -> &ETuple {
-    match par.exprs.as_slice() {
-        [Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(tuple)),
-        }] => tuple,
-        other => panic!("expected exactly one tuple expression, found {other:?}"),
+// Retired by decision 112: the normalized forms are fields, so no test reads a marker tuple or a
+// query that wraps the source of a bind. The helpers below read the fields. The text before:
+// ```
+// fn sole_tuple(par: &Par) -> &ETuple {
+//     match par.exprs.as_slice() {
+//         [Expr {
+//             expr_instance: Some(ExprInstance::ETupleBody(tuple)),
+//         }] => tuple,
+//         other => panic!("expected exactly one tuple expression, found {other:?}"),
+//     }
+// }
+//
+// /// The source of the single bind of the single receive of `par`.
+// fn sole_bind_source(par: &Par) -> &Par {
+//     match par.receives.as_slice() {
+//         [receive] => match receive.binds.as_slice() {
+//             [bind] => bind.source.as_ref().expect("a receive bind has a source"),
+//             other => panic!("expected exactly one bind, found {other:?}"),
+//         },
+//         other => panic!("expected exactly one receive, found {other:?}"),
+//     }
+// }
+// ```
+
+/// The single use block of `par`.
+fn sole_use_block(par: &Par) -> &UseBlock {
+    match par.use_blocks.as_slice() {
+        [block] => block,
+        other => panic!("expected exactly one use block, found {other:?}"),
     }
 }
 
-/// The source of the single bind of the single receive of `par`.
-fn sole_bind_source(par: &Par) -> &Par {
+/// The source and the query of the single bind of the single receive of `par`.
+fn sole_bind(par: &Par) -> (Par, Option<models::rhoapi::QuerySpec>) {
     match par.receives.as_slice() {
         [receive] => match receive.binds.as_slice() {
-            [bind] => bind.source.as_ref().expect("a receive bind has a source"),
+            [bind] => (
+                bind.source.clone().expect("a receive bind has a source"),
+                bind.query_spec.clone(),
+            ),
             other => panic!("expected exactly one bind, found {other:?}"),
         },
         other => panic!("expected exactly one receive, found {other:?}"),
@@ -208,14 +288,26 @@ fn p_use_block_builds_the_use_tuple() {
 fn p_use_block_space_and_body_see_the_current_scope() {
     let par = compile("new s in { use s { s!(1) } }");
     let body = send(bound_var(0), vec![gint(1)]);
-    let tuple = use_block(bound_var(0), body);
+    // Changed by decision 112: the use block is a field, so the flags of its holder carry the
+    // free variables. The text before:
+    // ```
+    // let tuple = use_block(bound_var(0), body);
+    // assert_eq!(
+    //     par,
+    //     sorted(new_par(new_term(1, Vec::new(), process(tuple.clone()))))
+    // );
+    // let normalized = sole_tuple(sole_new_body(&par));
+    // assert_eq!(normalized, &tuple);
+    // assert_eq!(normalized.locally_free, create_bit_vector(&[0]));
+    // ```
+    let block = use_block(bound_var(0), body);
     assert_eq!(
         par,
-        sorted(new_par(new_term(1, Vec::new(), process(tuple.clone()))))
+        sorted(new_par(new_term(1, Vec::new(), process(block.clone()))))
     );
-    let normalized = sole_tuple(sole_new_body(&par));
-    assert_eq!(normalized, &tuple);
-    assert_eq!(normalized.locally_free, create_bit_vector(&[0]));
+    let normalized_body = sole_new_body(&par);
+    assert_eq!(sole_use_block(normalized_body), &block);
+    assert_eq!(normalized_body.locally_free, create_bit_vector(&[0]));
 }
 
 #[test]
@@ -253,7 +345,22 @@ fn normalize_new_space_annotations_follow_the_binding_order() {
         send(bound_var(1), vec![gint(2)]),
     );
     let inner = new_term(3, vec!["rho:io:stdout".to_owned()], sorted(body));
-    let tuple = new_space(inner, vec![
+    // Changed by decision 112: the annotated new is a `New` with its annotations, in the news of
+    // the body. The text before:
+    // ```
+    // let tuple = new_space(inner, vec![
+    //     None,
+    //     Some(bound_var(0)),
+    //     Some(gstring("t")),
+    //     None,
+    // ])
+    // .expect("the binding-order annotations are well formed");
+    // assert_eq!(
+    //     par,
+    //     sorted(new_par(new_term(1, Vec::new(), process(tuple))))
+    // );
+    // ```
+    let annotated = new_space(inner, vec![
         None,
         Some(bound_var(0)),
         Some(gstring("t")),
@@ -262,7 +369,7 @@ fn normalize_new_space_annotations_follow_the_binding_order() {
     .expect("the binding-order annotations are well formed");
     assert_eq!(
         par,
-        sorted(new_par(new_term(1, Vec::new(), process(tuple))))
+        sorted(new_par(new_term(1, Vec::new(), new_par(annotated))))
     );
 }
 
@@ -270,16 +377,27 @@ fn normalize_new_space_annotations_follow_the_binding_order() {
 fn normalize_new_space_annotation_names_bind_outside_the_new() {
     let par = compile("new x in { new x : x in { x!(1) } }");
     let inner = new_term(1, Vec::new(), send(bound_var(0), vec![gint(1)]));
-    let tuple =
+    // Changed by decision 112: the annotated new is a `New` in the news of the body, and the
+    // flags of that body carry the free variable of the annotation. The text before:
+    // ```
+    // let tuple =
+    //     new_space(inner, vec![Some(bound_var(0))]).expect("one annotated binder is well formed");
+    // assert_eq!(
+    //     par,
+    //     sorted(new_par(new_term(1, Vec::new(), process(tuple))))
+    // );
+    // assert_eq!(
+    //     sole_tuple(sole_new_body(&par)).locally_free,
+    //     create_bit_vector(&[0])
+    // );
+    // ```
+    let annotated =
         new_space(inner, vec![Some(bound_var(0))]).expect("one annotated binder is well formed");
     assert_eq!(
         par,
-        sorted(new_par(new_term(1, Vec::new(), process(tuple))))
+        sorted(new_par(new_term(1, Vec::new(), new_par(annotated))))
     );
-    assert_eq!(
-        sole_tuple(sole_new_body(&par)).locally_free,
-        create_bit_vector(&[0])
-    );
+    assert_eq!(sole_new_body(&par).locally_free, create_bit_vector(&[0]));
     assert!(matches!(
         compile_error("new x : x in { x!(1) }"),
         InterpreterError::TopLevelFreeVariablesNotAllowedError(_)
@@ -326,8 +444,13 @@ fn normalize_new_space_unannotated_new_is_ordinary_and_uri_annotation_is_rejecte
 
 #[test]
 fn normalize_free_theory_builds_the_free_value() {
-    let nat = process(efree("Nat", Vec::new()).expect("Nat is a theory name"));
-    let theory = process(efree("Th", vec![gint(1), bound_var(0)]).expect("Th is a theory name"));
+    // Changed by decision 112: a free theory is the value `EFree`. The text before:
+    // ```
+    // let nat = process(efree("Nat", Vec::new()).expect("Nat is a theory name"));
+    // let theory = process(efree("Th", vec![gint(1), bound_var(0)]).expect("Th is a theory name"));
+    // ```
+    let nat = free_value(efree("Nat", Vec::new()).expect("Nat is a theory name"));
+    let theory = free_value(efree("Th", vec![gint(1), bound_var(0)]).expect("Th is a theory name"));
     assert_eq!(
         compile("new f in { f!(free Nat(), free Th(1, *f)) }"),
         sorted(new_par(new_term(
@@ -341,7 +464,9 @@ fn normalize_free_theory_builds_the_free_value() {
         sorted(concatenate_pars(send(gstring("x"), vec![gint(1)]), nat))
     );
     for builtin in ["Nat", "Int", "String", "Bool", "Any"] {
-        let value = process(efree(builtin, Vec::new()).expect("a builtin theory name"));
+        // Changed by decision 112: a free theory is the value `EFree`. The text before:
+        // let value = process(efree(builtin, Vec::new()).expect("a builtin theory name"));
+        let value = free_value(efree(builtin, Vec::new()).expect("a builtin theory name"));
         assert_eq!(
             compile(&format!(r#"@"x"!(free {builtin}())"#)),
             sorted(send(gstring("x"), vec![value]))
@@ -373,13 +498,27 @@ fn normalize_free_theory_rejects_names_outside_the_theory_position() {
 fn normalize_send_params_build_the_trailing_params_tuple() {
     let par = compile(r#"@"x"!(1; 2, k=3)"#);
     let trailing = params(vec![SendParam::Positional(gint(2)), named("k", gint(3))]);
-    assert_eq!(par, sorted(send(gstring("x"), vec![gint(1), trailing])));
+    // Changed by decision 112: the params are the `params` field of the send. The text before:
+    // ```
+    // assert_eq!(par, sorted(send(gstring("x"), vec![gint(1), trailing])));
+    // assert_eq!(
+    //     split_trailing_params(&sole_send(&par).data),
+    //     Ok(Some(SendParams {
+    //         positional: vec![gint(2)],
+    //         named: BTreeMap::from([("k".to_owned(), gint(3))]),
+    //     }))
+    // );
+    // ```
     assert_eq!(
-        split_trailing_params(&sole_send(&par).data),
-        Ok(Some(SendParams {
+        par,
+        sorted(send_with_params(gstring("x"), vec![gint(1)], trailing))
+    );
+    assert_eq!(
+        sole_send(&par).params,
+        Some(SendParams {
             positional: vec![gint(2)],
             named: BTreeMap::from([("k".to_owned(), gint(3))]),
-        }))
+        })
     );
 }
 
@@ -427,7 +566,9 @@ proptest! {
         let mut built = Vec::with_capacity(positional.len() + shuffled.len());
         built.extend(positional.iter().map(|value| SendParam::Positional(gint(*value))));
         built.extend(shuffled.iter().map(|(key, value)| named(key, gint(*value))));
-        let expected = sorted(send(gstring("x"), vec![gint(0), params(built)]));
+        // Changed by decision 112: the params are a field of the send. The text before:
+        // let expected = sorted(send(gstring("x"), vec![gint(0), params(built)]));
+        let expected = sorted(send_with_params(gstring("x"), vec![gint(0)], params(built)));
         prop_assert_eq!(from_shuffled, expected.encode_to_vec());
     }
 }
@@ -460,13 +601,27 @@ fn normalize_send_params_empty_section_is_erased() {
 fn normalize_send_params_params_only_send() {
     assert_eq!(
         compile(r#"@"x"!(; k=1)"#),
-        sorted(send(gstring("x"), vec![params(vec![named("k", gint(1))])]))
+        // Changed by decision 112: the params are a field of the send. The text before:
+        // sorted(send(gstring("x"), vec![params(vec![named("k", gint(1))])]))
+        sorted(send_with_params(
+            gstring("x"),
+            Vec::new(),
+            params(vec![named("k", gint(1))])
+        ))
     );
     assert_eq!(
         compile(r#"@"x"!(; 7)"#),
-        sorted(send(gstring("x"), vec![params(vec![
-            SendParam::Positional(gint(7))
-        ])]))
+        // Changed by decision 112: the params are a field of the send. The text before:
+        // ```
+        // sorted(send(gstring("x"), vec![params(vec![
+        //     SendParam::Positional(gint(7))
+        // ])]))
+        // ```
+        sorted(send_with_params(
+            gstring("x"),
+            Vec::new(),
+            params(vec![SendParam::Positional(gint(7))])
+        ))
     );
 }
 
@@ -475,10 +630,18 @@ fn normalize_send_params_persistent_send_keeps_its_params() {
     let par = compile(r#"@"x"!!(1; k=1)"#);
     assert_eq!(
         par,
-        sorted(persistent_send(gstring("x"), vec![
-            gint(1),
+        // Changed by decision 112: the params are a field of the send. The text before:
+        // ```
+        // sorted(persistent_send(gstring("x"), vec![
+        //     gint(1),
+        //     params(vec![named("k", gint(1))])
+        // ]))
+        // ```
+        sorted(persistent_send(
+            gstring("x"),
+            vec![gint(1)],
             params(vec![named("k", gint(1))])
-        ]))
+        ))
     );
     assert!(sole_send(&par).persistent);
 }
@@ -491,11 +654,17 @@ fn normalize_send_params_sync_send_appends_params_after_the_reply_name() {
         prost(r#"new r in { @"x"!(*r, 1; k=1) | for (_ <- r) { Nil } }"#)
     );
     let reply_send = sole_send(sole_new_body(&par));
-    assert_eq!(reply_send.data, vec![
-        bound_var(0),
-        gint(1),
-        params(vec![named("k", gint(1))])
-    ]);
+    // Changed by decision 112: the data hold the reply name and the argument, and the params
+    // are a field of the send. The text before:
+    // ```
+    // assert_eq!(reply_send.data, vec![
+    //     bound_var(0),
+    //     gint(1),
+    //     params(vec![named("k", gint(1))])
+    // ]);
+    // ```
+    assert_eq!(reply_send.data, vec![bound_var(0), gint(1)]);
+    assert_eq!(reply_send.params, Some(params(vec![named("k", gint(1))])));
     assert_eq!(
         prost(r#"@"x"!?(1; k=1); @"y"!(2)"#),
         prost(r#"new r in { @"x"!(*r, 1; k=1) | for (_ <- r) { @"y"!(2) } }"#)
@@ -535,26 +704,50 @@ fn normalize_send_params_values_bind_in_the_current_scope() {
         sorted(new_par(new_term(
             2,
             Vec::new(),
-            send(bound_var(1), vec![gint(1), trailing.clone()])
+            // Changed by decision 112: the params are a field of the send. The text before:
+            // send(bound_var(1), vec![gint(1), trailing.clone()])
+            send_with_params(bound_var(1), vec![gint(1)], trailing.clone())
         )))
     );
     let normalized = sole_send(sole_new_body(&par));
     assert_eq!(normalized.locally_free, create_bit_vector(&[0, 1]));
-    let normalized_params = normalized
-        .data
-        .last()
-        .expect("the send has a trailing params element");
+    // Changed by decision 112: the params are a field of the send, and the flags stay on the
+    // values. The text before:
+    // ```
+    // let normalized_params = normalized
+    //     .data
+    //     .last()
+    //     .expect("the send has a trailing params element");
+    // assert_eq!(normalized_params, &trailing);
+    // assert_eq!(normalized_params.locally_free, create_bit_vector(&[0]));
+    // ```
+    let normalized_params = normalized.params.as_ref().expect("the send has params");
     assert_eq!(normalized_params, &trailing);
-    assert_eq!(normalized_params.locally_free, create_bit_vector(&[0]));
+    assert_eq!(
+        normalized_params
+            .named
+            .get("k")
+            .expect("the param k")
+            .locally_free,
+        create_bit_vector(&[0])
+    );
     assert_eq!(
         compile("new x, v in { x!(1; *v) }"),
         sorted(new_par(new_term(
             2,
             Vec::new(),
-            send(bound_var(1), vec![
-                gint(1),
+            // Changed by decision 112: the params are a field of the send. The text before:
+            // ```
+            // send(bound_var(1), vec![
+            //     gint(1),
+            //     params(vec![SendParam::Positional(bound_var(0))])
+            // ])
+            // ```
+            send_with_params(
+                bound_var(1),
+                vec![gint(1)],
                 params(vec![SendParam::Positional(bound_var(0))])
-            ])
+            )
         )))
     );
 }
@@ -623,28 +816,48 @@ fn normalize_send_params_recheck_rejects_invalid_params() {
         )
     );
     let deferred = compile(r#"new v in { @"x"!(1; priority=*v) }"#);
-    assert!(contains_marker(&deferred));
+    // Changed by decision 112: deferred params stay a field of the send. The text before:
+    // assert!(contains_marker(&deferred));
+    assert!(sole_send(sole_new_body(&deferred)).params.is_some());
 }
 
 // ---------------------------------------------------------------------------
 // Receive queries `for (y <- ch ~ q) P`
 // ---------------------------------------------------------------------------
 
-fn query(channel: Par, payload: Vec<Par>, params: Vec<SendParam>) -> Par {
-    query_spec(channel, payload, params).expect("the test query is well formed")
+// Changed by decision 112: the query is a field of the bind, and it holds no channel. The text
+// before:
+// ```
+// fn query(channel: Par, payload: Vec<Par>, params: Vec<SendParam>) -> Par {
+//     query_spec(channel, payload, params).expect("the test query is well formed")
+// }
+// ```
+fn query(payload: Vec<Par>, params: Vec<SendParam>) -> Option<models::rhoapi::QuerySpec> {
+    Some(query_spec(payload, params).expect("the test query is well formed"))
 }
 
 #[test]
 fn normalize_receive_query_bare_payload_wraps_the_channel() {
     let par = compile(r#"for (y <- @"x" ~ 5) { Nil }"#);
+    // Changed by decision 112: the query is a field of the bind, next to its source. The text
+    // before:
+    // ```
+    // assert_eq!(
+    //     sole_bind_source(&par),
+    //     &query(gstring("x"), vec![gint(5)], Vec::new())
+    // );
+    // ```
     assert_eq!(
-        sole_bind_source(&par),
-        &query(gstring("x"), vec![gint(5)], Vec::new())
+        sole_bind(&par),
+        (gstring("x"), query(vec![gint(5)], Vec::new()))
     );
     let mut unwrapped = par.clone();
     for receive in &mut unwrapped.receives {
         for bind in &mut receive.binds {
-            bind.source = Some(gstring("x"));
+            // Changed by decision 112: dropping the query field leaves the plain bind. The text
+            // before:
+            // bind.source = Some(gstring("x"));
+            bind.query_spec = None;
         }
     }
     assert_eq!(unwrapped, compile(r#"for (y <- @"x") { Nil }"#));
@@ -665,16 +878,31 @@ fn normalize_receive_query_group_without_params_equals_the_bare_form() {
 #[test]
 fn normalize_receive_query_tuple_without_semicolon_is_one_payload() {
     assert_eq!(
-        sole_bind_source(&compile(r#"for (y <- @"x" ~ (1, 2)) { Nil }"#)),
-        &query(
+        // Changed by decision 112: the query is a field of the bind, next to its source. The
+        // text before:
+        // ```
+        // sole_bind_source(&compile(r#"for (y <- @"x" ~ (1, 2)) { Nil }"#)),
+        // &query(
+        //     gstring("x"),
+        //     vec![tuple(vec![gint(1), gint(2)])],
+        //     Vec::new()
+        // )
+        // ```
+        sole_bind(&compile(r#"for (y <- @"x" ~ (1, 2)) { Nil }"#)),
+        (
             gstring("x"),
-            vec![tuple(vec![gint(1), gint(2)])],
-            Vec::new()
+            query(vec![tuple(vec![gint(1), gint(2)])], Vec::new())
         )
     );
     assert_eq!(
-        sole_bind_source(&compile(r#"for (y <- @"x" ~ (1, 2;)) { Nil }"#)),
-        &query(gstring("x"), vec![gint(1), gint(2)], Vec::new())
+        // Changed by decision 112: the query is a field of the bind, next to its source. The
+        // text before:
+        // ```
+        // sole_bind_source(&compile(r#"for (y <- @"x" ~ (1, 2;)) { Nil }"#)),
+        // &query(gstring("x"), vec![gint(1), gint(2)], Vec::new())
+        // ```
+        sole_bind(&compile(r#"for (y <- @"x" ~ (1, 2;)) { Nil }"#)),
+        (gstring("x"), query(vec![gint(1), gint(2)], Vec::new()))
     );
 }
 
@@ -684,25 +912,49 @@ fn normalize_receive_query_named_params_and_params_only_groups() {
         r#"for (@doc <- @"db" ~ ([0.5, 0.25]; metric="cosine", threshold=0.8, k=3)) { Nil }"#,
     );
     assert_eq!(
-        sole_bind_source(&par),
-        &query(
+        // Changed by decision 112: the query is a field of the bind, next to its source. The
+        // text before:
+        // ```
+        // sole_bind_source(&par),
+        // &query(
+        //     gstring("db"),
+        //     vec![list(vec![gdouble(0.5), gdouble(0.25)])],
+        //     vec![
+        //         named("metric", gstring("cosine")),
+        //         named("threshold", gdouble(0.8)),
+        //         named("k", gint(3)),
+        //     ]
+        // )
+        // ```
+        sole_bind(&par),
+        (
             gstring("db"),
-            vec![list(vec![gdouble(0.5), gdouble(0.25)])],
-            vec![
+            query(vec![list(vec![gdouble(0.5), gdouble(0.25)])], vec![
                 named("metric", gstring("cosine")),
                 named("threshold", gdouble(0.8)),
                 named("k", gint(3)),
-            ]
+            ])
         )
     );
     assert_eq!(
-        sole_bind_source(&compile(
+        // Changed by decision 112: the query is a field of the bind, next to its source. The
+        // text before:
+        // ```
+        // sole_bind_source(&compile(
+        //     r#"for (@task <- @"tasks" ~ (; priority=0)) { Nil }"#
+        // )),
+        // &query(gstring("tasks"), Vec::new(), vec![named(
+        //     "priority",
+        //     gint(0)
+        // )])
+        // ```
+        sole_bind(&compile(
             r#"for (@task <- @"tasks" ~ (; priority=0)) { Nil }"#
         )),
-        &query(gstring("tasks"), Vec::new(), vec![named(
-            "priority",
-            gint(0)
-        )])
+        (
+            gstring("tasks"),
+            query(Vec::new(), vec![named("priority", gint(0))])
+        )
     );
 }
 
@@ -711,8 +963,14 @@ fn normalize_receive_query_binds_in_the_scope_outside_the_receive() {
     let par = compile(r#"new y in { for (y <- @"x" ~ *y) { y!(1) } }"#);
     let body = sole_new_body(&par);
     assert_eq!(
-        sole_bind_source(body),
-        &query(gstring("x"), vec![bound_var(0)], Vec::new())
+        // Changed by decision 112: the query is a field of the bind, next to its source. The
+        // text before:
+        // ```
+        // sole_bind_source(body),
+        // &query(gstring("x"), vec![bound_var(0)], Vec::new())
+        // ```
+        sole_bind(body),
+        (gstring("x"), query(vec![bound_var(0)], Vec::new()))
     );
     let receive = body.receives.first().expect("the body is one receive");
     assert_eq!(
@@ -737,31 +995,64 @@ fn normalize_receive_query_composes_with_joins_guards_and_receipts() {
     let join = compile(r#"for (@a <- @"x" ~ 1 & @b <- @"y" where a == b) { Nil }"#);
     let receive = join.receives.first().expect("one receive");
     assert!(receive.condition.is_some());
-    let mut sources: Vec<Par> = receive
+    // Changed by decision 112: each bind holds its source and its query side by side. The text
+    // before:
+    // ```
+    // let mut sources: Vec<Par> = receive
+    //     .binds
+    //     .iter()
+    //     .map(|bind| bind.source.clone().expect("a bind has a source"))
+    //     .collect();
+    // let mut expected = vec![
+    //     query(gstring("x"), vec![gint(1)], Vec::new()),
+    //     sorted(gstring("y")),
+    // ];
+    // sources.sort_by_key(Message::encode_to_vec);
+    // expected.sort_by_key(Message::encode_to_vec);
+    // assert_eq!(sources, expected);
+    // ```
+    let mut sources: Vec<(Par, Option<models::rhoapi::QuerySpec>)> = receive
         .binds
         .iter()
-        .map(|bind| bind.source.clone().expect("a bind has a source"))
+        .map(|bind| {
+            (
+                bind.source.clone().expect("a bind has a source"),
+                bind.query_spec.clone(),
+            )
+        })
         .collect();
     let mut expected = vec![
-        query(gstring("x"), vec![gint(1)], Vec::new()),
-        sorted(gstring("y")),
+        (gstring("x"), query(vec![gint(1)], Vec::new())),
+        (sorted(gstring("y")), None),
     ];
-    sources.sort_by_key(Message::encode_to_vec);
-    expected.sort_by_key(Message::encode_to_vec);
+    sources.sort_by_key(|(source, _)| source.encode_to_vec());
+    expected.sort_by_key(|(source, _)| source.encode_to_vec());
     assert_eq!(sources, expected);
 
     let receipts = compile(r#"for (@a <- @"x" ~ 1; @b <- @"y" ~ (; k=2)) { Nil }"#);
     assert_eq!(
-        sole_bind_source(&receipts),
-        &query(gstring("x"), vec![gint(1)], Vec::new())
+        // Changed by decision 112: the query is a field of the bind, next to its source. The
+        // text before:
+        // ```
+        // sole_bind_source(&receipts),
+        // &query(gstring("x"), vec![gint(1)], Vec::new())
+        // ```
+        sole_bind(&receipts),
+        (gstring("x"), query(vec![gint(1)], Vec::new()))
     );
     let inner = receipts.receives[0]
         .body
         .as_ref()
         .expect("the outer receive has a body");
     assert_eq!(
-        sole_bind_source(inner),
-        &query(gstring("y"), Vec::new(), vec![named("k", gint(2))])
+        // Changed by decision 112: the query is a field of the bind, next to its source. The
+        // text before:
+        // ```
+        // sole_bind_source(inner),
+        // &query(gstring("y"), Vec::new(), vec![named("k", gint(2))])
+        // ```
+        sole_bind(inner),
+        (gstring("y"), query(Vec::new(), vec![named("k", gint(2))]))
     );
 }
 
@@ -780,9 +1071,17 @@ fn normalize_receive_query_rejects_invalid_values() {
         out_of_range("threshold", "a Float, a BigRat or a FixedPoint in [0, 1]")
     );
     // A fixed-point threshold (decision 56) lies in [0, 1] as the other forms do.
-    assert!(contains_marker(&compile(
+    // Changed by decision 112: the query is a field of the bind. The text before:
+    // ```
+    // assert!(contains_marker(&compile(
+    //     r#"for (y <- @"x" ~ (1; threshold=0.85p2)) { Nil }"#
+    // )));
+    // ```
+    assert!(sole_bind(&compile(
         r#"for (y <- @"x" ~ (1; threshold=0.85p2)) { Nil }"#
-    )));
+    ))
+    .1
+    .is_some());
     assert_eq!(
         compile_error(r#"for (y <- @"x" ~ (1; threshold=1.5p1)) { Nil }"#),
         out_of_range("threshold", "a Float, a BigRat or a FixedPoint in [0, 1]")
@@ -799,7 +1098,9 @@ fn normalize_receive_query_rejects_invalid_values() {
         )
     );
     let deferred = compile(r#"new n in { for (y <- @"x" ~ (1; k=*n)) { Nil } }"#);
-    assert!(contains_marker(&deferred));
+    // Changed by decision 112: a deferred query stays a field of the bind. The text before:
+    // assert!(contains_marker(&deferred));
+    assert!(sole_bind(sole_new_body(&deferred)).1.is_some());
 }
 
 #[test]
@@ -974,13 +1275,25 @@ fn normalizer_native_vector_keeps_the_kind_and_order_of_each_element() {
     assert_eq!(list_elements(sole_datum(&reversed)), expected);
 }
 
+// Changed by decision 112: the params and the query are fields. The text before:
+// ```
+// /// A vector in the send param `embedding` and in the payload of a receive query keeps the arm
+// /// and the order of each element inside the marker tuples (decision 21).
+// ```
 /// A vector in the send param `embedding` and in the payload of a receive query keeps the arm
-/// and the order of each element inside the marker tuples (decision 21).
+/// and the order of each element inside the fields of the send and the bind (decision 21).
 #[test]
 fn normalizer_native_vector_in_params_and_queries_keeps_its_elements() {
     let par = compile(r#"@"v"!("doc"; embedding=[3, -4n, 5r, 0.5, -2.5f32, 1.25p2, true, 1e3])"#);
-    let trailing = split_trailing_params(&sole_send(&par).data)
-        .expect("canonical params")
+    // Changed by decision 112: the params are a field of the send. The text before:
+    // ```
+    // let trailing = split_trailing_params(&sole_send(&par).data)
+    //     .expect("canonical params")
+    //     .expect("the params of the send");
+    // ```
+    let trailing = sole_send(&par)
+        .params
+        .as_ref()
         .expect("the params of the send");
     assert!(trailing.positional.is_empty());
     let embedding = trailing
@@ -992,9 +1305,14 @@ fn normalizer_native_vector_in_params_and_queries_keeps_its_elements() {
     let par = compile(
         r#"for (y <- @"v" ~ ([3, -4n, 5r, 0.5, -2.5f32, 1.25p2, true, 1e3]; k=2)) { Nil }"#,
     );
-    let spec = models::rust::reified::encoding::decode_query_source(sole_bind_source(&par))
-        .expect("a canonical query")
-        .expect("the query of the receive");
+    // Changed by decision 112: the query is a field of the bind. The text before:
+    // ```
+    // let spec = models::rust::reified::encoding::decode_query_source(sole_bind_source(&par))
+    //     .expect("a canonical query")
+    //     .expect("the query of the receive");
+    // ```
+    let (_, spec) = sole_bind(&par);
+    let spec = spec.expect("the query of the receive");
     match spec.payload.as_slice() {
         [vector] => assert_eq!(list_elements(vector), native_vector_elements()),
         other => panic!("expected one query payload, found {other:?}"),
@@ -1030,4 +1348,35 @@ fn normalizer_native_vector_parses_no_string_and_rejects_malformed_floats() {
         ),
         "an f32 literal out of range fails in the normalizer"
     );
+}
+
+/// Decision 120 O-2: the five Reified forms are process forms, so they cannot appear in pattern
+/// position. The guard rejects each form in a match case, in a receive bind and in a contract
+/// formal. An empty `;` section erases, so it stays legal (ruling 4).
+#[test]
+fn reified_forms_in_patterns_are_rejected() {
+    let rejection = InterpreterError::NormalizerError(
+        "reified syntax: a use block, a free theory, send params, a bind query and an annotated \
+         name declaration cannot appear in pattern position"
+            .to_owned(),
+    );
+    let forms = [
+        r#"use @"s" { Nil }"#,
+        "free Nat()",
+        r#"@"x"!(1; k=1)"#,
+        r#"for (y <- @"x" ~ 1) { Nil }"#,
+        r#"new x : @"s" in { Nil }"#,
+    ];
+    for form in forms {
+        let sources = [
+            format!("match 1 {{ {form} => Nil }}"),
+            format!(r#"for (@{{ {form} }} <- @"c") {{ Nil }}"#),
+            format!(r#"contract @"c"(@{{ {form} }}) = {{ Nil }}"#),
+        ];
+        for source in sources {
+            assert_eq!(compile_error(&source), rejection, "{source}");
+        }
+    }
+    let erased = compile(r#"match 1 { @"x"!(1;) => Nil }"#);
+    assert!(!contains_marker(&erased));
 }

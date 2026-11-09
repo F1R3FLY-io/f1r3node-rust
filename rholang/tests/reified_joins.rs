@@ -3,22 +3,34 @@
 //! A receive with two or more binds whose channels all route to one native space is a join
 //! (`SpaceOp::Join`). The join engine (`spaces/join.rs`) runs every join. It also runs every
 //! produce, consume or settle whose collection has a join group, and every settle with a cascade
-//! state. The tests drive the family agent over an in-memory play space and its replay space.
+// Changed by decision 90 (C6, step D): no test of this file takes a replay space. The text
+// before:
+// ```
+// //! state. The tests drive the family agent over an in-memory play space and its replay space.
+// ```
+//! state. The tests drive the family agent over an in-memory play space.
 //! The Rholang tests run deploys through the runtime session of the P5 suites.
 //!
 //! The tests of the joins plan, section 7.1:
 //!
 //! | Test | What it shows |
 //! |---|---|
-//! | `space_joins_bag_greedy` | the first spatial match of each bind in DR-75 order, and the computed greedy limit that parks (decision 37) |
+// Changed by decision 102 (plan v4 C5.3, rule CR-1): play picks the window of a collection that
+// the group names once at random. The row before:
+// //! | `space_joins_bag_greedy` | the first spatial match of each bind in DR-75 order, and the computed greedy limit that parks (decision 37) |
+//! | `space_joins_bag_greedy` | a random match of each bind on a collection that the group names once (decision 102), and the computed greedy limit that parks (decision 37) |
 //! | `space_joins_set_classes` | two binds on one set take two classes, and a class is never bound twice |
 //! | `space_joins_set_bind_retires_class` | a fire that does not peek retires the other members of each bound class with `K_retire` |
 //! | `space_joins_cell_join` | a join over two cells, `CellOccupied` for a second waiter, and `[c, c]` with the incoming and the stored record |
 //! | `space_joins_queue_heads_only` | a join waiter fires only as the head of each queue, and a head that does not match blocks |
 //! | `space_joins_stack_heads_only` | tops only, and a fresh join becomes the top waiter |
 //! | `space_joins_pq_heads_only` | one lane for each bind, and the older lane head fires first (decision 38) |
-//! | `space_joins_repeated_channel_distinct_records` | k binds on one channel bind k distinct records, persistent ones included (decision 28) |
-//! | `space_joins_incoming_binds_once` | the incoming datum binds exactly one position, with the position retry |
+// Changed by decision 103 (decision 118, rule CR-9, decision-c6 §6.1 and §6.2): a persistent
+// entry claims nothing, so it can bind several positions. The rows before:
+// //! | `space_joins_repeated_channel_distinct_records` | k binds on one channel bind k distinct records, persistent ones included (decision 28) |
+// //! | `space_joins_incoming_binds_once` | the incoming datum binds exactly one position, with the position retry |
+//! | `space_joins_persistent_record_binds_two_positions` | a persistent record binds several positions, and a non-persistent record binds one (decision 118, rule (a)) |
+//! | `space_joins_incoming_binds_once` | a non-persistent incoming datum binds one position, with the position retry, and a persistent one binds two |
 //! | `space_joins_multi_ord_envelope_roundtrip` | the record of version 2 survives the commit, a checkpoint and a reset |
 //! | `space_joins_bind_order_restored_for_body` | the body gets the values and the random states in bind order, as a host join |
 //! | `space_joins_guard_checked_once_after_all_binds` | one guard check over the values in bind order for each attempt |
@@ -30,7 +42,8 @@
 //! | `space_joins_default_and_space_join_aborts` | `CrossSpaceJoin` for the default space and a space |
 //! | `space_joins_persisted_waiter_check3_conflict` | a parked join in the pre-state makes a produce on its channels conflict (merge check #3) |
 //! | `space_joins_escalation_relocks_once` | two transactions, the second over the closure, and one commit |
-//! | `space_joins_replay_equal` | replay reproduces play: events, roots, cost and the legacy log |
+// Changed by decision 90 (C6, step D, ruling R-11): the test runs native replay.
+//! | `space_joins_replay_equal` | native replay certifies the play of the join script on each discipline |
 //! | `space_joins_restart` | join waiters, records of version 2 and join groups survive a checkpoint and a reset |
 //!
 //! The tests of the joins plan, section 7.2 (decisions 43, 45, 46, 49 and 50):
@@ -43,18 +56,45 @@
 //! | `space_joins_cap_carries_pending_second_sends` | the settle of a stop carries the pending second sends and the operation |
 //! | `space_joins_settle_before_cap_resumes_the_operation` | the settle before the plan fills the transaction, and the operation resumes later |
 //! | `space_joins_txn_fires_bounded_at_the_cap` | no transaction makes more than `FIRE_ROUND_CAP` fires |
-//! | `space_joins_legacy_charges_equal_host` | Option P: each staged shape charges what `ChargingRSpace` charges for its host call |
+//! | `space_joins_legacy_charges_equal_host` | retired by decision 90 (decision 69) with Option P: each staged shape charged what `ChargingRSpace` charged for its host call |
 //! | `space_joins_classification_fires_as_check_joins` | a collection without joins fires as it fired at the second-wave commit |
 //! | `space_joins_native_execution_fails_closed` | decision 46: a join fails before any space work |
-//! | `space_joins_set_join_cascade_fires_exposed_waiter` | decision 50: a set waiter that a class move exposes fires in the same transaction |
+// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg:8-14). The row
+// before:
+// //! | `space_joins_set_join_cascade_fires_exposed_waiter` | decision 50: a set waiter that a class move exposes fires in the same transaction |
+//! | `space_joins_set_join_cascade_fires_exposed_waiter` | decision 118: the waiter of the F-JF-1 trace fires at its arrival, because its class has a persistent member |
+//!
+//! Added by decision 103 (decision 118, rule CR-9, decision-c6 §6): the tests of rule (a), the
+//! claim rule of the join search:
+//!
+//! | Test | What it shows |
+//! |---|---|
+//! | `space_joins_persistent_incoming_binds_two_positions` | a persistent incoming datum binds two positions of its collection in one COMM |
+//! | `space_joins_peek_persistent_incoming_is_sent_once` | a peek fire sends a persistent incoming datum again once |
+//! | `space_joins_set_persistent_class_binds_twice` | a set class with a persistent member binds two positions, on both sides |
+//! | `space_joins_set_free_class_binds_members_before_the_persistent_member` | the non-persistent members of a free class bind before its persistent member |
+//! | `space_joins_cascade_binds_a_persistent_record_at_two_positions` | on a queue, the cascade gives a waiter its turn, and it binds a persistent record at two positions |
 //!
 //! `space_joins_queue_programs_run_as_joins` runs the five programs of the P4 test
 //! `space_queue_join_rejected` (`reified_queue.rs`), which decision 29 disabled, as joins.
+//!
+//! Added by decision 102 (plan v4 C5.3): play picks at random among the records of the window of
+//! a collection that the group of a join names once (rule CR-1), and among the join waiters of an
+//! offer (decision 124, LP-1). Four tests check such picks: `space_joins_bag_greedy`,
+//! `space_joins_set_bind_retires_class`, `space_joins_guard_checked_once_after_all_binds` and
+//! `space_joins_produce_side_peek_reproduces_in_receipt_order`. Each part of a pick runs
+//! [`PICK_RUNS`] times, each run on a fresh rig, and checks that its outcome is in the allowed set.
+//! A coverage set checks that each allowed outcome occurs, and the doc of each test gives the miss
+//! bound. A run that reads its event log plays on a [`PairRig`]. The parts that no pick touches
+//! run once. Native replay of the join programs is certified by `space_joins_replay_equal`
+//! (decision 90, C6, step D).
 
 #[path = "support/mod.rs"]
 mod support;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
@@ -80,13 +120,19 @@ use rholang::rust::interpreter::accounting::native_phlo_rules::{
 use rholang::rust::interpreter::accounting::phlo_controls::{
     check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
 };
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::accounting::{
+//     funding_sig_compound, NativeRuntimeConfig, RuntimeBudget, Sig,
+// };
 use rholang::rust::interpreter::accounting::{
-    funding_sig_compound, NativeRuntimeConfig, RuntimeBudget, Sig,
+    funding_sig_compound, NativeRuntimeConfig, RuntimeBudget,
 };
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
-use rholang::rust::interpreter::reified::legacy_charges::{consume_charges, produce_charges};
+// Changed by decision 90 (decision 69): the module `reified::legacy_charges` of Option P is
+// deleted with the legacy meter (DR-134).
+// use rholang::rust::interpreter::reified::legacy_charges::{consume_charges, produce_charges};
 use rholang::rust::interpreter::reified::runtime;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::agent::{
@@ -103,7 +149,8 @@ use rholang::rust::interpreter::spaces::namespace::{
 use rholang::rust::interpreter::spaces::record::{self, JoinSlot, WaiterPolicy};
 use rholang::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern};
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Disabled by decision 90 (C6): the native session runs no legacy deploy.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
@@ -112,19 +159,49 @@ use rspace_plus_plus::rspace::merger::merging_logic::{
 };
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::space_store_handle::{
-    canonical_data_order, ConsumeOutcome, ProduceOutcome,
-};
+// Disabled by decision 90 (C6): the native session runs no legacy deploy.
+// use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+// use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Changed by decision 90 (decision 69): only the retired lone host differential used these
+// imports (see the note of `lone_calls_step`).
+// use rspace_plus_plus::rspace::space_store_handle::{
+//     canonical_data_order, ConsumeOutcome, ProduceOutcome,
+// };
+use rspace_plus_plus::rspace::space_store_handle::canonical_data_order;
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce, COMM};
+// Changed by decision 90 (decision 69): only the retired lone host differential used these
+// imports (see the note of `lone_calls_step`).
+// use support::agent::{
+//     any, budget, config_of, counter_channel, create, creation, data_channel, env_over, exactly,
+//     fired, int, join_group, join_on, join_waiters_on, joins_on, play, play_and_replay, play_with,
+//     receive_on, run, send_on, string, AnyRecord, AnyWaiter, CountingMatcher, HostRecord,
+//     JoinWaiterRow, ParRSpace, RecordingHost, SharedRecord, StagedCopy,
+// };
+// Changed by decision 90 (C6, step D): the rigged replay modes retire, so no test of this file
+// takes a play and replay pair. The text before:
+// ```
+// use support::agent::{
+//     any, budget, config_of, counter_channel, create, creation, data_channel, env_over, exactly,
+//     fired, int, join_group, join_on, join_waiters_on, joins_on, play, play_and_replay, play_with,
+//     receive_on, run, send_on, string, AnyRecord, AnyWaiter, CountingMatcher, HostRecord,
+//     JoinWaiterRow, ParRSpace, RecordingHost, SharedRecord,
+// };
+// ```
 use support::agent::{
     any, budget, config_of, counter_channel, create, creation, data_channel, env_over, exactly,
-    fired, int, join_group, join_on, join_waiters_on, joins_on, play, play_and_replay, play_with,
-    receive_on, run, send_on, string, AnyRecord, AnyWaiter, CountingMatcher, HostRecord,
-    JoinWaiterRow, ParRSpace, RecordingHost, SharedRecord, StagedCopy,
+    fired, int, join_group, join_on, join_waiters_on, joins_on, play, play_with, receive_on, run,
+    send_on, string, AnyRecord, AnyWaiter, CountingMatcher, HostRecord, JoinWaiterRow, ParRSpace,
+    RecordingHost, SharedRecord,
 };
-use support::legacy::{lone_host_consume, lone_host_produce, split};
+use support::family_programs::space_program;
+use support::native::{assert_reproduces, certify, native_play, AMPLE_LIMIT};
+// Changed by decision 90 (decision 69): the lone host calls return observer calls, and the
+// legacy charges of Option P are deleted with the legacy meter (DR-134).
+// use support::legacy::{lone_host_consume, lone_host_produce, split};
+// Changed by decision 90 (decision 69): only the retired lone host differential ran lone host
+// calls (see the note of `lone_calls_step`).
+use support::observed::{observed, Call, Recorder};
+use support::props::{racing_runtime, RACING_WORKERS};
 use support::session::{with_space, Session};
 
 // ─── The rig ─────────────────────────────────────────────────────────────────────────────────
@@ -135,8 +212,14 @@ const SPACE: NativeSpace = NativeSpace {
     durability: Durability::Durable,
 };
 
-/// The phlo of a legacy budget: far above every script of the suite.
-const LEGACY_PHLO: i64 = 1_000_000_000_000;
+// Changed by decision 90 (decision 69): no budget of the suite is a legacy budget, because DR-134
+// deleted the legacy meter (`STEP_PHLO`).
+//
+// /// The phlo of a legacy budget: far above every script of the suite.
+// const LEGACY_PHLO: i64 = 1_000_000_000_000;
+
+// Retired by decision 90 (C6, step D): the replay scripts of this suite were its only users, and
+// they retire (decision 125).
 
 /// The factory of the bag family.
 const BAG: &str = "rho:space:hashmap:bag";
@@ -456,6 +539,10 @@ fn region(byte: u8) -> CostAuthority {
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![byte])),
             }),
+            // Added by decision 90 (DR-135): an unpriced region, as outside native
+            // execution.
+            price: 0,
+            caller: None,
         }],
     }
 }
@@ -684,13 +771,92 @@ fn registered_consume(budget: &RuntimeBudget, consume: &Consume) -> Option<CostA
         .ok()
 }
 
+// ─── Random picks and the replay check (decision 102, rules CR-1 and CR-4) ───────────────────
+
+/// Added by decision 102 (plan v4 C5.3): the runs of a play test of a random pick, each on a
+/// fresh rig. An outcome with a chance of `p` or more is missing from all runs with a chance of
+/// `(1 - p)^64` or less. So one of two outcomes with a chance of 1/2 each is missing with a chance
+/// of `2·2^-64 = 2^-63`. One of three outcomes with a chance of 1/3 each is missing with a chance
+/// of `3·(2/3)^64`, which is less than `2·10^-11`.
+const PICK_RUNS: usize = 64;
+
+/// Added by decision 102 (plan v4 C5.3, rule CR-4): a rig over a fresh play space. Its first
+/// checkpoint empties the event log of the creation, so the log of a test holds every event of
+/// the test.
+struct PairRig {
+    /// The rig over the play space.
+    rig: Rig,
+}
+
+impl PairRig {
+    /// A rig of `hashmap:<inner>` over a fresh play space.
+    async fn new(inner: SpaceInner) -> PairRig {
+        let play_space = play().await;
+        let rig = Rig::over(play_space, inner, &budget()).await;
+        // The checkpoint empties the event log of the creation.
+        rig.root().await;
+        PairRig { rig }
+    }
+
+    /// Runs `op`, which must commit.
+    async fn ok(&mut self, op: SpaceOp) -> SpaceOutcome { self.rig.ok(op).await }
+
+    /// The log of play of the operations so far.
+    async fn play_log(&self) -> Vec<Event> {
+        let Checkpoint { log, .. } = self
+            .rig
+            .host
+            .create_checkpoint()
+            .await
+            .expect("a checkpoint of play");
+        log
+    }
+
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). `space_joins_replay_equal`,
+    // `space_pick_helpers_put_the_named_candidates_first_in_replay`.
+}
+
+/// Added by decision 102 (plan v4 C5.3): the source hashes of the records on `channel` that the
+/// join COMMs of `log` bind, in log order.
+fn join_binds_on(log: &[Event], channel: &Par) -> Vec<Blake2b256Hash> {
+    let key = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(channel);
+    log.iter()
+        .filter_map(|event| match event {
+            Event::Comm(comm) if comm.consume.channel_hashes.len() >= 2 => Some(comm),
+            _ => None,
+        })
+        .flat_map(|comm| comm.produces.iter())
+        .filter(|produce| produce.channel_hash == key)
+        .map(|produce| produce.hash.clone())
+        .collect()
+}
+
 // ─── 7.1: windows and searches ───────────────────────────────────────────────────────────────
 
+// Changed by decision 102 (plan v4 C5.3, rule CR-1): play picks the window of a collection that
+// the group names once at random, so the doc below replaces this one.
+// /// GREEDY on a bag (joins plan 3.4, decision 37). Each bind takes the first record of its
+// /// window that its pattern binds, in the canonical order of DR-75. There is no backtracking.
+// ///
+// /// * Two binds on two bags take the first record of each bag in canonical order.
+// /// * A literal pattern skips the records that it does not bind: the first spatial match wins.
+// /// * The computed greedy limit: the join `[c, c]` has the patterns `any` and `1`, and the records
+// ///   1 and 2 come in this canonical order. Greedy binds 1 to the first bind and finds no 1 for
+// ///   the second bind. So the join parks, although the assignment of 2 and 1 exists. With 2
+// ///   first in canonical order, greedy finds that assignment and fires.
 /// GREEDY on a bag (joins plan 3.4, decision 37). Each bind takes the first record of its
-/// window that its pattern binds, in the canonical order of DR-75. There is no backtracking.
+/// window that its pattern binds. There is no backtracking. Play picks the window of a collection
+/// that the group names once at random (decision 102, rule CR-1). A collection that the group
+/// names two or more times keeps the canonical order of DR-75 (E1, rule CR-8).
 ///
-/// * Two binds on two bags take the first record of each bag in canonical order.
-/// * A literal pattern skips the records that it does not bind: the first spatial match wins.
+/// * Two binds on two bags take a random record of each bag. This part runs [`PICK_RUNS`] times,
+///   each run on a fresh rig. Each run checks that `g` binds a record of each bag. Over the runs,
+///   `g` binds each of the 3 records of `a` and each of the 2 records of
+///   `b`. One of these outcomes is missing with a chance of `3·(2/3)^64 + 2·2^-64`, which is less
+///   than `2·10^-11`.
+/// * A literal pattern binds only the record that it matches. So `h` binds the other record of
+///   `b`, and `a` keeps the record that neither join binds.
 /// * The computed greedy limit: the join `[c, c]` has the patterns `any` and `1`, and the records
 ///   1 and 2 come in this canonical order. Greedy binds 1 to the first bind and finds no 1 for
 ///   the second bind. So the join parks, although the assignment of 2 and 1 exists. With 2
@@ -699,30 +865,95 @@ fn registered_consume(budget: &RuntimeBudget, consume: &Consume) -> Option<CostA
 async fn space_joins_bag_greedy() {
     let rig = Rig::new(SpaceInner::Bag).await;
     let (a, b) = (ch("a"), ch("b"));
-    for value in [1, 2, 3] {
-        rig.ok(put_salted(&a, value, 1)).await;
+    // Changed by decision 102 (plan v4 C5.3, rule CR-1): play picks the records of g at random.
+    // So this part runs PICK_RUNS times, each run on a fresh rig with its replay, and checks the
+    // allowed set and a coverage set. The body before:
+    // for value in [1, 2, 3] {
+    //     rig.ok(put_salted(&a, value, 1)).await;
+    // }
+    // for value in [10, 20] {
+    //     rig.ok(put(&b, value)).await;
+    // }
+    // let order_a = canonical_values(&rig.host, &a).await;
+    // let order_b = canonical_values(&rig.host, &b).await;
+    // let outcome = rig.ok(joined(join(&[(&a, any()), (&b, any())], "g"))).await;
+    // assert_eq!(fired(&outcome), vec![delivery("g", &[
+    //     order_a[0], order_b[0]
+    // ])]);
+    // let rest = canonical_values(&rig.host, &a).await;
+    // assert_eq!(rest, order_a[1..].to_vec());
+    // let target = rest[1];
+    // let outcome = rig
+    //     .ok(joined(join(&[(&a, exactly(target)), (&b, any())], "h")))
+    //     .await;
+    // assert_eq!(
+    //     fired(&outcome),
+    //     vec![delivery("h", &[order_b[1]])],
+    //     "the literal skips the first record of the bag"
+    // );
+    // assert_eq!(canonical_values(&rig.host, &a).await, vec![rest[0]]);
+    let mut bound_a = BTreeSet::<i64>::new();
+    let mut bound_b = BTreeSet::<i64>::new();
+    for _ in 0..PICK_RUNS {
+        let mut pair = PairRig::new(SpaceInner::Bag).await;
+        for value in [1, 2, 3] {
+            pair.ok(put_salted(&a, value, 1)).await;
+        }
+        for value in [10, 20] {
+            pair.ok(put(&b, value)).await;
+        }
+        let outcome = pair
+            .ok(joined(join(&[(&a, any()), (&b, any())], "g")))
+            .await;
+        let [(name, values)] =
+            <[(String, Vec<Par>); 1]>::try_from(fired(&outcome)).expect("one fire of the join");
+        assert_eq!(name, "g");
+        let [value_a, value_b] =
+            <[i64; 2]>::try_from(values.iter().map(number).collect::<Vec<_>>())
+                .expect("g binds two values");
+        assert!(
+            [1, 2, 3].contains(&value_a) && [10, 20].contains(&value_b),
+            "g binds a record of each bag, not {value_a} and {value_b}"
+        );
+        bound_a.insert(value_a);
+        bound_b.insert(value_b);
+        let unbound_a: Vec<i64> = [1, 2, 3]
+            .into_iter()
+            .filter(|value| *value != value_a)
+            .collect();
+        assert_eq!(
+            pair.rig.values(&a).await,
+            unbound_a,
+            "a keeps the records that g does not bind"
+        );
+        let unbound_b: Vec<i64> = [10, 20]
+            .into_iter()
+            .filter(|value| *value != value_b)
+            .collect();
+        let rest = canonical_values(&pair.rig.host, &a).await;
+        let target = rest[1];
+        let outcome = pair
+            .ok(joined(join(&[(&a, exactly(target)), (&b, any())], "h")))
+            .await;
+        assert_eq!(
+            fired(&outcome),
+            vec![delivery("h", &unbound_b)],
+            "the literal binds only the record that it matches"
+        );
+        assert_eq!(canonical_values(&pair.rig.host, &a).await, vec![rest[0]]);
+        // Retired by decision 90 (C6, step D): the replay over the rigged replay modes, which
+        // retire.
     }
-    for value in [10, 20] {
-        rig.ok(put(&b, value)).await;
-    }
-    let order_a = canonical_values(&rig.host, &a).await;
-    let order_b = canonical_values(&rig.host, &b).await;
-    let outcome = rig.ok(joined(join(&[(&a, any()), (&b, any())], "g"))).await;
-    assert_eq!(fired(&outcome), vec![delivery("g", &[
-        order_a[0], order_b[0]
-    ])]);
-    let rest = canonical_values(&rig.host, &a).await;
-    assert_eq!(rest, order_a[1..].to_vec());
-    let target = rest[1];
-    let outcome = rig
-        .ok(joined(join(&[(&a, exactly(target)), (&b, any())], "h")))
-        .await;
     assert_eq!(
-        fired(&outcome),
-        vec![delivery("h", &[order_b[1]])],
-        "the literal skips the first record of the bag"
+        bound_a,
+        BTreeSet::from([1, 2, 3]),
+        "g binds each record of a in some run"
     );
-    assert_eq!(canonical_values(&rig.host, &a).await, vec![rest[0]]);
+    assert_eq!(
+        bound_b,
+        BTreeSet::from([10, 20]),
+        "g binds each record of b in some run"
+    );
 
     // The greedy limit.
     let c = ch("c");
@@ -800,77 +1031,218 @@ async fn space_joins_set_classes() {
     );
 }
 
+// Changed by decision 102 (plan v4 C5.3, rule CR-1): play picks the bound member of a class at
+// random, so the doc below replaces this one.
+// /// RETIRE-SET-BINDS (joins plan 4.7). After a fire that does not peek, the other stored members
+// /// of each bound class leave with single-channel `K_retire` COMMs, unless they are persistent.
+// /// The consume side retires with the random state of the join. The produce side retires with the
+// /// random state of the incoming element. A persistent member keeps its class and stays.
 /// RETIRE-SET-BINDS (joins plan 4.7). After a fire that does not peek, the other stored members
-/// of each bound class leave with single-channel `K_retire` COMMs, unless they are persistent.
-/// The consume side retires with the random state of the join. The produce side retires with the
-/// random state of the incoming element. A persistent member keeps its class and stays.
+/// of each bound class leave with single-channel `K_retire` COMMs in canonical order, unless they
+/// are persistent. The consume side retires with the random state of the join. The produce side
+/// retires with the random state of the incoming element. A persistent member keeps its class and
+/// stays.
+///
+/// Play picks the bound member of a class at random (decision 102, rule CR-1). So the test runs
+/// [`PICK_RUNS`] times, each run on a fresh rig. Each run reads the bound member from the COMM of
+/// each fire and checks the `K_retire` COMMs of the other members. When the
+/// join binds the persistent member, both other members retire. Over the runs, the join binds
+/// each of the 3 members on the consume side and each of the 2 members on the produce side. One
+/// of these outcomes is missing with a chance of `3·(2/3)^64 + 2·2^-64`, which is less than
+/// `2·10^-11`.
 #[tokio::test]
 async fn space_joins_set_bind_retires_class() {
-    let rig = Rig::new(SpaceInner::Set).await;
+    // Changed by decision 102 (plan v4 C5.3, rule CR-1): play picks the bound member of each class
+    // at random. So the test runs PICK_RUNS times, each run on a fresh rig with its replay, and
+    // reads the bound members from the join COMMs of the play log. The body before:
+    // let rig = Rig::new(SpaceInner::Set).await;
+    // let (a, b) = (ch("a"), ch("b"));
+    // let members = ordered_sends(&a, &[(5, false), (5, false), (5, true)]);
+    // for member in &members {
+    //     rig.ok(SpaceOp::Produce(member.clone())).await;
+    // }
+    // rig.ok(put(&b, 7)).await;
+    // rig.log().await;
+    // let op = join(&[(&a, exactly(5)), (&b, any())], "j");
+    // let outcome = rig.ok(joined(op.clone())).await;
+    // assert_eq!(fired(&outcome), vec![delivery("j", &[7])]);
+    // let log = rig.log().await;
+    // assert_eq!(
+    //     consumes_on(&log, &data(&a)),
+    //     vec![retire_consume(
+    //         &a,
+    //         &op.body.random_state,
+    //         None,
+    //         &record_hash(&members[1])
+    //     )],
+    //     "one K_retire retires the second member, with the random state of the join"
+    // );
+    // assert_eq!(
+    //     rig.records(&a).await,
+    //     vec![(0, None, vec![int(5)], true)],
+    //     "the persistent member keeps its class"
+    // );
+    // rig.ok(put(&b, 8)).await;
+    // let again = rig
+    //     .ok(joined(join(&[(&a, exactly(5)), (&b, any())], "k")))
+    //     .await;
+    // assert_eq!(fired(&again), vec![delivery("k", &[8])]);
+    // assert_eq!(rig.records(&a).await, vec![(0, None, vec![int(5)], true)]);
+    //
+    // // The produce side: the incoming 9 fires the waiter. The second member of the class of 3
+    // // retires with the random state of the incoming element.
+    // let (c, d) = (ch("c"), ch("d"));
+    // let threes = ordered_sends(&c, &[(3, false), (3, false)]);
+    // for member in &threes {
+    //     rig.ok(SpaceOp::Produce(member.clone())).await;
+    // }
+    // let parked = rig
+    //     .ok(joined(join(&[(&c, exactly(3)), (&d, any())], "w")))
+    //     .await;
+    // assert!(parked.fires.is_empty());
+    // rig.log().await;
+    // let incoming = send_salted(&d, 9, 1);
+    // let outcome = rig.ok(SpaceOp::Produce(incoming.clone())).await;
+    // assert_eq!(fired(&outcome), vec![delivery("w", &[9])]);
+    // assert_eq!(consumes_on(&rig.log().await, &data(&c)), vec![
+    //     retire_consume(
+    //         &c,
+    //         &incoming.data.random_state,
+    //         None,
+    //         &record_hash(&threes[1])
+    //     )
+    // ]);
+    // assert!(rig.values(&c).await.is_empty());
+    // assert!(rig.values(&d).await.is_empty());
     let (a, b) = (ch("a"), ch("b"));
     let members = ordered_sends(&a, &[(5, false), (5, false), (5, true)]);
-    for member in &members {
-        rig.ok(SpaceOp::Produce(member.clone())).await;
-    }
-    rig.ok(put(&b, 7)).await;
-    rig.log().await;
     let op = join(&[(&a, exactly(5)), (&b, any())], "j");
-    let outcome = rig.ok(joined(op.clone())).await;
-    assert_eq!(fired(&outcome), vec![delivery("j", &[7])]);
-    let log = rig.log().await;
-    assert_eq!(
-        consumes_on(&log, &data(&a)),
-        vec![retire_consume(
-            &a,
-            &op.body.random_state,
-            None,
-            &record_hash(&members[1])
-        )],
-        "one K_retire retires the second member, with the random state of the join"
-    );
-    assert_eq!(
-        rig.records(&a).await,
-        vec![(0, None, vec![int(5)], true)],
-        "the persistent member keeps its class"
-    );
-    rig.ok(put(&b, 8)).await;
-    let again = rig
-        .ok(joined(join(&[(&a, exactly(5)), (&b, any())], "k")))
-        .await;
-    assert_eq!(fired(&again), vec![delivery("k", &[8])]);
-    assert_eq!(rig.records(&a).await, vec![(0, None, vec![int(5)], true)]);
-
-    // The produce side: the incoming 9 fires the waiter. The second member of the class of 3
-    // retires with the random state of the incoming element.
     let (c, d) = (ch("c"), ch("d"));
     let threes = ordered_sends(&c, &[(3, false), (3, false)]);
-    for member in &threes {
-        rig.ok(SpaceOp::Produce(member.clone())).await;
-    }
-    let parked = rig
-        .ok(joined(join(&[(&c, exactly(3)), (&d, any())], "w")))
-        .await;
-    assert!(parked.fires.is_empty());
-    rig.log().await;
     let incoming = send_salted(&d, 9, 1);
-    let outcome = rig.ok(SpaceOp::Produce(incoming.clone())).await;
-    assert_eq!(fired(&outcome), vec![delivery("w", &[9])]);
-    assert_eq!(consumes_on(&rig.log().await, &data(&c)), vec![
-        retire_consume(
-            &c,
-            &incoming.data.random_state,
-            None,
-            &record_hash(&threes[1])
-        )
-    ]);
-    assert!(rig.values(&c).await.is_empty());
-    assert!(rig.values(&d).await.is_empty());
+    let mut bound_fives = BTreeSet::<usize>::new();
+    let mut bound_threes = BTreeSet::<usize>::new();
+    for _ in 0..PICK_RUNS {
+        let mut pair = PairRig::new(SpaceInner::Set).await;
+        for member in &members {
+            pair.ok(SpaceOp::Produce(member.clone())).await;
+        }
+        pair.ok(put(&b, 7)).await;
+        let outcome = pair.ok(joined(op.clone())).await;
+        assert_eq!(fired(&outcome), vec![delivery("j", &[7])]);
+        assert_eq!(
+            pair.rig.records(&a).await,
+            vec![(0, None, vec![int(5)], true)],
+            "the persistent member keeps its class"
+        );
+        pair.ok(put(&b, 8)).await;
+        let again = pair
+            .ok(joined(join(&[(&a, exactly(5)), (&b, any())], "k")))
+            .await;
+        assert_eq!(fired(&again), vec![delivery("k", &[8])]);
+        assert_eq!(
+            pair.rig.records(&a).await,
+            vec![(0, None, vec![int(5)], true)],
+            "the persistent member stays after k"
+        );
+
+        // The produce side: the incoming 9 fires the waiter. The other member of the class of 3
+        // retires with the random state of the incoming element.
+        for member in &threes {
+            pair.ok(SpaceOp::Produce(member.clone())).await;
+        }
+        let parked = pair
+            .ok(joined(join(&[(&c, exactly(3)), (&d, any())], "w")))
+            .await;
+        assert!(parked.fires.is_empty());
+        let outcome = pair.ok(SpaceOp::Produce(incoming.clone())).await;
+        assert_eq!(fired(&outcome), vec![delivery("w", &[9])]);
+        assert!(pair.rig.values(&c).await.is_empty());
+        assert!(pair.rig.values(&d).await.is_empty());
+
+        // The COMMs of the fires name the bound members: j and k on a, and w on c.
+        let log = pair.play_log().await;
+        let [bound_j, bound_k] = <[Blake2b256Hash; 2]>::try_from(join_binds_on(&log, &data(&a)))
+            .expect("j and k each bind one member of the class of 5");
+        assert_eq!(
+            bound_k,
+            record_hash(&members[2]),
+            "k binds the persistent member"
+        );
+        let bound = members
+            .iter()
+            .position(|member| record_hash(member) == bound_j)
+            .expect("j binds a member of the class of 5");
+        // Each other member that is not persistent retires in canonical order, with the random
+        // state of the join. When j binds the persistent member, both other members retire.
+        let retired: &[usize] = match bound {
+            0 => &[1],
+            1 => &[0],
+            2 => &[0, 1],
+            other => panic!("the class of 5 has three members, not {other}"),
+        };
+        let expected: Vec<Consume> = retired
+            .iter()
+            .map(|index| {
+                retire_consume(
+                    &a,
+                    &op.body.random_state,
+                    None,
+                    &record_hash(&members[*index]),
+                )
+            })
+            .collect();
+        assert_eq!(
+            consumes_on(&log, &data(&a)),
+            expected,
+            "j binds the member {bound}, and the other members that are not persistent retire"
+        );
+        bound_fives.insert(bound);
+        let [bound_w] = <[Blake2b256Hash; 1]>::try_from(join_binds_on(&log, &data(&c)))
+            .expect("w binds one member of the class of 3");
+        let bound = threes
+            .iter()
+            .position(|member| record_hash(member) == bound_w)
+            .expect("w binds a member of the class of 3");
+        let other = match bound {
+            0 => 1,
+            1 => 0,
+            other => panic!("the class of 3 has two members, not {other}"),
+        };
+        assert_eq!(
+            consumes_on(&log, &data(&c)),
+            vec![retire_consume(
+                &c,
+                &incoming.data.random_state,
+                None,
+                &record_hash(&threes[other])
+            )],
+            "w binds the member {bound}, and the other member retires"
+        );
+        bound_threes.insert(bound);
+    }
+    assert_eq!(
+        bound_fives,
+        BTreeSet::from([0, 1, 2]),
+        "j binds each member of the class of 5 in some run"
+    );
+    assert_eq!(
+        bound_threes,
+        BTreeSet::from([0, 1]),
+        "w binds each member of the class of 3 in some run"
+    );
 }
 
+// Changed by decision 92: a failed join commits its anchor only, so the doc below replaces this
+// one.
+// /// A join over cells (F15): a cell holds one record and one waiter. A join over two cells parks
+// /// and fires. A second waiter on a cell fails with `CellOccupied` before it stages anything. A
+// /// join `[c, c]` needs two records. So it fires with the incoming record and the stored record,
+// /// because the incoming record reaches the head of a cell.
 /// A join over cells (F15): a cell holds one record and one waiter. A join over two cells parks
-/// and fires. A second waiter on a cell fails with `CellOccupied` before it stages anything. A
-/// join `[c, c]` needs two records. So it fires with the incoming record and the stored record,
-/// because the incoming record reaches the head of a cell.
+/// and fires. A second waiter on a cell fails with `CellOccupied`, and its transaction commits its
+/// anchor only (decision 92). A join `[c, c]` needs two records. So it fires with the incoming
+/// record and the stored record, because the incoming record reaches the head of a cell.
 #[tokio::test]
 async fn space_joins_cell_join() {
     let rig = Rig::new(SpaceInner::Cell).await;
@@ -884,7 +1256,12 @@ async fn space_joins_cell_join() {
             .await,
         Err(SpaceError::CellOccupied)
     );
-    assert!(rig.log().await.is_empty(), "the failed join stages nothing");
+    // Changed by decision 92: the failed join commits its anchor only.
+    // assert!(rig.log().await.is_empty(), "the failed join stages nothing");
+    assert!(
+        support::agent::logs_anchors_only(&rig.log().await, SPACE, 1),
+        "the failed join logs its anchor only"
+    );
     assert_eq!(rig.join_waiters(&[&a, &b]).await.len(), 1);
     assert!(rig.ok(put(&a, 1)).await.fires.is_empty());
     let outcome = rig.ok(put(&b, 2)).await;
@@ -1046,47 +1423,132 @@ async fn space_joins_pq_heads_only() {
     assert_eq!(rig.waiters(&e).await.len(), 1, "v3 still waits");
 }
 
-/// Decision 28: k binds on one channel bind k distinct records. A persistent record binds one
-/// bind only, so a join `[a, a]` over one persistent record parks, where HEAD would bind the
-/// record twice. A second record completes the join, and the persistent record stays.
+// Changed by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 1): a persistent entry
+// claims nothing (rule (a)), so a persistent record binds several positions of one join. The test
+// is renamed to `space_joins_persistent_record_binds_two_positions`. The test before:
+// /// Decision 28: k binds on one channel bind k distinct records. A persistent record binds one
+// /// bind only, so a join `[a, a]` over one persistent record parks, where HEAD would bind the
+// /// record twice. A second record completes the join, and the persistent record stays.
+// #[tokio::test]
+// async fn space_joins_repeated_channel_distinct_records() {
+//     let rig = Rig::new(SpaceInner::Bag).await;
+//     let a = ch("a");
+//     rig.ok(put_forever(&a, 1)).await;
+//     let parked = rig.ok(joined(join(&[(&a, any()), (&a, any())], "w"))).await;
+//     assert!(
+//         parked.fires.is_empty(),
+//         "one persistent record binds one bind only"
+//     );
+//     let outcome = rig.ok(put(&a, 2)).await;
+//     assert_eq!(fired(&outcome), vec![delivery("w", &[2, 1])]);
+//     assert_eq!(rig.records(&a).await, vec![(0, None, vec![int(1)], true)]);
+//
+//     let c = ch("c");
+//     rig.ok(put_forever(&c, 1)).await;
+//     rig.ok(put(&c, 3)).await;
+//     let three = rig
+//         .ok(joined(join(&[(&c, any()), (&c, any()), (&c, any())], "t")))
+//         .await;
+//     assert!(
+//         three.fires.is_empty(),
+//         "two records cannot bind three binds"
+//     );
+//     let outcome = rig.ok(put(&c, 4)).await;
+//     let [(name, values)] = <[(String, Vec<Par>); 1]>::try_from(fired(&outcome)).expect("one fire");
+//     assert_eq!(name, "t");
+//     assert_eq!(
+//         values[0],
+//         int(4),
+//         "the incoming record binds the first bind"
+//     );
+//     let mut rest = values[1..].to_vec();
+//     rest.sort_by_key(|value| format!("{value:?}"));
+//     let mut expected = vec![int(1), int(3)];
+//     expected.sort_by_key(|value| format!("{value:?}"));
+//     assert_eq!(rest, expected);
+//     assert_eq!(rig.records(&c).await, vec![(0, None, vec![int(1)], true)]);
+//
+//     // On a queue the window of two binds is the first two records.
+//     let queue = Rig::new(SpaceInner::Queue).await;
+//     let e = ch("e");
+//     for value in [1, 2, 3] {
+//         queue.ok(put(&e, value)).await;
+//     }
+//     let outcome = queue
+//         .ok(joined(join(&[(&e, any()), (&e, any())], "q")))
+//         .await;
+//     assert_eq!(fired(&outcome), vec![delivery("q", &[1, 2])]);
+//     assert_eq!(queue.values(&e).await, vec![3]);
+// }
+/// Decision 118, rule (a) of the claim rule (decision-c6.md section 3). A persistent record
+/// claims nothing, so it binds several positions of one join. A non-persistent record claims its
+/// record, so it binds one position (decision 28). A collection that a group names two or more
+/// times keeps the canonical order of DR-75 (E1, rule CR-8), so each part is deterministic.
+///
+/// * A join `[a, a]` over one persistent record 1 fires at its arrival with `[1, 1]`, and 1
+///   stays.
+/// * A join `[c, c, c]` over 3 and a persistent 1, in this canonical order (`ordered_sends`),
+///   binds 3 at the first position and 1 at the other two. Then c holds 1 only.
+/// * A join `[d, d, d]` over a persistent 1 and 3, in this canonical order, binds 1 at each
+///   position, the first entry of each E1 list. Then d holds 1 and 3.
+/// * On a queue the window of two binds is the first two records.
 #[tokio::test]
-async fn space_joins_repeated_channel_distinct_records() {
-    let rig = Rig::new(SpaceInner::Bag).await;
+async fn space_joins_persistent_record_binds_two_positions() {
+    let mut pair = PairRig::new(SpaceInner::Bag).await;
     let a = ch("a");
-    rig.ok(put_forever(&a, 1)).await;
-    let parked = rig.ok(joined(join(&[(&a, any()), (&a, any())], "w"))).await;
-    assert!(
-        parked.fires.is_empty(),
-        "one persistent record binds one bind only"
+    pair.ok(put_forever(&a, 1)).await;
+    let outcome = pair
+        .ok(joined(join(&[(&a, any()), (&a, any())], "w")))
+        .await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("w", &[1, 1])],
+        "the persistent 1 binds both binds at the arrival of the join"
     );
-    let outcome = rig.ok(put(&a, 2)).await;
-    assert_eq!(fired(&outcome), vec![delivery("w", &[2, 1])]);
-    assert_eq!(rig.records(&a).await, vec![(0, None, vec![int(1)], true)]);
+    assert_eq!(pair.rig.records(&a).await, vec![(
+        0,
+        None,
+        vec![int(1)],
+        true
+    )]);
 
     let c = ch("c");
-    rig.ok(put_forever(&c, 1)).await;
-    rig.ok(put(&c, 3)).await;
-    let three = rig
+    for send in ordered_sends(&c, &[(3, false), (1, true)]) {
+        pair.ok(SpaceOp::Produce(send)).await;
+    }
+    let outcome = pair
         .ok(joined(join(&[(&c, any()), (&c, any()), (&c, any())], "t")))
         .await;
-    assert!(
-        three.fires.is_empty(),
-        "two records cannot bind three binds"
-    );
-    let outcome = rig.ok(put(&c, 4)).await;
-    let [(name, values)] = <[(String, Vec<Par>); 1]>::try_from(fired(&outcome)).expect("one fire");
-    assert_eq!(name, "t");
     assert_eq!(
-        values[0],
-        int(4),
-        "the incoming record binds the first bind"
+        fired(&outcome),
+        vec![delivery("t", &[3, 1, 1])],
+        "3 claims its record at the first bind, and the persistent 1 binds the other two"
     );
-    let mut rest = values[1..].to_vec();
-    rest.sort_by_key(|value| format!("{value:?}"));
-    let mut expected = vec![int(1), int(3)];
-    expected.sort_by_key(|value| format!("{value:?}"));
-    assert_eq!(rest, expected);
-    assert_eq!(rig.records(&c).await, vec![(0, None, vec![int(1)], true)]);
+    assert_eq!(pair.rig.records(&c).await, vec![(
+        0,
+        None,
+        vec![int(1)],
+        true
+    )]);
+
+    let d = ch("d");
+    for send in ordered_sends(&d, &[(1, true), (3, false)]) {
+        pair.ok(SpaceOp::Produce(send)).await;
+    }
+    let outcome = pair
+        .ok(joined(join(&[(&d, any()), (&d, any()), (&d, any())], "u")))
+        .await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("u", &[1, 1, 1])],
+        "the persistent 1 is the first unclaimed entry of each E1 list"
+    );
+    assert_eq!(pair.rig.records(&d).await, vec![
+        (0, None, vec![int(1)], true),
+        (0, None, vec![int(3)], false)
+    ]);
+    // Retired by decision 90 (C6, step D): the replay over the rigged replay modes, which
+    // retire.
 
     // On a queue the window of two binds is the first two records.
     let queue = Rig::new(SpaceInner::Queue).await;
@@ -1101,19 +1563,77 @@ async fn space_joins_repeated_channel_distinct_records() {
     assert_eq!(queue.values(&e).await, vec![3]);
 }
 
-/// Decision 28 on the produce side (joins plan 3.5): the incoming datum binds exactly one
-/// position. The search tries each position of its collection in group order. On `[c, c]` with
-/// the patterns `any` and `9`, the incoming 9 first binds the first position, and then no stored
-/// record binds `9`. So the search retries the second position, where the stored 5 completes the
-/// join. Without the retry the 9 would be stored next to a waiter that it completes.
+// Changed by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 2): a persistent
+// incoming datum claims nothing, so it binds two positions of its collection. The doc before:
+// /// Decision 28 on the produce side (joins plan 3.5): the incoming datum binds exactly one
+// /// position. The search tries each position of its collection in group order. On `[c, c]` with
+// /// the patterns `any` and `9`, the incoming 9 first binds the first position, and then no stored
+// /// record binds `9`. So the search retries the second position, where the stored 5 completes the
+// /// join. Without the retry the 9 would be stored next to a waiter that it completes.
+/// Decision 28 on the produce side (joins plan 3.5), restated by decision 118 (rule (a),
+/// decision-c6.md section 6, item 2). The search pins the incoming datum at each position of its
+/// collection in group order (rule CR-10). On `[c, c]` with the patterns `any` and `9` over the
+/// stored 5:
+///
+/// * A non-persistent incoming 9 claims its record, so it binds one position. Pinned at the first
+///   position, it leaves no record for `9`. So the search retries the second position, where the
+///   stored 5 completes the join, and the fire is (5, 9). Without the retry the 9 would be stored
+///   next to a waiter that it completes.
+/// * A persistent incoming 9 claims nothing. Pinned at the first position, it also binds the
+///   second position through its incoming entry, first in the E1 list of its collection
+///   (decision-c6.md section 2, point 3). So the fire is (9, 9) with two incoming candidates on
+///   the produce channel. The stored 5 stays, and the 9 is stored after the fire.
 #[tokio::test]
 async fn space_joins_incoming_binds_once() {
+    // Changed by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 2): a persistent
+    // incoming 9 claims nothing, so it binds both positions of its collection, and each case
+    // replays its play. The body before:
+    // for persistent in [false, true] {
+    //     let rig = Rig::new(SpaceInner::Bag).await;
+    //     let c = ch("c");
+    //     let stored = send_salted(&c, 5, 1);
+    //     rig.ok(SpaceOp::Produce(stored.clone())).await;
+    //     let parked = rig
+    //         .ok(joined(join(&[(&c, any()), (&c, exactly(9))], "w")))
+    //         .await;
+    //     assert!(parked.fires.is_empty());
+    //     let incoming = ProduceOp {
+    //         persistent,
+    //         ..send_salted(&c, 9, 2)
+    //     };
+    //     let outcome = rig.ok(SpaceOp::Produce(incoming.clone())).await;
+    //     assert_eq!(fired(&outcome), vec![delivery("w", &[5])]);
+    //     let [fire] = outcome.fires.as_slice() else {
+    //         panic!("one fire");
+    //     };
+    //     let removed: Vec<ListParWithRandom> = fire
+    //         .results
+    //         .iter()
+    //         .map(|result| result.removed_datum.clone())
+    //         .collect();
+    //     assert_eq!(
+    //         removed,
+    //         vec![
+    //             record::wrap_datum(0, &stored.data),
+    //             record::wrap_datum(0, &incoming.data)
+    //         ],
+    //         "the stored 5 binds the first bind and the incoming 9 binds the second"
+    //     );
+    //     match persistent {
+    //         false => assert!(rig.values(&c).await.is_empty()),
+    //         true => assert_eq!(
+    //             rig.records(&c).await,
+    //             vec![(0, None, vec![int(9)], true)],
+    //             "a persistent incoming record is stored after the fire"
+    //         ),
+    //     }
+    // }
     for persistent in [false, true] {
-        let rig = Rig::new(SpaceInner::Bag).await;
+        let mut pair = PairRig::new(SpaceInner::Bag).await;
         let c = ch("c");
         let stored = send_salted(&c, 5, 1);
-        rig.ok(SpaceOp::Produce(stored.clone())).await;
-        let parked = rig
+        pair.ok(SpaceOp::Produce(stored.clone())).await;
+        let parked = pair
             .ok(joined(join(&[(&c, any()), (&c, exactly(9))], "w")))
             .await;
         assert!(parked.fires.is_empty());
@@ -1121,8 +1641,7 @@ async fn space_joins_incoming_binds_once() {
             persistent,
             ..send_salted(&c, 9, 2)
         };
-        let outcome = rig.ok(SpaceOp::Produce(incoming.clone())).await;
-        assert_eq!(fired(&outcome), vec![delivery("w", &[5])]);
+        let outcome = pair.ok(SpaceOp::Produce(incoming.clone())).await;
         let [fire] = outcome.fires.as_slice() else {
             panic!("one fire");
         };
@@ -1131,23 +1650,446 @@ async fn space_joins_incoming_binds_once() {
             .iter()
             .map(|result| result.removed_datum.clone())
             .collect();
+        let x = record::wrap_datum(0, &incoming.data);
+        let candidates_of_x = match persistent {
+            false => {
+                assert_eq!(fired(&outcome), vec![delivery("w", &[5])]);
+                assert_eq!(
+                    removed,
+                    vec![record::wrap_datum(0, &stored.data), x],
+                    "the retry pins the 9 at the second bind, and the stored 5 binds the first"
+                );
+                assert!(pair.rig.values(&c).await.is_empty());
+                1
+            }
+            true => {
+                assert_eq!(fired(&outcome), vec![delivery("w", &[9])]);
+                assert_eq!(
+                    removed,
+                    vec![x.clone(), x],
+                    "the persistent 9 binds both binds"
+                );
+                assert_eq!(
+                    pair.rig.records(&c).await,
+                    vec![
+                        (0, None, vec![int(5)], false),
+                        (0, None, vec![int(9)], true)
+                    ],
+                    "the stored 5 stays, and the persistent 9 is stored after the fire"
+                );
+                2
+            }
+        };
+        let log = pair.play_log().await;
+        let comm = log
+            .iter()
+            .find_map(|event| match event {
+                Event::Comm(comm) if comm.consume.channel_hashes.len() >= 2 => Some(comm),
+                _ => None,
+            })
+            .expect("the join COMM of the fire");
+        let channel_key = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&data(&c));
+        let x_hash = record_hash(&incoming);
         assert_eq!(
-            removed,
-            vec![
-                record::wrap_datum(0, &stored.data),
-                record::wrap_datum(0, &incoming.data)
-            ],
-            "the stored 5 binds the first bind and the incoming 9 binds the second"
+            comm.produces
+                .iter()
+                .filter(|produce| produce.hash == x_hash)
+                .count(),
+            candidates_of_x,
+            "the incoming candidates of the COMM (persistent: {persistent})"
         );
-        match persistent {
-            false => assert!(rig.values(&c).await.is_empty()),
-            true => assert_eq!(
-                rig.records(&c).await,
-                vec![(0, None, vec![int(9)], true)],
-                "a persistent incoming record is stored after the fire"
-            ),
-        }
+        assert!(
+            comm.produces
+                .iter()
+                .all(|produce| produce.channel_hash == channel_key),
+            "each candidate lies on the produce channel"
+        );
     }
+}
+
+// ─── 7.1: decision 118, rule (a) of the claim rule ───────────────────────────────────────────
+
+/// Added by decision 103 (decision 118, rule CR-9): the join COMMs of `log`, in log order.
+fn join_comms(log: &[Event]) -> Vec<&COMM> {
+    log.iter()
+        .filter_map(|event| match event {
+            Event::Comm(comm) if comm.consume.channel_hashes.len() >= 2 => Some(comm),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Added by decision 103 (decision 118, rule CR-9): `hashes`, sorted.
+fn sorted_hashes(mut hashes: Vec<Blake2b256Hash>) -> Vec<Blake2b256Hash> {
+    hashes.sort();
+    hashes
+}
+
+/// Added by decision 103 (decision 118, rule CR-9): the source hashes of the records that the
+/// COMM `comm` binds, one for each candidate, sorted.
+fn bound_sources(comm: &COMM) -> Vec<Blake2b256Hash> {
+    sorted_hashes(
+        comm.produces
+            .iter()
+            .map(|produce| produce.hash.clone())
+            .collect(),
+    )
+}
+
+/// Added by decision 103 (decision 118, rule CR-9): the source hashes of the records of the
+/// collection of `channel` in `rig`, sorted.
+async fn stored_sources(rig: &Rig, channel: &Par) -> Vec<Blake2b256Hash> {
+    sorted_hashes(
+        rig.host
+            .get_data(&data(channel))
+            .await
+            .into_iter()
+            .map(|datum| datum.source.hash)
+            .collect(),
+    )
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 5): a persistent incoming
+/// datum claims nothing, so it binds two positions of its collection in one COMM, on a bag and on
+/// a queue. The join `[c, c]` parks on the empty collection. The persistent send of 7 fires it
+/// with `[7, 7]`: the search pins 7 at the first position, and the incoming entry of 7, first in
+/// the E1 list of the second position, binds that position too. The COMM holds two incoming
+/// candidates, both on the produce channel. The collection keeps the persistent 7 once.
+#[tokio::test]
+async fn space_joins_persistent_incoming_binds_two_positions() {
+    for inner in [SpaceInner::Bag, SpaceInner::Queue] {
+        let mut pair = PairRig::new(inner).await;
+        let c = ch("c");
+        let parked = pair
+            .ok(joined(join(&[(&c, any()), (&c, any())], "w")))
+            .await;
+        assert!(
+            parked.fires.is_empty(),
+            "{inner:?}: the join parks on the empty collection"
+        );
+        let x = ProduceOp {
+            persistent: true,
+            ..send_salted(&c, 7, 1)
+        };
+        let outcome = pair.ok(SpaceOp::Produce(x)).await;
+        assert_eq!(
+            fired(&outcome),
+            vec![delivery("w", &[7, 7])],
+            "{inner:?}: the persistent 7 binds both binds"
+        );
+        let held: Vec<(Vec<Par>, bool)> = pair
+            .rig
+            .records(&c)
+            .await
+            .into_iter()
+            .map(|(_, _, payload, persistent)| (payload, persistent))
+            .collect();
+        assert_eq!(
+            held,
+            vec![(vec![int(7)], true)],
+            "{inner:?}: c holds the persistent 7 once"
+        );
+        assert!(
+            pair.rig.join_waiters(&[&c, &c]).await.is_empty(),
+            "{inner:?}: the join leaves"
+        );
+        let log = pair.play_log().await;
+        let [comm] = <[&COMM; 1]>::try_from(join_comms(&log)).expect("one join COMM");
+        let channel_key = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&data(&c));
+        let [first, second] = comm.produces.as_slice() else {
+            panic!("{inner:?}: the COMM binds two candidates");
+        };
+        assert_eq!(
+            first, second,
+            "{inner:?}: both candidates are the persistent 7"
+        );
+        assert!(
+            first.persistent && first.channel_hash == channel_key,
+            "{inner:?}: the candidates are the persistent produce on c"
+        );
+    }
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, C6.5, decision-c6 §6 item 6): a peek fire
+/// sends a persistent incoming datum again once, at its pinned position. The peek join `[c, c]`
+/// parks on the empty bag. The persistent send of 7 fires it with `[7, 7]`. The datum is stored
+/// nowhere, so the fire sends it again (decision 30), once, although it binds two positions. So c
+/// holds the persistent 7 once.
+#[tokio::test]
+async fn space_joins_peek_persistent_incoming_is_sent_once() {
+    let mut pair = PairRig::new(SpaceInner::Bag).await;
+    let c = ch("c");
+    let parked = pair
+        .ok(joined(peeking(join(&[(&c, any()), (&c, any())], "p"))))
+        .await;
+    assert!(
+        parked.fires.is_empty(),
+        "the peek join parks on the empty bag"
+    );
+    let x = ProduceOp {
+        persistent: true,
+        ..send_salted(&c, 7, 1)
+    };
+    let outcome = pair.ok(SpaceOp::Produce(x.clone())).await;
+    assert_eq!(fired(&outcome), vec![delivery("p", &[7, 7])]);
+    assert_eq!(
+        pair.rig.records(&c).await,
+        vec![(0, None, vec![int(7)], true)],
+        "the peek fire sends the persistent 7 again once"
+    );
+    assert_eq!(
+        stored_sources(&pair.rig, &c).await,
+        vec![record_hash(&x)],
+        "c holds the record of the send itself"
+    );
+    assert!(pair.rig.join_waiters(&[&c, &c]).await.is_empty());
+    let log = pair.play_log().await;
+    let [comm] = <[&COMM; 1]>::try_from(join_comms(&log)).expect("one join COMM");
+    assert_eq!(
+        bound_sources(comm),
+        vec![record_hash(&x), record_hash(&x)],
+        "the peek fire binds the persistent 7 at both binds"
+    );
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 7): a set class with a
+/// persistent member binds two positions of one join. The class 1 holds a1 and the persistent
+/// a2, in this canonical order.
+///
+/// * Consume side: the join `[s, s]` fires at its arrival with a1 and a2. The non-persistent a1
+///   claims its record and its class. The persistent a2 claims nothing, and its class has a
+///   persistent member, so a2 binds the second bind (rule (a)). Then s holds a2 only, with no
+///   `K_retire`.
+/// * The peek variant: the peek join binds a1 and a2 too. The fire sends a1 again once (Rule E),
+///   and it sends no persistent record again. So s holds a1 and a2, each once.
+/// * Produce side: the join W on `[s, s, t]` parks over a2, because t is empty. The send of a1
+///   does not fire W, so a1 is stored. The send of 5 on t then fires W with a1, a2 and 5. The
+///   commit check FR-1' passes with no `NotInView`, because a1 binds once.
+#[tokio::test]
+async fn space_joins_set_persistent_class_binds_twice() {
+    let s = ch("s");
+    let members = ordered_sends(&s, &[(1, false), (1, true)]);
+    let (a1, a2) = (&members[0], &members[1]);
+    let class_pair = sorted_hashes(vec![record_hash(a1), record_hash(a2)]);
+
+    // The consume side.
+    let mut pair = PairRig::new(SpaceInner::Set).await;
+    for member in &members {
+        pair.ok(SpaceOp::Produce(member.clone())).await;
+    }
+    let outcome = pair
+        .ok(joined(join(&[(&s, any()), (&s, any())], "w")))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("w", &[1, 1])]);
+    assert_eq!(
+        stored_sources(&pair.rig, &s).await,
+        vec![record_hash(a2)],
+        "a1 leaves, and the persistent a2 stays"
+    );
+    let log = pair.play_log().await;
+    let bound: Vec<Vec<Blake2b256Hash>> = join_comms(&log).into_iter().map(bound_sources).collect();
+    assert_eq!(bound, vec![class_pair.clone()], "the COMM binds a1 and a2");
+    assert!(
+        consumes_on(&log, &data(&s)).is_empty(),
+        "the fire makes no K_retire"
+    );
+
+    // The peek variant.
+    let mut pair = PairRig::new(SpaceInner::Set).await;
+    for member in &members {
+        pair.ok(SpaceOp::Produce(member.clone())).await;
+    }
+    let outcome = pair
+        .ok(joined(peeking(join(&[(&s, any()), (&s, any())], "p"))))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("p", &[1, 1])]);
+    assert_eq!(
+        stored_sources(&pair.rig, &s).await,
+        class_pair,
+        "the peek fire sends a1 again once, so s holds a1 and a2"
+    );
+    let log = pair.play_log().await;
+    let bound: Vec<Vec<Blake2b256Hash>> = join_comms(&log).into_iter().map(bound_sources).collect();
+    assert_eq!(
+        bound,
+        vec![class_pair.clone()],
+        "the peek COMM binds a1 and a2"
+    );
+
+    // The produce side.
+    let t = ch("t");
+    let five = send_salted(&t, 5, 1);
+    let mut pair = PairRig::new(SpaceInner::Set).await;
+    pair.ok(SpaceOp::Produce(a2.clone())).await;
+    let parked = pair
+        .ok(joined(join(&[(&s, any()), (&s, any()), (&t, any())], "w")))
+        .await;
+    assert!(
+        parked.fires.is_empty(),
+        "W parks over a2, because t is empty"
+    );
+    let stored = pair.ok(SpaceOp::Produce(a1.clone())).await;
+    assert!(stored.fires.is_empty(), "a1 is stored, because t is empty");
+    let outcome = pair.ok(SpaceOp::Produce(five.clone())).await;
+    assert_eq!(fired(&outcome), vec![delivery("w", &[1, 1, 5])]);
+    assert_eq!(
+        stored_sources(&pair.rig, &s).await,
+        vec![record_hash(a2)],
+        "a1 leaves, and the persistent a2 stays"
+    );
+    assert!(pair.rig.values(&t).await.is_empty());
+    assert!(pair.rig.join_waiters(&[&s, &s, &t]).await.is_empty());
+    let log = pair.play_log().await;
+    let bound: Vec<Vec<Blake2b256Hash>> = join_comms(&log).into_iter().map(bound_sources).collect();
+    assert_eq!(
+        bound,
+        vec![sorted_hashes(vec![
+            record_hash(a1),
+            record_hash(a2),
+            record_hash(&five)
+        ])],
+        "the COMM of the send of 5 binds a1, a2 and 5"
+    );
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, decision-c6 §3 row 2 and §6 item 8): the
+/// non-persistent members of a free set class bind before its persistent member. The class 1
+/// holds a1, a2 and the persistent a3, in this canonical order. The join `[s, s]` binds a1 at the
+/// first bind, and a1 claims its record and its class. The class has the persistent member a3,
+/// so the claimed class does not block a2, and a2 binds the second bind. The fire makes no
+/// `K_retire`, because the class has no other member that is not persistent. Then s holds a3, and
+/// a second join `[s, s]` binds a3 at both binds.
+#[tokio::test]
+async fn space_joins_set_free_class_binds_members_before_the_persistent_member() {
+    let s = ch("s");
+    let members = ordered_sends(&s, &[(1, false), (1, false), (1, true)]);
+    let mut pair = PairRig::new(SpaceInner::Set).await;
+    for member in &members {
+        pair.ok(SpaceOp::Produce(member.clone())).await;
+    }
+    let first = pair
+        .ok(joined(join(&[(&s, any()), (&s, any())], "w")))
+        .await;
+    assert_eq!(fired(&first), vec![delivery("w", &[1, 1])]);
+    assert_eq!(
+        stored_sources(&pair.rig, &s).await,
+        vec![record_hash(&members[2])],
+        "a1 and a2 leave, and the persistent a3 stays"
+    );
+    let second = pair
+        .ok(joined(join(&[(&s, any()), (&s, any())], "v")))
+        .await;
+    assert_eq!(fired(&second), vec![delivery("v", &[1, 1])]);
+    assert_eq!(
+        stored_sources(&pair.rig, &s).await,
+        vec![record_hash(&members[2])],
+        "the persistent a3 stays"
+    );
+    let log = pair.play_log().await;
+    let bound: Vec<Vec<Blake2b256Hash>> = join_comms(&log).into_iter().map(bound_sources).collect();
+    assert_eq!(
+        bound,
+        vec![
+            sorted_hashes(vec![record_hash(&members[0]), record_hash(&members[1])]),
+            vec![record_hash(&members[2]), record_hash(&members[2])]
+        ],
+        "the first join binds a1 and a2, and the second binds a3 twice"
+    );
+    assert!(
+        consumes_on(&log, &data(&s)).is_empty(),
+        "no fire makes a K_retire"
+    );
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 9): on a queue, a cascade
+/// gives a waiter its turn, and that waiter binds one persistent record at two positions. The
+/// queue holds the persistent 1. The join W0 `[exactly(1), exactly(5)]` reaches the head and
+/// parks, because the window `[1!!]` has no 5. The join W `[exactly(1), exactly(1)]` parks behind
+/// W0. The send of 5 fires W0 with `[1, 5]`. Then the cascade gives W the window `[1!!]`. The
+/// persistent 1 claims nothing, so W fires with `[1, 1]`. The queue keeps only the persistent 1.
+#[tokio::test]
+async fn space_joins_cascade_binds_a_persistent_record_at_two_positions() {
+    let q = ch("q");
+    let mut pair = PairRig::new(SpaceInner::Queue).await;
+    let stored = pair.ok(put_forever(&q, 1)).await;
+    assert!(
+        stored.fires.is_empty(),
+        "no waiter, so the persistent 1 is stored"
+    );
+    let head = pair
+        .ok(joined(join(&[(&q, exactly(1)), (&q, exactly(5))], "w0")))
+        .await;
+    assert!(
+        head.fires.is_empty(),
+        "the window [1!!] has no 5, so W0 parks at the head"
+    );
+    let behind = pair
+        .ok(joined(join(&[(&q, exactly(1)), (&q, exactly(1))], "w")))
+        .await;
+    assert!(behind.fires.is_empty(), "W parks behind W0");
+    let [one] = <[Blake2b256Hash; 1]>::try_from(stored_sources(&pair.rig, &q).await)
+        .expect("the queue holds the persistent 1");
+    let outcome = pair.ok(put(&q, 5)).await;
+    // The patterns `exactly` capture nothing, so the records that each fire removes give the
+    // value of each position.
+    let bound: Vec<(String, Vec<Vec<Par>>)> = fired(&outcome)
+        .into_iter()
+        .zip(&outcome.fires)
+        .map(|((name, _), fire)| {
+            let values = fire
+                .results
+                .iter()
+                .map(|result| {
+                    record::unwrap_datum(&result.removed_datum)
+                        .expect("a queue fire removes a datum record")
+                        .datum
+                        .pars
+                })
+                .collect();
+            (name, values)
+        })
+        .collect();
+    assert_eq!(
+        bound,
+        vec![
+            ("w0".to_string(), vec![vec![int(1)], vec![int(5)]]),
+            ("w".to_string(), vec![vec![int(1)], vec![int(1)]]),
+        ],
+        "the send of 5 fires W0 with [1, 5], and the cascade then fires W with [1, 1]"
+    );
+    let held: Vec<(Vec<Par>, bool)> = pair
+        .rig
+        .records(&q)
+        .await
+        .into_iter()
+        .map(|(_, _, payload, persistent)| (payload, persistent))
+        .collect();
+    assert_eq!(
+        held,
+        vec![(vec![int(1)], true)],
+        "the queue holds only the persistent 1"
+    );
+    let log = pair.play_log().await;
+    let [first, second] = <[&COMM; 2]>::try_from(join_comms(&log)).expect("two join COMMs");
+    // A COMM sorts its produces by channel and source hash, so the checks below do not read the
+    // positions from the order of the produces.
+    let (bound_one, bound_five): (Vec<&Produce>, Vec<&Produce>) = first
+        .produces
+        .iter()
+        .partition(|produce| produce.hash == one);
+    assert!(
+        matches!(bound_one.as_slice(), [produce] if produce.persistent),
+        "the COMM of W0 binds the persistent 1 once"
+    );
+    assert!(
+        matches!(bound_five.as_slice(), [produce] if !produce.persistent),
+        "the COMM of W0 binds the 5 in flight once"
+    );
+    assert_eq!(
+        bound_sources(second),
+        vec![one.clone(), one],
+        "the COMM of W binds the persistent 1 at both positions"
+    );
 }
 
 /// The continuation record of version 2 (joins plan 2.2). A join waiter holds one slot for each
@@ -1304,10 +2246,22 @@ async fn space_joins_bind_order_restored_for_body() {
     );
 }
 
+// Changed by decision 102 (plan v4 C5.3, rule CR-1) and decision 124 (LP-1, L5): play picks the
+// order of the join waiters of an offer at random, so the doc below replaces this one.
+// /// Decision 37 in joins (joins plan 3.4, 4.4, 4.5): the guard is checked once, after every bind
+// /// matched, over the values in bind order. On the consume side a refusal parks. On the produce
+// /// side a refusal of a bag moves on to the next waiter, and the head of a queue blocks. A counting
+// /// matcher shows one guard check for each attempt.
 /// Decision 37 in joins (joins plan 3.4, 4.4, 4.5): the guard is checked once, after every bind
 /// matched, over the values in bind order. On the consume side a refusal parks. On the produce
 /// side a refusal of a bag moves on to the next waiter, and the head of a queue blocks. A counting
 /// matcher shows one guard check for each attempt.
+///
+/// Play picks the order of the join waiters of an offer at random (decision 102, rule CR-1, and
+/// decision 124, LP-1). So the part of the bag waiters `w1` and `w2` runs [`PICK_RUNS`] times,
+/// each run on a fresh rig. In each run `w2` fires and `w1` stays. The count is 2 when `w1` comes
+/// first and refuses, and 1 when `w2` comes first. Over the runs, both counts occur. One of them
+/// is missing with a chance of `2^-63`.
 #[tokio::test]
 async fn space_joins_guard_checked_once_after_all_binds() {
     let counting = CountingMatcher::default();
@@ -1356,30 +2310,78 @@ async fn space_joins_guard_checked_once_after_all_binds() {
         ),
         guarded(join(&[(&c, any()), (&d, any())], "w2"), first_greater()),
     ]);
-    for op in &ordered {
-        assert!(rig.ok(joined(op.clone())).await.fires.is_empty());
+    // Changed by decision 102 (plan v4 C5.3, rule CR-1) and decision 124 (LP-1, L5): play picks
+    // the order of w1 and w2 at random. So this part runs PICK_RUNS times, each run on a fresh
+    // counting rig and a fresh play and replay pair, and checks the allowed set and a coverage
+    // set. The body before:
+    // for op in &ordered {
+    //     assert!(rig.ok(joined(op.clone())).await.fires.is_empty());
+    // }
+    // let before = counting.count();
+    // assert!(rig.ok(put(&d, 1)).await.fires.is_empty());
+    // assert_eq!(
+    //     counting.count(),
+    //     before,
+    //     "no search completes, so no guard runs"
+    // );
+    // let outcome = rig.ok(put(&c, 3)).await;
+    // assert_eq!(fired(&outcome), vec![delivery("w2", &[3, 1])]);
+    // assert_eq!(
+    //     counting.count() - before,
+    //     2,
+    //     "w1 refuses and w2 admits: one check for each attempt"
+    // );
+    // let left: Vec<String> = rig
+    //     .join_waiters(&[&c, &d])
+    //     .await
+    //     .into_iter()
+    //     .map(|row| row.name)
+    //     .collect();
+    // assert_eq!(left, vec!["w1".to_string()]);
+    let mut counts = BTreeSet::<usize>::new();
+    for _ in 0..PICK_RUNS {
+        let bag_counting = CountingMatcher::default();
+        let bag = Rig::over(
+            play_with(bag_counting.clone()).await,
+            SpaceInner::Bag,
+            &budget(),
+        )
+        .await;
+        for op in &ordered {
+            assert!(bag.ok(joined(op.clone())).await.fires.is_empty());
+        }
+        let before = bag_counting.count();
+        assert!(bag.ok(put(&d, 1)).await.fires.is_empty());
+        assert_eq!(
+            bag_counting.count(),
+            before,
+            "no search completes, so no guard runs"
+        );
+        let outcome = bag.ok(put(&c, 3)).await;
+        assert_eq!(fired(&outcome), vec![delivery("w2", &[3, 1])]);
+        let checks = bag_counting.count() - before;
+        assert!(
+            matches!(checks, 1 | 2),
+            "one check for each attempt: w2 alone, or w1 and then w2, not {checks}"
+        );
+        counts.insert(checks);
+        let left: Vec<String> = bag
+            .join_waiters(&[&c, &d])
+            .await
+            .into_iter()
+            .map(|row| row.name)
+            .collect();
+        assert_eq!(left, vec!["w1".to_string()]);
+
+        // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+        // which retire (decision 125). `space_joins_replay_equal`,
+        // `space_pick_helpers_put_the_named_candidates_first_in_replay`.
     }
-    let before = counting.count();
-    assert!(rig.ok(put(&d, 1)).await.fires.is_empty());
     assert_eq!(
-        counting.count(),
-        before,
-        "no search completes, so no guard runs"
+        counts,
+        BTreeSet::from([1, 2]),
+        "w1 comes first in some runs, and w2 in the others"
     );
-    let outcome = rig.ok(put(&c, 3)).await;
-    assert_eq!(fired(&outcome), vec![delivery("w2", &[3, 1])]);
-    assert_eq!(
-        counting.count() - before,
-        2,
-        "w1 refuses and w2 admits: one check for each attempt"
-    );
-    let left: Vec<String> = rig
-        .join_waiters(&[&c, &d])
-        .await
-        .into_iter()
-        .map(|row| row.name)
-        .collect();
-    assert_eq!(left, vec!["w1".to_string()]);
 
     let queue_counting = CountingMatcher::default();
     let queue = Rig::over(
@@ -1774,58 +2776,88 @@ async fn space_joins_default_and_space_join_aborts() {
 
 // ─── 7.1: merge check #3 ─────────────────────────────────────────────────────────────────────
 
-/// A play runtime with its history, as a validator evaluates the deploys of a block.
+// Changed by decision 90 (C6, decision 69): the node runs native deploys through the native
+// session, and native replay certifies each deploy (`support::session`). The legacy node
+// follows.
+//
+// /// A play runtime with its history, as a validator evaluates the deploys of a block.
+// struct MergeNode {
+//     play: rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
+//     history: rholang::rust::interpreter::rho_runtime::RhoHistoryRepository,
+// }
+//
+// impl MergeNode {
+//     /// A node over a fresh in-memory store, with a funded deploy signature.
+//     async fn new() -> MergeNode {
+//         let mut manager = InMemoryStoreManager::new();
+//         let stores = manager
+//             .r_space_stores()
+//             .await
+//             .expect("create the in-memory RSpace stores");
+//         let (play, _replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
+//         play.cost.set_deploy_signature_funded(
+//             support::session::DEPLOY_SIGNATURE,
+//             Sig::Ground(support::session::FUNDING_SIGNATURE.to_vec()),
+//         );
+//         MergeNode { play, history }
+//     }
+//
+//     /// Evaluates one deploy that must succeed, and returns its event log.
+//     async fn run(&mut self, source: &str, label: &str) -> Vec<Event> {
+//         let result = self
+//             .play
+//             .evaluate(
+//                 source,
+//                 Cost::create(support::session::PHLO, label.to_owned()),
+//                 HashMap::new(),
+//                 Blake2b512Random::create_from_bytes(label.as_bytes()),
+//             )
+//             .await
+//             .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+//         assert!(
+//             result.errors.is_empty(),
+//             "{label}: the deploy fails: {:?}",
+//             result.errors
+//         );
+//         self.play.take_event_log().await
+//     }
+//
+//     /// Checkpoints the play runtime and returns the root.
+//     async fn checkpoint(&mut self) -> Blake2b256Hash { self.play.create_checkpoint().await.root }
+//
+//     /// Resets the play runtime to `root`.
+//     async fn reset(&mut self, root: &Blake2b256Hash) {
+//         self.play
+//             .reset(root)
+//             .await
+//             .expect("reset the play runtime to a checkpoint root");
+//     }
+
+/// A native session with its history, as a validator evaluates the deploys of a block
+/// (decision 90, C6).
 struct MergeNode {
-    play: rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
+    session: Session,
     history: rholang::rust::interpreter::rho_runtime::RhoHistoryRepository,
 }
 
 impl MergeNode {
     /// A node over a fresh in-memory store, with a funded deploy signature.
     async fn new() -> MergeNode {
-        let mut manager = InMemoryStoreManager::new();
-        let stores = manager
-            .r_space_stores()
-            .await
-            .expect("create the in-memory RSpace stores");
-        let (play, _replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
-        play.cost.set_deploy_signature_funded(
-            support::session::DEPLOY_SIGNATURE,
-            Sig::Ground(support::session::FUNDING_SIGNATURE.to_vec()),
-        );
-        MergeNode { play, history }
+        let session = Session::new().await;
+        let history = session.history();
+        MergeNode { session, history }
     }
 
-    /// Evaluates one deploy that must succeed, and returns its event log.
+    /// Plays one deploy that must succeed, certifies it, and returns its event log.
     async fn run(&mut self, source: &str, label: &str) -> Vec<Event> {
-        let result = self
-            .play
-            .evaluate(
-                source,
-                Cost::create(support::session::PHLO, label.to_owned()),
-                HashMap::new(),
-                Blake2b512Random::create_from_bytes(label.as_bytes()),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
-        assert!(
-            result.errors.is_empty(),
-            "{label}: the deploy fails: {:?}",
-            result.errors
-        );
-        self.play.take_event_log().await
+        self.session.run(source, label).await.log
     }
 
-    /// Checkpoints the play runtime and returns the root.
-    async fn checkpoint(&mut self) -> Blake2b256Hash { self.play.create_checkpoint().await.root }
+    /// Checkpoints the runtime and returns the root.
+    async fn checkpoint(&mut self) -> Blake2b256Hash { self.session.checkpoint().await }
 
-    /// Resets the play runtime to `root`.
-    async fn reset(&mut self, root: &Blake2b256Hash) {
-        self.play
-            .reset(root)
-            .await
-            .expect("reset the play runtime to a checkpoint root");
-    }
+    /// Resets the runtime to `root`.
+    async fn reset(&mut self, root: &Blake2b256Hash) { self.session.reset(root).await }
 
     /// The merge index of a deploy log over the pre-state `root`, with the pre-state closures of
     /// `block_index.rs::create_event_log_index`.
@@ -1852,15 +2884,19 @@ impl MergeNode {
         )
     }
 
+    // Changed by decision 90 (C6): the session reads the data. The legacy reader follows.
+    //
+    // /// The pars of each datum on the public channel `channel`.
+    // async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
+    //     self.play
+    //         .get_data(&string(channel))
+    //         .await
+    //         .into_iter()
+    //         .map(|datum| datum.a.pars)
+    //         .collect()
+    // }
     /// The pars of each datum on the public channel `channel`.
-    async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
-        self.play
-            .get_data(&string(channel))
-            .await
-            .into_iter()
-            .map(|datum| datum.a.pars)
-            .collect()
-    }
+    async fn values(&self, channel: &str) -> Vec<Vec<Par>> { self.session.values(channel).await }
 }
 
 /// The source of the deploy that creates a space with the factory `urn` and three names of it.
@@ -2041,16 +3077,93 @@ async fn recorded(
     )
 }
 
-/// "Plan, then lock" (joins plan 4.1). An operation can have a closure that is larger than its
-/// own collections. Then it drops its first transaction, which stages nothing, and begins one
-/// second transaction over the lock keys of the closure. It commits once. A join that a second
-/// join reaches is in the closure. Every staged channel lies in the lock keys of its transaction
-/// (L1). A join whose closure is its own collections begins once, as a collection without a join
-/// does.
+// Disabled by decision 94: two-phase locking replaced the escalation. An operation takes phase
+// B over its scope keys in its one transaction, so no first transaction is dropped and no second
+// one begins. `space_joins_phase_b_locks_the_closure_once` below replaces this test.
+// /// "Plan, then lock" (joins plan 4.1). An operation can have a closure that is larger than its
+// /// own collections. Then it drops its first transaction, which stages nothing, and begins one
+// /// second transaction over the lock keys of the closure. It commits once. A join that a second
+// /// join reaches is in the closure. Every staged channel lies in the lock keys of its transaction
+// /// (L1). A join whose closure is its own collections begins once, as a collection without a join
+// /// does.
+// #[tokio::test]
+// async fn space_joins_escalation_relocks_once() {
+//     let (rig, record) = Rig::recording(SpaceInner::Queue, &budget()).await;
+//     let (a, b, c, d) = (ch("a"), ch("b"), ch("c"), ch("d"));
+//     let (begins, staged, commits) = recorded(
+//         &rig,
+//         &record,
+//         joined(join(&[(&a, any()), (&b, exactly(5))], "w1")),
+//     )
+//     .await;
+//     assert_eq!(
+//         begins,
+//         vec![closure_keys(&[&a, &b])],
+//         "a closure of its own binds"
+//     );
+//     assert_eq!(commits, vec![0]);
+//     assert!(staged.iter().all(|(txn, _)| *txn == 0));
+//
+//     let (begins, staged, commits) = recorded(
+//         &rig,
+//         &record,
+//         joined(join(&[(&b, exactly(6)), (&c, any())], "w2")),
+//     )
+//     .await;
+//     assert_eq!(begins, vec![
+//         closure_keys(&[&b, &c]),
+//         closure_keys(&[&a, &b, &c])
+//     ]);
+//     assert_eq!(commits, vec![1], "one commit, on the second transaction");
+//     assert!(
+//         staged.iter().all(|(txn, _)| *txn == 1),
+//         "the first transaction stages nothing"
+//     );
+//
+//     let (begins, staged, commits) = recorded(&rig, &record, put(&a, 1)).await;
+//     assert_eq!(begins, vec![
+//         collection_keys(&a),
+//         closure_keys(&[&a, &b, &c])
+//     ]);
+//     assert_eq!(commits, vec![1]);
+//     assert!(!staged.is_empty());
+//     for (txn, channels) in &staged {
+//         assert_eq!(*txn, 1);
+//         for channel in channels {
+//             assert!(
+//                 begins[1].contains(channel),
+//                 "L1: a staged channel lies in the lock keys"
+//             );
+//         }
+//     }
+//     assert!(
+//         begins[1].contains(&data(&c)),
+//         "the join of b and c is reached through the join of a and b"
+//     );
+//
+//     let (begins, _, commits) = recorded(&rig, &record, put(&d, 1)).await;
+//     assert_eq!(begins, vec![collection_keys(&d)], "no join, no escalation");
+//     assert_eq!(commits, vec![0]);
+// }
+
+/// Added by decision 94: "plan, then lock" in two phases (joins plan 4.1, `JoinScopeLock.tla`).
+/// An operation takes phase A over its own keys and classifies its route under phase A. Then it
+/// takes phase B over its own keys and the keys of its join scope, in one sorted call of the same
+/// transaction. The record of a begin holds the keys of both phases. So an operation begins once
+/// and commits once, also when its closure is larger than its own collections. A join that a
+/// second join reaches is in the closure. Every staged channel lies in the lock keys of its
+/// transaction (L1). An operation without a join takes phase B over no scope key. This test
+/// replaces `space_joins_escalation_relocks_once`.
 #[tokio::test]
-async fn space_joins_escalation_relocks_once() {
+async fn space_joins_phase_b_locks_the_closure_once() {
     let (rig, record) = Rig::recording(SpaceInner::Queue, &budget()).await;
     let (a, b, c, d) = (ch("a"), ch("b"), ch("c"), ch("d"));
+    let both_phases = |own: Vec<Par>, scope: Vec<Par>| {
+        let mut keys = Vec::with_capacity(own.len() + scope.len());
+        keys.extend(own);
+        keys.extend(scope);
+        keys
+    };
     let (begins, staged, commits) = recorded(
         &rig,
         &record,
@@ -2059,8 +3172,11 @@ async fn space_joins_escalation_relocks_once() {
     .await;
     assert_eq!(
         begins,
-        vec![closure_keys(&[&a, &b])],
-        "a closure of its own binds"
+        vec![both_phases(
+            closure_keys(&[&a, &b]),
+            closure_keys(&[&a, &b])
+        )],
+        "a closure of its own binds, and phase B takes its own scope"
     );
     assert_eq!(commits, vec![0]);
     assert!(staged.iter().all(|(txn, _)| *txn == 0));
@@ -2071,45 +3187,52 @@ async fn space_joins_escalation_relocks_once() {
         joined(join(&[(&b, exactly(6)), (&c, any())], "w2")),
     )
     .await;
-    assert_eq!(begins, vec![
-        closure_keys(&[&b, &c]),
-        closure_keys(&[&a, &b, &c])
-    ]);
-    assert_eq!(commits, vec![1], "one commit, on the second transaction");
-    assert!(
-        staged.iter().all(|(txn, _)| *txn == 1),
-        "the first transaction stages nothing"
+    assert_eq!(
+        begins,
+        vec![both_phases(
+            closure_keys(&[&b, &c]),
+            closure_keys(&[&a, &b, &c])
+        )],
+        "one begin, whose phase B takes the closure"
     );
+    assert_eq!(commits, vec![0], "one commit, on the one transaction");
+    assert!(staged.iter().all(|(txn, _)| *txn == 0));
 
     let (begins, staged, commits) = recorded(&rig, &record, put(&a, 1)).await;
-    assert_eq!(begins, vec![
+    assert_eq!(begins, vec![both_phases(
         collection_keys(&a),
         closure_keys(&[&a, &b, &c])
-    ]);
-    assert_eq!(commits, vec![1]);
+    )]);
+    assert_eq!(commits, vec![0]);
     assert!(!staged.is_empty());
     for (txn, channels) in &staged {
-        assert_eq!(*txn, 1);
+        assert_eq!(*txn, 0);
         for channel in channels {
             assert!(
-                begins[1].contains(channel),
+                begins[0].contains(channel),
                 "L1: a staged channel lies in the lock keys"
             );
         }
     }
     assert!(
-        begins[1].contains(&data(&c)),
+        begins[0].contains(&data(&c)),
         "the join of b and c is reached through the join of a and b"
     );
 
     let (begins, _, commits) = recorded(&rig, &record, put(&d, 1)).await;
-    assert_eq!(begins, vec![collection_keys(&d)], "no join, no escalation");
+    assert_eq!(begins, vec![collection_keys(&d)], "no join, no scope key");
     assert_eq!(commits, vec![0]);
 }
 
-/// The scripts of the replay and restart tests for `inner`: joins that park, fire on both
-/// sides, peek, cascade, persist and refuse. A cell fails some operations with `CellOccupied`,
-/// and a failed operation replays as the same failure.
+// Changed by decision 90 (C6, step D): the replay test no longer runs these scripts. The text
+// before:
+// ```
+// /// The scripts of the replay and restart tests for `inner`: joins that park, fire on both
+// /// sides, peek, cascade, persist and refuse. A cell fails some operations with `CellOccupied`,
+// /// and a failed operation replays as the same failure.
+// ```
+/// The scripts of the restart test for `inner`: joins that park, fire on both
+/// sides, peek, cascade, persist and refuse. A cell fails some operations with `CellOccupied`.
 fn join_script(inner: SpaceInner) -> Vec<SpaceOp> {
     let (a, b, c) = (ch("a"), ch("b"), ch("c"));
     let send = |channel: &Par, value: i64| match inner {
@@ -2159,133 +3282,204 @@ async fn run_script(rig: &Rig, script: &[SpaceOp]) -> Vec<Result<SpaceOutcome, S
     results
 }
 
-/// Replay stages the transactions of play (decision 36, joins plan 4.9 "Determinism"). For each
-/// discipline, the join script replays with the checkpoint log of an undrained play run. The
-/// results, the roots, the legacy logs and the phlo of the two budgets are equal. Every recorded
-/// COMM is paired. The capped queue of the cap tests replays too, with its settle job. A replay
-/// without the log diverges at the first COMM.
-#[tokio::test]
-async fn space_joins_replay_equal() {
-    for inner in INNERS {
-        replay_case(inner, join_script(inner)).await;
+// Changed by decision 92: every start of a play row names the space counter `S(sid)` as its last
+// join group, and the replay of `SpaceMode::Replay` names no such group.
+// /// Replay stages the transactions of play (decision 36, joins plan 4.9 "Determinism"). For each
+// /// discipline, the join script replays with the checkpoint log of an undrained play run. The
+// /// results, the roots, the legacy logs and the phlo of the two budgets are equal. Every recorded
+// /// COMM is paired. The capped queue of the cap tests replays too, with its settle job. A replay
+// /// without the log diverges at the first COMM.
+// Changed by decision 90 (C6, step D): the test replayed over the rigged replay modes, which
+// retire, so it runs as a native deploy (decision 125). The capped queue case of the old test has
+// its native successor in the capped chain of `pathmap_replay_equal` (the settle job and the
+// restored offer), and the replay without the log has its native successor in the cut journal of
+// that test. The text before:
+// ```
+// /// Replay stages the transactions of play (decision 36, joins plan 4.9 "Determinism"). For each
+// /// discipline, the join script replays with the checkpoint log of an undrained play run. The
+// /// results, the roots, the legacy logs and the phlo of the two budgets are equal. Every recorded
+// /// COMM is paired. The capped queue of the cap tests replays too, with its settle job. A replay
+// /// without the log diverges at the first COMM.
+// #[tokio::test]
+// async fn space_joins_replay_equal() {
+//     for inner in INNERS {
+//         replay_case(inner, join_script(inner)).await;
+//     }
+//     let (q1, q2) = (ch("q1"), ch("q2"));
+//     let mut capped = Vec::new();
+//     for value in 0..FIRE_ROUND_CAP + 2 {
+//         capped.push(put(&q2, i64::try_from(value).expect("a small value")));
+//     }
+//     capped.push(joined(join(&[(&q1, any()), (&q2, any())], "w")));
+//     for index in 0..=FIRE_ROUND_CAP {
+//         capped.push(take(&q2, &format!("v{index}"), any()));
+//     }
+//     capped.push(put(&q1, -5));
+//     let settle = SpaceOp::Settle(SettleOp {
+//         space: SPACE,
+//         key: key(&q1),
+//         channel: q1.clone(),
+//         random_state: send_salted(&q1, -5, 0).data.random_state,
+//         authority: CostAuthority::default(),
+//         introduction_authority: CostAuthority::default(),
+//         cascade: Some(Box::new(CascadeState {
+//             seeds: vec![key(&q2)],
+//             pending: Vec::new(),
+//             resume: None,
+//         })),
+//     });
+//     capped.push(settle);
+//     replay_case(SpaceInner::Queue, capped).await;
+// }
+// ```
+
+/// Added by decision 90 (C6, step D): the join script of [`space_joins_replay_equal`] as the body
+/// of a space program (`support::family_programs::space_program`, which binds `a` to `e` and
+/// `out`): joins that park, fire on both sides, peek, persist, cascade and refuse. A cell refuses
+/// some of the sends with `CellOccupied`, and the failure is part of what the certification
+/// reproduces. The persistent join has its own channels. A persistent send that meets a persistent
+/// waiter is a divergent pair, and phlo cannot end its rounds on a kind without a counter.
+const JOIN_SCRIPT_BODY: &str = r#"for (@x <- a & @y <- b) { out!(["j1", x, y]) } |
+a!(1) |
+b!(2) |
+a!(3) |
+b!(4) |
+for (@x <<- a & @y <<- b) { out!(["p", x, y]) } |
+for (@x <- a & @y <- b) { out!(["j2", x, y]) } |
+for (@x <- b & @y <- c) { out!(["j3", x, y]) } |
+for (@v <- c) { out!(["v", v]) } |
+c!(5) |
+c!(6) |
+b!(7) |
+for (@x <- a & @y <- c where false) { out!(["g", x, y]) } |
+a!(9) |
+a!!(8) |
+b!!(10) |
+for (@8 <- a & @10 <- b) { out!(["f", 8, 10]) } |
+for (@x <= d & @y <= e) { out!(["r", x, y]) } |
+d!(11) |
+e!(12)"#;
+
+/// Native replay certifies the play of [`JOIN_SCRIPT_BODY`] on each discipline of [`INNERS`]
+/// (decision 36, joins plan 4.9 "Determinism", decision 90, C6, step D). The script plays as one
+/// native deploy over a fresh `hashmap:<inner>` space on each runtime of `RACING_WORKERS`. The
+/// certification of the play (`certify`) reproduces its errors, a complete journal, its phlo, its
+/// authority events, its byte observations and its root (`assert_reproduces`). On a discipline
+/// that fails no operation, the play fires a join of the script and delivers its label.
+#[test]
+fn space_joins_replay_equal() {
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(async {
+            for inner in INNERS {
+                let label = format!("hashmap:{}, {workers} workers", inner.as_str());
+                let term =
+                    space_program(&family(inner).to_string(), r#""default""#, JOIN_SCRIPT_BODY);
+                let played = native_play(&term, AMPLE_LIMIT).await;
+                if played.result.errors.is_empty() {
+                    assert!(!played.out.is_empty(), "{label}: the script fires");
+                }
+                let certification = certify(&played, &term, AMPLE_LIMIT).await;
+                assert_reproduces(&label, &played, &certification);
+            }
+        });
     }
-    let (q1, q2) = (ch("q1"), ch("q2"));
-    let mut capped = Vec::new();
-    for value in 0..FIRE_ROUND_CAP + 2 {
-        capped.push(put(&q2, i64::try_from(value).expect("a small value")));
-    }
-    capped.push(joined(join(&[(&q1, any()), (&q2, any())], "w")));
-    for index in 0..=FIRE_ROUND_CAP {
-        capped.push(take(&q2, &format!("v{index}"), any()));
-    }
-    capped.push(put(&q1, -5));
-    let settle = SpaceOp::Settle(SettleOp {
-        space: SPACE,
-        key: key(&q1),
-        channel: q1.clone(),
-        random_state: send_salted(&q1, -5, 0).data.random_state,
-        authority: CostAuthority::default(),
-        introduction_authority: CostAuthority::default(),
-        cascade: Some(Box::new(CascadeState {
-            seeds: vec![key(&q2)],
-            pending: Vec::new(),
-            resume: None,
-        })),
-    });
-    capped.push(settle);
-    replay_case(SpaceInner::Queue, capped).await;
 }
 
-/// What one operation of a replay script shows: its result, its legacy log and its phlo.
-type Metered = (Result<SpaceOutcome, SpaceError>, Vec<Cost>, i64);
-
-/// Runs `script` over the host of `env` and returns what each operation shows. Each operation has
-/// a legacy budget of its own (decision 45, Option P). A budget keeps at most 1024 log entries,
-/// so one budget for each operation keeps every entry of a long script.
-async fn run_metered(env: &SpaceEnv, script: &[SpaceOp]) -> Vec<Metered> {
-    let mut steps = Vec::with_capacity(script.len());
-    for op in script {
-        let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join replay step"));
-        let _scope = budget.enter_legacy_scope();
-        let env = SpaceEnv {
-            budget: budget.clone(),
-            ..env.clone()
-        };
-        let before = budget.get().value;
-        let result = run(&FamilyAgent, &env, op.clone()).await;
-        steps.push((result, budget.get_log(), before - budget.get().value));
-    }
-    steps
-}
-
-/// One case of `space_joins_replay_equal`.
-async fn replay_case(inner: SpaceInner, script: Vec<SpaceOp>) {
-    let (play_space, replay_space) = play_and_replay().await;
-    let play_rig = Rig::over(play_space.clone(), inner, &budget()).await;
-    let start = play_space
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let played = run_metered(&play_rig.env, &script).await;
-    assert!(
-        played.iter().any(|(result, _, _)| result
-            .as_ref()
-            .is_ok_and(|outcome| !outcome.fires.is_empty())),
-        "{inner:?}: the script fires"
-    );
-    assert!(
-        played
-            .iter()
-            .all(|(_, log, spent)| !log.is_empty() || *spent == 0),
-        "{inner:?}: a step that costs phlo logs its charges"
-    );
-    let Checkpoint { root, log } = play_space.create_checkpoint().await.expect("a checkpoint");
-    assert!(
-        log.iter().any(
-            |event| matches!(event, Event::Comm(comm) if comm.consume.channel_hashes.len() >= 2)
-        ),
-        "{inner:?}: the play log holds a join COMM"
-    );
-    replay_space
-        .rig_and_reset(start.clone(), log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_env = env_over(replay_space.clone(), &budget());
-    let replayed = run_metered(&replay_env, &script).await;
-    assert_eq!(
-        replayed, played,
-        "{inner:?}: the results, the legacy logs and the costs"
-    );
-    // A replay space logs no events of its own, so the event check is the pairing. Every
-    // recorded event of play is used, and no fire of the replay is unpaired.
-    replay_space.take_event_log().await;
-    replay_space
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    let replay_root = replay_space
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint")
-        .root;
-    assert_eq!(replay_root, root, "{inner:?}: the root");
-
-    replay_space
-        .rig_and_reset(start, Vec::new())
-        .await
-        .expect("the replay rigs an empty log");
-    let mut diverged = false;
-    for op in &script {
-        if let Err(SpaceError::ReplayDivergence(_)) =
-            run(&FamilyAgent, &replay_env, op.clone()).await
-        {
-            diverged = true;
-            break;
-        }
-    }
-    assert!(diverged, "{inner:?}: a replay without the log diverges");
-}
+// Retired by decision 90 (C6, step D): `Metered`, `run_metered` and `replay_case` ran through the
+// rigged replay modes, which retire (decision 125). `space_joins_replay_equal`,
+// `pathmap_replay_equal`. The text before:
+// ```
+// /// What one operation of a replay script shows: its result, its legacy log and its phlo.
+// type Metered = (Result<SpaceOutcome, SpaceError>, Vec<Cost>, i64);
+//
+// /// Runs `script` over the host of `env` and returns what each operation shows. Each operation has
+// /// a legacy budget of its own (decision 45, Option P). A budget keeps at most 1024 log entries,
+// /// so one budget for each operation keeps every entry of a long script.
+// async fn run_metered(env: &SpaceEnv, script: &[SpaceOp]) -> Vec<Metered> {
+//     let mut steps = Vec::with_capacity(script.len());
+//     for op in script {
+//         let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join replay step"));
+//         let _scope = budget.enter_legacy_scope();
+//         let env = SpaceEnv {
+//             budget: budget.clone(),
+//             ..env.clone()
+//         };
+//         let before = budget.get().value;
+//         let result = run(&FamilyAgent, &env, op.clone()).await;
+//         steps.push((result, budget.get_log(), before - budget.get().value));
+//     }
+//     steps
+// }
+//
+// /// One case of `space_joins_replay_equal`.
+// async fn replay_case(inner: SpaceInner, script: Vec<SpaceOp>) {
+//     let (play_space, replay_space) = play_and_replay().await;
+//     let play_rig = Rig::over(play_space.clone(), inner, &budget()).await;
+//     let start = play_space
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint after the creation")
+//         .root;
+//     let played = run_metered(&play_rig.env, &script).await;
+//     assert!(
+//         played.iter().any(|(result, _, _)| result
+//             .as_ref()
+//             .is_ok_and(|outcome| !outcome.fires.is_empty())),
+//         "{inner:?}: the script fires"
+//     );
+//     assert!(
+//         played
+//             .iter()
+//             .all(|(_, log, spent)| !log.is_empty() || *spent == 0),
+//         "{inner:?}: a step that costs phlo logs its charges"
+//     );
+//     let Checkpoint { root, log } = play_space.create_checkpoint().await.expect("a checkpoint");
+//     assert!(
+//         log.iter().any(
+//             |event| matches!(event, Event::Comm(comm) if comm.consume.channel_hashes.len() >= 2)
+//         ),
+//         "{inner:?}: the play log holds a join COMM"
+//     );
+//     replay_space
+//         .rig_and_reset(start.clone(), log)
+//         .await
+//         .expect("the replay rigs the play log");
+//     let replay_env = env_over(replay_space.clone(), &budget());
+//     let replayed = run_metered(&replay_env, &script).await;
+//     assert_eq!(
+//         replayed, played,
+//         "{inner:?}: the results, the legacy logs and the costs"
+//     );
+//     // A replay space logs no events of its own, so the event check is the pairing. Every
+//     // recorded event of play is used, and no fire of the replay is unpaired.
+//     replay_space.take_event_log().await;
+//     replay_space
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired");
+//     let replay_root = replay_space
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint")
+//         .root;
+//     assert_eq!(replay_root, root, "{inner:?}: the root");
+//
+//     replay_space
+//         .rig_and_reset(start, Vec::new())
+//         .await
+//         .expect("the replay rigs an empty log");
+//     let mut diverged = false;
+//     for op in &script {
+//         if let Err(SpaceError::ReplayDivergence(_)) =
+//             run(&FamilyAgent, &replay_env, op.clone()).await
+//         {
+//             diverged = true;
+//             break;
+//         }
+//     }
+//     assert!(diverged, "{inner:?}: a replay without the log diverges");
+// }
+// ```
 
 /// The rows of the collections of `channels` in `host`, as sorted bytes. The rows of a channel
 /// are its records, its single-bind waiters, its join waiters and its join groups.
@@ -2373,22 +3567,25 @@ async fn space_joins_restart() {
 
 // ─── The five programs of the P4 join rejection, now joins ───────────────────────────────────
 
-/// Evaluates the deploy `source` with the label `label` on `runtime`, which must give a result.
-async fn evaluate_deploy(
-    runtime: &rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
-    source: &str,
-    label: &str,
-) -> rholang::rust::interpreter::interpreter::EvaluateResult {
-    runtime
-        .evaluate(
-            source,
-            Cost::create(support::session::PHLO, label.to_owned()),
-            HashMap::new(),
-            Blake2b512Random::create_from_bytes(label.as_bytes()),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"))
-}
+// Changed by decision 90 (C6): the programs below run on the native session, which plays and
+// certifies each deploy. The legacy evaluation follows.
+//
+// /// Evaluates the deploy `source` with the label `label` on `runtime`, which must give a result.
+// async fn evaluate_deploy(
+//     runtime: &rholang::rust::interpreter::rho_runtime::RhoRuntimeImpl,
+//     source: &str,
+//     label: &str,
+// ) -> rholang::rust::interpreter::interpreter::EvaluateResult {
+//     runtime
+//         .evaluate(
+//             source,
+//             Cost::create(support::session::PHLO, label.to_owned()),
+//             HashMap::new(),
+//             Blake2b512Random::create_from_bytes(label.as_bytes()),
+//         )
+//         .await
+//         .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"))
+// }
 
 /// The values that a host join `[h, h]` binds when it parks, then 3 arrives, then 4. This is the
 /// repeated-channel program of the P4 test on a host channel. The normalizer may order the binds
@@ -2428,8 +3625,14 @@ async fn host_repeated_join() -> [i64; 2] {
 
 /// The five programs of the P4 test `space_queue_join_rejected` run as joins of a queue space
 /// (decision 29). The programs are two names, a repeated channel, forged channels under `use`, a
-/// peek, and a persistent join. Each deploy replays with its own log (protocol D). Replay uses
-/// every event and reaches the cost and the root of play.
+/// peek, and a persistent join. Native replay certifies each deploy with its own record (decision
+/// 90, C6). Replay uses every journal row, and it reaches the phlo usage and the root of play.
+// Changed by decision 90 (C6): the legacy doc follows.
+//
+// /// The five programs of the P4 test `space_queue_join_rejected` run as joins of a queue space
+// /// (decision 29). The programs are two names, a repeated channel, forged channels under `use`, a
+// /// peek, and a persistent join. Each deploy replays with its own log (protocol D). Replay uses
+// /// every event and reaches the cost and the root of play.
 ///
 /// * Two names: the join parks, and the two sends fire it with the values in bind order.
 /// * A repeated channel: the join of `[a, a]` parks. The second record fires it with the values
@@ -2442,12 +3645,14 @@ async fn host_repeated_join() -> [i64; 2] {
 async fn space_joins_queue_programs_run_as_joins() {
     let mut session = Session::new().await;
     let space = session.setup(QUEUE, DEFAULT).await;
-    let start = session.play.create_checkpoint().await.root;
-    session
-        .replay
-        .reset(&start)
-        .await
-        .expect("reset the replay runtime to the setup");
+    // Changed by decision 90 (C6): the session certifies each deploy from its own pre-state, so
+    // the test keeps no replay runtime.
+    // let start = session.play.create_checkpoint().await.root;
+    // session
+    //     .replay
+    //     .reset(&start)
+    //     .await
+    //     .expect("reset the replay runtime to the setup");
     let host_repeated = host_repeated_join().await;
     let steps: Vec<(&str, String, Option<[i64; 2]>)> = vec![
         (
@@ -2512,32 +3717,35 @@ async fn space_joins_queue_programs_run_as_joins() {
     let mut expected: Vec<Vec<Par>> = Vec::new();
     for (label, body, output) in steps {
         let source = with_space(&body);
-        let played = evaluate_deploy(&session.play, &source, label).await;
-        assert!(played.errors.is_empty(), "{label}: {:?}", played.errors);
-        let Checkpoint { root, log } = session.play.create_checkpoint().await;
-        session
-            .replay
-            .rig(log.clone())
-            .await
-            .expect("rig the replay runtime with the play log");
-        let replayed = evaluate_deploy(&session.replay, &source, label).await;
-        assert!(replayed.errors.is_empty(), "{label}: {:?}", replayed.errors);
-        // The replay takes its log after each deploy, as the replay suites of P4 and P5 do. The
-        // take also clears the produce counters of the replay space, which its checkpoint keeps.
-        // A replay space logs no events of its own, so the event check is the pairing below.
-        // Every recorded event of play is used, and no fire is unpaired.
-        session.replay.take_event_log().await;
-        session
-            .replay
-            .check_replay_data()
-            .await
-            .unwrap_or_else(|error| panic!("{label}: the replay leaves events: {error:?}"));
-        assert_eq!(replayed.cost, played.cost, "{label}: the cost");
-        assert_eq!(
-            session.replay.create_checkpoint().await.root,
-            root,
-            "{label}: the root"
-        );
+        // Changed by decision 90 (C6): the session plays the deploy natively, checkpoints it and
+        // certifies it by native replay. The legacy play and rigged replay follow.
+        // let played = evaluate_deploy(&session.play, &source, label).await;
+        // assert!(played.errors.is_empty(), "{label}: {:?}", played.errors);
+        // let Checkpoint { root, log } = session.play.create_checkpoint().await;
+        // session
+        //     .replay
+        //     .rig(log.clone())
+        //     .await
+        //     .expect("rig the replay runtime with the play log");
+        // let replayed = evaluate_deploy(&session.replay, &source, label).await;
+        // assert!(replayed.errors.is_empty(), "{label}: {:?}", replayed.errors);
+        // // The replay takes its log after each deploy, as the replay suites of P4 and P5 do. The
+        // // take also clears the produce counters of the replay space, which its checkpoint keeps.
+        // // A replay space logs no events of its own, so the event check is the pairing below.
+        // // Every recorded event of play is used, and no fire is unpaired.
+        // session.replay.take_event_log().await;
+        // session
+        //     .replay
+        //     .check_replay_data()
+        //     .await
+        //     .unwrap_or_else(|error| panic!("{label}: the replay leaves events: {error:?}"));
+        // assert_eq!(replayed.cost, played.cost, "{label}: the cost");
+        // assert_eq!(
+        //     session.replay.create_checkpoint().await.root,
+        //     root,
+        //     "{label}: the root"
+        // );
+        session.run(&source, label).await;
         expected.extend(output.map(pair));
         assert_eq!(
             sorted(session.values(OUT).await),
@@ -2681,11 +3889,26 @@ fn forward_pair() -> (Par, Par) {
     (second, first)
 }
 
+// Changed by decision 102 (plan v4 C5.3, rule CR-1) and decision 124 (LP-1, L5): play picks the
+// order of the join waiters of an offer at random, so the doc below replaces this one.
+// /// The A.9 correction case (joins plan 4.8). A peek join P on `[b, c]` fires on the produce side
+// /// with the incoming `x` on `b` and the stored `r` on `c`. Both are sent again in receipt order.
+// /// The store keeps `x`, and the second send of `r` completes the join W on `[b, c]`. The
+// /// sequential host program does the same with `produce_peeks` in result order. It gives the same
+// /// fires, the same legacy charges for each call, and the same stores.
 /// The A.9 correction case (joins plan 4.8). A peek join P on `[b, c]` fires on the produce side
 /// with the incoming `x` on `b` and the stored `r` on `c`. Both are sent again in receipt order.
 /// The store keeps `x`, and the second send of `r` completes the join W on `[b, c]`. The
 /// sequential host program does the same with `produce_peeks` in result order. It gives the same
-/// fires, the same legacy charges for each call, and the same stores.
+/// fires, the same observer calls for each call (decision 90, decision 69), the same stores and
+/// the same waiters. Each row of the space names the footprint group of decision 92, which the
+/// host program does not have. So the comparison removes that group from the calls of the agent.
+///
+/// Play picks the order of the join waiters of an offer at random (decision 102, rule CR-1, and
+/// decision 124, LP-1). So `x` fires P first, which is the A.9 case, or W first. W first binds `x`
+/// and `r`, and P stays. The test runs [`PICK_RUNS`] times, each run on a fresh rig and a fresh
+/// host. Each run pins the host waiter to the waiter that the agent fired first. Over the runs,
+/// both orders occur. One of them is missing with a chance of `2^-63`.
 #[tokio::test]
 async fn space_joins_produce_side_peek_reproduces_in_receipt_order() {
     let (b, c) = forward_pair();
@@ -2695,109 +3918,267 @@ async fn space_joins_produce_side_peek_reproduces_in_receipt_order() {
     ]);
     let stored = send_salted(&c, 2, 1);
     let incoming = send_salted(&b, 1, 1);
-    let agent_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join a9 agent"));
-    let _agent_scope = agent_budget.enter_legacy_scope();
-    let rig = Rig::over(play().await, SpaceInner::Bag, &agent_budget).await;
-    let host_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join a9 host"));
-    let _host_scope = host_budget.enter_legacy_scope();
-    let pin: support::legacy::Pin = Arc::new(std::sync::Mutex::new(None));
-    // Changed by decision 89 (DR-129): host play picks a waiter at random, so the matcher of the
-    // host also holds a waiter pin.
-    // let host = support::legacy::pinned_charging_host(&host_budget, &pin).await;
-    let waiter = support::legacy::open_waiter();
-    let host = support::legacy::pinned_charging_host(&host_budget, &pin, &waiter).await;
+    // Changed by decision 102 (plan v4 C5.3, rule CR-1) and decision 124 (LP-1, L5): play picks
+    // the order of the join waiters of the offer of x at random. So the rest of the test runs
+    // PICK_RUNS times, each run on a fresh rig, a fresh host and a fresh play and replay pair,
+    // and checks the allowed set and a coverage set. The body before:
+    // let agent_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join a9 agent"));
+    // let _agent_scope = agent_budget.enter_legacy_scope();
+    // let rig = Rig::over(play().await, SpaceInner::Bag, &agent_budget).await;
+    // let host_budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join a9 host"));
+    // let _host_scope = host_budget.enter_legacy_scope();
+    // let pin: support::legacy::Pin = Arc::new(std::sync::Mutex::new(None));
+    // // Changed by decision 89 (DR-129): host play picks a waiter at random, so the matcher of the
+    // // host also holds a waiter pin.
+    // // let host = support::legacy::pinned_charging_host(&host_budget, &pin).await;
+    // let waiter = support::legacy::open_waiter();
+    // let host = support::legacy::pinned_charging_host(&host_budget, &pin, &waiter).await;
+    // let group = join_group(SPACE, &[&b, &c]);
+    // let channels = [&b, &c];
+    // let parked = |op: &JoinOp| {
+    //     record::wrap_join_continuation(&slots_of(&channels, &[0, 0]), &join_body(op))
+    //         .expect("a record of version 2")
+    // };
+    // let mut agent_logs = Vec::new();
+    // let mut host_logs = Vec::new();
+    // let mut agent_fires = Vec::new();
+    // let mut host_fires = Vec::new();
+    // // 1: the stored record r on c.
+    // let mark = agent_budget.get_log().len();
+    // rig.ok(SpaceOp::Produce(stored.clone())).await;
+    // agent_logs.push(agent_budget.get_log()[mark..].to_vec());
+    // let run = support::legacy::host_produce(
+    //     &host,
+    //     &host_budget,
+    //     data(&c),
+    //     record::wrap_datum(0, &stored.data),
+    //     false,
+    // )
+    // .await;
+    // assert!(run.fired.is_none());
+    // host_logs.push(run.entries);
+    // // 2 and 3: the peek join P and the join W park.
+    // for op in &ordered {
+    //     let mark = agent_budget.get_log().len();
+    //     assert!(rig.ok(joined(op.clone())).await.fires.is_empty());
+    //     agent_logs.push(agent_budget.get_log()[mark..].to_vec());
+    //     let run = support::legacy::host_consume(
+    //         &host,
+    //         &host_budget,
+    //         group.clone(),
+    //         vec![any(), any()],
+    //         parked(op),
+    //         false,
+    //         op.peek,
+    //     )
+    //     .await;
+    //     assert!(run.fired.is_none());
+    //     host_logs.push(run.entries);
+    // }
+    // // 4: the incoming x on b fires P, and the second send of r fires W.
+    // let mark = agent_budget.get_log().len();
+    // let outcome = rig.ok(SpaceOp::Produce(incoming.clone())).await;
+    // agent_logs.push(agent_budget.get_log()[mark..].to_vec());
+    // agent_fires.extend(fired(&outcome));
+    // let mut calls = vec![(data(&b), record::wrap_datum(0, &incoming.data))];
+    // let mut entries = Vec::new();
+    // // Added by decision 89 (DR-129): the incoming x completes both P and W, and P comes first in
+    // // canonical order. So the first call fires only P. The later calls have one waiter at most.
+    // support::legacy::set_waiter(
+    //     &waiter,
+    //     support::legacy::WaiterPin::Only(Box::new(parked(&ordered[0]))),
+    // );
+    // while !calls.is_empty() {
+    //     let (channel, record) = calls.remove(0);
+    //     let run = support::legacy::host_produce(&host, &host_budget, channel, record, false).await;
+    //     support::legacy::set_waiter(&waiter, support::legacy::WaiterPin::Any);
+    //     entries.extend(run.entries);
+    //     if let Some((cont, results)) = &run.fired {
+    //         let name = support::agent::body_name(
+    //             &record::unwrap_join_continuation(&cont.continuation)
+    //                 .expect("a join continuation record")
+    //                 .continuation,
+    //         );
+    //         let mut by_bind: Vec<(usize, Vec<Par>)> = slots_of(&channels, &[0, 0])
+    //             .iter()
+    //             .zip(results)
+    //             .map(|(slot, result)| (slot.bind, result.matched_datum.pars.clone()))
+    //             .collect();
+    //         by_bind.sort_by_key(|(bind, _)| *bind);
+    //         host_fires.push((
+    //             name,
+    //             by_bind.into_iter().flat_map(|(_, pars)| pars).collect(),
+    //         ));
+    //     }
+    //     calls.extend(run.reproduced);
+    // }
+    // host_logs.push(entries);
+    // assert_eq!(agent_fires, vec![
+    //     delivery("p", &[1, 2]),
+    //     delivery("w", &[1, 2])
+    // ]);
+    // assert_eq!(agent_fires, host_fires, "the fires of the host program");
+    // assert_eq!(agent_logs, host_logs, "the legacy charges of each call");
+    // for channel in [&b, &c] {
+    //     assert!(rig.records(channel).await.is_empty());
+    //     assert!(host.get_data(&data(channel)).await.is_empty());
+    // }
+    // assert!(rig.join_waiters(&channels).await.is_empty());
+    // assert!(host.get_waiting_continuations(group).await.is_empty());
     let group = join_group(SPACE, &[&b, &c]);
     let channels = [&b, &c];
     let parked = |op: &JoinOp| {
         record::wrap_join_continuation(&slots_of(&channels, &[0, 0]), &join_body(op))
             .expect("a record of version 2")
     };
-    let mut agent_logs = Vec::new();
-    let mut host_logs = Vec::new();
-    let mut agent_fires = Vec::new();
-    let mut host_fires = Vec::new();
-    // 1: the stored record r on c.
-    let mark = agent_budget.get_log().len();
-    rig.ok(SpaceOp::Produce(stored.clone())).await;
-    agent_logs.push(agent_budget.get_log()[mark..].to_vec());
-    let run = support::legacy::host_produce(
-        &host,
-        &host_budget,
-        data(&c),
-        record::wrap_datum(0, &stored.data),
-        false,
-    )
-    .await;
-    assert!(run.fired.is_none());
-    host_logs.push(run.entries);
-    // 2 and 3: the peek join P and the join W park.
-    for op in &ordered {
-        let mark = agent_budget.get_log().len();
-        assert!(rig.ok(joined(op.clone())).await.fires.is_empty());
-        agent_logs.push(agent_budget.get_log()[mark..].to_vec());
-        let run = support::legacy::host_consume(
+    let footprint = support::agent::space_counter_channel(SPACE);
+    let mut firsts = BTreeSet::<String>::new();
+    for _ in 0..PICK_RUNS {
+        let rig = Rig::over(play().await, SpaceInner::Bag, &budget()).await;
+        let agent_recorder = observed(&rig.host);
+        let host_recorder = Recorder::new();
+        let pin: support::legacy::Pin = Arc::new(std::sync::Mutex::new(None));
+        let waiter = support::legacy::open_waiter();
+        let host = support::legacy::pinned_observed_host(&host_recorder, &pin, &waiter).await;
+        let mut agent_calls: Vec<Vec<Call>> = Vec::with_capacity(4);
+        let mut host_calls: Vec<Vec<Call>> = Vec::with_capacity(4);
+        let mut host_fires = Vec::with_capacity(2);
+        // 1: the stored record r on c.
+        let mark = agent_recorder.count();
+        rig.ok(SpaceOp::Produce(stored.clone())).await;
+        agent_calls.push(agent_recorder.since(mark));
+        let run = support::legacy::host_produce(
             &host,
-            &host_budget,
-            group.clone(),
-            vec![any(), any()],
-            parked(op),
+            &host_recorder,
+            data(&c),
+            record::wrap_datum(0, &stored.data),
             false,
-            op.peek,
         )
         .await;
         assert!(run.fired.is_none());
-        host_logs.push(run.entries);
-    }
-    // 4: the incoming x on b fires P, and the second send of r fires W.
-    let mark = agent_budget.get_log().len();
-    let outcome = rig.ok(SpaceOp::Produce(incoming.clone())).await;
-    agent_logs.push(agent_budget.get_log()[mark..].to_vec());
-    agent_fires.extend(fired(&outcome));
-    let mut calls = vec![(data(&b), record::wrap_datum(0, &incoming.data))];
-    let mut entries = Vec::new();
-    // Added by decision 89 (DR-129): the incoming x completes both P and W, and P comes first in
-    // canonical order. So the first call fires only P. The later calls have one waiter at most.
-    support::legacy::set_waiter(
-        &waiter,
-        support::legacy::WaiterPin::Only(Box::new(parked(&ordered[0]))),
-    );
-    while !calls.is_empty() {
-        let (channel, record) = calls.remove(0);
-        let run = support::legacy::host_produce(&host, &host_budget, channel, record, false).await;
-        support::legacy::set_waiter(&waiter, support::legacy::WaiterPin::Any);
-        entries.extend(run.entries);
-        if let Some((cont, results)) = &run.fired {
-            let name = support::agent::body_name(
-                &record::unwrap_join_continuation(&cont.continuation)
-                    .expect("a join continuation record")
-                    .continuation,
-            );
-            let mut by_bind: Vec<(usize, Vec<Par>)> = slots_of(&channels, &[0, 0])
-                .iter()
-                .zip(results)
-                .map(|(slot, result)| (slot.bind, result.matched_datum.pars.clone()))
-                .collect();
-            by_bind.sort_by_key(|(bind, _)| *bind);
-            host_fires.push((
-                name,
-                by_bind.into_iter().flat_map(|(_, pars)| pars).collect(),
-            ));
+        host_calls.push(run.calls);
+        // 2 and 3: the peek join P and the join W park.
+        for op in &ordered {
+            let mark = agent_recorder.count();
+            assert!(rig.ok(joined(op.clone())).await.fires.is_empty());
+            agent_calls.push(agent_recorder.since(mark));
+            let run = support::legacy::host_consume(
+                &host,
+                &host_recorder,
+                group.clone(),
+                vec![any(), any()],
+                parked(op),
+                false,
+                op.peek,
+            )
+            .await;
+            assert!(run.fired.is_none());
+            host_calls.push(run.calls);
         }
-        calls.extend(run.reproduced);
+        // 4: the incoming x on b fires P or W first. P first is the A.9 case: P fires, and the
+        // second send of r fires W. W first binds x and r, and P stays.
+        let mark = agent_recorder.count();
+        let outcome = rig.ok(SpaceOp::Produce(incoming.clone())).await;
+        agent_calls.push(agent_recorder.since(mark));
+        let agent_fires = fired(&outcome);
+        let first = agent_fires
+            .first()
+            .map(|(name, _)| name.clone())
+            .expect("the incoming x fires a waiter");
+        let (first_op, expected_fires, expected_waiters) = match first.as_str() {
+            "p" => (
+                &ordered[0],
+                vec![delivery("p", &[1, 2]), delivery("w", &[1, 2])],
+                Vec::<String>::new(),
+            ),
+            "w" => (&ordered[1], vec![delivery("w", &[1, 2])], vec![
+                "p".to_string()
+            ]),
+            other => panic!("the incoming x fires P or W first, not {other}"),
+        };
+        assert_eq!(agent_fires, expected_fires);
+        firsts.insert(first);
+        let mut calls = vec![(data(&b), record::wrap_datum(0, &incoming.data))];
+        let mut produced_calls = Vec::new();
+        // The first call fires only the waiter that the agent fired first. The later calls have
+        // one waiter at most.
+        support::legacy::set_waiter(
+            &waiter,
+            support::legacy::WaiterPin::Only(Box::new(parked(first_op))),
+        );
+        while !calls.is_empty() {
+            let (channel, record) = calls.remove(0);
+            let run =
+                support::legacy::host_produce(&host, &host_recorder, channel, record, false).await;
+            support::legacy::set_waiter(&waiter, support::legacy::WaiterPin::Any);
+            produced_calls.extend(run.calls);
+            if let Some((cont, results)) = &run.fired {
+                let name = support::agent::body_name(
+                    &record::unwrap_join_continuation(&cont.continuation)
+                        .expect("a join continuation record")
+                        .continuation,
+                );
+                let mut by_bind: Vec<(usize, Vec<Par>)> = slots_of(&channels, &[0, 0])
+                    .iter()
+                    .zip(results)
+                    .map(|(slot, result)| (slot.bind, result.matched_datum.pars.clone()))
+                    .collect();
+                by_bind.sort_by_key(|(bind, _)| *bind);
+                host_fires.push((
+                    name,
+                    by_bind.into_iter().flat_map(|(_, pars)| pars).collect(),
+                ));
+            }
+            calls.extend(run.reproduced);
+        }
+        host_calls.push(produced_calls);
+        assert_eq!(agent_fires, host_fires, "the fires of the host program");
+        assert!(
+            agent_calls.iter().all(|calls| !calls.is_empty()),
+            "each call makes observer calls"
+        );
+        let agent_calls: Vec<Vec<Call>> = agent_calls
+            .iter()
+            .map(|calls| support::observed::without_footprint(calls, &footprint))
+            .collect();
+        assert_eq!(agent_calls, host_calls, "the observer calls of each call");
+        for channel in [&b, &c] {
+            assert!(rig.records(channel).await.is_empty());
+            assert!(host.get_data(&data(channel)).await.is_empty());
+        }
+        let agent_waiters: Vec<String> = rig
+            .join_waiters(&channels)
+            .await
+            .into_iter()
+            .map(|row| row.name)
+            .collect();
+        let host_waiters: Vec<String> = host
+            .get_waiting_continuations(group.clone())
+            .await
+            .iter()
+            .map(|waiting| {
+                support::agent::body_name(
+                    &record::unwrap_join_continuation(&waiting.continuation)
+                        .expect("a join continuation record")
+                        .continuation,
+                )
+            })
+            .collect();
+        assert_eq!(agent_waiters, expected_waiters, "the waiters of the agent");
+        assert_eq!(
+            host_waiters, expected_waiters,
+            "the waiters of the host program"
+        );
+
+        // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+        // which retire (decision 125). `space_joins_replay_equal`,
+        // `space_pick_helpers_put_the_named_candidates_first_in_replay`.
     }
-    host_logs.push(entries);
-    assert_eq!(agent_fires, vec![
-        delivery("p", &[1, 2]),
-        delivery("w", &[1, 2])
-    ]);
-    assert_eq!(agent_fires, host_fires, "the fires of the host program");
-    assert_eq!(agent_logs, host_logs, "the legacy charges of each call");
-    for channel in [&b, &c] {
-        assert!(rig.records(channel).await.is_empty());
-        assert!(host.get_data(&data(channel)).await.is_empty());
-    }
-    assert!(rig.join_waiters(&channels).await.is_empty());
-    assert!(host.get_waiting_continuations(group).await.is_empty());
+    assert_eq!(
+        firsts,
+        BTreeSet::from(["p".to_string(), "w".to_string()]),
+        "the incoming x fires P first in some runs and W first in others"
+    );
 }
 
 // ─── 7.2: decisions 43 and 49 ────────────────────────────────────────────────────────────────
@@ -3094,8 +4475,9 @@ async fn assert_peek_chain_ends(rig: &Rig, [b, c, d]: [&Par; 3]) {
 ///
 /// * With `b` last in group order, the second sends of `c` and `d` run first and store. Then the
 ///   send of `b` fires the next join. At the cap, the transaction owes the two sends and its own
-///   send. The settle job stores the two records in order and fires nothing. It re-issues the
-///   send with its order (decision 43), and the send fires the joins that are left.
+///   send. The settle job stores the two records in order and fires nothing. Its first operation
+///   is not its own, so it stages its anchor first (decision 92). It re-issues the send with its
+///   order (decision 43), and the send fires the joins that are left.
 /// * With `b` first in group order, the send of `b` stores, and the second send of `d` fires the
 ///   next join. At the cap, the transaction owes the two sends and nothing resumes. The settle
 ///   job puts them on its work stack before any fire. So the stop of the job at the cap carries
@@ -3134,9 +4516,25 @@ async fn space_joins_cap_carries_pending_second_sends() {
     let settle = first.reissue.clone().expect("the cap re-issues a settle");
     let job = rig.ok(settle.op).await;
     assert!(job.fires.is_empty(), "the job only stores the two records");
+    // Changed by decision 92: the first operation of the job is not its own, so the job stages
+    // its anchor first.
+    // assert_eq!(
+    //     rig.log().await,
+    //     vec![
+    //         Event::IoEvent(IOEvent::Produce(stored_produce(&on_c))),
+    //         Event::IoEvent(IOEvent::Produce(stored_produce(&on_d))),
+    //     ],
+    //     "the job sends in receipt order, with the identities of the records"
+    // );
+    let log = rig.log().await;
+    assert_eq!(log.len(), 4, "the anchor and the two sends: {log:?}");
+    assert!(
+        support::agent::logs_anchors_only(&log[..2], SPACE, 1),
+        "the job stages its anchor first"
+    );
     assert_eq!(
-        rig.log().await,
-        vec![
+        log[2..],
+        [
             Event::IoEvent(IOEvent::Produce(stored_produce(&on_c))),
             Event::IoEvent(IOEvent::Produce(stored_produce(&on_d))),
         ],
@@ -3398,212 +4796,247 @@ async fn space_joins_txn_fires_bounded_at_the_cap() {
 }
 
 // ─── 7.2: Option P ───────────────────────────────────────────────────────────────────────────
+//
+// Changed by decision 90 (decision 69): Option P (decision 45) is removed with the legacy meter
+// (DR-134). Its lone host calls cannot compare observer calls (see the note of `lone_calls_step`).
 
-/// The legacy log entries of the charges of the staged operation `staged` (decision 45,
-/// Option P): the pre-charge, then the post-charges.
-fn charges_of(staged: &StagedCopy) -> Vec<Cost> {
-    split(match staged {
-        StagedCopy::Produce(op) => produce_charges(op).expect("the charges of a staged produce"),
-        StagedCopy::Consume(op) => consume_charges(op).expect("the charges of a staged consume"),
-    })
-}
+// Changed by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+//
+// /// The legacy log entries of the charges of the staged operation `staged` (decision 45,
+// /// Option P): the pre-charge, then the post-charges.
+// fn charges_of(staged: &StagedCopy) -> Vec<Cost> {
+//     split(match staged {
+//         StagedCopy::Produce(op) => produce_charges(op).expect("the charges of a staged produce"),
+//         StagedCopy::Consume(op) => consume_charges(op).expect("the charges of a staged consume"),
+//     })
+// }
 
-/// The shape of a staged operation of the Option P differential.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Shape {
-    /// A take or a put of a counter: the touch of a collection.
-    Counter,
-    /// A store of a record: a send, a second send or a re-offer that fires nothing.
-    Store,
-    /// A single-bind waiter that parks.
-    Park,
-    /// A join waiter that parks.
-    JoinPark,
-    /// A consume-side join fire.
-    JoinFire,
-    /// A produce-side fire of a join waiter.
-    GroupFire,
-    /// A produce-side fire of a single-bind waiter: a re-offer, a send or a second send.
-    SingleFire,
-    /// A single-bind consume fire on a data channel: a `K_lift`, a `K_retire` or a receive.
-    Removal,
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential classified its
+// staged operations (see the note of `lone_calls_step`).
+//
+// /// The shape of a staged operation of the Option P differential.
+// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+// enum Shape {
+//     /// A take or a put of a counter: the touch of a collection.
+//     Counter,
+//     /// A store of a record: a send, a second send or a re-offer that fires nothing.
+//     Store,
+//     /// A single-bind waiter that parks.
+//     Park,
+//     /// A join waiter that parks.
+//     JoinPark,
+//     /// A consume-side join fire.
+//     JoinFire,
+//     /// A produce-side fire of a join waiter.
+//     GroupFire,
+//     /// A produce-side fire of a single-bind waiter: a re-offer, a send or a second send.
+//     SingleFire,
+//     /// A single-bind consume fire on a data channel: a `K_lift`, a `K_retire` or a receive.
+//     Removal,
+// }
 
-/// The shape of the staged operation `staged`. The counter channels of the collections are
-/// `counters`.
-fn shape_of(staged: &StagedCopy, counters: &[Par]) -> Shape {
-    match staged {
-        StagedCopy::Produce(op) if counters.contains(&op.channel) => Shape::Counter,
-        StagedCopy::Consume(op) if op.channels.iter().any(|channel| counters.contains(channel)) => {
-            Shape::Counter
-        }
-        StagedCopy::Produce(op) => match &op.outcome {
-            ProduceOutcome::Store => Shape::Store,
-            ProduceOutcome::Fire { channels, .. } if channels.len() >= 2 => Shape::GroupFire,
-            ProduceOutcome::Fire { .. } => Shape::SingleFire,
-        },
-        StagedCopy::Consume(op) => match (&op.outcome, op.channels.len() >= 2) {
-            (ConsumeOutcome::Park, true) => Shape::JoinPark,
-            (ConsumeOutcome::Park, false) => Shape::Park,
-            (ConsumeOutcome::Fire { .. }, true) => Shape::JoinFire,
-            (ConsumeOutcome::Fire { .. }, false) => Shape::Removal,
-        },
-    }
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential classified its
+// staged operations (see the note of `lone_calls_step`).
+//
+// /// The shape of the staged operation `staged`. The counter channels of the collections are
+// /// `counters`.
+// fn shape_of(staged: &StagedCopy, counters: &[Par]) -> Shape {
+//     match staged {
+//         StagedCopy::Produce(op) if counters.contains(&op.channel) => Shape::Counter,
+//         StagedCopy::Consume(op) if op.channels.iter().any(|channel| counters.contains(channel)) => {
+//             Shape::Counter
+//         }
+//         StagedCopy::Produce(op) => match &op.outcome {
+//             ProduceOutcome::Store => Shape::Store,
+//             ProduceOutcome::Fire { channels, .. } if channels.len() >= 2 => Shape::GroupFire,
+//             ProduceOutcome::Fire { .. } => Shape::SingleFire,
+//         },
+//         StagedCopy::Consume(op) => match (&op.outcome, op.channels.len() >= 2) {
+//             (ConsumeOutcome::Park, true) => Shape::JoinPark,
+//             (ConsumeOutcome::Park, false) => Shape::Park,
+//             (ConsumeOutcome::Fire { .. }, true) => Shape::JoinFire,
+//             (ConsumeOutcome::Fire { .. }, false) => Shape::Removal,
+//         },
+//     }
+// }
 
-/// Runs `op` in the recording rig `rig`, whose host records into `record`, with a fresh legacy
-/// budget, and checks Option P (decision 45). The legacy log of the job is the concatenation of
-/// the charges of its committed staged operations, in staging order. A fresh host that runs one
-/// staged operation alone logs exactly the charges of that operation. It returns the shapes of
-/// the staged operations. The counter channels of the collections are `counters`.
-async fn option_p_step(
-    rig: &Rig,
-    record: &SharedRecord,
-    op: SpaceOp,
-    counters: &[Par],
-) -> Vec<Shape> {
-    let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join option p"));
-    let _scope = budget.enter_legacy_scope();
-    let env = SpaceEnv {
-        budget: budget.clone(),
-        ..rig.env.clone()
-    };
-    let label = format!("{op:?}");
-    run(&FamilyAgent, &env, op)
-        .await
-        .unwrap_or_else(|error| panic!("the operation commits: {error:?}: {label}"));
-    let seen = std::mem::take(&mut *record.lock().expect("the record lock"));
-    let staged: Vec<&StagedCopy> = seen
-        .staged
-        .iter()
-        .filter(|(txn, _)| seen.commits.contains(txn))
-        .map(|(_, staged)| staged)
-        .collect();
-    let expected: Vec<Cost> = staged
-        .iter()
-        .flat_map(|staged| charges_of(staged))
-        .collect();
-    assert_eq!(budget.get_log(), expected, "the legacy log of {label}");
-    let mut shapes = Vec::with_capacity(staged.len());
-    for staged in staged {
-        let lone = match staged {
-            StagedCopy::Produce(op) => lone_host_produce(op).await,
-            StagedCopy::Consume(op) => lone_host_consume(op).await,
-        };
-        assert_eq!(lone, charges_of(staged), "a lone host call of {label}");
-        shapes.push(shape_of(staged, counters));
-    }
-    shapes
-}
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+//
+// /// Runs `op` in the recording rig `rig`, whose host records into `record`, with a fresh legacy
+// /// budget, and checks Option P (decision 45). The legacy log of the job is the concatenation of
+// /// the charges of its committed staged operations, in staging order. A fresh host that runs one
+// /// staged operation alone logs exactly the charges of that operation. It returns the shapes of
+// /// the staged operations. The counter channels of the collections are `counters`.
+// async fn option_p_step(
+//     rig: &Rig,
+//     record: &SharedRecord,
+//     op: SpaceOp,
+//     counters: &[Par],
+// ) -> Vec<Shape> {
+//     let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs join option p"));
+//     let _scope = budget.enter_legacy_scope();
+//     let env = SpaceEnv {
+//         budget: budget.clone(),
+//         ..rig.env.clone()
+//     };
+//     let label = format!("{op:?}");
+//     run(&FamilyAgent, &env, op)
+//         .await
+//         .unwrap_or_else(|error| panic!("the operation commits: {error:?}: {label}"));
+//     let seen = std::mem::take(&mut *record.lock().expect("the record lock"));
+//     let staged: Vec<&StagedCopy> = seen
+//         .staged
+//         .iter()
+//         .filter(|(txn, _)| seen.commits.contains(txn))
+//         .map(|(_, staged)| staged)
+//         .collect();
+//     let expected: Vec<Cost> = staged
+//         .iter()
+//         .flat_map(|staged| charges_of(staged))
+//         .collect();
+//     assert_eq!(budget.get_log(), expected, "the legacy log of {label}");
+//     let mut shapes = Vec::with_capacity(staged.len());
+//     for staged in staged {
+//         let lone = match staged {
+//             StagedCopy::Produce(op) => lone_host_produce(op).await,
+//             StagedCopy::Consume(op) => lone_host_consume(op).await,
+//         };
+//         assert_eq!(lone, charges_of(staged), "a lone host call of {label}");
+//         shapes.push(shape_of(staged, counters));
+//     }
+//     shapes
+// }
 
-/// Runs the operations `ops` in a fresh recording rig of `inner` through [`option_p_step`] and
-/// returns the shapes of all their staged operations. `channels` are the inner channels of the
-/// scenario.
-async fn option_p_scenario(
-    inner: SpaceInner,
-    channels: &[&Par],
-    ops: Vec<SpaceOp>,
-) -> BTreeSet<Shape> {
-    let (rig, record) = Rig::recording(inner, &budget()).await;
-    let counters: Vec<Par> = channels
-        .iter()
-        .map(|channel| counter_channel(SPACE, channel))
-        .collect();
-    let mut shapes = BTreeSet::new();
-    for op in ops {
-        shapes.extend(option_p_step(&rig, &record, op, &counters).await);
-    }
-    shapes
-}
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+//
+// /// Runs the operations `ops` in a fresh recording rig of `inner` through [`option_p_step`] and
+// /// returns the shapes of all their staged operations. `channels` are the inner channels of the
+// /// scenario.
+// async fn option_p_scenario(
+//     inner: SpaceInner,
+//     channels: &[&Par],
+//     ops: Vec<SpaceOp>,
+// ) -> BTreeSet<Shape> {
+//     let (rig, record) = Rig::recording(inner, &budget()).await;
+//     let counters: Vec<Par> = channels
+//         .iter()
+//         .map(|channel| counter_channel(SPACE, channel))
+//         .collect();
+//     let mut shapes = BTreeSet::new();
+//     for op in ops {
+//         shapes.extend(option_p_step(&rig, &record, op, &counters).await);
+//     }
+//     shapes
+// }
 
-/// Option P for joins (decision 45, joins plan 4.12). Every operation that the join engine stages
-/// charges what `ChargingRSpace` charges for the equal host call. A recording host shows that the
-/// legacy log of each job equals the charges of its staged operations. Each staged operation alone
-/// on a fresh host logs its charges.
-///
-/// * A queue: a join park, a produce-side group fire, a lift, a re-offer and the counters.
-/// * A stack: a consume-side join fire, whose lift and re-offer fire a receive.
-/// * A bag: a consume-side peek join and its second send. Also the A.9 case: a produce-side peek
-///   fire whose second sends store one record and fire a join.
-/// * A set: a consume-side join fire and the `K_retire` of the other member of its class.
-#[tokio::test]
-async fn space_joins_legacy_charges_equal_host() {
-    let (q1, q2) = (ch("q1"), ch("q2"));
-    let queue = option_p_scenario(SpaceInner::Queue, &[&q1, &q2], vec![
-        put(&q2, 10),
-        joined(join(&[(&q1, any()), (&q2, any())], "w")),
-        take(&q2, "v", any()),
-        put(&q2, 20),
-        put(&q1, 1),
-    ])
-    .await;
-    for shape in [
-        Shape::Counter,
-        Shape::Store,
-        Shape::Park,
-        Shape::JoinPark,
-        Shape::GroupFire,
-        Shape::Removal,
-        Shape::SingleFire,
-    ] {
-        assert!(
-            queue.contains(&shape),
-            "the queue stages {shape:?}: {queue:?}"
-        );
-    }
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+// Its lone host calls cannot move to the observer calls (see the note of `lone_calls_step`).
+//
+// /// Option P for joins (decision 45, joins plan 4.12). Every operation that the join engine stages
+// /// charges what `ChargingRSpace` charges for the equal host call. A recording host shows that the
+// /// legacy log of each job equals the charges of its staged operations. Each staged operation alone
+// /// on a fresh host logs its charges.
+// ///
+// /// * A queue: a join park, a produce-side group fire, a lift, a re-offer and the counters.
+// /// * A stack: a consume-side join fire, whose lift and re-offer fire a receive.
+// /// * A bag: a consume-side peek join and its second send. Also the A.9 case: a produce-side peek
+// ///   fire whose second sends store one record and fire a join.
+// /// * A set: a consume-side join fire and the `K_retire` of the other member of its class.
+// #[tokio::test]
+// async fn space_joins_legacy_charges_equal_host() {
+//     let (q1, q2) = (ch("q1"), ch("q2"));
+//     let queue = option_p_scenario(SpaceInner::Queue, &[&q1, &q2], vec![
+//         put(&q2, 10),
+//         joined(join(&[(&q1, any()), (&q2, any())], "w")),
+//         take(&q2, "v", any()),
+//         put(&q2, 20),
+//         put(&q1, 1),
+//     ])
+//     .await;
+//     for shape in [
+//         Shape::Counter,
+//         Shape::Store,
+//         Shape::Park,
+//         Shape::JoinPark,
+//         Shape::GroupFire,
+//         Shape::Removal,
+//         Shape::SingleFire,
+//     ] {
+//         assert!(
+//             queue.contains(&shape),
+//             "the queue stages {shape:?}: {queue:?}"
+//         );
+//     }
+//
+//     let (c, d) = (ch("c"), ch("d"));
+//     let stack = option_p_scenario(SpaceInner::Stack, &[&c, &d], vec![
+//         put(&c, 1),
+//         put(&c, 2),
+//         take(&c, "v", exactly(1)),
+//         put(&d, 5),
+//         joined(join(&[(&c, exactly(2)), (&d, any())], "w")),
+//     ])
+//     .await;
+//     for shape in [Shape::JoinFire, Shape::Removal, Shape::SingleFire] {
+//         assert!(
+//             stack.contains(&shape),
+//             "the stack stages {shape:?}: {stack:?}"
+//         );
+//     }
+//
+//     let (a, b) = (ch("a"), ch("b"));
+//     let (pb, pc) = forward_pair();
+//     let ordered = ordered_joins(vec![
+//         peeking(join(&[(&pb, any()), (&pc, any())], "p")),
+//         join(&[(&pb, any()), (&pc, any())], "w"),
+//     ]);
+//     let mut ops = vec![
+//         put_salted(&a, 1, 1),
+//         put_forever(&b, 2),
+//         joined(peeking(join(&[(&a, any()), (&b, any())], "q"))),
+//         SpaceOp::Produce(send_salted(&pc, 2, 1)),
+//     ];
+//     ops.extend(ordered.into_iter().map(joined));
+//     ops.push(SpaceOp::Produce(send_salted(&pb, 1, 1)));
+//     let bag = option_p_scenario(SpaceInner::Bag, &[&a, &b, &pb, &pc], ops).await;
+//     for shape in [
+//         Shape::JoinFire,
+//         Shape::Store,
+//         Shape::JoinPark,
+//         Shape::GroupFire,
+//     ] {
+//         assert!(bag.contains(&shape), "the bag stages {shape:?}: {bag:?}");
+//     }
+//
+//     let (s, t) = (ch("s"), ch("t"));
+//     let set = option_p_scenario(SpaceInner::Set, &[&s, &t], vec![
+//         put_salted(&s, 1, 1),
+//         put_salted(&s, 1, 2),
+//         put(&t, 5),
+//         joined(join(&[(&s, exactly(1)), (&t, any())], "r")),
+//     ])
+//     .await;
+//     for shape in [Shape::JoinFire, Shape::Removal] {
+//         assert!(set.contains(&shape), "the set stages {shape:?}: {set:?}");
+//     }
+// }
 
-    let (c, d) = (ch("c"), ch("d"));
-    let stack = option_p_scenario(SpaceInner::Stack, &[&c, &d], vec![
-        put(&c, 1),
-        put(&c, 2),
-        take(&c, "v", exactly(1)),
-        put(&d, 5),
-        joined(join(&[(&c, exactly(2)), (&d, any())], "w")),
-    ])
-    .await;
-    for shape in [Shape::JoinFire, Shape::Removal, Shape::SingleFire] {
-        assert!(
-            stack.contains(&shape),
-            "the stack stages {shape:?}: {stack:?}"
-        );
-    }
+// Disabled by decision 90 (decision 69): a lone host cannot make the observer calls of the agent,
+// because the calls name the history of the store of the agent. A run on 2026-10-26 found 9
+// staged operations whose calls differ:
+// * 5 differ only in the `times_repeated` of a COMM (lone 1, agent 0 or 2). The counts follow the
+//   produces of the store of the agent since its last event log. A lone host stores each record once.
+// * 2 differ only in the join groups of a start (lone none, agent 1 or 2). A lone host holds only the
+//   waiter of the operation.
+// * 2 `K_lift` consumes differ in the bound value. The agent binds the whole record. The
+//   `PinnedPayloadMatcher` of a lone host binds the payload of a datum record.
+// The legacy charges of Option P did not depend on these arguments. The exact observer-call
+// differential of the joins is `space_joins_produce_side_peek_reproduces_in_receipt_order`, whose
+// host program runs the whole history on one host.
 
-    let (a, b) = (ch("a"), ch("b"));
-    let (pb, pc) = forward_pair();
-    let ordered = ordered_joins(vec![
-        peeking(join(&[(&pb, any()), (&pc, any())], "p")),
-        join(&[(&pb, any()), (&pc, any())], "w"),
-    ]);
-    let mut ops = vec![
-        put_salted(&a, 1, 1),
-        put_forever(&b, 2),
-        joined(peeking(join(&[(&a, any()), (&b, any())], "q"))),
-        SpaceOp::Produce(send_salted(&pc, 2, 1)),
-    ];
-    ops.extend(ordered.into_iter().map(joined));
-    ops.push(SpaceOp::Produce(send_salted(&pb, 1, 1)));
-    let bag = option_p_scenario(SpaceInner::Bag, &[&a, &b, &pb, &pc], ops).await;
-    for shape in [
-        Shape::JoinFire,
-        Shape::Store,
-        Shape::JoinPark,
-        Shape::GroupFire,
-    ] {
-        assert!(bag.contains(&shape), "the bag stages {shape:?}: {bag:?}");
-    }
+// Disabled by decision 90 (decision 69): see the note of `lone_calls_step`.
 
-    let (s, t) = (ch("s"), ch("t"));
-    let set = option_p_scenario(SpaceInner::Set, &[&s, &t], vec![
-        put_salted(&s, 1, 1),
-        put_salted(&s, 1, 2),
-        put(&t, 5),
-        joined(join(&[(&s, exactly(1)), (&t, any())], "r")),
-    ])
-    .await;
-    for shape in [Shape::JoinFire, Shape::Removal] {
-        assert!(set.contains(&shape), "the set stages {shape:?}: {set:?}");
-    }
-}
+// Disabled by decision 90 (decision 69): see the note of `lone_calls_step`.
 
 // ─── 7.2: decision 46 ────────────────────────────────────────────────────────────────────────
 
@@ -3664,7 +5097,8 @@ fn native_config() -> NativeRuntimeConfig {
 
 // Disabled by decision 47: native execution runs joins, so no operation fails with
 // `SpacesUnsupportedInNativeExecution`. Its successor is
-// `space_joins_native_play_commits_as_legacy`.
+// `space_joins_native_play_commits_as_legacy`. Decision 90 (C6) restates that successor as
+// `space_joins_native_play_commits_and_legacy_fails_closed`.
 //
 // ```
 // /// Decision 46: native play and native replay fail closed before any space work. A join, a send
@@ -3721,8 +5155,14 @@ fn native_config() -> NativeRuntimeConfig {
 // }
 // ```
 
-/// The outcomes of the operations of `space_joins_native_play_commits_as_legacy`, the events of
-/// the play space, its root, and the number of transactions that the host of the runtime saw.
+// Changed by decision 90 (C6): the test that compared native play with legacy execution names
+// its native form. The legacy text follows.
+//
+// /// The outcomes of the operations of `space_joins_native_play_commits_as_legacy`, the events of
+// /// the play space, its root, and the number of transactions that the host of the runtime saw.
+/// The outcomes of the operations of `space_joins_native_play_commits_and_legacy_fails_closed`,
+/// the events of the play space, its root, and the number of transactions that the host of the
+/// runtime saw.
 type JoinRun = (Vec<SpaceOutcome>, Vec<Event>, Blake2b256Hash, usize);
 
 /// Runs a join, a send on a joined collection and a settle job with a cascade over a fresh queue
@@ -3760,13 +5200,70 @@ async fn join_run(deploy: RuntimeBudget) -> JoinRun {
     (outcomes, log, root, transactions)
 }
 
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, so a host runtime
+// outside native execution fails closed, and the comparison of native play with legacy execution
+// has no legacy side. The legacy test follows.
+//
+// /// Decision 47: native play runs joins. A join, a send on a joined collection and a settle job
+// /// with a cascade commit in a host runtime whose deploy runs natively as they commit in legacy
+// /// execution: the same outcomes, the same events and the same root, with as many transactions.
+// /// A native replay runtime that is not bound yet fails each operation closed with
+// /// `RuntimeUnavailable`.
+// #[tokio::test]
+// async fn space_joins_native_play_commits_as_legacy() {
+//     let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs join native"));
+//     native.set_deploy_signature_funded(
+//         b"rrs-join-native",
+//         funding_sig_compound(&[&1u64.to_be_bytes()]),
+//     );
+//     native
+//         .reset_for_native_execution(native_config())
+//         .expect("the budget enters native execution");
+//     assert!(native.native_execution_active());
+//     let (legacy_outcomes, legacy_log, legacy_root, legacy_transactions) = join_run(budget()).await;
+//     let (native_outcomes, native_log, native_root, native_transactions) = join_run(native).await;
+//     assert_eq!(native_outcomes, legacy_outcomes);
+//     assert_eq!(native_log, legacy_log);
+//     assert_eq!(native_root, legacy_root);
+//     assert!(legacy_transactions > 0);
+//     assert_eq!(native_transactions, legacy_transactions);
+//
+//     let (rig, _) = Rig::recording(SpaceInner::Queue, &budget()).await;
+//     let a = ch("a");
+//     rig.ok(put(&a, 1)).await;
+//     rig.log().await;
+//     let before = rig.root().await;
+//     let unbound = runtime::native_replay();
+//     let send = send_salted(&a, 3, 0);
+//     for op in [
+//         joined(join(&[(&a, any()), (&ch("b"), any())], "w")),
+//         SpaceOp::Produce(send.clone()),
+//         settle_after(&send, &[&ch("c")], Vec::new(), None),
+//     ] {
+//         match unbound
+//             .run_op(Arc::new(FamilyAgent), op.clone(), OpOrigin::Program)
+//             .await
+//         {
+//             Err(InterpreterError::ReduceError(message)) => assert!(
+//                 message.starts_with("reified:RuntimeUnavailable: "),
+//                 "{message}: {op:?}"
+//             ),
+//             other => panic!("an unbound native replay runtime ran {op:?}: {other:?}"),
+//         }
+//     }
+//     assert!(rig.log().await.is_empty(), "no space work");
+//     assert_eq!(rig.root().await, before);
+// }
+
 /// Decision 47: native play runs joins. A join, a send on a joined collection and a settle job
-/// with a cascade commit in a host runtime whose deploy runs natively as they commit in legacy
-/// execution: the same outcomes, the same events and the same root, with as many transactions.
-/// A native replay runtime that is not bound yet fails each operation closed with
-/// `RuntimeUnavailable`.
-#[tokio::test]
-async fn space_joins_native_play_commits_as_legacy() {
+/// with a cascade commit in a host runtime whose deploy runs natively. The join waits behind the
+/// older join on `a`, so no operation fires a waiter. The play log parks the join on `a` and `b`,
+/// and the host sees one transaction for each operation. Decision 90 (C6): a host runtime whose
+/// deploy is not in native execution and a native replay runtime that is not bound yet fail
+/// each operation closed with `RuntimeUnavailable`. They open no transaction, do no space work
+/// and keep the root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn space_joins_native_play_commits_and_legacy_fails_closed() {
     let native = RuntimeBudget::new(Cost::create(1_000_000, "rrs join native"));
     native.set_deploy_signature_funded(
         b"rrs-join-native",
@@ -3776,46 +5273,180 @@ async fn space_joins_native_play_commits_as_legacy() {
         .reset_for_native_execution(native_config())
         .expect("the budget enters native execution");
     assert!(native.native_execution_active());
-    let (legacy_outcomes, legacy_log, legacy_root, legacy_transactions) = join_run(budget()).await;
-    let (native_outcomes, native_log, native_root, native_transactions) = join_run(native).await;
-    assert_eq!(native_outcomes, legacy_outcomes);
-    assert_eq!(native_log, legacy_log);
-    assert_eq!(native_root, legacy_root);
-    assert!(legacy_transactions > 0);
-    assert_eq!(native_transactions, legacy_transactions);
+    let (outcomes, log, _, transactions) = join_run(native).await;
+    assert!(
+        outcomes.iter().all(|outcome| outcome.fires.is_empty()),
+        "the join waits behind the older join on `a`, and the send and the settle job fire no \
+         waiter: {outcomes:?}"
+    );
+    let joins = |event: &Event| match event {
+        Event::IoEvent(IOEvent::Consume(consume)) => consume.channel_hashes.len() == 2,
+        Event::Comm(comm) => comm.consume.channel_hashes.len() == 2,
+        Event::IoEvent(IOEvent::Produce(_)) => false,
+    };
+    assert!(
+        matches!(
+            log.iter()
+                .filter(|event| joins(event))
+                .collect::<Vec<_>>()
+                .as_slice(),
+            [Event::IoEvent(IOEvent::Consume(_))]
+        ),
+        "the play log parks the join on its two collections and holds no join COMM"
+    );
+    assert_eq!(
+        transactions, 3,
+        "the host sees one transaction for each operation"
+    );
 
     let (rig, _) = Rig::recording(SpaceInner::Queue, &budget()).await;
     let a = ch("a");
     rig.ok(put(&a, 1)).await;
     rig.log().await;
     let before = rig.root().await;
-    let unbound = runtime::native_replay();
     let send = send_salted(&a, 3, 0);
-    for op in [
+    let ops = [
         joined(join(&[(&a, any()), (&ch("b"), any())], "w")),
         SpaceOp::Produce(send.clone()),
         settle_after(&send, &[&ch("c")], Vec::new(), None),
+    ];
+    let (recording, record) = RecordingHost::new(rig.host.clone());
+    for reified in [
+        runtime::for_host(recording, budget()),
+        runtime::native_replay(),
     ] {
-        match unbound
-            .run_op(Arc::new(FamilyAgent), op.clone(), OpOrigin::Program)
-            .await
-        {
-            Err(InterpreterError::ReduceError(message)) => assert!(
-                message.starts_with("reified:RuntimeUnavailable: "),
-                "{message}: {op:?}"
-            ),
-            other => panic!("an unbound native replay runtime ran {op:?}: {other:?}"),
+        for op in &ops {
+            match reified
+                .run_op(Arc::new(FamilyAgent), op.clone(), OpOrigin::Program)
+                .await
+            {
+                Err(InterpreterError::ReduceError(message)) => assert!(
+                    message.starts_with("reified:RuntimeUnavailable: "),
+                    "{message}: {op:?}"
+                ),
+                other => panic!("a runtime outside native execution ran {op:?}: {other:?}"),
+            }
         }
     }
+    assert!(
+        record.lock().expect("the record lock").begins.is_empty(),
+        "no transaction"
+    );
     assert!(rig.log().await.is_empty(), "no space work");
     assert_eq!(rig.root().await, before);
 }
 
 // ─── 7.2: decision 50 ────────────────────────────────────────────────────────────────────────
 
+// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg:8-14). Rule
+// (a) of decision 118 makes W fire at its arrival, so the case below replaces this one. The case
+// before:
+// /// One case of `space_joins_set_join_cascade_fires_exposed_waiter`. The set holds a1 and the
+// /// persistent a2 of the class 1 and b of the class 2, in the canonical order a1, b, a2. With
+// /// `second_member`, the set also holds b2 of the class 2 after b.
+// async fn set_cascade_case(second_member: bool) {
+//     let s = ch("s");
+//     let entries: Vec<(i64, bool)> = match second_member {
+//         false => vec![(1, false), (2, false), (1, true)],
+//         true => vec![(1, false), (2, false), (2, false), (1, true)],
+//     };
+//     let members = ordered_sends(&s, &entries);
+//     let (a1, b, a2) = (&members[0], &members[1], &members[members.len() - 1]);
+//     let w = join(&[(&s, any()), (&s, exactly(1))], "w");
+//     let v = receive_on(SPACE, &s, "v", exactly(1));
+//     let mut script: Vec<SpaceOp> = members.iter().cloned().map(SpaceOp::Produce).collect();
+//     script.push(joined(w.clone()));
+//     script.push(SpaceOp::Consume(v.clone()));
+//
+//     let rig = Rig::new(SpaceInner::Set).await;
+//     for member in &members {
+//         rig.ok(SpaceOp::Produce(member.clone())).await;
+//     }
+//     assert!(
+//         rig.ok(joined(w.clone())).await.fires.is_empty(),
+//         "the greedy search parks W"
+//     );
+//     rig.log().await;
+//     let outcome = rig.ok(SpaceOp::Consume(v.clone())).await;
+//     assert_eq!(
+//         fired(&outcome),
+//         vec![delivery("v", &[]), delivery("w", &[2])],
+//         "W fires in the transaction of V"
+//     );
+//     assert_eq!(outcome.reissue, None);
+//     let log = rig.log().await;
+//     let lift_random =
+//         RandomPurpose::Lift.derive(&Blake2b512Random::from_bytes(&v.body.random_state));
+//     let lift = Consume::create(
+//         &vec![data(&s)],
+//         &vec![lift_pattern()],
+//         &retire_continuation(&record_hash(b), &lift_random, None),
+//         false,
+//     );
+//     let mut expected = vec![lift];
+//     if second_member {
+//         expected.push(retire_consume(
+//             &s,
+//             &b.data.random_state,
+//             None,
+//             &record_hash(&members[2]),
+//         ));
+//     }
+//     assert_eq!(
+//         consumes_on(&log, &data(&s)),
+//         expected,
+//         "the K_lift of b by its source hash, and the K_retire of b2 when b2 exists"
+//     );
+//     let comms: Vec<&COMM> = log
+//         .iter()
+//         .filter_map(|event| match event {
+//             Event::Comm(comm) => Some(comm),
+//             _ => None,
+//         })
+//         .collect();
+//     let bound_of = |comm: &COMM| {
+//         let mut bound: Vec<Blake2b256Hash> = comm
+//             .produces
+//             .iter()
+//             .map(|produce| produce.hash.clone())
+//             .collect();
+//         bound.sort();
+//         bound
+//     };
+//     let sorted = |mut hashes: Vec<Blake2b256Hash>| {
+//         hashes.sort();
+//         hashes
+//     };
+//     let class_key = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&data(&s));
+//     assert_eq!(
+//         comms[0].consume.channel_hashes,
+//         vec![class_key.clone(), class_key],
+//         "V fires first, as the class fire [D;2]"
+//     );
+//     assert_eq!(
+//         bound_of(comms[0]),
+//         sorted(vec![record_hash(a1), record_hash(a2)]),
+//         "V binds the whole class 1: a1 and the persistent a2"
+//     );
+//     let w_comm = comms
+//         .iter()
+//         .find(|comm| comm.consume.hash == join_waiter_hash(&w))
+//         .expect("W fires in the transaction of V");
+//     assert_eq!(
+//         bound_of(w_comm),
+//         sorted(vec![record_hash(b), record_hash(a2)]),
+//         "W binds the re-offered b and the persistent a2"
+//     );
+//     assert_eq!(rig.records(&s).await, vec![(0, None, vec![int(1)], true)]);
+//     assert!(rig.join_waiters(&[&s, &s]).await.is_empty());
+//     assert!(rig.waiters(&s).await.is_empty());
+//     replay_case(SpaceInner::Set, script).await;
+// }
 /// One case of `space_joins_set_join_cascade_fires_exposed_waiter`. The set holds a1 and the
 /// persistent a2 of the class 1 and b of the class 2, in the canonical order a1, b, a2. With
-/// `second_member`, the set also holds b2 of the class 2 after b.
+/// `second_member`, the set also holds b2 of the class 2 after b. W fires at its arrival with a1
+/// and a2, with no `K_lift` and no `K_retire`. V then fires with a2 in its own transaction,
+/// through a one-bind consume on `[D(s)]`.
 async fn set_cascade_case(second_member: bool) {
     let s = ch("s");
     let entries: Vec<(i64, bool)> = match second_member {
@@ -3823,115 +5454,140 @@ async fn set_cascade_case(second_member: bool) {
         true => vec![(1, false), (2, false), (2, false), (1, true)],
     };
     let members = ordered_sends(&s, &entries);
-    let (a1, b, a2) = (&members[0], &members[1], &members[members.len() - 1]);
+    let (a1, a2) = (&members[0], &members[members.len() - 1]);
     let w = join(&[(&s, any()), (&s, exactly(1))], "w");
     let v = receive_on(SPACE, &s, "v", exactly(1));
-    let mut script: Vec<SpaceOp> = members.iter().cloned().map(SpaceOp::Produce).collect();
-    script.push(joined(w.clone()));
-    script.push(SpaceOp::Consume(v.clone()));
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). `space_joins_replay_equal`, `pathmap_replay_equal`. The text
+    // before:
+    // ```
+    // let mut script: Vec<SpaceOp> = members.iter().cloned().map(SpaceOp::Produce).collect();
+    // script.push(joined(w.clone()));
+    // script.push(SpaceOp::Consume(v.clone()));
+    // ```
+    let class_key = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&data(&s));
+    let comms_of = |log: &[Event]| -> Vec<COMM> {
+        log.iter()
+            .filter_map(|event| match event {
+                Event::Comm(comm) => Some(comm.clone()),
+                _ => None,
+            })
+            .collect()
+    };
 
     let rig = Rig::new(SpaceInner::Set).await;
     for member in &members {
         rig.ok(SpaceOp::Produce(member.clone())).await;
     }
-    assert!(
-        rig.ok(joined(w.clone())).await.fires.is_empty(),
-        "the greedy search parks W"
-    );
     rig.log().await;
+    let arrival = rig.ok(joined(w.clone())).await;
+    assert_eq!(
+        fired(&arrival),
+        vec![delivery("w", &[1])],
+        "W fires at its arrival, with a1 at the bind any"
+    );
+    assert_eq!(arrival.reissue, None);
+    let log = rig.log().await;
+    assert!(
+        consumes_on(&log, &data(&s)).is_empty(),
+        "the fire of W makes no K_lift and no K_retire"
+    );
+    let [w_comm] = <[COMM; 1]>::try_from(comms_of(&log)).expect("one COMM, the fire of W");
+    assert_eq!(
+        w_comm.consume.channel_hashes,
+        vec![class_key.clone(), class_key.clone()],
+        "W fires on [D(s), D(s)]"
+    );
+    assert_eq!(
+        bound_sources(&w_comm),
+        sorted_hashes(vec![record_hash(a1), record_hash(a2)]),
+        "W binds a1, which claims its record and its class, and the persistent a2, which claims \
+         nothing"
+    );
+
     let outcome = rig.ok(SpaceOp::Consume(v.clone())).await;
     assert_eq!(
         fired(&outcome),
-        vec![delivery("v", &[]), delivery("w", &[2])],
-        "W fires in the transaction of V"
+        vec![delivery("v", &[])],
+        "V fires in its own transaction"
     );
     assert_eq!(outcome.reissue, None);
     let log = rig.log().await;
-    let lift_random =
-        RandomPurpose::Lift.derive(&Blake2b512Random::from_bytes(&v.body.random_state));
-    let lift = Consume::create(
-        &vec![data(&s)],
-        &vec![lift_pattern()],
-        &retire_continuation(&record_hash(b), &lift_random, None),
-        false,
-    );
-    let mut expected = vec![lift];
-    if second_member {
-        expected.push(retire_consume(
-            &s,
-            &b.data.random_state,
-            None,
-            &record_hash(&members[2]),
-        ));
-    }
+    let [v_comm] = <[COMM; 1]>::try_from(comms_of(&log))
+        .expect("one COMM, the fire of V, with no K_lift and no K_retire");
     assert_eq!(
-        consumes_on(&log, &data(&s)),
-        expected,
-        "the K_lift of b by its source hash, and the K_retire of b2 when b2 exists"
+        v_comm.consume.channel_hashes,
+        vec![class_key],
+        "V fires through a one-bind consume on [D(s)]"
     );
-    let comms: Vec<&COMM> = log
-        .iter()
-        .filter_map(|event| match event {
-            Event::Comm(comm) => Some(comm),
-            _ => None,
-        })
-        .collect();
-    let bound_of = |comm: &COMM| {
-        let mut bound: Vec<Blake2b256Hash> = comm
-            .produces
-            .iter()
-            .map(|produce| produce.hash.clone())
-            .collect();
-        bound.sort();
-        bound
+    assert_eq!(
+        bound_sources(&v_comm),
+        vec![record_hash(a2)],
+        "V binds the persistent a2, the only member of the class 1"
+    );
+    assert_eq!(
+        stored_sources(&rig, &s).await,
+        sorted_hashes(members[1..].iter().map(record_hash).collect()),
+        "a1 leaves, and b, b2 when it exists, and a2 stay"
+    );
+    let expected: Vec<AnyRecord> = match second_member {
+        false => vec![
+            (0, None, vec![int(1)], true),
+            (0, None, vec![int(2)], false),
+        ],
+        true => vec![
+            (0, None, vec![int(1)], true),
+            (0, None, vec![int(2)], false),
+            (0, None, vec![int(2)], false),
+        ],
     };
-    let sorted = |mut hashes: Vec<Blake2b256Hash>| {
-        hashes.sort();
-        hashes
-    };
-    let class_key = rspace_plus_plus::rspace::hashing::stable_hash_provider::hash(&data(&s));
-    assert_eq!(
-        comms[0].consume.channel_hashes,
-        vec![class_key.clone(), class_key],
-        "V fires first, as the class fire [D;2]"
-    );
-    assert_eq!(
-        bound_of(comms[0]),
-        sorted(vec![record_hash(a1), record_hash(a2)]),
-        "V binds the whole class 1: a1 and the persistent a2"
-    );
-    let w_comm = comms
-        .iter()
-        .find(|comm| comm.consume.hash == join_waiter_hash(&w))
-        .expect("W fires in the transaction of V");
-    assert_eq!(
-        bound_of(w_comm),
-        sorted(vec![record_hash(b), record_hash(a2)]),
-        "W binds the re-offered b and the persistent a2"
-    );
-    assert_eq!(rig.records(&s).await, vec![(0, None, vec![int(1)], true)]);
+    assert_eq!(rig.records(&s).await, expected);
     assert!(rig.join_waiters(&[&s, &s]).await.is_empty());
     assert!(rig.waiters(&s).await.is_empty());
-    replay_case(SpaceInner::Set, script).await;
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). `space_joins_replay_equal`, `pathmap_replay_equal`. The text
+    // before:
+    // replay_case(SpaceInner::Set, script).await;
 }
 
-/// Decision 50 (finding F-JF-1, joins plan 4.9). A fire on a joined set can remove the
-/// non-persistent first member of a class while a persistent member stays. Then the class moves to
-/// the place of the persistent member. The waiter that the move exposes fires in the same
-/// transaction.
+// Changed by decision 118: the trace of F-JF-1 is vacuous (NoSetCascadeUnsafe.cfg:8-14). The doc
+// before:
+// /// Decision 50 (finding F-JF-1, joins plan 4.9). A fire on a joined set can remove the
+// /// non-persistent first member of a class while a persistent member stays. Then the class moves to
+// /// the place of the persistent member. The waiter that the move exposes fires in the same
+// /// transaction.
+// ///
+// /// The first case is the computed trace of `set_join_class_shift_breaks_inv_scan`
+// /// (`JoinCascade.v`) and of `NoSetCascadeUnsafe` (`JoinCascade.tla`). It has three sends on one
+// /// set collection: a, b and a persistent a, in this canonical order. The join W on `[s, s]` with
+// /// the patterns any and a parks. The greedy search gives the class of a to the first bind
+// /// (decision 37). The receive V of a takes the class of a with the class fire `[D; 2]`. The first
+// /// a leaves and the persistent a stays, so the class of a now sits after b. In the same
+// /// transaction, the cascade lifts b with `K_lift`, whose continuation has the source hash of b as
+// /// its key. It offers b again and fires W with b and the persistent a. The set holds the
+// /// persistent a, and replay equals play.
+// ///
+// /// The second case adds a second member b2 of the class of b. The fire of W then retires b2 with
+// /// `K_retire` and the random state of b (RETIRE-SET-BINDS).
+/// Decision 50 (finding F-JF-1, joins plan 4.9), restated by decision 118. The trace of F-JF-1 is
+/// vacuous (NoSetCascadeUnsafe.cfg:8-14): a set class with a persistent member never blocks as a
+/// class, so the join of that trace fires at its arrival and never parks.
 ///
-/// The first case is the computed trace of `set_join_class_shift_breaks_inv_scan`
-/// (`JoinCascade.v`) and of `NoSetCascadeUnsafe` (`JoinCascade.tla`). It has three sends on one
-/// set collection: a, b and a persistent a, in this canonical order. The join W on `[s, s]` with
-/// the patterns any and a parks. The greedy search gives the class of a to the first bind
-/// (decision 37). The receive V of a takes the class of a with the class fire `[D; 2]`. The first
-/// a leaves and the persistent a stays, so the class of a now sits after b. In the same
-/// transaction, the cascade lifts b with `K_lift`, whose continuation has the source hash of b as
-/// its key. It offers b again and fires W with b and the persistent a. The set holds the
-/// persistent a, and replay equals play.
+/// The first case has three sends on one set collection: a1, b and a persistent a2 of the class of
+/// a1, in this canonical order. The join W on `[s, s]` with the patterns any and 1 fires at its
+/// arrival under rule (a) of decision 118 (decision-c6.md section 3). The non-persistent a1
+/// binds the first bind and claims its record and its class. The persistent a2 claims nothing,
+/// and its class has a persistent member, so a2 binds the second bind. The fire makes no `K_lift`
+/// and no `K_retire`, because the class of a1 has no other member that is not persistent. The
+/// receive V of 1 then fires in its own transaction with a2, through a one-bind consume on
+/// `[D(s)]`. The set ends with b and a2.
 ///
-/// The second case adds a second member b2 of the class of b. The fire of W then retires b2 with
-/// `K_retire` and the random state of b (RETIRE-SET-BINDS).
+/// The second case adds a second member b2 of the class of b. The class of b stays whole, so the
+/// set also keeps b2.
+///
+/// The Rust test of the NoSetCascadeUnsafe trace itself is
+/// `set_cascade_fires_the_guarded_receive_that_a_vetoed_pick_parked` in
+/// `rholang/tests/reified_native_random_picks.rs`.
 #[tokio::test]
 async fn space_joins_set_join_cascade_fires_exposed_waiter() {
     set_cascade_case(false).await;

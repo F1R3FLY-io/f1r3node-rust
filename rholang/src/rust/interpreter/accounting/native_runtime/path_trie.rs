@@ -10,8 +10,10 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(test)]
+use rspace_plus_plus::rspace::operation_context::CausalPath;
 use rspace_plus_plus::rspace::operation_context::{
-    child_path_digest, root_path_digest, CausalPath, PathDigest, PathSegment,
+    child_path_digest, root_path_digest, PathDigest, PathSegment,
 };
 
 use super::InterpreterError;
@@ -35,6 +37,10 @@ impl PathId {
 
 /// The digest key of a path: equal keys mean equal paths, unless Blake2b-256
 /// collides (`NativePathTrie.occurrence_key_correct`).
+// Changed by DR-132 (D1-A): native replay finds each row by its recorded
+// source, so production no longer keys slots by path. The key stays for the
+// property test of the trie, which checks the proven key property.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct PathKey {
     digest: PathDigest,
@@ -42,6 +48,8 @@ pub(super) struct PathKey {
     last: Option<PathSegment>,
 }
 
+// Changed by DR-132: test-only, as `PathKey`.
+#[cfg(test)]
 impl PathKey {
     pub(super) fn of(path: &CausalPath) -> Self {
         Self {
@@ -134,6 +142,8 @@ impl NativePathTrie {
         }
     }
 
+    // Changed by DR-132: test-only, as `PathKey`.
+    #[cfg(test)]
     pub(super) fn key(&self, id: PathId) -> PathKey {
         PathKey {
             digest: self.digest(id),

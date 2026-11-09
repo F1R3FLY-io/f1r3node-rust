@@ -96,6 +96,7 @@ pub fn sole(value: &Par) -> Option<&ExprInstance> {
         connective_used,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = value;
     let others_empty = sends.is_empty()
         && receives.is_empty()
@@ -108,6 +109,7 @@ pub fn sole(value: &Par) -> Option<&ExprInstance> {
         && locally_free.is_empty()
         && cost_signed_terms.is_empty()
         && cost_stacks.is_empty()
+        && use_blocks.is_empty()
         && !connective_used;
     match (others_empty, exprs.as_slice()) {
         (true, [expr]) => expr.expr_instance.as_ref(),

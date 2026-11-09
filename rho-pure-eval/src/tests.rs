@@ -340,6 +340,7 @@ fn process_level_par_content_is_preserved() {
             persistent: false,
             locally_free: vec![],
             connective_used: false,
+            params: None,
         }],
         ..Par::default()
     };

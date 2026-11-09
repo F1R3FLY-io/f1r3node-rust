@@ -79,6 +79,21 @@ printf '%s\n' '{"iteration":2,"provider":"docker","duration_s":120,"ok":false,"m
 write_summary "$MIXED" 2 1
 jq -e '.shard_up_seconds == 60' "$MIXED/summary.json" >/dev/null
 
+# A segment deadline kills the running iteration (exit 124). The driver does
+# not count it in FAILURES, so the provider split must not count it either.
+TRUNCATED="$TMP/truncated"
+mkdir -p "$TRUNCATED/iteration-00001-docker" "$TRUNCATED/iteration-00002-subprocess"
+printf '%s\n' '{"iteration":1,"provider":"docker","duration_s":60,"ok":true,"metrics":{}}' >"$TRUNCATED/iteration-00001-docker/metrics.json"
+printf '%s\n' '{"iteration":2,"provider":"subprocess","duration_s":30,"exit_code":124,"ok":false,"deadline_truncated":true,"metrics":{}}' >"$TRUNCATED/iteration-00002-subprocess/metrics.json"
+write_summary "$TRUNCATED" 2 0
+jq -e '
+  .failures == 0
+  and .providers.docker.failures == 0
+  and .providers.subprocess.iterations == 1
+  and .providers.subprocess.failures == 0
+  and .shard_up_seconds == 60
+' "$TRUNCATED/summary.json" >/dev/null
+
 SPARSE="$TMP/sparse"
 mkdir -p "$SPARSE/iteration-00001-docker"
 printf '%s\n' '{"iteration":1,"provider":"docker","ok":true,"rss_peak_mb":null,"metrics":{"lfb_spread":{"samples":2}}}' >"$SPARSE/iteration-00001-docker/metrics.json"

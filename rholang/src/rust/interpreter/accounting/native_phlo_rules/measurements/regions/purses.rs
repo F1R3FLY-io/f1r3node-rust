@@ -94,6 +94,11 @@ impl NativePhloRegionDemands<'_> {
         let mut encoded_bytes = 0_usize;
         for row in self.measurements.observations.rows() {
             for region in &row.authority.regions {
+                // Added by G3 (DR-135, S7): a region that the filter of the
+                // demand left out binds no purse of the client (R10).
+                if self.excludes(region) {
+                    continue;
+                }
                 let original_authority = region
                     .signature
                     .as_ref()

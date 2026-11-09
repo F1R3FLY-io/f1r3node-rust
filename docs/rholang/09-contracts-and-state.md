@@ -329,4 +329,6 @@ This is especially dangerous in multi-hop call chains (A -> B -> C -> D): a miss
 
 To diagnose, use the block report API (`getEventByHash` with `forceReplay=true`, see [Tracing in Tests](../testing-tracing.md#tracing-rholang-execution-via-block-report)) to inspect produces and consumes per deploy. An orphan produce has a `random_state` that no consume matches.
 
+On a protocol-6 shard, every user deploy is an offered deploy. Its block report shows the produces, consumes and COMMs of its user run in a USER batch, so the same diagnosis works (DR-70).
+
 Defensive practice: any contract that exposes an address it computed at runtime and expects to receive sends on it should ensure the receiver is installed *before* the address leaves the contract. See [Vaults and Tokens — Self-Registering Contracts](12-vaults-and-tokens.md#self-registering-contracts).

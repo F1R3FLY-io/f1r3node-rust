@@ -37,12 +37,12 @@ pub(crate) fn guarded_channel_action(
     multi_writer_channels: &HashSet<Blake2b256Hash>,
 ) -> Result<Option<RhoTrieAction>, HistoryError> {
     if let Some(number_ch_val) = number_chs.get(hash) {
-        let (diff, merge_type) = *number_ch_val;
+        let (diff, merge_type) = number_ch_val;
         let base_get_data = |h: &Blake2b256Hash| reader.get_data(h);
         Ok(Some(RholangMergingLogic::calculate_number_channel_merge(
             hash,
             diff,
-            merge_type,
+            *merge_type,
             channel_changes,
             base_get_data,
         )?))

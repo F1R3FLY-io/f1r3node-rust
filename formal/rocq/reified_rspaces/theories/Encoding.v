@@ -1,6 +1,9 @@
 (* ═══════════════════════════════════════════════════════════════════════════
    Encoding.v — Marker-tuple encoding of the Reified RSpaces surface syntax
 
+   Retired from the gate by decision 112. This file is frozen evidence of the
+   marker encoding. SyntaxFields.v models the protobuf fields that replace it.
+
    This module models the wire encoding of the Reified RSpaces syntax (phase
    P2). Plan decision 18 encodes each Reified construct as an ETuple inside
    the existing Par fields. The head of the tuple is an unforgeable 2-byte

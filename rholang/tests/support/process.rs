@@ -4,10 +4,16 @@
 //! runs one role in a fresh process. A child keeps its store in a run directory under
 //! `RRS_SCRATCH`, or under `target/verification/reified-rspaces/scratch`, and never in the
 //! RAM-backed temporary directory of the host. Each child writes one record for each deploy, and
-//! the parent compares the records of its children with its own.
+//! the parent certifies the records of its children, as a validator in another process does.
+// Changed by decision 93 (decision 111): the parent certifies the records of its children. The
+// old text follows.
+// //! RAM-backed temporary directory of the host. Each child writes one record for each deploy, and
+// //! the parent compares the records of its children with its own.
 //!
-//! The child of a test runs the same test function, so it has the tokio worker count of the
-//! parent (finding F-47-2: the session charge of native execution depends on the thread count).
+//! The role of a child names its step and its racing runtime (`role_runtime`, decision 111).
+// Changed by decision 111: a role names its racing runtime. The old text follows.
+// //! The child of a test runs the same test function, so it has the tokio worker count of the
+// //! parent (finding F-47-2: the session charge of native execution depends on the thread count).
 //! The parent keeps the standard output of each child, so no test-harness line of a child
 //! reaches the output of the parent. It shows the standard error of a child that fails.
 //!
@@ -83,6 +89,20 @@ impl Child<'_> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// Added by decision 111: the step and the racing runtime of the role `{step}-{workers}` of a
+/// child process.
+pub fn role_runtime(role: &str) -> (&str, usize) {
+    let (step, workers) = role
+        .rsplit_once('-')
+        .expect("a role names its step and its racing runtime");
+    (
+        step,
+        workers
+            .parse()
+            .expect("the racing runtime of a role is a worker count"),
+    )
 }
 
 /// The record of one deploy that a process writes for the parent or for the next process.
@@ -297,8 +317,12 @@ pub async fn certify_record(chain: &mut NativeChain, record: &DeployRecord, limi
     );
 }
 
-/// Checks that two runs give the same record of one deploy: the roots, the outputs, the cost
-/// vector, the evidence bytes and the event log.
-pub fn assert_same_record(own: &DeployRecord, other: &DeployRecord) {
-    assert_eq!(own, other, "{}: the records of two runs differ", own.label);
-}
+// Retired by decision 93 (decision 111): racing evaluation gives two runs other records, so no
+// test compares the records of two runs. The parent certifies them (`certify_record`). The old
+// helper follows.
+//
+// /// Checks that two runs give the same record of one deploy: the roots, the outputs, the cost
+// /// vector, the evidence bytes and the event log.
+// pub fn assert_same_record(own: &DeployRecord, other: &DeployRecord) {
+//     assert_eq!(own, other, "{}: the records of two runs differ", own.label);
+// }

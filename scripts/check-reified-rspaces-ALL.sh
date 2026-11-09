@@ -29,6 +29,12 @@
 #   7. loom      - cargo test --release -p rholang --test loom_reified
 #   8. benches   - cargo bench -p rholang --bench B -- --test, once for each
 #                  Reified bench, with RRS_BENCH_MAX_SIZE=1000
+#   9. chromadb  - the suites of the feature chromadb, which alone registers
+#                  rho:vectordb:embed and rho:vectordb:ann (decision 113):
+#                  cargo test --release -p rholang --features chromadb with the
+#                  chroma, examples, rehydrate and factory suites, and the
+#                  library tests of reified::system_processes and
+#                  reified::system_channels
 #
 # The cargo suites of the per-phase gate sets (G2 to G17) are not legs.
 #
@@ -43,6 +49,10 @@
 #   RRS_REDACTION_HOME  home directory of the original design ledger, for the
 #                       ledger-copy checks (default $HOME)
 #   RRS_ALL_LEGS        space-separated subset of the leg names (default: all)
+#   LIBTORCH            libtorch 2.4.0, which torch-sys of the feature chromadb
+#                       needs (leg 9). The leg sets BZIP2_NO_PKG_CONFIG=1, so the
+#                       linker binds this libtorch and no system one, and it adds
+#                       $LIBTORCH/lib to LD_LIBRARY_PATH for the test binaries.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,7 +65,9 @@ fi
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-24G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-800%}"
 export RRS_REDACTION_HOME="${RRS_REDACTION_HOME:-$HOME}"
-ALL_LEGS=(proofs tla z3 sage checkers examples loom benches)
+# Changed by decision 113: leg 9 runs the suites of the feature chromadb.
+# ALL_LEGS=(proofs tla z3 sage checkers examples loom benches)
+ALL_LEGS=(proofs tla z3 sage checkers examples loom benches chromadb)
 read -r -a LEGS <<< "${RRS_ALL_LEGS:-${ALL_LEGS[*]}}"
 BENCHES=(reified_spaces reified_persistence)
 Z3_SCRIPTS=(squared_form_cosine topk_tiebreak_total_order metric_algebra)
@@ -102,8 +114,19 @@ need_tool() {
 }
 need_tool bash
 need_tool python3
-if wants examples || wants loom || wants benches; then
+# Changed by decision 113: leg 9 needs cargo too.
+# if wants examples || wants loom || wants benches; then
+if wants examples || wants loom || wants benches || wants chromadb; then
   need_tool cargo
+fi
+# Added by decision 113: a test binary of the feature chromadb loads libtorch 2.4.0.
+if wants chromadb; then
+  if [[ -n "${LIBTORCH:-}" && -d "$LIBTORCH/lib" ]]; then
+    pass "tool libtorch: $LIBTORCH"
+  else
+    fail "tool libtorch: set LIBTORCH to libtorch 2.4.0 (leg chromadb)"
+    tools_ok=false
+  fi
 fi
 if wants sage; then
   need_tool sage
@@ -225,6 +248,21 @@ if wants benches; then
     run_leg "bench $bench" "$LOG_DIR/bench-$bench.log" \
       bounded cargo bench -p rholang --bench "$bench" -- --test
   done
+fi
+
+# ── 9. chromadb ─────────────────────────────────────────────────────────────
+# Added by decision 113: only a build with the feature chromadb registers embed
+# and ann, so their suites and their library tests run in that build.
+if wants chromadb; then
+  library_path="$LIBTORCH/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  run_leg "chromadb" "$LOG_DIR/chromadb.log" \
+    bounded env BZIP2_NO_PKG_CONFIG=1 LD_LIBRARY_PATH="$library_path" \
+    cargo test --release -p rholang --features chromadb --test reified_vectordb_chroma \
+    --test reified_examples_execute --test reified_rehydrate --test reified_factory
+  run_leg "chromadb lib" "$LOG_DIR/chromadb-lib.log" \
+    bounded env BZIP2_NO_PKG_CONFIG=1 LD_LIBRARY_PATH="$library_path" \
+    cargo test --release -p rholang --features chromadb --lib -- \
+    reified::system_processes reified::system_channels
 fi
 
 finish

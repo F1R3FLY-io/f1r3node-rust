@@ -7,7 +7,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+// Changed by DR-134 (DR-66 item 1): an offered pending store holds candidates.
+// use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage;
+use block_storage::rust::deploy::key_value_deploy_storage::{
+    KeyValueDeployStorage, PendingDeployCandidate,
+};
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::casper::{CasperShardConf, CasperSnapshot, OnChainCasperState};
@@ -18,11 +22,17 @@ use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signed::Signed;
 use dashmap::DashSet;
 use models::rust::casper::protocol::casper_message::DeployData;
+// Added by DR-134 (DR-66 item 1): the envelope limits of the offered store.
+use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::ByteString;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 
+// Added by DR-134 (DR-66 item 1): offered deploys. The legacy `create_deploy`
+// stays for the tests of the legacy selection entry point.
+use crate::helper::offered_deploy;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::util::genesis_builder::DEFAULT_VALIDATOR_SKS;
 use crate::util::rholang::resources;
 
@@ -45,10 +55,33 @@ fn create_deploy(
         valid_after_block_number,
         shard_id: "test-shard".to_string(),
         expiration_timestamp,
+        parameters: Vec::new(),
     };
 
     Signed::create(deploy_data, Box::new(Secp256k1), validator_sk.clone())
         .expect("Failed to create signed deploy")
+}
+
+/// Added by DR-134 (DR-66 item 1): `create_deploy` as an offered deploy. The
+/// offered test builder signs no expiration timestamp, so only the block-window
+/// cases use it.
+fn create_offered_deploy(
+    valid_after_block_number: i64,
+    validator_sk: &PrivateKey,
+) -> OfferedDeploy {
+    offered_deploy::source_deploy(
+        format!("new x in {{ x!({}) }}", valid_after_block_number),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0),
+        None,
+        None,
+        Some(validator_sk.clone()),
+        Some(valid_after_block_number),
+        Some("test-shard".to_string()),
+    )
+    .expect("Failed to create offered deploy")
 }
 
 /// Gives the snapshot a parent whose main-parent chain roots at a
@@ -232,9 +265,11 @@ async fn seen_deploys_wait_for_finalized_recovery_buffer() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -355,9 +390,11 @@ async fn ordinary_deploys_are_ignored_when_user_deploy_leadership_is_disabled() 
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -428,9 +465,11 @@ async fn unrelated_ordinary_deploys_remain_selectable_while_scope_has_user_work(
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -477,9 +516,11 @@ async fn ordinary_deploy_selection_uses_config_cap() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -533,9 +574,11 @@ async fn ordinary_deploy_selection_is_bounded_only_by_the_configured_cap() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -592,9 +635,11 @@ async fn recovered_deploy_selection_uses_normal_retry_window() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -682,9 +727,11 @@ async fn rejected_in_scope_ordinary_deploy_waits_for_recovery_buffer() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -750,9 +797,11 @@ async fn pool_retry_of_an_unsettled_rejection_is_deferred_by_the_gate() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -835,9 +884,11 @@ async fn block_expired_deploy_in_unresolved_scope_is_removed_from_storage() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -891,9 +942,11 @@ async fn block_expired_rejected_deploy_is_purged_not_retried() {
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -945,9 +998,11 @@ async fn buffered_retry_admission_follows_the_recovered_deploys_policy_switch() 
             .expect("deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("rejected deploy buffer"),
     ));
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
         .await
@@ -1056,9 +1111,11 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
             .expect("Failed to create deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("Failed to create rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("Failed to create rejected deploy buffer"),
     ));
 
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -1083,17 +1140,30 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Create deploys:
     // - Expired deploy: valid_after_block_number = 0 (<= 51, expired)
     // - Valid deploy: valid_after_block_number = 60 (> 51 and < 101, valid)
-    let expired_deploy = create_deploy(0, None, &validator_sk);
-    let valid_deploy = create_deploy(60, None, &validator_sk);
+    // Changed by DR-134 (DR-66 item 1): offered deploys.
+    // let expired_deploy = create_deploy(0, None, &validator_sk);
+    // let valid_deploy = create_deploy(60, None, &validator_sk);
+    let expired_deploy = create_offered_deploy(0, &validator_sk);
+    let valid_deploy = create_offered_deploy(60, &validator_sk);
 
     // Add both deploys to storage
     {
         let mut ds = deploy_storage.lock();
-        ds.add(vec![expired_deploy.clone(), valid_deploy.clone()])
-            .expect("Failed to add deploys");
+        // Changed by DR-134 (DR-66 item 1): the pending store keeps offered
+        // envelopes in its envelope table.
+        // ds.add(vec![expired_deploy.clone(), valid_deploy.clone()])
+        //     .expect("Failed to add deploys");
+        for deploy in [&expired_deploy, &valid_deploy] {
+            ds.add_envelope_if_absent(&deploy.envelope)
+                .expect("Failed to add deploys");
+        }
 
         // Verify both deploys are in storage
-        let deploys_before = ds.read_all().expect("Failed to read deploys");
+        // Changed by DR-134 (DR-66 item 1): the envelope table.
+        // let deploys_before = ds.read_all().expect("Failed to read deploys");
+        let deploys_before = ds
+            .read_all_envelopes(offered_funded_v6_limits().envelope)
+            .expect("Failed to read deploys");
         assert_eq!(deploys_before.len(), 2, "Expected 2 deploys before create");
     }
 
@@ -1103,7 +1173,15 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Call BlockCreator.create
     // The cleanup happens in prepare_user_deploys before block creation
     // Block creation may fail due to empty parents, but that's after cleanup
-    let _ = block_creator::create(
+    // Changed by DR-134 (DR-66 item 1): under offered activation, selection and
+    // its cleanup read the offered envelope table. The activation flag alone
+    // selects that path. Only the compute step reads the adopted policy, and
+    // this parentless fixture never reaches a valid block.
+    // let _ = block_creator::create(
+    //     &snapshot,
+    let _ = block_creator::create_with_adopted_policy(
+        None,
+        true,
         &snapshot,
         &validator_identity,
         None,
@@ -1118,16 +1196,32 @@ async fn should_remove_block_expired_deploys_while_keeping_valid_ones() {
     // Verify: expired deploy removed, valid deploy kept
     {
         let ds = deploy_storage.lock();
-        let deploys_after = ds.read_all().expect("Failed to read deploys");
+        // Changed by DR-134 (DR-66 item 1): the envelope table, and the
+        // identity of an offered deploy.
+        // let deploys_after = ds.read_all().expect("Failed to read deploys");
+        let deploys_after = ds
+            .read_all_envelopes(offered_funded_v6_limits().envelope)
+            .expect("Failed to read deploys");
         assert_eq!(
             deploys_after.len(),
             1,
             "Expected 1 deploy after create (expired should be removed)"
         );
 
-        let remaining_deploy = deploys_after.iter().next().unwrap();
+        // Changed by DR-134 (DR-66 item 1): the envelope listing is a slice.
+        // let remaining_deploy = deploys_after.iter().next().unwrap();
+        let remaining_deploy = deploys_after.first().expect("one deploy remains");
+        // assert_eq!(
+        //     remaining_deploy.sig, valid_deploy.sig,
+        //     "Expected valid deploy to remain"
+        // );
+        let remaining_identity: &[u8] = match remaining_deploy {
+            PendingDeployCandidate::Envelope(envelope) => envelope.identity().as_bytes(),
+            PendingDeployCandidate::Legacy(deploy) => &deploy.sig[..],
+        };
         assert_eq!(
-            remaining_deploy.sig, valid_deploy.sig,
+            remaining_identity,
+            &valid_deploy.sig[..],
             "Expected valid deploy to remain"
         );
     }
@@ -1155,9 +1249,11 @@ async fn should_remove_both_block_expired_and_time_expired_deploys() {
             .expect("Failed to create deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("Failed to create rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("Failed to create rejected deploy buffer"),
     ));
 
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)
@@ -1259,9 +1355,11 @@ async fn should_remove_expired_deploys_from_rejected_deploy_buffer() {
             .expect("Failed to create deploy storage"),
     ));
     let rejected_deploy_buffer = Arc::new(Mutex::new(
-        block_storage::rust::deploy::key_value_rejected_deploy_buffer::KeyValueRejectedDeployBuffer::new(&mut kvm)
-            .await
-            .expect("Failed to create rejected deploy buffer"),
+        block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer::new(
+            &mut kvm,
+        )
+        .await
+        .expect("Failed to create rejected deploy buffer"),
     ));
 
     let block_store = KeyValueBlockStore::create_from_kvm(&mut kvm)

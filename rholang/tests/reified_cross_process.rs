@@ -9,15 +9,24 @@
 //!
 //! | Test | Property |
 //! |---|---|
-//! | `n2_cross_process_post_state_equal` | The children `n2-a` and `n2-b` each play one deploy set in a fresh process over an in-memory store, and the parent plays the set twice in its own process. For each deploy, all four runs give the same pre-state and post-state roots, outputs, event log, evidence bytes and phlo. |
-//! | `space_cross_block_replay` | The child `propose` plays three blocks over one LMDB store. Block 1 creates a durable space of each family and an agent space, with records and waiters. Block 2 uses them, fires the waiters of block 1, and creates and ends a `temp` space and a `seq` space inside each deploy. Block 3 runs joins, PathMap prefix deliveries and agent calls. The child `validate` opens the store in another process and certifies each deploy once from its pre-state. The parent plays the blocks in its own process and compares every record of the child `propose` with its own. |
+//! | `n2_cross_process_post_state_equal` | On each racing runtime, the child `n2-{workers}` plays one deploy set in a fresh process over an in-memory store. The parent certifies each record of the child from the empty root, as a validator in another process does (decisions 93 and 111). |
+//! | `space_cross_block_replay` | The child `propose` plays three blocks over one LMDB store. Block 1 creates a durable space of each family and an agent space, with records and waiters. Block 2 uses them, fires the waiters of block 1, and creates and ends a `temp` space and a `seq` space inside each deploy. Block 3 runs joins, PathMap prefix deliveries and agent calls. The child `validate` opens the store in another process and certifies each deploy once from its pre-state. The parent certifies every record of the child `propose` from the empty root, and it checks the deliveries. The test runs on each racing runtime (decisions 93 and 111). |
+// Changed by decisions 93 and 111: the parent certifies the records of its children on each
+// racing runtime. The old rows follow.
+// //! | `n2_cross_process_post_state_equal` | The children `n2-a` and `n2-b` each play one deploy set in a fresh process over an in-memory store, and the parent plays the set twice in its own process. For each deploy, all four runs give the same pre-state and post-state roots, outputs, event log, evidence bytes and phlo. |
+// //! | `space_cross_block_replay` | The child `propose` plays three blocks over one LMDB store. Block 1 creates a durable space of each family and an agent space, with records and waiters. Block 2 uses them, fires the waiters of block 1, and creates and ends a `temp` space and a `seq` space inside each deploy. Block 3 runs joins, PathMap prefix deliveries and agent calls. The child `validate` opens the store in another process and certifies each deploy once from its pre-state. The parent plays the blocks in its own process and compares every record of the child `propose` with its own. |
 //!
 //! The deploy set of N2 holds the 24 family programs with the qualifiers `default` and `temp`,
 //! two VectorDB programs with queries, the six HashSet families with `seq`, and the six deploys of
 //! the conformance kit of the reference agent. The PathMap family programs make prefix
-//! deliveries. The children run the same test function as the parent, so they have the tokio
-//! worker count of the parent (finding F-47-2). Only the child `validate` certifies, because a
-//! validator certifies each deploy once (amendment A16). In the replay across blocks, each family
+//! deliveries. The role of a child names its step and its racing runtime (`role_runtime`,
+//! decision 111). The child `validate` and the parent each certify each deploy once, as two
+//! validators do (amendment A16). In the replay across blocks, each family
+// Changed by decisions 93 and 111: a role names its racing runtime, and the parent certifies.
+// The old lines follow.
+// //! deliveries. The children run the same test function as the parent, so they have the tokio
+// //! worker count of the parent (finding F-47-2). Only the child `validate` certifies, because a
+// //! validator certifies each deploy once (amendment A16). In the replay across blocks, each family
 //! forwards its deliveries to a channel of its own, and the parent checks the deliveries of each
 //! family after its run.
 
@@ -32,10 +41,17 @@ use support::family_programs::{
     HASHSET_UNIT_TAKE,
 };
 use support::native::{NativeChain, AMPLE_LIMIT};
+// Changed by decision 93 (decision 111): the parent certifies the records of its children. The
+// old import follows.
+// use support::process::{
+//     assert_same_record, certify_record, play_recorded, read_records, run_directory, write_records,
+//     Child, DeployRecord,
+// };
 use support::process::{
-    assert_same_record, certify_record, play_recorded, read_records, run_directory, write_records,
-    Child, DeployRecord,
+    certify_record, play_recorded, read_records, role_runtime, run_directory, write_records, Child,
+    DeployRecord,
 };
+use support::props::{racing_runtime, RACING_WORKERS};
 
 // The phlo limit of the HashSet deploys, the constructor of the VectorDB spaces and `Deploy`
 // moved to `support::blocks` (P9 step 4), which the LFS suite shares.
@@ -50,17 +66,20 @@ async fn play_all(chain: &mut NativeChain, deploys: &[Deploy]) -> Vec<DeployReco
     records
 }
 
-/// Checks that two runs of one deploy set give the same records, deploy by deploy.
-fn assert_same_records(own: &[DeployRecord], other: &[DeployRecord], run: &str) {
-    assert_eq!(
-        own.len(),
-        other.len(),
-        "{run}: the runs played the same number of deploys"
-    );
-    for (mine, theirs) in own.iter().zip(other) {
-        assert_same_record(mine, theirs);
-    }
-}
+// Retired by decision 93 (decision 111): racing evaluation gives two runs other records, so the
+// parent certifies the records of its children (`certify_record`). The old helper follows.
+//
+// /// Checks that two runs of one deploy set give the same records, deploy by deploy.
+// fn assert_same_records(own: &[DeployRecord], other: &[DeployRecord], run: &str) {
+//     assert_eq!(
+//         own.len(),
+//         other.len(),
+//         "{run}: the runs played the same number of deploys"
+//     );
+//     for (mine, theirs) in own.iter().zip(other) {
+//         assert_same_record(mine, theirs);
+//     }
+// }
 
 // ─── N2 ────────────────────────────────────────────────────────────────────────────────────────
 
@@ -123,28 +142,82 @@ async fn n2_run() -> Vec<DeployRecord> {
     play_all(&mut chain, &n2_deploys()).await
 }
 
-/// N2 (amendment A14): two child processes and two runs of the parent give the same record for
-/// each deploy of the set.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn n2_cross_process_post_state_equal() {
+// Changed by decision 93 (decision 111): racing evaluation gives two runs other records, so a
+// child runs on each racing runtime and the parent certifies its records. The old test follows.
+//
+// /// N2 (amendment A14): two child processes and two runs of the parent give the same record for
+// /// each deploy of the set.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn n2_cross_process_post_state_equal() {
+//     if let Some((role, directory)) = N2.role() {
+//         let records = n2_run().await;
+//         write_records(&directory, &role, &records);
+//         return;
+//     }
+//     let directory = run_directory("n2");
+//     N2.spawn("n2-a", &directory).await;
+//     N2.spawn("n2-b", &directory).await;
+//     let first = n2_run().await;
+//     let second = n2_run().await;
+//     assert_eq!(
+//         first.len(),
+//         n2_deploys().len(),
+//         "the run plays every deploy"
+//     );
+//     assert_same_records(&first, &second, "the second run of the parent");
+//     assert_same_records(&first, &read_records(&directory, "n2-a"), "the child n2-a");
+//     assert_same_records(&first, &read_records(&directory, "n2-b"), "the child n2-b");
+//     std::fs::remove_dir_all(&directory).expect("remove the run directory");
+// }
+
+/// N2 (amendment A14, decisions 93 and 111): on each racing runtime, a child process plays the
+/// deploy set, and the parent certifies the record of each deploy.
+#[test]
+fn n2_cross_process_post_state_equal() {
     if let Some((role, directory)) = N2.role() {
-        let records = n2_run().await;
+        let (_, workers) = role_runtime(&role);
+        let records = racing_runtime(workers).block_on(n2_run());
         write_records(&directory, &role, &records);
         return;
     }
-    let directory = run_directory("n2");
-    N2.spawn("n2-a", &directory).await;
-    N2.spawn("n2-b", &directory).await;
-    let first = n2_run().await;
-    let second = n2_run().await;
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(n2_certified(workers));
+    }
+}
+
+/// Added by decision 93 (decision 111): runs the child `n2-{workers}` and certifies each of its
+/// records in this process from the empty root, as a validator in another process does.
+async fn n2_certified(workers: usize) {
+    let role = format!("n2-{workers}");
+    let directory = run_directory(&role);
+    N2.spawn(&role, &directory).await;
+    let records = read_records(&directory, &role);
+    let deploys = n2_deploys();
     assert_eq!(
-        first.len(),
-        n2_deploys().len(),
-        "the run plays every deploy"
+        records.len(),
+        deploys.len(),
+        "{role}: the child plays every deploy"
     );
-    assert_same_records(&first, &second, "the second run of the parent");
-    assert_same_records(&first, &read_records(&directory, "n2-a"), "the child n2-a");
-    assert_same_records(&first, &read_records(&directory, "n2-b"), "the child n2-b");
+    for pair in records.windows(2) {
+        assert_eq!(
+            pair[1].pre_root, pair[0].post_root,
+            "{}: each deploy starts at the root of the deploy before it",
+            pair[1].label
+        );
+    }
+    let mut validator = NativeChain::new().await;
+    assert_eq!(
+        records.first().map(DeployRecord::pre),
+        Some(validator.history().root()),
+        "{role}: the first deploy starts at the empty root"
+    );
+    for (record, deploy) in records.iter().zip(&deploys) {
+        assert_eq!(
+            record.label, deploy.label,
+            "{role}: the records follow the deploy set"
+        );
+        certify_record(&mut validator, record, deploy.limit).await;
+    }
     std::fs::remove_dir_all(&directory).expect("remove the run directory");
 }
 
@@ -166,31 +239,62 @@ fn replay_deploys() -> Vec<Deploy> { blocks().into_iter().flatten().collect() }
 
 /// The replay across blocks (amendment A16): the child `propose` plays the three blocks over one
 /// LMDB store, the child `validate` certifies each deploy once from its pre-state in another
-/// process, and the parent plays the blocks in its own process and compares the records.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_cross_block_replay() {
+/// process. The parent certifies each record from the empty root in its own process, on each
+/// racing runtime.
+// Changed by decisions 93 and 111: the parent certifies the records of `propose`, and the test
+// runs on each racing runtime. The old doc and header follow.
+// /// LMDB store, the child `validate` certifies each deploy once from its pre-state in another
+// /// process, and the parent plays the blocks in its own process and compares the records.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_cross_block_replay() {
+#[test]
+fn space_cross_block_replay() {
     if let Some((role, directory)) = REPLAY.role() {
         let store = directory.join("lmdb");
-        return match role.as_str() {
-            "propose" => {
-                let mut chain = NativeChain::open(&store, None).await;
-                let records = play_all(&mut chain, &replay_deploys()).await;
-                write_records(&directory, "propose", &records);
-            }
-            "validate" => {
-                let records = read_records(&directory, "propose");
-                let first = records.first().expect("the blocks have deploys");
-                let mut chain = NativeChain::open(&store, Some(&first.pre())).await;
-                for (record, deploy) in records.iter().zip(replay_deploys()) {
-                    certify_record(&mut chain, record, deploy.limit).await;
+        // Changed by decision 111: the role names its step and its racing runtime. The old match
+        // follows.
+        // return match role.as_str() {
+        let (step, workers) = role_runtime(&role);
+        return racing_runtime(workers).block_on(async {
+            match step {
+                "propose" => {
+                    let mut chain = NativeChain::open(&store, None).await;
+                    let records = play_all(&mut chain, &replay_deploys()).await;
+                    write_records(&directory, "propose", &records);
                 }
+                "validate" => {
+                    let records = read_records(&directory, "propose");
+                    let first = records.first().expect("the blocks have deploys");
+                    let mut chain = NativeChain::open(&store, Some(&first.pre())).await;
+                    for (record, deploy) in records.iter().zip(replay_deploys()) {
+                        certify_record(&mut chain, record, deploy.limit).await;
+                    }
+                }
+                other => panic!("unknown role {other}"),
             }
-            other => panic!("unknown role {other}"),
-        };
+        });
+        // };
     }
-    let directory = run_directory("cross-block-replay");
-    REPLAY.spawn("propose", &directory).await;
-    REPLAY.spawn("validate", &directory).await;
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(cross_block_run(workers));
+    }
+}
+
+/// Added by decisions 93 and 111: one run of [`space_cross_block_replay`] on the racing runtime
+/// with `workers` workers.
+async fn cross_block_run(workers: usize) {
+    // Changed by decision 111: each racing runtime has its own run directory and children. The
+    // old lines follow.
+    // let directory = run_directory("cross-block-replay");
+    // REPLAY.spawn("propose", &directory).await;
+    // REPLAY.spawn("validate", &directory).await;
+    let directory = run_directory(&format!("cross-block-replay-{workers}"));
+    REPLAY
+        .spawn(&format!("propose-{workers}"), &directory)
+        .await;
+    REPLAY
+        .spawn(&format!("validate-{workers}"), &directory)
+        .await;
     let proposed = read_records(&directory, "propose");
     for pair in proposed.windows(2) {
         assert_eq!(
@@ -200,8 +304,27 @@ async fn space_cross_block_replay() {
         );
     }
     let mut warm = NativeChain::new().await;
-    let own = play_all(&mut warm, &replay_deploys()).await;
-    assert_same_records(&own, &proposed, "the child propose");
+    // Changed by decision 93 (decision 111): racing evaluation gives the parent other records, so
+    // it certifies the records of `propose` instead. The old lines follow.
+    // let own = play_all(&mut warm, &replay_deploys()).await;
+    // assert_same_records(&own, &proposed, "the child propose");
+    let deploys = replay_deploys();
+    assert_eq!(
+        proposed.len(),
+        deploys.len(),
+        "the child propose plays every deploy"
+    );
+    assert_eq!(
+        proposed.first().map(DeployRecord::pre),
+        Some(warm.history().root()),
+        "the first deploy starts at the empty root"
+    );
+    for (record, deploy) in proposed.iter().zip(&deploys) {
+        assert_eq!(record.label, deploy.label, "the records follow the blocks");
+        certify_record(&mut warm, record, deploy.limit).await;
+    }
+    let last = proposed.last().expect("the blocks have deploys");
+    warm.reset(&last.post()).await;
     for family in block_families() {
         let mut expected = vec!["fired", "join", "seq", "take", "temp"];
         if family.label.starts_with("pathmap:") {

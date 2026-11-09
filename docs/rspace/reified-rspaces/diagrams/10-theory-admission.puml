@@ -60,7 +60,7 @@ elseif (send) then
     stop
   else (yes)
   endif
-  :admit each value v_i in order, one reserved unit each,
+  :admit each value v_i in order, at no charge,
   before any staging or counter bump (TH-5, TH-8); <<$rrs_checker>>
   note right
     TH-1: a builtin decides by shape,

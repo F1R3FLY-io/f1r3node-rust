@@ -128,4 +128,24 @@ mod tests {
         // Return finished when all items as Done
         assert!(st4.is_finished());
     }
+
+    #[test]
+    fn rejected_should_return_a_received_item_for_requesting_again() {
+        let st = ST::new(vec![10]);
+        let (st1, _) = st.get_next(false);
+        let (st2, _) = st1.received(10);
+
+        let st3 = st2.rejected(10);
+        let (st4, ids) = st3.get_next(false);
+        assert_eq!(ids, vec![10]);
+
+        let (st5, is_received) = st4.received(10);
+        assert!(is_received);
+        assert!(st5.done(10).is_finished());
+
+        // Only a Received item goes back
+        assert_eq!(st4.rejected(10), st4);
+        let st6 = st5.done(10);
+        assert_eq!(st6.rejected(10), st6);
+    }
 }

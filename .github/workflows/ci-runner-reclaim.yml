@@ -1,0 +1,197 @@
+name: CI Runner Reclaim
+
+# Terminates the ephemeral OCI runner VMs of a heavy CI run after that run
+# completes, for every conclusion (EPIC-022 TASK-022-4). The in-run Reclaim
+# Ephemeral Runners job did not exist in 18 of 30 sampled cancelled or failed
+# runs (2026-09-25 to 2026-10-07), and a cancelled run cannot clean up after
+# itself. workflow_run fires after the run ends, also when it was cancelled.
+#
+# The launch job tags each VM with github-run-id and github-run-key
+# (<run id>-<attempt>). This workflow terminates only VMs whose name matches the
+# ci-eph- scheme AND whose github-run-key equals the completed attempt, so a
+# re-run attempt keeps its own VMs. ci-runner-reaper and the OCI reaper Function
+# stay as the backstop for VMs that were never tagged.
+#
+# Fork pull requests use OCI only after a reviewer approves the run in the
+# ephemeral-launch environment. The detect job starts the credential job only
+# when Await Launch Approval succeeded and the launch job ran in that attempt.
+#
+# NOTE: workflow_run triggers only from the default branch (master). Until this
+# file reaches master, run it manually with workflow_dispatch.
+
+on:
+  workflow_run:
+    workflows: ["CI", "CI (fork PRs)"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: GitHub run id of the heavy CI run
+        required: true
+      run_attempt:
+        description: Attempt number of that run
+        default: "1"
+      dry_run:
+        description: List the VMs without terminating them
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-runner-reclaim-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # Same literal as ci-runner-reaper.yml. check-workflow-invariants.sh
+  # (invariant 6) requires every file that pins it to agree.
+  CI_RUNNER_COMPARTMENT_OCID: "ocid1.compartment.oc1..aaaaaaaalq6bh2a6dmq4h6i3nrripxlcevv7fa3goaf7wxve52qiuocmehia"
+  OCI_CLI_INSTALLER_URL: "https://raw.githubusercontent.com/oracle/oci-cli/v3.89.1/scripts/install/install.sh"
+  OCI_CLI_INSTALLER_SHA256: "079dcc9a3e2a61ec692400e30169c9996b2998ac8c4e205198ed5863283fcb76"
+  OCI_CLI_INSTALLER_PY_SHA256: "f66dc9e2b69cbbd269374db638ffa9c0b08a5a4ea0b836b81336d6581aab9eed"
+  OCI_CLI_VERSION: "3.89.1"
+
+jobs:
+  detect:
+    name: Detect runner launch
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    timeout-minutes: 5
+    outputs:
+      launched: ${{ steps.detect.outputs.launched }}
+      run_id: ${{ steps.detect.outputs.run_id }}
+      run_attempt: ${{ steps.detect.outputs.run_attempt }}
+    steps:
+      # .github/scripts/test-ci-runner-reclaim.sh runs this block.
+      - name: Check whether the run launched OCI runners
+        id: detect
+        shell: bash -e {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt || inputs.run_attempt }}
+        run: |
+          case "$RUN_ID" in ''|*[!0-9]*) echo "::error::run id must be numeric: $RUN_ID"; exit 1 ;; esac
+          case "$RUN_ATTEMPT" in ''|*[!0-9]*) echo "::error::run attempt must be numeric: $RUN_ATTEMPT"; exit 1 ;; esac
+          jobs="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" \
+            --jq '.jobs[] | "\(.name)\t\(.conclusion // .status)"')"
+          # A run uses OCI only after Await Launch Approval succeeds. For a fork
+          # pull request that job waits for a reviewer in the ephemeral-launch
+          # environment, so this job never starts the credential job for a run
+          # that nobody approved.
+          approval="$(awk -F'\t' '$1 ~ /^(Heavy Pipeline \/ )?Await Launch Approval$/ { print $2 }' <<< "$jobs")"
+          launch="$(awk -F'\t' '$1 ~ /^(Heavy Pipeline \/ )?Launch Ephemeral Runners$/ { print $2 }' <<< "$jobs")"
+          approved=false
+          while read -r state; do
+            [ "$state" = success ] && approved=true
+          done <<< "$approval"
+          launched=false
+          if [ "$approved" = true ]; then
+            while read -r state; do
+              case "$state" in
+                success|failure|cancelled|timed_out) launched=true ;;
+              esac
+            done <<< "$launch"
+          fi
+          echo "Run $RUN_ID attempt $RUN_ATTEMPT approval: ${approval:-absent}, launch job: ${launch:-absent} -> launched=$launched"
+          {
+            echo "launched=$launched"
+            echo "run_id=$RUN_ID"
+            echo "run_attempt=$RUN_ATTEMPT"
+          } >> "$GITHUB_OUTPUT"
+
+  reclaim:
+    name: Terminate the run's runner VMs
+    needs: detect
+    if: needs.detect.outputs.launched == 'true'
+    runs-on: ubuntu-latest
+    environment: oci-credentials
+    timeout-minutes: 15
+    steps:
+      - name: Install OCI CLI (pinned, checksum-verified)
+        shell: bash -ex {0}
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 "$OCI_CLI_INSTALLER_URL" -o /tmp/oci-install.sh
+          echo "$OCI_CLI_INSTALLER_SHA256  /tmp/oci-install.sh" | sha256sum -c -
+          bash /tmp/oci-install.sh \
+            --accept-all-defaults --install-dir /opt/oci-cli --exec-dir /usr/local/bin \
+            --oci-cli-version "$OCI_CLI_VERSION" \
+            --verify-checksum "$OCI_CLI_INSTALLER_PY_SHA256"
+          oci --version
+
+      - name: Configure OCI auth from secrets
+        shell: bash -e {0} # no -x: never trace the multi-line private key
+        env:
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SUPPRESS_LABEL_WARNING: "True"
+        run: |
+          install -d -m 700 ~/.oci
+          printf '%s\n' "$OCI_PRIVATE_KEY" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config <<CFG
+          [DEFAULT]
+          user=$OCI_USER_OCID
+          fingerprint=$OCI_FINGERPRINT
+          tenancy=$OCI_TENANCY_OCID
+          region=$OCI_REGION
+          key_file=$HOME/.oci/key.pem
+          CFG
+          chmod 600 ~/.oci/config
+
+      # .github/scripts/test-ci-runner-reclaim.sh runs this block.
+      - name: Terminate VMs tagged with this run attempt
+        shell: bash -e {0}
+        env:
+          RUN_ID: ${{ needs.detect.outputs.run_id }}
+          RUN_ATTEMPT: ${{ needs.detect.outputs.run_attempt }}
+          # `== true` guards against string-typed inputs, where "false" is truthy.
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '' }}
+        run: |
+          case "$RUN_ID" in ''|*[!0-9]*) echo "::error::run id must be numeric: $RUN_ID"; exit 1 ;; esac
+          case "$RUN_ATTEMPT" in ''|*[!0-9]*) echo "::error::run attempt must be numeric: $RUN_ATTEMPT"; exit 1 ;; esac
+          run_key="${RUN_ID}-${RUN_ATTEMPT}"
+          instances="$(oci compute instance list --compartment-id "$CI_RUNNER_COMPARTMENT_OCID" --all --output json)"
+          targets="$(jq -r --arg id "$RUN_ID" --arg key "$run_key" '
+              (.data // [])[]
+              | select(."lifecycle-state" == "RUNNING" or ."lifecycle-state" == "STOPPED"
+                       or ."lifecycle-state" == "PROVISIONING" or ."lifecycle-state" == "STARTING"
+                       or ."lifecycle-state" == "STOPPING")
+              | select(."display-name" | test("^ci-eph-[A-Za-z0-9._-]+$"))
+              | select((."freeform-tags"["github-run-id"] // "") == $id)
+              | select((."freeform-tags"["github-run-key"] // "") == $key)
+              | "\(.id)\t\(."display-name")"' <<< "$instances")"
+          if [ -z "$targets" ]; then
+            echo "No live VM is tagged with github-run-key=$run_key."
+            exit 0
+          fi
+          failed=0
+          count=0
+          while IFS=$'\t' read -r iid name; do
+            count=$((count + 1))
+            if [ -n "$DRY_RUN" ]; then
+              echo "Would terminate $name"
+            elif oci compute instance terminate --instance-id "$iid" --force >/dev/null; then
+              echo "Terminated $name"
+            else
+              echo "::warning::could not terminate $name"
+              failed=$((failed + 1))
+            fi
+          done <<< "$targets"
+          echo "reclaimed=$count failed=$failed run_key=$run_key" >> "$GITHUB_STEP_SUMMARY"
+          [ "$failed" -eq 0 ]
+
+      - name: Shred OCI credentials
+        if: always()
+        shell: bash -e {0}
+        run: |
+          if [ -d ~/.oci ]; then
+            find ~/.oci -type f -exec shred -u {} + 2>/dev/null || rm -rf ~/.oci
+            rm -rf ~/.oci
+          fi

@@ -11,41 +11,74 @@
 // tests compare the events of the log on the space channels with these tables: `C(sid)` is the
 // config channel, `S(sid)` the space counter, `S(k)` and `D(k)` the counter and the data channel
 // of the collection `k`.
+//
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, native funded
+// execution. So the tests run on the native session of the shared harness (`support::session`),
+// which plays each deploy natively, checkpoints a deploy that succeeds, reverts a deploy that
+// fails, and certifies each deploy by native replay. The shared harness has the deploy, the
+// readers, the labels and the channel helpers of this file. The helpers that only this file
+// uses are free functions over the session, so a call `session.setup()` became
+// `setup(&mut session)`. The legacy copies of this file are commented out below.
 
 #[path = "../../models/tests/support/reified_strategies.rs"]
 mod reified_strategies;
 
+// Added by decision 90 (C6): the native session of the shared harness.
+#[path = "support/mod.rs"]
+mod support;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+use models::rhoapi::{ListParWithRandom, Par};
 use reified_strategies::{gint, gstring, list, tuple};
 use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use rholang::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::Sig;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::accounting::costs::Cost;
+// use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::merging::mergeable_tags::non_negative_mergeable_tag_name;
 use rholang::rust::interpreter::reified::costs::FIRE_ROUND_CAP;
-use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::spaces::namespace::{
+//     self, CollectionKey, Durability, NameTail, NativeSpace, REIFIED_TAG, SID_LEN,
+// };
 use rholang::rust::interpreter::spaces::namespace::{
-    self, CollectionKey, Durability, NameTail, NativeSpace, REIFIED_TAG, SID_LEN,
+    self, Durability, NameTail, NativeSpace, REIFIED_TAG, SID_LEN,
 };
 use rholang::rust::interpreter::spaces::record::{self, RecordKind};
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
-use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
+use rspace_plus_plus::rspace::internal::Datum;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+// use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce, COMM};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+use support::props::{racing_runtime, RACING_WORKERS};
+use support::session::{
+    comms_on, config_channel, counter_channel, counter_of, data_channel, data_produces,
+    events_touching, native, space_counter_channel, Labels, Session, Space,
+};
 
 /// True when `event` is a COMM whose consume is on the channel with the hash `key`.
 fn is_comm_on(event: &Event, key: &Blake2b256Hash) -> bool {
@@ -55,12 +88,16 @@ fn is_comm_on(event: &Event, key: &Blake2b256Hash) -> bool {
     }
 }
 
-const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-queue-deploy";
-const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-queue-payer";
-const PHLO: i64 = 100_000_000;
+// Disabled by decision 90 (C6): the native session funds its own deploy signature and limit.
+// const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-queue-deploy";
+// const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-queue-payer";
+// const PHLO: i64 = 100_000_000;
 
-/// The phlo limit of a divergent pair. It stops the endless re-issue in about 100 ms.
-const DIVERGENT_PHLO: i64 = 100_000;
+// Changed by decision 90 (C6): the limit of the divergent pair is a native phlo limit.
+// /// The phlo limit of a divergent pair. It stops the endless re-issue in about 100 ms.
+// const DIVERGENT_PHLO: i64 = 100_000;
+/// The native phlo limit of a divergent pair. It stops the endless re-issue after a few rounds.
+const DIVERGENT_PHLO: u64 = 20_000;
 
 /// A deploy that creates a space and two names of it. The handle goes to `@"rrs-handle"` and
 /// the names go to `@"rrs-names"`.
@@ -88,383 +125,399 @@ fn injected(name: &str) -> String { format!("rho:rrs:test:{name}") }
 
 type Injections = HashMap<String, Par>;
 
-/// One deploy: its result, its event log, and the space-scoped channels with data that it
-/// left in the store before the revert of a failed deploy.
-struct Deploy {
-    result: EvaluateResult,
-    log: Vec<Event>,
-    residue: BTreeSet<Vec<u8>>,
-}
+// Changed by decision 90 (C6, decision 69): the shared harness (`support::session`) has the
+// native session and the deploy, the error codes, the readers, the labels and the channel helpers
+// below. The setup of this file follows as a free function. The legacy copies follow.
+//
+// /// One deploy: its result, its event log, and the space-scoped channels with data that it
+// /// left in the store before the revert of a failed deploy.
+// struct Deploy {
+//     result: EvaluateResult,
+//     log: Vec<Event>,
+//     residue: BTreeSet<Vec<u8>>,
+// }
+//
+// impl Deploy {
+//     fn codes(&self) -> Vec<String> { error_codes(&self.result.errors) }
+// }
+//
+// fn error_codes(errors: &[InterpreterError]) -> Vec<String> {
+//     let mut codes = Vec::with_capacity(errors.len());
+//     for error in errors {
+//         push_codes(error, &mut codes);
+//     }
+//     codes
+// }
+//
+// fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
+//     match error {
+//         InterpreterError::AggregateError { interpreter_errors } => {
+//             for inner in interpreter_errors {
+//                 push_codes(inner, codes);
+//             }
+//         }
+//         InterpreterError::ReduceError(message) => codes.push(
+//             message
+//                 .strip_prefix("reified:")
+//                 .and_then(|rest| rest.split(':').next())
+//                 .map(str::to_owned)
+//                 .unwrap_or_else(|| message.clone()),
+//         ),
+//         other => codes.push(format!("{other:?}")),
+//     }
+// }
+//
+// /// A play runtime and a replay runtime over a fresh in-memory store, with a funded deploy.
+// struct Session {
+//     play: RhoRuntimeImpl,
+//     replay: RhoRuntimeImpl,
+// }
+//
+// impl Session {
+//     async fn new() -> Self {
+//         let mut manager = InMemoryStoreManager::new();
+//         let stores = manager
+//             .r_space_stores()
+//             .await
+//             .expect("create the in-memory RSpace stores");
+//         let (play, replay, _history) = create_runtimes(stores, false, &mut Vec::new()).await;
+//         for runtime in [&play, &replay] {
+//             runtime.cost.set_deploy_signature_funded(
+//                 DEPLOY_SIGNATURE,
+//                 Sig::Ground(FUNDING_SIGNATURE.to_vec()),
+//             );
+//         }
+//         Self { play, replay }
+//     }
+//
+//     async fn deploy_full(
+//         &mut self,
+//         source: &str,
+//         label: &str,
+//         injections: &Injections,
+//         phlo: i64,
+//     ) -> Deploy {
+//         let fallback = self.play.create_soft_checkpoint().await;
+//         let before = self.space_data_channels().await;
+//         let result = self
+//             .play
+//             .evaluate(
+//                 source,
+//                 Cost::create(phlo, label.to_owned()),
+//                 injections.clone(),
+//                 Blake2b512Random::create_from_bytes(label.as_bytes()),
+//             )
+//             .await
+//             .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+//         let log = self.play.take_event_log().await;
+//         let residue = self
+//             .space_data_channels()
+//             .await
+//             .difference(&before)
+//             .cloned()
+//             .collect();
+//         if !result.errors.is_empty() {
+//             self.play.revert_to_soft_checkpoint(fallback).await;
+//         }
+//         Deploy {
+//             result,
+//             log,
+//             residue,
+//         }
+//     }
+//
+//     async fn deploy_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
+//         self.deploy_full(source, label, injections, PHLO).await
+//     }
+//
+//     async fn run(&mut self, source: &str, label: &str) -> Deploy {
+//         let deploy = self.deploy_with(source, label, &Injections::new()).await;
+//         assert!(
+//             deploy.result.errors.is_empty(),
+//             "{label}: the deploy fails: {:?}",
+//             deploy.result.errors
+//         );
+//         deploy
+//     }
+//
+//     /// A deploy that must fail with exactly the error codes `expected` and leave no new space
+//     /// data.
+//     async fn fail_with(
+//         &mut self,
+//         source: &str,
+//         label: &str,
+//         injections: &Injections,
+//         expected: &[&str],
+//     ) -> Deploy {
+//         let deploy = self.deploy_with(source, label, injections).await;
+//         assert_eq!(deploy.codes(), expected, "{label}: the error codes");
+//         assert!(
+//             deploy.residue.is_empty(),
+//             "{label}: a failed deploy wrote space data before it failed"
+//         );
+//         deploy
+//     }
+//
+//     async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
+//         self.play
+//             .get_data(&gstring(channel))
+//             .await
+//             .into_iter()
+//             .map(|datum| datum.a.pars)
+//             .collect()
+//     }
+//
+//     async fn sole(&self, channel: &str) -> Par {
+//         match <[Vec<Par>; 1]>::try_from(self.values(channel).await) {
+//             Ok([pars]) => match <[Par; 1]>::try_from(pars) {
+//                 Ok([value]) => value,
+//                 Err(pars) => panic!("@{channel:?} holds a datum of {} values", pars.len()),
+//             },
+//             Err(data) => panic!("@{channel:?} holds {} data instead of one", data.len()),
+//         }
+//     }
+//
+//     async fn data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
+//         self.play.get_data(channel).await
+//     }
+//
+//     async fn waiters(
+//         &self,
+//         channel: &Par,
+//     ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
+//         self.play.get_continuations(vec![channel.clone()]).await
+//     }
+//
+//     async fn space_data_channels(&self) -> BTreeSet<Vec<u8>> {
+//         self.play
+//             .get_hot_changes()
+//             .await
+//             .into_iter()
+//             .filter(|(_, row)| !row.data.is_empty())
+//             .filter_map(|(channels, _)| match channels.as_slice() {
+//                 [channel] => namespace::sole_gprivate_id(channel)
+//                     .filter(|id| id.first() == Some(&REIFIED_TAG) && id.len() > 2)
+//                     .map(<[u8]>::to_vec),
+//                 _ => None,
+//             })
+//             .collect()
+//     }
+//
+//     /// Runs `SETUP` and returns the space and the channels of its two names.
+//     async fn setup(&mut self) -> Space {
+//         self.run(SETUP, "rrs-p4-queue-setup").await;
+//         let space = native(&self.sole("rrs-handle").await);
+//         let names = match <[Vec<Par>; 1]>::try_from(self.values("rrs-names").await) {
+//             Ok([names]) => names,
+//             Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
+//         };
+//         let [a, b] = <[Par; 2]>::try_from(names).expect("the setup makes two names");
+//         Space { space, a, b }
+//     }
+//
+//     /// The records of the collection of `name`, in `ord` order: `(ord, payload, persistent)`.
+//     async fn records(&self, space: NativeSpace, name: &Par) -> Vec<(i64, Vec<Par>, bool)> {
+//         let mut records: Vec<(i64, Vec<Par>, bool)> = self
+//             .data(&data_channel(space, name))
+//             .await
+//             .into_iter()
+//             .map(|datum| {
+//                 let decoded = record::unwrap_datum(&datum.a).expect("a datum record decodes");
+//                 (decoded.ord, decoded.datum.pars, datum.persist)
+//             })
+//             .collect();
+//         records.sort_by_key(|(ord, _, _)| *ord);
+//         records
+//     }
+//
+//     /// The parked continuations of the collection of `name`, in `ord` order: `(ord,
+//     /// persistent, peek)`.
+//     async fn parked(&self, space: NativeSpace, name: &Par) -> Vec<(i64, bool, bool)> {
+//         let mut parked: Vec<(i64, bool, bool)> = self
+//             .waiters(&data_channel(space, name))
+//             .await
+//             .into_iter()
+//             .map(|waiter| {
+//                 let ord = record::continuation_ord(&waiter.continuation)
+//                     .expect("a parked continuation decodes");
+//                 (ord, waiter.persist, !waiter.peeks.is_empty())
+//             })
+//             .collect();
+//         parked.sort_by_key(|(ord, _, _)| *ord);
+//         parked
+//     }
+//
+//     /// The value of the counter of the collection of `name`.
+//     async fn counter(&self, space: NativeSpace, name: &Par) -> i64 {
+//         counter_of(&self.data(&counter_channel(space, name)).await)
+//     }
+//
+//     /// The value of the space counter.
+//     async fn space_counter(&self, space: NativeSpace) -> i64 {
+//         counter_of(&self.data(&space_counter_channel(space)).await)
+//     }
+// }
+//
+// /// The value of the only counter record of a counter channel.
+// fn counter_of(data: &[Datum<ListParWithRandom>]) -> i64 {
+//     match data {
+//         [datum] => {
+//             assert!(!datum.persist, "a counter record is never persistent");
+//             record::counter_value(&datum.a).expect("a counter record decodes")
+//         }
+//         other => panic!("a counter channel holds {} records", other.len()),
+//     }
+// }
+//
+// /// The setup space and its two names.
+// struct Space {
+//     space: NativeSpace,
+//     a: Par,
+//     b: Par,
+// }
+//
+// impl Space {
+//     /// The labels of the channels of the space for event signatures: `C`, `S`, `H`, and `S:x`,
+//     /// `D:x`, `N:x` for the name `x`.
+//     fn labels(&self) -> Labels {
+//         let mut labels = vec![
+//             (hash(&config_channel(self.space)), "C".to_owned()),
+//             (hash(&space_counter_channel(self.space)), "S".to_owned()),
+//             (
+//                 hash(&namespace::gprivate(namespace::handle_channel(self.space))),
+//                 "H".to_owned(),
+//             ),
+//         ];
+//         for (label, name) in [("a", &self.a), ("b", &self.b)] {
+//             labels.push((
+//                 hash(&counter_channel(self.space, name)),
+//                 format!("S:{label}"),
+//             ));
+//             labels.push((hash(&data_channel(self.space, name)), format!("D:{label}")));
+//             labels.push((hash(name), format!("N:{label}")));
+//         }
+//         Labels(labels)
+//     }
+// }
+//
+// /// Channel labels for the event signatures of a log.
+// struct Labels(Vec<(Blake2b256Hash, String)>);
+//
+// impl Labels {
+//     fn label(&self, channel: &Blake2b256Hash) -> Option<&str> {
+//         self.0
+//             .iter()
+//             .find(|(key, _)| key == channel)
+//             .map(|(_, label)| label.as_str())
+//     }
+//
+//     /// The signature of each event of `log` on a labeled channel, in log order: `P` for a
+//     /// produce, `C` for a consume, `M` for a COMM, then the label. A persistent event ends with
+//     /// `!`, and a COMM with peeks ends with `peek`.
+//     fn signature(&self, log: &[Event]) -> Vec<String> {
+//         log.iter()
+//             .filter_map(|event| match event {
+//                 Event::IoEvent(IOEvent::Produce(produce)) => self
+//                     .label(&produce.channel_hash)
+//                     .map(|label| format!("P {label}{}", bang(produce.persistent))),
+//                 Event::IoEvent(IOEvent::Consume(consume)) => {
+//                     match consume.channel_hashes.as_slice() {
+//                         [channel] => self
+//                             .label(channel)
+//                             .map(|label| format!("C {label}{}", bang(consume.persistent))),
+//                         _ => None,
+//                     }
+//                 }
+//                 Event::Comm(comm) => match comm.consume.channel_hashes.as_slice() {
+//                     [channel] => self.label(channel).map(|label| {
+//                         format!(
+//                             "M {label}{}{}",
+//                             bang(comm.consume.persistent),
+//                             if comm.peeks.is_empty() { "" } else { " peek" }
+//                         )
+//                     }),
+//                     _ => None,
+//                 },
+//             })
+//             .collect()
+//     }
+// }
+//
+// fn bang(persistent: bool) -> &'static str {
+//     match persistent {
+//         true => "!",
+//         false => "",
+//     }
+// }
+//
+// fn native(handle: &Par) -> NativeSpace {
+//     match classify_space_ref(handle) {
+//         Ok(SpaceRef::Native(space)) => space,
+//         other => panic!("the value is not a native space handle: {other:?}"),
+//     }
+// }
+//
+// fn config_channel(space: NativeSpace) -> Par {
+//     namespace::gprivate(namespace::config_channel(space))
+// }
+//
+// fn space_counter_channel(space: NativeSpace) -> Par {
+//     namespace::gprivate(namespace::space_counter(space))
+// }
+//
+// fn key(channel: &Par) -> CollectionKey {
+//     CollectionKey::of_channel(channel).expect("a channel has a collection key")
+// }
+//
+// fn counter_channel(space: NativeSpace, channel: &Par) -> Par {
+//     namespace::gprivate(namespace::collection_counter(space, &key(channel)))
+// }
+//
+// fn data_channel(space: NativeSpace, channel: &Par) -> Par {
+//     namespace::gprivate(namespace::data_channel(space, &key(channel)))
+// }
+//
+// /// The number of events of `log` that touch `channel`.
+// fn events_touching(log: &[Event], channel: &Par) -> usize {
+//     let key = hash(channel);
+//     log.iter()
+//         .filter(|event| match event {
+//             Event::IoEvent(IOEvent::Produce(produce)) => produce.channel_hash == key,
+//             Event::IoEvent(IOEvent::Consume(consume)) => consume.channel_hashes.contains(&key),
+//             Event::Comm(comm) => comm.consume.channel_hashes.contains(&key),
+//         })
+//         .count()
+// }
+//
+// /// The number of COMMs of `log` whose consume is on `channel`.
+// fn comms_on(log: &[Event], channel: &Par) -> usize {
+//     let key = hash(channel);
+//     log.iter().filter(|event| is_comm_on(event, &key)).count()
+// }
+//
+// /// The produce events of `log` on `channel`, in log order.
+// fn data_produces(log: &[Event], channel: &Par) -> Vec<Produce> {
+//     let key = hash(channel);
+//     log.iter()
+//         .filter_map(|event| match event {
+//             Event::IoEvent(IOEvent::Produce(produce)) if produce.channel_hash == key => {
+//                 Some(produce.clone())
+//             }
+//             _ => None,
+//         })
+//         .collect()
+// }
 
-impl Deploy {
-    fn codes(&self) -> Vec<String> { error_codes(&self.result.errors) }
-}
-
-fn error_codes(errors: &[InterpreterError]) -> Vec<String> {
-    let mut codes = Vec::with_capacity(errors.len());
-    for error in errors {
-        push_codes(error, &mut codes);
-    }
-    codes
-}
-
-fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
-    match error {
-        InterpreterError::AggregateError { interpreter_errors } => {
-            for inner in interpreter_errors {
-                push_codes(inner, codes);
-            }
-        }
-        InterpreterError::ReduceError(message) => codes.push(
-            message
-                .strip_prefix("reified:")
-                .and_then(|rest| rest.split(':').next())
-                .map(str::to_owned)
-                .unwrap_or_else(|| message.clone()),
-        ),
-        other => codes.push(format!("{other:?}")),
-    }
-}
-
-/// A play runtime and a replay runtime over a fresh in-memory store, with a funded deploy.
-struct Session {
-    play: RhoRuntimeImpl,
-    replay: RhoRuntimeImpl,
-}
-
-impl Session {
-    async fn new() -> Self {
-        let mut manager = InMemoryStoreManager::new();
-        let stores = manager
-            .r_space_stores()
-            .await
-            .expect("create the in-memory RSpace stores");
-        let (play, replay, _history) = create_runtimes(stores, false, &mut Vec::new()).await;
-        for runtime in [&play, &replay] {
-            runtime.cost.set_deploy_signature_funded(
-                DEPLOY_SIGNATURE,
-                Sig::Ground(FUNDING_SIGNATURE.to_vec()),
-            );
-        }
-        Self { play, replay }
-    }
-
-    async fn deploy_full(
-        &mut self,
-        source: &str,
-        label: &str,
-        injections: &Injections,
-        phlo: i64,
-    ) -> Deploy {
-        let fallback = self.play.create_soft_checkpoint().await;
-        let before = self.space_data_channels().await;
-        let result = self
-            .play
-            .evaluate(
-                source,
-                Cost::create(phlo, label.to_owned()),
-                injections.clone(),
-                Blake2b512Random::create_from_bytes(label.as_bytes()),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
-        let log = self.play.take_event_log().await;
-        let residue = self
-            .space_data_channels()
-            .await
-            .difference(&before)
-            .cloned()
-            .collect();
-        if !result.errors.is_empty() {
-            self.play.revert_to_soft_checkpoint(fallback).await;
-        }
-        Deploy {
-            result,
-            log,
-            residue,
-        }
-    }
-
-    async fn deploy_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
-        self.deploy_full(source, label, injections, PHLO).await
-    }
-
-    async fn run(&mut self, source: &str, label: &str) -> Deploy {
-        let deploy = self.deploy_with(source, label, &Injections::new()).await;
-        assert!(
-            deploy.result.errors.is_empty(),
-            "{label}: the deploy fails: {:?}",
-            deploy.result.errors
-        );
-        deploy
-    }
-
-    /// A deploy that must fail with exactly the error codes `expected` and leave no new space
-    /// data.
-    async fn fail_with(
-        &mut self,
-        source: &str,
-        label: &str,
-        injections: &Injections,
-        expected: &[&str],
-    ) -> Deploy {
-        let deploy = self.deploy_with(source, label, injections).await;
-        assert_eq!(deploy.codes(), expected, "{label}: the error codes");
-        assert!(
-            deploy.residue.is_empty(),
-            "{label}: a failed deploy wrote space data before it failed"
-        );
-        deploy
-    }
-
-    async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
-        self.play
-            .get_data(&gstring(channel))
-            .await
-            .into_iter()
-            .map(|datum| datum.a.pars)
-            .collect()
-    }
-
-    async fn sole(&self, channel: &str) -> Par {
-        match <[Vec<Par>; 1]>::try_from(self.values(channel).await) {
-            Ok([pars]) => match <[Par; 1]>::try_from(pars) {
-                Ok([value]) => value,
-                Err(pars) => panic!("@{channel:?} holds a datum of {} values", pars.len()),
-            },
-            Err(data) => panic!("@{channel:?} holds {} data instead of one", data.len()),
-        }
-    }
-
-    async fn data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
-        self.play.get_data(channel).await
-    }
-
-    async fn waiters(
-        &self,
-        channel: &Par,
-    ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
-        self.play.get_continuations(vec![channel.clone()]).await
-    }
-
-    async fn space_data_channels(&self) -> BTreeSet<Vec<u8>> {
-        self.play
-            .get_hot_changes()
-            .await
-            .into_iter()
-            .filter(|(_, row)| !row.data.is_empty())
-            .filter_map(|(channels, _)| match channels.as_slice() {
-                [channel] => namespace::sole_gprivate_id(channel)
-                    .filter(|id| id.first() == Some(&REIFIED_TAG) && id.len() > 2)
-                    .map(<[u8]>::to_vec),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Runs `SETUP` and returns the space and the channels of its two names.
-    async fn setup(&mut self) -> Space {
-        self.run(SETUP, "rrs-p4-queue-setup").await;
-        let space = native(&self.sole("rrs-handle").await);
-        let names = match <[Vec<Par>; 1]>::try_from(self.values("rrs-names").await) {
-            Ok([names]) => names,
-            Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
-        };
-        let [a, b] = <[Par; 2]>::try_from(names).expect("the setup makes two names");
-        Space { space, a, b }
-    }
-
-    /// The records of the collection of `name`, in `ord` order: `(ord, payload, persistent)`.
-    async fn records(&self, space: NativeSpace, name: &Par) -> Vec<(i64, Vec<Par>, bool)> {
-        let mut records: Vec<(i64, Vec<Par>, bool)> = self
-            .data(&data_channel(space, name))
-            .await
-            .into_iter()
-            .map(|datum| {
-                let decoded = record::unwrap_datum(&datum.a).expect("a datum record decodes");
-                (decoded.ord, decoded.datum.pars, datum.persist)
-            })
-            .collect();
-        records.sort_by_key(|(ord, _, _)| *ord);
-        records
-    }
-
-    /// The parked continuations of the collection of `name`, in `ord` order: `(ord,
-    /// persistent, peek)`.
-    async fn parked(&self, space: NativeSpace, name: &Par) -> Vec<(i64, bool, bool)> {
-        let mut parked: Vec<(i64, bool, bool)> = self
-            .waiters(&data_channel(space, name))
-            .await
-            .into_iter()
-            .map(|waiter| {
-                let ord = record::continuation_ord(&waiter.continuation)
-                    .expect("a parked continuation decodes");
-                (ord, waiter.persist, !waiter.peeks.is_empty())
-            })
-            .collect();
-        parked.sort_by_key(|(ord, _, _)| *ord);
-        parked
-    }
-
-    /// The value of the counter of the collection of `name`.
-    async fn counter(&self, space: NativeSpace, name: &Par) -> i64 {
-        counter_of(&self.data(&counter_channel(space, name)).await)
-    }
-
-    /// The value of the space counter.
-    async fn space_counter(&self, space: NativeSpace) -> i64 {
-        counter_of(&self.data(&space_counter_channel(space)).await)
-    }
-}
-
-/// The value of the only counter record of a counter channel.
-fn counter_of(data: &[Datum<ListParWithRandom>]) -> i64 {
-    match data {
-        [datum] => {
-            assert!(!datum.persist, "a counter record is never persistent");
-            record::counter_value(&datum.a).expect("a counter record decodes")
-        }
-        other => panic!("a counter channel holds {} records", other.len()),
-    }
-}
-
-/// The setup space and its two names.
-struct Space {
-    space: NativeSpace,
-    a: Par,
-    b: Par,
-}
-
-impl Space {
-    /// The labels of the channels of the space for event signatures: `C`, `S`, `H`, and `S:x`,
-    /// `D:x`, `N:x` for the name `x`.
-    fn labels(&self) -> Labels {
-        let mut labels = vec![
-            (hash(&config_channel(self.space)), "C".to_owned()),
-            (hash(&space_counter_channel(self.space)), "S".to_owned()),
-            (
-                hash(&namespace::gprivate(namespace::handle_channel(self.space))),
-                "H".to_owned(),
-            ),
-        ];
-        for (label, name) in [("a", &self.a), ("b", &self.b)] {
-            labels.push((
-                hash(&counter_channel(self.space, name)),
-                format!("S:{label}"),
-            ));
-            labels.push((hash(&data_channel(self.space, name)), format!("D:{label}")));
-            labels.push((hash(name), format!("N:{label}")));
-        }
-        Labels(labels)
-    }
-}
-
-/// Channel labels for the event signatures of a log.
-struct Labels(Vec<(Blake2b256Hash, String)>);
-
-impl Labels {
-    fn label(&self, channel: &Blake2b256Hash) -> Option<&str> {
-        self.0
-            .iter()
-            .find(|(key, _)| key == channel)
-            .map(|(_, label)| label.as_str())
-    }
-
-    /// The signature of each event of `log` on a labeled channel, in log order: `P` for a
-    /// produce, `C` for a consume, `M` for a COMM, then the label. A persistent event ends with
-    /// `!`, and a COMM with peeks ends with `peek`.
-    fn signature(&self, log: &[Event]) -> Vec<String> {
-        log.iter()
-            .filter_map(|event| match event {
-                Event::IoEvent(IOEvent::Produce(produce)) => self
-                    .label(&produce.channel_hash)
-                    .map(|label| format!("P {label}{}", bang(produce.persistent))),
-                Event::IoEvent(IOEvent::Consume(consume)) => {
-                    match consume.channel_hashes.as_slice() {
-                        [channel] => self
-                            .label(channel)
-                            .map(|label| format!("C {label}{}", bang(consume.persistent))),
-                        _ => None,
-                    }
-                }
-                Event::Comm(comm) => match comm.consume.channel_hashes.as_slice() {
-                    [channel] => self.label(channel).map(|label| {
-                        format!(
-                            "M {label}{}{}",
-                            bang(comm.consume.persistent),
-                            if comm.peeks.is_empty() { "" } else { " peek" }
-                        )
-                    }),
-                    _ => None,
-                },
-            })
-            .collect()
-    }
-}
-
-fn bang(persistent: bool) -> &'static str {
-    match persistent {
-        true => "!",
-        false => "",
-    }
-}
-
-fn native(handle: &Par) -> NativeSpace {
-    match classify_space_ref(handle) {
-        Ok(SpaceRef::Native(space)) => space,
-        other => panic!("the value is not a native space handle: {other:?}"),
-    }
-}
-
-fn config_channel(space: NativeSpace) -> Par {
-    namespace::gprivate(namespace::config_channel(space))
-}
-
-fn space_counter_channel(space: NativeSpace) -> Par {
-    namespace::gprivate(namespace::space_counter(space))
-}
-
-fn key(channel: &Par) -> CollectionKey {
-    CollectionKey::of_channel(channel).expect("a channel has a collection key")
-}
-
-fn counter_channel(space: NativeSpace, channel: &Par) -> Par {
-    namespace::gprivate(namespace::collection_counter(space, &key(channel)))
-}
-
-fn data_channel(space: NativeSpace, channel: &Par) -> Par {
-    namespace::gprivate(namespace::data_channel(space, &key(channel)))
-}
-
-/// The number of events of `log` that touch `channel`.
-fn events_touching(log: &[Event], channel: &Par) -> usize {
-    let key = hash(channel);
-    log.iter()
-        .filter(|event| match event {
-            Event::IoEvent(IOEvent::Produce(produce)) => produce.channel_hash == key,
-            Event::IoEvent(IOEvent::Consume(consume)) => consume.channel_hashes.contains(&key),
-            Event::Comm(comm) => comm.consume.channel_hashes.contains(&key),
-        })
-        .count()
-}
-
-/// The number of COMMs of `log` whose consume is on `channel`.
-fn comms_on(log: &[Event], channel: &Par) -> usize {
-    let key = hash(channel);
-    log.iter().filter(|event| is_comm_on(event, &key)).count()
-}
-
-/// The produce events of `log` on `channel`, in log order.
-fn data_produces(log: &[Event], channel: &Par) -> Vec<Produce> {
-    let key = hash(channel);
-    log.iter()
-        .filter_map(|event| match event {
-            Event::IoEvent(IOEvent::Produce(produce)) if produce.channel_hash == key => {
-                Some(produce.clone())
-            }
-            _ => None,
-        })
-        .collect()
+/// Runs `SETUP` and returns the space and the channels of its two names.
+async fn setup(session: &mut Session) -> Space {
+    session.run(SETUP, "rrs-p4-queue-setup").await;
+    let space = native(&session.sole("rrs-handle").await);
+    let names = match <[Vec<Par>; 1]>::try_from(session.values("rrs-names").await) {
+        Ok([names]) => names,
+        Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
+    };
+    let [a, b] = <[Par; 2]>::try_from(names).expect("the setup makes two names");
+    Space { space, a, b }
 }
 
 mod space_queue_head_only {
@@ -473,7 +526,7 @@ mod space_queue_head_only {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_head_only_fifo_delivery() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         // The values arrive in an order that is neither sorted nor the order of their hashes.
         let values = [5, 3, 9, 1, 7];
         for (index, value) in values.into_iter().enumerate() {
@@ -601,7 +654,7 @@ mod space_queue_head_only {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_head_only_data_head_blocks() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         for (index, value) in [1, 2].into_iter().enumerate() {
             session
                 .run(
@@ -647,7 +700,7 @@ mod space_queue_head_only {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_head_only_waiter_head_blocks() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         for value in [1, 2] {
             session
                 .run(
@@ -731,7 +784,7 @@ mod space_queue_head_only {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_head_only_peek_keeps_head() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         for (index, value) in [5, 6].into_iter().enumerate() {
             session
                 .run(
@@ -789,7 +842,7 @@ mod space_real_events {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_events_namespaced() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         session
             .run(&with_space("a!(0) | b!(1)"), "rrs-p4-namespaced-seed")
             .await;
@@ -874,7 +927,7 @@ mod space_real_events {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_counter_bump_shape() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         let labels = space.labels();
         assert_eq!(session.space_counter(space.space).await, 0);
         assert!(session
@@ -958,7 +1011,7 @@ mod space_real_events {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_ord_envelope() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         for (index, payload) in ["1", "2, 3", "[4]"].into_iter().enumerate() {
             session
                 .run(
@@ -1042,7 +1095,7 @@ mod space_real_events {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_reissue_persistent_send() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         let labels = space.labels();
         // Two waiters on b. A persistent send fires both in one transaction and then stays
         // (P4 design B.6, E7).
@@ -1110,14 +1163,28 @@ mod space_real_events {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn space_queue_reissue_reenters_ahead_of_younger_records() {
+    // Changed by decision 111: the test runs on each racing runtime, and its body moved to
+    // `reissue_reenters_run`. The old lines follow.
+    // #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // async fn space_queue_reissue_reenters_ahead_of_younger_records() {
+    #[test]
+    fn space_queue_reissue_reenters_ahead_of_younger_records() {
+        for workers in RACING_WORKERS {
+            racing_runtime(workers).block_on(reissue_reenters_run());
+        }
+    }
+
+    /// Added by decision 111: the body of
+    /// [`space_queue_reissue_reenters_ahead_of_younger_records`] on one racing runtime.
+    async fn reissue_reenters_run() {
         // Decision 43: a re-issued persistent send keeps the order of its first round. A body
         // that the first round fires sends a younger datum to the queue before the second round,
         // and the head waiter does not take it. The send re-enters ahead of that datum and fires
         // the head waiter.
+        // Changed by decision 93 (decision 111): the bump of the younger send comes before or
+        // after the bump of the second round.
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         let mut parks = String::from("for (@v <- a) { a!(99) }");
         for _ in 1..FIRE_ROUND_CAP {
             parks.push_str(" | for (@v <- a) { Nil }");
@@ -1137,13 +1204,31 @@ mod space_real_events {
             "the first round, the younger send and the second round each bump the counter"
         );
         assert_eq!(session.sole("rrs-d43-one").await, gint(1));
-        assert_eq!(
-            session.records(space.space, &space.a).await,
-            vec![
-                (first, vec![gint(1)], true),
-                (first + 1, vec![gint(99)], false)
-            ],
-            "the send rests at its first order, ahead of the younger datum"
+        // Changed by decision 93 (decision 111): the younger datum takes the order after the
+        // first round or after the second round. The old check follows.
+        // assert_eq!(
+        //     session.records(space.space, &space.a).await,
+        //     vec![
+        //         (first, vec![gint(1)], true),
+        //         (first + 1, vec![gint(99)], false)
+        //     ],
+        //     "the send rests at its first order, ahead of the younger datum"
+        // );
+        let records = session.records(space.space, &space.a).await;
+        let younger = match records.as_slice() {
+            [(send, sent, true), (order, datum, false)]
+                if *send == first && *sent == [gint(1)] && *datum == [gint(99)] =>
+            {
+                *order
+            }
+            other => {
+                panic!("the send rests at its first order, ahead of the younger datum: {other:?}")
+            }
+        };
+        assert!(
+            younger == first + 1 || younger == first + 2,
+            "the younger datum takes the order after the first round or after the second: \
+             {younger}"
         );
         assert!(session.parked(space.space, &space.a).await.is_empty());
         let produces = data_produces(&deploy.log, &data_channel(space.space, &space.a));
@@ -1151,10 +1236,17 @@ mod space_real_events {
             .iter()
             .filter(|produce| produce.persistent)
             .collect();
-        assert_eq!(
-            send.len(),
-            FIRE_ROUND_CAP + 2,
-            "two rounds of fires and the store"
+        // Changed by decision 93 (decision 111): a re-issue logs its produce again (R6). The old
+        // check follows.
+        // assert_eq!(
+        //     send.len(),
+        //     FIRE_ROUND_CAP + 2,
+        //     "two rounds of fires and the store"
+        // );
+        assert!(
+            send.len() >= FIRE_ROUND_CAP + 2,
+            "two rounds of fires and the store, and the re-issues (R6): {}",
+            send.len()
         );
         assert!(send.iter().all(|produce| *produce == send[0]));
     }
@@ -1165,7 +1257,7 @@ mod space_real_events {
         // deploy has one introduction row for its one identity, as the host has for a
         // persistent produce that it makes again (`persistent_introductions`).
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         let mut parks = String::new();
         for _ in 0..=FIRE_ROUND_CAP {
             parks.push_str("for (@v <- a) { Nil } | ");
@@ -1204,7 +1296,7 @@ mod space_real_events {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_queue_reissue_peek_produce() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         let labels = space.labels();
         // A peek waiter at the head and a waiter behind it. The send fires the peek waiter and
         // offers the datum again to the next head in the same transaction (A1, decision 30).
@@ -1266,70 +1358,100 @@ mod space_real_events {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn space_queue_divergent_pair_exhausts_phlo() {
+    // Changed by decision 93 (decision 111): each attempt runs on its own racing runtime, and no
+    // test compares the logs of two attempts. The body moved to `divergent_attempt`. The old lines
+    // follow.
+    // #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // async fn space_queue_divergent_pair_exhausts_phlo() {
+    #[test]
+    fn space_queue_divergent_pair_exhausts_phlo() {
+        for (attempt, workers) in RACING_WORKERS.into_iter().enumerate() {
+            racing_runtime(workers).block_on(divergent_attempt(attempt));
+        }
+    }
+
+    /// Added by decision 93 (decision 111): the attempt `attempt` of
+    /// [`space_queue_divergent_pair_exhausts_phlo`] on one racing runtime.
+    async fn divergent_attempt(attempt: usize) {
         // A persistent receive and a persistent send on one collection: each round fires and
         // keeps both, so the operation re-issues as a new Intent::Space after every round
         // (A10). The rounds stop only when the phlo runs out.
-        let mut outcomes = Vec::with_capacity(2);
-        for attempt in 0..2 {
-            let mut session = Session::new().await;
-            let space = session.setup().await;
-            let counter = session.counter_or_zero(space.space, &space.a).await;
-            let deploy = session
-                .deploy_full(
-                    &with_space("for (@x <= a) { Nil } | a!!(1)"),
-                    "rrs-p4-divergent",
-                    &Injections::new(),
-                    DIVERGENT_PHLO,
-                )
-                .await;
-            assert_eq!(
-                deploy.result.errors,
-                vec![InterpreterError::OutOfPhlogistonsError],
-                "attempt {attempt}: the pair runs until the phlo is spent"
-            );
-            assert_eq!(deploy.result.cost.value, DIVERGENT_PHLO);
-            let bumps = comms_on(&deploy.log, &counter_channel(space.space, &space.a));
-            let fires = comms_on(&deploy.log, &data_channel(space.space, &space.a));
-            assert!(
-                bumps >= 3,
-                "attempt {attempt}: the pair runs several rounds: {bumps}"
-            );
-            assert!(
-                bumps == fires || bumps == fires + 1,
-                "attempt {attempt}: each round bumps once and fires once, and the phlo can run \
-                 out between the two: {fires} fires, {bumps} bumps"
-            );
-            assert_eq!(
-                session.counter_or_zero(space.space, &space.a).await,
-                counter,
-                "attempt {attempt}: the failed deploy is reverted"
-            );
-            // Decision 43: the element in flight keeps its record, so every round repeats one
-            // produce on the data channel and one COMM, and only the bump of a round is new.
-            let data = data_channel(space.space, &space.a);
-            let produces = data_produces(&deploy.log, &data);
-            assert!(
-                produces.iter().all(|produce| *produce == produces[0]),
-                "attempt {attempt}: every round produces one record"
-            );
-            let key = hash(&data);
-            let comms: Vec<&COMM> = deploy
-                .log
-                .iter()
-                .filter_map(|event| match event {
-                    Event::Comm(comm) if is_comm_on(event, &key) => Some(comm),
-                    _ => None,
-                })
-                .collect();
-            assert!(
-                comms.iter().all(|comm| *comm == comms[0]),
-                "attempt {attempt}: every round repeats one COMM"
-            );
-            outcomes.push(deploy.log);
-        }
-        assert_eq!(outcomes[0], outcomes[1], "the rounds are deterministic");
+        // let mut outcomes = Vec::with_capacity(2);
+        // for attempt in 0..2 {
+        let mut session = Session::new().await;
+        let space = setup(&mut session).await;
+        let counter = counter_or_zero(&session, space.space, &space.a).await;
+        let deploy = session
+            .deploy_full(
+                &with_space("for (@x <= a) { Nil } | a!!(1)"),
+                "rrs-p4-divergent",
+                &Injections::new(),
+                DIVERGENT_PHLO,
+            )
+            .await;
+        assert_eq!(
+            deploy.result.errors,
+            vec![InterpreterError::OutOfPhlogistonsError],
+            "attempt {attempt}: the pair runs until the phlo is spent"
+        );
+        // Changed by decision 90 (C6): native play records its budget. The pair spends at most
+        // its limit, and the budget denies the attempt that runs over it. The legacy check of
+        // the spent phlo follows.
+        // assert_eq!(deploy.result.cost.value, DIVERGENT_PHLO);
+        let recording = deploy
+            .result
+            .native_budget_recording
+            .as_ref()
+            .expect("native play records its budget");
+        assert!(
+            recording.used <= DIVERGENT_PHLO,
+            "attempt {attempt}: the pair spends at most its limit: {}",
+            recording.used
+        );
+        assert!(
+            recording.attempts.iter().any(|budget| !budget.granted),
+            "attempt {attempt}: the budget denies the attempt over the limit"
+        );
+        let bumps = comms_on(&deploy.log, &counter_channel(space.space, &space.a));
+        let fires = comms_on(&deploy.log, &data_channel(space.space, &space.a));
+        assert!(
+            bumps >= 3,
+            "attempt {attempt}: the pair runs several rounds: {bumps}"
+        );
+        assert!(
+            bumps == fires || bumps == fires + 1,
+            "attempt {attempt}: each round bumps once and fires once, and the phlo can run \
+             out between the two: {fires} fires, {bumps} bumps"
+        );
+        assert_eq!(
+            counter_or_zero(&session, space.space, &space.a).await,
+            counter,
+            "attempt {attempt}: the failed deploy is reverted"
+        );
+        // Decision 43: the element in flight keeps its record, so every round repeats one
+        // produce on the data channel and one COMM, and only the bump of a round is new.
+        let data = data_channel(space.space, &space.a);
+        let produces = data_produces(&deploy.log, &data);
+        assert!(
+            produces.iter().all(|produce| *produce == produces[0]),
+            "attempt {attempt}: every round produces one record"
+        );
+        let key = hash(&data);
+        let comms: Vec<&COMM> = deploy
+            .log
+            .iter()
+            .filter_map(|event| match event {
+                Event::Comm(comm) if is_comm_on(event, &key) => Some(comm),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            comms.iter().all(|comm| *comm == comms[0]),
+            "attempt {attempt}: every round repeats one COMM"
+        );
+        // outcomes.push(deploy.log);
+        // }
+        // assert_eq!(outcomes[0], outcomes[1], "the rounds are deterministic");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1352,7 +1474,7 @@ mod space_real_events {
             ("persistent-send", "b!!(7)"),
         ];
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         let labels = space.labels();
         let host_labels = Labels(vec![
             (hash(&gstring("rrs-host-a")), "D:a".to_owned()),
@@ -1402,14 +1524,26 @@ mod space_real_events {
     }
 }
 
-impl Session {
-    /// The value of the counter of the collection of `name`, or 0 before its first operation.
-    async fn counter_or_zero(&self, space: NativeSpace, name: &Par) -> i64 {
-        let data = self.data(&counter_channel(space, name)).await;
-        match data.is_empty() {
-            true => 0,
-            false => counter_of(&data),
-        }
+// Changed by decision 90 (C6): the reader is a free function over the shared session. The
+// legacy method follows.
+//
+// impl Session {
+//     /// The value of the counter of the collection of `name`, or 0 before its first operation.
+//     async fn counter_or_zero(&self, space: NativeSpace, name: &Par) -> i64 {
+//         let data = self.data(&counter_channel(space, name)).await;
+//         match data.is_empty() {
+//             true => 0,
+//             false => counter_of(&data),
+//         }
+//     }
+// }
+
+/// The value of the counter of the collection of `name`, or 0 before its first operation.
+async fn counter_or_zero(session: &Session, space: NativeSpace, name: &Par) -> i64 {
+    let data = session.data(&counter_channel(space, name)).await;
+    match data.is_empty() {
+        true => 0,
+        false => counter_of(&data),
     }
 }
 
@@ -1496,7 +1630,7 @@ fn check_rows(result: &EvaluateResult, log: &[Event], label: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_queue_cross_space_join_rejected() {
     let mut session = Session::new().await;
-    let space = session.setup().await;
+    let space = setup(&mut session).await;
     session
         .run(
             r#"
@@ -1546,7 +1680,7 @@ new factory(`rho:space:hashmap:queue`) in {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_queue_query_rejected() {
     let mut session = Session::new().await;
-    let space = session.setup().await;
+    let space = setup(&mut session).await;
     session.run(&with_space("a!(1)"), "rrs-p4-query-seed").await;
     for (label, body) in [
         ("value", r#"for (@x <- a ~ 1) { @"rrs-query"!(x) }"#),
@@ -1581,7 +1715,7 @@ async fn space_queue_query_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_queue_send_params_rejected() {
     let mut session = Session::new().await;
-    let space = session.setup().await;
+    let space = setup(&mut session).await;
     for (label, body, code) in [
         ("priority", "a!(1; priority=0)", "UnknownParam"),
         ("named", "a!(1; capacity=2)", "UnknownParam"),
@@ -1612,7 +1746,7 @@ async fn space_queue_send_params_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_queue_dangling_name_aborts() {
     let mut session = Session::new().await;
-    let space = session.setup().await;
+    let space = setup(&mut session).await;
     let missing = NativeSpace {
         sid: [0x3D; SID_LEN],
         durability: Durability::Durable,
@@ -1692,7 +1826,7 @@ mod space_meta_channels {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_meta_channels_config_record() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         let config = session.data(&config_channel(space.space)).await;
         let [config] = <[Datum<ListParWithRandom>; 1]>::try_from(config)
             .unwrap_or_else(|data| panic!("C(sid) holds {} records", data.len()));
@@ -1741,7 +1875,7 @@ for (@q <- queue!?("qualifier")) { for (@c <- queue!?("config")) { for (n <- que
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn space_meta_channels_counters() {
         let mut session = Session::new().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         assert_eq!(
             session.space_counter(space.space).await,
             0,
@@ -1812,38 +1946,63 @@ for (@q <- queue!?("qualifier")) { for (@c <- queue!?("config")) { for (n <- que
     async fn space_meta_channels_no_second_root() {
         let mut session = Session::new().await;
         let empty_root = session.play.get_root().await;
-        let space = session.setup().await;
+        let space = setup(&mut session).await;
         session
             .run(&with_space("a!(1) | a!(2)"), "rrs-p4-root-enqueue")
             .await;
         let root = session.play.create_checkpoint().await.root;
         assert_ne!(root, empty_root);
-        // The checkpoint moves every space record into the one history trie: nothing stays
-        // behind in the hot store.
-        assert!(session.space_data_channels().await.is_empty());
-        // A second runtime over the same store reads the space records at the root.
-        let replay_root = {
-            let replay = &mut session.replay;
-            replay.reset(&root).await.expect("reset the replay runtime");
-            replay.get_root().await
-        };
-        assert_eq!(replay_root, root);
-        assert_eq!(
+        // Changed by decision 90 (C6): the native session reads the space records through the
+        // history, so the test reads the hot store itself, and a second runtime over the store of
+        // the session reads the root. The legacy checks follow.
+        // // The checkpoint moves every space record into the one history trie: nothing stays
+        // // behind in the hot store.
+        // assert!(session.space_data_channels().await.is_empty());
+        // // A second runtime over the same store reads the space records at the root.
+        // let replay_root = {
+        //     let replay = &mut session.replay;
+        //     replay.reset(&root).await.expect("reset the replay runtime");
+        //     replay.get_root().await
+        // };
+        // assert_eq!(replay_root, root);
+        // assert_eq!(
+        //     session
+        //         .replay
+        //         .get_data(&data_channel(space.space, &space.a))
+        //         .await
+        //         .len(),
+        //     2
+        // );
+        // assert_eq!(
+        //     session
+        //         .replay
+        //         .get_data(&config_channel(space.space))
+        //         .await
+        //         .len(),
+        //     1
+        // );
+        // The checkpoint moves every record into the one history trie: nothing stays behind in
+        // the hot store.
+        assert!(
             session
-                .replay
+                .play
+                .get_hot_changes()
+                .await
+                .into_iter()
+                .all(|(_, row)| row.data.is_empty()),
+            "the checkpoint leaves no record in the hot store"
+        );
+        // A second runtime over the same store reads the space records at the root.
+        let second = session.runtime_at(&root).await;
+        assert_eq!(second.get_root().await, root);
+        assert_eq!(
+            second
                 .get_data(&data_channel(space.space, &space.a))
                 .await
                 .len(),
             2
         );
-        assert_eq!(
-            session
-                .replay
-                .get_data(&config_channel(space.space))
-                .await
-                .len(),
-            1
-        );
+        assert_eq!(second.get_data(&config_channel(space.space)).await.len(), 1);
         // A read changes no state, so the root stays. A write changes the root.
         session
             .run(
@@ -1888,14 +2047,20 @@ for (@q <- queue!?("qualifier")) { for (@c <- queue!?("config")) { for (n <- que
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_namespaced_channels_never_mergeable() {
     let mut session = Session::new().await;
-    let space = session.setup().await;
+    let space = setup(&mut session).await;
     // The control sends on a tuple channel headed by the IntegerAdd tag outside every use
     // block. The space operations include the same kind of tuple channel inside a use block,
     // where it routes to the space.
+    // Changed by decision 90 (dev-parity trim 4 of the base): the runtime binds only the
+    // bitmask tag URI, so the deploy injects the IntegerAdd tag through the test URI.
+    // let deploy = session
+    //     .run(
+    //         &format!(
+    //             "new tag(`rho:system:integerAddMergeableTag`) in {{ {} }}",
     let deploy = session
-        .run(
+        .deploy_with(
             &format!(
-                "new tag(`rho:system:integerAddMergeableTag`) in {{ {} }}",
+                "new tag(`rho:test:integerAddMergeableTag`) in {{ {} }}",
                 with_space(
                     r#"
 @(*tag, 1)!(5) |
@@ -1906,8 +2071,17 @@ for (n <- queue!?("gensym")) { n!(7) }
                 )
             ),
             "rrs-p4-mergeable",
+            &Injections::from([(
+                "rho:test:integerAddMergeableTag".to_owned(),
+                non_negative_mergeable_tag_name(),
+            )]),
         )
         .await;
+    assert!(
+        deploy.result.errors.is_empty(),
+        "rrs-p4-mergeable: the deploy fails: {:?}",
+        deploy.result.errors
+    );
     let tag = non_negative_mergeable_tag_name();
     let control = tuple(vec![tag.clone(), gint(1)]);
     let routed = tuple(vec![tag, gint(2)]);

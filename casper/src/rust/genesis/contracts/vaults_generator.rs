@@ -19,7 +19,7 @@ impl VaultsGenerator {
             .iter()
             .map(|v| {
                 format!(
-                    "(\"{}\", {})",
+                    "(\"{}\", {}n)",
                     v.vault_address.to_base58(),
                     v.initial_balance
                 )

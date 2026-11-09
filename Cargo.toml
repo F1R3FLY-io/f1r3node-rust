@@ -16,6 +16,7 @@ members = [
 	"formal/loom/cost_accounting",
 	"scripts/supply-chain",
 	"scripts/casper-soak",
+	"scripts/file-read-service",
 ]
 
 [workspace.dependencies]

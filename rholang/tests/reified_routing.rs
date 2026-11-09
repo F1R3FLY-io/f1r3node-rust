@@ -11,37 +11,58 @@
 // routes to its own space in every context (R3). An agent-tagged name needs P8 (R4). Every other
 // channel routes to the space of the use block, or to the default space outside a use block
 // (R5). System process replies route without a context (R7).
+//
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, native funded
+// execution. So the tests run on the native session of the shared harness (`support::session`),
+// and native replay certifies each deploy. The session helpers of this file that the shared
+// session does not have are free functions over it, so a call `session.setup()` became
+// `setup(&mut session)`. The legacy session of this file is commented out below.
 
 #[path = "../../models/tests/support/reified_strategies.rs"]
 mod reified_strategies;
 
+// Added by decision 90 (C6): the native session of the shared harness.
+#[path = "support/mod.rs"]
+mod support;
+
 use std::collections::{BTreeSet, HashMap};
 
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::{ListParWithRandom, Par};
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use models::rhoapi::{ListParWithRandom, Par};
+use models::rhoapi::Par;
 use models::rust::space_factory_urn::SpaceFactoryUrn;
 use models::rust::utils::new_bundle_par;
 use reified_strategies::{gbool, gint, gstring, list};
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::Sig;
-use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::interpreter::EvaluateResult;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::accounting::costs::Cost;
+// use rholang::rust::interpreter::accounting::Sig;
+// use rholang::rust::interpreter::errors::InterpreterError;
+// use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::reified::route::{classify_channel, ChannelClass};
 use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::factory::urn::factory_capability;
 use rholang::rust::interpreter::spaces::namespace::{
     self, CollectionKey, Durability, Kind, NameTail, NativeSpace, ReifiedId, AGENT_TAG,
     REIFIED_TAG, SID_LEN,
 };
 use rholang::rust::interpreter::spaces::record;
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
-use rspace_plus_plus::rspace::internal::Datum;
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rspace_plus_plus::rspace::internal::Datum;
+// use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+// use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::Event;
+use support::native::unordered_log;
+use support::props::{racing_runtime, RACING_WORKERS};
+use support::session::Session;
 
 /// True when `event` is a COMM whose consume is on the channel with the hash `key`.
 fn is_comm_on(event: &Event, key: &Blake2b256Hash) -> bool {
@@ -51,9 +72,10 @@ fn is_comm_on(event: &Event, key: &Blake2b256Hash) -> bool {
     }
 }
 
-const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-routing-deploy";
-const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-routing-payer";
-const PHLO: i64 = 100_000_000;
+// Disabled by decision 90 (C6): the native session funds its own deploy signature and limit.
+// const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-routing-deploy";
+// const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-routing-payer";
+// const PHLO: i64 = 100_000_000;
 
 /// A deploy that creates a space and two names of it. The handle goes to `@"rrs-handle"` and
 /// the names go to `@"rrs-names"`.
@@ -92,205 +114,254 @@ fn injected(name: &str) -> String { format!("rho:rrs:test:{name}") }
 
 type Injections = HashMap<String, Par>;
 
-struct Deploy {
-    result: EvaluateResult,
-    log: Vec<Event>,
-    residue: BTreeSet<Vec<u8>>,
+// Changed by decision 90 (C6, decision 69): the tests run on the native session of the shared
+// harness, whose deploys, error codes and readers are the ones of this file. The helpers that
+// only this file uses follow as free functions. The legacy deploy, error codes and session
+// follow.
+//
+// struct Deploy {
+//     result: EvaluateResult,
+//     log: Vec<Event>,
+//     residue: BTreeSet<Vec<u8>>,
+// }
+//
+// impl Deploy {
+//     fn codes(&self) -> Vec<String> { error_codes(&self.result.errors) }
+// }
+//
+// fn error_codes(errors: &[InterpreterError]) -> Vec<String> {
+//     let mut codes = Vec::with_capacity(errors.len());
+//     for error in errors {
+//         push_codes(error, &mut codes);
+//     }
+//     codes
+// }
+//
+// fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
+//     match error {
+//         InterpreterError::AggregateError { interpreter_errors } => {
+//             for inner in interpreter_errors {
+//                 push_codes(inner, codes);
+//             }
+//         }
+//         InterpreterError::ReduceError(message) => codes.push(
+//             message
+//                 .strip_prefix("reified:")
+//                 .and_then(|rest| rest.split(':').next())
+//                 .map(str::to_owned)
+//                 .unwrap_or_else(|| message.clone()),
+//         ),
+//         other => codes.push(format!("{other:?}")),
+//     }
+// }
+//
+// /// A play runtime and a replay runtime over a fresh in-memory store, with a funded deploy.
+// struct Session {
+//     play: RhoRuntimeImpl,
+//     replay: RhoRuntimeImpl,
+// }
+//
+// impl Session {
+//     async fn new() -> Self {
+//         let mut manager = InMemoryStoreManager::new();
+//         let stores = manager
+//             .r_space_stores()
+//             .await
+//             .expect("create the in-memory RSpace stores");
+//         let (play, replay, _history) = create_runtimes(stores, false, &mut Vec::new()).await;
+//         for runtime in [&play, &replay] {
+//             runtime.cost.set_deploy_signature_funded(
+//                 DEPLOY_SIGNATURE,
+//                 Sig::Ground(FUNDING_SIGNATURE.to_vec()),
+//             );
+//         }
+//         Self { play, replay }
+//     }
+//
+//     async fn deploy_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
+//         let fallback = self.play.create_soft_checkpoint().await;
+//         let before = self.space_data_channels().await;
+//         let result = self
+//             .play
+//             .evaluate(
+//                 source,
+//                 Cost::create(PHLO, label.to_owned()),
+//                 injections.clone(),
+//                 Blake2b512Random::create_from_bytes(label.as_bytes()),
+//             )
+//             .await
+//             .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+//         let log = self.play.take_event_log().await;
+//         let residue = self
+//             .space_data_channels()
+//             .await
+//             .difference(&before)
+//             .cloned()
+//             .collect();
+//         if !result.errors.is_empty() {
+//             self.play.revert_to_soft_checkpoint(fallback).await;
+//         }
+//         Deploy {
+//             result,
+//             log,
+//             residue,
+//         }
+//     }
+//
+//     async fn run_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
+//         let deploy = self.deploy_with(source, label, injections).await;
+//         assert!(
+//             deploy.result.errors.is_empty(),
+//             "{label}: the deploy fails: {:?}",
+//             deploy.result.errors
+//         );
+//         deploy
+//     }
+//
+//     async fn run(&mut self, source: &str, label: &str) -> Deploy {
+//         self.run_with(source, label, &Injections::new()).await
+//     }
+//
+//     async fn fail_with(
+//         &mut self,
+//         source: &str,
+//         label: &str,
+//         injections: &Injections,
+//         expected: &[&str],
+//     ) -> Deploy {
+//         let deploy = self.deploy_with(source, label, injections).await;
+//         assert_eq!(deploy.codes(), expected, "{label}: the error codes");
+//         assert!(
+//             deploy.residue.is_empty(),
+//             "{label}: a failed deploy wrote space data before it failed"
+//         );
+//         deploy
+//     }
+//
+//     async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
+//         self.play
+//             .get_data(&gstring(channel))
+//             .await
+//             .into_iter()
+//             .map(|datum| datum.a.pars)
+//             .collect()
+//     }
+//
+//     async fn sole(&self, channel: &str) -> Par {
+//         match <[Vec<Par>; 1]>::try_from(self.values(channel).await) {
+//             Ok([pars]) => match <[Par; 1]>::try_from(pars) {
+//                 Ok([value]) => value,
+//                 Err(pars) => panic!("@{channel:?} holds a datum of {} values", pars.len()),
+//             },
+//             Err(data) => panic!("@{channel:?} holds {} data instead of one", data.len()),
+//         }
+//     }
+//
+//     async fn data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
+//         self.play.get_data(channel).await
+//     }
+//
+//     async fn space_data_channels(&self) -> BTreeSet<Vec<u8>> {
+//         self.play
+//             .get_hot_changes()
+//             .await
+//             .into_iter()
+//             .filter(|(_, row)| !row.data.is_empty())
+//             .filter_map(|(channels, _)| match channels.as_slice() {
+//                 [channel] => namespace::sole_gprivate_id(channel)
+//                     .filter(|id| id.first() == Some(&REIFIED_TAG) && id.len() > 2)
+//                     .map(<[u8]>::to_vec),
+//                 _ => None,
+//             })
+//             .collect()
+//     }
+//
+//     /// Runs `SETUP` and returns the space and its two names.
+//     async fn setup(&mut self) -> (NativeSpace, Par, Par) {
+//         self.run(SETUP, "rrs-p4-routing-setup").await;
+//         let space = native(&self.sole("rrs-handle").await);
+//         let names = match <[Vec<Par>; 1]>::try_from(self.values("rrs-names").await) {
+//             Ok([names]) => names,
+//             Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
+//         };
+//         let [a, b] = <[Par; 2]>::try_from(names).expect("the setup makes two names");
+//         (space, a, b)
+//     }
+//
+//     /// Runs `OTHER` and returns the second space.
+//     async fn other(&mut self) -> NativeSpace {
+//         self.run(OTHER, "rrs-p4-routing-other").await;
+//         native(&self.sole("rrs-other").await)
+//     }
+//
+//     /// The payloads of the records on the collection of `channel` in `space`, in `ord` order.
+//     async fn records(&self, space: NativeSpace, channel: &Par) -> Vec<Vec<Par>> {
+//         let mut records: Vec<(i64, Vec<Par>)> = self
+//             .data(&data_channel(space, channel))
+//             .await
+//             .into_iter()
+//             .map(|datum| {
+//                 let decoded = record::unwrap_datum(&datum.a).expect("a datum record decodes");
+//                 (decoded.ord, decoded.datum.pars)
+//             })
+//             .collect();
+//         records.sort_by_key(|(ord, _)| *ord);
+//         records.into_iter().map(|(_, pars)| pars).collect()
+//     }
+//
+//     /// The value of the space counter: the number of collections that the space opened.
+//     async fn opened(&self, space: NativeSpace) -> i64 {
+//         let data = self
+//             .data(&namespace::gprivate(namespace::space_counter(space)))
+//             .await;
+//         match data.as_slice() {
+//             [datum] => record::counter_value(&datum.a).expect("a counter record decodes"),
+//             other => panic!("the space counter holds {} records", other.len()),
+//         }
+//     }
+// }
+
+/// Runs `SETUP` and returns the space and its two names.
+async fn setup(session: &mut Session) -> (NativeSpace, Par, Par) {
+    session.run(SETUP, "rrs-p4-routing-setup").await;
+    let space = native(&session.sole("rrs-handle").await);
+    let names = match <[Vec<Par>; 1]>::try_from(session.values("rrs-names").await) {
+        Ok([names]) => names,
+        Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
+    };
+    let [a, b] = <[Par; 2]>::try_from(names).expect("the setup makes two names");
+    (space, a, b)
 }
 
-impl Deploy {
-    fn codes(&self) -> Vec<String> { error_codes(&self.result.errors) }
+/// Runs `OTHER` and returns the second space.
+async fn other(session: &mut Session) -> NativeSpace {
+    session.run(OTHER, "rrs-p4-routing-other").await;
+    native(&session.sole("rrs-other").await)
 }
 
-fn error_codes(errors: &[InterpreterError]) -> Vec<String> {
-    let mut codes = Vec::with_capacity(errors.len());
-    for error in errors {
-        push_codes(error, &mut codes);
-    }
-    codes
+/// The payloads of the records on the collection of `channel` in `space`, in `ord` order.
+async fn records(session: &Session, space: NativeSpace, channel: &Par) -> Vec<Vec<Par>> {
+    let mut records: Vec<(i64, Vec<Par>)> = session
+        .data(&data_channel(space, channel))
+        .await
+        .into_iter()
+        .map(|datum| {
+            let decoded = record::unwrap_datum(&datum.a).expect("a datum record decodes");
+            (decoded.ord, decoded.datum.pars)
+        })
+        .collect();
+    records.sort_by_key(|(ord, _)| *ord);
+    records.into_iter().map(|(_, pars)| pars).collect()
 }
 
-fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
-    match error {
-        InterpreterError::AggregateError { interpreter_errors } => {
-            for inner in interpreter_errors {
-                push_codes(inner, codes);
-            }
-        }
-        InterpreterError::ReduceError(message) => codes.push(
-            message
-                .strip_prefix("reified:")
-                .and_then(|rest| rest.split(':').next())
-                .map(str::to_owned)
-                .unwrap_or_else(|| message.clone()),
-        ),
-        other => codes.push(format!("{other:?}")),
-    }
-}
-
-/// A play runtime and a replay runtime over a fresh in-memory store, with a funded deploy.
-struct Session {
-    play: RhoRuntimeImpl,
-    replay: RhoRuntimeImpl,
-}
-
-impl Session {
-    async fn new() -> Self {
-        let mut manager = InMemoryStoreManager::new();
-        let stores = manager
-            .r_space_stores()
-            .await
-            .expect("create the in-memory RSpace stores");
-        let (play, replay, _history) = create_runtimes(stores, false, &mut Vec::new()).await;
-        for runtime in [&play, &replay] {
-            runtime.cost.set_deploy_signature_funded(
-                DEPLOY_SIGNATURE,
-                Sig::Ground(FUNDING_SIGNATURE.to_vec()),
-            );
-        }
-        Self { play, replay }
-    }
-
-    async fn deploy_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
-        let fallback = self.play.create_soft_checkpoint().await;
-        let before = self.space_data_channels().await;
-        let result = self
-            .play
-            .evaluate(
-                source,
-                Cost::create(PHLO, label.to_owned()),
-                injections.clone(),
-                Blake2b512Random::create_from_bytes(label.as_bytes()),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
-        let log = self.play.take_event_log().await;
-        let residue = self
-            .space_data_channels()
-            .await
-            .difference(&before)
-            .cloned()
-            .collect();
-        if !result.errors.is_empty() {
-            self.play.revert_to_soft_checkpoint(fallback).await;
-        }
-        Deploy {
-            result,
-            log,
-            residue,
-        }
-    }
-
-    async fn run_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
-        let deploy = self.deploy_with(source, label, injections).await;
-        assert!(
-            deploy.result.errors.is_empty(),
-            "{label}: the deploy fails: {:?}",
-            deploy.result.errors
-        );
-        deploy
-    }
-
-    async fn run(&mut self, source: &str, label: &str) -> Deploy {
-        self.run_with(source, label, &Injections::new()).await
-    }
-
-    async fn fail_with(
-        &mut self,
-        source: &str,
-        label: &str,
-        injections: &Injections,
-        expected: &[&str],
-    ) -> Deploy {
-        let deploy = self.deploy_with(source, label, injections).await;
-        assert_eq!(deploy.codes(), expected, "{label}: the error codes");
-        assert!(
-            deploy.residue.is_empty(),
-            "{label}: a failed deploy wrote space data before it failed"
-        );
-        deploy
-    }
-
-    async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
-        self.play
-            .get_data(&gstring(channel))
-            .await
-            .into_iter()
-            .map(|datum| datum.a.pars)
-            .collect()
-    }
-
-    async fn sole(&self, channel: &str) -> Par {
-        match <[Vec<Par>; 1]>::try_from(self.values(channel).await) {
-            Ok([pars]) => match <[Par; 1]>::try_from(pars) {
-                Ok([value]) => value,
-                Err(pars) => panic!("@{channel:?} holds a datum of {} values", pars.len()),
-            },
-            Err(data) => panic!("@{channel:?} holds {} data instead of one", data.len()),
-        }
-    }
-
-    async fn data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
-        self.play.get_data(channel).await
-    }
-
-    async fn space_data_channels(&self) -> BTreeSet<Vec<u8>> {
-        self.play
-            .get_hot_changes()
-            .await
-            .into_iter()
-            .filter(|(_, row)| !row.data.is_empty())
-            .filter_map(|(channels, _)| match channels.as_slice() {
-                [channel] => namespace::sole_gprivate_id(channel)
-                    .filter(|id| id.first() == Some(&REIFIED_TAG) && id.len() > 2)
-                    .map(<[u8]>::to_vec),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Runs `SETUP` and returns the space and its two names.
-    async fn setup(&mut self) -> (NativeSpace, Par, Par) {
-        self.run(SETUP, "rrs-p4-routing-setup").await;
-        let space = native(&self.sole("rrs-handle").await);
-        let names = match <[Vec<Par>; 1]>::try_from(self.values("rrs-names").await) {
-            Ok([names]) => names,
-            Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
-        };
-        let [a, b] = <[Par; 2]>::try_from(names).expect("the setup makes two names");
-        (space, a, b)
-    }
-
-    /// Runs `OTHER` and returns the second space.
-    async fn other(&mut self) -> NativeSpace {
-        self.run(OTHER, "rrs-p4-routing-other").await;
-        native(&self.sole("rrs-other").await)
-    }
-
-    /// The payloads of the records on the collection of `channel` in `space`, in `ord` order.
-    async fn records(&self, space: NativeSpace, channel: &Par) -> Vec<Vec<Par>> {
-        let mut records: Vec<(i64, Vec<Par>)> = self
-            .data(&data_channel(space, channel))
-            .await
-            .into_iter()
-            .map(|datum| {
-                let decoded = record::unwrap_datum(&datum.a).expect("a datum record decodes");
-                (decoded.ord, decoded.datum.pars)
-            })
-            .collect();
-        records.sort_by_key(|(ord, _)| *ord);
-        records.into_iter().map(|(_, pars)| pars).collect()
-    }
-
-    /// The value of the space counter: the number of collections that the space opened.
-    async fn opened(&self, space: NativeSpace) -> i64 {
-        let data = self
-            .data(&namespace::gprivate(namespace::space_counter(space)))
-            .await;
-        match data.as_slice() {
-            [datum] => record::counter_value(&datum.a).expect("a counter record decodes"),
-            other => panic!("the space counter holds {} records", other.len()),
-        }
+/// The value of the space counter: the number of collections that the space opened.
+async fn opened(session: &Session, space: NativeSpace) -> i64 {
+    let data = session
+        .data(&namespace::gprivate(namespace::space_counter(space)))
+        .await;
+    match data.as_slice() {
+        [datum] => record::counter_value(&datum.a).expect("a counter record decodes"),
+        other => panic!("the space counter holds {} records", other.len()),
     }
 }
 
@@ -325,8 +396,8 @@ mod reducer_space_routing {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_space_name_intrinsic() {
         let mut session = Session::new().await;
-        let (space, a, _) = session.setup().await;
-        let other = session.other().await;
+        let (space, a, _) = setup(&mut session).await;
+        let other = other(&mut session).await;
         // In the use block of the other space, a name of the first space still routes to the
         // first space (R3).
         session
@@ -335,12 +406,12 @@ mod reducer_space_routing {
                 "rrs-p4-intrinsic",
             )
             .await;
-        let mut records = session.records(space, &a).await;
-        records.sort_by_key(|pars| format!("{pars:?}"));
-        assert_eq!(records, vec![vec![gint(1)], vec![gint(2)]]);
-        assert!(session.records(other, &a).await.is_empty());
+        let mut stored = records(&session, space, &a).await;
+        stored.sort_by_key(|pars| format!("{pars:?}"));
+        assert_eq!(stored, vec![vec![gint(1)], vec![gint(2)]]);
+        assert!(records(&session, other, &a).await.is_empty());
         assert_eq!(
-            session.opened(other).await,
+            opened(&session, other).await,
             0,
             "the other space opened no collection"
         );
@@ -352,15 +423,15 @@ mod reducer_space_routing {
             )
             .await;
         assert_eq!(comms_on(&receive.log, &data_channel(space, &a)), 2);
-        assert!(session.records(space, &a).await.is_empty());
-        assert_eq!(session.opened(other).await, 0);
+        assert!(records(&session, space, &a).await.is_empty());
+        assert_eq!(opened(&session, other).await, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_default_classes() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
-        let opened = session.opened(space).await;
+        let (space, _, _) = setup(&mut session).await;
+        let opened_before = opened(&session, space).await;
         let foreign = fabricated_space(0x44);
         let foreign_key =
             CollectionKey::of_channel(&gstring("k")).expect("a channel has a collection key");
@@ -425,8 +496,8 @@ new ret in {
             "a config id is a host channel"
         );
         assert_eq!(
-            session.opened(space).await,
-            opened,
+            opened(&session, space).await,
+            opened_before,
             "no collection was opened"
         );
         assert_eq!(
@@ -467,7 +538,7 @@ new ret in {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_use_forged() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
+        let (space, _, _) = setup(&mut session).await;
         session
             .run(
                 &with_space(
@@ -477,15 +548,15 @@ new ret in {
             )
             .await;
         // In the use block, each forged channel is the collection of its canonical bytes (R5).
-        assert_eq!(session.records(space, &gstring("x")).await, vec![vec![
+        assert_eq!(records(&session, space, &gstring("x")).await, vec![vec![
             gint(1)
         ]]);
         assert_eq!(
-            session.records(space, &list(vec![gint(1), gint(2)])).await,
+            records(&session, space, &list(vec![gint(1), gint(2)])).await,
             vec![vec![gint(2)]]
         );
         assert_eq!(
-            session.records(space, &list(vec![gint(2), gint(1)])).await,
+            records(&session, space, &list(vec![gint(2), gint(1)])).await,
             vec![vec![gint(3)]],
             "a list keeps its order in its key"
         );
@@ -501,35 +572,37 @@ new ret in {
         let mut sorted_par = gstring("x");
         sorted_par.exprs.extend(gint(4).exprs);
         assert!(
-            session.records(space, &sorted_par).await.is_empty(),
+            records(&session, space, &sorted_par).await.is_empty(),
             "the receive on the reordered channel took the record"
         );
         assert_eq!(
-            session.opened(space).await,
+            opened(&session, space).await,
             4,
             "four collections were opened"
         );
         // In nested use blocks, the innermost block names the space.
-        let other = session.other().await;
+        let other = other(&mut session).await;
         session
             .run(
                 &with_spaces(r#"use queue { use other { @"nested"!(1) } | @"outer"!(2) }"#),
                 "rrs-p4-forged-nested",
             )
             .await;
-        assert_eq!(session.records(other, &gstring("nested")).await, vec![
+        assert_eq!(records(&session, other, &gstring("nested")).await, vec![
             vec![gint(1)]
         ]);
-        assert!(session.records(space, &gstring("nested")).await.is_empty());
-        assert_eq!(session.records(space, &gstring("outer")).await, vec![vec![
-            gint(2)
-        ]]);
+        assert!(records(&session, space, &gstring("nested"))
+            .await
+            .is_empty());
+        assert_eq!(records(&session, space, &gstring("outer")).await, vec![
+            vec![gint(2)]
+        ]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_use_new_mints_space_names() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
+        let (space, _, _) = setup(&mut session).await;
         session
             .run(
                 &with_space(
@@ -561,7 +634,7 @@ new out in {
             new_bundle_par(namespace::gprivate(vec![0]), true, false),
             "a URI binder keeps its value in a use block"
         );
-        assert_eq!(session.records(space, &name).await, vec![vec![gint(1)]]);
+        assert_eq!(records(&session, space, &name).await, vec![vec![gint(1)]]);
         // The new name keeps its space outside the use block.
         session
             .run(
@@ -569,7 +642,7 @@ new out in {
                 "rrs-p4-minted-outside",
             )
             .await;
-        assert_eq!(session.records(space, &name).await, vec![
+        assert_eq!(records(&session, space, &name).await, vec![
             vec![gint(1)],
             vec![gint(2)]
         ]);
@@ -607,8 +680,8 @@ new out in {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_newspace_annotation() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
-        let other = session.other().await;
+        let (space, _, _) = setup(&mut session).await;
+        let other = other(&mut session).await;
         session
             .run(
                 &with_spaces(
@@ -688,7 +761,7 @@ new out in {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_use_body_closure() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
+        let (space, _, _) = setup(&mut session).await;
         // A receive in a use block stores its body in the USE tuple of its context. When it
         // fires in a later deploy, outside every use block, the body runs in the context.
         session
@@ -703,7 +776,7 @@ new out in {
                 "rrs-p4-closure-fire",
             )
             .await;
-        assert_eq!(session.records(space, &gstring("outbox")).await, vec![
+        assert_eq!(records(&session, space, &gstring("outbox")).await, vec![
             vec![gint(5)]
         ]);
         assert!(
@@ -719,7 +792,7 @@ new out in {
                 "rrs-p4-closure-host",
             )
             .await;
-        assert_eq!(session.records(space, &gstring("outbox2")).await, vec![
+        assert_eq!(records(&session, space, &gstring("outbox2")).await, vec![
             vec![gint(6)]
         ]);
         // Without a use block, the same program writes to the host.
@@ -730,13 +803,15 @@ new out in {
             )
             .await;
         assert_eq!(session.values("outbox3").await, vec![vec![gint(7)]]);
-        assert!(session.records(space, &gstring("outbox3")).await.is_empty());
+        assert!(records(&session, space, &gstring("outbox3"))
+            .await
+            .is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_replies_route_r7() {
         let mut session = Session::new().await;
-        let (space, a, b) = session.setup().await;
+        let (space, a, b) = setup(&mut session).await;
         // System processes reply on the raw return channel. A space name routes the reply into
         // its space (R7).
         session
@@ -751,7 +826,7 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
                 "rrs-p4-r7",
             )
             .await;
-        let mut replies = session.records(space, &a).await;
+        let mut replies = records(&session, space, &a).await;
         replies.sort_by_key(|pars| format!("{pars:?}"));
         let capability = factory_capability(SpaceFactoryUrn::HASHMAP_QUEUE)
             .expect("the family has a capability");
@@ -761,7 +836,7 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
             replies, expected,
             "both replies are records of the space name"
         );
-        assert_eq!(session.records(space, &b).await, vec![vec![gbool(true)]]);
+        assert_eq!(records(&session, space, &b).await, vec![vec![gbool(true)]]);
         // R7 ignores the use context: a forged return channel is a host channel even in a use
         // block (A18).
         session
@@ -775,8 +850,7 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
         assert_eq!(session.values("rrs-r7-forged").await, vec![vec![gbool(
             true
         )]]);
-        assert!(session
-            .records(space, &gstring("rrs-r7-forged"))
+        assert!(records(&session, space, &gstring("rrs-r7-forged"))
             .await
             .is_empty());
     }
@@ -785,7 +859,7 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
     async fn reducer_space_routing_survives_reset() {
         let mut session = Session::new().await;
         let empty = session.play.get_root().await;
-        let (space, a, _) = session.setup().await;
+        let (space, a, _) = setup(&mut session).await;
         session
             .run(&with_space("a!(1)"), "rrs-p4-reset-enqueue")
             .await;
@@ -796,23 +870,32 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
         session
             .run(&with_space("a!(2)"), "rrs-p4-reset-after")
             .await;
-        assert_eq!(session.records(space, &a).await, vec![vec![gint(1)], vec![
-            gint(2)
-        ]]);
+        assert_eq!(records(&session, space, &a).await, vec![
+            vec![gint(1)],
+            vec![gint(2)]
+        ]);
         // Another runtime over the store routes the same way at the root.
-        session
-            .replay
-            .reset(&root)
-            .await
-            .expect("reset the replay runtime to the root");
+        // Changed by decision 90 (C6): a second runtime over the store of the session reads the
+        // root. The legacy replay runtime follows.
+        // session
+        //     .replay
+        //     .reset(&root)
+        //     .await
+        //     .expect("reset the replay runtime to the root");
+        // assert_eq!(
+        //     session
+        //         .replay
+        //         .get_data(&data_channel(space, &a))
+        //         .await
+        //         .len(),
+        //     1,
+        //     "the replay runtime sees the record at the root"
+        // );
+        let second = session.runtime_at(&root).await;
         assert_eq!(
-            session
-                .replay
-                .get_data(&data_channel(space, &a))
-                .await
-                .len(),
+            second.get_data(&data_channel(space, &a)).await.len(),
             1,
-            "the replay runtime sees the record at the root"
+            "the second runtime sees the record at the root"
         );
         // Before the space existed, the same name fails closed.
         session
@@ -834,13 +917,13 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
             .reset(&root)
             .await
             .expect("reset to the root again");
-        assert_eq!(session.records(space, &a).await, vec![vec![gint(1)]]);
+        assert_eq!(records(&session, space, &a).await, vec![vec![gint(1)]]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_space_routing_agent_gate() {
         let mut session = Session::new().await;
-        session.setup().await;
+        setup(&mut session).await;
         let injections = Injections::from([(
             injected("tag"),
             namespace::gprivate(vec![REIFIED_TAG, AGENT_TAG]),
@@ -895,12 +978,24 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`) in {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn reducer_space_routing_ordinary_unchanged() {
+    // Changed by decision 111: the test runs on each racing runtime, and its body moved to
+    // `ordinary_unchanged_run`. The old lines follow.
+    // #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // async fn reducer_space_routing_ordinary_unchanged() {
+    #[test]
+    fn reducer_space_routing_ordinary_unchanged() {
+        for workers in RACING_WORKERS {
+            racing_runtime(workers).block_on(ordinary_unchanged_run());
+        }
+    }
+
+    /// Added by decision 111: the body of [`reducer_space_routing_ordinary_unchanged`] on one
+    /// racing runtime.
+    async fn ordinary_unchanged_run() {
         // An ordinary program logs the same events and costs the same, with or without spaces
         // in the store.
         let ordinary = r#"
-new a, b, c, out(`rho:io:stdout`), tag(`rho:system:integerAddMergeableTag`) in {
+new a, b, c, out(`rho:io:stdout`), tag(`rho:test:integerAddMergeableTag`) in {
   a!(1) | a!!(2) | b!(3, "x") | @"rrs-public"!([1, 2], {"k": 3}) |
   for (@x <- a & @y <- b) { c!(x) } |
   for (@z <<- @"rrs-public") { out!(z) } |
@@ -911,18 +1006,37 @@ new a, b, c, out(`rho:io:stdout`), tag(`rho:system:integerAddMergeableTag`) in {
 }
 "#;
         let mut without = Session::new().await;
-        let plain = without.run(ordinary, "rrs-p4-ordinary").await;
+        // Changed by decision 90 (dev-parity trim 4 of the base): the runtime binds only the
+        // bitmask tag URI, so both deploys inject the IntegerAdd tag through the test URI.
+        // let plain = without.run(ordinary, "rrs-p4-ordinary").await;
+        let tag = Injections::from([(
+            "rho:test:integerAddMergeableTag".to_owned(),
+            rholang::rust::interpreter::merging::mergeable_tags::non_negative_mergeable_tag_name(),
+        )]);
+        let plain = without.run_with(ordinary, "rrs-p4-ordinary", &tag).await;
         let mut with = Session::new().await;
-        with.setup().await;
+        setup(&mut with).await;
         with.run(
             &with_space("a!(1) | for (@x <- b) { Nil }"),
             "rrs-p4-ordinary-spaces",
         )
         .await;
         with.play.create_checkpoint().await;
-        let spaced = with.run(ordinary, "rrs-p4-ordinary").await;
-        assert_eq!(plain.log, spaced.log, "the ordinary events do not change");
-        assert_eq!(plain.result.cost.value, spaced.result.cost.value);
+        // let spaced = with.run(ordinary, "rrs-p4-ordinary").await;
+        let spaced = with.run_with(ordinary, "rrs-p4-ordinary", &tag).await;
+        // Changed by decision 93 (decision 111): racing evaluation orders the events by arrival,
+        // and native execution has no legacy cost. The old checks follow.
+        // assert_eq!(plain.log, spaced.log, "the ordinary events do not change");
+        // assert_eq!(plain.result.cost.value, spaced.result.cost.value);
+        assert_eq!(
+            unordered_log(&plain.log),
+            unordered_log(&spaced.log),
+            "the ordinary events do not change, in any order"
+        );
+        assert_eq!(
+            plain.result.native_phlo_usage, spaced.result.native_phlo_usage,
+            "the ordinary program costs the same"
+        );
         assert_eq!(plain.result.mergeable, spaced.result.mergeable);
         assert_eq!(with.sole("rrs-result").await, gint(42));
         assert!(!plain.log.is_empty(), "the ordinary program logs events");
@@ -939,7 +1053,7 @@ mod reducer_handle_unwrap {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_handle_unwrap_write_flag() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
+        let (space, _, _) = setup(&mut session).await;
         for (label, body) in [
             ("read-only", r#"use @{bundle-{*queue}} { @"x"!(1) }"#),
             ("no-flags", r#"use @{bundle0{*queue}} { @"x"!(1) }"#),
@@ -954,7 +1068,7 @@ mod reducer_handle_unwrap {
                 )
                 .await;
         }
-        assert!(session.records(space, &gstring("x")).await.is_empty());
+        assert!(records(&session, space, &gstring("x")).await.is_empty());
         // A bundle with the write flag is the handle.
         session
             .run(
@@ -964,13 +1078,13 @@ mod reducer_handle_unwrap {
                 "rrs-p4-write-flag-writable",
             )
             .await;
-        assert_eq!(session.records(space, &gstring("x")).await.len(), 2);
+        assert_eq!(records(&session, space, &gstring("x")).await.len(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_handle_unwrap_not_a_space_ref() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
+        let (space, _, _) = setup(&mut session).await;
         let injections = Injections::from([(
             injected("config"),
             namespace::gprivate(namespace::config_channel(space)),
@@ -1006,7 +1120,7 @@ mod reducer_handle_unwrap {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_handle_unwrap_empty_space_ref() {
         let mut session = Session::new().await;
-        session.setup().await;
+        setup(&mut session).await;
         for (label, body) in [
             ("use", r#"use @Nil { @"x"!(1) }"#),
             ("annotation", "new x : @Nil in { x!(1) }"),
@@ -1027,7 +1141,7 @@ mod reducer_handle_unwrap {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_handle_unwrap_agent_classification() {
         let mut session = Session::new().await;
-        session.setup().await;
+        setup(&mut session).await;
         // A value that is not a Reified id is a space of a user agent, and getSpaceAgent
         // classifies the same values the same way.
         let references = [
@@ -1079,7 +1193,7 @@ mod reducer_handle_unwrap {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_handle_unwrap_native_handle() {
         let mut session = Session::new().await;
-        let (space, _, _) = session.setup().await;
+        let (space, _, _) = setup(&mut session).await;
         let injections = Injections::from([(
             injected("bare"),
             namespace::gprivate(namespace::handle_channel(space)),
@@ -1103,12 +1217,12 @@ new n : bare in { n!(4) | @"rrs-n"!(*n) }
                 &injections,
             )
             .await;
-        let mut values: Vec<Vec<Par>> = session.records(space, &gstring("x")).await;
+        let mut values: Vec<Vec<Par>> = records(&session, space, &gstring("x")).await;
         values.sort_by_key(|pars| format!("{pars:?}"));
         assert_eq!(values, vec![vec![gint(1)], vec![gint(2)], vec![gint(3)]]);
         let name = session.sole("rrs-n").await;
         assert_eq!(classify_channel(&name), ChannelClass::SpaceName(space));
-        assert_eq!(session.records(space, &name).await, vec![vec![gint(4)]]);
+        assert_eq!(records(&session, space, &name).await, vec![vec![gint(4)]]);
         assert_eq!(
             classify_space_ref(&namespace::gprivate(namespace::handle_channel(space))),
             Ok(SpaceRef::Native(space))
@@ -1132,7 +1246,7 @@ new n : bare in { n!(4) | @"rrs-n"!(*n) }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reducer_agent_reference_write_rule() {
         let mut session = Session::new().await;
-        session.setup().await;
+        setup(&mut session).await;
         for (label, reference, code) in [
             (
                 "read-only",

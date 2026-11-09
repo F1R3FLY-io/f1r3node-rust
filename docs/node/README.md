@@ -142,7 +142,7 @@ CLI flags are applied to the parsed `NodeConf` by `config_mapper.rs`:
 ```
 
 - `lastFinalizedBlockNumber` — block number of the LFB, or -1 if casper not yet initialized
-- `isValidator` — true if the node has a propose function (can create blocks)
+- `isValidator` — true if the node has a configured validator key; this does not confirm current bond status
 - `isReadOnly` — true if the node is running in read-only mode
 - `isReady` — true after the engine enters Running state; clients can poll this instead of parsing logs
 - `currentEpoch` — `lastFinalizedBlockNumber / epochLength`
@@ -181,7 +181,7 @@ All query endpoints accept an optional `?block_hash=` parameter to query against
 
 ### `GET /api/balance/{address}`
 
-Returns the vault balance for a wallet address. The address must be a REV address (Base58-encoded, starts with `1111`). Queries the SystemVault contract at `rho:vault:system`.
+Returns the vault balance for a wallet address. The address must be a native-token address (Base58-encoded, starts with `1111`). Queries the SystemVault contract at `rho:vault:system`.
 
 ```json
 {"address": "04abc...", "balance": 1000000, "blockNumber": 42, "blockHash": "abc..."}

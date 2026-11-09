@@ -63,12 +63,23 @@ use models::create_bit_vector;
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
+// Changed by decision 112: the guard walk reads the new fields. The text before:
+// ```
+// use models::rhoapi::{
+//     BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostSignedTerm, EAnd, EDiv,
+//     EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult,
+//     ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar,
+//     EZipper, Expr, If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom,
+//     Receive, ReceiveBind, Send, TaggedContinuation, Var,
+// };
+// ```
 use models::rhoapi::{
     BindPattern, Bundle, Connective, ConnectiveBody, CostAuthority, CostSignedTerm, EAnd, EDiv,
-    EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod, EMult,
-    ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar,
+    EEq, EFree, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus, EMinusMinus, EMod,
+    EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar,
     EZipper, Expr, If, KeyValuePair, ListParWithRandom, Match, MatchCase, New, Par, ParWithRandom,
-    Receive, ReceiveBind, Send, TaggedContinuation, Var,
+    QuerySpec, Receive, ReceiveBind, Send, SendParams, SpaceAnnotation, TaggedContinuation,
+    UseBlock, Var,
 };
 use models::rust::utils::{
     new_boundvar_par, new_bundle_par, new_freevar_par, new_gbool_par, new_gstring_par, union,
@@ -618,6 +629,7 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a>) -> Result<(
         connective_used: _,
         cost_signed_terms,
         cost_stacks: _,
+        use_blocks,
     } = par;
     for send in sends {
         let Send {
@@ -626,9 +638,16 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a>) -> Result<(
             persistent: _,
             locally_free: _,
             connective_used: _,
+            params,
         } = send;
         work.optional(chan, depth);
         work.pars(data, depth);
+        if let Some(SendParams { positional, named }) = params {
+            work.pars(positional, depth);
+            for value in named.values() {
+                work.par(value, depth);
+            }
+        }
     }
     for receive in receives {
         let Receive {
@@ -648,9 +667,16 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a>) -> Result<(
                 remainder: _,
                 free_count: _,
                 cost_signature: _,
+                query_spec,
             } = bind;
             work.pars(patterns, depth);
             work.optional(source, depth);
+            if let Some(QuerySpec { payload, named }) = query_spec {
+                work.pars(payload, depth);
+                for value in named.values() {
+                    work.par(value, depth);
+                }
+            }
         }
         let inner = deeper(depth, *bind_count)?;
         work.optional(body, inner);
@@ -663,10 +689,15 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a>) -> Result<(
             uri: _,
             injections,
             locally_free: _,
+            space_types,
         } = new;
         work.optional(p, deeper(depth, *bind_count)?);
         for injected in injections.values() {
             work.par(injected, depth);
+        }
+        for annotation in space_types {
+            let SpaceAnnotation { space } = annotation;
+            work.optional(space, depth);
         }
     }
     for expr in exprs {
@@ -733,7 +764,19 @@ fn guard_par<'a>(par: &'a Par, depth: u32, work: &mut GuardWork<'a>) -> Result<(
         work.optional(if_false, depth);
     }
     for term in cost_signed_terms {
-        let CostSignedTerm { body, signature: _ } = term;
+        // Changed by decision 90 (DR-135): a signed term also holds its held price, a plain
+        // integer with no variable in it.
+        // let CostSignedTerm { body, signature: _ } = term;
+        let CostSignedTerm {
+            body,
+            signature: _,
+            held_price: _,
+        } = term;
+        work.optional(body, depth);
+    }
+    for block in use_blocks {
+        let UseBlock { space, body } = block;
+        work.optional(space, depth);
         work.optional(body, depth);
     }
     Ok(())
@@ -821,6 +864,17 @@ fn guard_expr<'a>(expr: &'a Expr, depth: u32, work: &mut GuardWork<'a>) -> Optio
             remainder: _,
         })) => {
             work.pars(ps, depth);
+            None
+        }
+        Some(ExprInstance::EFreeBody(EFree { theory: _, args })) => {
+            work.pars(args, depth);
+            None
+        }
+        Some(ExprInstance::EParamsBody(SendParams { positional, named })) => {
+            work.pars(positional, depth);
+            for value in named.values() {
+                work.par(value, depth);
+            }
             None
         }
         Some(ExprInstance::EMapBody(EMap {
@@ -963,6 +1017,7 @@ fn matcher_forwarder(matcher: &Par) -> Par {
             persistent: false,
             locally_free: args_bound.clone(),
             connective_used: false,
+            params: None,
         }])
         .with_locally_free(args_bound)
 }
@@ -1268,6 +1323,7 @@ pub fn translate_new(
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(inner),
             persistent: false,
@@ -1287,6 +1343,7 @@ pub fn translate_new(
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         });
     }
     let random = base.split_byte(NEW_PAR_BRANCH);
@@ -1685,7 +1742,12 @@ mod tests {
     /// The message of a failed call.
     fn call_code(error: InterpreterError) -> String {
         match error {
-            InterpreterError::ReduceError(message) => message,
+            // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): a user failure
+            // of a space is a `SpaceUserError` with the text of its reduce error.
+            // InterpreterError::ReduceError(message) => message,
+            InterpreterError::ReduceError(message) | InterpreterError::SpaceUserError(message) => {
+                message
+            }
             other => format!("{other:?}"),
         }
     }

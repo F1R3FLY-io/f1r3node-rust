@@ -230,6 +230,7 @@ mod tests {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 }],
                 body: Some(Par::default()),
                 persistent: false,

@@ -308,11 +308,11 @@ validate_ci_evidence() {
 		fail "CI target evidence does not bind run $run_id attempt $run_attempt to merge $merge"
 	jq -e '
 		def aggregator($arch):
-			[.jobs[] | select(.name == ("Integration Tests (" + $arch + ")"))]
+			[.jobs[] | select(.name == ("Integration Gate (" + $arch + ")"))]
 			| length == 1 and .[0].status == "completed" and .[0].conclusion == "success";
 		type == "object" and (.jobs | type == "array")
 		and aggregator("amd64") and aggregator("arm64")' "$jobs" >/dev/null ||
-		fail "CI run does not contain one successful Heavy Pipeline aggregator for each architecture"
+		fail "CI run does not contain one successful Integration Gate for each architecture"
 }
 
 summarize() {

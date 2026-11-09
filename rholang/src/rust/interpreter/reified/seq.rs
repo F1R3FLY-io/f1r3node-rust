@@ -1,9 +1,27 @@
-//! The send rule of `seq` spaces (P7, design v3 W3: SQ-1 and SQ-2).
+//! The send rule of `seq` spaces (P7, design v3 W3: SQ-1 and SQ-2), and the causal histories of
+//! their claims (decision 91).
 //!
 //! FIPS lines 279 to 285: a `seq` channel is temp, it is never sent, alone or inside a process,
 //! it is not used in a concurrent process, and it is used in at most one sequential process. The
 //! engine checks the uses with one claim for each channel (SQ-3, `spaces::ephemeral::SeqClaims`).
 //! This module checks the sends.
+//!
+//! **Causal histories (decision 91, `SpaceCoordination.tla`).** Evaluation races (DR-132), so a
+//! use of a channel is admitted when the last use of the channel happened before it, as the
+//! causal history of the use shows ([`SeqHistory`]). The history of an evaluation task is the
+//! task-local `SEQ_HISTORY`:
+//!
+//! * the root of an evaluation starts with the empty history (`with_history`);
+//! * a task that the evaluator spawns starts with a copy of the history of its parent
+//!   (`inherit`, the `Split` of the model);
+//! * a fired body starts with the union of the histories of its participants: the history of
+//!   each datum and of the continuation, which the book holds by random state (`with_history`,
+//!   the `Comm` of the model);
+//! * a committed use adds itself to the history of its task and of its own item (`learn` and
+//!   `SeqClaims::store`, the `CommitUse` of the model).
+//!
+//! The verdict depends only on the program and on the matches of the COMMs, which replay takes
+//! from the recorded rows, so play and replay agree.
 //!
 //! **SQ-1.** A seq name is an id `n(sid…)` of a `seq` space of the current root evaluation. The
 //! handle of a `seq` space is not a name, so a program may send it.
@@ -41,19 +59,37 @@
 //!     push every Par, Expr and CostSignature child of node
 //! ```
 
-use std::collections::BTreeSet;
+// Changed by decision 91: the causal histories need the map, the cell, the shared pointer and
+// the task-local future.
+// use std::collections::BTreeSet;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::sync::Arc;
 
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::cost_signature::Value as SignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
+// Changed by decision 112: the scan walks the new fields. The text before:
+// ```
+// use models::rhoapi::{
+//     Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
+//     CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus,
+//     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
+//     ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase,
+//     New, Par, Receive, ReceiveBind, Send,
+// };
+// ```
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
-    CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod, EMinus,
-    EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus,
-    ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match, MatchCase,
-    New, Par, Receive, ReceiveBind, Send,
+    CostStack, EAnd, EDiv, EEq, EFree, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMethod,
+    EMinus, EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus,
+    EPlusPlus, ESet, ETuple, EVar, EZipper, Expr, GPrivate, GUnforgeable, If, KeyValuePair, Match,
+    MatchCase, New, Par, QuerySpec, Receive, ReceiveBind, Send, SendParams, SpaceAnnotation,
+    UseBlock,
 };
+use tokio::task::futures::TaskLocalFuture;
 
 use super::system_channels::{handle_of, op_of};
 use crate::rust::interpreter::spaces::errors::SpaceError;
@@ -85,6 +121,28 @@ pub fn check_send(chan: &Par, pars: &[Par], seq: &BTreeSet<SpaceId>) -> Result<(
             (Some(_), false) | (None, _) => None,
         };
         scan(par, seq, exempt)?;
+    }
+    Ok(())
+}
+
+/// SQ-2: the params of a send take the rule of its data.
+pub fn check_params(
+    chan: &Par,
+    pars: &[Par],
+    params: Option<&SendParams>,
+    seq: &BTreeSet<SpaceId>,
+) -> Result<(), SpaceError> {
+    let Some(params) = params else {
+        return Ok(());
+    };
+    if seq.is_empty() {
+        return Ok(());
+    }
+    if op_of(chan) == Some(HANDLE_OP) && pars.first().is_some_and(is_bare_handle) {
+        return Ok(());
+    }
+    for value in params.positional.iter().chain(params.named.values()) {
+        scan(value, seq, None)?;
     }
     Ok(())
 }
@@ -168,6 +226,7 @@ fn scan_par<'a>(
         connective_used: _,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     for unforgeable in unforgeables {
         check_unforgeable(unforgeable, seq, exempt)?;
@@ -179,9 +238,16 @@ fn scan_par<'a>(
             persistent: _,
             locally_free: _,
             connective_used: _,
+            params,
         } = send;
         work.optional(chan);
         work.pars(data);
+        if let Some(SendParams { positional, named }) = params {
+            work.pars(positional);
+            for value in named.values() {
+                work.par(value);
+            }
+        }
     }
     for receive in receives {
         let Receive {
@@ -201,10 +267,17 @@ fn scan_par<'a>(
                 remainder: _,
                 free_count: _,
                 cost_signature,
+                query_spec,
             } = bind;
             work.pars(patterns);
             work.optional(source);
             work.signature(cost_signature);
+            if let Some(QuerySpec { payload, named }) = query_spec {
+                work.pars(payload);
+                for value in named.values() {
+                    work.par(value);
+                }
+            }
         }
         work.optional(body);
         work.optional(condition);
@@ -216,10 +289,15 @@ fn scan_par<'a>(
             uri: _,
             injections,
             locally_free: _,
+            space_types,
         } = new;
         work.optional(p);
         for injected in injections.values() {
             work.par(injected);
+        }
+        for annotation in space_types {
+            let SpaceAnnotation { space } = annotation;
+            work.optional(space);
         }
     }
     for expr in exprs {
@@ -285,7 +363,14 @@ fn scan_par<'a>(
         work.optional(if_false);
     }
     for term in cost_signed_terms {
-        let CostSignedTerm { body, signature } = term;
+        // Changed by decision 90 (DR-135): a signed term also holds its held price, a plain
+        // integer with no name in it.
+        // let CostSignedTerm { body, signature } = term;
+        let CostSignedTerm {
+            body,
+            signature,
+            held_price: _,
+        } = term;
         work.optional(body);
         work.signature(signature);
     }
@@ -294,6 +379,11 @@ fn scan_par<'a>(
         for cell in cells {
             work.push(Node::Signature(cell));
         }
+    }
+    for block in use_blocks {
+        let UseBlock { space, body } = block;
+        work.optional(space);
+        work.optional(body);
     }
     Ok(())
 }
@@ -397,6 +487,13 @@ fn scan_expr<'a>(expr: &'a Expr, work: &mut Work<'a>) {
             connective_used: _,
             remainder: _,
         })) => work.pars(ps),
+        Some(ExprInstance::EFreeBody(EFree { theory: _, args })) => work.pars(args),
+        Some(ExprInstance::EParamsBody(SendParams { positional, named })) => {
+            work.pars(positional);
+            for value in named.values() {
+                work.par(value);
+            }
+        }
         Some(ExprInstance::EMapBody(EMap {
             kvs,
             locally_free: _,
@@ -460,6 +557,111 @@ fn scan_signature<'a>(signature: &'a CostSignature, work: &mut Work<'a>) {
     }
 }
 
+// ── Decision 91: the causal histories of the seq claims ──────────────────────────────────────
+
+/// Added by decision 91: a causal history (QF-15). For each channel of a `seq` space, it holds
+/// the number of the last use of that channel that happened before. The admitted uses of one
+/// channel form a causal chain (`SeqCausalChain` of `SpaceCoordination.tla`), so the number of
+/// the last known use of a channel stands for every earlier use of it, and one number for each
+/// channel holds the whole history. The empty history has no map, so a deploy without a `seq`
+/// use never allocates one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SeqHistory(Option<Arc<BTreeMap<Vec<u8>, u64>>>);
+
+impl SeqHistory {
+    /// True when no use is in the history.
+    pub fn is_empty(&self) -> bool { self.0.is_none() }
+
+    /// The number of the last use of the channel `id` in the history, or 0.
+    pub fn last_use(&self, id: &[u8]) -> u64 {
+        self.0
+            .as_ref()
+            .and_then(|uses| uses.get(id).copied())
+            .unwrap_or(0)
+    }
+
+    /// True when the use number `use_number` of the channel `id` is in the history
+    /// (`Admissible` of `SpaceCoordination.tla`: `claim[c] \in hist[p]`).
+    pub fn knows(&self, id: &[u8], use_number: u64) -> bool { self.last_use(id) >= use_number }
+
+    /// The union of two histories: the larger use number of each channel (`Comm` of
+    /// `SpaceCoordination.tla`: `hist[p] \cup hist[q]`).
+    pub fn join(&self, other: &SeqHistory) -> SeqHistory {
+        match (&self.0, &other.0) {
+            (None, _) => other.clone(),
+            (_, None) => self.clone(),
+            (Some(left), Some(right)) => {
+                let mut uses = BTreeMap::clone(left);
+                for (id, number) in right.iter() {
+                    let known = uses.entry(id.clone()).or_insert(0);
+                    *known = (*known).max(*number);
+                }
+                SeqHistory(Some(Arc::new(uses)))
+            }
+        }
+    }
+
+    /// The history with the uses `uses` added (`CommitUse` of `SpaceCoordination.tla`:
+    /// `hist[p] \cup {id}`).
+    pub fn with_uses(&self, uses: &[(Vec<u8>, u64)]) -> SeqHistory {
+        if uses.is_empty() {
+            return self.clone();
+        }
+        let mut known = self.0.as_deref().cloned().unwrap_or_default();
+        for (id, number) in uses {
+            let last = known.entry(id.clone()).or_insert(0);
+            *last = (*last).max(*number);
+        }
+        SeqHistory(Some(Arc::new(known)))
+    }
+}
+
+tokio::task_local! {
+    /// Added by decision 91: the causal history of the current evaluation task. A task that
+    /// the evaluator spawns starts with a copy of the history of its parent (`inherit`), and a
+    /// fired body starts with the union of the histories of its participants
+    /// (`with_history`).
+    static SEQ_HISTORY: RefCell<SeqHistory>;
+}
+
+/// Added by decision 91: the causal history of the current task, or the empty history outside a
+/// history scope.
+pub fn current_history() -> SeqHistory {
+    SEQ_HISTORY
+        .try_with(|history| history.borrow().clone())
+        .unwrap_or_default()
+}
+
+/// Added by decision 91: adds `uses` to the history of the current task, after the uses
+/// committed. The reply of the job then gives the uses to the continuation of the task
+/// (`CommitUse` of `SpaceCoordination.tla`). Outside a history scope it does nothing.
+pub fn learn(uses: &[(Vec<u8>, u64)]) {
+    if uses.is_empty() {
+        return;
+    }
+    let _ = SEQ_HISTORY.try_with(|history| {
+        let next = history.borrow().with_uses(uses);
+        *history.borrow_mut() = next;
+    });
+}
+
+/// Added by decision 91: runs `future` as a task with a copy of the history of the current task,
+/// as both children of a split get the history of the parent (`Split` of
+/// `SpaceCoordination.tla`). The spawn helper of the evaluator calls it for every task.
+pub fn inherit<F: Future>(future: F) -> TaskLocalFuture<RefCell<SeqHistory>, F> {
+    SEQ_HISTORY.scope(RefCell::new(current_history()), future)
+}
+
+/// Added by decision 91: runs `future` with the history `history`: the root of an evaluation
+/// with the empty history, or a fired body with the union of the histories of its participants
+/// (`Comm` of `SpaceCoordination.tla`).
+pub fn with_history<F: Future>(
+    history: SeqHistory,
+    future: F,
+) -> TaskLocalFuture<RefCell<SeqHistory>, F> {
+    SEQ_HISTORY.scope(RefCell::new(history), future)
+}
+
 #[cfg(test)]
 mod tests {
     use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
@@ -468,6 +670,61 @@ mod tests {
     use crate::rust::interpreter::spaces::namespace::{
         self, gprivate, NameTail, NativeSpace, SID_LEN,
     };
+
+    /// Added by decision 91: the history with the uses `uses`.
+    fn history(uses: &[(&[u8], u64)]) -> SeqHistory {
+        let uses: Vec<(Vec<u8>, u64)> = uses.iter().map(|(id, n)| (id.to_vec(), *n)).collect();
+        SeqHistory::default().with_uses(&uses)
+    }
+
+    /// Added by decision 91: the union of histories is commutative, associative and
+    /// idempotent, the empty history is its unit, and a history knows every use up to the last
+    /// known use of each channel (the per-channel clock of `SeqHistory`).
+    #[test]
+    fn seq_history_is_a_join_semilattice_of_per_channel_clocks() {
+        let a = history(&[(b"x", 2), (b"y", 1)]);
+        let b = history(&[(b"x", 5)]);
+        let c = history(&[(b"z", 3)]);
+        let empty = SeqHistory::default();
+        assert_eq!(a.join(&b), b.join(&a));
+        assert_eq!(a.join(&b).join(&c), a.join(&b.join(&c)));
+        assert_eq!(a.join(&a), a);
+        assert_eq!(a.join(&empty), a);
+        assert_eq!(empty.join(&a), a);
+        assert!(empty.is_empty() && !a.is_empty());
+        let joined = a.join(&b);
+        assert_eq!(joined.last_use(b"x"), 5);
+        assert!(joined.knows(b"x", 3), "use 5 of x stands for uses 1 to 5");
+        assert!(!joined.knows(b"x", 6));
+        assert!(joined.knows(b"y", 1) && !joined.knows(b"z", 1));
+        assert_eq!(
+            a.with_uses(&[(b"x".to_vec(), 1)]),
+            a,
+            "an older use changes nothing"
+        );
+        assert_eq!(a.with_uses(&[]), a);
+    }
+
+    /// Added by decision 91: a spawned task starts with a copy of the history of its parent, a
+    /// change in the child stays in the child, and `learn` outside a scope does nothing
+    /// (`Split` of `SpaceCoordination.tla`).
+    #[tokio::test]
+    async fn seq_history_inherit_copies_the_parent_history() {
+        learn(&[(b"x".to_vec(), 1)]);
+        assert!(current_history().is_empty(), "no scope, no history");
+        let parent = history(&[(b"x", 1)]);
+        let (child, parent_after) = with_history(parent.clone(), async {
+            let child = inherit(async {
+                learn(&[(b"y".to_vec(), 4)]);
+                current_history()
+            })
+            .await;
+            (child, current_history())
+        })
+        .await;
+        assert_eq!(child, parent.with_uses(&[(b"y".to_vec(), 4)]));
+        assert_eq!(parent_after, parent, "the child does not change its parent");
+    }
 
     fn space(seed: u8, durability: Durability) -> NativeSpace {
         NativeSpace {
@@ -575,6 +832,9 @@ mod tests {
                 signature: Some(CostSignature {
                     value: Some(SignatureValue::Name(par.clone())),
                 }),
+                // Added by decision 90 (DR-135): a signed term of the surface syntax has no
+                // held price.
+                held_price: None,
             }],
             ..Default::default()
         };
@@ -701,6 +961,49 @@ mod tests {
                 &spaces
             ),
             Err(SpaceError::SeqSent { space: seq.sid })
+        );
+    }
+
+    /// SQ-2 (decision 112): the params of a send take the rule of its data. A seq name in a
+    /// positional value or a named value aborts. Absent params pass, a value without a seq name
+    /// passes, the forwarder hop passes, and with no seq space nothing is scanned.
+    #[test]
+    fn check_params_rejects_a_seq_name() {
+        let seq = space(1, Durability::Ephemeral);
+        let spaces = seq_of(&[seq]);
+        let x = name(seq, 7);
+        let target = string("out");
+        let positional = SendParams {
+            positional: vec![x.clone()],
+            named: BTreeMap::new(),
+        };
+        let named = SendParams {
+            positional: Vec::new(),
+            named: BTreeMap::from([("key".to_string(), list(vec![x.clone()]))]),
+        };
+        let op = gprivate(namespace::op_channel(HANDLE_OP));
+        for params in [&positional, &named] {
+            assert_eq!(
+                check_params(&target, &[int(0)], Some(params), &spaces),
+                Err(SpaceError::SeqSent { space: seq.sid })
+            );
+            assert_eq!(
+                check_params(&target, &[int(0)], Some(params), &BTreeSet::new()),
+                Ok(())
+            );
+            assert_eq!(
+                check_params(&op, &[handle(seq)], Some(params), &spaces),
+                Ok(())
+            );
+        }
+        assert_eq!(check_params(&target, &[int(0)], None, &spaces), Ok(()));
+        let clean = SendParams {
+            positional: vec![int(1)],
+            named: BTreeMap::from([("key".to_string(), int(2))]),
+        };
+        assert_eq!(
+            check_params(&target, &[int(0)], Some(&clean), &spaces),
+            Ok(())
         );
     }
 }

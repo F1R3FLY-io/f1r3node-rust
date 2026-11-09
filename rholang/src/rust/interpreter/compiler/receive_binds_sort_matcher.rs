@@ -1,6 +1,8 @@
 // See rholang/src/main/scala/coop/rchain/rholang/interpreter/compiler/ReceiveBindsSortMatcher.scala
 
-use models::rhoapi::{CostSignature, Par, ReceiveBind, Var};
+// Changed by decision 112: the tuple carries the query of the bind. The text before:
+// use models::rhoapi::{CostSignature, Par, ReceiveBind, Var};
+use models::rhoapi::{CostSignature, Par, QuerySpec, ReceiveBind, Var};
 use models::rust::rholang::sorter::receive_sort_matcher::ReceiveSortMatcher;
 use models::rust::rholang::sorter::score_tree::ScoredTerm;
 
@@ -14,18 +16,22 @@ pub fn pre_sort_binds<T: Clone + std::fmt::Debug>(
         Par,
         FreeMap<T>,
         Option<CostSignature>,
+        Option<QuerySpec>,
     )>,
 ) -> Result<Vec<(ReceiveBind, FreeMap<T>)>, InterpreterError> {
     let mut bind_sortings: Vec<ScoredTerm<(ReceiveBind, FreeMap<T>)>> = binds
         .into_iter()
         .map(
-            |(patterns, remainder, channel, known_free, cost_signature)| {
+            // Changed by decision 112: the query is a field of the bind. The text before:
+            // |(patterns, remainder, channel, known_free, cost_signature)| {
+            |(patterns, remainder, channel, known_free, cost_signature, query_spec)| {
                 let sorted_bind = ReceiveSortMatcher::sort_bind(ReceiveBind {
                     patterns,
                     source: Some(channel),
                     remainder,
                     free_count: known_free.count_no_wildcards() as i32,
                     cost_signature,
+                    query_spec,
                 });
 
                 ScoredTerm {
@@ -60,6 +66,7 @@ mod tests {
             Par,
             FreeMap<VarSort>,
             Option<CostSignature>,
+            Option<QuerySpec>,
         )> = vec![
             (
                 vec![new_gint_par(2, Vec::new(), false)],
@@ -67,12 +74,14 @@ mod tests {
                 new_gint_par(3, Vec::new(), false),
                 empty_map.clone(),
                 None,
+                None,
             ),
             (
                 vec![new_gint_par(3, Vec::new(), false)],
                 None,
                 new_gint_par(2, Vec::new(), false),
                 empty_map.clone(),
+                None,
                 None,
             ),
             (
@@ -81,12 +90,14 @@ mod tests {
                 new_gint_par(2, Vec::new(), false),
                 empty_map.clone(),
                 None,
+                None,
             ),
             (
                 vec![new_gint_par(1, Vec::new(), false)],
                 None,
                 new_gint_par(3, Vec::new(), false),
                 empty_map.clone(),
+                None,
                 None,
             ),
         ];
@@ -99,6 +110,7 @@ mod tests {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 },
                 empty_map.clone(),
             ),
@@ -109,6 +121,7 @@ mod tests {
                     remainder: Some(new_freevar_var(0)),
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 },
                 empty_map.clone(),
             ),
@@ -119,6 +132,7 @@ mod tests {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 },
                 empty_map.clone(),
             ),
@@ -129,6 +143,7 @@ mod tests {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 },
                 empty_map,
             ),

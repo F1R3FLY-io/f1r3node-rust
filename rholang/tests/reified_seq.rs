@@ -7,10 +7,20 @@
 //! | Test | Property |
 //! |---|---|
 //! | `reducer_seq_payload` | SQ-2: a send whose data holds a seq name as data, in a quoted process, in a bundle, in a list, in a map or in the message of a handle `produce` aborts with `SeqSent`, and the deploy changes no state. The handle of a `seq` space may be sent, and the channel argument of the space's own `produce` and the forwarder hop are not scanned, so a sync `produce` runs. |
-//! | `seq_scan_is_schedule_independent` | Decision 83: the SQ-2 check reads one book in each scheduling window. The creation job records a seq space, so the sends of one scheduling window read one book. Two shapes of the P9 step 3 probe, a touch of a stored space beside a seq creation, play 24 times each, and native replay certifies each play. |
+// Changed by decision 90 (DR-132): racing evaluation retired the scheduling windows. The text
+// before:
+// //! | `seq_scan_is_schedule_independent` | Decision 83: the SQ-2 check reads one book in each
+// //! scheduling window. The creation job records a seq space, so the sends of one scheduling
+// //! window read one book. Two shapes
+//! | `seq_scan_is_schedule_independent` | Decision 83: the SQ-2 check holds while the sends of a deploy race with the creation of a seq space. Two shapes of the P9 step 3 probe, a touch of a stored space beside a seq creation, play 24 times each, and native replay certifies each play. |
 //! | `reducer_seq_atomic_guard` | SQ-3 and SQ-6 on the traces of design v3, section 5: concurrent uses of one channel abort with `SeqConcurrent` (a send and a receive, a forged channel of `use S`, a PathMap name), a chain of sync uses runs, sync uses of two channels in parallel run, parallel reads and allocations use no channel, a join of two chained channels runs, and a re-issue at `FIRE_ROUND_CAP` is no use. |
-//! | `prop_seq_claim_chain` | `SeqExclusive` (`SpaceCoordination.tla`): for generated uses of two channels by generated participants, the claims admit a use exactly when the last admitted use of its channel is a prefix of its participant path, so the admitted uses of each channel form one prefix chain. A job that fails stores nothing. |
-//! | `prop_seq_qualifier_support` | `QualifierSupport` (`SpaceCoordination.tla`): for every family, qualifier and execution model, an accepted constructor of a HashSet family has `seq`, and an accepted `seq` constructor has native execution. Among the families with a schema, gate 3 refuses exactly `seq` in legacy execution (QT-4, QT-5). |
+// Changed by decision 91: the causal property replaces the disabled path property. The row
+// before:
+// //! | `prop_seq_claim_chain` | `SeqExclusive` (`SpaceCoordination.tla`): for generated uses of two channels by generated participants, the claims admit a use exactly when the last admitted use of its channel is a prefix of its participant path, so the admitted uses of each channel form one prefix chain. A job that fails stores nothing. |
+//! | `prop_seq_claim_causal_chain` | `SeqCausalChain` and `ClaimTracksLastUse` (`SpaceCoordination.tla`): for generated uses, causal histories and failures, the claims admit a use exactly when its channel has no stored use or the job knows the last stored use of the channel. A failing job claims and then stores nothing (SQ-4). |
+//! | `prop_seq_qualifier_support` | `QualifierSupport` (`SpaceCoordination.tla`): for every family and qualifier, an accepted constructor of a HashSet family has `seq`. Among the families with a schema, gate 3 refuses a qualifier exactly when the store does not take it (QT-4). Spaces run only in native execution, so no factory refuses `seq` (decision 90, C6). |
+// Changed by decision 90 (C6, step D): gate 3 reads no execution model. The legacy row follows.
+// //! | `prop_seq_qualifier_support` | `QualifierSupport` (`SpaceCoordination.tla`): for every family, qualifier and execution model, an accepted constructor of a HashSet family has `seq`, and an accepted `seq` constructor has native execution. Among the families with a schema, gate 3 refuses exactly `seq` in legacy execution (QT-4, QT-5). |
 //! | `prop_use_context_is_lexical` | `UseBalance` (`SpaceCoordination.tla`): for generated nests of `use` blocks over two spaces, each send on a forged channel lands in the space of its innermost `use` block, or in the default space outside every block, in native execution. |
 //! | `prop_seq_scan_finds_every_seq_name` | `SeqNotSent` (`SpaceCoordination.tla`): for generated data trees with ids at generated places, the scan of SQ-2 fails with `SeqSent` exactly when a tree holds a name of a live `seq` space, and it names that space. |
 
@@ -35,13 +45,16 @@ use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::reified::seq::check_send;
 use rholang::rust::interpreter::spaces::ephemeral::{ClaimRole, SeqClaims, VolatileRegistry};
 use rholang::rust::interpreter::spaces::errors::SpaceError;
-use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+// Changed by decision 90 (C6, step D): the factory reads no execution model.
+// use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
 use rholang::rust::interpreter::spaces::factory::defaults::constructor_schema;
 use rholang::rust::interpreter::spaces::namespace::{
     self, gprivate, CollectionKey, Durability, NameTail, NativeSpace, ReifiedId, SpaceId, SID_LEN,
 };
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rspace_plus_plus::rspace::operation_context::{self, OperationOrder, PathSegment};
+// Disabled by decision 91: only the path property, now commented out, named the order.
+// use rspace_plus_plus::rspace::operation_context::{self, OperationOrder, PathSegment};
 use support::native::{
     assert_reproduces, certify, native_play, NativeChain, Played, AMPLE_LIMIT, OUT,
 };
@@ -193,11 +206,16 @@ fn schedule_touch(seq: &str) -> String {
     )
 }
 
-/// Decision 83 (P7 design v3, VR-2): the SQ-2 scan reads one set of seq spaces in each scheduling
-/// window. The creation job records a seq space, and no participant runs during a job, so the
-/// sends of one scheduling window read one set of seq spaces. Each shape plays
-/// [`SCHEDULE_RUNS`] times on a fresh chain at the v6 limits, and native replay certifies each
-/// play.
+// Changed by decision 90 (DR-132): racing evaluation retired the scheduling windows. The text
+// before:
+// /// Decision 83 (P7 design v3, VR-2): the SQ-2 scan reads one set of seq spaces in each
+// /// scheduling window. The creation job records a seq space, and no participant runs during a
+// /// job, so the sends of one scheduling window read one set of seq spaces. Each shape plays
+// /// [`SCHEDULE_RUNS`] times on a fresh chain at the v6 limits, and native replay certifies each
+// /// play.
+/// Decision 83 (P7 design v3, VR-2): the SQ-2 scan holds while the sends of a deploy race with
+/// the creation of a seq space. Each shape plays [`SCHEDULE_RUNS`] times on a fresh chain at the
+/// v6 limits, and native replay certifies each play.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn seq_scan_is_schedule_independent() {
     for (shape, seq) in [
@@ -344,31 +362,47 @@ for (@a <- x & @b <- y) { out!(["join", a, b]) }"#,
         "{:?}",
         played.result.errors
     );
-    assert!(played
-        .outputs
-        .iter()
-        .any(|output| output.contains("\"again\"")));
+    // Disabled by decision 90 (DR-132): racing evaluation runs the internal re-issue and the
+    // receive of the first body as two tasks, and they race for the last record. Either one can
+    // take it, so the body prints "again" in some schedules only. In both schedules the receive
+    // of the body makes a use of `x` that knows the use of the persistent receive, and the
+    // re-issue makes no use, so the deploy has no error (checked above). The scheduler ran the
+    // receive of the body first.
+    // assert!(played
+    //     .outputs
+    //     .iter()
+    //     .any(|output| output.contains("\"again\"")));
 }
 
 // ─── Properties ──────────────────────────────────────────────────────────────────────────────────
 // ─── QualifierSupport and UseBalance ───────────────────────────────────────────────────────────
 
-/// `QualifierSupport` through gate 3 (QT-4, QT-5): every accepted constructor of a HashSet
-/// family has `seq`, and every accepted `seq` constructor has native execution. Among the
-/// families with a schema, gate 3 refuses exactly `seq` in legacy execution.
+// Changed by decision 90 (C6, step D): gate 3 reads no execution model. The legacy text follows.
+//
+// /// `QualifierSupport` through gate 3 (QT-4, QT-5): every accepted constructor of a HashSet
+// /// family has `seq`, and every accepted `seq` constructor has native execution. Among the
+// /// families with a schema, gate 3 refuses exactly `seq` in legacy execution.
+/// `QualifierSupport` through gate 3 (QT-4): every accepted constructor of a HashSet family has
+/// `seq`. Among the families with a schema, gate 3 refuses a qualifier with
+/// `BadConstructorArgument` exactly when the store does not take it. Spaces run only in native
+/// execution, so no factory refuses `seq` (decision 90, C6).
 #[test]
 fn prop_seq_qualifier_support() {
     let families: Vec<SpaceFactoryUrn> = SpaceFactoryUrn::all().collect();
     check(
         pure_config(),
-        (0..families.len(), 0usize..3, any::<bool>()),
-        |(index, qualifier, native)| {
+        // Changed by decision 90 (C6, step D): the property draws no execution model.
+        // (0..families.len(), 0usize..3, any::<bool>()),
+        // |(index, qualifier, native)| {
+        (0..families.len(), 0usize..3),
+        |(index, qualifier)| {
             let family = families[index];
             let qualifier = ["default", "temp", "seq"][qualifier];
-            let execution = match native {
-                true => Execution::Native,
-                false => Execution::Legacy,
-            };
+            // Retired by decision 90 (C6, step D): gate 3 reads no execution model.
+            // let execution = match native {
+            //     true => Execution::Native,
+            //     false => Execution::Legacy,
+            // };
             let ctor = models::rust::utils::new_elist_par(
                 vec![string(qualifier)],
                 Vec::new(),
@@ -377,24 +411,36 @@ fn prop_seq_qualifier_support() {
                 Vec::new(),
                 false,
             );
-            let result = FactoryConstructor::validate_in(family, &ctor, execution);
+            // Changed by decision 90 (C6, step D): `validate_in` is retired.
+            // let result = FactoryConstructor::validate_in(family, &ctor, execution);
+            let result = FactoryConstructor::validate(family, &ctor);
             if let Ok(validated) = &result {
                 if family.outer == SpaceOuter::HashSet && validated.qualifier != UrnQualifier::Seq {
                     return Err(TestCaseError::fail(format!(
                         "{family}: a HashSet space without seq"
                     )));
                 }
-                if validated.qualifier == UrnQualifier::Seq && !native {
-                    return Err(TestCaseError::fail(format!(
-                        "{family}: seq in legacy execution"
-                    )));
-                }
+                // Retired by decision 90 (C6, step D): every deploy runs in native execution.
+                // if validated.qualifier == UrnQualifier::Seq && !native {
+                //     return Err(TestCaseError::fail(format!(
+                //         "{family}: seq in legacy execution"
+                //     )));
+                // }
             }
             if constructor_schema(family).is_some() {
-                let refused = matches!(result, Err(SpaceError::QualifierUnavailable(_)));
-                if refused != (qualifier == "seq" && !native) {
+                // Changed by decision 90 (C6, step D): gate 3 refuses exactly the qualifiers that
+                // the store does not take, with `BadConstructorArgument`.
+                // let refused = matches!(result, Err(SpaceError::QualifierUnavailable(_)));
+                // if refused != (qualifier == "seq" && !native) {
+                //     return Err(TestCaseError::fail(format!(
+                //         "{family} {qualifier} native {native}: {result:?}"
+                //     )));
+                // }
+                let refused = matches!(result, Err(SpaceError::BadConstructorArgument(_)));
+                let takes = family.outer != SpaceOuter::HashSet || qualifier == "seq";
+                if refused == takes {
                     return Err(TestCaseError::fail(format!(
-                        "{family} {qualifier} native {native}: {result:?}"
+                        "{family} {qualifier}: {result:?}"
                     )));
                 }
             }
@@ -521,33 +567,144 @@ fn prop_use_context_is_lexical() {
     });
 }
 
-/// One generated use: a channel (0 or 1) and the participant path of the job that uses it, and
-/// whether the job fails after its claims.
+// Disabled by decision 91 (DR-132): racing evaluation sets no participant path, so the claims
+// of a seq channel follow the causal history of each job instead (`prop_seq_claim_causal_chain`
+// below). The property of the path rule stays here for the record.
+// /// One generated use: a channel (0 or 1) and the participant path of the job that uses it, and
+// /// whether the job fails after its claims.
+// #[derive(Clone, Debug)]
+// struct Use {
+//     channel: u8,
+//     path: Vec<PathSegment>,
+//     fails: bool,
+// }
+//
+// fn uses() -> impl Strategy<Value = Vec<Use>> {
+//     let segment = (0u64..3, 0u64..3);
+//     let path = proptest::collection::vec(segment, 0..4);
+//     let one =
+//         (0u8..2, path, proptest::bool::weighted(0.2)).prop_map(|(channel, path, fails)| Use {
+//             channel,
+//             path,
+//             fails,
+//         });
+//     proptest::collection::vec(one, 1..24)
+// }
+//
+// /// `SeqExclusive` through the claims of the engine (`SeqClaims`): each use runs as a job in the
+// /// operation order of its participant path. The oracle admits a use exactly when the last
+// /// admitted use of its channel is a prefix of its path. A failing job claims and then stores
+// /// nothing (SQ-4).
+// #[test]
+// fn prop_seq_claim_chain() {
+//     let space = NativeSpace {
+//         sid: [6; SID_LEN],
+//         durability: Durability::Ephemeral,
+//     };
+//     let channels = [0u8, 1].map(|byte| {
+//         gprivate(namespace::data_channel(
+//             space,
+//             &CollectionKey::from_bytes(vec![byte]).expect("a key"),
+//         ))
+//     });
+//     check(pure_config(), uses(), |uses| {
+//         tokio_runtime().block_on(async {
+//             let registry = Arc::new(VolatileRegistry::default());
+//             let mut last: BTreeMap<u8, Vec<PathSegment>> = BTreeMap::new();
+//             let mut admitted: BTreeMap<u8, Vec<Vec<PathSegment>>> = BTreeMap::new();
+//             for Use {
+//                 channel,
+//                 path,
+//                 fails,
+//             } in uses
+//             {
+//                 let mut order = path.clone();
+//                 order.push((9, 0));
+//                 let order = OperationOrder {
+//                     session: [3; 32],
+//                     path: order.into(),
+//                 };
+//                 let registry = Arc::clone(&registry);
+//                 let claimed = &channels[usize::from(channel)];
+//                 let result = operation_context::scope(order, async move {
+//                     let mut claims = SeqClaims::open(&registry, space, SpaceQualifier::Seq, false)
+//                         .expect("a seq job opens")
+//                         .expect("a program job claims");
+//                     claims.claim(claimed, ClaimRole::Data)?;
+//                     if !fails {
+//                         claims.store();
+//                     }
+//                     Ok::<(), SpaceError>(())
+//                 })
+//                 .await;
+//                 let expected = last
+//                     .get(&channel)
+//                     .is_none_or(|claim| path.starts_with(claim));
+//                 match (expected, result) {
+//                     (true, Ok(())) => {
+//                         if !fails {
+//                             last.insert(channel, path.clone());
+//                             admitted.entry(channel).or_default().push(path);
+//                         }
+//                     }
+//                     (false, Err(SpaceError::SeqConcurrent { space: refused })) => {
+//                         if refused != space.sid {
+//                             return Err(TestCaseError::fail("the error names another space"));
+//                         }
+//                     }
+//                     (expected, result) => {
+//                         return Err(TestCaseError::fail(format!(
+//                             "channel {channel} path {path:?}: expected {expected}, got {result:?}"
+//                         )));
+//                     }
+//                 }
+//             }
+//             for chain in admitted.values() {
+//                 if chain.windows(2).any(|pair| !pair[1].starts_with(&pair[0])) {
+//                     return Err(TestCaseError::fail(format!(
+//                         "not one prefix chain: {chain:?}"
+//                     )));
+//                 }
+//             }
+//             Ok(())
+//         })
+//     });
+// }
+
+/// Added by decision 91: one generated use for the causal rule. It names a channel (0 or 1),
+/// the earlier uses whose stores its task learned (indices into the earlier uses), and whether
+/// the job fails after its claims.
 #[derive(Clone, Debug)]
-struct Use {
+struct CausalUse {
     channel: u8,
-    path: Vec<PathSegment>,
+    knows: Vec<usize>,
     fails: bool,
 }
 
-fn uses() -> impl Strategy<Value = Vec<Use>> {
-    let segment = (0u64..3, 0u64..3);
-    let path = proptest::collection::vec(segment, 0..4);
-    let one =
-        (0u8..2, path, proptest::bool::weighted(0.2)).prop_map(|(channel, path, fails)| Use {
+fn causal_uses() -> impl Strategy<Value = Vec<CausalUse>> {
+    let one = (
+        0u8..2,
+        proptest::collection::vec(0usize..24, 0..4),
+        proptest::bool::weighted(0.2),
+    )
+        .prop_map(|(channel, knows, fails)| CausalUse {
             channel,
-            path,
+            knows,
             fails,
         });
     proptest::collection::vec(one, 1..24)
 }
 
-/// `SeqExclusive` through the claims of the engine (`SeqClaims`): each use runs as a job in the
-/// operation order of its participant path. The oracle admits a use exactly when the last
-/// admitted use of its channel is a prefix of its path. A failing job claims and then stores
-/// nothing (SQ-4).
+/// Added by decision 91 (`SeqCausalChain` of `SpaceCoordination.tla`, through `SeqClaims`): each
+/// use runs as a job under the causal history that the stores of the uses it knows taught their
+/// tasks. The oracle models causality with sets of use indices, apart from `SeqHistory`. It admits
+/// a use exactly when its channel has no stored use or the job knows the last stored use of the
+/// channel. A failing job claims and then stores nothing (SQ-4), so it teaches nothing. The stored
+/// uses of each channel form one chain, in which each use knows the one before it.
 #[test]
-fn prop_seq_claim_chain() {
+fn prop_seq_claim_causal_chain() {
+    use rholang::rust::interpreter::reified::seq::{self as seq_history, SeqHistory};
+
     let space = NativeSpace {
         sid: [6; SID_LEN],
         durability: Durability::Ephemeral,
@@ -558,44 +715,68 @@ fn prop_seq_claim_chain() {
             &CollectionKey::from_bytes(vec![byte]).expect("a key"),
         ))
     });
-    check(pure_config(), uses(), |uses| {
+    check(pure_config(), causal_uses(), |uses| {
         tokio_runtime().block_on(async {
             let registry = Arc::new(VolatileRegistry::default());
-            let mut last: BTreeMap<u8, Vec<PathSegment>> = BTreeMap::new();
-            let mut admitted: BTreeMap<u8, Vec<Vec<PathSegment>>> = BTreeMap::new();
-            for Use {
-                channel,
-                path,
-                fails,
-            } in uses
+            // The history that the store of each stored use taught its task.
+            let mut taught: BTreeMap<usize, SeqHistory> = BTreeMap::new();
+            // The causal past of each stored use: itself and the past of each use it knows.
+            let mut past: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+            let mut last: BTreeMap<u8, usize> = BTreeMap::new();
+            let mut chains: BTreeMap<u8, Vec<usize>> = BTreeMap::new();
+            for (
+                index,
+                CausalUse {
+                    channel,
+                    knows,
+                    fails,
+                },
+            ) in uses.into_iter().enumerate()
             {
-                let mut order = path.clone();
-                order.push((9, 0));
-                let order = OperationOrder {
-                    session: [3; 32],
-                    path: order.into(),
-                };
-                let registry = Arc::clone(&registry);
-                let claimed = &channels[usize::from(channel)];
-                let result = operation_context::scope(order, async move {
-                    let mut claims = SeqClaims::open(&registry, space, SpaceQualifier::Seq, false)
-                        .expect("a seq job opens")
-                        .expect("a program job claims");
-                    claims.claim(claimed, ClaimRole::Data)?;
-                    if !fails {
-                        claims.store();
-                    }
-                    Ok::<(), SpaceError>(())
-                })
-                .await;
+                let known: BTreeSet<usize> = knows
+                    .into_iter()
+                    .filter(|known| *known < index && past.contains_key(known))
+                    .collect();
+                let mut known_past = BTreeSet::new();
+                for use_index in &known {
+                    known_past.extend(past[use_index].iter().copied());
+                }
+                let history = known
+                    .iter()
+                    .map(|use_index| &taught[use_index])
+                    .fold(SeqHistory::default(), |history, learned| {
+                        history.join(learned)
+                    });
                 let expected = last
                     .get(&channel)
-                    .is_none_or(|claim| path.starts_with(claim));
+                    .is_none_or(|stored| known_past.contains(stored));
+                let registry = Arc::clone(&registry);
+                let claimed = &channels[usize::from(channel)];
+                let item = vec![u8::try_from(index).expect("fewer than 256 uses"); 8];
+                let result = seq_history::with_history(history, async move {
+                    let mut claims =
+                        SeqClaims::open(&registry, space, SpaceQualifier::Seq, false, &item)
+                            .expect("a seq job opens")
+                            .expect("a program job claims");
+                    claims.claim(claimed, ClaimRole::Data)?;
+                    if !fails {
+                        // Changed by decision 124 (plan v4 C7.19, rule CR-24, ruling M-4): a claim
+                        // belongs to its row. The text before:
+                        // claims.store();
+                        claims.close_row(0);
+                        claims.store(1, None);
+                    }
+                    Ok::<SeqHistory, SpaceError>(seq_history::current_history())
+                })
+                .await;
                 match (expected, result) {
-                    (true, Ok(())) => {
+                    (true, Ok(learned)) => {
                         if !fails {
-                            last.insert(channel, path.clone());
-                            admitted.entry(channel).or_default().push(path);
+                            taught.insert(index, learned);
+                            known_past.insert(index);
+                            past.insert(index, known_past);
+                            last.insert(channel, index);
+                            chains.entry(channel).or_default().push(index);
                         }
                     }
                     (false, Err(SpaceError::SeqConcurrent { space: refused })) => {
@@ -605,15 +786,18 @@ fn prop_seq_claim_chain() {
                     }
                     (expected, result) => {
                         return Err(TestCaseError::fail(format!(
-                            "channel {channel} path {path:?}: expected {expected}, got {result:?}"
+                            "channel {channel} use {index}: expected {expected}, got {result:?}"
                         )));
                     }
                 }
             }
-            for chain in admitted.values() {
-                if chain.windows(2).any(|pair| !pair[1].starts_with(&pair[0])) {
+            for chain in chains.values() {
+                if chain
+                    .windows(2)
+                    .any(|pair| !past[&pair[1]].contains(&pair[0]))
+                {
                     return Err(TestCaseError::fail(format!(
-                        "not one prefix chain: {chain:?}"
+                        "not one causal chain: {chain:?}"
                     )));
                 }
             }

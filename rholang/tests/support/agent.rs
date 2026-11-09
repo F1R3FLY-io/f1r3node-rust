@@ -26,7 +26,10 @@ use models::rust::utils::{new_freevar_par, new_freevar_var, new_gint_par, new_gs
 use rholang::rust::interpreter::accounting::costs::Cost;
 use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
-use rholang::rust::interpreter::reified::legacy_charges::{ParSpaceConsume, ParSpaceProduce};
+// Changed by decision 90 (decision 69): the module `reified::legacy_charges` of Option P is
+// deleted with the legacy meter (DR-134), so the harness names its staged operations over `Par`
+// itself ([`ParSpaceProduce`], [`ParSpaceConsume`]).
+// use rholang::rust::interpreter::reified::legacy_charges::{ParSpaceConsume, ParSpaceProduce};
 use rholang::rust::interpreter::spaces::agent::{
     run_op, ConsumeOp, JoinBind, JoinOp, ProduceOp, SpaceAgent, SpaceCreation, SpaceEnv, SpaceOp,
     SpaceOutcome,
@@ -45,17 +48,34 @@ use rspace_plus_plus::rspace::rspace::RSpace;
 use rspace_plus_plus::rspace::rspace_interface::{ISpace, RSpaceOperationSource};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Changed by decision 92: the check of a committed anchor reads the outcome of a consume.
+// use rspace_plus_plus::rspace::space_store_handle::{
+//     BoxedSpaceTxn, ProduceOutcome, SpaceConsume, SpaceMode, SpaceProduce, SpaceStoreHandle,
+//     SpaceTxn, SpaceTxnError, SpaceTxnHost, SpaceTxnReceipt, StagedOp, SweepReport,
+//     TxnRegistration,
+// };
 use rspace_plus_plus::rspace::space_store_handle::{
-    BoxedSpaceTxn, ProduceOutcome, SpaceConsume, SpaceMode, SpaceProduce, SpaceStoreHandle,
-    SpaceTxn, SpaceTxnError, SpaceTxnHost, SpaceTxnReceipt, StagedOp, SweepReport, TxnRegistration,
+    BoxedSpaceTxn, ConsumeOutcome, ProduceOutcome, SpaceConsume, SpaceMode, SpaceProduce,
+    SpaceStoreHandle, SpaceTxn, SpaceTxnError, SpaceTxnHost, SpaceTxnReceipt, StagedOp,
+    SweepReport, TxnRegistration,
 };
-use rspace_plus_plus::rspace::trace::event::{Produce, COMM};
+// Changed by decision 92: the check of the anchors of a log reads the events.
+// use rspace_plus_plus::rspace::trace::event::{Produce, COMM};
+use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce, COMM};
 
 /// The play space of an agent test.
 pub type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// The replay space of an agent test.
 pub type ParReplay = ReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+/// Added by decision 90 (decision 69): a staged produce over `Par`, as the deleted module
+/// `reified::legacy_charges` named it.
+pub type ParSpaceProduce = SpaceProduce<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+/// Added by decision 90 (decision 69): a staged consume over `Par`, as the deleted module
+/// `reified::legacy_charges` named it.
+pub type ParSpaceConsume = SpaceConsume<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// The phlo budget of an agent test.
 pub fn budget() -> RuntimeBudget {
@@ -162,6 +182,21 @@ pub fn counter_channel(space: NativeSpace, channel: &Par) -> Par {
 /// The space counter `S(sid)`.
 pub fn space_counter_channel(space: NativeSpace) -> Par {
     namespace::gprivate(namespace::space_counter(space))
+}
+
+/// Added by decision 92: true when the event log `log` holds exactly `count` anchors of the space
+/// `space` and nothing else (`spaces::anchor`). An anchor is a consume on the config channel
+/// `C(sid)` and the COMM of that consume. A job that fails at a position of the state commits its
+/// anchor only, and then it fails.
+pub fn logs_anchors_only(log: &[Event], space: NativeSpace, count: usize) -> bool {
+    let config = stable_hash_provider::hash(&namespace::gprivate(namespace::config_channel(space)));
+    log.len() == 2 * count
+        && log.chunks(2).all(|pair| match pair {
+            [Event::IoEvent(IOEvent::Consume(consume)), Event::Comm(comm)] => {
+                consume.channel_hashes == [config.clone()] && comm.consume == *consume
+            }
+            _ => false,
+        })
 }
 
 /// A send of `value` on `channel` of `space`.
@@ -524,9 +559,11 @@ impl StagedCopy {
 /// What a [`RecordingHost`] saw, in order.
 #[derive(Default)]
 pub struct HostRecord {
-    /// The lock keys of each transaction, in the order of the begins.
+    /// The lock keys of each transaction, in the order of the begins. Changed by decision 94:
+    /// the keys of phase A, and then the scope keys of phase B.
     pub begins: Vec<Vec<Par>>,
-    /// Each staged operation with the index of its transaction, in staging order.
+    /// Each staged operation with the index of its transaction, in staging order. Changed by
+    /// decision 92: a discard removes the staged operations of its transaction.
     pub staged: Vec<(usize, StagedCopy)>,
     /// The index of each transaction that committed, in commit order.
     pub commits: Vec<usize>,
@@ -534,6 +571,25 @@ pub struct HostRecord {
 
 /// The shared record of a [`RecordingHost`].
 pub type SharedRecord = Arc<Mutex<HostRecord>>;
+
+/// Added by decision 92: true when the record `seen` commits one transaction, and that transaction
+/// stages the anchor of its job only (`spaces::anchor`): one consume on the config channel
+/// `C(sid)` of the space `space`, which fires.
+pub fn commits_anchor_only(seen: &HostRecord, space: NativeSpace) -> bool {
+    let config = namespace::gprivate(namespace::config_channel(space));
+    match seen.commits.as_slice() {
+        [txn] => {
+            let mut staged = seen.staged.iter().filter(|(index, _)| index == txn);
+            match (staged.next(), staged.next()) {
+                (Some((_, StagedCopy::Consume(op))), None) => {
+                    op.channels == [config] && matches!(op.outcome, ConsumeOutcome::Fire { .. })
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
 
 /// A host that records the transactions of an agent: the lock keys of each `begin`, a copy of
 /// each staged operation, and each commit. It forwards every call to the host `inner`, so the
@@ -565,6 +621,10 @@ fn copy_produce(op: &ParSpaceProduce) -> ParSpaceProduce {
         persist: op.persist,
         outcome: op.outcome.clone(),
         before_observe: None,
+        // Added by decision 92.
+        own: op.own,
+        // Added by decision 123 (plan v4, V3-9): no row search.
+        search: None,
     }
 }
 
@@ -578,6 +638,10 @@ fn copy_consume(op: &ParSpaceConsume) -> ParSpaceConsume {
         peeks: op.peeks.clone(),
         outcome: op.outcome.clone(),
         before_observe: None,
+        // Added by decision 92.
+        own: op.own,
+        // Added by decision 123 (plan v4, V3-9): no row search.
+        search: None,
     }
 }
 
@@ -591,13 +655,34 @@ where H: SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         self.inner.matcher()
     }
 
-    async fn begin(
+    // Changed by decision 94: the default `begin` takes phase A through `begin_phase_a` and then
+    // phase B through the recorded transaction, so the record sees both phases.
+    // async fn begin(
+    //     &self,
+    //     lock_keys: &[Par],
+    //     registration: TxnRegistration,
+    // ) -> Result<BoxedSpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation>, SpaceTxnError>
+    // {
+    //     let inner = self.inner.begin(lock_keys, registration).await?;
+    //     let index = {
+    //         let mut record = self.record.lock().expect("the record lock");
+    //         record.begins.push(lock_keys.to_vec());
+    //         record.begins.len() - 1
+    //     };
+    //     Ok(Box::new(RecordingTxn {
+    //         inner,
+    //         record: Arc::clone(&self.record),
+    //         index,
+    //     }))
+    // }
+
+    async fn begin_phase_a(
         &self,
         lock_keys: &[Par],
         registration: TxnRegistration,
     ) -> Result<BoxedSpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation>, SpaceTxnError>
     {
-        let inner = self.inner.begin(lock_keys, registration).await?;
+        let inner = self.inner.begin_phase_a(lock_keys, registration).await?;
         let index = {
             let mut record = self.record.lock().expect("the record lock");
             record.begins.push(lock_keys.to_vec());
@@ -672,6 +757,12 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         self.inner.recorded_comms(source)
     }
 
+    // Added by decision 124 (F2, base one row source for each produce, replay_rspace.rs:1058-1082):
+    // the wrapped transaction gives the journal index of the recorded row.
+    fn recorded_row_index(&mut self, source: RSpaceOperationSource<'_>) -> Option<usize> {
+        self.inner.recorded_row_index(source)
+    }
+
     fn admits(
         &mut self,
         comm: &COMM,
@@ -699,6 +790,30 @@ impl SpaceTxn<Par, BindPattern, ListParWithRandom, TaggedContinuation> for Recor
         let staged = self.inner.consume(op)?;
         self.note_staged(StagedCopy::Consume(Box::new(copy)));
         Ok(staged)
+    }
+
+    /// Added by decision 94: the scope keys of phase B join the lock keys of the transaction.
+    async fn lock_phase_b(&mut self, scope_keys: &[Par]) -> Result<(), SpaceTxnError> {
+        self.inner.lock_phase_b(scope_keys).await?;
+        self.record.lock().expect("the record lock").begins[self.index]
+            .extend(scope_keys.iter().cloned());
+        Ok(())
+    }
+
+    /// Added by decision 92.
+    fn set_footprint_key(&mut self, key: Par) -> Result<(), SpaceTxnError> {
+        self.inner.set_footprint_key(key)
+    }
+
+    /// Added by decision 92: the discard removes the staged copies of the transaction.
+    fn discard_staged(&mut self) -> Result<(), SpaceTxnError> {
+        self.inner.discard_staged()?;
+        self.record
+            .lock()
+            .expect("the record lock")
+            .staged
+            .retain(|(index, _)| *index != self.index);
+        Ok(())
     }
 
     async fn commit(

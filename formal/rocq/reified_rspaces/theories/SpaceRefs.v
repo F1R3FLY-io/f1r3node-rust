@@ -12,13 +12,24 @@
    its own space under every context. An agent-tagged name goes to the
    agent. A forged channel goes to the space of the use-context, or to the
    default space outside every `use` block. The R7 backend of the system
-   processes routes with no context. A body that the reducer stores under
-   a context is wrapped in a USE tuple, so the context returns when the
-   body runs. The handle process accepts a call only on a bare handle id,
-   and replies only on a reply name. A receive with a QUERY tuple as its
-   source routes the inner channel of the query (P5b): the tuple never
-   takes the fast path, the inner channel takes the read rule of HEAD, and
-   the default space rejects the query. P8 (step 1) adds the spaces of user
+   processes routes with no context.
+
+   Changed by decision 112: the syntax moves from marker tuples to protobuf
+   fields, so the wrapper of a body and a query are fields. The text before:
+     A body that the reducer stores under
+     a context is wrapped in a USE tuple, so the context returns when the
+     body runs. The handle process accepts a call only on a bare handle id,
+     and replies only on a reply name. A receive with a QUERY tuple as its
+     source routes the inner channel of the query (P5b): the tuple never
+     takes the fast path, the inner channel takes the read rule of HEAD, and
+     the default space rejects the query.
+
+   A body that the reducer stores under a context is wrapped in a use block
+   field, so the context returns when the body runs. The handle process
+   accepts a call only on a bare handle id, and replies only on a reply
+   name. A bind with a query routes its own channel (P5b): the bind never
+   takes the fast path, the channel takes the read rule of HEAD, and the
+   default space rejects the query. P8 (step 1) adds the spaces of user
    agents: an agent route carries the agent reference and the raw channel,
    a use-context names a native space or an agent, a forged channel under
    the context of an agent routes to that agent, and a use block enters
@@ -34,6 +45,10 @@
      row) and A.13 (the headline query_source_routes_inner_channel).
    - Plan: rules R1 to R7, A6, A23, decision 21 (the QUERY tuple) and I-20
      (the refresh before each strict decode).
+   - Decision 112: the Reified syntax moves to protobuf fields. A use block
+     is an element of Par.use_blocks, a query is ReceiveBind.query_spec, the
+     two marker readers retire, and headline 12 becomes
+     query_bind_routes_its_channel. SyntaxFields.v is the model of the fields.
    - P8 design v2 (plan decision 77): AG-1 (the route data), AG-2 (the
      use-context), AG-3 (agent identity) and AG-4 (the write rule).
    - Code: the current tree (P5). The line numbers below are the line
@@ -53,7 +68,7 @@
    is_empty                 rholang/src/rust/interpreter/reified/scope.rs:103-130
    sole_unforgeable, sole_gprivate_id, reified_id_of
                             rholang/src/rust/interpreter/spaces/namespace.rs:
-                            374-404, 407-414, 417-419
+                            374-404, 409-416, 419-421
    single_bundle            models/src/rust/rholang/implicits.rs:65-81
    sole_expr                rholang/src/rust/interpreter/reified/route.rs:60-95
    is_agent_tagged          rholang/src/rust/interpreter/reified/route.rs:97-107
@@ -65,9 +80,9 @@
    route                    rholang/src/rust/interpreter/reified/route.rs:
                             173-225, 230-232 (R1 to R5, and route_channel)
    r7_produce, r7_of        rholang/src/rust/interpreter/reified/execution.rs:
-                            175-200 (produce routes with no context)
+                            170-195 (produce routes with no context)
    r7_agent_bundle          rholang/src/rust/interpreter/reified/execution.rs:
-                            139-154 (r7_route, R7A-1)
+                            134-149 (r7_route, R7A-1)
    routes_to_default_       rholang/src/rust/interpreter/reified/
      without_context        reducer_hooks.rs:1333-1338
    classify_space_ref, unbundle
@@ -77,7 +92,10 @@
                             185-193
    enter_use, fire_step     rholang/src/rust/interpreter/reified/
                             reducer_hooks.rs:257-274, 284-314, 440-455
+                            Changed by decision 112: eval_use_block reads the
+                            use_blocks field. The text before:
                             (eval_marker, eval_use, space_ref),
+                            (eval_use_block, eval_use, space_ref),
                             rholang/src/rust/interpreter/dispatch.rs:62-71
                             (a fired body runs on the root reducer).
                             enter_use models eval_use of P8 step 4: a
@@ -91,10 +109,10 @@
    call_channel             rholang/src/rust/interpreter/reified/scope.rs:
                             166-180
    handle_of                rholang/src/rust/interpreter/reified/
-                            system_channels.rs:96-101
+                            system_channels.rs:106-111
    parse_message            rholang/src/rust/interpreter/reified/handle.rs:
                             151-180, 194-203, 883-919, 921-926, 928-933,
-                            935-944, 953-958 (ParsedMessage::parse,
+                            935-944, 984-989 (ParsedMessage::parse,
                             is_reply_name and the sole readers)
    method_of, arity         rholang/src/rust/interpreter/reified/handle.rs:
                             104-113, 116-122
@@ -103,10 +121,15 @@
    ensure_available, space_entry
                             rholang/src/rust/interpreter/reified/runtime.rs
                             (ReifiedRuntime::host, ensure_available, and
-                            run_op, create_space and read_config, which call
-                            host before submit_space), reified/
+                            run_op, create_space, allocate and read_config,
+                            which call host before their job), reified/
                             system_processes.rs (read_config of
-                            getSpaceAgent)
+                            getSpaceAgent). Changed by decision 90: the jobs
+                            run inline since DR-132, so no entry calls
+                            submit_space.
+   Changed by decision 112: a query is a field of its bind, the marker readers
+   retire and the read rule of unbundle_receive covers every bind. The text
+   before:
    marker_of, sole_marker_tuple
                             models/src/rust/reified/encoding.rs:346-356,
                             369-374 (marker_of, sole_marker_tuple)
@@ -121,10 +144,32 @@
    read_bind, route_bind    rholang/src/rust/interpreter/reified/
                             reducer_hooks.rs:1358-1372, 868-888 (query_bind,
                             route_receive)
+
+   h4_passes                rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs (reject_query_source),
+                            models/src/rust/reified/encoding.rs
+                            (check_query_spec)
+   has_query, takes_fast_path
+                            rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs (the condition of the fast path
+                            of reified_consume)
+   read_channel             rholang/src/rust/interpreter/reduce.rs
+                            (unbundle_receive)
+   read_bind, route_bind    rholang/src/rust/interpreter/reduce.rs
+                            (unbundle_receive),
+                            rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs (route_receive)
    single_target            rholang/src/rust/interpreter/reified/
                             reducer_hooks.rs:1390-1435 (single_bind_route)
+   Changed by decision 112: receive_one starts at H4 and the read rule. The
+   text before:
    receive_one              rholang/src/rust/interpreter/reified/
                             reducer_hooks.rs:704-791 (reified_consume)
+
+   receive_one              rholang/src/rust/interpreter/reduce.rs
+                            (unbundle_receive),
+                            rholang/src/rust/interpreter/reified/
+                            reducer_hooks.rs (reified_consume)
 
    ─────────────────────────────────────────────────────────────────────────
    Abstraction
@@ -132,16 +177,26 @@
    - A Par keeps what the readers look at. The field procs counts the
      sends, receives, news and matches. The field conns counts the
      connectives. The field conds counts the conditionals,
-     cost_signed_terms and cost_stacks. No reader looks at locally_free.
+     cost_signed_terms and cost_stacks. The field use_blocks holds the use
+     blocks of the Par (Par.use_blocks). No reader looks at locally_free.
+     Changed by decision 112: marker_of retired, so no reader looks at
+     connective_used. The text before:
      Only marker_of (section 8) looks at connective_used, as the marker_of
-     of encoding.rs does. single_bundle (implicits.rs) does
+     of encoding.rs does.
+     No reader looks at connective_used. single_bundle (implicits.rs) does
      not look at conds, so a bundle next to a conditional still unbundles,
      as in HEAD's eval_send. The model keeps that rule.
    - The canonical bytes of a channel (bincode of the sorted term) are a
      section variable canon: every theorem holds for every serializer.
-   - The USE tuple is the tuple (USE, space, body) with the marker name
+   - Changed by decision 112: a use block is a field and no tuple. The text
+     before:
+     The USE tuple is the tuple (USE, space, body) with the marker name
      GPrivate([0xE0, 0xD0]) at its head. decode_use reads it, and
      Encoding.v proves the strict decoder of the code against its encoder.
+
+     The Par use_par holds one use block in use_blocks, decode_use_par reads
+     it, and SyntaxFields.v proves the decoder of the field against its
+     encoder.
    - The evaluation of a space reference (eval_expr, then
      substitute_and_charge) is a section variable eval_ref. The section
      hypothesis eval_space_ref states that a space reference, native or
@@ -150,11 +205,18 @@
    - The handle process: split_trailing_params, the config read, the
      param schema and the method bodies are section variables. The theorem
      covers the checks that run before a method body.
-   - Receive queries: the strict decoder of the elements of a QUERY tuple
+   - Changed by decision 112: a query is a field of its bind. The text before:
+     Receive queries: the strict decoder of the elements of a QUERY tuple
      (decode_query) is a section variable strict_query, and the query
      itself is a section type. Encoding.v proves the decoder against its
      encoder, so this module models only what the routing reads: the
-     marker head, the inner channel, and whether the tuple decodes. The
+     marker head, the inner channel, and whether the tuple decodes.
+
+     Receive queries: the check of a query field (check_query_spec) is a
+     section variable strict_query, and the query itself is a section type.
+     SyntaxFields.v proves the decoder of the field against its encoder, so
+     this module models only what the routing reads: whether the bind has a
+     query and whether the check accepts it. The
      model covers a receive with one bind. A join with a query keeps the
      join errors of P4 (reducer_hooks.rs join_route) until P5c.
 
@@ -183,10 +245,18 @@
    11. native_execution_runs_spaces       native play and a bound native replay
                                           runtime run a space entry, and an
                                           unbound one fails closed (decision 47)
+   Changed by decision 112: headline 12 has a new name and speaks of the
+   query field. The text before:
    12. query_source_routes_inner_channel  a receive with a QUERY tuple routes
                                           the inner channel of the query, and
                                           a source without one keeps the
                                           receive of P4 (P5b)
+
+   12. query_bind_routes_its_channel      a bind with a query routes its own
+                                          channel, and a bind without one
+                                          keeps the receive of P4 on its
+                                          channel after the read rule (P5b,
+                                          decision 112)
    13. agent_ref_requires_write_flag      a use block enters the context of a
                                           user agent only when the reference
                                           has a call channel under the bundle
@@ -232,7 +302,10 @@ Definition reified_tag : nat := 224.
 Definition sid_len : nat := 32.
 Definition ephemeral_bit : nat := 32.
 Definition agent_tag : nat := 255.
+(* Retired by decision 112: no marker tuple remains, so the USE marker name has
+   no reader. The text before:
 Definition use_marker : nat := 208.
+*)
 
 Inductive kind : Type :=
 | KData | KConfig | KPathIndex | KAllocator | KSequence | KHandle
@@ -413,8 +486,13 @@ Inductive unf : Type :=
 | UPrivate : bytes -> unf       (* GPrivate id *)
 | UOther : nat -> unf.          (* GDeployId, GDeployerId, GSysAuthToken, ... *)
 
-Inductive par : Type :=
+(* Changed by decision 112: a Par holds its use blocks in the new field
+   use_blocks. The text before:
 | mkPar : nat -> nat -> nat -> list expr -> list unf -> list bundle -> list nat -> bool -> par
+*)
+Inductive par : Type :=
+| mkPar : nat -> nat -> nat -> list expr -> list unf -> list bundle -> list nat -> bool ->
+          list use_block -> par
 with expr : Type :=
 | ENone : expr                  (* an Expr whose expr_instance is None *)
 | ETuple : list par -> expr
@@ -423,18 +501,31 @@ with expr : Type :=
 | EBool : bool -> expr
 | EOther : nat -> expr
 with bundle : Type :=
-| mkBundle : option par -> bool -> bool -> bundle.   (* body, write_flag, read_flag *)
+| mkBundle : option par -> bool -> bool -> bundle    (* body, write_flag, read_flag *)
+with use_block : Type :=
+| mkUseBlock : par -> par -> use_block.              (* UseBlock.space and UseBlock.body *)
 
+(* Changed by decision 112: mkPar has the field use_blocks, so every value and
+   pattern of mkPar in this section holds one more argument, and the forms below
+   require no use block. The texts before:
 Definition empty_par : par := mkPar 0 0 0 [] [] [] [] false.
+Definition gprivate (id : bytes) : par := mkPar 0 0 0 [] [UPrivate id] [] [] false.
+  match p with mkPar 0 0 0 [] [] [] _ _ => true | _ => false end.
+  match p with mkPar 0 0 0 [] [u] [] _ _ => Some u | _ => None end.
+  match p with mkPar 0 0 _ [] [] [b] _ _ => Some b | _ => None end.
+  | mkPar 0 0 0 [e] [] [] _ _ => match e with ENone => None | _ => Some e end
+  match p with mkPar 0 0 0 [] [] [b] _ _ => Some b | _ => None end.
+*)
+Definition empty_par : par := mkPar 0 0 0 [] [] [] [] false [].
 
 (* namespace::gprivate *)
-Definition gprivate (id : bytes) : par := mkPar 0 0 0 [] [UPrivate id] [] [] false.
+Definition gprivate (id : bytes) : par := mkPar 0 0 0 [] [UPrivate id] [] [] false [].
 
 Definition is_empty (p : par) : bool :=
-  match p with mkPar 0 0 0 [] [] [] _ _ => true | _ => false end.
+  match p with mkPar 0 0 0 [] [] [] _ _ [] => true | _ => false end.
 
 Definition sole_unforgeable (p : par) : option unf :=
-  match p with mkPar 0 0 0 [] [u] [] _ _ => Some u | _ => None end.
+  match p with mkPar 0 0 0 [] [u] [] _ _ [] => Some u | _ => None end.
 
 Definition sole_gprivate_id (p : par) : option bytes :=
   match sole_unforgeable p with Some (UPrivate id) => Some id | _ => None end.
@@ -444,39 +535,49 @@ Definition reified_id_of (p : par) : option reified_id :=
 
 (* implicits.rs single_bundle: it does not look at conds. *)
 Definition single_bundle (p : par) : option bundle :=
-  match p with mkPar 0 0 _ [] [] [b] _ _ => Some b | _ => None end.
+  match p with mkPar 0 0 _ [] [] [b] _ _ [] => Some b | _ => None end.
 
 (* route.rs sole_expr and handle.rs sole_expr: one Expr with an instance,
    and nothing else. *)
 Definition sole_expr (p : par) : option expr :=
   match p with
-  | mkPar 0 0 0 [e] [] [] _ _ => match e with ENone => None | _ => Some e end
+  | mkPar 0 0 0 [e] [] [] _ _ [] => match e with ENone => None | _ => Some e end
   | _ => None
   end.
 
 (* handle.rs sole_bundle: one bundle and nothing else (conds included). *)
 Definition sole_bundle (p : par) : option bundle :=
-  match p with mkPar 0 0 0 [] [] [b] _ _ => Some b | _ => None end.
+  match p with mkPar 0 0 0 [] [] [b] _ _ [] => Some b | _ => None end.
 
 Definition bytes_eqb (a b : bytes) : bool := if list_eq_dec Nat.eq_dec a b then true else false.
 
-Lemma sole_unforgeable_shape :
+(* Changed by decision 112: the statements of the three shape lemmas below name
+   the field use_blocks, and the proofs case on it. The texts before:
   forall p u, sole_unforgeable p = Some u -> exists lf cu, p = mkPar 0 0 0 [] [u] [] lf cu.
-Proof.
   intros [[|a] [|b] [|c] [|e es] [|u1 [|u2 us]] [|bd bs] lf cu] u H; cbn in H; try discriminate.
+  forall p b, single_bundle p = Some b -> exists c lf cu, p = mkPar 0 0 c [] [] [b] lf cu.
+  intros [[|a] [|b0] c [|e es] [|u us] [|bd [|bd2 bs]] lf cu] b H; cbn in H; try discriminate.
+    exists id lf cu, p = mkPar 0 0 0 [] [UPrivate id] [] lf cu /\ decode_reified_id id = Some x.
+*)
+Lemma sole_unforgeable_shape :
+  forall p u, sole_unforgeable p = Some u -> exists lf cu, p = mkPar 0 0 0 [] [u] [] lf cu [].
+Proof.
+  intros [[|a] [|b] [|c] [|e es] [|u1 [|u2 us]] [|bd bs] lf cu [|ub ubs]] u H; cbn in H;
+    try discriminate.
   injection H as <-. exists lf, cu. reflexivity.
 Qed.
 
 Lemma single_bundle_shape :
-  forall p b, single_bundle p = Some b -> exists c lf cu, p = mkPar 0 0 c [] [] [b] lf cu.
+  forall p b, single_bundle p = Some b -> exists c lf cu, p = mkPar 0 0 c [] [] [b] lf cu [].
 Proof.
-  intros [[|a] [|b0] c [|e es] [|u us] [|bd [|bd2 bs]] lf cu] b H; cbn in H; try discriminate.
+  intros [[|a] [|b0] c [|e es] [|u us] [|bd [|bd2 bs]] lf cu [|ub ubs]] b H; cbn in H;
+    try discriminate.
   injection H as <-. exists c, lf, cu. reflexivity.
 Qed.
 
 Lemma reified_id_of_shape :
   forall p x, reified_id_of p = Some x ->
-    exists id lf cu, p = mkPar 0 0 0 [] [UPrivate id] [] lf cu /\ decode_reified_id id = Some x.
+    exists id lf cu, p = mkPar 0 0 0 [] [UPrivate id] [] lf cu [] /\ decode_reified_id id = Some x.
 Proof.
   intros p x H. unfold reified_id_of, sole_gprivate_id in H.
   destruct (sole_unforgeable p) as [[id | n] |] eqn:E; try discriminate.
@@ -897,7 +998,10 @@ Section Routing.
      the route of HEAD: the default space. *)
   Theorem r7_agent_reply_bundle_exact :
     forall body w rd k lf cu,
-      r7_produce (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu) =
+      (* Changed by decision 112: mkPar has the field use_blocks. The texts before:
+         r7_produce (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu) =
+         assert (Hb : classify_channel (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu) = CForged). *)
+      r7_produce (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu []) =
         match body with
         | Some t =>
             if w && rd && is_agent_tagged t then
@@ -907,7 +1011,7 @@ Section Routing.
         end.
   Proof.
     intros body w rd k lf cu.
-    assert (Hb : classify_channel (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu) = CForged).
+    assert (Hb : classify_channel (mkPar 0 0 k [] [] [mkBundle body w rd] lf cu []) = CForged).
     { apply (single_bundle_forged _ (mkBundle body w rd)). reflexivity. }
     unfold r7_produce, r7_agent_bundle. cbn [single_bundle].
     destruct body as [t |];
@@ -923,11 +1027,15 @@ Section Routing.
      the translation of `new` binds (user_agent.rs agent_minted_name, P8
      step 4, design v2 TN-3). *)
   Definition agent_tuple (a raw : par) (lf : list nat) (cu : bool) : par :=
-    mkPar 0 0 0 [ETuple [gprivate [reified_tag; agent_tag]; a; raw]] [] [] lf cu.
+    (* Changed by decision 112: mkPar has the field use_blocks. The text before:
+       mkPar 0 0 0 [ETuple [gprivate [reified_tag; agent_tag]; a; raw]] [] [] lf cu. *)
+    mkPar 0 0 0 [ETuple [gprivate [reified_tag; agent_tag]; a; raw]] [] [] lf cu [].
 
   Definition agent_minted_name (a raw : par) (lf : list nat) (cu : bool)
              (blf : list nat) (bcu : bool) : par :=
-    mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true true] blf bcu.
+    (* Changed by decision 112: mkPar has the field use_blocks. The text before:
+       mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true true] blf bcu. *)
+    mkPar 0 0 0 [] [] [mkBundle (Some (agent_tuple a raw lf cu)) true true] blf bcu [].
 
   Lemma agent_tuple_tagged : forall a raw lf cu, is_agent_tagged (agent_tuple a raw lf cu) = true.
   Proof.
@@ -1005,8 +1113,11 @@ Section Routing.
   Qed.
 End Routing.
 
-(* ── 5. The USE wrapper (scope.rs wrap_body, reducer_hooks.rs eval_use) ── *)
+(* ── 5. The use wrapper (scope.rs wrap_body, reducer_hooks.rs eval_use) ── *)
 
+(* Retired by decision 112: a stored body carries its context in the field
+   use_blocks of its Par, so the USE tuple and its decoder have no reader.
+   The text before:
 (* The USE tuple (USE, space, body) with the marker GPrivate([0xE0, 0xD0]). *)
 Definition use_tuple (space body : par) : par :=
   mkPar 0 0 0 [ETuple [gprivate [reified_tag; use_marker]; space; body]] [] [] [] false.
@@ -1023,9 +1134,30 @@ Definition decode_use (p : par) : option (par * par) :=
 
 Lemma decode_use_tuple : forall s b, decode_use (use_tuple s b) = Some (s, b).
 Proof. intros s b. reflexivity. Qed.
+*)
 
-Definition wrap_body (cx : ctx) (body : par) : par :=
+(* use_par (scope.rs wrap_body): the Par of a stored body under a context
+   holds one use block and nothing else. *)
+Definition use_par (space body : par) : par :=
+  mkPar 0 0 0 [] [] [] [] false [mkUseBlock space body].
+
+(* decode_use_par reads the wrapper of a stored body: a Par that holds one use
+   block and no other term. *)
+Definition decode_use_par (p : par) : option (par * par) :=
+  match p with
+  | mkPar 0 0 0 [] [] [] _ _ [mkUseBlock s b] => Some (s, b)
+  | _ => None
+  end.
+
+Lemma decode_use_par_use_par : forall s b, decode_use_par (use_par s b) = Some (s, b).
+Proof. intros s b. reflexivity. Qed.
+
+(* Changed by decision 112: a stored body is a Par with a use block. The text
+   before:
   match cx with Some t => use_tuple (t_space t) body | None => body end.
+*)
+Definition wrap_body (cx : ctx) (body : par) : par :=
+  match cx with Some t => use_par (t_space t) body | None => body end.
 
 (* AG-4 (P8): the call channel of an agent reference under the bundle rule of
    eval_send (reduce.rs): a bundle with the write flag gives its body, a
@@ -1098,10 +1230,15 @@ Section UseWrapper.
      root reducer, whose context is None
      (rholang/src/rust/interpreter/dispatch.rs:62-71). Inside a reduction,
      eval_continuation runs the body in a detached task of that root
+     reducer, so the context is None there as well. A use block enters its
+     context (eval_use_block).
+     Changed by decision 112: the reader is the use block of the Par, not the
+     USE tuple. The text before:
      reducer, so the context is None there as well. A USE tuple enters its
-     context (eval_marker). *)
+     context (eval_marker).
+    match decode_use p with *)
   Definition fire_step (e : env) (p : par) : fire_result :=
-    match decode_use p with
+    match decode_use_par p with
     | Some (space, body) =>
         match enter_use e space with
         | Entered t => Runs (Some t) body
@@ -1128,10 +1265,13 @@ Section UseWrapper.
         injection H as <-. cbn.
         rewrite (classify_agent_is_reference _ _ Ec) in Ec.
         split; [exact Ec | rewrite Ecc; discriminate].
-    - intros [[s [n |]] |] body e Hv; [| | reflexivity].
-      + cbn [wrap_body t_space]. unfold fire_step. rewrite decode_use_tuple. unfold enter_use.
+    - (* Changed by decision 112: the two rewrites below use the new lemma
+         decode_use_par_use_par. The text before:
+         rewrite decode_use_tuple. (at both sites) *)
+      intros [[s [n |]] |] body e Hv; [| | reflexivity].
+      + cbn [wrap_body t_space]. unfold fire_step. rewrite decode_use_par_use_par. unfold enter_use.
         cbn [ctx_valid] in Hv. rewrite (eval_space_ref e _ _ Hv), Hv. reflexivity.
-      + cbn [wrap_body t_space]. unfold fire_step. rewrite decode_use_tuple. unfold enter_use.
+      + cbn [wrap_body t_space]. unfold fire_step. rewrite decode_use_par_use_par. unfold enter_use.
         cbn [ctx_valid] in Hv. destruct Hv as [Hc Hw].
         rewrite (eval_space_ref e _ _ Hc), Hc.
         destruct (call_channel s) as [ch |]; [reflexivity | contradiction Hw; reflexivity].
@@ -1399,8 +1539,12 @@ End HandleDispatch.
    space of the runtime, a detached runtime, or the runtime of the native
    replay environment, which the environment binds once to the store of its
    native replay session (bound = true). A host runtime also sees whether its
-   budget runs a native deploy (RuntimeBudget::native_execution_active), and
-   it runs space jobs in both cases. *)
+   budget runs a native deploy (RuntimeBudget::native_execution_active).
+   Changed by decision 90 (C6, decision 69): spaces have one execution model,
+   native funded execution. A host runtime runs space jobs only when its
+   budget runs a native deploy, as the base issues grants only in native
+   offered execution (offered_grants.rs). Before, it ran them in both
+   cases. *)
 Inductive runtime_state : Type := RtHost | RtDetached | RtNativeReplay (bound : bool).
 
 Inductive availability_error : Type := RuntimeUnavailable.
@@ -1410,7 +1554,9 @@ Inductive availability_error : Type := RuntimeUnavailable.
 Definition ensure_available (st : runtime_state) (native : bool)
     : option availability_error :=
   match st with
-  | RtHost => None
+  (* Changed by decision 90 (C6): the host arm reads the budget. The arm of
+     decision 47 was RtHost => None. *)
+  | RtHost => if native then None else Some RuntimeUnavailable
   | RtDetached => Some RuntimeUnavailable
   | RtNativeReplay bound => if bound then None else Some RuntimeUnavailable
   end.
@@ -1425,15 +1571,21 @@ Definition space_entry {Op : Type} (st : runtime_state) (native : bool) (ops : l
   | None => (ops, None)
   end.
 
-(* Headline 11 (decision 47). Native play (a host runtime whose budget runs a
-   native deploy) runs a space entry as legacy execution runs it. A native
-   replay runtime that the environment bound runs it as native play, so play
-   and replay stage the same operations. A native replay runtime that is not
-   bound yet, and a detached runtime, stage nothing and fail with
-   RuntimeUnavailable. *)
+(* Headline 11 (decision 47, amended by decision 90). Native play (a host
+   runtime whose budget runs a native deploy) runs a space entry. Outside
+   native execution a host runtime stages nothing and fails with
+   RuntimeUnavailable, so spaces have one execution model (C6). A native
+   replay runtime that the environment bound runs a space entry as native
+   play, so play and replay stage the same operations. A native replay
+   runtime that is not bound yet, and a detached runtime, stage nothing and
+   fail with RuntimeUnavailable.
+
+   Changed by decision 90 (C6): the first clause of decision 47 was
+   space_entry RtHost true ops = space_entry RtHost false ops, because a host
+   runtime ran space jobs in legacy execution too. *)
 Theorem native_execution_runs_spaces :
   forall (Op : Type) (ops : list Op) (native : bool),
-    space_entry RtHost true ops = space_entry RtHost false ops /\
+    space_entry RtHost false ops = ([], Some RuntimeUnavailable) /\
     space_entry (RtNativeReplay true) native ops = space_entry RtHost true ops /\
     space_entry RtHost true ops = (ops, None) /\
     space_entry (RtNativeReplay false) native ops = ([], Some RuntimeUnavailable) /\
@@ -1445,6 +1597,9 @@ Qed.
 
 (* ── 8. Receive queries (reducer_hooks.rs, P5b) ─────────────────────────── *)
 
+(* Retired by decision 112: a query is a field of its bind, so the marker names
+   and the reader of marker tuples have no reader left in this module. The
+   text before:
 (* The marker names of encoding.rs (marker_of): GPrivate([0xE0, m]) with m in
    0xD0..0xD4 (208..212), on a Par without the connective flag. QUERY is
    0xD3 (211). *)
@@ -1470,13 +1625,28 @@ Definition sole_marker_tuple (p : par) : option (nat * list par) :=
 
 Definition is_marker_tuple (p : par) : bool :=
   match sole_marker_tuple p with Some _ => true | None => false end.
+*)
 
-(* reducer_hooks.rs takes_fast_path: outside every use block, reified_consume
+(* Whether a bind carries a query (ReceiveBind.query_spec). *)
+Definition has_query {Q : Type} (q : option Q) : bool :=
+  match q with Some _ => true | None => false end.
+
+(* reducer_hooks.rs reified_consume: outside every use block, the fast path
+   calls the baseline consume only for a bind without a query whose channel
+   routes to the default space.
+   Changed by decision 112: the fast path tests the query field, not the
+   marker head of a QUERY tuple. The text before:
+   reducer_hooks.rs takes_fast_path: outside every use block, reified_consume
    calls the baseline consume only for a channel that routes to the default
-   space and is no marker tuple. *)
+   space and is no marker tuple.
 Definition takes_fast_path (c : par) : bool :=
   routes_to_default_without_context c && negb (is_marker_tuple c).
+*)
+Definition takes_fast_path {Q : Type} (c : par) (q : option Q) : bool :=
+  routes_to_default_without_context c && negb (has_query q).
 
+(* Retired by decision 112: no marker tuple remains, so sole_expr_shape,
+   marker_of_gprivate and marker_tuple_forged have no reader. The text before:
 Lemma sole_expr_shape :
   forall p e, sole_expr p = Some e -> exists lf cu, p = mkPar 0 0 0 [e] [] [] lf cu.
 Proof.
@@ -1519,17 +1689,27 @@ Proof.
   cbn [nth] in Hmeq. unfold is_marker_byte in Hm. apply andb_prop in Hm as [_ Hle].
   apply Nat.leb_le in Hle. unfold agent_tag in Hmeq. lia.
 Qed.
+*)
 
 Section Queries.
   Variable canon : par -> option bytes.
   (* The payload and the named params of a query (agent.rs QueryParams). *)
   Variable query : Type.
-  (* The strict decoder of the elements of a QUERY tuple after its head, after
+  (* check_query_spec of encoding.rs: true when a query holds a payload or a
+     named param and its keys are valid. SyntaxFields.v proves the decoder of
+     the field against its encoder.
+     Changed by decision 112: a query is a field of its bind, so the check
+     takes one query and no tuple. The text before:
+  The strict decoder of the elements of a QUERY tuple after its head, after
      the I-20 refresh (encoding.rs decode_query, which Encoding.v proves
      against its encoder): Some (inner channel, query) for the canonical image
-     of a query, and None for every other QUERY tuple. *)
+     of a query, and None for every other QUERY tuple.
   Variable strict_query : list par -> option (par * query).
+  *)
+  Variable strict_query : query -> bool.
 
+  (* Retired by decision 112: the source of a bind is its channel and the query
+     is a field of the bind, so no reader decodes a source. The text before:
   Inductive source_read : Type :=
   | SrcPlain : source_read
   | SrcQuery : par -> query -> source_read
@@ -1545,12 +1725,25 @@ Section Queries.
         else SrcPlain
     | None => SrcPlain
     end.
+  *)
 
-  (* Hook H4, reject_query_source: only a malformed QUERY tuple fails. *)
+  (* Hook H4, reject_query_source: a bind without a query passes, and a bind
+     with a query passes when check_query_spec accepts the query.
+     Changed by decision 112: H4 reads the field of the bind. The text before:
+  Hook H4, reject_query_source: only a malformed QUERY tuple fails.
   Definition h4_passes (c : par) : bool :=
     match decode_source c with SrcMalformed => false | SrcPlain | SrcQuery _ _ => true end.
+  *)
+  Definition h4_passes (q : option query) : bool :=
+    match q with Some x => strict_query x | None => true end.
 
-  (* readable_channel: the read rule of unbundle_receive. A bundle without the
+  (* The read rule of unbundle_receive, which applies to the channel of every
+     bind. A bundle without the read flag fails with the text of HEAD. The
+     Rust code unwraps the body of a readable bundle, so a Bundle without a
+     body stops the reducer there, and the model records that case as NoBody.
+     Changed by decision 112: readable_channel retired with the QUERY tuple,
+     and unbundle_receive holds the only read rule. The text before:
+     readable_channel: the read rule of unbundle_receive. A bundle without the
      read flag fails with the text of HEAD; a bundle without a body fails with
      the error of unwrap_option_safe. *)
   Inductive read_result : Type := Readable : par -> read_result | NotReadable | NoBody.
@@ -1579,7 +1772,10 @@ Section Queries.
   Definition route_bind (cx : ctx) (ch : par) (q : option query) : bind_read :=
     match route canon cx ch with RouteOk r => BindOk ch q r | RouteErr => BindErr RKey end.
 
-  (* query_bind, then route_channel (route_receive). *)
+  (* The read rule of unbundle_receive, then route_channel (route_receive).
+     Changed by decision 112: the read rule applies to the channel of every
+     bind, and the query travels beside the channel. The text before:
+  query_bind, then route_channel (route_receive).
   Definition read_bind (cx : ctx) (c : par) : bind_read :=
     match decode_source c with
     | SrcMalformed => BindErr RMalformed
@@ -1590,6 +1786,13 @@ Section Queries.
         | NotReadable => BindErr RNotReadable
         | NoBody => BindErr RNoBody
         end
+    end.
+  *)
+  Definition read_bind (cx : ctx) (c : par) (q : option query) : bind_read :=
+    match read_channel c with
+    | Readable ch => route_bind cx ch q
+    | NotReadable => BindErr RNotReadable
+    | NoBody => BindErr RNoBody
     end.
 
   (* TAgent a raw: the translation T_recv of a receive on the user agent a
@@ -1614,15 +1817,33 @@ Section Queries.
     | BindOk _ (Some _) (RAgent _ _) => TFail RQuerySpecUnsupportedOnAgent
     end.
 
-  (* reified_consume for one bind: the fast path outside every use block, and
-     the routing path otherwise. *)
+  (* A bind of a receive in the order of the reducer. Hook H4 runs first, then
+     the read rule of unbundle_receive, then reified_consume for one bind: the
+     fast path outside every use block, and the routing path otherwise.
+     Changed by decision 112: the bind carries its query, and H4 and the read
+     rule run before the fast path for every bind. The text before:
+  reified_consume for one bind: the fast path outside every use block, and
+     the routing path otherwise.
   Definition receive_one (cx : ctx) (c : par) : recv_target :=
     match cx with
     | None => if takes_fast_path c then THost c else single_target (read_bind cx c)
     | Some _ => single_target (read_bind cx c)
     end.
+  *)
+  Definition receive_one (cx : ctx) (c : par) (q : option query) : recv_target :=
+    if negb (h4_passes q) then TFail RMalformed else
+    match cx, read_channel c with
+    | None, Readable ch =>
+        if takes_fast_path ch q then THost ch else single_target (read_bind cx c q)
+    | _, _ => single_target (read_bind cx c q)
+    end.
 
-  (* The receive of P4 for one bind on a source that H4 passes: the fast path
+  (* The receive of P4 for one bind on a channel after the read rule: the fast
+     path tests only routes_to_default_without_context, and the routing path
+     routes the channel itself.
+     Changed by decision 112: the argument is the channel after the read rule,
+     because the read rule now runs inside receive_one. The text before:
+     The receive of P4 for one bind on a source that H4 passes: the fast path
      tests only routes_to_default_without_context, and the routing path routes
      the source itself. *)
   Definition p4_receive_one (cx : ctx) (c : par) : recv_target :=
@@ -1633,7 +1854,11 @@ Section Queries.
     | Some _ => single_target (route_bind cx c None)
     end.
 
-  (* The specification: the target of a receive on the inner channel
+  (* The specification: the target of a bind with the query q on the channel
+     inner_channel, under the context cx. The name of the argument stays from
+     the QUERY tuple.
+     Changed by decision 112: a query has no channel of its own. The text
+     before: The specification: the target of a receive on the inner channel
      inner_channel of a query q, under the context cx. *)
   Definition query_target (cx : ctx) (inner_channel : par) (q : query) : recv_target :=
     match read_channel inner_channel with
@@ -1651,7 +1876,10 @@ Section Queries.
     | NoBody => TFail RNoBody
     end.
 
-  (* Headline 12. A receive with a QUERY tuple as its source routes the inner
+  (* Changed by decision 112: headline 12 becomes query_bind_routes_its_channel,
+     because a query is a field of its bind and the bind routes its own
+     channel. The text before:
+  Headline 12. A receive with a QUERY tuple as its source routes the inner
      channel of the query (P5b):
      - H4 fails exactly on a malformed QUERY tuple, so a well-formed query
        passes it;
@@ -1661,7 +1889,7 @@ Section Queries.
        route of the inner channel decides under every context: a native space
        gets the query, the default space fails with QuerySpecUnsupported, and
        a user agent fails with QuerySpecUnsupportedOnAgentSpace (P8 step 3);
-     - a source without a QUERY tuple keeps the receive of P4. *)
+     - a source without a QUERY tuple keeps the receive of P4.
   Theorem query_source_routes_inner_channel :
     forall cx c,
       (h4_passes c = false <-> decode_source c = SrcMalformed) /\
@@ -1699,6 +1927,59 @@ Section Queries.
         rewrite (marker_tuple_forged c Em). reflexivity.
       + rewrite andb_true_r. reflexivity.
   Qed.
+  *)
+
+  (* Headline 12. A bind with a query routes its own channel (P5b, decision
+     112). The statement has three clauses:
+     1. H4 fails exactly on a present query that check_query_spec rejects, so
+        a well-formed query and an absent query pass it.
+     2. A well-formed query never takes the fast path, and the receive never
+        becomes a consume of the host on any channel. The receive applies the
+        read rule of HEAD to the channel, and the route of the channel decides
+        under every context: a native space gets the query, the default space
+        fails with QuerySpecUnsupported, and a user agent fails with
+        QuerySpecUnsupportedOnAgentSpace (P8 step 3).
+     3. A bind without a query keeps the receive of P4 on its channel after
+        the read rule. p4_receive_one models the path after the read rule of
+        unbundle_receive, so the equation holds for each channel that the
+        read rule gives. A channel that is no bundle reads as itself. *)
+  Theorem query_bind_routes_its_channel :
+    forall cx c,
+      (forall q, h4_passes q = false <-> exists x, q = Some x /\ strict_query x = false) /\
+      (forall x, strict_query x = true ->
+         (forall ch, takes_fast_path ch (Some x) = false) /\
+         (forall h, receive_one cx c (Some x) <> THost h) /\
+         receive_one cx c (Some x) = query_target cx c x) /\
+      (forall ch, read_channel c = Readable ch ->
+         receive_one cx c None = p4_receive_one cx ch).
+  Proof.
+    intros cx c. split; [| split].
+    - intros [x |]; unfold h4_passes; split.
+      + intros H. exists x. split; [reflexivity | exact H].
+      + intros [y [Hy Hs]]. injection Hy as ->. exact Hs.
+      + intros H. discriminate H.
+      + intros [y [Hy _]]. discriminate Hy.
+    - intros x Hx.
+      assert (Hfast : forall ch, takes_fast_path ch (Some x) = false).
+      { intros ch. unfold takes_fast_path. cbn [has_query negb]. apply andb_false_r. }
+      assert (Hrecv : receive_one cx c (Some x) = query_target cx c x).
+      { unfold receive_one, read_bind, query_target. cbn [h4_passes]. rewrite Hx. cbn [negb].
+        destruct cx as [t |]; destruct (read_channel c) as [ch | |];
+          try reflexivity; try rewrite Hfast;
+          unfold route_bind;
+          match goal with
+          | |- context [route canon ?cx0 ?ch0] =>
+              destruct (route canon cx0 ch0) as [[| n k | a r] |]; reflexivity
+          end. }
+      split; [exact Hfast | split; [| exact Hrecv]].
+      intros h Hh. rewrite Hrecv in Hh. unfold query_target in Hh.
+      destruct (read_channel c) as [ch | |]; try discriminate Hh.
+      destruct (route canon cx ch) as [[| n k | a r] |]; discriminate Hh.
+    - intros ch Hr. unfold receive_one, p4_receive_one, read_bind. cbn [h4_passes negb].
+      rewrite Hr. destruct cx as [t |]; [reflexivity |].
+      unfold takes_fast_path. cbn [has_query negb]. rewrite andb_true_r.
+      destruct (routes_to_default_without_context ch); reflexivity.
+  Qed.
 End Queries.
 
 (* ── Headline assumptions ────────────────────────────────────────────── *)
@@ -1713,7 +1994,10 @@ Print Assumptions ordinary_channels_route_default.
 Print Assumptions use_wrapper_restores_ctx.
 Print Assumptions handle_dispatch_total.
 Print Assumptions native_execution_runs_spaces.
+(* Changed by decision 112: headline 12 has a new name. The text before:
 Print Assumptions query_source_routes_inner_channel.
+*)
+Print Assumptions query_bind_routes_its_channel.
 Print Assumptions agent_ref_requires_write_flag.
 Print Assumptions r7_agent_reply_bundle_exact.
 Print Assumptions tag_untag_id.

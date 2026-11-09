@@ -63,6 +63,7 @@ show_status() {
     echo ""
     echo "Hooks provide:"
     echo "  pre-commit: cargo fmt --check, cargo clippy"
+    echo "  commit-msg: reject unratified co-authors and session trailers"
     echo "  pre-push:   CI script tests and cargo test (full workspace)"
 }
 
@@ -79,6 +80,7 @@ install_via_hookspath() {
     echo ""
     echo "Hooks installed:"
     echo "  pre-commit: cargo fmt --check + cargo clippy"
+    echo "  commit-msg: reject unratified co-authors and session trailers"
     echo "  pre-push:   CI script tests and cargo test (full workspace)"
     echo ""
     echo "To verify: git config --local core.hooksPath"

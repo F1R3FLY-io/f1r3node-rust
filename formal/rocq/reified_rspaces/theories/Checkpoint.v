@@ -63,7 +63,7 @@
                              store_data, store_waiting_continuation,
                              remove_matched_datum_and_join, and
                              rs/space_store_handle.rs sweep_volatile
-   snapshot, revert          rs/rspace/ispace_impl.rs:278-320
+   snapshot, revert          rs/rspace/ispace_impl.rs:197-207, 215-239
                              (create_soft_checkpoint: the cache snapshot;
                              revert_to_soft_checkpoint:
                              create_from_hs_and_hr(cache_snapshot, base))

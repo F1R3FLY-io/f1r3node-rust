@@ -15,31 +15,44 @@
 #[path = "../../models/tests/support/reified_strategies.rs"]
 mod reified_strategies;
 
+// Added by decision 90 (C6, decision 69): the node runs native deploys through the native
+// session of the shared harness.
+#[path = "support/mod.rs"]
+mod support;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+// Disabled by decision 90 (C6): the native session draws the random state of each deploy.
+// use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::Par;
 use reified_strategies::gstring;
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::Sig;
+// Disabled by decision 90 (C6): the native session runs no legacy deploy.
+// use rholang::rust::interpreter::accounting::costs::Cost;
+// use rholang::rust::interpreter::accounting::Sig;
 use rholang::rust::interpreter::reified::scope::{classify_space_ref, SpaceRef};
-use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl};
+// Changed by decision 90 (C6): the session holds the runtime.
+// use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::{RhoHistoryRepository, RhoRuntime};
 use rholang::rust::interpreter::spaces::namespace::{self, CollectionKey, NativeSpace};
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Disabled by decision 90 (C6): the native session builds the runtime.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     compute_related_sets, conflict_reason, conflicts, depends, NumberChannelsDiff,
 };
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Disabled by decision 90 (C6): the native session builds the runtime.
+// use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+// use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 use shared::rust::hashable_set::HashableSet;
+use support::session::Session;
 
-const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-merge-deploy";
-const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-merge-payer";
-const PHLO: i64 = 100_000_000;
+// Disabled by decision 90 (C6): the native session funds its own deploy signature and limit.
+// const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-merge-deploy";
+// const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-merge-payer";
+// const PHLO: i64 = 100_000_000;
 
 /// A deploy that creates a space and four names of it. The handle goes to `@"rrs-handle"` and
 /// the names go to `@"rrs-names"`.
@@ -65,9 +78,19 @@ fn with_space(body: &str) -> String {
 
 fn injected(name: &str) -> String { format!("rho:rrs:test:{name}") }
 
-/// A play runtime and the history of one in-memory store.
+// Changed by decision 90 (C6, decision 69): the node runs native deploys through the native
+// session (`support::session`), and native replay certifies each deploy. The legacy node
+// follows.
+//
+// /// A play runtime and the history of one in-memory store.
+// struct Node {
+//     play: RhoRuntimeImpl,
+//     history: RhoHistoryRepository,
+// }
+
+/// A native session and the history of its store (decision 90, C6).
 struct Node {
-    play: RhoRuntimeImpl,
+    session: Session,
     history: RhoHistoryRepository,
 }
 
@@ -79,51 +102,116 @@ struct PreState {
 }
 
 impl Node {
+    // Changed by decision 90 (C6): the session builds the runtime and plays each deploy. The
+    // legacy constructor and deploy follow.
+    //
+    // async fn new() -> Self {
+    //     let mut manager = InMemoryStoreManager::new();
+    //     let stores = manager
+    //         .r_space_stores()
+    //         .await
+    //         .expect("create the in-memory RSpace stores");
+    //     let (play, _replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
+    //     play.cost
+    //         .set_deploy_signature_funded(DEPLOY_SIGNATURE, Sig::Ground(FUNDING_SIGNATURE.to_vec()));
+    //     Self { play, history }
+    // }
+    //
+    // /// Evaluates one deploy that must succeed, and returns its event log.
+    // async fn deploy_with(
+    //     &mut self,
+    //     source: &str,
+    //     label: &str,
+    //     injections: &HashMap<String, Par>,
+    // ) -> Vec<Event> {
+    //     let result = self
+    //         .play
+    //         .evaluate(
+    //             source,
+    //             Cost::create(PHLO, label.to_owned()),
+    //             injections.clone(),
+    //             Blake2b512Random::create_from_bytes(label.as_bytes()),
+    //         )
+    //         .await
+    //         .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+    //     assert!(
+    //         result.errors.is_empty(),
+    //         "{label}: the deploy fails: {:?}",
+    //         result.errors
+    //     );
+    //     self.play.take_event_log().await
+    // }
+
     async fn new() -> Self {
-        let mut manager = InMemoryStoreManager::new();
-        let stores = manager
-            .r_space_stores()
-            .await
-            .expect("create the in-memory RSpace stores");
-        let (play, _replay, history) = create_runtimes(stores, false, &mut Vec::new()).await;
-        play.cost
-            .set_deploy_signature_funded(DEPLOY_SIGNATURE, Sig::Ground(FUNDING_SIGNATURE.to_vec()));
-        Self { play, history }
+        let session = Session::new().await;
+        let history = session.history();
+        Self { session, history }
     }
 
-    /// Evaluates one deploy that must succeed, and returns its event log.
+    /// Plays one deploy that must succeed, certifies it by native replay, and returns its event
+    /// log.
     async fn deploy_with(
         &mut self,
         source: &str,
         label: &str,
         injections: &HashMap<String, Par>,
     ) -> Vec<Event> {
-        let result = self
-            .play
-            .evaluate(
-                source,
-                Cost::create(PHLO, label.to_owned()),
-                injections.clone(),
-                Blake2b512Random::create_from_bytes(label.as_bytes()),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+        let deploy = self.session.deploy_with(source, label, injections).await;
         assert!(
-            result.errors.is_empty(),
+            deploy.result.errors.is_empty(),
             "{label}: the deploy fails: {:?}",
-            result.errors
+            deploy.result.errors
         );
-        self.play.take_event_log().await
+        deploy.log
     }
 
     async fn deploy(&mut self, source: &str, label: &str) -> Vec<Event> {
         self.deploy_with(source, label, &HashMap::new()).await
     }
 
+    // Changed by decision 90 (C6): the session holds the runtime. The legacy pre-state and
+    // branch follow.
+    //
+    // /// Runs `SETUP` and `seed`, and checkpoints the pre-state of the branches.
+    // async fn pre_state(&mut self, seed: &str) -> PreState {
+    //     self.deploy(SETUP, "rrs-p4-merge-setup").await;
+    //     let handle = self
+    //         .play
+    //         .get_data(&gstring("rrs-handle"))
+    //         .await
+    //         .first()
+    //         .and_then(|datum| datum.a.pars.first().cloned())
+    //         .expect("the setup stores the handle");
+    //     let space = match classify_space_ref(&handle) {
+    //         Ok(SpaceRef::Native(space)) => space,
+    //         other => panic!("the handle is not a native space: {other:?}"),
+    //     };
+    //     let names = self
+    //         .play
+    //         .get_data(&gstring("rrs-names"))
+    //         .await
+    //         .first()
+    //         .map(|datum| datum.a.pars.clone())
+    //         .expect("the setup stores the names");
+    //     self.deploy(&with_space(seed), "rrs-p4-merge-seed").await;
+    //     let root = self.play.create_checkpoint().await.root;
+    //     PreState { space, names, root }
+    // }
+    //
+    // /// The event log of one branch: `source` evaluated from the pre-state root.
+    // async fn branch(&mut self, pre: &PreState, source: &str, label: &str) -> Vec<Event> {
+    //     self.play
+    //         .reset(&pre.root)
+    //         .await
+    //         .expect("reset the play runtime to the pre-state root");
+    //     self.deploy(&with_space(source), label).await
+    // }
+
     /// Runs `SETUP` and `seed`, and checkpoints the pre-state of the branches.
     async fn pre_state(&mut self, seed: &str) -> PreState {
         self.deploy(SETUP, "rrs-p4-merge-setup").await;
         let handle = self
+            .session
             .play
             .get_data(&gstring("rrs-handle"))
             .await
@@ -135,6 +223,7 @@ impl Node {
             other => panic!("the handle is not a native space: {other:?}"),
         };
         let names = self
+            .session
             .play
             .get_data(&gstring("rrs-names"))
             .await
@@ -142,16 +231,13 @@ impl Node {
             .map(|datum| datum.a.pars.clone())
             .expect("the setup stores the names");
         self.deploy(&with_space(seed), "rrs-p4-merge-seed").await;
-        let root = self.play.create_checkpoint().await.root;
+        let root = self.session.checkpoint().await;
         PreState { space, names, root }
     }
 
     /// The event log of one branch: `source` evaluated from the pre-state root.
     async fn branch(&mut self, pre: &PreState, source: &str, label: &str) -> Vec<Event> {
-        self.play
-            .reset(&pre.root)
-            .await
-            .expect("reset the play runtime to the pre-state root");
+        self.session.reset(&pre.root).await;
         self.deploy(&with_space(source), label).await
     }
 
@@ -415,27 +501,45 @@ mod space_collection_conflicts {
         // the block index leaves it out.
         let mut node = Node::new().await;
         let pre = node.pre_state("a!(10) | b!(20)").await;
-        node.play
-            .reset(&pre.root)
-            .await
-            .expect("reset the play runtime to the pre-state root");
+        // Changed by decision 90 (C6): the session resets the runtime, and it plays, reverts and
+        // certifies the failed deploy. The legacy lines follow.
+        // node.play
+        //     .reset(&pre.root)
+        //     .await
+        //     .expect("reset the play runtime to the pre-state root");
+        // let mut logs = Vec::with_capacity(4);
+        // logs.push(node.deploy(&with_space("a!(1)"), "rrs-p4-chain-1").await);
+        // logs.push(node.deploy(&with_space("a!(2)"), "rrs-p4-chain-2").await);
+        // let fallback = node.play.create_soft_checkpoint().await;
+        // let failed = node
+        //     .play
+        //     .evaluate(
+        //         &with_space("a!(3; priority=0)"),
+        //         Cost::create(PHLO, "rrs-p4-chain-failed".to_owned()),
+        //         HashMap::new(),
+        //         Blake2b512Random::create_from_bytes(b"rrs-p4-chain-failed"),
+        //     )
+        //     .await
+        //     .expect("the failed deploy returns a result");
+        // assert!(!failed.errors.is_empty(), "the deploy with params fails");
+        // node.play.take_event_log().await;
+        // node.play.revert_to_soft_checkpoint(fallback).await;
+        node.session.reset(&pre.root).await;
         let mut logs = Vec::with_capacity(4);
         logs.push(node.deploy(&with_space("a!(1)"), "rrs-p4-chain-1").await);
         logs.push(node.deploy(&with_space("a!(2)"), "rrs-p4-chain-2").await);
-        let fallback = node.play.create_soft_checkpoint().await;
         let failed = node
-            .play
-            .evaluate(
+            .session
+            .deploy_with(
                 &with_space("a!(3; priority=0)"),
-                Cost::create(PHLO, "rrs-p4-chain-failed".to_owned()),
-                HashMap::new(),
-                Blake2b512Random::create_from_bytes(b"rrs-p4-chain-failed"),
+                "rrs-p4-chain-failed",
+                &HashMap::new(),
             )
-            .await
-            .expect("the failed deploy returns a result");
-        assert!(!failed.errors.is_empty(), "the deploy with params fails");
-        node.play.take_event_log().await;
-        node.play.revert_to_soft_checkpoint(fallback).await;
+            .await;
+        assert!(
+            !failed.result.errors.is_empty(),
+            "the deploy with params fails"
+        );
         logs.push(node.deploy(&with_space("b!(4)"), "rrs-p4-chain-3").await);
         logs.push(
             node.deploy(&with_space("for (@x <- a) { Nil }"), "rrs-p4-chain-4")
@@ -577,10 +681,12 @@ async fn reified_handle_cross_block_merge_join_handle_conflicts() {
     let pre = node.pre_state("a!(10) | b!(20)").await;
     let handle = namespace::gprivate(namespace::handle_channel(pre.space));
     let injections = HashMap::from([(injected("handle"), handle.clone())]);
-    node.play
-        .reset(&pre.root)
-        .await
-        .expect("reset the play runtime to the pre-state root");
+    // Changed by decision 90 (C6): the session resets the runtime. The legacy reset follows.
+    // node.play
+    //     .reset(&pre.root)
+    //     .await
+    //     .expect("reset the play runtime to the pre-state root");
+    node.session.reset(&pre.root).await;
     node.deploy_with(
         &format!(
             "new h(`{}`) in {{ for (@x <= h & @y <= @\"rrs-desc\") {{ Nil }} | @\"rrs-desc\"!!(0) }}",
@@ -590,7 +696,9 @@ async fn reified_handle_cross_block_merge_join_handle_conflicts() {
         &injections,
     )
     .await;
-    let root = node.play.create_checkpoint().await.root;
+    // Changed by decision 90 (C6): the session checkpoints the runtime.
+    // let root = node.play.create_checkpoint().await.root;
+    let root = node.session.checkpoint().await;
     let joined = PreState {
         space: pre.space,
         names: pre.names.clone(),

@@ -200,7 +200,7 @@ The cap $`4p + 128`$ makes the loop end in every case, and an input that the cap
 
 Figure TL9 shows the loop.
 
-![Activity diagram of the Ziv loop. The loop first tests the exact cases and returns their rounding at once. Otherwise it sets the working width to p plus 32. In each round it reserves the cost of one step on the meter, which can exit with HostWorkRejected, then it encloses the value in a rigorous dyadic interval at the working width. If both ends of the interval round to the same p-bit value, that value is the correctly rounded result. Otherwise, if the width has reached the cap 4p plus 128, the loop exits with PrecisionExhausted, and if not, the width doubles, up to the cap, and the next round starts.](../diagrams/44-tl-ziv-loop.svg)
+![Activity diagram of the Ziv loop. The loop first tests the exact cases and returns their rounding at once. Otherwise it sets the working width to p plus 32. In each round it encloses the value in a rigorous dyadic interval at the working width. If both ends of the interval round to the same p-bit value, that value is the correctly rounded result. Otherwise, if the width has reached the cap 4p plus 128, the loop exits with PrecisionExhausted, and if not, the width doubles, up to the cap, and the next round starts.](../diagrams/44-tl-ziv-loop.svg)
 
 *Figure TL9. Source: [diagrams/44-tl-ziv-loop.puml](../diagrams/44-tl-ziv-loop.puml), rendered by [diagrams/render.sh](../diagrams/render.sh).*
 
@@ -208,7 +208,7 @@ Figure TL9 shows the loop.
 
 TL reuses the exact numbers of the P6 tensor module ([decision 54](../decision-register.md#decision-54)).
 
-- **Ingress.** `number_of` (`rholang/src/rust/interpreter/tensor/num.rs:243-292`) and `vector_of` (`rholang/src/rust/interpreter/tensor/num.rs:325-360`) read the numbers of a `Par`. Integers, floats and Booleans become dyadic numbers, and `GBigRat` and `GFixedPoint` become reduced rationals. NaN and the infinities fail with `NonFiniteValue`, and the negative zero becomes 0.
+- **Ingress.** `number_of` (`rholang/src/rust/interpreter/tensor/num.rs:224-263`) and `vector_of` (`rholang/src/rust/interpreter/tensor/num.rs:291-321`) read the numbers of a `Par`. Integers, floats and Booleans become dyadic numbers, and `GBigRat` and `GFixedPoint` become reduced rationals. NaN and the infinities fail with `NonFiniteValue`, and the negative zero becomes 0.
 - **Representation.** A value is a dyadic number or a reduced rational. A sum of dyadic products uses the long accumulator DYADIC-SUM (`rholang/src/rust/interpreter/tensor/exact.rs:44-52`), whose unit is the least exponent so far, so the sum never rounds.
 - **Exact operations.** Division is exact, and so are `avg` and comparisons, which cross-multiply. `%` takes integer operands, and another operand gives $`\bot`$ ([section 2.6](#26-built-in-functions)).
 - **Delivery.** A delivered score is $`\mathrm{RN}_{53}`$ of the exact score, by `round_to_f64` (`rholang/src/rust/interpreter/tensor/num.rs:465-482`).
@@ -291,11 +291,11 @@ SEMI-NAIVE(C):
 
 Figures TL10 and TL11 show the order of the components and one semi-naive iteration.
 
-![Activity diagram of the evaluation order of a TensorLogic program. The evaluator computes the query slice, the statements that the queries need, and its strongly connected components in topological order. For each component it branches on the class. A non-recursive component evaluates each statement once. An index-guarded component visits the guard values in ascending order and evaluates the statements at each value, and a virtual dimension keeps only two slices. A Boolean monotone component runs the semi-naive iteration, stratum by stratum. After the last component the evaluator encodes the query outputs and reserves each element before it writes it.](../diagrams/43-tl-evaluation-order.svg)
+![Activity diagram of the evaluation order of a TensorLogic program. The evaluator computes the query slice, the statements that the queries need, and its strongly connected components in topological order. For each component it branches on the class. A non-recursive component evaluates each statement once. An index-guarded component visits the guard values in ascending order and evaluates the statements at each value, and a virtual dimension keeps only two slices. A Boolean monotone component runs the semi-naive iteration, stratum by stratum. After the last component the evaluator encodes the query outputs.](../diagrams/43-tl-evaluation-order.svg)
 
 *Figure TL10. Source: [diagrams/43-tl-evaluation-order.puml](../diagrams/43-tl-evaluation-order.puml), rendered by [diagrams/render.sh](../diagrams/render.sh).*
 
-![Activity diagram of the semi-naive iteration. The set R and the delta start with the facts and the non-recursive rules of the component. While the delta is not empty, the evaluator evaluates the rules with at least one atom of the delta, in canonical order, reserving the work of each join first. The new delta is the set of derived tuples that are not in R, and R grows by the delta. When the delta is empty, R is the least fixpoint, and the number of rounds is at most the number of possible derived tuples.](../diagrams/45-tl-semi-naive.svg)
+![Activity diagram of the semi-naive iteration. The set R and the delta start with the facts and the non-recursive rules of the component. While the delta is not empty, the evaluator evaluates the rules with at least one atom of the delta, in canonical order. The new delta is the set of derived tuples that are not in R, and R grows by the delta. When the delta is empty, R is the least fixpoint, and the number of rounds is at most the number of possible derived tuples.](../diagrams/45-tl-semi-naive.svg)
 
 *Figure TL11. Source: [diagrams/45-tl-semi-naive.puml](../diagrams/45-tl-semi-naive.puml), rendered by [diagrams/render.sh](../diagrams/render.sh).*
 

@@ -46,7 +46,8 @@
    fire then checks its candidate and observes its COMM. Last, the backend
    applies the effects of play. H24 to H26 model this protocol over
    abstract operations, and H27 models the charge of a view load (P5 of
-   design v2).
+   design v2). Changed by decision 89 (DR-131): H27 is disabled, because
+   no view load is metered.
 
    Code base: the campaign tree after the merge of feature/cost-accounted-rho
    at 4d67b5ccc. Every host file that this header cites with a line range
@@ -77,7 +78,7 @@
    (rspace++/src/rspace/ is abbreviated as rs/, and
    rs/space_store_handle.rs as ssh)
    ─────────────────────────────────────────────────────────────────────────
-   produce_id, consume_id    rs/trace/event.rs:238-249, 322-337 (create)
+   produce_id, consume_id    rs/trace/event.rs:155-166, 221-236 (create)
    pid_leb, comm_sort        rs/trace/event.rs:57-65 (COMM produce sort)
    mk_comm                   rs/trace/event.rs:37-78 (COMM::new)
    counters_of               rs/rspace/trace_log.rs:69-86 (produce_counters),
@@ -93,9 +94,9 @@
    put_continuation,         rs/hot_store.rs:720-783, 1315-1317
      wk_ident
    host_remove_continuation  rs/hot_store.rs:818-861
-   put_join, remove_join     rs/hot_store.rs:1017-1040, 1069-1113
+   put_join, remove_join     rs/hot_store.rs:1029-1052, 1069-1113
    store_waiting_continuation rs/rspace/ops_consume.rs:179-190,
-                             rs/replay_rspace.rs:1652-1668
+                             rs/replay_rspace.rs:1657-1673
    host_rm_loop              rs/rspace/ops_produce.rs:228-248,
                              rs/replay_rspace.rs:1798-1818
    host_spd_loop             rs/rspace/ops_consume.rs:192-202,
@@ -107,7 +108,7 @@
    host_prelude              rs/rspace/accounting.rs:20-87,
                              rs/rspace/ops_produce.rs:32-78,
                              rs/rspace/ops_consume.rs:31-81,
-                             rs/replay_rspace.rs:836-905, 1133-1192,
+                             rs/replay_rspace.rs:841-910, 1133-1192,
                              rholang/src/rust/interpreter/reduce.rs:544-548,
                              656-660 (register_introduction_authority)
    host_play_produce         rs/rspace/ops_produce.rs:32-113, 163-210
@@ -155,7 +156,7 @@
    replay_reproduces_play_   play keeps the log of a failed deploy and
      run, replay_sim_gen     reverts it (casper/src/rust/rholang/runtime.rs:934-958).
                              Replay compares the status, then the cost
-                             (casper/src/rust/rholang/replay_runtime.rs:619-632)
+                             (casper/src/rust/rholang/replay_runtime.rs:581-594)
    space_prelude, commit_*   design §2.1 (play) and §2.2 (replay) tables,
                              ssh commit_operation and commit_staged
    space_pf_loop,            design §2.1 row 6 (record removal by equality).
@@ -163,16 +164,16 @@
      vpf_loop, vcf_loop      so a peek fire removes its stored
                              non-persistent records. Each commit of a fire
                              calls remove_matched_datum_and_join
-                             (rs/rspace/space_play.rs:208,
+                             (rs/rspace/space_play.rs:197,
                              rs/replay_rspace/space_replay.rs:300) or
                              store_persistent_data
-                             (rs/rspace/space_play.rs:307,
+                             (rs/rspace/space_play.rs:277,
                              rs/replay_rspace/space_replay.rs:442). ssh
                              removed_records (rs/space_store_handle.rs:1595)
                              stages the same records
    backend                   design §2.3 (ReportingRspace delegates)
-   sub_order, sched_part     rholang/src/rust/interpreter/
-                             deterministic_reduction.rs:84-135,
+   sub_order, sched_part     base 4d67b5ccc (decision 90 removed it): rholang/src/
+                             rust/interpreter/deterministic_reduction.rs, lines 84-135,
                              rs/operation_context.rs:177-214, ssh sub_order
    covered                   ssh check_event_correlation (FR-7: it runs in
                              every build profile. FR-7': it reads the staged
@@ -195,8 +196,8 @@
                              (get_data), 927-955 (get_joins), ssh
                              TxnView::load_data, load_continuations,
                              load_joins
-   leaf_at, ck_actions       rs/hot_store.rs:1115-1170 (changes)
-   hkey                      rs/history/history_repository_impl.rs:306-348
+   leaf_at, ck_actions       rs/hot_store.rs:1127-1182 (changes)
+   hkey                      rs/history/history_repository_impl.rs:307-349
                              (transform: hash, hash_from_vec), rs/hashing/
                              stable_hash_provider.rs (hash_from_hashes sorts
                              the channel hashes)
@@ -233,9 +234,9 @@
      commit_play_consume,    and TxnCore::stage_consume
      commit_replay_consume   (rs/space_store_handle.rs:2620), PlayBackend::
                              produce_fire and consume_observed
-                             (rs/rspace/space_play.rs:161 and 243), and
+                             (rs/rspace/space_play.rs:150 and 232), and
                              ReplayBackend::produce_fire and consume_observed
-                             (rs/replay_rspace/space_replay.rs:226 and 347).
+                             (rs/replay_rspace/space_replay.rs:226 and 399).
                              A fire never stores its incoming datum, and a
                              peek fire removes the records of any fire
    fire_stores_no_datum,     FR-10 after decision 45 (design report §C.10):
@@ -253,13 +254,13 @@
                              with the same Produce::create identity
                              (decision 30)
    restore_of,               decision 45: receive_head
-     restores_after          (rholang/src/rust/interpreter/spaces/generic.rs:1800)
+     restores_after          (rholang/src/rust/interpreter/spaces/generic.rs:3999)
                              copies the head record when a peek fires on a
                              non-persistent record
-                             (rholang/src/rust/interpreter/spaces/generic.rs:1844).
+                             (rholang/src/rust/interpreter/spaces/generic.rs:1843).
                              restore_peeked and Cx::restore
-                             (rholang/src/rust/interpreter/spaces/generic.rs:1887
-                             and 1233) stage a Store of that record with
+                             (rholang/src/rust/interpreter/spaces/generic.rs:1886
+                             and 1232) stage a Store of that record with
                              persist = false right after the fire. The model
                              does not include the record authority that the
                              re-store registers (Introduction::for_record,
@@ -277,7 +278,7 @@
                              rs/util.rs:57-70 and rs/rspace/ops_consume.rs:204-229
                              give the data_list tuples, and
                              rs/space_matcher.rs:72-90 gives removed_datum
-   stored_sources,           Produce::create (rs/trace/event.rs:238-249)
+   stored_sources,           Produce::create (rs/trace/event.rs:155-166)
      restore_same_identity   hashes the channel, the data and the persist
                              flag. ssh stage_produce gives a staged produce
                              that identity (rs/space_store_handle.rs:2422). So
@@ -510,6 +511,8 @@
    H27 view_charge_cache_independent   P5: a view load charges its key and
                                        its value only, so a hit and a miss
                                        charge the same
+                                       (disabled by decision 89, DR-131:
+                                       no view load is metered)
    H28 coverage_commit                 P9 (amendment A10): with the leaf-hash,
                                        decoded-row and event-multiplicity
                                        premises, a Produce of the log names
@@ -904,7 +907,7 @@ Variable kont_eq_dec : forall x y : Kont, {x = y} + {x <> y}.
 Variable pid_eq_dec : forall x y : PId, {x = y} + {x <> y}.
 Variable cid_eq_dec : forall x y : CId, {x = y} + {x <> y}.
 
-(* Produce::create and Consume::create (event.rs:238-249, 322-337). *)
+(* Produce::create and Consume::create (event.rs:155-166, 221-236). *)
 Variable produce_id : Chan -> Val -> bool -> PId.
 Variable consume_id : list Chan -> list Pat -> Kont -> bool -> CId.
 
@@ -1189,7 +1192,7 @@ Definition space_remove_continuation (S : Store) (g : list Chan) (w : WK) : Stor
   then (upd_conts S g (remove_first wk_eq_dec w (s_conts S g)), [FxRemoveCont g w])
   else (S, []).
 
-(* put_join inserts at index 0 only if absent (hot_store.rs:1017-1040). *)
+(* put_join inserts at index 0 only if absent (hot_store.rs:1029-1052). *)
 Definition put_join (S : Store) (c : Chan) (g : list Chan) : Store * list Fx :=
   if in_dec lc_eq_dec g (s_joins S c)
   then (S, [])
@@ -1215,7 +1218,7 @@ Fixpoint put_joins (S : Store) (cs : list Chan) (g : list Chan) : Store * list F
   end.
 
 (* store_waiting_continuation (ops_consume.rs:179-190 and
-   replay_rspace.rs:1652-1668). *)
+   replay_rspace.rs:1657-1673). *)
 Definition store_waiting_continuation (S : Store) (chs : list Chan) (w : WK) : Store * list Fx :=
   let p1 := put_continuation S chs w in
   let p2 := put_joins (fst p1) chs chs in (fst p2, snd p1 ++ snd p2).
@@ -1318,8 +1321,8 @@ Record Res := mkRes {
 
 Inductive Pre := PreStop (obs : list Obs) (st : Status) | PreGo (obs : list Obs).
 
-(* Host call prefix (accounting.rs:20-31, ops_produce.rs:44-78,
-   ops_consume.rs:45-81 and replay_rspace.rs:851-905, 1144-1192). The first
+(* Host call prefix (accounting.rs:20-31, ops_produce.rs:61-123,
+   ops_consume.rs:45-81 and replay_rspace.rs:856-910, 1144-1192). The first
    call is the register_introduction_authority call of the reducer
    (reduce.rs:544-548, 656-660). The substrate calls before_observe at the
    same position. *)
@@ -3714,7 +3717,7 @@ Definition host_produce_peeks (op : Op) : list Op :=
 
 (* stored_sources holds when the source of each record of the view is the
    Produce::create identity of its channel, value and persist flag
-   (rs/trace/event.rs:238-249). A staged Store and a host produce store
+   (rs/trace/event.rs:155-166). A staged Store and a host produce store
    exactly that identity, and staging keeps the property
    (stage_keeps_stored_sources). *)
 Definition stored_sources (V : View) : Prop :=
@@ -6585,7 +6588,7 @@ Definition op_groups (op : Op) : list (list Chan) :=
   | OConsume chs _ _ _ _ _ => [chs]
   end.
 
-(* ── Hot-store read cache (hot_store.rs:671-718, 865-877, 987-1015) ────── *)
+(* ── Hot-store read cache (hot_store.rs:671-718, 865-877, 999-1027) ────── *)
 
 (* The keys of the three hot-store maps. *)
 Inductive CKey := CData (c : Chan) | CCont (g : list Chan) | CJoins (c : Chan).
@@ -6598,7 +6601,7 @@ Definition key_canonical (k : CKey) : bool :=
 
 (* A first read of a key caches it: get_continuations, get_data and
    get_joins insert the history value into the map (hot_store.rs:671-718,
-   865-877, 987-1015). The list stands for the cached keys in the iteration
+   865-877, 999-1027). The list stands for the cached keys in the iteration
    order of changes(). *)
 Definition touch (k : CKey) (cache : list CKey) : list CKey :=
   if in_dec ckey_eq_dec k cache then cache else cache ++ [k].
@@ -6688,7 +6691,7 @@ Fixpoint session_ops (cache : list CKey) (T : Txn) (accs : list Access) : list O
 (* ── Checkpoint of the hot store ───────────────────────────────────────── *)
 
 (* [hkey] is the prefixed Blake2b history key of a cached key
-   (history_repository_impl.rs:306-348). hash_from_vec sorts the channel
+   (history_repository_impl.rs:307-349). hash_from_vec sorts the channel
    hashes, so a permuted group has the history key of its canonical group.
    The encoders stand for the serializers of the three leaf kinds. *)
 Variable HKey : Type.
@@ -6699,7 +6702,7 @@ Variable encode_data : list Datum -> Leaf.
 Variable encode_conts : list WK -> Leaf.
 Variable encode_joins : list (list Chan) -> Leaf.
 
-(* changes() (hot_store.rs:1115-1170): an empty cached list becomes a
+(* changes() (hot_store.rs:1127-1182): an empty cached list becomes a
    Delete (None), a non-empty list an Insert of its leaf. *)
 Definition leaf_at (S : Store) (k : CKey) : option Leaf :=
   match k with
@@ -9156,6 +9159,9 @@ Qed.
 
 End NativeReplay.
 
+(* Disabled by decision 89 (DR-131, step M2): no view load is metered, so H27
+   (view_charge_cache_independent) goes with the metered view reads of
+   decision 47. The section stays below as a comment.
 (* ═════════ The charge of a view load (P5 of decision 47, I-12) ═════════ *)
 
 Section ViewCharges.
@@ -9204,6 +9210,7 @@ Proof.
 Qed.
 
 End ViewCharges.
+*)
 
 (* ═══════════ The premises of H9 are satisfiable ══════════════════════════════ *)
 
@@ -9338,7 +9345,9 @@ Print Assumptions replay_reproduces_play_run.
 Print Assumptions native_replay_reproduces_play.
 Print Assumptions native_replay_denial_keeps_prefix.
 Print Assumptions native_replay_fails_closed.
+(* Disabled by decision 89 (DR-131, step M2): H27 goes with the metered view reads.
 Print Assumptions view_charge_cache_independent.
+*)
 Print Assumptions coverage_commit.
 Print Assumptions two_block_replay_preserves_roots.
 Print Assumptions two_block_native_replay_preserves_roots.

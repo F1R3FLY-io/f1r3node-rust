@@ -39,72 +39,72 @@
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    record_kind, kind_byte, tag_bytes, tag
-                            spaces/record.rs:84, 87, 92-97, 109-111, 114
+                            spaces/record.rs:107, 110, 115-120, 132-134, 137
                             (RECORD_TAG_MARK, RECORD_VERSION, RecordKind,
                             tag_bytes, tag)
-   sole shapes of rpar      spaces/record.rs:136-171, 174-181 (sole_expr,
+   sole shapes of rpar      spaces/record.rs:159-196, 199-206 (sole_expr,
                             expr_par)
-   list_par                 spaces/record.rs:185-208 (the bit sets of the
+   list_par                 spaces/record.rs:210-233 (the bit sets of the
                             normalizer)
-   list_elements            spaces/record.rs:213-232 (strict flags)
+   list_elements            spaces/record.rs:238-257 (strict flags)
    is_tag, is_nil, natural_of
-                            spaces/record.rs:234-239, 241, 243-248
+                            spaces/record.rs:259-264, 266, 268-273
    datum_envelope, wrap_datum, datum_ord, unwrap_datum
-                            spaces/record.rs:253-260, 264-274, 277-287,
-                            300-315
+                            spaces/record.rs:278-285, 289-299, 302-312,
+                            325-340
    continuation_envelope, wrap_continuation, continuation_parts,
-   unwrap_continuation      spaces/record.rs:318-325, 330-350, 353-370,
-                            388-403
+   unwrap_continuation      spaces/record.rs:343-350, 355-375, 378-395,
+                            423-438
    counter_record, counter_value
-                            spaces/record.rs:412-423, 426-435
+                            spaces/record.rs:447-458, 461-470
    config_record, config_map
-                            spaces/record.rs:442-449, 452-465
-   key_priority             spaces/record.rs:867 (PRIORITY_KEY)
-   priority_slot,           spaces/record.rs:871-876, 880-885
+                            spaces/record.rs:477-484, 487-500
+   key_priority             spaces/record.rs:687 (PRIORITY_KEY)
+   priority_slot,           spaces/record.rs:691-696, 700-705
    level_of_slot            (priority_slot, level_of_slot)
-   pq_datum_envelope,       spaces/record.rs:890-897, 902-916, 921-934,
-   wrap_pq_datum,           925-941 (pq_datum_envelope, wrap_pq_datum,
+   pq_datum_envelope,       spaces/record.rs:710-717, 722-736, 741-754,
+   wrap_pq_datum,           770-786 (pq_datum_envelope, wrap_pq_datum,
    pq_datum_slots,          pq_datum_slots, unwrap_pq_datum)
    unwrap_pq_datum
-   pq_policy,               spaces/record.rs:972-985, 991-1018 (pq_policy,
+   pq_policy,               spaces/record.rs:792-805, 811-838 (pq_policy,
    level_of_policy          level_of_policy)
    pq_continuation_envelope,
-   wrap_pq_continuation,    spaces/record.rs:1022-1029, 1034-1055,
-   pq_continuation_parts,   1035-1052, 1076-1092
+   wrap_pq_continuation,    spaces/record.rs:842-849, 854-875,
+   pq_continuation_parts,   880-897, 921-937
    unwrap_pq_continuation   (pq_continuation_envelope, wrap_pq_continuation,
                             pq_continuation_parts, unwrap_pq_continuation)
-   into_continuation        spaces/record.rs:773-814 (into_continuation, the
+   into_continuation        spaces/record.rs:640-681 (into_continuation, the
                             outcome decoder of every family)
    join_continuation_version, join_tag_bytes, join_tag, is_join_tag
-                            spaces/record.rs:1706, 1709-1714, 1746,
-                            1748-1753 (JOIN_CONTINUATION_VERSION,
+                            spaces/record.rs:1314, 1317-1322, 1350,
+                            1352-1357 (JOIN_CONTINUATION_VERSION,
                             JOIN_CONTINUATION_TAG, join_tag, is_join_tag)
-   join_slot                spaces/record.rs:1722-1731 (JoinSlot)
-   level_ok, slots_fresh,   spaces/record.rs:1758-1772 (join_slots_valid:
+   join_slot                spaces/record.rs:1329-1338 (JoinSlot)
+   level_ok, slots_fresh,   spaces/record.rs:1362-1376 (join_slots_valid:
    join_slots_valid         two or more slots, natural ords and levels,
                             and a fresh bind index below the count)
-   slot_par                 spaces/record.rs:1776-1783 (join_slot_par)
+   slot_par                 spaces/record.rs:1380-1387 (join_slot_par)
    join_continuation_envelope, wrap_join_continuation
-                            spaces/record.rs:1786-1802, 1807-1827
+                            spaces/record.rs:1390-1406, 1411-1431
                             (join_envelope_of, join_continuation_envelope,
                             wrap_join_continuation)
    join_slot_of, join_slots_of, join_continuation_parts,
-   unwrap_join_continuation spaces/record.rs:1830-1840, 1843-1866,
-                            1876-1891
+   unwrap_join_continuation spaces/record.rs:1434-1444, 1447-1470,
+                            1480-1495
    space_config, to_par, from_par
-                            spaces/types/config.rs:36-54, 58-71, 93-127,
-                            133-180, 209-257 (the keys, SpaceConfig,
+                            spaces/types/config.rs:35-53, 57-70, 92-126,
+                            132-179, 201-249 (the keys, SpaceConfig,
                             to_par, from_par, and string_par, map_par,
                             string_of, bytes_of, map_entries)
-   map_par flags            models/src/rust/par_map.rs:48-55, 67-70
+   map_par flags            models/src/rust/par_map.rs:32-39, 51-54
                             (create_from_vec: any key or value flag)
    merger_number            rholang/src/rust/interpreter/merging/
-                            rholang_merging_logic.rs:274-286, 288-293
+                            rholang_merging_logic.rs:269-285, 308-313
                             (try_get_number_with_rnd and
                             encoded_datum_is_number),
-                            models/src/rust/rholang/implicits.rs:49-63
+                            models/src/rust/rholang/implicits.rs:50-65
                             (single_expr) and casper/src/rust/merging/
-                            dag_merger.rs:55-60
+                            dag_merger.rs:56-61
                             (binary_data_is_single_number)
 
    ─────────────────────────────────────────────────────────────────────────
@@ -1215,7 +1215,7 @@ Qed.
 (* ── 10. Headline 7: the merger number predicate ───────────────────────── *)
 
 Section MergerNumber.
-  (* single_expr (implicits.rs:49-63) ignores the unforgeables, the
+  (* single_expr (implicits.rs:50-65) ignores the unforgeables, the
      connectives and the conditionals, so an opaque Par can be a single
      GInt. other_single_gint is that unknown predicate on opaque codes. *)
   Variable other_single_gint : nat -> bool -> bool.

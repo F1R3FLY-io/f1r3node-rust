@@ -9,7 +9,7 @@ By default, F1r3fly will not build with ChromaDB support. This is because Chroma
 
 To compile F1r3fly with ChromaDB support, you can use cargo's `feature` flag: `cargo run --package rholang --release --features "chromadb"`. In order to use ChromaDB, you must have a running ChromaDB instance. You can start one by invoking `docker compose -f docker/shard.yml --profile chromadb up`.
 
-Additionally, when starting F1r3fly for the first time with ChromaDB support, the ONNX representation of `sentence-transformers/all-MiniLM-L6-v2` and its tokenizer are downloaded from Hugging Face over Rustls and cached locally. Subsequent starts load the model from that cache and do not require network access. Set `FASTEMBED_CACHE_DIR` to place the cache on durable storage; otherwise it is stored in `.fastembed_cache` relative to the node working directory. `HF_HOME` takes precedence when it is set, and `HF_ENDPOINT` selects an approved Hugging Face mirror.
+Additionally, when starting F1r3fly for the first time with ChromaDB support, the SBERT embeddings used for vector search will be downloaded, which will take about 80MB. This only happens once.
 
 If, for whatever reason, the F1r3fly node is unable to interact with the ChromaDB service, a log message is recorded with `info!` and all subsequent `rho:chroma:*` calls will behave as NoOps. 
 
@@ -21,9 +21,6 @@ The `chroma` crate uses environment variables to identify how to communicate wit
 | `CHROMA_ENDPOINT` | `http://localhost:8000` |
 | `CHROMA_TENANT`   | `"default_tenant"`      |
 | `CHROMA_DATABASE` | `"default_database"`    |
-| `FASTEMBED_CACHE_DIR` | `.fastembed_cache` |
-| `HF_HOME` | unset |
-| `HF_ENDPOINT` | Hugging Face public endpoint |
 
 
 ## Design Assumptions and Consensus Semantics
@@ -194,19 +191,33 @@ The space must have the default qualifier and a metric that ChromaDB indexes: `c
 ### Embeddings and advisory queries
 
 Two system processes connect a program to the services of a node.
-Each one takes the reply channel first and replies `[true, …]` or `[false, code, detail]`.
-A call with send params aborts the deploy with `ParamsUnsupported`, and a persistent call aborts it with `PersistentOpCall`.
+Only a node built with the feature `chromadb` registers them.
+Each one takes the reply channel first and replies `[true, …]` or `[false, code, message]`.
+A call with send params aborts the deploy with `ParamsUnsupported`.
+A persistent send to either process fails at its fire with `SystemProcessShapeError`, as for every recorded external service.
 
 - `rho:vectordb:embed` embeds one text, or a list of at most 64 texts with at most 64 KiB of text. It replies `[true, vector, model]`, or `[true, [vector…], model]` for a list. The model of a node is `all-MiniLM-L6-v2`, with 384 dimensions.
-- `rho:vectordb:ann` takes a mirrored space, a channel of the space, a query and the options `{"k": k}`. It replies `[true, ids, distances, watermark]`: the ids of at most $`k`$ nearest records, their distances, and the last finalized block that the mirror reflects.
+- `rho:vectordb:ann` takes a mirrored space, a channel of the space, a query and the options `{"k": k}`. It replies `[true, ids, distances]`: the ids of at most $`k`$ nearest records and their distances.
 
-The failure codes of `embed` are `BadArgument`, `EmbeddingRateLimited`, `EmbeddingUnavailable` and `NonFiniteEmbedding`.
-The failure codes of `ann` are `NotAVectorDbSpace`, `MirrorDisabled`, `DimensionMismatch`, `BadArgument`, `InvalidOption` and `MirrorUnavailable`.
-A text query of `ann` can also fail with the codes of the embedder.
+A failure reply is the failure reply of the recorded external services, with one of their codes:
+
+- `EXT_BAD_ARG` when a check of the call fails. A text over the quota of `embed` fails this way too.
+- `EXT_FAILED` when the embedder or the mirror fails.
+- `EXT_OUTPUT_TOO_LARGE` when a reply does not fit in the record room of the deploy.
+
+The message is fixed text that names the process, for example `vectordb_embed: invalid argument` or `vectordb_ann: external service failed`.
+It never holds the text of a service.
+
+The checks of an `ann` call are these:
+
+1. The space is a native VectorDB space with a mirror.
+2. The query is a text, or a numeric vector with the dimensions of the space.
+3. The options are a map with the one key `k`, an `Int` from 1 to the capacity of the space.
 
 Both processes are recorded processes.
-The node records each reply, a failure reply included, and replay produces the recorded reply without a call to the embedder or the mirror.
-Before it produces the reply, replay makes the checks of `ann` against consensus state, as play does.
+Play records each reply, a failure reply included.
+Replay delivers the recorded reply after the checks that apply to every recorded process: the record exists, and it is plain data.
+Replay makes no check of the call, and it calls neither the embedder nor the mirror.
 Both processes run in native execution.
 
 An id of `ann` is the 32-byte hash of the source produce of a record.
@@ -217,7 +228,7 @@ The exact order of the query decides among the other records, and not the order 
 
 ### Example
 
-The mirror receives the records of a deploy only after the deploy succeeds.
+The writer of the node applies the records of a commit after the commit, and a publication never waits.
 So the example stores the records in one deploy, and it queries them in a later deploy.
 The first deploy makes a space with a mirror, takes a name of the space, and stores three vectors under it.
 
@@ -239,7 +250,9 @@ new ann(`rho:vectordb:ann`) in {
   for (m <<- @"my-space") { for (mn <<- @"my-name") {
     for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) {
       match r {
-        [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
+        // Changed by decision 114: the reply is [true, ids, distances], with no watermark.
+        // [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
+        [true, ids, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } }
         [false, code, _]  => { @"result"!(code) }
       }
     }
@@ -249,25 +262,26 @@ new ann(`rho:vectordb:ann`) in {
 
 The receive binds the list of the selected vectors, in the exact order of the query.
 
-### How the mirror stays current
+### How the mirror receives records
 
-The mirror follows the finalized state of the space through four steps:
+The mirror receives the records that the node itself plays, through three steps:
 
-1. **Journal.** After each committed transaction, the node computes its net writes. A new record that stays is an upsert, and a removed record is a delete. A peek writes nothing.
-2. **Publication.** A deploy whose final result has no errors publishes its journal to the writer of the node. A failed deploy publishes nothing.
-3. **Writer.** One task applies the batches in order, from a queue of 1,024 batches, with up to 3 attempts. A publication never waits: a full queue or a failed batch marks its collection dirty.
-4. **Reconciler.** On each finalized block, the reconciler repairs each collection that is dirty or older than the block. It sets each registered channel to the records of the finalized state, and then it sets the watermark of the collection.
+1. **Capture.** After each committed transaction of a mirrored space, the node computes its net writes. A new record that stays is an upsert, and a removed record is a delete. A peek writes nothing.
+2. **Publication.** In play, each commit publishes its net writes to the writer of the node before it releases the space. The final result of the deploy does not matter, so a failed deploy and an exploratory deploy publish their commits too.
+3. **Writer.** One task applies the batches in order, from a queue of 1,024 batches, with up to 3 attempts. A publication never waits: the writer drops a batch that finds the queue full, and a batch that fails after its attempts.
 
-A node that replays a block publishes the deploys of the block to its own mirror.
-The mirror reflects the finalized blocks, and `ann` reports the watermark of that view.
-After an LFS bootstrap, the records of a channel that the node never journaled are absent until the channel changes.
-After a restart, the dirty marks of the writer are lost, so a failed batch is repaired when its channels change again.
+A node that replays a block publishes nothing to its mirror.
+The mirror is an oracle store, as the external services of the File I/O processes are: nothing external is undone, and nothing repairs the mirror.
+So the mirror can hold the records of a failed deploy, of an exploratory deploy or of a block that the shard does not keep.
+It also lacks the records that only other nodes played, and the records of a dropped batch.
+Consensus does not depend on the content of a mirror.
+Replay delivers the recorded reply of `ann`, and a stale id names no stored record.
 
 ### Running a node with the mirror
 
 To run a node with the mirror, do these steps:
 
-1. Build the node with the `chromadb` feature of the rholang crate: `cargo build -p node --release --features rholang/chromadb`.
+1. Build the node with the `chromadb` feature of the rholang crate: `cargo build -p node --release --features rholang/chromadb`. Give every node of the shard this build.
 2. Start a ChromaDB server of the pinned image: `docker compose -f docker/shard.yml --profile chromadb up`.
 3. Set `CHROMA_ENDPOINT` for each node. `docker/shard.yml` sets it to `http://chroma-db:8000`.
 4. Give each node its own `CHROMA_DATABASE`, so that no node writes the mirror of another node.
@@ -275,7 +289,12 @@ To run a node with the mirror, do these steps:
 The node makes its database on the first call.
 Each collection of a space is named `rrs-` and the lowercase hex of the first 16 bytes of the space id.
 The reply of `space!?("config")` reports it under the key `mirror`.
-A node without the feature, or without an endpoint, has no mirror: its publications drop, and `ann` replies `MirrorUnavailable`.
+
+Only the build with the feature registers `rho:vectordb:embed` and `rho:vectordb:ann`.
+A node of another build cannot run a deploy that names them.
+So its post-state differs from the post-state of the other nodes of the shard.
+A validator installs the services of its build, and an observer installs the unavailable services, so its `embed` and `ann` reply `EXT_FAILED`.
+A validator without an endpoint has no mirror: its publications drop, and `ann` replies `EXT_FAILED`.
 
 The repository tests the backend against a real server with `bash scripts/verify-reified/chroma-live.sh`.
 The script starts a disposable server of the pinned image, and it gives each run a new database.

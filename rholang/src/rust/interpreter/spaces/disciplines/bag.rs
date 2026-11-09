@@ -2,11 +2,20 @@
 //!
 //! A bag is a multiset on both sides. Every record and every waiting continuation of a
 //! collection can meet an incoming element, so nothing blocks. A receive takes the first record
-//! in the canonical order of DR-75 whose payload its pattern binds, and it checks its guard once
-//! on that record (decision 37). A send fires the first waiter in canonical order whose pattern
-//! binds the datum and whose guard admits it. A guard refusal moves the send to the next waiter.
-//! The canonical order sorts the entries by the hash of their source produce or consume, so the
-//! choices depend on the entry set, not on the list order of the store (decision 41).
+// Changed by decision 102: a bag picks at random in play, and replay follows the record. The
+// text before:
+// ```
+// //! in the canonical order of DR-75 whose payload its pattern binds, and it checks its guard once
+// //! on that record (decision 37). A send fires the first waiter in canonical order whose pattern
+// //! binds the datum and whose guard admits it. A guard refusal moves the send to the next waiter.
+// //! The canonical order sorts the entries by the hash of their source produce or consume, so the
+// //! choices depend on the entry set, not on the list order of the store (decision 41).
+// ```
+//! in the pick order of the operation whose payload its pattern binds, and it checks its guard
+//! once on that record (decision 37). A send fires the first waiter in the pick order whose
+//! pattern binds the datum and whose guard admits it. A guard refusal moves the send to the next
+//! waiter. Play shuffles the canonical order of DR-75 once for each search, and replay puts
+//! first the candidates that the recorded row names (decision 102).
 //!
 //! A bag has no counter and no params. Every record and every parked continuation has the `ord`
 //! 0, so two equal sends store two equal records, and a re-issued element keeps its record and
@@ -35,8 +44,13 @@ impl Discipline for BagDiscipline {
     const NAME: &'static str = "bag";
     const USES_COUNTER: bool = false;
     const SEND_PARAMS: &'static [&'static str] = &[];
-    /// A join bind sees every stored record in the canonical order of DR-75 (P5c).
+    // Changed by decision 102: a bag picks at random, so its window has the order of `Scan`.
+    // The text before:
+    // /// A join bind sees every stored record in the canonical order of DR-75 (P5c).
+    /// A join bind sees every stored record, in the order of `JoinWindow::Scan` (P5c).
     const JOIN_WINDOW: JoinWindow = JoinWindow::Scan;
+    /// Added by decision 102 (plan v4 C4.3, rule CR-1): a bag picks at random in play.
+    const RANDOM_PICKS: bool = true;
 
     /// The entry with the least `(ord, bincode bytes)`, as for the queue. Every entry of a bag
     /// has the `ord` 0, so it is the entry with the least bytes. Only the head driver uses a

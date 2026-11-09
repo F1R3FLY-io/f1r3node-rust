@@ -125,7 +125,7 @@ Figure 1 shows the plans of a send, a receive, and the second send of a peek.
 
 ## 3. The store
 
-`PathMapOuter` is the outer store of a PathMap space (`spaces/outer/pathmap.rs:156-240`).
+`PathMapOuter` is the outer store of a PathMap space (`spaces/outer/pathmap.rs:109-190`).
 It names the channels of the space and checks the path rules.
 It holds no state of its own, and the planner and the join engine stage every record.
 Its hooks `classify` and `run_join` send every PathMap operation to the join engine through the prefix source ([section 5.10](#510-the-prefix-source-on-the-join-engine)).
@@ -136,36 +136,36 @@ Its hooks `classify` and `run_join` send every PathMap operation to the join eng
 
 | Channel | Holds | Builder |
 |---|---|---|
-| $`D(\mathit{sid}, \mathrm{path\_key}(p))`$ | the datum records of the path $`p`$ | `path_data` (`spaces/outer/pathmap.rs:88-90`) |
-| $`I(\mathit{sid}, \mathrm{prefix\_key}(q))`$ | one marker for each datum under $`q`$, and the waiters on $`q`$ | `index` (`spaces/outer/pathmap.rs:94-96`) |
-| $`S(\mathit{sid})`$ | the token, the space counter | `token` (`spaces/outer/pathmap.rs:85`) |
+| $`D(\mathit{sid}, \mathrm{path\_key}(p))`$ | the datum records of the path $`p`$ | `path_data` (`spaces/outer/pathmap.rs:83-85`) |
+| $`I(\mathit{sid}, \mathrm{prefix\_key}(q))`$ | one marker for each datum under $`q`$, and the waiters on $`q`$ | `index` (`spaces/outer/pathmap.rs:89-91`) |
+| $`S(\mathit{sid})`$ | the token, the space counter | `token` (`spaces/outer/pathmap.rs:80`) |
 
 All three are [storage channels](glossary.md#storage-channel) of the namespace tag 0xE0, so ordinary Rholang cannot name them.
-`path_channels` gives the data channel of a path and the index channel of each of its prefixes in depth order (`spaces/outer/pathmap.rs:127-142`).
-Each builder has a metered form that reserves its name template and its id buffer first.
+`path_channels` gives the data channel of a path and the index channel of each of its prefixes in depth order (`spaces/outer/pathmap.rs:95-106`).
+*Changed by [decision 89](decision-register.md#decision-89): the builders no longer have metered forms, because DR-131 of the base removed host work.*
 
 ### 3.2 Keys and the path rules
 
-The key of a channel is the path key of its path (`spaces/outer/pathmap.rs:190-194`).
+The key of a channel is the path key of its path (`spaces/outer/pathmap.rs:144-147`).
 So `@c` and `@[c]` name one data channel, as rule PP-1 states.
 Routing keys an operation by the canonical bytes of its channel, because routing runs before it knows the family of the space.
 A PathMap operation does not use that routed key, because it derives every key from its channel.
 The prefix source replaces the key of each channel by the scope key $`[\mathtt{0x49}] \mathbin{\Vert} \mathrm{prefix\_key}(\mathrm{path}(c))`$ before the engine runs.
 
-`check_key` accepts a channel only when its path has at most 64 elements (`spaces/outer/pathmap.rs:201-210`).
+`check_key` accepts a channel only when its path has at most 64 elements (`spaces/outer/pathmap.rs:153-161`).
 No element of an accepted path holds an `EPathMap` or an `EZipper` at any depth.
 A deeper path fails with `PathTooDeep` before the element scan (F9 of [decision 39](decision-register.md#decision-39)).
 An element with a PathMap or a zipper fails with `UnsupportedPathElement`.
 The check runs before any staging, so a failed operation changes no record.
-Every prefix of an accepted path is accepted too, so every index channel of a stored datum is valid (`path_element_rules`, `PathMapPrefix.v:1455`).
+Every prefix of an accepted path is accepted too, so every index channel of a stored datum is valid (`path_element_rules`, `PathMapPrefix.v:1461`).
 
 ### 3.3 Creation, names and the counter
 
-The generic creation stages the space counter $`S(\mathit{sid})`$ with the value 0, and the store adds no other record (`spaces/outer/pathmap.rs:225-233`).
-The counter channel of every path is the token (`spaces/outer/pathmap.rs:218-220`), so a PathMap space has no collection counter.
+The generic creation stages the space counter $`S(\mathit{sid})`$ with the value 0, and the store adds no other record (`spaces/outer/pathmap.rs:176-183`).
+The counter channel of every path is the token (`spaces/outer/pathmap.rs:169-171`), so a PathMap space has no collection counter.
 A PathMap space has no allocator.
 
-The store makes fresh names as the HashMap store does (`spaces/outer/pathmap.rs:237-239`).
+The store makes fresh names as the HashMap store does (`spaces/outer/pathmap.rs:187-189`).
 A fresh name `n` is an unforgeable channel, and its path is `[n]`.
 So the paths under `[n]` form a private subtree that only the holders of `n` can name.
 
@@ -181,18 +181,18 @@ The marker of the datum $`d`$ on the path $`p`$, for the prefix $`q \preceq p`$,
 | Part | Value | Reason |
 |---|---|---|
 | `pars` | `[EList[tag_I, GByteArray(src(d))], EList(p∖q)]` | the envelope names the datum, and the suffix gives the re-rooting |
-| `tag_I` | `GByteArray([0xE0, 0x52, 0x49, 0x01])` (`spaces/pathmap/markers.rs:61`) | the layout of the record tags, with the kind `I` and the version 1 |
+| `tag_I` | `GByteArray([0xE0, 0x52, 0x49, 0x01])` (`spaces/pathmap/markers.rs:55`) | the layout of the record tags, with the kind `I` and the version 1 |
 | `random_state` | $`\mathrm{split\_short}(\mathrm{derive}_{\mathtt{PathMarker}}(\mathrm{rs}(d)), \lvert q \rvert)`$ | distinct markers have distinct produce hashes |
 | `persist` | the flag of $`d`$ | a persistent datum keeps its markers |
 | `cost_authority` | the cost authority of the record of $`d`$ (`marker_authority`) | the store and the restore of a marker take it from one function |
 | `cost_stack` | none | a marker carries no payload |
 
 The marker tag has the layout of the record tags of `record.rs`, and this module defines it, so `RecordKind` does not change.
-The derivation $`\mathrm{derive}_{\mathtt{PathMarker}}`$ splits the random state of $`d`$ by the namespace tag 0xE0 and then by the purpose byte 0x04 (`spaces/pathmap/markers.rs:137-147`).
+The derivation $`\mathrm{derive}_{\mathtt{PathMarker}}`$ splits the random state of $`d`$ by the namespace tag 0xE0 and then by the purpose byte 0x04 (`spaces/pathmap/markers.rs:123-133`).
 The final split by the depth $`\lvert q \rvert`$ gives each marker of $`d`$ its own random state.
 So no marker hash equals the hash of an older produce, which a merge would file as "copied by peek" (the plan, "Marker uniqueness").
 
-The authority of a marker is the cost authority of the record of $`d`$, not the authority of the operation that stores it (`marker_authority`, `spaces/pathmap/markers.rs:130-132`).
+The authority of a marker is the cost authority of the record of $`d`$, not the authority of the operation that stores it (`marker_authority`, `spaces/pathmap/markers.rs:116-118`).
 A peek in a later job can remove a marker, and the restore of that job must build the same bytes again.
 The produce hash covers the whole record, and no authority and an empty authority differ in their bytes.
 So the store of the markers and the restore of one marker take the authority from this one function.
@@ -203,7 +203,7 @@ It compares the bytes and the produce hash of each restored marker.
 
 ### 4.2 The vehicle
 
-The vehicle carries a datum to a waiter in a produce-side delivery (`spaces/pathmap/markers.rs:197-213`).
+The vehicle carries a datum to a waiter in a produce-side delivery (`spaces/pathmap/markers.rs:152-170`).
 It is the marker of the datum, followed by the payload of the datum:
 
 ```math
@@ -225,25 +225,25 @@ The marker invariant MI holds in every state $`\sigma`$ of a space: the markers 
 
 The equation is an equation of multisets.
 A datum on a path of depth $`n`$ has $`n + 1`$ markers, so the depth cap limits each datum to 65 markers.
-The planner checks MI on each path that it reads, and a break fails closed with `Inconsistent` (`spaces/pathmap/delivery.rs:330-365`).
+The planner checks MI on each path that it reads, and a break fails closed with `Inconsistent` (`spaces/pathmap/delivery.rs:298-331`).
 
 ### 4.4 Strict decoders
 
-The decoders accept only the exact image of their encoders (`spaces/pathmap/markers.rs:278-284`, `297-306`).
+The decoders accept only the exact image of their encoders (`spaces/pathmap/markers.rs:201-207`, `210-219`).
 A marker has exactly two pars and no cost stack, and its envelope holds the marker tag and a source of 32 bytes.
 Every other record is a `MalformedMarker`, and the operation fails with `Inconsistent`.
-The theorem `marker_record_roundtrip` (`PathMapPrefix.v:1350`) proves that the decoder inverts the encoder and that the encoder is injective.
+The theorem `marker_record_roundtrip` (`PathMapPrefix.v:1356`) proves that the decoder inverts the encoder and that the encoder is injective.
 
 ## 5. The delivery plans
 
 The planner of `spaces/pathmap/delivery.rs` holds the pure parts of a delivery.
-It reads a staged view that its caller passes in (`PrefixView`, `spaces/pathmap/delivery.rs:87-97`), and it stages nothing.
+It reads a staged view that its caller passes in (`PrefixView`, `spaces/pathmap/delivery.rs:81-91`), and it stages nothing.
 The join engine matches, checks guards, and stages with these plans through the prefix source of [section 5.10](#510-the-prefix-source-on-the-join-engine).
 Each plan below names a chunk in the style of literate programming ([Knu84](#ref-knu84)).
 
 ### 5.1 CONSUME-CANDIDATES
 
-A receive on $`q`$ takes its candidates from the markers of $`I(q)`$ (`spaces/pathmap/delivery.rs:175-182`, `190-249`).
+A receive on $`q`$ takes its candidates from the markers of $`I(q)`$ (`spaces/pathmap/delivery.rs:169-175`, `182-240`).
 The prefix source calls the form `consume_candidates_excluding`, which leaves out the datums in flight ([section 5.11](#511-elements-in-flight-and-the-fire-cap)).
 The candidates come path by path, in the byte order of the path keys, and the exact path comes first.
 Inside one path, the order of the discipline applies.
@@ -261,18 +261,18 @@ It is the canonical order of DR-75 for a bag or a set, and the head for a head-o
   return the paths in key order, each with its records in that order
 ```
 
-The order is the order `cand_lt` of the model (`spaces/pathmap/delivery.rs:630-636`):
+The order is the order `cand_lt` of the model (`spaces/pathmap/delivery.rs:598-603`):
 
 ```math
 (p_1, r_1) <_{\mathrm{cand}} (p_2, r_2) \iff \mathrm{path\_key}(p_1) <_{\mathrm{lex}} \mathrm{path\_key}(p_2) \;\lor\; \bigl( p_1 = p_2 \land r_1 <_D r_2 \bigr)
 ```
 
 Here $`r_1 <_D r_2`$ is the order of the discipline inside one path.
-The terminator 0x00 is below every tag, so the exact path is the first candidate (`candidate_order_total`, `PathMapPrefix.v:1014`).
+The terminator 0x00 is below every tag, so the exact path is the first candidate (`candidate_order_total`, `PathMapPrefix.v:1016`).
 
 ### 5.2 PRODUCE-WAITERS
 
-A send on $`p`$ meets the waiters of the prefixes of $`p`$, the most specific prefix first (`spaces/pathmap/delivery.rs:389-431`).
+A send on $`p`$ meets the waiters of the prefixes of $`p`$, the most specific prefix first (`spaces/pathmap/delivery.rs:350-397`).
 
 ```text
 ⟨PRODUCE-WAITERS(p)⟩ ≡
@@ -285,7 +285,7 @@ A prefix without waiters gives nothing.
 
 ### 5.3 REROOT
 
-The engine re-roots each argument of a candidate before it matches the argument (`spaces/pathmap/delivery.rs:436-454`).
+The engine re-roots each argument of a candidate before it matches the argument (`spaces/pathmap/delivery.rs:435-452`).
 
 ```text
 ⟨REROOT(s, d)⟩ ≡
@@ -317,8 +317,8 @@ A peek waiter keeps the datum in flight, and the next waiter sees it ([decision 
 
 ### 5.5 STORE-MARKERS
 
-A send that no waiter spends stores its datum and then its markers (`spaces/pathmap/delivery.rs:460-487`).
-The prefix source builds the markers with `datum_markers`, which takes the random state and the authority from the record of the datum (`spaces/pathmap/delivery.rs:494-508`).
+A send that no waiter spends stores its datum and then its markers (`spaces/pathmap/delivery.rs:458-475`).
+The prefix source builds the markers with `datum_markers`, which takes the random state and the authority from the record of the datum (`spaces/pathmap/delivery.rs:482-489`).
 
 ```text
 ⟨STORE-MARKERS(x, p)⟩ ≡
@@ -372,13 +372,13 @@ On a PathMap space the second send of a datum on $`p`$ is a send on $`p`$.
 ```
 
 The second send has the identity and the cost authority of $`d`$, and it bumps no counter.
-When no waiter spends $`d`$, the space holds the data and the markers that it held before the peek, up to their order (`peek_restores_delivered_marker`, `PathMapPrefix.v:2010`).
+When no waiter spends $`d`$, the space holds the data and the markers that it held before the peek, up to their order (`peek_restores_delivered_marker`, `PathMapPrefix.v:2016`).
 At the fire cap, the transaction stores the marker again in FINISH before its commit ([section 5.11](#511-elements-in-flight-and-the-fire-cap)).
 This is the PathMap form of RESTORE-SCAN and RETIRE-CLASS of the [scan driver](glossary.md#scan-driver): the record of $`d`$ and its markers form the class of $`d`$.
 
 ### 5.8 RETIRE-PLAN
 
-A removal of a datum after a delivery retires its record and its other markers (`spaces/pathmap/delivery.rs:542-551`).
+A removal of a datum after a delivery retires its record and its other markers (`spaces/pathmap/delivery.rs:521-530`).
 
 ```text
 ⟨RETIRE-PLAN(d at p, delivered = k)⟩ ≡
@@ -388,8 +388,8 @@ A removal of a datum after a delivery retires its record and its other markers (
 ```
 
 The marker of the depth $`k`$ is left out, because the delivery COMM removed it.
-Each `K_retire` is a COMM on one channel (`delivery_vehicle_single_channel`, `PathMapPrefix.v:1911`).
-The plan keeps MI: the record and its markers leave together (`marker_invariant_preserved`, `PathMapPrefix.v:2560`).
+Each `K_retire` is a COMM on one channel (`delivery_vehicle_single_channel`, `PathMapPrefix.v:1917`).
+The plan keeps MI: the record and its markers leave together (`marker_invariant_preserved`, `PathMapPrefix.v:2566`).
 The prefix source runs the plan at every fire site of the engine, the single-bind fire included ([section 5.10](#510-the-prefix-source-on-the-join-engine)).
 A set also retires the other members of each bound class on the path of the class (RETIRE-CLASS).
 
@@ -400,7 +400,7 @@ On a PathMap space, a head waiter of $`I(q)`$ sees the head datum of each path u
 So a change on $`D(p)`$ can make a head waiter fireable on any prefix of $`p`$, and a change on $`I(q)`$ only on $`q`$.
 
 The engine marks those prefixes as dirty, and a cascade fires the dirty prefixes until no head waiter is fireable.
-Each fire lowers a finite measure, so the cascade ends within the measure (`heads_no_match`, `PathMapPrefix.v:3038`).
+Each fire lowers a finite measure, so the cascade ends within the measure (`heads_no_match`, `PathMapPrefix.v:3044`).
 The cascade is the DRAIN-AND-CASCADE step of the join engine, and the prefix source serves its windows and its heads.
 The head of each prefix blocks its own later waiters (S-15 of the design of the seams).
 A refusal moves to the head of the next prefix.
@@ -408,19 +408,19 @@ A refusal moves to the head of the next prefix.
 ### 5.10 The prefix source on the join engine
 
 Phase 2 runs every PathMap operation on the join engine of `spaces/join.rs`, a single-bind operation included ([decision 29](decision-register.md#decision-29), joins plan section 9).
-`PathMapOuter` sets `ALWAYS_ESCALATES` and overrides the hooks `classify` and `run_join` of `OuterStore` (`spaces/outer/pathmap.rs:162`, `166-185`).
-The prefix source `PrefixSource` implements the store seam `JoinSource` of the engine for a PathMap space (`spaces/pathmap/join.rs:744-756`).
+`PathMapOuter` overrides the hooks `classify` and `run_join` of `OuterStore` (`spaces/outer/pathmap.rs:121-127`, `131-139`). *Changed by [decision 94](decision-register.md#decision-94): before, the store set `ALWAYS_ESCALATES`. Phase B of the transaction now covers the lock keys of the prefix scope, so no operation runs in a new transaction.*
+The prefix source `PrefixSource` implements the store seam `JoinSource` of the engine for a PathMap space (`spaces/pathmap/join.rs:673-685`).
 Figure 2 shows one operation from its classification to its commit.
 
-![Activity diagram of one PathMap operation on the join engine. CLASSIFY runs in the first transaction: it checks the path of each channel, the params, the query and the rules of a join, and a failed check stages nothing. PREFIX-SCOPE takes the own prefixes, a send adds every prefix of its path, closes them under the join groups of each index channel, and adds every prefix of every stored datum once a prefix holds a marker, with one read of the root index channel. ALWAYS_ESCALATES drops the first transaction and begins once over C(sid), S(sid), the data channel of each data path and the index channel of each prefix. RUN-JOIN gives each channel the scope key of its path and orders the binds of a join by the hash of their index channels. TOUCH bumps the token once in the transaction for an ordered discipline. WINDOW takes, for each path under a prefix in path-key order, the window of the discipline without the datums in flight. OFFER meets the waiters of each prefix of the path, the most specific first, one head waiter for each prefix, and RECEIVE searches the windows greedily and checks the guard once. A fire is one COMM on the index channel of the waiter. A peek fire owes the marker of each bound datum that is not persistent, as a second send with a restore depth. Otherwise retire_spent runs RETIRE-PLAN and RETIRE-CLASS at every fire site. Without a fire, land stores a fresh element with its markers or restores an owed marker, and a waiter parks on the index channels of its prefixes. FINISH stores each owed marker again, and a bag or a set bumps the token once when the transaction changed the state. A stop with owed work commits and re-issues one settle job with the offers of the second sends, the dirty prefixes and the resume of the operation.](diagrams/27-pathmap-prefix-source.svg)
+![Activity diagram of one PathMap operation on the join engine. CLASSIFY runs under phase A of the transaction: it checks the path of each channel, the params, the query and the rules of a join, and a failed check stages nothing. PREFIX-SCOPE takes the own prefixes, a send adds every prefix of its path, closes them under the join groups of each index channel, and adds every prefix of every stored datum once a prefix holds a marker, with one read of the root index channel. Phase B of the same transaction locks C(sid), S(sid), the data channel of each data path and the index channel of each prefix in one sorted call. RUN-JOIN gives each channel the scope key of its path and orders the binds of a join by the hash of their index channels. TOUCH bumps the token once in the transaction for an ordered discipline. WINDOW takes, for each path under a prefix in path-key order, the window of the discipline without the datums in flight. OFFER meets the waiters of each prefix of the path, the most specific first, one head waiter for each prefix, and RECEIVE searches the windows greedily and checks the guard once. A fire is one COMM on the index channel of the waiter. A peek fire owes the marker of each bound datum that is not persistent, as a second send with a restore depth. Otherwise retire_spent runs RETIRE-PLAN and RETIRE-CLASS at every fire site. Without a fire, land stores a fresh element with its markers or restores an owed marker, and a waiter parks on the index channels of its prefixes. FINISH stores each owed marker again, and a bag or a set bumps the token once when the transaction changed the state. A stop with owed work commits and re-issues one settle job with the offers of the second sends, the dirty prefixes and the resume of the operation.](diagrams/27-pathmap-prefix-source.svg)
 
 *Figure 2. Source: [diagrams/27-pathmap-prefix-source.puml](diagrams/27-pathmap-prefix-source.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
-The classification computes the prefix scope in the first transaction (`classify` and `prefix_scope`, `spaces/pathmap/join.rs:123-132`, `704-713`).
+The classification computes the prefix scope in the first transaction (`classify` and `prefix_scope`, `spaces/pathmap/join.rs:177-186`, `798-807`).
 The scope holds every prefix that the operation can read or stage on, so the engine never stages outside its lock keys.
 
 ```text
-⟨PREFIX-SCOPE(op)⟩ ≡                                 ▷ every read and copy reserved first
+⟨PREFIX-SCOPE(op)⟩ ≡
   check each channel of op, its params, its query and the rules of a join
   own ← the prefix of each channel of op             ▷ a send also adds every prefix of its path
   repeat until no prefix is added:
@@ -431,7 +431,7 @@ The scope holds every prefix that the operation can read or stage on, so the eng
   escalate once: drop the first transaction, begin over the lock keys
 ```
 
-The engine finds the collections of an operation by their keys, so `run_join` gives each channel the scope key of its path (`spaces/pathmap/join.rs:136-147`).
+The engine finds the collections of an operation by their keys, so `run_join` gives each channel the scope key of its path (`spaces/pathmap/join.rs:171-181`).
 A join takes its binds in the order of $`(\mathrm{hash}(I(q_i)), i)`$, which is the canonical group order of the keyed engine (FR-1').
 The test `pathmap_staging_stays_in_the_lock_keys` checks one escalation and the lock keys of every staged channel for each discipline.
 
@@ -459,13 +459,13 @@ So two markers of one datum on nested prefixes claim one entry, and one datum bi
 An element is in flight when a COMM removed its marker on one prefix while its record and its other markers stay.
 The second send of a peek and a lifted element of a cascade are in flight.
 Each one carries the depth of that prefix as its restore depth.
-Every window, member list and count leaves out the datums in flight (`in_flight`, `spaces/pathmap/join.rs:1181-1207`).
+Every window, member list and count leaves out the datums in flight (`in_flight`, `spaces/pathmap/join.rs:1129-1149`).
 These are the second sends that the transaction owes, the element of the offer, and every pending work item with a restore depth.
 So the marker invariant holds for every datum that a search reads (item 5 of the arbitration of the seams of the join engine).
 
 A store of an element with a restore depth stores no new record.
-It stores the owed marker again with the bytes of the stored one (`restore_marker`, `spaces/pathmap/join.rs:1843-1862`).
-A spend of such an element runs RETIRE-PLAN without the owed depth (`spent_element`, `spaces/pathmap/join.rs:2043-2064`).
+It stores the owed marker again with the bytes of the stored one (`restore_marker`, `spaces/pathmap/join.rs:1778-1803`).
+A spend of such an element runs RETIRE-PLAN without the owed depth (`spent_element`, `spaces/pathmap/join.rs:2725-2747`).
 
 **Open item O-2, closed: a second send at the fire cap.**
 A transaction can stop at `FIRE_ROUND_CAP` while it owes the marker of a second send.
@@ -511,10 +511,10 @@ An operation of an ordered discipline consumes the token with the value $`t`$, t
 
 So the orders of the stored entries of a space are pairwise distinct and below the token.
 A re-issued persistent operation keeps the order of its first round ([decision 43](decision-register.md#decision-43)), and a later bump never gives that order again.
-A re-entered element therefore meets no equal order (`token_ord_reentry`, `PathMapPrefix.v:3126`).
+A re-entered element therefore meets no equal order (`token_ord_reentry`, `PathMapPrefix.v:3132`).
 It enters the head of a queue only when it is older than every stored entry.
 
-An ordered discipline bumps the token once in each transaction, before its plan (`touch`, `spaces/pathmap/join.rs:2116-2132`).
+An ordered discipline bumps the token once in each transaction, before its plan (`touch`, `spaces/pathmap/join.rs:2415-2431`).
 The prefix source shares one counter (`shares_counter`), so the engine bumps the token once, although every prefix of the scope names it.
 The bump uses $`S(\mathit{sid})`$ as both counter channels of `counter::bump`, which is intended, because the token is the collection counter of every prefix.
 
@@ -535,7 +535,7 @@ Check #2 reports a conflict when one branch creates a produce and the other bran
 A new datum on $`p`$ produces its marker on $`I(q)`$ for every $`q \preceq p`$.
 A new waiter on $`q`$ consumes on $`I(q)`$.
 So a datum in one branch and a waiter on a prefix of its path in the other branch meet on $`I(q)`$.
-Check #2 sees that contact (`prefix_contact_anchored`, `PathMapPrefix.v:1948`).
+Check #2 sees that contact (`prefix_contact_anchored`, `PathMapPrefix.v:1954`).
 The index channels are injective, so a datum touches no index channel of a path that is not one of its prefixes.
 
 The TLA+ model `PathMapPrefix.tla` checks the claim on every fork of two branches within its bounds (invariant `MergeDetectsPrefixContact`).
@@ -550,11 +550,13 @@ A waiter that persists across blocks makes the later writes under its prefixes t
 
 ## 8. Metering
 
+Retired by [decision 89](decision-register.md#decision-89) and [decision 96](decision-register.md#decision-96): DR-131 of the base removed host work, so the planner reserves nothing. The theorem and the tests of this section left the tree, and this section records the last state before that removal.
+
 The planner reserves each read and each copy on the meter of the job before it makes it ([decision 42](decision-register.md#decision-42)).
 It reserves each marker decode, each path-key encode, each key comparison, each suffix copy, and each buffer.
 The orders of the disciplines reserve their own work, and the record builders have metered forms.
 
-The trace model of the prefix scan proves the rule (`prefix_scan_trace_covered`, `PathMapPrefix.v:3268`).
+The trace model of the prefix scan proves the rule (`prefix_scan_trace_covered`, disabled in `PathMapPrefix.v`).
 Every prefix of the trace reads at most what it reserved, the reads after the commit included.
 So a [host work](glossary.md#host-work) budget below the reservations fails at a reservation before the commit, and the operation has no effect.
 The unit test `the_planner_reserves_its_work` cuts the budget at each step of the planner.
@@ -565,11 +567,11 @@ The unit test `the_planner_reserves_its_work` cuts the budget at each step of th
 
 | Failure | Cause | Code |
 |---|---|---|
-| `PathTooDeep` | a channel path or a prefix with more than 64 elements (F9) | `spaces/outer/pathmap.rs:201-210` |
-| `UnsupportedPathElement` | an element that holds an `EPathMap` or an `EZipper` at any depth | `spaces/outer/pathmap.rs:201-210` |
-| `Inconsistent` | a malformed marker or vehicle, or a datum without its marker | `spaces/pathmap/markers.rs:88-95` |
+| `PathTooDeep` | a channel path or a prefix with more than 64 elements (F9) | `spaces/outer/pathmap.rs:153-161` |
+| `UnsupportedPathElement` | an element that holds an `EPathMap` or an `EZipper` at any depth | `spaces/outer/pathmap.rs:153-161` |
+| `Inconsistent` | a malformed marker or vehicle, or a datum without its marker | `spaces/pathmap/markers.rs:79-86` |
 | `CellOccupied` | a second record on one path, or a second waiter on one prefix, of a cell space (F15) | the capacity check of the join engine |
-| `HostWorkRejected` | a host-work budget that ends before a reservation | `spaces/pathmap/markers.rs:218-247` |
+| `HostWorkRejected` | Retired by [decision 89](decision-register.md#decision-89): DR-131 of the base removed host work, so no reservation can cut a PathMap operation. | None |
 
 ## 10. Security and determinism
 
@@ -577,7 +579,7 @@ The unit test `the_planner_reserves_its_work` cuts the budget at each step of th
 Only the engine writes a marker, and the strict decoders reject every record that their encoders do not make.
 
 **Bounded work.** The depth cap bounds the markers of a datum and the index channels of an operation to 65.
-The meter reserves every read before it happens, and `FIRE_ROUND_CAP` bounds the fires of a transaction.
+`FIRE_ROUND_CAP` bounds the fires of a transaction. *Changed by [decision 89](decision-register.md#decision-89): before, the meter also reserved every read.*
 
 **Private subtrees.** A fresh name roots a subtree that no other program can name ([section 3.3](#33-creation-names-and-the-counter)).
 
@@ -604,17 +606,17 @@ Each headline has a `Print Assumptions` line, and `rocqchk` reports no axiom.
 
 | Headline | Location | Statement | Property test |
 |---|---|---|---|
-| `marker_record_roundtrip` | `PathMapPrefix.v:1350` | the strict decoder inverts the encoder, the encoder is injective, and the tag is the record tag of the kind `I` | `prop_marker_record_roundtrip`, `the_marker_decoder_is_strict` |
-| `vehicle_carries_payload` | `PathMapPrefix.v:1382` | the vehicle is the marker followed by the payload, and its size covers the payload | `prop_vehicle_carries_payload`, `a_vehicle_is_the_marker_followed_by_the_payload` |
-| `path_element_rules` | `PathMapPrefix.v:1455` | the path rules, prefix closure, and at most 65 markers | `prop_path_element_rules`, `check_key_follows_the_path_rules` |
-| `delivery_vehicle_single_channel` | `PathMapPrefix.v:1911` | every event is single-channel, and the vehicle is never stored | `a_removal_retires_the_record_and_every_other_marker`, `the_index_channels_of_the_model_are_the_store_channels`, and the event tests of Phase 2 |
-| `prefix_contact_anchored` | `PathMapPrefix.v:1948` | the markers anchor every prefix contact on $`I(q)`$ | `prop_candidates_cover_the_prefix_in_key_order`, `the_path_channels_are_storage_channels_of_the_space` |
-| `peek_restores_delivered_marker` | `PathMapPrefix.v:2010` | the second send restores the marker or spends the datum | `prop_marker_invariant_preserved`, `prop_waiter_prefixes_are_most_specific_first` |
-| `no_match_remains` | `PathMapPrefix.v:2380` | the scan plans on prefixes leave no pending match without a guard | `prop_candidates_cover_the_prefix_in_key_order`, `prop_waiter_prefixes_are_most_specific_first`, and the plan tests of Phase 2 |
-| `marker_invariant_preserved` | `PathMapPrefix.v:2560` | every staging and every plan keeps MI | `prop_marker_invariant_preserved`, `a_broken_marker_invariant_is_inconsistent` |
-| `heads_no_match` | `PathMapPrefix.v:3038` | dirty coverage, and a cascade that ends with no fireable head | `head_orders_take_the_heads_of_a_path`, and the cascade tests of Phase 2 |
-| `token_ord_reentry` | `PathMapPrefix.v:3126` | distinct orders, first-round orders of a re-issue, and no tie at a re-entry | `the_token_is_the_space_counter_and_the_counter_of_every_path`, and the order tests of Phase 2 |
-| `prefix_scan_trace_covered` | `PathMapPrefix.v:3268` | the prefix scan reserves before it reads | `the_planner_reserves_its_work`, `metered_forms_equal_the_plain_forms_and_reject_a_cut_budget`, `the_metered_builders_reserve_their_work` |
+| `marker_record_roundtrip` | `PathMapPrefix.v:1356` | the strict decoder inverts the encoder, the encoder is injective, and the tag is the record tag of the kind `I` | `prop_marker_record_roundtrip`, `the_marker_decoder_is_strict` |
+| `vehicle_carries_payload` | `PathMapPrefix.v:1388` | the vehicle is the marker followed by the payload, and its size covers the payload | `prop_vehicle_carries_payload`, `a_vehicle_is_the_marker_followed_by_the_payload` |
+| `path_element_rules` | `PathMapPrefix.v:1461` | the path rules, prefix closure, and at most 65 markers | `prop_path_element_rules`, `check_key_follows_the_path_rules` |
+| `delivery_vehicle_single_channel` | `PathMapPrefix.v:1917` | every event is single-channel, and the vehicle is never stored | `a_removal_retires_the_record_and_every_other_marker`, `the_index_channels_of_the_model_are_the_store_channels`, and the event tests of Phase 2 |
+| `prefix_contact_anchored` | `PathMapPrefix.v:1954` | the markers anchor every prefix contact on $`I(q)`$ | `prop_candidates_cover_the_prefix_in_key_order`, `the_path_channels_are_storage_channels_of_the_space` |
+| `peek_restores_delivered_marker` | `PathMapPrefix.v:2016` | the second send restores the marker or spends the datum | `prop_marker_invariant_preserved`, `prop_waiter_prefixes_are_most_specific_first` |
+| `no_match_remains` | `PathMapPrefix.v:2386` | the scan plans on prefixes leave no pending match without a guard | `prop_candidates_cover_the_prefix_in_key_order`, `prop_waiter_prefixes_are_most_specific_first`, and the plan tests of Phase 2 |
+| `marker_invariant_preserved` | `PathMapPrefix.v:2566` | every staging and every plan keeps MI | `prop_marker_invariant_preserved`, `a_broken_marker_invariant_is_inconsistent` |
+| `heads_no_match` | `PathMapPrefix.v:3044` | dirty coverage, and a cascade that ends with no fireable head | `head_orders_take_the_heads_of_a_path`, and the cascade tests of Phase 2 |
+| `token_ord_reentry` | `PathMapPrefix.v:3132` | distinct orders, first-round orders of a re-issue, and no tie at a re-entry | `the_token_is_the_space_counter_and_the_counter_of_every_path`, and the order tests of Phase 2 |
+| `prefix_scan_trace_covered` | Disabled in `PathMapPrefix.v` by [decision 96](decision-register.md#decision-96) | the prefix scan reserved before it read | Retired with host work ([decision 89](decision-register.md#decision-89)) |
 
 The 37 negative controls of wave W3 each change one rule of the model, and each mutant fails inside its expected lemma.
 The 17 controls of wave W2 still fail inside their lemmas on the extended module.
@@ -665,7 +667,7 @@ The file `reified_pattern_enforcement.rs` adds the six PathMap rows, and `reifie
 | `prop_pathmap_no_match_remains_any_schedule` | R103, V23 | on a bag and a set, no parked waiter without a guard matches a datum under its prefix |
 | `prop_pathmap_head_cascade_leaves_no_fireable_head` | R105 | on a queue and a stack, no head waiter matches a head datum of a path under its prefix |
 | `prop_pathmap_token_orders_reenter_at_their_place` | R106 | distinct orders below the token, and a re-issue carries its first-round order |
-| `prop_pathmap_reservation_cut_rejects_without_effect` | R107 | the exact budget gives the outcome, and a cut rejects with no event and no change |
+| `prop_pathmap_reservation_cut_rejects_without_effect` | R107 | Retired by [decision 89](decision-register.md#decision-89): the property left the tree with host work. |
 | `prop_pathmap_merge_detects_prefix_contact` | V25 | without the token, two branches conflict exactly on the index channels of their contacts |
 
 The legacy-charges test uses a lone host whose matcher binds the records of the staged operation with the values that the agent bound.

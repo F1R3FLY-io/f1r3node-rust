@@ -514,7 +514,11 @@ fn prop_guard_placement() {
                 _ => Err("AgentGuardSpansJoin".to_string()),
             };
             let placed = place_guard(&found, &counts).map_err(|error| match error {
-                InterpreterError::ReduceError(message) => message
+                // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): the code
+                // `AgentGuardSpansJoin` is a user failure, so it is a `SpaceUserError`.
+                // InterpreterError::ReduceError(message) => message
+                InterpreterError::ReduceError(message)
+                | InterpreterError::SpaceUserError(message) => message
                     .strip_prefix("reified:")
                     .and_then(|rest| rest.split(':').next())
                     .unwrap_or_default()
@@ -688,6 +692,7 @@ fn send_par(chan: Par, data: Vec<Par>) -> Par {
             persistent: false,
             locally_free: locally_free.clone(),
             connective_used: false,
+            params: None,
         }])
         .with_locally_free(locally_free)
 }

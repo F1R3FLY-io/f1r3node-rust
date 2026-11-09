@@ -10,8 +10,11 @@
 #                           the load average at the start, the toolchain and
 #                           the revision of the tree
 #   BENCH.log               the Criterion output of each bench
+# Changed by decision 89: a record holds no host work. The text before:
+# #   BENCH-records.jsonl     one record for each case (RRS_BENCH_RECORD): the
+# #                           phlo, the root, the result and the host work
 #   BENCH-records.jsonl     one record for each case (RRS_BENCH_RECORD): the
-#                           phlo, the root, the result and the host work
+#                           phlo, the root and the result
 #   criterion/              the Criterion estimates and samples (CRITERION_HOME)
 #   BENCH.uprof/            with --profile: the AMD uProf session of the bench
 #   BENCH.uprof-report.csv  with --profile: the uProf report with the self and

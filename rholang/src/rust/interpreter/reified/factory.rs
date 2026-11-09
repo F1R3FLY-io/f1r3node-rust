@@ -3,8 +3,8 @@
 //! A call `F!(ret, ctor)` on the factory channel of a family creates a new space:
 //!
 //! 1. The random state `r` and the cost authority `α` are those of the call datum.
-//! 2. `FactoryConstructor::validate_in` checks the constructor list `ctor` in the execution
-//!    model of the deploy: legacy execution refuses `seq` (P7, QT-5).
+//! 2. `ReifiedRuntime::ensure_available` fails outside native execution (decision 90, C6).
+//!    Then `FactoryConstructor::validate` checks the constructor list `ctor`.
 //! 3. The space id is `sid = r.split_byte(0xE0).split_byte(0x01).next()` (I-19,
 //!    `types::id::derive_space_id`).
 //! 4. `ReifiedRuntime::create_space` runs one `Intent::Space` job whose footprint holds
@@ -94,8 +94,12 @@ impl FactoryProcess {
         };
         // Changed by P7 step 2 (design v3 QT-5): gate 3 needs the execution model of the deploy.
         // let constructor = FactoryConstructor::validate(self.family, ctor)?;
-        let constructor =
-            FactoryConstructor::validate_in(self.family, ctor, self.runtime.execution()?)?;
+        // Changed by decision 90 (C6, step D): gate 3 reads no execution model. The runtime check
+        // still runs before every gate of the constructor, as `execution` ran it.
+        // let constructor =
+        //     FactoryConstructor::validate_in(self.family, ctor, self.runtime.execution()?)?;
+        self.runtime.ensure_available()?;
+        let constructor = FactoryConstructor::validate(self.family, ctor)?;
         let space = NativeSpace {
             sid: derive_space_id(&random),
             durability: constructor.durability(),
@@ -148,6 +152,7 @@ pub fn handle_continuation(space: NativeSpace, random: &Blake2b512Random) -> Tag
         persistent: false,
         locally_free: args_bound.clone(),
         connective_used: false,
+        params: None,
     };
     TaggedContinuation {
         tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
@@ -278,7 +283,7 @@ mod tests {
         assert_eq!(classify_space_ref(&reply[0]), Ok(SpaceRef::Native(space)));
         let config = fixture
             .runtime
-            .read_config(Arc::clone(&fixture.agent), space, None)
+            .read_config(Arc::clone(&fixture.agent), space)
             .await
             .expect("the config record exists");
         let constructor =
@@ -302,32 +307,51 @@ mod tests {
     #[tokio::test]
     async fn reified_factory_rejects_bad_constructor_before_any_effect() {
         let fixture = Fixture::new().await;
+        // Changed by the user decision of 2026-10-25 (as DR-128): each case also names whether
+        // its code is a user failure, which aborts with `SpaceUserError`.
+        // let cases = [
+        //     // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
+        //     // (list(vec![string("temp")]), "QualifierUnavailable"),
+        //     (list(vec![string("seq")]), "QualifierUnavailable"),
+        //     (string("default"), "BadConstructorArgument"),
+        //     (list(vec![int(1)]), "BadConstructorArgument"),
+        //     (
+        //         list(vec![string("default"), string("default")]),
+        //         "BadConstructorArgument",
+        //     ),
+        // ];
         let cases = [
-            // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
-            // (list(vec![string("temp")]), "QualifierUnavailable"),
-            (list(vec![string("seq")]), "QualifierUnavailable"),
-            (string("default"), "BadConstructorArgument"),
-            (list(vec![int(1)]), "BadConstructorArgument"),
+            // Changed by decision 90 (C6, step D): gate 3 reads no execution model, so it takes
+            // `seq` for this family. The loop after the cases checks a runtime outside native
+            // execution. The legacy case follows.
+            // (list(vec![string("seq")]), "QualifierUnavailable", false),
+            (string("default"), "BadConstructorArgument", true),
+            (list(vec![int(1)]), "BadConstructorArgument", true),
             (
                 list(vec![string("default"), string("default")]),
                 "BadConstructorArgument",
+                true,
             ),
         ];
-        for (index, (ctor, code)) in cases.into_iter().enumerate() {
+        for (index, (ctor, code, user_failure)) in cases.into_iter().enumerate() {
             let seed = [u8::try_from(index).expect("a small index")];
             let ret = reply_name(seed[0]);
-            match fixture
-                .factory()
-                .call(&fixture.contract, call(vec![ret.clone(), ctor], &seed))
-                .await
-            {
-                Err(InterpreterError::ReduceError(message)) => {
+            match (
+                user_failure,
+                fixture
+                    .factory()
+                    .call(&fixture.contract, call(vec![ret.clone(), ctor], &seed))
+                    .await,
+            ) {
+                // Err(InterpreterError::ReduceError(message)) => {
+                (false, Err(InterpreterError::ReduceError(message)))
+                | (true, Err(InterpreterError::SpaceUserError(message))) => {
                     assert!(
                         message.starts_with(&format!("reified:{code}: ")),
                         "{message}"
                     );
                 }
-                other => panic!("a bad constructor returned {other:?}"),
+                (_, other) => panic!("a bad constructor returned {other:?}"),
             }
             assert!(fixture.data(&ret).await.is_empty());
             assert_eq!(record_counts(&fixture, space_of(&seed)).await, (0, 0, 0));
@@ -339,6 +363,31 @@ mod tests {
                 .await,
             Err(InterpreterError::IllegalArgumentError(_))
         ));
+        // Added by decision 90 (C6, step D): outside native execution, the runtime check runs
+        // before every gate of the constructor. A `seq` constructor and a constructor that gate 2
+        // refuses both fail with `RuntimeUnavailable`, which is not a user failure.
+        for runtime in [unavailable(), native_replay()] {
+            let outside = Fixture::with_runtime(runtime).await;
+            for (index, ctor) in [list(vec![string("seq")]), string("default")]
+                .into_iter()
+                .enumerate()
+            {
+                let seed = [u8::try_from(index).expect("a small index")];
+                let ret = reply_name(seed[0]);
+                match outside
+                    .factory()
+                    .call(&outside.contract, call(vec![ret.clone(), ctor], &seed))
+                    .await
+                {
+                    Err(InterpreterError::ReduceError(message)) => assert!(
+                        message.starts_with("reified:RuntimeUnavailable: "),
+                        "{message}"
+                    ),
+                    other => panic!("a factory outside native execution returned {other:?}"),
+                }
+                assert!(outside.data(&ret).await.is_empty());
+            }
+        }
     }
 
     #[tokio::test]
@@ -444,6 +493,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }]);
         reduction
             .evaluate(term, b"through the reducer")
@@ -461,7 +511,7 @@ mod tests {
         };
         let config = reduction
             .runtime
-            .read_config(native_agent(), space, None)
+            .read_config(native_agent(), space)
             .await
             .expect("the space exists");
         let config = SpaceConfig::from_par(&config).expect("a canonical config");

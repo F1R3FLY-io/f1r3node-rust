@@ -20,9 +20,19 @@
 use models::rhoapi::Par;
 
 use super::errors::ReifiedReduceError;
+// Added by decision 127 (kind registry): the ops of the registered kinds.
+use crate::rust::interpreter::spaces::families::{kind_families, kind_processes};
+// Changed by decision 127 (kind registry, ruling D3): the factory ops leave out the agent tag.
+// The text before:
+// ```
+// use crate::rust::interpreter::spaces::namespace::{
+//     self, NativeSpace, ReifiedId, ANN, ASSERT_EQUAL, EMBED, GET_SPACE_AGENT, HANDLE_OP, MATCHER_OP,
+//     NATIVE_ENGINE_FACTORY, SINK_OP, VECTOR,
+// };
+// ```
 use crate::rust::interpreter::spaces::namespace::{
-    self, NativeSpace, ReifiedId, ANN, ASSERT_EQUAL, EMBED, GET_SPACE_AGENT, HANDLE_OP, MATCHER_OP,
-    NATIVE_ENGINE_FACTORY, SINK_OP, VECTOR,
+    self, NativeSpace, ReifiedId, AGENT_TAG, ANN, ASSERT_EQUAL, EMBED, GET_SPACE_AGENT, HANDLE_OP,
+    MATCHER_OP, NATIVE_ENGINE_FACTORY, SINK_OP, VECTOR,
 };
 use crate::rust::interpreter::system_processes::{Arity, BodyRef};
 
@@ -101,16 +111,44 @@ pub fn handle_of(channel: &Par) -> Option<NativeSpace> {
 }
 
 /// True for a factory op: the families `0x00..=0x1F` and the reserved engine factory `0x20`.
-pub const fn is_factory_op(op: u8) -> bool { op <= NATIVE_ENGINE_FACTORY }
+/// Changed by decision 127 (kind registry, ruling D3): and the factory op of each family of a
+/// registered kind. The built-in and reserved ranges come first, so every built-in op keeps one
+/// range test, and only another op scans the kind families. The text before:
+// pub const fn is_factory_op(op: u8) -> bool { op <= NATIVE_ENGINE_FACTORY }
+pub fn is_factory_op(op: u8) -> bool {
+    match op {
+        0x00..=NATIVE_ENGINE_FACTORY => true,
+        GET_SPACE_AGENT..=ANN | HANDLE_OP..=SINK_OP | 0xD0..=0xDF | AGENT_TAG => false,
+        _ => kind_families().any(|family| family.factory().op == op),
+    }
+}
 
 /// True for an op that takes calls: `0x00..=0x25` and `0x30..=0x32`. Markers and the agent tag
 /// take no calls.
-pub const fn is_call_op(op: u8) -> bool { op <= ANN || (HANDLE_OP <= op && op <= SINK_OP) }
+/// Changed by decision 127 (kind registry): and the factory ops and the process ops of the
+/// registered kinds. The text before:
+// pub const fn is_call_op(op: u8) -> bool { op <= ANN || (HANDLE_OP <= op && op <= SINK_OP) }
+pub fn is_call_op(op: u8) -> bool {
+    match op {
+        0x00..=ANN | HANDLE_OP..=SINK_OP => true,
+        _ => is_factory_op(op) || kind_processes().any(|process| process.channel.op == op),
+    }
+}
+
+/// Added by decision 127 (kind registry, ruling D4): true for an op that a registered kind may
+/// take: 0x26-0x2F, 0x33-0xCF or 0xE0-0xFE. The other ops are the built-in system processes
+/// (0x00-0x25 and 0x30-0x32), the syntax markers (0xD0-0xD4), the markers that decision 57
+/// reserves (0xD5-0xDF) and the agent tag (0xFF).
+pub const fn is_kind_op(op: u8) -> bool {
+    !matches!(op, 0x00..=ANN | HANDLE_OP..=SINK_OP | 0xD0..=0xDF | AGENT_TAG)
+}
 
 /// A persistent send (`!!`) aborts on every op that takes calls and on every handle (A21),
 /// and on every matcher and body capability of a translated receive (P8, design v2 A13). The
 /// runtime never cancels the re-produce of a persistent send, so a call could repeat forever.
 /// `channel` is the channel after the unbundling of `eval_send`.
+/// Changed by decisions 106 and 127: a persistent send to a recorded process passes here. Base
+/// rule P2 fails it at its fire, before any service call (`reduce.rs`, DR-114).
 pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), ReifiedReduceError> {
     if !persistent {
         return Ok(());
@@ -119,6 +157,9 @@ pub fn check_persistent_send(channel: &Par, persistent: bool) -> Result<(), Reif
         Some(ReifiedId::Op(op)) if is_factory_op(op) => {
             Err(ReifiedReduceError::PersistentFactoryCall)
         }
+        // Added by decisions 106 and 127: base rule P2 fails a persistent send to a recorded
+        // process at its fire, before any service call (`reduce.rs`, DR-114).
+        Some(ReifiedId::Op(op)) if is_recorded_process(body_ref(op)) => Ok(()),
         Some(ReifiedId::Op(op)) if is_call_op(op) => Err(ReifiedReduceError::PersistentOpCall),
         Some(ReifiedId::Handle(_)) => Err(ReifiedReduceError::PersistentHandleCall),
         Some(ReifiedId::Matcher(..) | ReifiedId::Body(..)) => {
@@ -411,8 +452,17 @@ pub const ANN_BODY_REF: BodyRef = body_ref(ANN);
 /// True for the recorded processes of Reified RSpaces, `embed` and `ann` (decision 68). Their
 /// own handlers record and replay their replies, so native funded execution does not send them
 /// to its driver of external services (`is_native_external_process`).
-pub const fn is_recorded_process(body: BodyRef) -> bool {
-    body == EMBED_BODY_REF || body == ANN_BODY_REF
+/// Changed by decision 127 (kind registry): and the recorded processes of the registered kinds,
+/// whose handlers record and replay their replies in the same way. The text before:
+// ```
+// pub const fn is_recorded_process(body: BodyRef) -> bool {
+//     body == EMBED_BODY_REF || body == ANN_BODY_REF
+// }
+// ```
+pub fn is_recorded_process(body: BodyRef) -> bool {
+    body == EMBED_BODY_REF
+        || body == ANN_BODY_REF
+        || kind_processes().any(|process| process.recorded && process.channel.body_ref() == body)
 }
 
 /// `ann!(ret, space, channel, query, options)` (P6 step 7, decision 57): a recorded process.
@@ -432,7 +482,15 @@ pub const ANN_PROCESS: SystemChannel = SystemChannel {
 /// | `rho:lang:vector`    | `[E0, 23]` | 2     | 235     |
 /// | `rho:vectordb:embed` | `[E0, 24]` | 2     | 236     |
 /// | `rho:vectordb:ann`   | `[E0, 25]` | 5     | 237     |
+///
+/// Changed by decision 113: only a build with the feature `chromadb` registers `embed` and
+/// `ann`, as the base does for its Chroma processes. The default build has the first row alone.
+#[cfg(feature = "chromadb")]
 pub const P6_PROCESSES: [SystemChannel; 3] = [VECTOR_PROCESS, EMBED_PROCESS, ANN_PROCESS];
+/// The system processes of P6 in a build without the feature `chromadb`: `rho:lang:vector`
+/// alone (decision 113).
+#[cfg(not(feature = "chromadb"))]
+pub const P6_PROCESSES: [SystemChannel; 1] = [VECTOR_PROCESS];
 
 /// The factory of the family `hashset:bag`: family index 26, `(ret, ctor)` (P7).
 pub const HASHSET_BAG_FACTORY: SystemChannel = SystemChannel {
@@ -527,7 +585,10 @@ pub const P8_PROCESSES: [SystemChannel; 2] = [MATCHER_OP_PROCESS, SINK_OP_PROCES
 
 /// True for an op whose call the reducer packs into `[ret, [x…]]` (I-18): every factory, and
 /// `rho:lang:vector`.
-pub const fn packs_arguments(op: u8) -> bool { is_factory_op(op) || op == VECTOR }
+// Changed by decision 127 (kind registry): `is_factory_op` reads the registry, so this is not
+// const. The text before:
+// pub const fn packs_arguments(op: u8) -> bool { is_factory_op(op) || op == VECTOR }
+pub fn packs_arguments(op: u8) -> bool { is_factory_op(op) || op == VECTOR }
 
 #[cfg(test)]
 mod tests {
@@ -738,11 +799,15 @@ mod tests {
 
     #[test]
     fn p6_processes_have_the_table_values() {
+        // Changed by decision 113: the default build registers `rho:lang:vector` alone.
+        #[cfg(feature = "chromadb")]
         let expected = [
             ("rho:lang:vector", 0x23, 2, 235),
             ("rho:vectordb:embed", 0x24, 2, 236),
             ("rho:vectordb:ann", 0x25, 5, 237),
         ];
+        #[cfg(not(feature = "chromadb"))]
+        let expected = [("rho:lang:vector", 0x23, 2, 235)];
         assert_eq!(P6_PROCESSES.len(), expected.len());
         for (channel, (urn, op, arity, body)) in P6_PROCESSES.iter().zip(expected) {
             assert_eq!(
@@ -833,8 +898,14 @@ mod tests {
                 0x00..=FACTORY_LAST | NATIVE_ENGINE_FACTORY => {
                     Err(ReifiedReduceError::PersistentFactoryCall)
                 }
-                GET_SPACE_AGENT | ASSERT_EQUAL | VECTOR | EMBED | ANN | HANDLE_OP | MATCHER_OP
-                | SINK_OP => Err(ReifiedReduceError::PersistentOpCall),
+                // Changed by decision 106: a persistent send to `embed` or `ann` passes A21, and
+                // base rule P2 fails it at its fire.
+                // GET_SPACE_AGENT | ASSERT_EQUAL | VECTOR | EMBED | ANN | HANDLE_OP | MATCHER_OP
+                // | SINK_OP => Err(ReifiedReduceError::PersistentOpCall),
+                GET_SPACE_AGENT | ASSERT_EQUAL | VECTOR | HANDLE_OP | MATCHER_OP | SINK_OP => {
+                    Err(ReifiedReduceError::PersistentOpCall)
+                }
+                EMBED | ANN => Ok(()),
                 _ => Ok(()),
             };
             assert_eq!(
@@ -888,6 +959,31 @@ mod tests {
             assert_eq!(check_persistent_send(&ordinary, true), Ok(()));
             assert_eq!(op_of(&ordinary), None);
             assert_eq!(handle_of(&ordinary), None);
+        }
+    }
+
+    /// Added by decision 127 (kind registry, ruling D4): the free ops are 0x26-0x2F, 0x33-0xCF
+    /// and 0xE0-0xFE. Without a plug-in, the factory ops are the ops up to the native engine
+    /// factory, and no built-in channel takes a free op.
+    #[test]
+    fn kind_ops_are_the_free_ops() {
+        for op in 0..=u8::MAX {
+            assert_eq!(
+                is_kind_op(op),
+                matches!(op, 0x26..=0x2F | 0x33..=0xCF | 0xE0..=0xFE),
+                "{op:#04x}"
+            );
+            assert_eq!(is_factory_op(op), op <= NATIVE_ENGINE_FACTORY, "{op:#04x}");
+        }
+        let built_in = P4_SYSTEM_CHANNELS
+            .iter()
+            .chain(&P5_SYSTEM_CHANNELS)
+            .chain(&P6_SYSTEM_CHANNELS)
+            .chain(&P6_PROCESSES)
+            .chain(&P7_SYSTEM_CHANNELS)
+            .chain(&P8_PROCESSES);
+        for channel in built_in {
+            assert!(!is_kind_op(channel.op), "{}", channel.urn);
         }
     }
 }

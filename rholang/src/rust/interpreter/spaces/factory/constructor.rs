@@ -7,9 +7,9 @@
 //!
 //! 1. The family has a constructor schema in this phase, else `FamilyUnavailable`.
 //! 2. The constructor parses, else `BadConstructorArgument`.
-//! 3. The family takes the qualifier, else `BadConstructorArgument`. In native execution every
-//!    qualifier passes (P7). Legacy execution refuses `seq` with `QualifierUnavailable`, because
-//!    the Seq rules need the job order of native execution (P7, design v3 QT-5).
+//! 3. The family takes the qualifier, else `BadConstructorArgument`. HashSet takes only `seq`,
+//!    and every other store takes every qualifier (P7, HS-6). Spaces run only in native
+//!    execution (decision 90, C6), so no execution model refuses a qualifier.
 //! 4. A theory `free Th()` names a builtin: `Nat`, `Int`, `String`, `Bool` or `Any` (P7, TH-4).
 //!    Another name fails with `UnknownTheory` and the nearest builtin within two edits, and a
 //!    builtin with arguments fails with `BadConstructorArgument`. The config persists the
@@ -40,14 +40,25 @@ use std::collections::BTreeMap;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
 use models::rust::reified::encoding::SendParams;
-use models::rust::space_factory_urn::{
-    SpaceFactoryConstructor, SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier,
-};
+// Changed by decision 127 (kind registry): the registry classifies a family. The text before:
+// ```
+// use models::rust::space_factory_urn::{
+//     SpaceFactoryConstructor, SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier,
+// };
+// ```
+use models::rust::space_factory_urn::{SpaceFactoryConstructor, SpaceFactoryUrn, SpaceQualifier};
 
-use super::defaults::{
-    constructor_schema, required_params, suggestion, ParamRule, METRIC_PARAM, MIRROR_PARAM,
-};
+// Changed by decision 127 (kind registry): gate 1 reads the schema of the registered family. The
+// text before:
+// ```
+// use super::defaults::{
+//     constructor_schema, required_params, suggestion, ParamRule, METRIC_PARAM, MIRROR_PARAM,
+// };
+// ```
+use super::defaults::{required_params, suggestion, ParamRule, METRIC_PARAM, MIRROR_PARAM};
 use crate::rust::interpreter::spaces::errors::SpaceError;
+// Added by decision 127 (kind registry).
+use crate::rust::interpreter::spaces::families::Family;
 use crate::rust::interpreter::spaces::namespace::{Durability, NativeSpace};
 use crate::rust::interpreter::spaces::record::sole_expr;
 use crate::rust::interpreter::spaces::theory::builtin::{BuiltinKind, BUILTIN_NAMES};
@@ -70,35 +81,51 @@ pub struct FactoryConstructor {
     pub theory: Option<TheoryIdentity>,
 }
 
-/// The execution model of a factory call (P7, design v3 QT-5). The Seq rules need the
-/// deterministic job order of native execution, so gate 3 accepts `seq` only there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Execution {
-    /// Legacy execution: host produces and consumes bypass the scheduler (F11).
-    Legacy,
-    /// Native funded execution (protocol v6), in native play and native replay.
-    Native,
-}
+// Retired by decision 90 (C6, step D): spaces have one execution model (decision 69), so a
+// factory call has no execution model to choose.
+// /// The execution model of a factory call (P7, design v3 QT-5). The Seq rules need the
+// /// deterministic job order of native execution, so gate 3 accepts `seq` only there.
+// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// pub enum Execution {
+//     /// Legacy execution: host produces and consumes bypass the scheduler (F11).
+//     Legacy,
+//     /// Native funded execution (protocol v6), in native play and native replay.
+//     Native,
+// }
 
 impl FactoryConstructor {
-    /// Validates the constructor list `ctor` of a call to the factory of `family` in native
-    /// execution, the model of every new deploy (decision 69). It is
-    /// [`FactoryConstructor::validate_in`] with [`Execution::Native`].
+    // Changed by decision 90 (C6, step D): `validate` runs the gates itself, because
+    // `validate_in` and its execution model are retired.
+    // /// Validates the constructor list `ctor` of a call to the factory of `family` in native
+    // /// execution, the model of every new deploy (decision 69). It is
+    // /// [`FactoryConstructor::validate_in`] with [`Execution::Native`].
+    // pub fn validate(family: SpaceFactoryUrn, ctor: &Par) -> Result<FactoryConstructor, SpaceError> {
+    //     Self::validate_in(family, ctor, Execution::Native)
+    // }
+    //
+    // /// Validates the constructor list `ctor` of a call to the factory of `family` in the
+    // /// execution model `execution` with the gates 1 to 9 of this module, in order.
+    // pub fn validate_in(
+    //     family: SpaceFactoryUrn,
+    //     ctor: &Par,
+    //     execution: Execution,
+    // ) -> Result<FactoryConstructor, SpaceError> {
+    /// Validates the constructor list `ctor` of a call to the factory of `family` with the gates
+    /// 1 to 9 of this module, in order. Spaces run only in native execution (decision 90, C6).
     pub fn validate(family: SpaceFactoryUrn, ctor: &Par) -> Result<FactoryConstructor, SpaceError> {
-        Self::validate_in(family, ctor, Execution::Native)
-    }
-
-    /// Validates the constructor list `ctor` of a call to the factory of `family` in the
-    /// execution model `execution` with the gates 1 to 9 of this module, in order.
-    pub fn validate_in(
-        family: SpaceFactoryUrn,
-        ctor: &Par,
-        execution: Execution,
-    ) -> Result<FactoryConstructor, SpaceError> {
-        let schema = constructor_schema(family).ok_or_else(|| SpaceError::FamilyUnavailable {
+        // Changed by decision 127 (kind registry): the registry gives the family, its schema, its
+        // qualifiers and its param rules (gates 1, 3 and 8). The text before:
+        // ```
+        // let schema = constructor_schema(family).ok_or_else(|| SpaceError::FamilyUnavailable {
+        //     outer: family.outer.as_str().to_string(),
+        //     inner: family.inner.as_str().to_string(),
+        // })?;
+        // ```
+        let registered = Family::of_urn(family).ok_or_else(|| SpaceError::FamilyUnavailable {
             outer: family.outer.as_str().to_string(),
             inner: family.inner.as_str().to_string(),
         })?;
+        let schema = registered.constructor_schema();
         let SpaceFactoryConstructor {
             qualifier,
             theory,
@@ -106,7 +133,10 @@ impl FactoryConstructor {
         } = SpaceFactoryConstructor::parse(ctor)
             .map_err(|error| SpaceError::BadConstructorArgument(error.to_string()))?;
         let qualifier = qualifier.unwrap_or_default();
-        if !family.supports_qualifier(qualifier) {
+        // Changed by decision 127 (kind registry): the registry gives the family, its schema, its
+        // qualifiers and its param rules (gates 1, 3 and 8). The text before:
+        // if !family.supports_qualifier(qualifier) {
+        if !registered.supports_qualifier(qualifier) {
             return Err(SpaceError::BadConstructorArgument(format!(
                 "the {} outer store does not take the {qualifier} qualifier",
                 family.outer.as_str()
@@ -132,15 +162,17 @@ impl FactoryConstructor {
         //         ))
         //     }
         // }
-        match (qualifier, execution) {
-            (SpaceQualifier::Default | SpaceQualifier::Temp, _)
-            | (SpaceQualifier::Seq, Execution::Native) => {}
-            (SpaceQualifier::Seq, Execution::Legacy) => {
-                return Err(SpaceError::QualifierUnavailable(
-                    qualifier.as_str().to_string(),
-                ))
-            }
-        }
+        // Retired by decision 90 (C6, step D): spaces have one execution model (decision 69), so
+        // gate 3 takes every qualifier that the family supports.
+        // match (qualifier, execution) {
+        //     (SpaceQualifier::Default | SpaceQualifier::Temp, _)
+        //     | (SpaceQualifier::Seq, Execution::Native) => {}
+        //     (SpaceQualifier::Seq, Execution::Legacy) => {
+        //         return Err(SpaceError::QualifierUnavailable(
+        //             qualifier.as_str().to_string(),
+        //         ))
+        //     }
+        // }
         // Changed by P7 step 4 (design v3 TH-4): gate 4 resolves the builtin theories.
         // if let Some(theory) = theory {
         //     return Err(SpaceError::TheoryUnavailable(theory.name));
@@ -167,7 +199,10 @@ impl FactoryConstructor {
                 key: (*key).to_string(),
             });
         }
-        let params = canonical_params(named)?;
+        // Changed by decision 127 (kind registry): the registry gives the family, its schema, its
+        // qualifiers and its param rules (gates 1, 3 and 8). The text before:
+        // let params = canonical_params(named)?;
+        let params = canonical_params(registered, named)?;
         check_mirror(qualifier, &params)?;
         Ok(FactoryConstructor {
             family,
@@ -262,13 +297,34 @@ fn check_mirror(
 /// Gate 8: each named param in the canonical form of its rule, in bytewise key order. The first
 /// value that its rule refuses fails with `InvalidParam`. Gate 6 has checked every key against
 /// the schema, and every schema key has a rule, so a key without a rule is inconsistent.
-fn canonical_params(named: BTreeMap<String, Par>) -> Result<BTreeMap<String, Par>, SpaceError> {
+/// Changed by decision 127 (kind registry): the rule of the registered family comes first
+/// (`Family::param_rule`), and the built-in table second.
+// Changed by decision 127 (kind registry): the rule of the registered family comes first. The text
+// before:
+// fn canonical_params(named: BTreeMap<String, Par>) -> Result<BTreeMap<String, Par>, SpaceError> {
+fn canonical_params(
+    family: &Family,
+    named: BTreeMap<String, Par>,
+) -> Result<BTreeMap<String, Par>, SpaceError> {
     let mut params = BTreeMap::new();
     for (key, value) in named {
-        let rule = ParamRule::of(&key).ok_or(SpaceError::Inconsistent(
-            "a constructor param has no value rule",
-        ))?;
-        match rule.canonical(&value) {
+        // Changed by decision 127 (kind registry): the rule of the registered family comes first.
+        // The text before:
+        // ```
+        // let rule = ParamRule::of(&key).ok_or(SpaceError::Inconsistent(
+        //     "a constructor param has no value rule",
+        // ))?;
+        // match rule.canonical(&value) {
+        // ```
+        let canonical = match family.param_rule(&key) {
+            Some(check) => check(&value),
+            None => ParamRule::of(&key)
+                .ok_or(SpaceError::Inconsistent(
+                    "a constructor param has no value rule",
+                ))?
+                .canonical(&value),
+        };
+        match canonical {
             Some(canonical) => {
                 params.insert(key, canonical);
             }
@@ -280,33 +336,60 @@ fn canonical_params(named: BTreeMap<String, Par>) -> Result<BTreeMap<String, Par
 
 /// The family that a stored config names. A config without a supported pair is inconsistent.
 pub fn family_of(config: &SpaceConfig) -> Result<SpaceFactoryUrn, SpaceError> {
-    match (
-        SpaceOuter::parse(&config.outer),
-        SpaceInner::parse(&config.inner),
-    ) {
-        (Some(outer), Some(inner)) => {
-            let family = SpaceFactoryUrn { outer, inner };
-            match family.is_supported_pair() {
-                true => Ok(family),
-                false => Err(SpaceError::Inconsistent(
-                    "the config record names an unsupported family",
-                )),
-            }
-        }
-        (None, _) | (Some(_), None) => Err(SpaceError::Inconsistent(
-            "the config record names an unknown family",
-        )),
+    // Changed by decision 127 (kind registry): the registry classifies the names. A name of no
+    // registered family is unknown, and a pair of known names that no family registers is
+    // unsupported, as before. The text before:
+    // ```
+    // match (
+    //     SpaceOuter::parse(&config.outer),
+    //     SpaceInner::parse(&config.inner),
+    // ) {
+    //     (Some(outer), Some(inner)) => {
+    //         let family = SpaceFactoryUrn { outer, inner };
+    //         match family.is_supported_pair() {
+    //             true => Ok(family),
+    //             false => Err(SpaceError::Inconsistent(
+    //                 "the config record names an unsupported family",
+    //             )),
+    //         }
+    //     }
+    //     (None, _) | (Some(_), None) => Err(SpaceError::Inconsistent(
+    //         "the config record names an unknown family",
+    //     )),
+    // }
+    // ```
+    match Family::of_config(config) {
+        Some(family) => Ok(family.urn()),
+        None => match (
+            Family::registered().any(|family| family.urn().outer.as_str() == config.outer),
+            Family::registered().any(|family| family.urn().inner.as_str() == config.inner),
+        ) {
+            (true, true) => Err(SpaceError::Inconsistent(
+                "the config record names an unsupported family",
+            )),
+            (false, _) | (true, false) => Err(SpaceError::Inconsistent(
+                "the config record names an unknown family",
+            )),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use models::rust::reified::builders;
-    use models::rust::reified::encoding::{encode_free, FreeTheory};
+    // Changed by decision 112: the tests build the value form of the params. The text before:
+    // use models::rust::reified::encoding::{encode_free, FreeTheory};
+    use models::rust::reified::encoding::{encode_free, encode_params, FreeTheory};
     use models::rust::reified::params::SendParam;
+    // Added by decision 127 (kind registry): the tests name the built-in stores and the schema
+    // table.
+    use models::rust::space_factory_urn::{SpaceInner, SpaceOuter};
     use models::rust::utils::{new_elist_par, new_gbool_par, new_gint_par, new_gstring_par};
 
     use super::*;
+    // Added by decision 127 (kind registry): the tests name the built-in stores and the schema
+    // table.
+    use crate::rust::interpreter::spaces::factory::defaults::constructor_schema;
     use crate::rust::interpreter::spaces::namespace::SID_LEN;
 
     fn list(ps: Vec<Par>) -> Par { new_elist_par(ps, Vec::new(), false, None, Vec::new(), false) }
@@ -326,7 +409,17 @@ mod tests {
     }
 
     fn params(params: Vec<SendParam>) -> Par {
-        builders::send_params(params)
+        // Changed by decision 112: the builder gives the params message, and a factory reads the
+        // value form. The text before:
+        // ```
+        // builders::send_params(params)
+        //     .expect("valid params")
+        //     .expect("non-empty params")
+        // ```
+        let params = builders::send_params(params)
+            .expect("valid params")
+            .expect("non-empty params");
+        encode_params(&params)
             .expect("valid params")
             .expect("non-empty params")
     }
@@ -391,13 +484,24 @@ mod tests {
                 .theory,
             Some(TheoryIdentity::builtin("Nat"))
         );
+        // Changed by decision 90 (C6, step D): gate 3 reads no execution model, so a HashSet
+        // family shows the order of gates 3 and 4. The legacy case follows.
+        // assert_eq!(
+        //     FactoryConstructor::validate_in(
+        //         SpaceFactoryUrn::HASHMAP_QUEUE,
+        //         &list(vec![string("seq"), nat()]),
+        //         Execution::Legacy
+        //     ),
+        //     Err(SpaceError::QualifierUnavailable("seq".to_string()))
+        // );
         assert_eq!(
-            FactoryConstructor::validate_in(
-                SpaceFactoryUrn::HASHMAP_QUEUE,
-                &list(vec![string("seq"), nat()]),
-                Execution::Legacy
+            FactoryConstructor::validate(
+                family(SpaceOuter::HashSet, SpaceInner::Bag),
+                &list(vec![string("default"), free("Bounded", Vec::new())])
             ),
-            Err(SpaceError::QualifierUnavailable("seq".to_string()))
+            Err(SpaceError::BadConstructorArgument(
+                "the hashset outer store does not take the default qualifier".to_string()
+            ))
         );
         let seq = validate(vec![string("seq")]).expect("a seq constructor is valid natively");
         assert_eq!(seq.qualifier, SpaceQualifier::Seq);
@@ -490,10 +594,16 @@ mod tests {
         }
     }
 
-    /// HS-6 and QT-5: a HashSet factory takes only `seq`, and only in native execution. Gate 3
-    /// refuses `default` and `temp` with `BadConstructorArgument` in both execution models, and
-    /// legacy execution refuses `seq` with `QualifierUnavailable`. Every gate runs before the
-    /// params, so an unknown param does not change the error.
+    // Changed by decision 90 (C6, step D): gate 3 reads no execution model, so the test checks
+    // the rule of the store only. The legacy text follows.
+    //
+    // /// HS-6 and QT-5: a HashSet factory takes only `seq`, and only in native execution. Gate 3
+    // /// refuses `default` and `temp` with `BadConstructorArgument` in both execution models, and
+    // /// legacy execution refuses `seq` with `QualifierUnavailable`. Every gate runs before the
+    // /// params, so an unknown param does not change the error.
+    /// HS-6: a HashSet factory takes only `seq`. Gate 3 refuses `default` and `temp` with
+    /// `BadConstructorArgument`, and it runs before the params, so an unknown param does not
+    /// change the error. Spaces run only in native execution (decision 90, C6).
     #[test]
     fn reified_factory_hashset_takes_only_seq_in_native_execution() {
         let unknown = params(vec![SendParam::Named("zeta".to_string(), int(1))]);
@@ -506,29 +616,45 @@ mod tests {
             SpaceInner::PriorityQueue,
         ] {
             let hashset = family(SpaceOuter::HashSet, inner);
-            for execution in [Execution::Native, Execution::Legacy] {
-                for (ctor, qualifier) in [
-                    (Vec::new(), "default"),
-                    (vec![string("default")], "default"),
-                    (vec![string("temp")], "temp"),
-                    (vec![string("temp"), unknown.clone()], "temp"),
-                ] {
-                    assert_eq!(
-                        FactoryConstructor::validate_in(hashset, &list(ctor), execution),
-                        Err(SpaceError::BadConstructorArgument(format!(
-                            "the hashset outer store does not take the {qualifier} qualifier"
-                        ))),
-                        "{hashset} {execution:?} {qualifier}"
-                    );
-                }
-            }
-            for ctor in [vec![string("seq")], vec![string("seq"), unknown.clone()]] {
+            // Changed by decision 90 (C6, step D): gate 3 reads no execution model.
+            // for execution in [Execution::Native, Execution::Legacy] {
+            //     for (ctor, qualifier) in [
+            //         (Vec::new(), "default"),
+            //         (vec![string("default")], "default"),
+            //         (vec![string("temp")], "temp"),
+            //         (vec![string("temp"), unknown.clone()], "temp"),
+            //     ] {
+            //         assert_eq!(
+            //             FactoryConstructor::validate_in(hashset, &list(ctor), execution),
+            //             Err(SpaceError::BadConstructorArgument(format!(
+            //                 "the hashset outer store does not take the {qualifier} qualifier"
+            //             ))),
+            //             "{hashset} {execution:?} {qualifier}"
+            //         );
+            //     }
+            // }
+            for (ctor, qualifier) in [
+                (Vec::new(), "default"),
+                (vec![string("default")], "default"),
+                (vec![string("temp")], "temp"),
+                (vec![string("temp"), unknown.clone()], "temp"),
+            ] {
                 assert_eq!(
-                    FactoryConstructor::validate_in(hashset, &list(ctor), Execution::Legacy),
-                    Err(SpaceError::QualifierUnavailable("seq".to_string())),
-                    "{hashset}"
+                    FactoryConstructor::validate(hashset, &list(ctor)),
+                    Err(SpaceError::BadConstructorArgument(format!(
+                        "the hashset outer store does not take the {qualifier} qualifier"
+                    ))),
+                    "{hashset} {qualifier}"
                 );
             }
+            // Retired by decision 90 (C6, step D): no execution model refuses `seq`.
+            // for ctor in [vec![string("seq")], vec![string("seq"), unknown.clone()]] {
+            //     assert_eq!(
+            //         FactoryConstructor::validate_in(hashset, &list(ctor), Execution::Legacy),
+            //         Err(SpaceError::QualifierUnavailable("seq".to_string())),
+            //         "{hashset}"
+            //     );
+            // }
             let seq = FactoryConstructor::validate(hashset, &list(vec![string("seq")]))
                 .expect("a seq HashSet constructor is valid natively");
             assert_eq!(seq.qualifier, SpaceQualifier::Seq);
@@ -686,14 +812,17 @@ mod tests {
         //     check(array_queue, vec![string("seq")]),
         //     Err(SpaceError::QualifierUnavailable("seq".to_string()))
         // );
-        assert_eq!(
-            FactoryConstructor::validate_in(
-                array_queue,
-                &list(vec![string("seq")]),
-                Execution::Legacy
-            ),
-            Err(SpaceError::QualifierUnavailable("seq".to_string()))
-        );
+        // Retired by decision 90 (C6, step D): an Array family takes every qualifier, so gate 3
+        // refuses nothing here. `reified_factory_hashset_takes_only_seq_in_native_execution`
+        // shows gate 3 before the params.
+        // assert_eq!(
+        //     FactoryConstructor::validate_in(
+        //         array_queue,
+        //         &list(vec![string("seq")]),
+        //         Execution::Legacy
+        //     ),
+        //     Err(SpaceError::QualifierUnavailable("seq".to_string()))
+        // );
         assert_eq!(
             check(array_queue, vec![string("seq")]),
             Err(SpaceError::MissingParam {

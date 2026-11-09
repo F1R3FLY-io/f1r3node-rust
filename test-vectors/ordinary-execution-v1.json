@@ -1,10 +1,17 @@
 {
-  "capture_command": "git archive 4c58a925f | tar -x -C target/scratch/base-4c58a925f && cp rholang/tests/reified_ordinary_regression.rs rholang/tests/reified_source_normalization.rs target/scratch/base-4c58a925f/rholang/tests/ && cd target/scratch/base-4c58a925f && export TMPDIR=$PWD/target/tmp RRS_CAPTURE_ORDINARY_OUT=$PWD/target/capture/ordinary-fragments && systemd-run --user --scope --quiet -p MemoryMax=24G -p MemorySwapMax=0 -p CPUQuota=800% -- env CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=4 RUST_TEST_THREADS=4 cargo test --offline -p rholang --test reified_ordinary_regression > target/capture/ordinary.log 2>&1",
-  "captured_at_revision": "4c58a925f2b63e4aa3721383a0b885e2f330a145",
-  "code_identical_to": "4c58a925f2b63e4aa3721383a0b885e2f330a145, the tip of feature/cost-accounted-rho that the campaign merged on 2026-10-16: the capture ran in a clean export of that commit (git archive), with the campaign's harness files copied in, so no Reified code was present",
+  "capture_command": "git archive 702496775 | tar -x -C target/scratch/base-702496775 && cp rholang/tests/reified_ordinary_regression.rs rholang/tests/reified_source_normalization.rs target/scratch/base-702496775/rholang/tests/ && cd target/scratch/base-702496775 && export TMPDIR=$PWD/target/tmp RRS_CAPTURE_ORDINARY_OUT=$PWD/target/capture/mt/run-1 && systemd-run --user --scope --quiet -p MemoryMax=32G -p MemorySwapMax=0 -p CPUQuota=1600% -p IOWeight=30 -p TasksMax=400 -- env CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=8 RUST_TEST_THREADS=4 cargo test --offline -p rholang --test reified_ordinary_regression > target/capture/mt/run-1.log 2>&1 (ten runs, run-1 to run-10, gave identical fragments)",
+  "captured_at_revision": "7024967758bcef46597ca9b7a7cdd809e757b28c",
+  "code_identical_to": "7024967758bcef46597ca9b7a7cdd809e757b28c, the tip of feature/cost-accounted-rho that the campaign merged on 2026-10-25: the capture ran in a clean export of that commit (git archive), with the campaign's harness files copied in, so no Reified code was present",
   "deterministic_candidates": {
     "continuations": {
       "bodies": [
+        {
+          "body": {
+            "par": "\"rrs-dc-fired\"!(0, x-1)"
+          },
+          "guard": null,
+          "has_cost_authority": true
+        },
         {
           "body": {
             "par": "\"rrs-dc-fired\"!(3, x-1)"
@@ -14,7 +21,7 @@
         },
         {
           "body": {
-            "par": "\"rrs-dc-fired\"!(2, x-1)"
+            "par": "\"rrs-dc-fired\"!(4, x-1)"
           },
           "guard": null,
           "has_cost_authority": true
@@ -35,34 +42,27 @@
         },
         {
           "body": {
-            "par": "\"rrs-dc-fired\"!(4, x-1)"
-          },
-          "guard": null,
-          "has_cost_authority": true
-        },
-        {
-          "body": {
-            "par": "\"rrs-dc-fired\"!(0, x-1)"
+            "par": "\"rrs-dc-fired\"!(2, x-1)"
           },
           "guard": null,
           "has_cost_authority": true
         }
       ],
       "fired_sorted": [
-        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
-        "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
-        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5",
-        "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
-        "c631d4f1e7b7e657e6a2d2e87a7d762fb26e50a97ce71e28bbf230e9d6824047",
-        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded"
+        "76143c3479259e67354859f904267861b8abe34db52d859e92e87a1d81807dc6",
+        "77a3a5b930cb9e90623fa5979f3d8e483e0e91bc74f2efbda0233b6999469c85",
+        "90e82c7f05c011d0dd0577c5f4e6964e25fa92bdc1bf51920161f9d3fadbcbb2",
+        "9ae60adb2bb5c8629f6c82113e80c5c89c93dfa5282765b03cfa9148388cebab",
+        "a30fdc0439c311c292b50d5faf74bd9eb1123eaab01a6881a1d7ceb2e6fa6762",
+        "ee1e1f240c1ea586c2b2caa50ae31a83f33141deef713b3f08ab165405a36b14"
       ],
       "ranked_hashes": [
-        "5186eb5d4c4c013a65330881b788ad3095797d18962a65517904955dfbb10074",
-        "b4768bd1a0d6b793360d4f5bf4da4d6edb150aff72fd10001b84567e804e9d64",
-        "e4236d71b785bceec25016ba54a1155468f04e0a20ad1e3a639dc65c4e524ded",
-        "33c8a50c1975eea1faa0b44e55cea94c3a06741f17b00ae631d3fab64dc79051",
-        "c631d4f1e7b7e657e6a2d2e87a7d762fb26e50a97ce71e28bbf230e9d6824047",
-        "8893f56090ec22152e68da9e2d3cd37d9aa9e3145dea4737b6b53f2b31961cf5"
+        "a30fdc0439c311c292b50d5faf74bd9eb1123eaab01a6881a1d7ceb2e6fa6762",
+        "9ae60adb2bb5c8629f6c82113e80c5c89c93dfa5282765b03cfa9148388cebab",
+        "76143c3479259e67354859f904267861b8abe34db52d859e92e87a1d81807dc6",
+        "90e82c7f05c011d0dd0577c5f4e6964e25fa92bdc1bf51920161f9d3fadbcbb2",
+        "ee1e1f240c1ea586c2b2caa50ae31a83f33141deef713b3f08ab165405a36b14",
+        "77a3a5b930cb9e90623fa5979f3d8e483e0e91bc74f2efbda0233b6999469c85"
       ],
       "sends": [
         "@\"rrs-dc-cont\"!(0)",
@@ -76,38 +76,38 @@
     },
     "data": {
       "ranked_hashes": [
-        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
-        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
-        "62e19a4a55f4c8bca6252ad314aa9e31f294745b6cb4d5923559e8c30841d060",
-        "71c4bc3c65b81515e627110dfbff22d5183546ea16573598ca21d2c3777d0214",
-        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4",
-        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096"
+        "4358556ebc5e66fc9a01bf804c3decfd19a641e1f416ac57611bea32c9ee6cd8",
+        "aae547a95a00f21535ea17de8545977015033cb8532451df48b07bd8410b0e4f",
+        "7fac82bbe6b253ccdbce5589b23bb6de62ffe766e6989a3dadb22bd8e7f44ec7",
+        "85277ca55903e4ed6093d48f5f7712b0df4c9d3e606c44cb508d101401ba3299",
+        "0a8a9b7d6c02c175f05b345ae2a20774858b86ce61905c020f7d8b12aae54c48",
+        "690700aa7bc5936f6c5c5dc3498be7f8fb63c5d3c85000dfe2eec9f68513f7ac"
       ],
       "source": "@\"rrs-dc-data\"!(0) | @\"rrs-dc-data\"!(1) | @\"rrs-dc-data\"!(2) | @\"rrs-dc-data\"!(3) | @\"rrs-dc-data\"!(4) | @\"rrs-dc-data\"!(5)",
       "take_source": "for (@x <- @\"rrs-dc-data\") { Nil }",
       "taken_sorted": [
-        "11cfb0cf789b77945e04c5604965f5a92b1f44e7fbce63a555de87f39de36096",
-        "62e19a4a55f4c8bca6252ad314aa9e31f294745b6cb4d5923559e8c30841d060",
-        "71c4bc3c65b81515e627110dfbff22d5183546ea16573598ca21d2c3777d0214",
-        "7d4476e4a469472fad0321957ea8ae383d862cabc3bd212f5a963caa8791c361",
-        "97bc8336f9c022e5b5ab2aadd22388c4e1221e407d960d09c38fc49fc388dabd",
-        "a83964e8c1e4895e14e46ad348a08c86a0b693f7f9b6500447fa0e44c71df7c4"
+        "0a8a9b7d6c02c175f05b345ae2a20774858b86ce61905c020f7d8b12aae54c48",
+        "4358556ebc5e66fc9a01bf804c3decfd19a641e1f416ac57611bea32c9ee6cd8",
+        "690700aa7bc5936f6c5c5dc3498be7f8fb63c5d3c85000dfe2eec9f68513f7ac",
+        "7fac82bbe6b253ccdbce5589b23bb6de62ffe766e6989a3dadb22bd8e7f44ec7",
+        "85277ca55903e4ed6093d48f5f7712b0df4c9d3e606c44cb508d101401ba3299",
+        "aae547a95a00f21535ea17de8545977015033cb8532451df48b07bd8410b0e4f"
       ],
       "values": [
         [
-          "5"
+          "0"
         ],
         [
           "2"
         ],
         [
-          "0"
+          "3"
         ],
         [
           "4"
         ],
         [
-          "3"
+          "5"
         ],
         [
           "1"
@@ -136,7 +136,7 @@
             "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
             "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
           ],
-          "hash": "f7c37c356e7d65f31e03134113a72f024b11b128431255ee5d0df9d44573c162",
+          "hash": "1b157c558493247fba8734e669d2374162a90075b6c1ab9d9f19e1e41793fb88",
           "kind": "consume",
           "persistent": false
         },
@@ -146,7 +146,7 @@
           {
             "channel_hash": "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
             "failed": false,
-            "hash": "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+            "hash": "f74e21f740c2a5b91504c24ad24ac1b564ca2f3162b728309851b8bef442c7a4",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -155,7 +155,7 @@
           {
             "channel_hash": "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
             "failed": false,
-            "hash": "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+            "hash": "e4fee745a88d5385ab923bf7ac9ac437fa17c648980befa5fe6b50040069a582",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -164,7 +164,7 @@
           {
             "channel_hash": "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
             "failed": false,
-            "hash": "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+            "hash": "bc653db59009c9ca75fbb1e39b0d4fb9776fde44f8ce137cc61cb9fa42e9b559",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -173,15 +173,15 @@
         ],
         "times_repeated": [
           [
-            "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+            "bc653db59009c9ca75fbb1e39b0d4fb9776fde44f8ce137cc61cb9fa42e9b559",
             0
           ],
           [
-            "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+            "e4fee745a88d5385ab923bf7ac9ac437fa17c648980befa5fe6b50040069a582",
             0
           ],
           [
-            "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+            "f74e21f740c2a5b91504c24ad24ac1b564ca2f3162b728309851b8bef442c7a4",
             0
           ]
         ]
@@ -192,27 +192,13 @@
         "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
         "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
       ],
-      "evaluation_order": [
-        "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
-        "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
-        "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44"
-      ],
       "logs": {
         "data": {
           "events": [
             {
-              "channel_hash": "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
-              "failed": false,
-              "hash": "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
-              "is_deterministic": true,
-              "kind": "produce",
-              "output_value": [],
-              "persistent": false
-            },
-            {
               "channel_hash": "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
               "failed": false,
-              "hash": "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+              "hash": "f74e21f740c2a5b91504c24ad24ac1b564ca2f3162b728309851b8bef442c7a4",
               "is_deterministic": true,
               "kind": "produce",
               "output_value": [],
@@ -221,7 +207,16 @@
             {
               "channel_hash": "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
               "failed": false,
-              "hash": "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+              "hash": "e4fee745a88d5385ab923bf7ac9ac437fa17c648980befa5fe6b50040069a582",
+              "is_deterministic": true,
+              "kind": "produce",
+              "output_value": [],
+              "persistent": false
+            },
+            {
+              "channel_hash": "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
+              "failed": false,
+              "hash": "bc653db59009c9ca75fbb1e39b0d4fb9776fde44f8ce137cc61cb9fa42e9b559",
               "is_deterministic": true,
               "kind": "produce",
               "output_value": [],
@@ -242,7 +237,7 @@
                 "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
                 "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
               ],
-              "hash": "f7c37c356e7d65f31e03134113a72f024b11b128431255ee5d0df9d44573c162",
+              "hash": "1b157c558493247fba8734e669d2374162a90075b6c1ab9d9f19e1e41793fb88",
               "kind": "consume",
               "persistent": false
             },
@@ -253,7 +248,7 @@
                   "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
                   "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d"
                 ],
-                "hash": "f7c37c356e7d65f31e03134113a72f024b11b128431255ee5d0df9d44573c162",
+                "hash": "1b157c558493247fba8734e669d2374162a90075b6c1ab9d9f19e1e41793fb88",
                 "kind": "consume",
                 "persistent": false
               },
@@ -263,7 +258,7 @@
                 {
                   "channel_hash": "0e3b8d2971bec6419bf656de97726bbf8997f8fc2828f98047b3069036fe694b",
                   "failed": false,
-                  "hash": "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+                  "hash": "f74e21f740c2a5b91504c24ad24ac1b564ca2f3162b728309851b8bef442c7a4",
                   "is_deterministic": true,
                   "kind": "produce",
                   "output_value": [],
@@ -272,7 +267,7 @@
                 {
                   "channel_hash": "d67dcbf135977d712ef503247aa43dac3d4ce83e15275fd193916a2165d08f44",
                   "failed": false,
-                  "hash": "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+                  "hash": "e4fee745a88d5385ab923bf7ac9ac437fa17c648980befa5fe6b50040069a582",
                   "is_deterministic": true,
                   "kind": "produce",
                   "output_value": [],
@@ -281,7 +276,7 @@
                 {
                   "channel_hash": "ec75f88c745a11dc538ec57f4c09e61616edd87fce7f1a0e1aa85a818406217d",
                   "failed": false,
-                  "hash": "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+                  "hash": "bc653db59009c9ca75fbb1e39b0d4fb9776fde44f8ce137cc61cb9fa42e9b559",
                   "is_deterministic": true,
                   "kind": "produce",
                   "output_value": [],
@@ -290,15 +285,15 @@
               ],
               "times_repeated": [
                 [
-                  "6ed0e6da1bf5439072d828f50425b5960fa9665442a97a7ef5ea6fb910eae4c1",
+                  "bc653db59009c9ca75fbb1e39b0d4fb9776fde44f8ce137cc61cb9fa42e9b559",
                   0
                 ],
                 [
-                  "ad37508ee79d59fba08ec2f81584a1d4563a4350bfdeae161ebc97c05fd4364f",
+                  "e4fee745a88d5385ab923bf7ac9ac437fa17c648980befa5fe6b50040069a582",
                   0
                 ],
                 [
-                  "f1171272da5cafec153a500f637afe4c03c11a929b435a81e15793a953665dce",
+                  "f74e21f740c2a5b91504c24ad24ac1b564ca2f3162b728309851b8bef442c7a4",
                   0
                 ]
               ]
@@ -306,7 +301,7 @@
             {
               "channel_hash": "d5e9f39f425e89e4924b52753bde0596cbd3560a104ae7f2e510dd3c333372a3",
               "failed": false,
-              "hash": "5ece26c391423d323474e8287f59912ec31c3e0e8136783da8ea27486ca96b59",
+              "hash": "8bf9c4a7b9ff94bd4397b56af8ef61f8e655355ff2f1d38508b1876b235ad3a7",
               "is_deterministic": true,
               "kind": "produce",
               "output_value": [],
@@ -340,7 +335,7 @@
             "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
             "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236"
           ],
-          "hash": "efc24991d7cbc76ecaa923300220192623a691355f84f277ad4cf8a3c5e78b2d",
+          "hash": "0977855ecb8d64ac46d19e94aa01508f21719fe23a1ff4c6ea5ff9511dbee34b",
           "kind": "consume",
           "persistent": false
         },
@@ -350,7 +345,7 @@
           {
             "channel_hash": "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
             "failed": false,
-            "hash": "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+            "hash": "2ab376fc960ff925437d214b84c5f4e89fc45ac84175a5862bbda923128d65fc",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -359,7 +354,7 @@
           {
             "channel_hash": "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
             "failed": false,
-            "hash": "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+            "hash": "5d6aa5027824cd4b69b98f465055c0711154e8cb879d0534c19cfca462ec9959",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -368,7 +363,7 @@
           {
             "channel_hash": "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
             "failed": false,
-            "hash": "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+            "hash": "04e28cb784836746469fe42c21f4460484bc64513c77fa0522662f3162252252",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -377,16 +372,16 @@
         ],
         "times_repeated": [
           [
-            "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+            "04e28cb784836746469fe42c21f4460484bc64513c77fa0522662f3162252252",
             0
           ],
           [
-            "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
-            0
-          ],
-          [
-            "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+            "2ab376fc960ff925437d214b84c5f4e89fc45ac84175a5862bbda923128d65fc",
             1
+          ],
+          [
+            "5d6aa5027824cd4b69b98f465055c0711154e8cb879d0534c19cfca462ec9959",
+            0
           ]
         ]
       },
@@ -410,7 +405,7 @@
                 "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
                 "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236"
               ],
-              "hash": "efc24991d7cbc76ecaa923300220192623a691355f84f277ad4cf8a3c5e78b2d",
+              "hash": "0977855ecb8d64ac46d19e94aa01508f21719fe23a1ff4c6ea5ff9511dbee34b",
               "kind": "consume",
               "persistent": false
             }
@@ -425,7 +420,7 @@
               {
                 "channel_hash": "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
                 "failed": false,
-                "hash": "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+                "hash": "5d6aa5027824cd4b69b98f465055c0711154e8cb879d0534c19cfca462ec9959",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -442,7 +437,7 @@
               {
                 "channel_hash": "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
                 "failed": false,
-                "hash": "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+                "hash": "04e28cb784836746469fe42c21f4460484bc64513c77fa0522662f3162252252",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -459,7 +454,7 @@
               {
                 "channel_hash": "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
                 "failed": false,
-                "hash": "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+                "hash": "2ab376fc960ff925437d214b84c5f4e89fc45ac84175a5862bbda923128d65fc",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -472,7 +467,7 @@
                     "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
                     "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236"
                   ],
-                  "hash": "efc24991d7cbc76ecaa923300220192623a691355f84f277ad4cf8a3c5e78b2d",
+                  "hash": "0977855ecb8d64ac46d19e94aa01508f21719fe23a1ff4c6ea5ff9511dbee34b",
                   "kind": "consume",
                   "persistent": false
                 },
@@ -482,7 +477,7 @@
                   {
                     "channel_hash": "0455d0480e9b31ae5006a0088b4ce5ecfd5be8e9ad23f9d4900009c81de06390",
                     "failed": false,
-                    "hash": "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+                    "hash": "2ab376fc960ff925437d214b84c5f4e89fc45ac84175a5862bbda923128d65fc",
                     "is_deterministic": true,
                     "kind": "produce",
                     "output_value": [],
@@ -491,7 +486,7 @@
                   {
                     "channel_hash": "3e23dd5efbf78290ebdc4d6276142183bfa5d78cd7505827e7338ca7330f83c8",
                     "failed": false,
-                    "hash": "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+                    "hash": "5d6aa5027824cd4b69b98f465055c0711154e8cb879d0534c19cfca462ec9959",
                     "is_deterministic": true,
                     "kind": "produce",
                     "output_value": [],
@@ -500,7 +495,7 @@
                   {
                     "channel_hash": "adcd16b6da653d1df71c78c555c1faaa096ad114525859597fccda49e8804236",
                     "failed": false,
-                    "hash": "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
+                    "hash": "04e28cb784836746469fe42c21f4460484bc64513c77fa0522662f3162252252",
                     "is_deterministic": true,
                     "kind": "produce",
                     "output_value": [],
@@ -509,23 +504,23 @@
                 ],
                 "times_repeated": [
                   [
-                    "29b3fe00332747da1265989519af3e6cf5f81a64987f8214d12f8a9acdff3426",
+                    "04e28cb784836746469fe42c21f4460484bc64513c77fa0522662f3162252252",
                     0
                   ],
                   [
-                    "d6b4f06706766870f7c9fdf39219c17e16ca606ca2f9e1048f4d0327c8008174",
-                    0
-                  ],
-                  [
-                    "d79624692dc743df88a186d0cce7a77cfd32df9a7a88da5fa411aa9d42ce5a8a",
+                    "2ab376fc960ff925437d214b84c5f4e89fc45ac84175a5862bbda923128d65fc",
                     1
+                  ],
+                  [
+                    "5d6aa5027824cd4b69b98f465055c0711154e8cb879d0534c19cfca462ec9959",
+                    0
                   ]
                 ]
               },
               {
                 "channel_hash": "60517d6b81d801794d0fbfb4f4d80429a5c85671073923e33d72a2a7aa321e4e",
                 "failed": false,
-                "hash": "441d655d17f4bef6d8496640c7510bfc9b43c19e931831656de5dd0c486e747c",
+                "hash": "17f87fb403dd21da9b40b80dd39ff62af3f5e838baad1fd7e88f7f01700c5077",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -562,7 +557,7 @@
           "source": {
             "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
             "failed": false,
-            "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+            "hash": "e107c7f7bad20e08c4ae64460803abc1d75c615a2520b5efad20b883618fa9ff",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -572,7 +567,7 @@
         "reproduce": {
           "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
           "failed": false,
-          "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+          "hash": "e107c7f7bad20e08c4ae64460803abc1d75c615a2520b5efad20b883618fa9ff",
           "is_deterministic": true,
           "kind": "produce",
           "output_value": [],
@@ -586,7 +581,7 @@
             "channel_hashes": [
               "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7"
             ],
-            "hash": "3ede97962cb71682bb0f6dd67d11558404705dd8e0cd2c03ffccd68842bc980d",
+            "hash": "46856fe5b32806f3406ec432561dd00ff31a36e1893c07321259fb1a10714b34",
             "kind": "consume",
             "persistent": false
           }
@@ -599,9 +594,27 @@
       "send": {
         "events": [
           {
+            "channel_hash": "0e961ae9d6d3d015107bd1d291b4aceb26aaafec0ea5bf9617fcdc03a7a76b54",
+            "failed": false,
+            "hash": "453a24caa0215b433797b7161864e650908324a84eb9c3a79424f803f98a00f1",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
             "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
             "failed": false,
-            "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+            "hash": "e107c7f7bad20e08c4ae64460803abc1d75c615a2520b5efad20b883618fa9ff",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
+            "failed": false,
+            "hash": "e107c7f7bad20e08c4ae64460803abc1d75c615a2520b5efad20b883618fa9ff",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -612,7 +625,7 @@
               "channel_hashes": [
                 "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7"
               ],
-              "hash": "3ede97962cb71682bb0f6dd67d11558404705dd8e0cd2c03ffccd68842bc980d",
+              "hash": "46856fe5b32806f3406ec432561dd00ff31a36e1893c07321259fb1a10714b34",
               "kind": "consume",
               "persistent": false
             },
@@ -624,7 +637,7 @@
               {
                 "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
                 "failed": false,
-                "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+                "hash": "e107c7f7bad20e08c4ae64460803abc1d75c615a2520b5efad20b883618fa9ff",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -633,33 +646,15 @@
             ],
             "times_repeated": [
               [
-                "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
+                "e107c7f7bad20e08c4ae64460803abc1d75c615a2520b5efad20b883618fa9ff",
                 1
               ]
             ]
-          },
-          {
-            "channel_hash": "0e961ae9d6d3d015107bd1d291b4aceb26aaafec0ea5bf9617fcdc03a7a76b54",
-            "failed": false,
-            "hash": "47466d8094e38bad8f50d499ff5021e3b38232aac1a99908ac61c907eaf154d0",
-            "is_deterministic": true,
-            "kind": "produce",
-            "output_value": [],
-            "persistent": false
-          },
-          {
-            "channel_hash": "e38a8014e2cb5d584c8d49218d2d7e97b66d8fe6ccf3ec08d43504a9cec6e2b7",
-            "failed": false,
-            "hash": "3803e05bb119bae5c0d12f7a2fbaa1be3e7bf2fcf1d8637f014a39c25490801e",
-            "is_deterministic": true,
-            "kind": "produce",
-            "output_value": [],
-            "persistent": false
           }
         ],
         "kinds": [
-          "produce",
           "comm",
+          "produce",
           "produce",
           "produce"
         ]
@@ -687,7 +682,7 @@
           "source": {
             "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
             "failed": false,
-            "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+            "hash": "2f30511c585f853ac29345bfe45253bcd4d30f73acd9db136ba655f21183541b",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -697,7 +692,7 @@
         "reproduce": {
           "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
           "failed": false,
-          "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+          "hash": "2f30511c585f853ac29345bfe45253bcd4d30f73acd9db136ba655f21183541b",
           "is_deterministic": true,
           "kind": "produce",
           "output_value": [],
@@ -708,10 +703,28 @@
       "peek": {
         "events": [
           {
+            "channel_hash": "50676adee8d2f8ac0c06b7df8c938bc828af20159182857b2edaef3305360ac9",
+            "failed": false,
+            "hash": "d951eed55ac88cc5f7a31289615d32e8f1b112fada06c776bb2b384a7dbe6636",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
+            "failed": false,
+            "hash": "2f30511c585f853ac29345bfe45253bcd4d30f73acd9db136ba655f21183541b",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
             "channel_hashes": [
               "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b"
             ],
-            "hash": "3b26aaa6498d14e8b9d565e3ecd7ede407e8ea1b904739875cbb50198381c437",
+            "hash": "b2671bb91bcfbb554597ca4b67e259998afd639592e56e4954ba3234cb01d9f9",
             "kind": "consume",
             "persistent": false
           },
@@ -720,7 +733,7 @@
               "channel_hashes": [
                 "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b"
               ],
-              "hash": "3b26aaa6498d14e8b9d565e3ecd7ede407e8ea1b904739875cbb50198381c437",
+              "hash": "b2671bb91bcfbb554597ca4b67e259998afd639592e56e4954ba3234cb01d9f9",
               "kind": "consume",
               "persistent": false
             },
@@ -732,7 +745,7 @@
               {
                 "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
                 "failed": false,
-                "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+                "hash": "2f30511c585f853ac29345bfe45253bcd4d30f73acd9db136ba655f21183541b",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -741,33 +754,15 @@
             ],
             "times_repeated": [
               [
-                "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+                "2f30511c585f853ac29345bfe45253bcd4d30f73acd9db136ba655f21183541b",
                 0
               ]
             ]
-          },
-          {
-            "channel_hash": "50676adee8d2f8ac0c06b7df8c938bc828af20159182857b2edaef3305360ac9",
-            "failed": false,
-            "hash": "0a6432d8cd2549032fca514dd21ac1f1f096fb8fdb1ada009beccd5df6805b22",
-            "is_deterministic": true,
-            "kind": "produce",
-            "output_value": [],
-            "persistent": false
-          },
-          {
-            "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
-            "failed": false,
-            "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
-            "is_deterministic": true,
-            "kind": "produce",
-            "output_value": [],
-            "persistent": false
           }
         ],
         "kinds": [
-          "consume",
           "comm",
+          "consume",
           "produce",
           "produce"
         ]
@@ -778,7 +773,7 @@
           {
             "channel_hash": "a493edcb5dee528c2c28c8d59e1253c8440e72321317009fe24d4a0104caf05b",
             "failed": false,
-            "hash": "bcf5d665c60372ebded552a3657902d335811bad3ce9f1b7caa788876c34bdeb",
+            "hash": "2f30511c585f853ac29345bfe45253bcd4d30f73acd9db136ba655f21183541b",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -805,7 +800,7 @@
           {
             "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
             "failed": false,
-            "hash": "46d2526ab3a161d814259f881ec421dea3182ab7d0958bd96cf61df5ca6bbaca",
+            "hash": "7f772b7170498dd1d2fae1cb0141b931742334bcc80a66ff7d8dcede71e9c1d6",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -814,7 +809,7 @@
           {
             "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
             "failed": false,
-            "hash": "faecd8c89b2cb5f63f9eaef68a4c189ea147bf8e0dbce818f7fabfcdd58403de",
+            "hash": "c9ce1ba3290ab0637143581530c5614caf631ffb34b886e2ecab12a0c7b95295",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -862,7 +857,16 @@
           {
             "channel_hash": "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e",
             "failed": false,
-            "hash": "61ed95e8ebf7ce9b7557b6edfeace062f5afd66a6906c48243abd65a6f051bfa",
+            "hash": "65e9617618f3cda2a7acda0f44e8d53395ae4c34282c36ecfa6c0d4f366a98a9",
+            "is_deterministic": true,
+            "kind": "produce",
+            "output_value": [],
+            "persistent": false
+          },
+          {
+            "channel_hash": "8b4de448d934974bd6a857881e721202b31ba8886cb94b3624c281eb94c098cf",
+            "failed": false,
+            "hash": "75e1707d4803ec09966dabdb44c4207c77979c9828bcaff0218d3e229e3d3625",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -872,7 +876,16 @@
             "channel_hashes": [
               "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e"
             ],
-            "hash": "608268ad5d0acfe93055678a094297214e3d00288f3dc0b54c6ccbd356095fc0",
+            "hash": "7a0c0b42442d43607070a8ea685b58c5e5bb1415b641cb6e12e0097fb12b36bd",
+            "kind": "consume",
+            "persistent": false
+          },
+          {
+            "channel_hashes": [
+              "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
+              "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028"
+            ],
+            "hash": "50582edbf2511da16b21da4065e067d3fbe0caaa6eec4c58fc309182e6e2f964",
             "kind": "consume",
             "persistent": false
           },
@@ -881,7 +894,7 @@
               "channel_hashes": [
                 "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e"
               ],
-              "hash": "608268ad5d0acfe93055678a094297214e3d00288f3dc0b54c6ccbd356095fc0",
+              "hash": "7a0c0b42442d43607070a8ea685b58c5e5bb1415b641cb6e12e0097fb12b36bd",
               "kind": "consume",
               "persistent": false
             },
@@ -891,7 +904,7 @@
               {
                 "channel_hash": "10f0508e3b8d777ac6b1a49018068ea771d867b5b5fe331b9ad2fe2eead13e8e",
                 "failed": false,
-                "hash": "61ed95e8ebf7ce9b7557b6edfeace062f5afd66a6906c48243abd65a6f051bfa",
+                "hash": "65e9617618f3cda2a7acda0f44e8d53395ae4c34282c36ecfa6c0d4f366a98a9",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -900,19 +913,10 @@
             ],
             "times_repeated": [
               [
-                "61ed95e8ebf7ce9b7557b6edfeace062f5afd66a6906c48243abd65a6f051bfa",
+                "65e9617618f3cda2a7acda0f44e8d53395ae4c34282c36ecfa6c0d4f366a98a9",
                 1
               ]
             ]
-          },
-          {
-            "channel_hashes": [
-              "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
-              "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028"
-            ],
-            "hash": "a8bfb2191c78ce8be315e3bd494c6d7a4c0accf06ab26a49f270ad15373971aa",
-            "kind": "consume",
-            "persistent": false
           },
           {
             "consume": {
@@ -920,7 +924,7 @@
                 "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
                 "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028"
               ],
-              "hash": "a8bfb2191c78ce8be315e3bd494c6d7a4c0accf06ab26a49f270ad15373971aa",
+              "hash": "50582edbf2511da16b21da4065e067d3fbe0caaa6eec4c58fc309182e6e2f964",
               "kind": "consume",
               "persistent": false
             },
@@ -930,7 +934,7 @@
               {
                 "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
                 "failed": false,
-                "hash": "46d2526ab3a161d814259f881ec421dea3182ab7d0958bd96cf61df5ca6bbaca",
+                "hash": "7f772b7170498dd1d2fae1cb0141b931742334bcc80a66ff7d8dcede71e9c1d6",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -939,7 +943,7 @@
               {
                 "channel_hash": "59043623c863dd5ae3d05fb2fe6fcfaf7118d77a3d9232bd5bc05c2b4f5e5028",
                 "failed": false,
-                "hash": "faecd8c89b2cb5f63f9eaef68a4c189ea147bf8e0dbce818f7fabfcdd58403de",
+                "hash": "c9ce1ba3290ab0637143581530c5614caf631ffb34b886e2ecab12a0c7b95295",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -948,31 +952,22 @@
             ],
             "times_repeated": [
               [
-                "46d2526ab3a161d814259f881ec421dea3182ab7d0958bd96cf61df5ca6bbaca",
+                "7f772b7170498dd1d2fae1cb0141b931742334bcc80a66ff7d8dcede71e9c1d6",
                 0
               ],
               [
-                "faecd8c89b2cb5f63f9eaef68a4c189ea147bf8e0dbce818f7fabfcdd58403de",
+                "c9ce1ba3290ab0637143581530c5614caf631ffb34b886e2ecab12a0c7b95295",
                 0
               ]
             ]
-          },
-          {
-            "channel_hash": "8b4de448d934974bd6a857881e721202b31ba8886cb94b3624c281eb94c098cf",
-            "failed": false,
-            "hash": "f2546465eff48472a0aaa33971497a85886b9fef083663d3b614ecf6c18a8178",
-            "is_deterministic": true,
-            "kind": "produce",
-            "output_value": [],
-            "persistent": false
           }
         ],
         "kinds": [
+          "comm",
+          "comm",
+          "consume",
+          "consume",
           "produce",
-          "consume",
-          "comm",
-          "consume",
-          "comm",
           "produce"
         ]
       },
@@ -992,7 +987,7 @@
           {
             "channel_hash": "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
             "failed": false,
-            "hash": "a8e23494e8b18233f809c41d340fb226573aafd6377fb3f8bf28a02c4dfec485",
+            "hash": "261dd25f3efd03831e43062e8b02d83752c705352b7a4eeabf38055554a3b6df",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -1001,7 +996,7 @@
           {
             "channel_hash": "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
             "failed": false,
-            "hash": "a60dd908c8c13846881cdcd7605e335f15884b1c2a8bda88a807c2d50fa1480e",
+            "hash": "ff160e7f1020ffcc1fcdf19f87aa335f8f73f1b6f15f60cf4a61145c7e1c735c",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -1018,7 +1013,7 @@
           "[1, 6]"
         ],
         [
-          "[1, 1]"
+          "[1, 8]"
         ]
       ],
       "greedy_assignment": null,
@@ -1046,7 +1041,7 @@
           {
             "channel_hash": "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979",
             "failed": false,
-            "hash": "b4099e35a0aba55f718a1f7c1ead4b01e582f6df772e17976fc691a9ce4c00c2",
+            "hash": "30f8c971c84b64ffd0103fe33740a1758dfa77d97424660f496720aba87f1216",
             "is_deterministic": true,
             "kind": "produce",
             "output_value": [],
@@ -1056,7 +1051,16 @@
             "channel_hashes": [
               "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979"
             ],
-            "hash": "77f73f6baba563083897dbf72963ef450bc41ba42701646b56ef95847e251c26",
+            "hash": "ccb98741e4d703a35602182c765f2799b3afbaf79f57dc0e6eeb2e254671859b",
+            "kind": "consume",
+            "persistent": false
+          },
+          {
+            "channel_hashes": [
+              "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
+              "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae"
+            ],
+            "hash": "919839aad8772d2e2efa65d334de282442ec9f1abc01afcec450186e0f118357",
             "kind": "consume",
             "persistent": false
           },
@@ -1065,7 +1069,7 @@
               "channel_hashes": [
                 "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979"
               ],
-              "hash": "77f73f6baba563083897dbf72963ef450bc41ba42701646b56ef95847e251c26",
+              "hash": "ccb98741e4d703a35602182c765f2799b3afbaf79f57dc0e6eeb2e254671859b",
               "kind": "consume",
               "persistent": false
             },
@@ -1075,7 +1079,7 @@
               {
                 "channel_hash": "4050c088c824435bc40f24a2919c159d676683921c160b4cc4b21d672eaef979",
                 "failed": false,
-                "hash": "b4099e35a0aba55f718a1f7c1ead4b01e582f6df772e17976fc691a9ce4c00c2",
+                "hash": "30f8c971c84b64ffd0103fe33740a1758dfa77d97424660f496720aba87f1216",
                 "is_deterministic": true,
                 "kind": "produce",
                 "output_value": [],
@@ -1084,26 +1088,17 @@
             ],
             "times_repeated": [
               [
-                "b4099e35a0aba55f718a1f7c1ead4b01e582f6df772e17976fc691a9ce4c00c2",
+                "30f8c971c84b64ffd0103fe33740a1758dfa77d97424660f496720aba87f1216",
                 1
               ]
             ]
-          },
-          {
-            "channel_hashes": [
-              "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae",
-              "c31d0316621b785da0ff69cd94bbe45e1a1e870b9425354d4190044a9c7235ae"
-            ],
-            "hash": "63c82f4f2c3f7d2caa1c7881821382ad097a5ec97312f455ee50d913edff75ac",
-            "kind": "consume",
-            "persistent": false
           }
         ],
         "kinds": [
-          "produce",
-          "consume",
           "comm",
-          "consume"
+          "consume",
+          "consume",
+          "produce"
         ]
       },
       "remaining_data_count": 2,
@@ -1115,7 +1110,7 @@
     }
   },
   "r4_leaf_bytes": {
-    "checkpoint_root": "44dbc86595d1ce54e5cd87d749b384bf3c9ccb5c18418221407d02d0bcc9487b",
+    "checkpoint_root": "3cff3172f1415562334ee0f0dc60919d44434b0d7fb1645bb555e42c833a0279",
     "continuations": [
       {
         "channels": [
@@ -1123,7 +1118,7 @@
         ],
         "key": "5b68310b8092cbd63b297f0d83813ae29aa8a8c9271f22a167e6bc4dd84c9d31",
         "leaf": [
-          "01000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000001000000000101000000000000002000000000000000cb5ed344a4e244215543492e089074e7c55f6a2e92a2bcbddaad72a47f07b6be0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72342d6e65766572000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f680000000000000000000000000000000800000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000010000000000000020000000000000008a636121f28a06e08d105251da010758749b5aeefca0a102f81b1d90b3cce79c20000000000000005d060f1be46e768fc8b53b3d9b0f7ee986dc9827da5b0794a6a1c25c3e7fd52300"
+          "01000000000000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000001000000000101000000000000002000000000000000cb5ed344a4e244215543492e089074e7c55f6a2e92a2bcbddaad72a47f07b6be0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000000000000000000010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72342d6e65766572000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f680000000000000000000000000000000800000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000010000000000000020000000000000008a636121f28a06e08d105251da010758749b5aeefca0a102f81b1d90b3cce79c20000000000000001a2e087d86e3dd19a978c618142ffe436b1ff869fe9833e089822e4ae5638a2300"
         ]
       },
       {
@@ -1133,7 +1128,7 @@
         ],
         "key": "4de95e19ac16e41c3fd2fd6385afdd726a2081f3f32ac2eb8976d1993bd4eb3a",
         "leaf": [
-          "020000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000010000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000001000000000101000000000000002000000000000000f0469428349bba4cd783e4e54078a217111cc5cdf3a70ccad3bb5cac6b2cefc80101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72342d6e6576657200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f6800000000000000000000000000000008000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000200000000000000200000000000000051bd19f00d0e3ca266f69982e0c2d5d58efca85ecea2d87942d66151f83f81462000000000000000b6c8562cbf5dd5dc2418fe4fc48d9b7937b3a7f8f6444c5a4e5bfd042321dfa52000000000000000747617036896e53660ef518dea95787ea24562f3a598e95e47f5343472bdc54500"
+          "020000000000000001000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000010000000100000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000000000000001000000000101000000000000002000000000000000f0469428349bba4cd783e4e54078a217111cc5cdf3a70ccad3bb5cac6b2cefc80101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000000000000000000010000000001010000000000000001000000000000000000000000000000000000000000000000010000000000000001020000000c000000000000007272732d72342d6e6576657200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000010000000000000001130000000101000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000011300000001010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f6800000000000000000000000000000008000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000200000000000000200000000000000051bd19f00d0e3ca266f69982e0c2d5d58efca85ecea2d87942d66151f83f81462000000000000000b6c8562cbf5dd5dc2418fe4fc48d9b7937b3a7f8f6444c5a4e5bfd042321dfa520000000000000002cbd1893e0a4bae78351ac22351fd5ce537d89393c85cfdb9799e1c74b3f104100"
         ]
       }
     ],
@@ -1141,8 +1136,8 @@
       "channel": "@{\"rrs-r4-data\"}",
       "key": "7136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e91",
       "leaf": [
-        "0100000000000000000000000000000000000000000000000000000000000000010000000000000001010000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f680000000000000000000000000000000800000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000010100000000000000200000000000000041475bff957da8c521a05049806207225b8979d36ba15852cf42fb349f37582a0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000120000000000000007136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e9120000000000000003d31f54c954e153b157195bd3a121c2ae76e55ae8a2bb122a4318e24b0806e980101000000000000000000",
-        "02000000000000000000000000000000000000000000000000000000000000000100000000000000010100000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001020000000500000000000000736576656e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f6800000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000101000000000000002000000000000000883d26260435df7d7b2f71047c89d1e9958b93edc63a42bb3fd93644b3ba457b0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000020000000000000007136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e91200000000000000026be58783e42f3cbecd4460abbaa8aa9f792beca0b479fdc774a0178bf0189050001000000000000000000"
+        "0100000000000000000000000000000000000000000000000000000000000000010000000000000001010000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f680000000000000000000000000000000800000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000700000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000010100000000000000200000000000000041475bff957da8c521a05049806207225b8979d36ba15852cf42fb349f37582a0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000000000000000000000120000000000000007136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e9120000000000000000e3fee34cc18429383653f56778964d4bdb5cdc4f6161a6bce1fb1d16b3c04970101000000000000000000",
+        "02000000000000000000000000000000000000000000000000000000000000000100000000000000010100000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000000001020000000500000000000000736576656e000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000018020000000000004e4876fef0e9e5b675871b7050aead6f565d8cb444a5ce6c017e220957dddd65217ae1977e094ab0332285335793dc1f48e7ebd1c1764573318843eeb361a5f6800000000000000000000000000000008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000101000000000000002000000000000000883d26260435df7d7b2f71047c89d1e9958b93edc63a42bb3fd93644b3ba457b0101000000001f000000000000007272732d6f7264696e6172792d657865637574696f6e2d76312d7061796572000000000000000000000020000000000000007136d5b63ea4a9966bd1413a5d4b373698310bf234aad2c9c8413b0928eb1e912000000000000000251e3abecb7f461948bf73bdb93b0785100689db4bd7353e000ee5b87d2617ab0001000000000000000000"
       ]
     },
     "data_channel_joins_leaf": [],
@@ -1171,10 +1166,10 @@
       }
     ],
     "kinds": [
-      "produce",
-      "produce",
       "consume",
-      "consume"
+      "consume",
+      "produce",
+      "produce"
     ],
     "program": "@\"rrs-r4-data\"!(7, \"seven\") | @\"rrs-r4-data\"!!(8) | for (@a <- @\"rrs-r4-wait\") { @\"rrs-r4-never\"!(a) } | for (@b <- @\"rrs-r4-join-left\" & @c <- @\"rrs-r4-join-right\") { @\"rrs-r4-never\"!(b, c) }"
   },
@@ -1539,15 +1534,10 @@
       },
       "out_of_phlo": {
         "native": {
-          "comm_identity_counts": [
-            2,
-            2
-          ],
           "errors": [
             "OutOfPhlogistonsError"
           ],
-          "native_phlo_usage": 14738,
-          "operation_count": 4
+          "native_phlo_usage": 14738
         },
         "native_limit": 20000,
         "native_weights": [
@@ -1592,13 +1582,8 @@
       },
       "persistent_receive": {
         "native": {
-          "comm_identity_counts": [
-            2,
-            2
-          ],
           "errors": [],
-          "native_phlo_usage": 26854,
-          "operation_count": 7
+          "native_phlo_usage": 26854
         },
         "native_limit": 1000000,
         "native_weights": [
@@ -1617,12 +1602,8 @@
       },
       "persistent_send": {
         "native": {
-          "comm_identity_counts": [
-            2
-          ],
           "errors": [],
-          "native_phlo_usage": 14564,
-          "operation_count": 3
+          "native_phlo_usage": 14564
         },
         "native_limit": 1000000,
         "native_weights": [
@@ -2101,64 +2082,25 @@
       }
     ],
     "kinds": [
-      "produce",
-      "produce",
-      "produce",
-      "produce",
-      "consume",
       "comm",
+      "consume",
+      "consume",
+      "consume",
+      "consume",
+      "consume",
+      "consume",
       "produce",
-      "consume",
-      "consume",
-      "consume",
-      "consume",
       "produce",
-      "consume"
+      "produce",
+      "produce",
+      "produce",
+      "produce"
     ],
     "program": "\n@\"rrs-r8-data\"!(1, \"one\") |\n@\"rrs-r8-data\"!(2, \"two\") |\n@\"rrs-r8-persistent-data\"!!([3, 4]) |\nfor (@x <- @\"rrs-r8-wait\") { @\"rrs-r8-never\"!(x) } |\nfor (@a <- @\"rrs-r8-join-left\" & @b <- @\"rrs-r8-join-right\") { @\"rrs-r8-never\"!(a, b) } |\nfor (@y <= @\"rrs-r8-persistent-wait\") { Nil } |\nfor (@z <<- @\"rrs-r8-peek-wait\") { Nil } |\n@\"rrs-r8-consumed\"!(5) |\nfor (@w <- @\"rrs-r8-consumed\") { @\"rrs-r8-result\"!(w * 2) } |\nnew private in { private!({\"k\": Set(5)}) | for (@v <- private & @u <- @\"rrs-r8-join-right\") { Nil } }\n"
   },
   "r9_play_replay_equality": {
-    "event_kinds": [
-      "produce",
-      "produce",
-      "produce",
-      "produce",
-      "produce",
-      "consume",
-      "comm",
-      "produce",
-      "consume",
-      "comm",
-      "produce",
-      "consume",
-      "consume",
-      "comm",
-      "produce",
-      "produce",
-      "consume",
-      "comm",
-      "produce",
-      "consume",
-      "comm",
-      "produce",
-      "consume",
-      "comm",
-      "produce",
-      "consume",
-      "comm",
-      "produce",
-      "consume",
-      "comm",
-      "produce",
-      "comm",
-      "produce",
-      "produce",
-      "comm",
-      "consume"
-    ],
-    "event_log_length": 36,
     "play_cost": 23794,
-    "play_root": "ec4b24bd3a41de3aa40774312cf1298cb06754527daf9ab4ff451126f5188170",
+    "play_root": "26da89f1a31cd12638f75896c1ac79c03907c165bb2e963796d6c5d63a410ca1",
     "program": "\nnew loop, result, stdout(`rho:io:stdout`) in {\n  contract loop(@n, @acc) = {\n    match n {\n      0 => result!(acc)\n      _ => loop!(n - 1, acc + n)\n    }\n  } |\n  loop!(4, 0) |\n  for (@total <- result) {\n    @\"rrs-r9-total\"!(total) |\n    stdout!([\"rrs-r9\", total])\n  } |\n  @\"rrs-r9-left\"!(1) |\n  @\"rrs-r9-right\"!(2) |\n  for (@l <- @\"rrs-r9-left\" & @r <- @\"rrs-r9-right\") { @\"rrs-r9-joined\"!(l + r) } |\n  @\"rrs-r9-peek\"!(\"seen\") |\n  for (@s <<- @\"rrs-r9-peek\") { @\"rrs-r9-peeked\"!(s) } |\n  @\"rrs-r9-persistent\"!!(10) |\n  for (@p <- @\"rrs-r9-persistent\") { @\"rrs-r9-persistent-seen\"!(p) }\n}\n",
     "replay_root_equals_play_root": true,
     "start_root": "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdf12fe3a8"

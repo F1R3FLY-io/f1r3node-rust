@@ -290,6 +290,10 @@ mod tests {
                 signature: Some(CostSignature {
                     value: Some(models::rhoapi::cost_signature::Value::Ground(vec![byte])),
                 }),
+                // Added by decision 90 (DR-135): an unpriced region, as outside native
+                // execution.
+                price: 0,
+                caller: None,
             }],
         }
     }

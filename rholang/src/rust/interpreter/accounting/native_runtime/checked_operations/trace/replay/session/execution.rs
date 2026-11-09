@@ -16,11 +16,24 @@ use crate::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
-use crate::rust::interpreter::deterministic_reduction::scheduled_execution;
+// Changed by DR-132 (P18): the deterministic scheduler is gone (D3-A).
+// use crate::rust::interpreter::deterministic_reduction::scheduled_execution;
+// Changed by G3 (DR-135, S6): the replay backend maps a skipped
+// introduction as play does.
+// use crate::rust::interpreter::execution_space::{
+//     ConsumeResult, EvaluationProgress, ExecutionBackend, ExecutionSpace, ProduceResult,
+// };
 use crate::rust::interpreter::execution_space::{
-    ConsumeResult, ExecutionBackend, ExecutionSpace, ProduceResult,
+    refused_stores_nothing, ConsumeResult, EvaluationProgress, ExecutionBackend, ExecutionSpace,
+    ProduceResult,
 };
 use crate::rust::interpreter::spaces::agent::ParSpaceStore;
+
+// Added by decision 90 (DR-132): the readiness wait of the space transactions of Reified
+// RSpaces. A descendant of `trace::replay` reads the journal and the counted park.
+// Changed by decision 95: the session epoch calls the check and the wait
+// (`operations.rs`).
+mod space_readiness;
 
 type Session = NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
@@ -31,10 +44,16 @@ struct NativeExecution {
 
 impl Session {
     pub(crate) fn execution_space(self: &Arc<Self>, budget: RuntimeBudget) -> ExecutionSpace {
-        scheduled_execution(ExecutionSpace::new(NativeExecution {
+        // Changed by DR-132 (P18): the native execution space runs without
+        // the scheduler wrapper.
+        // scheduled_execution(ExecutionSpace::new(NativeExecution {
+        //     session: self.clone(),
+        //     budget,
+        // }))
+        ExecutionSpace::new(NativeExecution {
             session: self.clone(),
             budget,
-        }))
+        })
     }
 
     /// The space store of this session for the Reified RSpaces runtime of native replay
@@ -68,6 +87,11 @@ impl Session {
                 budget.introduction(identity, kind).map_err(Into::into)
             }),
             installed,
+            // Added by decision 90 (DR-132): the readiness wait of the transactions over the
+            // journal of this session.
+            // Disabled by decision 95: the session epoch gives the readiness check and the
+            // wait (`space_transaction_ready` and `wait_space_change` in `operations.rs`).
+            // Arc::new(space_readiness::SpaceReadiness::new(self.replay.clone())),
         );
         SpaceStoreHandle::new(host)
     }
@@ -83,7 +107,13 @@ impl ExecutionBackend for NativeExecution {
         persistent: bool,
         peeks: BTreeSet<i32>,
     ) -> Result<ConsumeResult, RSpaceError> {
-        self.session
+        // Changed by G3 (DR-135, S6): a skipped introduction stores nothing,
+        // and the run continues, as in play (R8). The result is mapped below.
+        // self.session
+        //     .inner
+        //     .consume_with_authority(
+        let result = self
+            .session
             .inner
             .consume_with_authority(
                 channels,
@@ -110,7 +140,11 @@ impl ExecutionBackend for NativeExecution {
                         .map_err(Into::into)
                 },
             )
-            .await
+            // Changed by G3 (DR-135, S6): the result is mapped below.
+            // .await
+            .await;
+        // Added by G3 (DR-135, S6).
+        refused_stores_nothing(result)
     }
 
     async fn produce(
@@ -141,7 +175,11 @@ impl ExecutionBackend for NativeExecution {
                     )
                     .map_err(Into::into)
             })
-            .await?;
+            // Changed by G3 (DR-135, S6): a skipped introduction stores
+            // nothing, and the run continues, as in play (R8).
+            // .await?;
+            .await;
+        let result = refused_stores_nothing(result)?;
         // Added by DR-114 (E2): a returned produce may carry a record only when
         // it fires a non-persistent call of a recorded process. Otherwise a
         // block could hand a forged record to the user's code.
@@ -166,6 +204,12 @@ impl ExecutionBackend for NativeExecution {
     }
 
     async fn is_replay(&self) -> bool { true }
+
+    /// Added by DR-132 (D2-B): native replay counts the tasks of each
+    /// evaluation for its stall rule.
+    fn evaluation_progress(&self) -> Option<Arc<dyn EvaluationProgress>> {
+        Some(self.session.evaluation_progress())
+    }
 
     async fn update_produce(
         &self,

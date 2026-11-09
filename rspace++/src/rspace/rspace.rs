@@ -46,6 +46,9 @@ mod tests;
 mod trace_log;
 
 pub use locks::LOCK_SEQUENCE;
+// Added by decision 123 (plan v4, V3-8): the COMM of a produce fire, which
+// the Reified space transactions build with the base function.
+pub(crate) use ops_produce::produce_comm_with;
 
 #[derive(Clone)]
 pub struct RSpaceStore {

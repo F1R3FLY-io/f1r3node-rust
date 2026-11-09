@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::Par;
+// Changed by G3 (DR-135, S7): the demand filter names the region type.
+// use models::rhoapi::Par;
+use models::rhoapi::{CostRegion, Par};
 use models::rust::casper::protocol::casper_message::Event as CasperEvent;
 use models::rust::casper::protocol::offered_processed_deploy::OfferedProcessedDeploy;
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
@@ -35,10 +37,17 @@ use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::merger::merging_logic::MergeType;
 use rspace_plus_plus::rspace::trace::event::Event;
 
-use super::held_capacity::{capture_debits, GuardMember, GuardRole};
+// Changed by DR-134 (DR-65 item 5): the later holds of a member.
+// use super::held_capacity::{capture_debits, GuardMember, GuardRole};
+use super::held_capacity::{capture_debits, GuardMember, GuardRole, LaterHolds};
+// Changed by G3 (DR-135, S7): the owner rows of a member (R10).
+// use super::settlement::{
+//     check_metered_usage, invalid, NativeFundedSettlement, NativeGrantIssuanceInput,
+//     NativeGrantSettlementInput,
+// };
 use super::settlement::{
     check_metered_usage, invalid, NativeFundedSettlement, NativeGrantIssuanceInput,
-    NativeGrantSettlementInput,
+    NativeGrantSettlementInput, OwnerSettlement,
 };
 use super::{
     select_rooted_native_family, NativeAttemptSettlementInput, NativeAttemptSettlementLimits,
@@ -61,6 +70,9 @@ use crate::rust::util::rholang::costacc::prepaid_receipts::{
     NativeRetainedSettlementLimits, PrepaidReceiptBucket, PrepaidReceiptBucketLimits,
     PrepaidReceiptLimits, PrepaidReceiptSnapshot, PrepaidStackCaptureLimits, PrepaidStackPopLimits,
 };
+// Added by G3 (DR-135, S7): the limits of the journal check that folds the
+// owner totals.
+use crate::rust::util::rholang::costacc::production_limits::offered_funded_v6_replay_limits;
 use crate::rust::util::rholang::costacc::supply::PurseStack;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
@@ -114,6 +126,10 @@ pub struct NativeOfferedPreparedResult {
     pub resource_rev: u128,
     pub fee_rev: u128,
     pub rev_spent: u128,
+    /// Added by G3 (DR-135, S7): the billed owner phlo and owner REV of the
+    /// run (G-4), which the cost evidence commits.
+    pub owner_phlo: u64,
+    pub owner_rev: u128,
     pub user_log: std::sync::Arc<[Event]>,
     pub grant_drain_log: std::sync::Arc<[Event]>,
     pub settlement_log: Vec<CasperEvent>,
@@ -125,6 +141,10 @@ pub struct NativeOfferedCandidateResult {
     pub processed: OfferedProcessedDeploy,
     pub final_root: [u8; 32],
     pub mergeable: HashMap<Par, MergeType>,
+    /// Added by DR-134 (DR-65 O-10): the member settled as a held-capacity
+    /// guard rollback. A batch that the play budget stops runs again when a
+    /// shipped member rolled back.
+    pub guard_rolled_back: bool,
 }
 
 fn match_birth_claims(
@@ -495,11 +515,27 @@ pub(super) fn check_birth_positions(
 }
 
 impl NativeOfferedAttempt<'_, '_> {
+    // Changed by DR-134 (DR-65 item 5, design §8.3): the producer takes the
+    // later holds of the member, and `snapshot` is the settlement snapshot of
+    // the member: the wallets at its execution root R_{i-1}, with each source
+    // capacity capped by the later holds (option B).
+    // pub(crate) async fn produce_native_offered_candidate_with_rooted_prepaid(
+    //     self,
+    //     manager: &RuntimeManager,
+    //     envelope: DeployEnvelope,
+    //     snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+    //     grants: Option<NativeGrantSettlementInput<'_>>,
+    //     production: NativeOfferedProductionLimits,
+    //     inventory_limits: NativePrepaidInventoryLimits,
+    //     receipt_limits: PrepaidReceiptLimits,
+    // ) -> Result<NativeOfferedCandidateResult, CasperError> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn produce_native_offered_candidate_with_rooted_prepaid(
         self,
         manager: &RuntimeManager,
         envelope: DeployEnvelope,
         snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+        later: &LaterHolds,
         grants: Option<NativeGrantSettlementInput<'_>>,
         production: NativeOfferedProductionLimits,
         inventory_limits: NativePrepaidInventoryLimits,
@@ -507,13 +543,16 @@ impl NativeOfferedAttempt<'_, '_> {
     ) -> Result<NativeOfferedCandidateResult, CasperError> {
         let settlement = OfferedSettlementContext::from_block_inputs(&envelope, &self.block_data)?;
         let adopted = self.adopted.clone();
-        let funding_root = self.preflight.funding_root;
+        // Changed by DR-134 (DR-65 amendment of 2026-10-12): the prepaid stacks
+        // and receipts of a member are read at its execution root R_{i-1}.
+        // let funding_root = self.preflight.funding_root;
+        let execution_root = self.preflight.execution_root;
         let preflight = self.preflight;
         let stacks = self
             .read_measured_prepaid_stacks(manager, production.family, production.stack_capture)
             .await?;
         let captured = manager.capture_prepaid_stacks(
-            funding_root,
+            execution_root,
             &stacks,
             &adopted,
             production.stack_capture,
@@ -536,7 +575,7 @@ impl NativeOfferedAttempt<'_, '_> {
         receipt_ids.sort_unstable();
         receipt_ids.dedup();
         let receipt_snapshot =
-            manager.capture_prepaid_receipts(funding_root, &receipt_ids, receipt_limits)?;
+            manager.capture_prepaid_receipts(execution_root, &receipt_ids, receipt_limits)?;
         let selected = preflight.selected_terms(&adopted)?;
         let schedule = PhloScheduleBinding::new(selected.schedule(), PhloGenesisPolicy::LIMITS)
             .map_err(invalid)?;
@@ -544,6 +583,8 @@ impl NativeOfferedAttempt<'_, '_> {
             manager,
             envelope,
             snapshot,
+            // Added by DR-134 (DR-65 item 5).
+            later,
             NativeAttemptSettlementInput {
                 inventory: &inventory,
                 schedule: &schedule,
@@ -561,11 +602,15 @@ impl NativeOfferedAttempt<'_, '_> {
         .await
     }
 
+    // Changed by DR-134 (DR-65 item 5): the producer takes the later holds of
+    // the member (the parameter `later`, after `snapshot`).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn produce_native_offered_candidate(
         mut self,
         manager: &RuntimeManager,
         envelope: DeployEnvelope,
         snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+        later: &LaterHolds,
         input: NativeAttemptSettlementInput<'_, '_, '_>,
         birth_claims: &[RetainedBirthFunding<'_>],
         receipt_snapshot: &PrepaidReceiptSnapshot,
@@ -600,6 +645,8 @@ impl NativeOfferedAttempt<'_, '_> {
                 manager,
                 envelope.clone(),
                 snapshot,
+                // Added by DR-134 (DR-65 item 5).
+                later,
                 input,
                 birth_claims,
                 receipt_snapshot,
@@ -619,6 +666,8 @@ impl NativeOfferedAttempt<'_, '_> {
                         manager,
                         envelope,
                         snapshot,
+                        // Added by DR-134 (DR-65 item 5).
+                        later,
                         input,
                         birth_claims,
                         receipt_snapshot,
@@ -670,12 +719,15 @@ impl NativeOfferedAttempt<'_, '_> {
     //     production: NativeOfferedProductionLimits,
     //     budget: &HostWorkBudget,
     // ) -> Result<NativeOfferedCandidateResult, CasperError> {
+    // Changed by DR-134 (DR-65 item 5): the pass takes the later holds of the
+    // member (the parameter `later`, after `snapshot`).
     #[allow(clippy::too_many_arguments)]
     async fn produce_native_offered_candidate_inner(
         &mut self,
         manager: &RuntimeManager,
         envelope: DeployEnvelope,
         snapshot: &DirectWalletPolicySnapshot<'_, OfferedFundedDeploy>,
+        later: &LaterHolds,
         input: NativeAttemptSettlementInput<'_, '_, '_>,
         birth_claims: &[RetainedBirthFunding<'_>],
         receipt_snapshot: &PrepaidReceiptSnapshot,
@@ -693,21 +745,40 @@ impl NativeOfferedAttempt<'_, '_> {
             .envelope()
             .envelope_commitment()
             .map_err(invalid)?;
+        // Changed by DR-134 (DR-65 amendment of 2026-10-12): the receipts, the
+        // settlement grants, the settlement snapshot and the inventory of a
+        // member belong to its execution root R_{i-1}.
+        // if identity.as_ref() != self.preflight.envelope_identity
+        //     || envelope.identity().as_bytes() != self.preflight.envelope_identity
+        //     || receipt_snapshot.root() != self.preflight.funding_root
+        //     || self.runtime.runtime.get_root().await.bytes() != self.preflight.execution_root
+        //     || grants.as_ref().is_some_and(|grant| {
+        //         grant.snapshot.root() != self.preflight.funding_root
+        //             || grant.verified.root() != self.preflight.funding_root
+        //     })
+        // {
+        //     return Err(invalid(
+        //         "offered production inputs differ from authenticated roots or envelope",
+        //     ));
+        // }
+        // if snapshot.wallets().pre_state_root() != self.preflight.funding_root
+        //     || input.inventory.root() != self.preflight.funding_root
+        // {
         if identity.as_ref() != self.preflight.envelope_identity
             || envelope.identity().as_bytes() != self.preflight.envelope_identity
-            || receipt_snapshot.root() != self.preflight.funding_root
+            || receipt_snapshot.root() != self.preflight.execution_root
             || self.runtime.runtime.get_root().await.bytes() != self.preflight.execution_root
             || grants.as_ref().is_some_and(|grant| {
-                grant.snapshot.root() != self.preflight.funding_root
-                    || grant.verified.root() != self.preflight.funding_root
+                grant.snapshot.root() != self.preflight.execution_root
+                    || grant.verified.root() != self.preflight.execution_root
             })
         {
             return Err(invalid(
                 "offered production inputs differ from authenticated roots or envelope",
             ));
         }
-        if snapshot.wallets().pre_state_root() != self.preflight.funding_root
-            || input.inventory.root() != self.preflight.funding_root
+        if snapshot.wallets().pre_state_root() != self.preflight.execution_root
+            || input.inventory.root() != self.preflight.execution_root
         {
             return Err(invalid(
                 "measured funding inputs belong to another original root",
@@ -757,8 +828,50 @@ impl NativeOfferedAttempt<'_, '_> {
         // // DR-113: the bound of an offer is its signed limit.
         // self.adopted
         //     .bind_execution_contract(controls, &schedule, rholang::rust::interpreter::accounting::native_phlo_rules::NativeBoundSource::SignedLimit)?;
-        self.adopted
-            .bind_execution_contract(controls, &schedule, self.gate.bound_source())?;
+        // Changed by G3 (DR-135, S7): the producer keeps the contract, which
+        // folds the recording of the run for the owner totals.
+        // self.adopted
+        //     .bind_execution_contract(controls, &schedule, self.gate.bound_source())?;
+        let contract =
+            self.adopted
+                .bind_execution_contract(controls, &schedule, self.gate.bound_source())?;
+        // Added by G3 (DR-135, S7): the billed owner sums of the run (G-4).
+        // The producer cannot read the play ledger. It folds its recording
+        // with the journal check of replay, so play and replay derive the
+        // sums from the same fold.
+        let owner_totals = match self.owner.as_deref() {
+            Some(binding) => {
+                let recording = self
+                    .evaluation
+                    .native_budget_recording
+                    .as_ref()
+                    .ok_or_else(|| invalid("native evaluation has no complete budget recording"))?;
+                let operations = self
+                    .evaluation
+                    .native_operation_recording
+                    .clone()
+                    .ok_or_else(|| {
+                        invalid("native evaluation has no complete operation journal")
+                    })?;
+                contract
+                    .check_operation_journal_with_owners(
+                        self.preflight.envelope_identity,
+                        recording,
+                        operations,
+                        offered_funded_v6_replay_limits().journal,
+                        Some(binding),
+                    )
+                    .map_err(invalid)?
+                    .owner_totals()
+            }
+            None => None,
+        };
+        let owners = owner_totals
+            .as_ref()
+            .map(OwnerSettlement::new)
+            .transpose()?;
+        let owner_usage = owner_totals.as_ref().map_or(0, |totals| totals.usage);
+        let owner_rev = owners.as_ref().map_or(0, OwnerSettlement::owner_rev);
         let measured = self
             .adopted
             .native_rules()
@@ -767,8 +880,16 @@ impl NativeOfferedAttempt<'_, '_> {
                 limits.measured.observations,
             )
             .map_err(invalid)?;
+        // Changed by G3 (DR-135, S7): the demand of the client leaves out the
+        // owner regions (R10, G-2).
+        // let regions = measured
+        //     .region_demands(limits.measured.regions)
+        //     .map_err(invalid)?;
         let regions = measured
-            .region_demands(limits.measured.regions)
+            .region_demands_filtered(
+                limits.measured.regions,
+                Some(&|region: &CostRegion| self.keeps_client_region(region)),
+            )
             .map_err(invalid)?;
         let located = regions
             .locate_purses(limits.measured.purses)
@@ -840,7 +961,9 @@ impl NativeOfferedAttempt<'_, '_> {
             .select_measured_demand(&demand, limits.measured.demand)?;
         let binding = input.inventory.bind_measured_demand(
             NativePrepaidDemandInput {
-                expected_root: self.preflight.funding_root,
+                // Changed by DR-134 (DR-65 amendment of 2026-10-12).
+                // expected_root: self.preflight.funding_root,
+                expected_root: self.preflight.execution_root,
                 controls,
                 demand: &demand,
                 draws: selection.draws(),
@@ -856,12 +979,24 @@ impl NativeOfferedAttempt<'_, '_> {
         .map_err(invalid)?
         .with_retained_acquisitions(&retained)
         .map_err(invalid)?;
+        // Changed by G3 (DR-135, S7): the meter also charged the owner phlo
+        // (R10).
+        // check_metered_usage(
+        //     self.evaluation
+        //         .byte_observations
+        //         .has_complete_measurements(),
+        //     self.evaluation.native_phlo_usage,
+        //     observed.usage(),
+        // )?;
         check_metered_usage(
             self.evaluation
                 .byte_observations
                 .has_complete_measurements(),
             self.evaluation.native_phlo_usage,
-            observed.usage(),
+            observed
+                .usage()
+                .checked_add(owner_usage)
+                .ok_or_else(|| invalid("native owner usage overflows"))?,
         )?;
         if observed
             .usage()
@@ -870,7 +1005,13 @@ impl NativeOfferedAttempt<'_, '_> {
         {
             return Err(invalid("native retained usage exceeds signed phlo limit"));
         }
-        let fresh_phlo = observed.fresh_usage();
+        // Changed by G3 (DR-135, S7): the fresh phlo holds the owner phlo
+        // (plan S7 edit 5).
+        // let fresh_phlo = observed.fresh_usage();
+        let fresh_phlo = observed
+            .fresh_usage()
+            .checked_add(owner_usage)
+            .ok_or_else(|| invalid("native owner usage overflows"))?;
         let retained_phlo = observed.retained_usage();
         let summary = self
             .evaluation
@@ -1074,17 +1215,41 @@ impl NativeOfferedAttempt<'_, '_> {
             // root, where the run has changed them. A failing guard settles
             // nothing here, and the caller rolls the run back.
             if !rolled_back && matches!(failure_class, NativeCostFailureClass::Success) {
-                let debits = capture_debits(checked.capture().amounts())?;
+                // Changed by G3 (DR-135, S7): the owner debits join the guard,
+                // and the guard reads the owner purses (§7 "Guard").
+                // let debits = capture_debits(checked.capture().amounts())?;
+                let mut debits = capture_debits(checked.capture().amounts())?;
+                if let Some(owners) = &owners {
+                    owners.add_debits(&mut debits)?;
+                }
+                let owner_payers = owners
+                    .as_ref()
+                    .map(OwnerSettlement::payers)
+                    .unwrap_or_default();
+                // Changed by DR-134 (DR-65 item 5): the guard checks the later
+                // holds of the member.
+                // let balances = manager
+                //     .purse_balances_at(snapshot, settlement_root, &debits)
+                //     .await?;
+                // Changed by G3 (DR-135, S7).
+                // let balances = manager
+                //     .purse_balances_at(snapshot, settlement_root, &debits, later)
+                //     .await?;
                 let balances = manager
-                    .purse_balances_at(snapshot, settlement_root, &debits)
+                    .purse_balances_at(snapshot, settlement_root, &debits, later, &owner_payers)
                     .await?;
                 let member = GuardMember {
                     deploy_id: &self.preflight.envelope_identity,
                     funding_root: &self.preflight.funding_root,
                     role: GuardRole::Play,
                 };
+                // Changed by DR-134 (DR-65 item 5).
+                // if manager
+                //     .held_capacity_guard_outcome(member, &balances, &debits)
+                //     .is_err()
+                // {
                 if manager
-                    .held_capacity_guard_outcome(member, &balances, &debits)
+                    .held_capacity_guard_outcome(member, &balances, &debits, later)
                     .is_err()
                 {
                     return Ok(None);
@@ -1129,6 +1294,9 @@ impl NativeOfferedAttempt<'_, '_> {
                     wallet_receipt,
                     grants,
                     issuances,
+                    // Added by G3 (DR-135, S7): the owners pay their billed
+                    // debits, also on the rolled-back pass (§7 "Guard").
+                    owners.as_ref(),
                 )
                 .await?;
             let wallet_root: [u8; 32] = settlement
@@ -1141,7 +1309,10 @@ impl NativeOfferedAttempt<'_, '_> {
                 .apply_prepaid_retained_after_wallet(
                     prepared_receipts,
                     consumption,
-                    self.preflight.funding_root,
+                    // Changed by DR-134 (DR-65 amendment of 2026-10-12): the
+                    // retained apply starts from the execution root.
+                    // self.preflight.funding_root,
+                    self.preflight.execution_root,
                     wallet_root,
                     production.retained_settlement,
                 )
@@ -1251,6 +1422,9 @@ impl NativeOfferedAttempt<'_, '_> {
             resource_rev: result.settlement.resource_rev,
             fee_rev: result.settlement.fee_rev,
             rev_spent: result.settlement.rev_spent,
+            // Added by G3 (DR-135, S7).
+            owner_phlo: owner_usage,
+            owner_rev,
             user_log: self.replay_log.clone(),
             grant_drain_log: self.grant_issue_log.clone(),
             settlement_log: result.settlement.settlement_log,
@@ -1272,6 +1446,8 @@ impl NativeOfferedAttempt<'_, '_> {
             processed,
             final_root,
             mergeable,
+            // Added by DR-134 (DR-65 O-10).
+            guard_rolled_back: rolled_back,
         }))
     }
 }

@@ -25,7 +25,9 @@ skinparam ActivityBorderColor #333333
 skinparam ActivityDiamondBackgroundColor $ca_control
 skinparam ActivityDiamondBorderColor #333333
 skinparam ActivityBarColor #555555
-title Phased plan: Phase 0 to Phase 3 (status at HEAD e38ff0de8)
+' Changed on 2026-10-20: the Phase 1 box now gives the status of 2026-10-20 (DR-134, DR-135).
+' title Phased plan: Phase 0 to Phase 3 (status at HEAD e38ff0de8)
+title Phased plan: Phase 0 to Phase 3 (status on 2026-10-20)
 
 start
 fork
@@ -39,15 +41,18 @@ fork
   meets: evidence for or against E4 performance; <<$ca_supply>>
 fork again
   :**Phase 1, acceptance core** (L) — G1 committed
-  and live, only the code motion of G2 committed,
-  G3 not started
+  and live, G2 implemented (DR-134),
+  G3 implemented (DR-135)
   G1 DR-64 check before execution,
   G2 several offers per block as an ordered batch executor,
   G3 installer funding (DR-68)
   ----
   verify: SameBlockFundingGroups.tla with negative controls,
   Rocq group lemmas, EndToEndAuthority.v extensions,
-  HeldCapacityGuard.v (committed)
+  HeldCapacityGuard.v (committed),
+  G3: NativeOwnerRefusal.tla, HeldProvenance.tla, owner extensions
+  of FundingSlotBootstrap, LocatedAuthoritySettlement and
+  SameBlockFundingGroups (TLA+ and Rocq)
   meets, inside one block: (i) transaction boundaries,
   the P1 gate, E2 user alternatives, (iv) merge via signatures; <<$ca_gate>>
 fork again
@@ -117,7 +122,7 @@ legend bottom
   | D-0 to D-9 | the open decisions of the proposal (§11) |
   | D-1 option A, option B | A: order-then-execute with the parallel executor. B: the v6 merge rule with the parallel executor. |
   | S, M, L, XL | relative sizes: small, medium, large, extra large |
-  | HEAD e38ff0de8 | the commit of feature/cost-accounted-rho at which this status holds |
+  | 2026-10-20 | the date of this status. The code citations of the proposal stay at HEAD e38ff0de8, its code basis. |
   | v6 | protocol version 6, with cost accounting |
   | soak | a long load test of a network of validators |
   | A/A calibration | two runs of the same build that measure the noise |

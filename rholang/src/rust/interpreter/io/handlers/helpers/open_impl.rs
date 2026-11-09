@@ -6,8 +6,8 @@
 //      retargeted to file-end by the kernel; the shadow-position
 //      model can't extend cleanly).
 //   3. Resolve the logical root through `RootIdentityRegistry::
-//      resolve_or_identity`.  (BACKLOG: migrate to the gated
-//      variant.)
+//      resolve_or_identity_gated_for_consensus` — Consensus-mode
+//      calls on unregistered `/@bundle/<X>` roots refuse upfront.
 //   4. `safe_open_verified` on the blocking pool.
 //   5. Reject non-regular-file leaves (symlink pre-caught by
 //      `O_NOFOLLOW`; sockets / fifos / devices surface here as
@@ -58,7 +58,8 @@ use crate::rust::interpreter::io::ConsensusMode;
 ///
 /// 1. Parse mode string.
 /// 2. Consensus + O_APPEND rejection (specific message).
-/// 3. Root registry resolution (ungated — Shape-A deferred).
+/// 3. Root registry resolution via the gated resolver — refuses
+///    Consensus-mode calls on unregistered `/@bundle/<X>` roots.
 /// 4. `spawn_blocking(safe_open_verified)` with
 ///    `fopen_flags`-derived `(flags, mode_bits)`.
 /// 5. Metadata regular-file check (no TOCTOU because we already
@@ -93,11 +94,19 @@ pub async fn open_impl_via_table(
              are required, or open the cap as Oracular",
         );
     }
-    // BACKLOG: migrate to resolve_or_identity_gated_for_consensus
-    // when the gated API lands.  Coordinated migration with
-    // fs_exists / fs_stat / path-mutation handlers.
+    // Shape-A gating: Consensus-mode open on an unregistered
+    // `/@bundle/<X>` logical root short-circuits with
+    // FSERR_UNSUPPORTED before safe_open_verified runs.  Returned
+    // Par is `err(c, m)` so the caller gets a well-formed FSERR
+    // reply.
     let root_pb = PathBuf::from(&root);
-    let (root_pb, expected_root_id) = handles.root_registry.resolve_or_identity(&root_pb);
+    let (root_pb, expected_root_id) = match handles
+        .root_registry
+        .resolve_or_identity_gated_for_consensus(&root_pb, cmode)
+    {
+        Ok(v) => v,
+        Err((c, m)) => return err(c, m),
+    };
     let intent_copy = intent;
     let rel_for_open = rel.clone();
     let opened = spawn_blocking(move || {

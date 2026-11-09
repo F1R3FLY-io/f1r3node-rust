@@ -57,8 +57,8 @@ The seam of this build uses the shapes of Table 2, so the merge can map an insta
 
 | This build | F1r3lang | Note |
 |---|---|---|
-| `TheoryVerdict` (`spaces/theory/mod.rs:66-79`) | `AdmissionDecision` | The same three verdicts. An `Undetermined` verdict reports the usage of the check, as F1r3lang does. |
-| `TheoryUsage` (`spaces/theory/mod.rs:37-42`) | `AdmissionUsage`, `AdmissionBudget` | One type holds the usage of a check and the limits of an identity. |
+| `TheoryVerdict` (`spaces/theory/mod.rs:64-77`) | `AdmissionDecision` | The same three verdicts. An `Undetermined` verdict reports the usage of the check, as F1r3lang does. |
+| `TheoryUsage` (`spaces/theory/mod.rs:35-40`) | `AdmissionUsage`, `AdmissionBudget` | One type holds the usage of a check and the limits of an identity. |
 | `SpaceTheory::admit` and `check_match` | `AdmissionChecker` through the kernel | The space agent calls the checker itself, because a space is not an `ISpace` implementor ([I-1](decision-register.md#i-1)). |
 | One reserved unit for each builtin check | `STRUCTURAL_ADMISSION_WORK_UNITS = 1` | The same work for a structural check |
 | `TheoryCommitLease` and `NestedCommitGuard` | The revalidation at the commit boundary | Section [4](#4-what-changes-at-the-merge) states the composition |
@@ -82,7 +82,7 @@ Each check must still reserve its work before it reads, the same on a hit and a 
 
 **Guard composition.** The combination point of the guards of a space transaction is `SpaceTxn::commit`, not `produce_guarded`, because a space is not an `ISpace` implementor.
 The commit acquires the authority of the installed language once, revalidates every lease, applies the transaction, and releases the authority.
-The leases come from the admission of a send, the check at a match, and an FLT where-permit.
+The leases come from the admission of a send, the fire of a match, and an FLT where-permit.
 Until F1r3lang offers a revalidation that a space can call, a transaction with two or more leases aborts with `NestedCommitGuard` (rule TH-9 of the [specification](specification.md#5-theories)).
 
 **Where-clauses.** From the merge on, a receive on a space follows the selection rule of F1r3lang ([decision 37](decision-register.md#decision-37)).
@@ -95,7 +95,7 @@ The check of the theory at a match stays part of the guard, so it joins that sel
 - A verdict other than `Proven` fails closed: it aborts a send, and it refuses a match as a guard refusal.
 - A datum in flight is checked at its send and not again at a match.
 - The `config` reply of a handle shows the identity as a map.
-- The ordinary terms keep their encoding, because the syntax of a theory is a marker tuple ([decision 18](decision-register.md#decision-18)).
+- The ordinary terms keep their prost bytes, because the syntax of a theory is the protobuf field `EFreeBody` ([decision 112](decision-register.md#decision-112)).
 
 ## 6. Open items for phase P12
 

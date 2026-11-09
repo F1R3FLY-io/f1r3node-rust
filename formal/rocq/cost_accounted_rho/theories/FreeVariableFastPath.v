@@ -37,6 +37,12 @@
    No axiom, parameter or admission is used. Section variables are
    universally quantified when the sections close.
 
+   Decision 112 adds an eleventh field list, use_blocks, before cost_stacks in
+   the field order of both matcher paths. The theorems over field lists are
+   parametric in the number and the contents of the lists, so they hold for the
+   eleventh list. The count of ten in this comment and in fresh names the
+   lists of the base, and no theorem depends on it.
+
    Rust correspondence: rholang/src/rust/interpreter/matcher/spatial_matcher.rs
    (free_variable_level, bind_free_variable, bind_free_variable_by_reference)
    and fold_match.rs. *)

@@ -90,7 +90,7 @@
                              (Lane::sees)
    record_head, waiter_head  spaces/disciplines/priority_queue.rs:400-411
                              (record_heads and waiter_heads)
-   view                      spaces/disciplines/priority_queue.rs:446-506
+   view                      spaces/disciplines/priority_queue.rs:542-608
                              (record_head_list: the record in flight is the
                              head of its level when its order is the least)
    first_match               spaces/disciplines/priority_queue.rs:513-539
@@ -111,7 +111,7 @@
    settle_of, settle_at      spaces/settle.rs:569-582, 588-601 and 606-616
                              (settle_before_plan, settle_after_plan and
                              settle_job)
-   after_fire, cap           reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,
+   after_fire, cap           reified/costs.rs:17, 71-82 (FIRE_ROUND_CAP,
                              FireRounds::after_fire)
    cand1, cand2              spaces/disciplines/priority_queue.rs:149-154
                              (Level::candidate_lanes) and 542-594 (the
@@ -119,30 +119,30 @@
    offer_pick                spaces/disciplines/priority_queue.rs:545-597
                              (offer_target: the older head first, and each
                              refusal marks its lane)
-   fits_datum                spaces/generic.rs:958-997 (Cx::matches)
+   fits_datum                spaces/generic.rs:957-996 (Cx::matches)
    offer_loop                spaces/disciplines/priority_queue.rs:795-854
                              (offer_pq)
    receive_loop,             spaces/disciplines/priority_queue.rs:860-965 and
    consume_fire              929-938 (receive_pq and restore_peeked) and
-                             spaces/generic.rs:442-449 (Discipline::restore)
+                             spaces/generic.rs:441-448 (Discipline::restore)
    fresh_offer,              spaces/disciplines/priority_queue.rs:254-268 and
    fresh_receive,            416-437 (reaches_head, precedes and
    reenter_offer,            at_lane_head: a fresh element joins the tail of
    reenter_receive           its lane, and a re-entry precedes with <)
-   with_settles,             spaces/generic.rs:1702-1715 (open_plan) and
+   with_settles,             spaces/generic.rs:3791-3804 (open_plan) and
    plan_at_cap               spaces/disciplines/priority_queue.rs:319-345
                              (the settle hooks)
    carried, next_round       spaces/settle.rs:643-675 and 681-705, and
                              spaces/disciplines/priority_queue.rs:846 and 957
                              (reissued_ord: persistent.then_some(ord))
-   produce, consume,         spaces/generic.rs:2544-2714 (run_with) and
-   bumped, bump_ord          spaces/counter.rs:165-245 (bump)
-   fires (the fire count)    spaces/generic.rs:708, 801 and 2623 (Plan.rounds,
+   produce, consume,         spaces/generic.rs:2543-2710 (run_with) and
+   bumped, bump_ord          spaces/counter.rs:165-244 (bump)
+   fires (the fire count)    spaces/generic.rs:707, 800 and 2619 (Plan.rounds,
                              Cx::rounds, and the FireRounds of a transaction)
    apply, run, drop_key      the staged view of the substrate
                              (space_store_handle.rs, stage_produce and
                              stage_consume), as in StackDiscipline.v
-   priority_admitted,        spaces/disciplines/priority_queue.rs:275-295 and
+   priority_admitted,        spaces/disciplines/priority_queue.rs:304-324 and
    produce_checked           658-738 (check_values, priority_of,
                              priorities_bound, check_priority, send_level)
    size                      the staged view: records and waiters only (I-10)
@@ -253,6 +253,9 @@
                                           (decision 45, Rule E)
    19. level_scan_trace_covered           the level scans reserve their reads
                                           before they make them (DR-88)
+                                          Decision 96 (decision 89, DR-131)
+                                          disables this headline with the
+                                          host-work metering.
    20. pq_settle_keeps_unspent_records    a settle loses no record, from
                                           every fire count (NoRecordLost)
 
@@ -378,6 +381,8 @@
      pq_head_blocks, pq_reentry_at_fifo_place, pq_reissue_keeps_ord,
      pq_peek_restore_needs_no_settle, pq_settle_trace_covered). The
      reified_priority_queue.rs suite cites the names of the brief.
+     Decision 96 (decision 89, DR-131) disables level_scan_trace_covered
+     with the host-work metering.
    ═══════════════════════════════════════════════════════════════════════ *)
 From Stdlib Require Import List Arith Bool Lia PeanoNat ZArith.
 From Stdlib Require Import Sorting.Permutation.
@@ -4099,6 +4104,8 @@ Proof.
   reflexivity.
 Qed.
 
+(* Disabled by decision 96 (decision 89, DR-131): level_scan_trace_covered
+   goes with the host-work metering. The section stays below as a comment.
 (* ── 19. Headline 19: the level scans reserve their reads first ─────────── *)
 
 (* The metering rule of DR-88 (decision 42), restated from AgentReadCoverage.v
@@ -4560,6 +4567,7 @@ Section LevelScanMetering.
     - rewrite after_rounds_read. lia.
   Qed.
 End LevelScanMetering.
+*)
 
 Print Assumptions pq_level_order.
 Print Assumptions pq_unprioritized_lowest.
@@ -4579,5 +4587,8 @@ Print Assumptions pq_no_level_storage.
 Print Assumptions pq_reissue_takes_level_fifo_place.
 Print Assumptions pq_reentered_waiter_keeps_seniority.
 Print Assumptions pq_peek_restores_head.
+(* Disabled by decision 96 (decision 89, DR-131): level_scan_trace_covered
+   goes with the host-work metering.
 Print Assumptions level_scan_trace_covered.
+*)
 Print Assumptions pq_settle_keeps_unspent_records.

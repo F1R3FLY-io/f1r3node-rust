@@ -12,7 +12,7 @@
 '      other than Proven aborts the deploy.
 '   3. At a match, each stored datum is checked again in the COMM, and a
 '      verdict other than Proven makes it ineligible.
-'   4. Every check reserves its work before it reads the value.
+'   4. A theory check adds no phlo (rule TH-8).
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 52-tl-admission.puml   Check: ./render.sh --check
@@ -53,7 +53,7 @@ AGENT -> RSPACE : the config C(sid) with the compact identity bytes,\nand the co
 == At a send ==
 DEPLOY -> AGENT : space!(v)
 AGENT -> RSPACE : read the identity from the config
-AGENT -> ENGINE : check v, after the reservation of the work
+AGENT -> ENGINE : check v
 alt ok = 1
   ENGINE --> AGENT : Proven
   AGENT -> RSPACE : stage and commit the send
@@ -70,7 +70,7 @@ else Refuted or Undetermined
   AGENT -> AGENT : the datum is ineligible, as after a guard rejection
 end
 note over SEAM, ENGINE
-  A check is a pure function of the identity, the value and the budget,
+  A check is a pure function of the identity and the value,
   so play, replay and a later attach give the same verdicts.
 end note
 

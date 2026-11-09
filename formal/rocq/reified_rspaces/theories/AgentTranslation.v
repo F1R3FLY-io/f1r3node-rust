@@ -33,7 +33,7 @@
    ─────────────────────────────────────────────────────────────────────────
    offsets_from, offsets, total
                             rholang/src/rust/interpreter/reified/
-                            user_agent.rs:942-952 (offsets_of, TR-3)
+                            user_agent.rs:989-999 (offsets_of, TR-3)
    owner_from, owner        rholang/src/rust/interpreter/reified/
                             user_agent.rs:956-961 (owner_of)
    position, index_owners, place_guard
@@ -67,7 +67,7 @@
                             binders of a new, TN-1)
    targets_from, targets, tag
                             rholang/src/rust/interpreter/reified/
-                            user_agent.rs:1272-1389 (translate_new, TN-2
+                            user_agent.rs:1320-1439 (translate_new, TN-2
                             to TN-4), 1220-1227 (agent_minted_name)
    resume_env, eval_target  the nested resume receives of translate_new
                             and the match of reduce.rs eval_match, whose

@@ -11,6 +11,11 @@
 (* element takes any unused id. So the model explores every canonical      *)
 (* order of the entries.                                                   *)
 (*                                                                         *)
+(* Changed by decision 102 (DR-129 of the base): the DR-75 order is the    *)
+(* replay order. Play shuffles the candidates of a bag and a set           *)
+(* (pick_data_order and pick_waiter_order), so each pick of the model can  *)
+(* take any candidate. The cell has no random pick (decision 119 G10).     *)
+(*                                                                         *)
 (* The plans, with the current guard rule of decision 37:                  *)
 (*   bag, set   OFFER-SCAN: the datum fires the first waiter, in canonical *)
 (*              order, that matches it spatially and whose guard admits    *)
@@ -37,6 +42,16 @@
 (* re-issued element of the cell keeps its id when it is persistent, and   *)
 (* takes a fresh id otherwise.                                             *)
 (*                                                                         *)
+(* Changed by decision 102: OFFER-SCAN fires any waiter that matches the   *)
+(* datum spatially and whose guard admits it. RECEIVE-SCAN takes any       *)
+(* record that matches spatially. The guard checks that record once, and a *)
+(* refusal parks.                                                          *)
+(*                                                                         *)
+(* Changed by decision 119 G1 and decision 101: a set receive that does    *)
+(* not peek binds the member of its class with the least identity.         *)
+(* K_retire then retires the other non-persistent members of the class. A  *)
+(* peek binds its pick alone.                                              *)
+(*                                                                         *)
 (* Invariants (TypeOK holds the types):                                    *)
 (*   V1 NoPendingMatch     a stored waiter without a guard matches no      *)
 (*                         stored record spatially (decision 37)           *)
@@ -58,6 +73,7 @@
 (*                         included, happens when no waiter matches the    *)
 (*                         record and admits it: a peek re-stores the      *)
 (*                         record itself as the host's second send         *)
+(* Changed by decision 102: every invariant holds for every pick.          *)
 (*                                                                         *)
 (* Unsafe controls (CONSTANT flags). Each one refutes exactly one of the   *)
 (* invariants that its configuration checks, and the complement run        *)
@@ -67,8 +83,10 @@
 (*                                 WildcardMatch, under which every        *)
 (*                                 pattern matches every value (D6)        *)
 (*   RetireClass = FALSE           SetRetireOneUnsafe refutes              *)
-(*                                 SetClassRetired: a consume removes only *)
-(*                                 the representative                      *)
+(*                                 SetClassRetired: no K_retire follows    *)
+(*                                 the receive fire. Changed by decision   *)
+(*                                 119 G1: before, the consume removed     *)
+(*                                 only the representative.                *)
 (*   RetireOnProduce = FALSE       SetNoProduceRetireUnsafe refutes        *)
 (*                                 SetClassRetired: no K_retire after a    *)
 (*                                 produce-side fire (the R5 S3 trace)     *)
@@ -104,9 +122,9 @@
 (*   CellReceive          1128-1199, 1201-1290) with Cx::check_capacity    *)
 (*                        (758-773) and the plain Cx::restore (864-880)    *)
 (*   FireOffer, FireRecv  Cx::fire_offer_on and Cx::fire_receive_group     *)
-(*                        (spaces/generic.rs:1270-1396)                    *)
-(*   Retire               Cx::retire (spaces/generic.rs:1398-1410)         *)
-(*   the round cap        reified/costs.rs:41-44, 302-334                  *)
+(*                        (spaces/generic.rs:1269-1395)                    *)
+(*   Retire               Cx::retire (spaces/generic.rs:1397-1409)         *)
+(*   the round cap        reified/costs.rs:14-17, 71-82                    *)
 (*                        (FIRE_ROUND_CAP, FireRounds::after_fire)         *)
 (* The Rocq modules Match.v and GenericRSpace.v prove the same rules for   *)
 (* every matcher, every order and every fire-round cap.                    *)
@@ -291,19 +309,36 @@ ReissueK(k, st) == [st EXCEPT !.add = @ \cup {ContElt(k)}]
 
 \* ── The scan driver of bag and set ──────────────────────────────────────
 
-\* OFFER-SCAN of the datum x after fired fires of the round.
-RECURSIVE OfferScan(_, _, _)
+\* Changed by decision 102: OFFER-SCAN returns the set of the states of every pick, because the
+\* datum fires any waiter of cands (pick_waiter_order). The old form follows.
+\* \* OFFER-SCAN of the datum x after fired fires of the round.
+\* RECURSIVE OfferScan(_, _, _)
+\* OfferScan(x, st, fired) ==
+\*     LET cands == {w \in st.wtrs : EngineMatches(w.pat, x.val) /\ Admits(w.guard, x.val)}
+\*     IN IF cands = {}
+\*        THEN Store(x, st)
+\*        ELSE LET w == FirstById(cands)
+\*                 st1 == FireOffer(x, w, st)
+\*                 st2 == IF ~w.peek /\ Discipline = "set" /\ RetireOnProduce
+\*                        THEN RetireClassOf(x.val, st1) ELSE st1
+\*             IN IF ~x.pers /\ ~w.peek THEN st2
+\*                ELSE IF w.pers \/ fired + 1 >= Cap THEN Reissue(x, st2)
+\*                ELSE OfferScan(x, st2, fired + 1)
+
+\* OFFER-SCAN of the datum x after fired fires of the round. OfferScanAt is
+\* the fire of the picked waiter w.
+RECURSIVE OfferScan(_, _, _), OfferScanAt(_, _, _, _)
+OfferScanAt(x, st, fired, w) ==
+    LET st1 == FireOffer(x, w, st)
+        st2 == IF ~w.peek /\ Discipline = "set" /\ RetireOnProduce
+               THEN RetireClassOf(x.val, st1) ELSE st1
+    IN IF ~x.pers /\ ~w.peek THEN {st2}
+       ELSE IF w.pers \/ fired + 1 >= Cap THEN {Reissue(x, st2)}
+       ELSE OfferScan(x, st2, fired + 1)
 OfferScan(x, st, fired) ==
     LET cands == {w \in st.wtrs : EngineMatches(w.pat, x.val) /\ Admits(w.guard, x.val)}
-    IN IF cands = {}
-       THEN Store(x, st)
-       ELSE LET w == FirstById(cands)
-                st1 == FireOffer(x, w, st)
-                st2 == IF ~w.peek /\ Discipline = "set" /\ RetireOnProduce
-                       THEN RetireClassOf(x.val, st1) ELSE st1
-            IN IF ~x.pers /\ ~w.peek THEN st2
-               ELSE IF w.pers \/ fired + 1 >= Cap THEN Reissue(x, st2)
-               ELSE OfferScan(x, st2, fired + 1)
+    IN IF cands = {} THEN {Store(x, st)}
+       ELSE UNION {OfferScanAt(x, st, fired, w) : w \in cands}
 
 \* The head driver of the cell: the datum x meets the head waiter.
 RECURSIVE CellOffer(_, _, _)
@@ -317,37 +352,85 @@ CellOffer(x, st, fired) ==
                     ELSE IF w.pers \/ fired + 1 >= Cap THEN Reissue(x, st1)
                     ELSE CellOffer(x, st1, fired + 1)
 
+\* Changed by decision 102: OFFER returns a set. The old form follows.
+\* Offer(x, st, fired) ==
+\*     IF Discipline = "cell" THEN CellOffer(x, st, fired) ELSE OfferScan(x, st, fired)
 Offer(x, st, fired) ==
-    IF Discipline = "cell" THEN CellOffer(x, st, fired) ELSE OfferScan(x, st, fired)
+    IF Discipline = "cell" THEN {CellOffer(x, st, fired)} ELSE OfferScan(x, st, fired)
 
 \* The re-store of the record r that the peek k removed (Rule E): the same
 \* record, not persistent, with its own authority. The scan driver offers it
 \* again (RESTORE-SCAN) with the fire rounds of the operation, and the cell
 \* stores it with a plain store.
-Restore(k, r, st, fired) ==
-    LET x == [id |-> r.id, val |-> r.val, pers |-> FALSE,
-              auth |-> IF RestoreOwnAuthority THEN r.auth ELSE k.id]
-    IN IF Discipline = "cell" \/ ~RestoreReoffer
-       THEN StoreRec(x, st, FALSE)
-       ELSE IF fired >= Cap THEN Reissue(x, st)
-       ELSE OfferScan(x, st, fired)
+\* Changed by decision 102: the re-offer of the scan driver returns the set of the states of
+\* every pick, so the restore of the cell and the restore of the scan driver are two
+\* operators. The old form follows.
+\* Restore(k, r, st, fired) ==
+\*     LET x == [id |-> r.id, val |-> r.val, pers |-> FALSE,
+\*               auth |-> IF RestoreOwnAuthority THEN r.auth ELSE k.id]
+\*     IN IF Discipline = "cell" \/ ~RestoreReoffer
+\*        THEN StoreRec(x, st, FALSE)
+\*        ELSE IF fired >= Cap THEN Reissue(x, st)
+\*        ELSE OfferScan(x, st, fired)
+Restored(k, r) ==
+    [id |-> r.id, val |-> r.val, pers |-> FALSE,
+     auth |-> IF RestoreOwnAuthority THEN r.auth ELSE k.id]
+CellRestore(k, r, st) == StoreRec(Restored(k, r), st, FALSE)
+ScanRestore(k, r, st, fired) ==
+    IF ~RestoreReoffer THEN {StoreRec(Restored(k, r), st, FALSE)}
+    ELSE IF fired >= Cap THEN {Reissue(Restored(k, r), st)}
+    ELSE OfferScan(Restored(k, r), st, fired)
+
+\* Changed by decision 102 (DR-129 of the base), decision 119 G1 and decision 101: RECEIVE-SCAN
+\* returns the set of the states of every pick. The receive takes any record that matches
+\* spatially (pick_data_order), and the guard checks that record once. A set receive that does
+\* not peek fires one bind of the member of the class with the least identity, and K_retire
+\* then retires the other non-persistent members. The Unsafe RetireClass = FALSE drops the
+\* K_retire. The old form follows.
+\* \* RECEIVE-SCAN of the continuation k after fired fires of the round.
+\* RECURSIVE ReceiveScan(_, _, _)
+\* ReceiveScan(k, st, fired) ==
+\*     LET spat == {r \in st.recs : EngineMatches(k.pat, r.val)}
+\*     IN IF spat = {} THEN Park(k, st)
+\*        ELSE LET r == FirstById(spat)
+\*             IN IF ~Admits(k.guard, r.val) THEN Park(k, st)
+\*                ELSE LET C == IF k.peek \/ Discipline # "set" \/ ~RetireClass THEN {r}
+\*                              ELSE {m \in st.recs : m.val = r.val}
+\*                         st1 == FireRecv(k, r, C, st)
+\*                         st2 == IF k.peek /\ ~r.pers /\ PeekRestore
+\*                                THEN Restore(k, r, st1, fired + 1) ELSE st1
+\*                     IN IF ~k.pers THEN st2
+\*                        ELSE IF k.peek \/ (\E c \in C : c.pers) \/ fired + 1 >= Cap
+\*                             THEN ReissueK(k, st2)
+\*                             ELSE ReceiveScan(k, st2, fired + 1)
+
+\* The class that the receive k binds with the pick r (class_of): the stored
+\* members of the class of r on a set without a peek, and r otherwise.
+ClassOfPick(k, r, st) ==
+    IF k.peek \/ Discipline # "set" THEN {r} ELSE {m \in st.recs : m.val = r.val}
 
 \* RECEIVE-SCAN of the continuation k after fired fires of the round.
-RECURSIVE ReceiveScan(_, _, _)
+\* ReceiveScanAt is the pick of the record r: the guard, then the fire of
+\* the first member of its class (G1), the K_retire of the others and the
+\* re-store of a peek.
+RECURSIVE ReceiveScan(_, _, _), ReceiveScanAt(_, _, _, _)
+ReceiveScanAt(k, st, fired, r) ==
+    IF ~Admits(k.guard, r.val) THEN {Park(k, st)}
+    ELSE LET C == ClassOfPick(k, r, st)
+             first == FirstById(C)
+             st0 == FireRecv(k, first, {first}, st)
+             st1 == IF ~k.peek /\ Discipline = "set" /\ RetireClass
+                    THEN RetireClassOf(r.val, st0) ELSE st0
+             st2s == IF k.peek /\ ~r.pers /\ PeekRestore
+                     THEN ScanRestore(k, r, st1, fired + 1) ELSE {st1}
+         IN IF ~k.pers THEN st2s
+            ELSE IF k.peek \/ (\E c \in C : c.pers) \/ fired + 1 >= Cap
+                 THEN {ReissueK(k, s) : s \in st2s}
+                 ELSE UNION {ReceiveScan(k, s, fired + 1) : s \in st2s}
 ReceiveScan(k, st, fired) ==
     LET spat == {r \in st.recs : EngineMatches(k.pat, r.val)}
-    IN IF spat = {} THEN Park(k, st)
-       ELSE LET r == FirstById(spat)
-            IN IF ~Admits(k.guard, r.val) THEN Park(k, st)
-               ELSE LET C == IF k.peek \/ Discipline # "set" \/ ~RetireClass THEN {r}
-                             ELSE {m \in st.recs : m.val = r.val}
-                        st1 == FireRecv(k, r, C, st)
-                        st2 == IF k.peek /\ ~r.pers /\ PeekRestore
-                               THEN Restore(k, r, st1, fired + 1) ELSE st1
-                    IN IF ~k.pers THEN st2
-                       ELSE IF k.peek \/ (\E c \in C : c.pers) \/ fired + 1 >= Cap
-                            THEN ReissueK(k, st2)
-                            ELSE ReceiveScan(k, st2, fired + 1)
+    IN IF spat = {} THEN {Park(k, st)}
+       ELSE UNION {ReceiveScanAt(k, st, fired, r) : r \in spat}
 
 \* The head driver of the cell: the continuation k meets the head record.
 RECURSIVE CellReceive(_, _, _)
@@ -356,15 +439,22 @@ CellReceive(k, st, fired) ==
     ELSE LET r == FirstById(st.recs)
          IN IF ~(EngineMatches(k.pat, r.val) /\ Admits(k.guard, r.val))
             THEN Park(k, st)
+            \* Changed by decision 102: the cell restore is CellRestore, a plain
+            \* store, as Restore was for the cell. The old line follows.
+            \*                st2 == IF k.peek /\ ~r.pers /\ PeekRestore
+            \*                       THEN Restore(k, r, st1, fired + 1) ELSE st1
             ELSE LET st1 == FireRecv(k, r, {r}, st)
                      st2 == IF k.peek /\ ~r.pers /\ PeekRestore
-                            THEN Restore(k, r, st1, fired + 1) ELSE st1
+                            THEN CellRestore(k, r, st1) ELSE st1
                  IN IF ~k.pers THEN st2
                     ELSE IF k.peek \/ r.pers \/ fired + 1 >= Cap THEN ReissueK(k, st2)
                     ELSE CellReceive(k, st2, fired + 1)
 
+\* Changed by decision 102: RECEIVE returns a set. The old form follows.
+\* Receive(k, st, fired) ==
+\*     IF Discipline = "cell" THEN CellReceive(k, st, fired) ELSE ReceiveScan(k, st, fired)
 Receive(k, st, fired) ==
-    IF Discipline = "cell" THEN CellReceive(k, st, fired) ELSE ReceiveScan(k, st, fired)
+    IF Discipline = "cell" THEN {CellReceive(k, st, fired)} ELSE ReceiveScan(k, st, fired)
 
 \* ── Steps ───────────────────────────────────────────────────────────────
 
@@ -408,7 +498,9 @@ Init ==
 Produce(v, pers, id) ==
     LET x == [id |-> id, val |-> v, pers |-> pers, auth |-> id]
     IN /\ ops < MaxOps
-       /\ Commit(Offer(x, Begin, 0), inflight)
+       \* Changed by decision 102: the round commits any state of its picks.
+       \* /\ Commit(Offer(x, Begin, 0), inflight)
+       /\ \E res \in Offer(x, Begin, 0) : Commit(res, inflight)
        /\ produced' = produced \cup {id}
        /\ persistents' = IF pers THEN persistents \cup {id} ELSE persistents
        /\ used' = used \cup {id}
@@ -419,7 +511,9 @@ Consume(p, g, pers, peek, id) ==
     LET k == [id |-> id, pat |-> p, guard |-> g, pers |-> pers, peek |-> peek]
     IN /\ ops < MaxOps
        /\ ~(pers /\ peek)
-       /\ Commit(Receive(k, Begin, 0), inflight)
+       \* Changed by decision 102: the round commits any state of its picks.
+       \* /\ Commit(Receive(k, Begin, 0), inflight)
+       /\ \E res \in Receive(k, Begin, 0) : Commit(res, inflight)
        /\ used' = used \cup {id}
        /\ UNCHANGED <<produced, persistents>>
 
@@ -432,12 +526,16 @@ ReenterData(e) ==
     /\ IF Discipline = "cell" /\ ~e.pers
        THEN \E nid \in FreeIds :
               LET x == [id |-> nid, val |-> e.term, pers |-> FALSE, auth |-> nid]
-              IN /\ Commit(Offer(x, Begin, 0), inflight \ {e})
+              \* Changed by decision 102: the round commits any state of its picks.
+              \* IN /\ Commit(Offer(x, Begin, 0), inflight \ {e})
+              IN /\ \E res \in Offer(x, Begin, 0) : Commit(res, inflight \ {e})
                  /\ produced' = (produced \ {e.id}) \cup {nid}
                  /\ used' = used \cup {nid}
                  /\ UNCHANGED persistents
        ELSE LET x == [id |-> e.id, val |-> e.term, pers |-> e.pers, auth |-> e.auth]
-            IN /\ Commit(Offer(x, Begin, 0), inflight \ {e})
+            \* Changed by decision 102: the round commits any state of its picks.
+            \* IN /\ Commit(Offer(x, Begin, 0), inflight \ {e})
+            IN /\ \E res \in Offer(x, Begin, 0) : Commit(res, inflight \ {e})
                /\ UNCHANGED <<produced, persistents, used>>
 
 ReenterCont(e) ==
@@ -445,7 +543,9 @@ ReenterCont(e) ==
     /\ e \in inflight
     /\ e.side = "consume"
     /\ LET k == [id |-> e.id, pat |-> e.term, guard |-> e.guard, pers |-> e.pers, peek |-> e.peek]
-       IN Commit(Receive(k, Begin, 0), inflight \ {e})
+       \* Changed by decision 102: the round commits any state of its picks.
+       \* IN Commit(Receive(k, Begin, 0), inflight \ {e})
+       IN \E res \in Receive(k, Begin, 0) : Commit(res, inflight \ {e})
     /\ UNCHANGED <<produced, persistents, used>>
 
 Next ==

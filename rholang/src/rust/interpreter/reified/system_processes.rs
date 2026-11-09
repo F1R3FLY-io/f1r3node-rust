@@ -28,20 +28,32 @@
 //! arguments after `ret` (I-18). `tensor::ops` computes the value, and the process replies
 //! `[true, value]` or `[false, code, detail]` on `ret` (decision 57).
 //!
-//! `embed` and `ann` are recorded processes (decision 57): the dispatcher records the reply of a
-//! call on its produce event (`non_deterministic_ops`), and replay produces the recorded reply.
-//! In play they ask the services of the node (`vectordb_services`). Every failure is a reply
-//! `[false, code, detail]`, so it is recorded too. The checks of an `ann` call read only
-//! consensus state, so play and replay both make them. In native funded execution both processes
-//! use the record and replay of DR-114 of `feature/cost-accounted-rho` (decision 68): they are in
-//! its recorded set (`is_native_recorded_op`), a success of play takes its bytes from the record
-//! room of the deploy, and replay of a call without its record fails. They keep their own
-//! handlers, because `ann` checks consensus state in replay too.
+//! `embed` and `ann` are recorded processes (decision 57). In play they ask the services of the
+//! node (`vectordb_services`), and the dispatcher records the reply of the call on its produce
+//! event. Replay delivers the recorded reply.
+//!
+//! Changed by decisions 104 to 106 (DR-114 oracle mode): both processes follow the recorded
+//! process contract of `feature/cost-accounted-rho`. They are in its recorded set
+//! (`is_native_recorded_op`). A failure replies `[false, code, message]` with a base code, and the
+//! dispatcher records it too. A success of play takes its bytes from the record room of the deploy
+//! (`native_played_reply`). Replay makes no check and delivers the record
+//! (`native_replayed_reply`). A persistent send to either process fails at its fire, by base rule
+//! P2. Before, replay made the checks of `ann` too, the failures had Reified codes, and rule A21
+//! aborted a persistent send.
+//!
+//! Changed by decision 116: the two processes keep their own handlers, for two reasons. The reply
+//! channel `ret` comes first, as the File I/O sugar requires, but the base driver takes its ack
+//! last. `ann` also reads the Reified runtime, which the base driver does not hold.
+//!
+//! Changed by decision 113: only a build with the feature `chromadb` registers `embed` and `ann`.
+//! The VectorDB space type exists in every build.
 
 use std::sync::Arc;
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{CostAuthority, EList, Par};
+// Changed by decision 90 (DR-132): no parameter names `CostAuthority` now.
+// use models::rhoapi::{CostAuthority, EList, Par};
+use models::rhoapi::{EList, Par};
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
 use models::rust::rholang::sorter::sortable::Sortable;
 use models::rust::space_factory_urn::SpaceInner;
@@ -58,15 +70,22 @@ use super::system_channels::{
     SINK_OP_PROCESS, VECTOR_PROCESS,
 };
 use super::user_agent::{self, MatcherProcess};
+// Changed by decision 105: the base codes replace the Reified codes, and the base helpers build
+// the replies.
+// use super::vectordb_services::{
+//     self, channel_digest, collection_name, f32_list, failed_reply, is_ok_reply, list_par, ok_reply,
+//     EmbedFailure, Neighbour, ServiceReplyCode, VectorDbServices,
+// };
 use super::vectordb_services::{
-    self, channel_digest, collection_name, f32_list, failed_reply, is_ok_reply, list_par, ok_reply,
-    EmbedFailure, Neighbour, ServiceReplyCode, VectorDbServices,
+    self, channel_digest, collection_name, f32_list, list_par, ok_reply, EmbedFailure, Neighbour,
+    VectorDbServices,
 };
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::contract_call::{ContractCall, Producer};
-use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
-    submit_space, SpaceRequest,
-};
+// Changed by decision 90 (DR-132): the scheduler and its space jobs are gone.
+// use crate::rust::interpreter::deterministic_reduction::reified_schedule::{
+//     submit_space, SpaceRequest,
+// };
 use crate::rust::interpreter::errors::{illegal_argument_error, InterpreterError};
 use crate::rust::interpreter::spaces::agent::SpaceAgent;
 use crate::rust::interpreter::spaces::disciplines::vectordb::{vdb_config, ID_LEN};
@@ -78,8 +97,15 @@ use crate::rust::interpreter::spaces::families::FamilyAgent;
 use crate::rust::interpreter::spaces::namespace::{CollectionKey, NativeSpace, SpaceId};
 use crate::rust::interpreter::spaces::record::{expr_par, sole_expr};
 use crate::rust::interpreter::spaces::types::config::{map_entries, SpaceConfig};
-use crate::rust::interpreter::system_processes::{Definition, ProcessContext, Remainder};
-use crate::rust::interpreter::tensor::num::{self, NumError};
+// Changed by decision 105: the base codes replace the Reified codes, and the base helpers build
+// the replies.
+// use crate::rust::interpreter::system_processes::{Definition, ProcessContext, Remainder};
+// use crate::rust::interpreter::tensor::num::{self, NumError};
+use crate::rust::interpreter::system_processes::{
+    native_failure_reply, native_played_reply, native_replayed_reply, Definition, ProcessContext,
+    Remainder, EXT_BAD_ARG, EXT_FAILED,
+};
+use crate::rust::interpreter::tensor::num;
 use crate::rust::interpreter::tensor::ops::{self, OpFailure};
 
 /// The native agent of every wired family: the family agent (P5 design v3, A.3.4). It reads the
@@ -98,12 +124,20 @@ pub fn native_agent() -> Arc<dyn SpaceAgent> { Arc::new(FamilyAgent) }
 /// handler of its family, so the second install of its channel changes nothing: the install
 /// map and the dispatch table are keyed by the channel and by the body ref. P8 appends the
 /// matcher process and the sink of user agents (`P8_PROCESSES`) after the factories of P7.
+/// Added by decision 127 (kind registry): the factories of the registered kinds come last, then
+/// their system processes, each in op order.
 pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
     let agent = native_agent();
     let families: Vec<_> = urn::registered_p5_families().collect();
     let aliases: Vec<_> = urn::registered_aliases().collect();
     let p6_families: Vec<_> = urn::registered_p6_families().collect();
     let p7_families: Vec<_> = urn::registered_p7_families().collect();
+    // Added by decision 127 (kind registry): the factories and the processes of the registered
+    // kinds, in op order.
+    let kind_families: Vec<_> = urn::registered_kind_families().collect();
+    let mut kind_processes: Vec<&SpaceProcess> =
+        crate::rust::interpreter::spaces::families::kind_processes().collect();
+    kind_processes.sort_by_key(|process| process.channel.op);
     let mut definitions = Vec::with_capacity(
         P4_SYSTEM_CHANNELS.len()
             + families.len()
@@ -113,6 +147,8 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
             + p7_families.len()
             + P8_PROCESSES.len(),
     );
+    // Added by decision 127 (kind registry): room for the definitions of the registered kinds.
+    definitions.reserve(kind_families.len() + kind_processes.len());
     let factory = |family, channel| {
         definition(
             channel,
@@ -151,7 +187,11 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
         definitions.push(factory(family, channel));
     }
     definitions.push(definition(VECTOR_PROCESS, ReifiedProcess::Vector));
+    // Changed by decision 113: only a build with the feature `chromadb` registers `embed` and
+    // `ann`, as the base does for its Chroma processes (`rho_runtime.rs`).
+    #[cfg(feature = "chromadb")]
     definitions.push(definition(EMBED_PROCESS, ReifiedProcess::Embed));
+    #[cfg(feature = "chromadb")]
     definitions.push(definition(ANN_PROCESS, ReifiedProcess::Ann {
         runtime: Arc::clone(runtime),
         agent: Arc::clone(&agent),
@@ -168,12 +208,33 @@ pub fn definitions(runtime: &Arc<ReifiedRuntime>) -> Vec<Definition> {
         ReifiedProcess::Sink,
         Some(new_wildcard_var()),
     ));
+    // Added by decision 127 (kind registry): the factories of the registered kinds, then their
+    // system processes.
+    for (family, channel) in kind_families {
+        definitions.push(factory(family, channel));
+    }
+    for process in kind_processes {
+        definitions.push((process.definition)(runtime));
+    }
     definitions
 }
 
 /// Adds the Reified system processes of `runtime` to `processes`.
 pub fn register(processes: &mut Vec<Definition>, runtime: &Arc<ReifiedRuntime>) {
     processes.extend(definitions(runtime));
+}
+
+/// Added by decision 127 (kind registry): a system process of a registered kind: its channel,
+/// whether its handler records and replays its replies (DR-114), and its definition.
+pub struct SpaceProcess {
+    /// The URN, the op and the arity of the process.
+    pub channel: SystemChannel,
+    /// True for a process whose handler records its reply in play and replays it, as the
+    /// recorded built-in processes do. Base rule P2 then fails a persistent send to it at its
+    /// fire.
+    pub recorded: bool,
+    /// The definition of the process for the runtime `runtime`.
+    pub definition: fn(&Arc<ReifiedRuntime>) -> Definition,
 }
 
 /// A Reified system process.
@@ -186,7 +247,10 @@ enum ReifiedProcess {
     AssertEqual,
     Handle(HandleProcess),
     Vector,
+    // Changed by decision 113: only a chromadb build constructs these two.
+    #[cfg_attr(not(feature = "chromadb"), allow(dead_code))]
     Embed,
+    #[cfg_attr(not(feature = "chromadb"), allow(dead_code))]
     Ann {
         runtime: Arc<ReifiedRuntime>,
         agent: Arc<dyn SpaceAgent>,
@@ -269,9 +333,14 @@ async fn get_space_agent(
     contract: &ContractCall,
     contract_args: ContractArgs,
 ) -> Result<Vec<Par>, InterpreterError> {
-    let authority = match contract_args.0.as_slice() {
-        [call] => call.cost_authority.clone(),
-        _ => return Err(illegal_argument_error(GET_SPACE_AGENT_PROCESS.urn)),
+    // Changed by decision 90 (DR-132): the config read takes no cost authority, so only the
+    // arity of the call is checked here.
+    // let authority = match contract_args.0.as_slice() {
+    //     [call] => call.cost_authority.clone(),
+    //     _ => return Err(illegal_argument_error(GET_SPACE_AGENT_PROCESS.urn)),
+    // };
+    let [_] = contract_args.0.as_slice() else {
+        return Err(illegal_argument_error(GET_SPACE_AGENT_PROCESS.urn));
     };
     let Some((produce, _, _, args)) = contract.unapply(contract_args) else {
         return Err(illegal_argument_error(GET_SPACE_AGENT_PROCESS.urn));
@@ -286,7 +355,7 @@ async fn get_space_agent(
         Ok(SpaceRef::Native(space)) if runtime.check_live_space(space).is_err() => {
             dangling_reply(space.sid)
         }
-        Ok(SpaceRef::Native(space)) => match read_config(runtime, agent, space, authority).await? {
+        Ok(SpaceRef::Native(space)) => match read_config(runtime, agent, space).await? {
             Ok(config) => {
                 let config = SpaceConfig::from_par(&config).map_err(SpaceError::from)?;
                 let family = family_of(&config)?;
@@ -312,15 +381,23 @@ fn dangling_reply(space: SpaceId) -> Par {
     )])
 }
 
-/// Reads the config map of `space` as `ReifiedRuntime::read_config` does: one read-only
-/// `Intent::Space` job that commits nothing. The outer result is the result of the job, and
-/// the inner result keeps the typed space error, so `getSpaceAgent` can reply
-/// `DanglingHandle`.
+/// Reads the config map of `space` as `ReifiedRuntime::read_config` does: one read-only job
+/// that commits nothing. The outer result is the result of the job, and the inner result keeps
+/// the typed space error, so `getSpaceAgent` can reply `DanglingHandle`.
+///
+/// Changed by decision 90 (DR-132): the job runs inline in the counted task of the caller.
+/// Before, it was an `Intent::Space` of the scheduler, whose footprint held the parameter
+/// `authority: Option<CostAuthority>`. Nothing else used the parameter, so it is gone.
+// async fn read_config(
+//     runtime: &Arc<ReifiedRuntime>,
+//     agent: &Arc<dyn SpaceAgent>,
+//     space: NativeSpace,
+//     authority: Option<CostAuthority>,
+// ) -> Result<Result<Par, SpaceError>, InterpreterError> {
 async fn read_config(
     runtime: &Arc<ReifiedRuntime>,
     agent: &Arc<dyn SpaceAgent>,
     space: NativeSpace,
-    authority: Option<CostAuthority>,
 ) -> Result<Result<Par, SpaceError>, InterpreterError> {
     // Replaced by decision 46: the mode alone does not decide availability, because a host
     // runtime is unavailable in native play too.
@@ -332,20 +409,22 @@ async fn read_config(
     //     }
     // }
     runtime.ensure_available()?;
-    let runtime = Arc::clone(runtime);
-    let agent = Arc::clone(agent);
-    submit_space(SpaceRequest {
-        sid: space.sid,
-        authority,
-        channels: Vec::new(),
-        job: Box::new(move || {
-            Box::pin(async move {
-                let env = runtime.space_env()?;
-                Ok(agent.read_config(&env, space).await)
-            })
-        }),
-    })
-    .await
+    // let runtime = Arc::clone(runtime);
+    // let agent = Arc::clone(agent);
+    // submit_space(SpaceRequest {
+    //     sid: space.sid,
+    //     authority,
+    //     channels: Vec::new(),
+    //     job: Box::new(move || {
+    //         Box::pin(async move {
+    //             let env = runtime.space_env()?;
+    //             Ok(agent.read_config(&env, space).await)
+    //         })
+    //     }),
+    // })
+    // .await
+    let env = runtime.space_env()?;
+    Ok(agent.read_config(&env, space).await)
 }
 
 /// `assertEqual!(ret, a, b)` (plan decision 33).
@@ -388,11 +467,19 @@ async fn vector(
     Ok(reply)
 }
 
+/// The process names of the base codes of `embed` and `ann` (decision 105, DR-114 item 4).
+const EMBED_NAME: &str = "vectordb_embed";
+const ANN_NAME: &str = "vectordb_ann";
+
 /// `embed!(ret, text)` or `embed!(ret, [text…])` (P6 step 7, decision 57). Play embeds the
 /// texts with the embedder of the node and replies `[true, vector, model]` for one text or
-/// `[true, [vector…], model]` for a list, with each vector a list of `GFloat32`, or
-/// `[false, code, detail]`. In native funded execution a success takes its bytes from the record
-/// room of the deploy (decision 68). Replay produces the recorded reply.
+/// `[true, [vector…], model]` for a list, with each vector a list of `GFloat32`.
+///
+/// Changed by decisions 104 and 105 (DR-114): a failure replies `[false, code, message]` with a
+/// base code. A bad argument gives `EXT_BAD_ARG`, and a failure of the embedder gives
+/// `EXT_FAILED`. Play records a success through `native_played_reply`. Replay delivers the
+/// record through `native_replayed_reply`. Before, a failure replied a Reified code, and
+/// `within_record_room` and `record_present` made these steps.
 async fn embed(
     contract: &ContractCall,
     contract_args: ContractArgs,
@@ -404,16 +491,23 @@ async fn embed(
     let [ret, input] = args.as_slice() else {
         return Err(illegal_argument_error(EMBED_PROCESS.urn));
     };
-    record_present(EMBED_PROCESS.urn, is_replay, &previous_output)?;
-    if is_replay {
-        produce(&previous_output, ret).await?;
-        return Ok(previous_output);
-    }
-    let output = vec![embed_reply(input).await];
+    // Changed by decision 104 (DR-114): replay delivers the record after the checks of the base
+    // driver.
+    // record_present(EMBED_PROCESS.urn, is_replay, &previous_output)?;
+    // if is_replay {
+    //     produce(&previous_output, ret).await?;
+    //     return Ok(previous_output);
+    // }
+    // let output = vec![embed_reply(input).await];
     // Changed by decision 89 (DR-114, decision 68): a success of native play takes its bytes
     // from the record room.
     // produce_recorded(produce, output, ret).await
-    produce_recorded(produce, within_record_room(output, cost), ret).await
+    // produce_recorded(produce, within_record_room(output, cost), ret).await
+    let reply = match is_replay {
+        true => native_replayed_reply(EMBED_NAME, previous_output)?,
+        false => embed_reply(input, cost).await,
+    };
+    produce_recorded(produce, reply, ret).await
 }
 
 /// The texts of the argument of `embed`: one text, or a non-empty list of texts. The flag is
@@ -441,53 +535,87 @@ fn texts_of(input: &Par) -> Option<(Vec<String>, bool)> {
 }
 
 /// The reply of `embed` to `input`. The node-local quota bounds the work of the model.
-async fn embed_reply(input: &Par) -> Par {
+///
+/// Changed by decision 105: the reply is the recorded output of play. A bad argument or a text
+/// over the quota gives `EXT_BAD_ARG`, and a failure of the embedder gives `EXT_FAILED`. A
+/// success takes its bytes from the record room through `native_played_reply`. Before, the reply
+/// was one value with a Reified code, and `embed` took the record room.
+// async fn embed_reply(input: &Par) -> Par {
+async fn embed_reply(input: &Par, cost: &RuntimeBudget) -> Vec<Par> {
     let Some((texts, single)) = texts_of(input) else {
-        return failed_reply(ServiceReplyCode::BadArgument);
+        // return failed_reply(ServiceReplyCode::BadArgument);
+        return vec![native_failure_reply(
+            EMBED_NAME,
+            EXT_BAD_ARG,
+            "invalid argument",
+        )];
     };
     let bytes: usize = texts.iter().map(String::len).sum();
     if texts.len() > vectordb_services::MAX_TEXTS || bytes > vectordb_services::MAX_TEXT_BYTES {
-        return failed_reply(ServiceReplyCode::EmbeddingRateLimited);
+        // return failed_reply(ServiceReplyCode::EmbeddingRateLimited);
+        return vec![native_failure_reply(
+            EMBED_NAME,
+            EXT_BAD_ARG,
+            "invalid argument",
+        )];
     }
     let services = vectordb_services::current();
     match embed_texts(&services, &texts).await {
-        Ok(vectors) => {
+        // Ok(vectors) => {
+        Some(vectors) => {
             let value = match (single, vectors.as_slice()) {
                 (true, [vector]) => f32_list(vector),
                 _ => list_par(vectors.iter().map(|vector| f32_list(vector)).collect()),
             };
             let model = expr_par(ExprInstance::GString(services.embedder.model().to_string()));
-            ok_reply(vec![value, model])
+            // ok_reply(vec![value, model])
+            native_played_reply(EMBED_NAME, vec![ok_reply(vec![value, model])], cost)
         }
-        Err(code) => failed_reply(code),
+        // Err(code) => failed_reply(code),
+        None => vec![native_failure_reply(
+            EMBED_NAME,
+            EXT_FAILED,
+            "external service failed",
+        )],
     }
 }
 
 /// The vectors of `texts` from the embedder of the node: one finite vector for each text.
-async fn embed_texts(
-    services: &VectorDbServices,
-    texts: &[String],
-) -> Result<Vec<Vec<f32>>, ServiceReplyCode> {
+///
+/// Changed by decision 105: a failure gives `None`, because the base code `EXT_FAILED` names
+/// every failure of a service. Before, each failure gave its own Reified code.
+// async fn embed_texts(
+//     services: &VectorDbServices,
+//     texts: &[String],
+// ) -> Result<Vec<Vec<f32>>, ServiceReplyCode> {
+//     match services.embedder.embed(texts).await {
+//         Ok(vectors) if vectors.len() != texts.len() => Err(ServiceReplyCode::EmbeddingUnavailable),
+//         Ok(vectors) if vectors.iter().flatten().any(|value| !value.is_finite()) => {
+//             Err(ServiceReplyCode::NonFiniteEmbedding)
+//         }
+//         Ok(vectors) => Ok(vectors),
+//         Err(EmbedFailure::Unavailable) => Err(ServiceReplyCode::EmbeddingUnavailable),
+//         Err(EmbedFailure::NonFinite) => Err(ServiceReplyCode::NonFiniteEmbedding),
+//     }
+// }
+async fn embed_texts(services: &VectorDbServices, texts: &[String]) -> Option<Vec<Vec<f32>>> {
     match services.embedder.embed(texts).await {
-        Ok(vectors) if vectors.len() != texts.len() => Err(ServiceReplyCode::EmbeddingUnavailable),
-        Ok(vectors) if vectors.iter().flatten().any(|value| !value.is_finite()) => {
-            Err(ServiceReplyCode::NonFiniteEmbedding)
-        }
-        Ok(vectors) => Ok(vectors),
-        Err(EmbedFailure::Unavailable) => Err(ServiceReplyCode::EmbeddingUnavailable),
-        Err(EmbedFailure::NonFinite) => Err(ServiceReplyCode::NonFiniteEmbedding),
+        Ok(vectors) if vectors.len() != texts.len() => None,
+        Ok(vectors) if vectors.iter().flatten().any(|value| !value.is_finite()) => None,
+        Ok(vectors) => Some(vectors),
+        Err(EmbedFailure::Unavailable | EmbedFailure::NonFinite) => None,
     }
 }
 
 /// `ann!(ret, space, channel, query, options)` (P6 step 7, decision 57). Play asks the mirror of
-/// the VectorDB space `space` for the `k` records of `channel` that are nearest to `query`, and
-/// replies `[true, ids, distances, watermark]` or `[false, code, detail]`. The ids are hints: only
-/// the exact query param `ids=` turns them into a decision (decision 58). In native funded
-/// execution a success takes its bytes from the record room of the deploy (decision 68). Replay
-/// produces the recorded reply.
+/// the VectorDB space `space` for the `k` records of `channel` that are nearest to `query`. The
+/// ids are hints: only the exact query param `ids=` turns them into a decision (decision 58).
 ///
-/// The checks of the call read consensus state only, so play and replay both make them. Only
-/// the answers of the services are recorded.
+/// Changed by decisions 104, 105 and 114 (DR-114): play replies `[true, ids, distances]`, and a
+/// success takes its bytes from the record room through `native_played_reply`. A failed check of
+/// play gives `EXT_BAD_ARG`, and a failure of a service gives `EXT_FAILED`. Replay makes no check
+/// and delivers the record through `native_replayed_reply`. Before, replay made the checks of
+/// play too, and the reply ended with the watermark.
 async fn ann(
     runtime: &Arc<ReifiedRuntime>,
     agent: &Arc<dyn SpaceAgent>,
@@ -495,9 +623,14 @@ async fn ann(
     contract_args: ContractArgs,
     cost: &RuntimeBudget,
 ) -> Result<Vec<Par>, InterpreterError> {
-    let authority = match contract_args.0.as_slice() {
-        [call] => call.cost_authority.clone(),
-        _ => return Err(illegal_argument_error(ANN_PROCESS.urn)),
+    // Changed by decision 90 (DR-132): the config read takes no cost authority, so only the
+    // arity of the call is checked here.
+    // let authority = match contract_args.0.as_slice() {
+    //     [call] => call.cost_authority.clone(),
+    //     _ => return Err(illegal_argument_error(ANN_PROCESS.urn)),
+    // };
+    let [_] = contract_args.0.as_slice() else {
+        return Err(illegal_argument_error(ANN_PROCESS.urn));
     };
     let Some((produce, is_replay, previous_output, args)) = contract.unapply(contract_args) else {
         return Err(illegal_argument_error(ANN_PROCESS.urn));
@@ -505,20 +638,41 @@ async fn ann(
     let [ret, space, channel, query, options] = args.as_slice() else {
         return Err(illegal_argument_error(ANN_PROCESS.urn));
     };
-    record_present(ANN_PROCESS.urn, is_replay, &previous_output)?;
-    let request = ann_request(runtime, agent, authority, space, channel, query, options).await?;
-    if is_replay {
-        produce(&previous_output, ret).await?;
-        return Ok(previous_output);
-    }
-    let reply = match request {
-        Ok(request) => ann_answer(&vectordb_services::current(), request).await,
-        Err(code) => failed_reply(code),
-    };
+    // Changed by decision 104 (DR-114): replay delivers the record after the checks of the base
+    // driver, and it makes no check of play.
+    // record_present(ANN_PROCESS.urn, is_replay, &previous_output)?;
+    // let request = ann_request(runtime, agent, authority, space, channel, query, options).await?;
+    // if is_replay {
+    //     produce(&previous_output, ret).await?;
+    //     return Ok(previous_output);
+    // }
+    // let reply = match request {
+    //     Ok(request) => ann_answer(&vectordb_services::current(), request).await,
+    //     Err(code) => failed_reply(code),
+    // };
     // Changed by decision 89 (DR-114, decision 68): a success of native play takes its bytes
     // from the record room.
     // produce_recorded(produce, vec![reply], ret).await
-    produce_recorded(produce, within_record_room(vec![reply], cost), ret).await
+    // produce_recorded(produce, within_record_room(vec![reply], cost), ret).await
+    let reply = match is_replay {
+        true => native_replayed_reply(ANN_NAME, previous_output)?,
+        false => match ann_request(runtime, agent, space, channel, query, options).await? {
+            Some(request) => match ann_answer(&vectordb_services::current(), request).await {
+                Some(answer) => native_played_reply(ANN_NAME, vec![answer], cost),
+                None => vec![native_failure_reply(
+                    ANN_NAME,
+                    EXT_FAILED,
+                    "external service failed",
+                )],
+            },
+            None => vec![native_failure_reply(
+                ANN_NAME,
+                EXT_BAD_ARG,
+                "invalid argument",
+            )],
+        },
+    };
+    produce_recorded(produce, reply, ret).await
 }
 
 /// A call of `ann` whose arguments pass every check of consensus state.
@@ -544,47 +698,68 @@ enum AnnQuery {
     Text(String),
 }
 
-/// The checks of an `ann` call, in this order: the space is a native VectorDB space
-/// (`NotAVectorDbSpace`) with a mirror (`MirrorDisabled`), the query is a text or a numeric
-/// vector of the dimensions of the space (`DimensionMismatch`, `BadArgument`), and the options
-/// are a map of `k` (`InvalidOption`). A failure of the config job fails the deploy, as for
-/// `getSpaceAgent`.
+/// The checks of an `ann` call in play, in this order. The space is a native VectorDB space with
+/// a mirror. The query is a text, or a numeric vector of the dimensions of the space. The options
+/// are a map of `k`. A failure of the config job fails the deploy, as for `getSpaceAgent`.
+///
+/// Changed by decisions 104 and 105: only play makes the checks. Before, replay made them too,
+/// and each failed check had its own Reified code.
+// Changed by decision 90 (DR-132): the config read takes no cost authority, so the parameter
+// `authority: Option<CostAuthority>` after `agent` is gone.
+// Changed by decision 105: a failed check gives `None`, and `ann` replies `EXT_BAD_ARG`.
+// async fn ann_request(
+//     runtime: &Arc<ReifiedRuntime>,
+//     agent: &Arc<dyn SpaceAgent>,
+//     space: &Par,
+//     channel: &Par,
+//     query: &Par,
+//     options: &Par,
+// ) -> Result<Result<AnnRequest, ServiceReplyCode>, InterpreterError> {
 async fn ann_request(
     runtime: &Arc<ReifiedRuntime>,
     agent: &Arc<dyn SpaceAgent>,
-    authority: Option<CostAuthority>,
     space: &Par,
     channel: &Par,
     query: &Par,
     options: &Par,
-) -> Result<Result<AnnRequest, ServiceReplyCode>, InterpreterError> {
+) -> Result<Option<AnnRequest>, InterpreterError> {
     let native = match classify_space_ref(space) {
         Ok(SpaceRef::Native(native)) => native,
-        Ok(SpaceRef::Agent(_)) | Err(_) => return Ok(Err(ServiceReplyCode::NotAVectorDbSpace)),
+        // Ok(SpaceRef::Agent(_)) | Err(_) => return Ok(Err(ServiceReplyCode::NotAVectorDbSpace)),
+        Ok(SpaceRef::Agent(_)) | Err(_) => return Ok(None),
     };
-    let config_map = match read_config(runtime, agent, native, authority).await? {
+    // let config_map = match read_config(runtime, agent, native, authority).await? {
+    let config_map = match read_config(runtime, agent, native).await? {
         Ok(config_map) => config_map,
-        Err(SpaceError::DanglingHandle { .. }) => {
-            return Ok(Err(ServiceReplyCode::NotAVectorDbSpace))
-        }
+        // Err(SpaceError::DanglingHandle { .. }) => {
+        //     return Ok(Err(ServiceReplyCode::NotAVectorDbSpace))
+        // }
+        Err(SpaceError::DanglingHandle { .. }) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let config = SpaceConfig::from_par(&config_map).map_err(SpaceError::from)?;
     if family_of(&config)?.inner != SpaceInner::VectorDb {
-        return Ok(Err(ServiceReplyCode::NotAVectorDbSpace));
+        // return Ok(Err(ServiceReplyCode::NotAVectorDbSpace));
+        return Ok(None);
     }
     if !config.params.contains_key(MIRROR_PARAM) {
-        return Ok(Err(ServiceReplyCode::MirrorDisabled));
+        // return Ok(Err(ServiceReplyCode::MirrorDisabled));
+        return Ok(None);
     }
     let cfg = vdb_config(&config)?;
-    let query = match query_of(query, cfg.dimensions) {
-        Ok(query) => query,
-        Err(code) => return Ok(Err(code)),
+    // let query = match query_of(query, cfg.dimensions) {
+    //     Ok(query) => query,
+    //     Err(code) => return Ok(Err(code)),
+    // };
+    let Some(query) = query_of(query, cfg.dimensions) else {
+        return Ok(None);
     };
     let Some(k) = option_k(options, cfg.capacity) else {
-        return Ok(Err(ServiceReplyCode::InvalidOption));
+        // return Ok(Err(ServiceReplyCode::InvalidOption));
+        return Ok(None);
     };
-    Ok(Ok(AnnRequest {
+    // Ok(Ok(AnnRequest {
+    Ok(Some(AnnRequest {
         collection: collection_name(&native.sid),
         channel: channel_digest(&CollectionKey::of_channel(channel)?),
         query,
@@ -595,24 +770,34 @@ async fn ann_request(
 
 /// The query of an `ann` call: a text, or a numeric vector of `dimensions` elements whose
 /// values are finite as `f32` values.
-fn query_of(query: &Par, dimensions: usize) -> Result<AnnQuery, ServiceReplyCode> {
+///
+/// Changed by decision 105: a failure gives `None`. Before, a failure gave `DimensionMismatch` or
+/// `BadArgument`.
+// fn query_of(query: &Par, dimensions: usize) -> Result<AnnQuery, ServiceReplyCode> {
+fn query_of(query: &Par, dimensions: usize) -> Option<AnnQuery> {
     if let (Some(ExprInstance::GString(text)), false) = (sole_expr(query), query.connective_used) {
-        return Ok(AnnQuery::Text(text.clone()));
+        // return Ok(AnnQuery::Text(text.clone()));
+        return Some(AnnQuery::Text(text.clone()));
     }
-    let vector = match num::vector_of(query, Some(dimensions)) {
-        Ok(vector) => vector,
-        Err(NumError::DimensionMismatch { .. }) => return Err(ServiceReplyCode::DimensionMismatch),
-        Err(_) => return Err(ServiceReplyCode::BadArgument),
+    // let vector = match num::vector_of(query, Some(dimensions)) {
+    //     Ok(vector) => vector,
+    //     Err(NumError::DimensionMismatch { .. }) => return Err(ServiceReplyCode::DimensionMismatch),
+    //     Err(_) => return Err(ServiceReplyCode::BadArgument),
+    // };
+    let Ok(vector) = num::vector_of(query, Some(dimensions)) else {
+        return None;
     };
     let values = vector.rationals();
     let mut elements = Vec::with_capacity(values.len());
     for value in values.iter() {
         match num::round_to_f64(value).map(|value| value as f32) {
             Ok(element) if element.is_finite() => elements.push(element),
-            Ok(_) | Err(_) => return Err(ServiceReplyCode::BadArgument),
+            // Ok(_) | Err(_) => return Err(ServiceReplyCode::BadArgument),
+            Ok(_) | Err(_) => return None,
         }
     }
-    Ok(AnnQuery::Vector(elements))
+    // Ok(AnnQuery::Vector(elements))
+    Some(AnnQuery::Vector(elements))
 }
 
 /// The `k` of the options of `ann`: a map with the one key `k`, an `Int` in `[1, capacity]`.
@@ -631,18 +816,28 @@ fn option_k(options: &Par, capacity: usize) -> Option<usize> {
 }
 
 /// The answer of the services to a checked `ann` call: the embedder embeds a text query, and the
-/// mirror answers the `k` neighbours and the watermark of the collection. A failure replies its
-/// code, and the reply drops an id that is not 32 bytes long, because it cannot name a record.
-async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {
+/// mirror answers the `k` neighbours. The reply drops an id that is not 32 bytes long, because it
+/// cannot name a record.
+///
+/// Changed by decisions 105 and 114: a failure gives `None`, and the reply carries no watermark.
+/// Before, a failure replied its Reified code, and the mirror also answered the watermark of the
+/// collection.
+// async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {
+async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Option<Par> {
     let vector = match request.query {
         AnnQuery::Vector(vector) => vector,
         AnnQuery::Text(text) => match embed_texts(services, std::slice::from_ref(&text)).await {
-            Ok(vectors) => match <[Vec<f32>; 1]>::try_from(vectors) {
+            // Ok(vectors) => match <[Vec<f32>; 1]>::try_from(vectors) {
+            //     Ok([vector]) if vector.len() == request.dimensions => vector,
+            //     Ok(_) => return failed_reply(ServiceReplyCode::DimensionMismatch),
+            //     Err(_) => return failed_reply(ServiceReplyCode::EmbeddingUnavailable),
+            // },
+            // Err(code) => return failed_reply(code),
+            Some(vectors) => match <[Vec<f32>; 1]>::try_from(vectors) {
                 Ok([vector]) if vector.len() == request.dimensions => vector,
-                Ok(_) => return failed_reply(ServiceReplyCode::DimensionMismatch),
-                Err(_) => return failed_reply(ServiceReplyCode::EmbeddingUnavailable),
+                Ok(_) | Err(_) => return None,
             },
-            Err(code) => return failed_reply(code),
+            None => return None,
         },
     };
     let neighbours = match services
@@ -651,12 +846,14 @@ async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {
         .await
     {
         Ok(neighbours) => neighbours,
-        Err(_) => return failed_reply(ServiceReplyCode::MirrorUnavailable),
+        // Err(_) => return failed_reply(ServiceReplyCode::MirrorUnavailable),
+        Err(_) => return None,
     };
-    let watermark = match services.mirror.watermark(&request.collection).await {
-        Ok(watermark) => watermark,
-        Err(_) => return failed_reply(ServiceReplyCode::MirrorUnavailable),
-    };
+    // Retired by decision 114: the reply carries no watermark.
+    // let watermark = match services.mirror.watermark(&request.collection).await {
+    //     Ok(watermark) => watermark,
+    //     Err(_) => return failed_reply(ServiceReplyCode::MirrorUnavailable),
+    // };
     let neighbours: Vec<Neighbour> = neighbours
         .into_iter()
         .filter(|neighbour| neighbour.id.len() == ID_LEN)
@@ -674,10 +871,12 @@ async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {
             .map(|neighbour| expr_par(ExprInstance::GFloat32(neighbour.distance.to_bits())))
             .collect(),
     );
-    let watermark = expr_par(ExprInstance::GInt(
-        i64::try_from(watermark).unwrap_or(i64::MAX),
-    ));
-    ok_reply(vec![ids, distances, watermark])
+    // Retired by decision 114: the reply carries no watermark.
+    // let watermark = expr_par(ExprInstance::GInt(
+    //     i64::try_from(watermark).unwrap_or(i64::MAX),
+    // ));
+    // ok_reply(vec![ids, distances, watermark])
+    Some(ok_reply(vec![ids, distances]))
 }
 
 /// Produces the recorded or computed `output` of a recorded process on `ret`. A failure of the
@@ -698,52 +897,54 @@ async fn produce_recorded(
     }
 }
 
-/// The record room that the reply `output` of native play takes (DR-114, decision 5): the
-/// encoded length of each reply value and 64 bytes. `None` when the sum overflows `u64`.
-fn record_bytes(output: &[Par]) -> Option<u64> {
-    output.iter().try_fold(0_u64, |total, par| {
-        u64::try_from(par.encoded_len())
-            .ok()
-            .and_then(|bytes| bytes.checked_add(64))
-            .and_then(|bytes| total.checked_add(bytes))
-    })
-}
-
-/// The reply that play records for the reply `output` of a call (decision 68). In native funded
-/// execution a success takes its bytes from the record room of the deploy
-/// (`RuntimeBudget::take_native_record_room`), and a success that does not fit becomes the
-/// failure `OutputTooLarge`. A failure takes no room, because its size is small and fixed.
-/// Outside native funded execution the reply stays as it is.
-fn within_record_room(output: Vec<Par>, cost: &RuntimeBudget) -> Vec<Par> {
-    let success = matches!(output.as_slice(), [reply] if is_ok_reply(reply));
-    let fits = match (cost.native_execution_active(), success) {
-        (true, true) => {
-            record_bytes(&output).is_some_and(|bytes| cost.take_native_record_room(bytes))
-        }
-        (true, false) | (false, _) => true,
-    };
-    match fits {
-        true => output,
-        false => vec![failed_reply(ServiceReplyCode::OutputTooLarge)],
-    }
-}
-
-/// Replay of a recorded call needs the record of play, as the driver of DR-114 requires
-/// (`native_recorded_call`). Play records every reply of `embed` and `ann`, and a call whose reply
-/// play could not produce keeps its record too, so an empty record means a block without the
-/// record. Replay then fails with `BugFoundError` before it reads anything.
-fn record_present(
-    urn: &str,
-    is_replay: bool,
-    previous_output: &[Par],
-) -> Result<(), InterpreterError> {
-    match is_replay && previous_output.is_empty() {
-        true => Err(InterpreterError::BugFoundError(format!(
-            "replay of {urn} has no recorded output"
-        ))),
-        false => Ok(()),
-    }
-}
+// Retired by decision 105: `native_played_reply` and `native_replayed_reply` of the base take
+// their place.
+// /// The record room that the reply `output` of native play takes (DR-114, decision 5): the
+// /// encoded length of each reply value and 64 bytes. `None` when the sum overflows `u64`.
+// fn record_bytes(output: &[Par]) -> Option<u64> {
+//     output.iter().try_fold(0_u64, |total, par| {
+//         u64::try_from(par.encoded_len())
+//             .ok()
+//             .and_then(|bytes| bytes.checked_add(64))
+//             .and_then(|bytes| total.checked_add(bytes))
+//     })
+// }
+//
+// /// The reply that play records for the reply `output` of a call (decision 68). In native funded
+// /// execution a success takes its bytes from the record room of the deploy
+// /// (`RuntimeBudget::take_native_record_room`), and a success that does not fit becomes the
+// /// failure `OutputTooLarge`. A failure takes no room, because its size is small and fixed.
+// /// Outside native funded execution the reply stays as it is.
+// fn within_record_room(output: Vec<Par>, cost: &RuntimeBudget) -> Vec<Par> {
+//     let success = matches!(output.as_slice(), [reply] if is_ok_reply(reply));
+//     let fits = match (cost.native_execution_active(), success) {
+//         (true, true) => {
+//             record_bytes(&output).is_some_and(|bytes| cost.take_native_record_room(bytes))
+//         }
+//         (true, false) | (false, _) => true,
+//     };
+//     match fits {
+//         true => output,
+//         false => vec![failed_reply(ServiceReplyCode::OutputTooLarge)],
+//     }
+// }
+//
+// /// Replay of a recorded call needs the record of play, as the driver of DR-114 requires
+// /// (`native_recorded_call`). Play records every reply of `embed` and `ann`, and a call whose reply
+// /// play could not produce keeps its record too, so an empty record means a block without the
+// /// record. Replay then fails with `BugFoundError` before it reads anything.
+// fn record_present(
+//     urn: &str,
+//     is_replay: bool,
+//     previous_output: &[Par],
+// ) -> Result<(), InterpreterError> {
+//     match is_replay && previous_output.is_empty() {
+//         true => Err(InterpreterError::BugFoundError(format!(
+//             "replay of {urn} has no recorded output"
+//         ))),
+//         false => Ok(()),
+//     }
+// }
 
 #[cfg(test)]
 pub(crate) mod harness {
@@ -755,6 +956,7 @@ pub(crate) mod harness {
 
     use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
+    use models::rust::phlo_schedule::{PhloGenesisPolicy, PhloScheduleV1};
     use models::rust::space_factory_urn::SpaceFactoryUrn;
     use models::rust::utils::{new_elist_par, new_gint_par, new_gstring_par};
     use rspace_plus_plus::rspace::rspace::RSpace;
@@ -764,9 +966,18 @@ pub(crate) mod harness {
 
     use super::native_agent;
     use crate::rust::interpreter::accounting::costs::Cost;
-    use crate::rust::interpreter::accounting::RuntimeBudget;
+    // Added by decision 90 (C6): the native configuration of the fixtures.
+    use crate::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativeBoundSource, NativeBudgetTraceLimits,
+        NativePhloDimension, NativePhloExecutionContract, NativePhloRegionLimits,
+    };
+    use crate::rust::interpreter::accounting::phlo_controls::{
+        check_phlo_controls, PhloScheduleBinding, SignedPhloControls,
+    };
+    use crate::rust::interpreter::accounting::{NativeRuntimeConfig, RuntimeBudget};
     use crate::rust::interpreter::contract_call::ContractCall;
-    use crate::rust::interpreter::deterministic_reduction::root;
+    // Changed by decision 90 (DR-132): the scheduler is gone.
+    // use crate::rust::interpreter::deterministic_reduction::root;
     use crate::rust::interpreter::dispatch::RholangAndScalaDispatcher;
     use crate::rust::interpreter::errors::InterpreterError;
     use crate::rust::interpreter::external_services::ExternalServices;
@@ -790,8 +1001,78 @@ pub(crate) mod harness {
         .expect("an in-memory space")
     }
 
+    // Changed by decision 90 (C6, decision 69): a host runtime runs space jobs only in native
+    // execution, so the fixtures run on a native budget, as the native fixtures of the base do
+    // (`accounting/native_runtime/tests/racing_evaluation.rs`).
+    // pub(crate) fn budget() -> RuntimeBudget {
+    //     RuntimeBudget::new(Cost::create(i64::MAX, "reified system process test"))
+    // }
     pub(crate) fn budget() -> RuntimeBudget {
-        RuntimeBudget::new(Cost::create(i64::MAX, "reified system process test"))
+        let budget = RuntimeBudget::new(Cost::unsafe_max());
+        budget
+            .reset_for_native_execution(native_config())
+            .expect("the test budget enters native execution");
+        budget
+    }
+
+    /// Added by decision 90 (C6): the native configuration `config(u64::MAX, [0, 1, 1, 0])` of
+    /// the base fixtures (`accounting/native_runtime/tests.rs`). The base keeps that fixture
+    /// private to its module, so this harness restates it.
+    // Changed by decision 107: the fixture is `priced_native_config(u64::MAX, 0)`, as the base
+    // fixture `config` calls `priced_config(limit, weights, 0)`.
+    pub(crate) fn native_config() -> NativeRuntimeConfig { priced_native_config(u64::MAX, 0) }
+
+    /// Added by decision 107: the native configuration `priced_config(limit, [0, 1, 1, 0],
+    /// price)` of the base fixtures. The schedule has the actual price `price`, and the signed
+    /// price ceiling and the owner ceiling equal it. The resource bound equals the limit. A
+    /// positive price needs a limit whose charge `limit * price + 1` fits in `u64`.
+    pub(crate) fn priced_native_config(limit: u64, price: u64) -> NativeRuntimeConfig {
+        let descriptor = PhloScheduleV1 {
+            protocol_version: 6,
+            network: b"native-test",
+            shard: b"root",
+            settlement_asset: b"REV",
+            settlement_unit: b"atomic-REV",
+            decimal_scale: 8,
+            classes: NativePhloDimension::ALL
+                .into_iter()
+                .zip([0, 1, 1, 0])
+                .zip([b"c".as_slice(), b"i", b"t", b"r"])
+                .map(|((dimension, weight), name)| dimension.resource_class(name, weight))
+                .collect(),
+            actual_price: price,
+            compatibility_rule: native_resource_compatibility_rule(),
+        };
+        let binding = PhloScheduleBinding::new(&descriptor, PhloGenesisPolicy::LIMITS)
+            .expect("the test schedule binds");
+        let selected = binding.schedule();
+        let schedules = [selected];
+        let owner_ceilings = [price];
+        let controls = check_phlo_controls(
+            selected.environment,
+            0,
+            u64::MAX,
+            SignedPhloControls {
+                limit,
+                price_ceiling: price,
+                required_owner_ceilings: &owner_ceilings,
+                permitted_schedules: &schedules,
+            },
+            selected,
+            limit,
+        )
+        .expect("the test controls check");
+        let contract =
+            NativePhloExecutionContract::new(controls, &binding, NativeBoundSource::Certificate)
+                .expect("the test contract builds");
+        NativeRuntimeConfig::new(contract, NativeBudgetTraceLimits {
+            attempts: 100_000,
+            path_segments: 4096,
+            regions: NativePhloRegionLimits {
+                regions: 1000,
+                encoded_authority_bytes: 10_000_000,
+            },
+        })
     }
 
     /// The arguments of a call with the data `pars` and the random state of `seed`.
@@ -905,7 +1186,8 @@ pub(crate) mod harness {
         pub(crate) rspace: ParRSpace,
         pub(crate) runtime: Arc<ReifiedRuntime>,
         pub(crate) reducer: Arc<DebruijnInterpreter>,
-        pub(crate) budget: RuntimeBudget,
+        // Disabled by decision 90 (DR-132): only the scheduler root of `reduce` read the budget.
+        // pub(crate) budget: RuntimeBudget,
     }
 
     impl Reduction {
@@ -914,13 +1196,21 @@ pub(crate) mod harness {
             let budget = budget();
             let runtime = for_host(rspace.clone(), budget.clone());
             let mut processes = super::definitions(&runtime);
+            let space_runtime = crate::rust::interpreter::reified::runtime::for_host(
+                rspace.clone(),
+                budget.clone(),
+            );
             let (reducer, _, _, _) = create_rho_env(
                 rspace.clone(),
+                space_runtime,
                 Arc::new(tokio::sync::RwLock::new(HashMap::new())),
                 Arc::new(HashMap::new()),
                 &mut processes,
                 budget.clone(),
                 ExternalServices::noop(),
+                // Added by decision 90: the file handles that the base passes to every
+                // environment.
+                crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
             )
             .await
             .expect("create the rho environment");
@@ -932,7 +1222,7 @@ pub(crate) mod harness {
                 rspace,
                 runtime,
                 reducer,
-                budget,
+                // budget,
             }
         }
 
@@ -945,16 +1235,24 @@ pub(crate) mod harness {
         }
 
         /// Runs `future` as one root evaluation of the reducer.
+        ///
+        /// Changed by decision 90 (DR-132): the future runs in the per-call dispatch scope of
+        /// the base, as `inj_with_observation` runs a deploy, and the scope drains before the
+        /// result returns. Before, it ran under the scheduler root, which dropped the errors
+        /// of the detached tasks as this form does.
         pub(crate) async fn reduce<T>(&self, future: impl Future<Output = T>) -> T {
             self.runtime.begin_evaluation_scope();
             self.reducer.core.reified.begin_evaluation_scope();
-            root(
-                self.reducer.core.space.clone(),
-                self.budget.clone(),
-                self.reducer.core.reduction_coordinator.clone(),
-                future,
-            )
-            .await
+            // root(
+            //     self.reducer.core.space.clone(),
+            //     self.budget.clone(),
+            //     self.reducer.core.reduction_coordinator.clone(),
+            //     future,
+            // )
+            // .await
+            crate::rust::interpreter::reduce::with_dispatch_scope(future)
+                .await
+                .0
         }
 
         /// Evaluates `term` as a deploy body.
@@ -998,33 +1296,123 @@ mod tests {
 
     fn typed(code: SpaceReplyCode) -> Par { typed_error(code, Vec::new()) }
 
-    /// Decision 68 (DR-114): replay of `embed` or `ann` without the record of play fails with
-    /// `BugFoundError`. Play, and replay with a record, pass the check. The success predicate of
-    /// the record room tells an `ok_reply` from a `failed_reply`.
-    #[test]
-    fn recorded_processes_need_their_record_in_replay() {
-        let reply = failed_reply(ServiceReplyCode::BadArgument);
-        for urn in [EMBED_PROCESS.urn, ANN_PROCESS.urn] {
-            assert_eq!(
-                record_present(urn, true, &[]),
-                Err(InterpreterError::BugFoundError(format!(
-                    "replay of {urn} has no recorded output"
-                )))
-            );
-            assert_eq!(
-                record_present(urn, true, std::slice::from_ref(&reply)),
-                Ok(())
-            );
-            assert_eq!(record_present(urn, false, &[]), Ok(()));
+    // Retired by decision 105: the base helpers `native_played_reply` and `native_replayed_reply`
+    // replace `record_present`, `record_bytes` and `within_record_room`, and
+    // `vectordb_replay_delivers_the_record_without_a_check` covers the replay checks.
+    // /// Decision 68 (DR-114): replay of `embed` or `ann` without the record of play fails with
+    // /// `BugFoundError`. Play, and replay with a record, pass the check. The success predicate of
+    // /// the record room tells an `ok_reply` from a `failed_reply`.
+    // #[test]
+    // fn recorded_processes_need_their_record_in_replay() {
+    //     let reply = failed_reply(ServiceReplyCode::BadArgument);
+    //     for urn in [EMBED_PROCESS.urn, ANN_PROCESS.urn] {
+    //         assert_eq!(
+    //             record_present(urn, true, &[]),
+    //             Err(InterpreterError::BugFoundError(format!(
+    //                 "replay of {urn} has no recorded output"
+    //             )))
+    //         );
+    //         assert_eq!(
+    //             record_present(urn, true, std::slice::from_ref(&reply)),
+    //             Ok(())
+    //         );
+    //         assert_eq!(record_present(urn, false, &[]), Ok(()));
+    //     }
+    //     assert!(is_ok_reply(&ok_reply(vec![int(1)])));
+    //     assert!(!is_ok_reply(&reply));
+    //     assert!(!is_ok_reply(&int(1)));
+    //     assert_eq!(record_bytes(&[]), Some(0));
+    //     assert_eq!(
+    //         record_bytes(std::slice::from_ref(&reply)),
+    //         Some(u64::try_from(reply.encoded_len()).expect("a small reply") + 64)
+    //     );
+    // }
+
+    /// Added by decisions 104 and 116 (DR-114): replay of `embed` and `ann` delivers the record of
+    /// play through `native_replayed_reply`, and it makes no check of play. Play of `ann` reads the
+    /// config of the space before it reads the options, so it fails on a runtime without a host.
+    /// Replay of the same call delivers its record. An empty record and a record that is not plain
+    /// data fail with `BugFoundError`, and nothing lands on the reply channel.
+    #[cfg(feature = "chromadb")]
+    #[tokio::test]
+    async fn vectordb_replay_delivers_the_record_without_a_check() {
+        use super::harness::budget;
+        use crate::rust::interpreter::accounting::owner_funding::plain_data_tests::review_forgeries;
+
+        let fixture = Fixture::with_runtime(unavailable()).await;
+        let cost = budget();
+        let embed = ReifiedProcess::Embed;
+        let ann = ReifiedProcess::Ann {
+            runtime: Arc::clone(&fixture.runtime),
+            agent: Arc::clone(&fixture.agent),
+        };
+        let handle = namespace::gprivate(namespace::handle_channel(space_of(b"no host")));
+        let ann_data = |ret: Par| {
+            vec![
+                ret,
+                handle.clone(),
+                string("records"),
+                string("text"),
+                int(1),
+            ]
+        };
+        let ret = reply_name(1);
+        match ann
+            .call(
+                &fixture.contract,
+                call(ann_data(ret.clone()), b"ann play"),
+                &cost,
+            )
+            .await
+        {
+            Err(InterpreterError::ReduceError(message)) => {
+                assert!(
+                    message.starts_with("reified:RuntimeUnavailable: "),
+                    "{message}"
+                );
+            }
+            other => panic!("play of ann without a host returned {other:?}"),
         }
-        assert!(is_ok_reply(&ok_reply(vec![int(1)])));
-        assert!(!is_ok_reply(&reply));
-        assert!(!is_ok_reply(&int(1)));
-        assert_eq!(record_bytes(&[]), Some(0));
-        assert_eq!(
-            record_bytes(std::slice::from_ref(&reply)),
-            Some(u64::try_from(reply.encoded_len()).expect("a small reply") + 64)
-        );
+        assert!(fixture.data(&ret).await.is_empty());
+        let record = vec![ok_reply(vec![int(1)])];
+        let cases = [
+            (&embed, EMBED_NAME, vec![reply_name(2), string("text")]),
+            (&ann, ANN_NAME, ann_data(reply_name(3))),
+        ];
+        for (process, name, data) in cases {
+            let ret = data[0].clone();
+            let replay = |record: Vec<Par>| {
+                let (pars, _, _) = call(data.clone(), b"replay");
+                (pars, true, record)
+            };
+            let reply = process
+                .call(&fixture.contract, replay(record.clone()), &cost)
+                .await
+                .expect("replay delivers the record");
+            assert_eq!(reply, record, "{name}");
+            assert_eq!(fixture.data(&ret).await, vec![record.clone()], "{name}");
+            assert_eq!(
+                process
+                    .call(&fixture.contract, replay(Vec::new()), &cost)
+                    .await,
+                Err(InterpreterError::BugFoundError(format!(
+                    "native replay of {name} has no recorded output"
+                ))),
+                "{name}"
+            );
+            for (label, forged) in review_forgeries() {
+                assert_eq!(
+                    process
+                        .call(&fixture.contract, replay(vec![forged]), &cost)
+                        .await,
+                    Err(InterpreterError::BugFoundError(format!(
+                        "native replay of {name} has a recorded output that is not plain data"
+                    ))),
+                    "{name}: {label}"
+                );
+            }
+            assert_eq!(fixture.data(&ret).await, vec![record.clone()], "{name}");
+        }
     }
 
     fn send(channel: Par, data: Vec<Par>) -> Par {
@@ -1034,6 +1422,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])
     }
 

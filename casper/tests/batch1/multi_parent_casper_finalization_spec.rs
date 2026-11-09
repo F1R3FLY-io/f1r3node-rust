@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
 use crypto::rust::public_key::PublicKey;
 use models::rust::casper::protocol::casper_message::BlockMessage;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 

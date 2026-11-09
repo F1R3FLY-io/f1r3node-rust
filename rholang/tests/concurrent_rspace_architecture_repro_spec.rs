@@ -15,7 +15,9 @@ use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::trace::Log;
+// Changed by DR-132: the whole-log comparison of `deterministic_checkpoint`
+// is gone, so the log type has no user.
+// use rspace_plus_plus::rspace::trace::Log;
 
 fn repo_path(relative: impl AsRef<Path>) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -49,14 +51,23 @@ fn concurrent_rspace_architecture_repro_eval_loop_must_not_use_join_all() {
         !reducer.contains("futures::future::join_all"),
         "reduce.rs still uses join_all; the design requires non-blocking concurrent branch completion"
     );
-    // The eval-parallel + continuation joins now DETACH each branch onto the atomic-counter completion
-    // driver (`spawn_detached`) instead of the parent awaiting a `FuturesUnordered` join. This is an even
-    // stronger form of completion-order, non-parent-pinning draining: it removes the O(N) parked-parent
-    // chain entirely (the parent returns immediately; the driver awaits live -> 0 at the inj/eval drain).
-    // Supersedes the earlier `FuturesUnordered` requirement.
+    // Changed by DR-132: the deterministic scheduler and its detached driver
+    // are gone. Evaluation takes dev's per-call deferral scope. Inside a scope,
+    // each continuation body, each re-issue and each parallel child runs as a
+    // task that the drain of `inj` awaits, so no parent awaits its children and
+    // no parked-parent chain forms.
+    // // The eval-parallel + continuation joins now DETACH each branch onto the atomic-counter completion
+    // // driver (`spawn_detached`) instead of the parent awaiting a `FuturesUnordered` join. This is an even
+    // // stronger form of completion-order, non-parent-pinning draining: it removes the O(N) parked-parent
+    // // chain entirely (the parent returns immediately; the driver awaits live -> 0 at the inj/eval drain).
+    // // Supersedes the earlier `FuturesUnordered` requirement.
+    // assert!(
+    //     reducer.contains("spawn_detached"),
+    //     "reduce.rs no longer detaches eval branches onto the atomic-counter completion driver (spawn_detached)"
+    // );
     assert!(
-        reducer.contains("spawn_detached"),
-        "reduce.rs no longer detaches eval branches onto the atomic-counter completion driver (spawn_detached)"
+        reducer.contains("spawn_in_dispatch_scope") && reducer.contains("DEFERRED_DISPATCHES"),
+        "reduce.rs does not run evaluation tasks in the per-call deferral scope (spawn_in_dispatch_scope, DEFERRED_DISPATCHES)"
     );
     assert!(
         !reducer.contains("FuturesUnordered"),
@@ -222,30 +233,32 @@ async fn concurrent_rspace_architecture_repro_play_replay_costs_must_match_for_i
     );
 }
 
-async fn deterministic_checkpoint(term: &str) -> (Blake2b256Hash, Log) {
-    let mut store_manager = InMemoryStoreManager::new();
-    let stores = store_manager
-        .r_space_stores()
-        .await
-        .expect("failed to create in-memory stores");
-    let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
-    let result = runtime
-        .evaluate(
-            term,
-            Cost::create(100_000, "deterministic reduction frontier"),
-            Default::default(),
-            Blake2b512Random::create_from_bytes(&[]),
-        )
-        .await
-        .expect("evaluation failed");
-    assert!(
-        result.errors.is_empty(),
-        "evaluation errors: {:?}",
-        result.errors
-    );
-    let checkpoint = runtime.create_checkpoint().await;
-    (checkpoint.root, checkpoint.log)
-}
+// Changed by DR-132: racing evaluation gives arrival-order logs, so no test
+// compares whole logs across runs. `assert_outcomes` replays each run instead.
+// async fn deterministic_checkpoint(term: &str) -> (Blake2b256Hash, Log) {
+//     let mut store_manager = InMemoryStoreManager::new();
+//     let stores = store_manager
+//         .r_space_stores()
+//         .await
+//         .expect("failed to create in-memory stores");
+//     let (mut runtime, _, _) = create_runtimes(stores, false, &mut Vec::new()).await;
+//     let result = runtime
+//         .evaluate(
+//             term,
+//             Cost::create(100_000, "deterministic reduction frontier"),
+//             Default::default(),
+//             Blake2b512Random::create_from_bytes(&[]),
+//         )
+//         .await
+//         .expect("evaluation failed");
+//     assert!(
+//         result.errors.is_empty(),
+//         "evaluation errors: {:?}",
+//         result.errors
+//     );
+//     let checkpoint = runtime.create_checkpoint().await;
+//     (checkpoint.root, checkpoint.log)
+// }
 
 // Superseded by DR-129: restored dev's randomized candidate order (user
 // decision 2026-10-12). Play takes either datum, so the term ends in one of two
@@ -368,40 +381,77 @@ async fn competing_parallel_produces_end_in_either_outcome_and_replay() {
     .await;
 }
 
-async fn assert_canonical_permutations(terms: &[&str]) {
-    let expected = deterministic_checkpoint(terms[0]).await;
-    for _ in 0..4 {
-        for term in terms {
-            let observed = deterministic_checkpoint(term).await;
-            assert_eq!(observed.0, expected.0, "root diverged for {term}");
-            assert_eq!(observed.1, expected.1, "event log diverged for {term}");
-        }
-    }
-}
+// Changed by DR-132: no caller is left (see the tests below).
+// async fn assert_canonical_permutations(terms: &[&str]) {
+//     let expected = deterministic_checkpoint(terms[0]).await;
+//     for _ in 0..4 {
+//         for term in terms {
+//             let observed = deterministic_checkpoint(term).await;
+//             assert_eq!(observed.0, expected.0, "root diverged for {term}");
+//             assert_eq!(observed.1, expected.1, "event log diverged for {term}");
+//         }
+//     }
+// }
 
-// DR-129: this test stays canonical under dev's random play order. The
-// scheduler runs the sends before the receives, so the first receive in path
-// order takes the datum and play meets no choice (spec runs 2026-10-13).
+// Changed by DR-132: racing evaluation runs the sends and the receives in any
+// order, so the premise of DR-129 below no longer holds, and either receive
+// can take the datum. The test moves to `assert_outcomes`. Each run replays
+// its own record, and the runs show both outcomes.
+// // DR-129: this test stays canonical under dev's random play order. The
+// // scheduler runs the sends before the receives, so the first receive in path
+// // order takes the datum and play meets no choice (spec runs 2026-10-13).
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn competing_consumers_are_canonical_across_parallel_permutations() {
+//     assert_canonical_permutations(&[
+//         r#"for (@a <- @"x") { @"left"!(a) } | for (@b <- @"x") { @"right"!(b) } | @"x"!(1)"#,
+//         r#"@"x"!(1) | for (@b <- @"x") { @"right"!(b) } | for (@a <- @"x") { @"left"!(a) }"#,
+//         r#"for (@b <- @"x") { @"right"!(b) } | @"x"!(1) | for (@a <- @"x") { @"left"!(a) }"#,
+//     ])
+//     .await;
+// }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn competing_consumers_are_canonical_across_parallel_permutations() {
-    assert_canonical_permutations(&[
-        r#"for (@a <- @"x") { @"left"!(a) } | for (@b <- @"x") { @"right"!(b) } | @"x"!(1)"#,
-        r#"@"x"!(1) | for (@b <- @"x") { @"right"!(b) } | for (@a <- @"x") { @"left"!(a) }"#,
-        r#"for (@b <- @"x") { @"right"!(b) } | @"x"!(1) | for (@a <- @"x") { @"left"!(a) }"#,
-    ])
+async fn competing_consumers_end_in_either_outcome_across_parallel_permutations() {
+    assert_outcomes(
+        &[
+            r#"for (@a <- @"x") { @"left"!(a) } | for (@b <- @"x") { @"right"!(b) } | @"x"!(1)"#,
+            r#"@"x"!(1) | for (@b <- @"x") { @"right"!(b) } | for (@a <- @"x") { @"left"!(a) }"#,
+            r#"for (@b <- @"x") { @"right"!(b) } | @"x"!(1) | for (@a <- @"x") { @"left"!(a) }"#,
+        ],
+        &["left", "right", "x"],
+        &[r#"left=["1"] right=[] x=[]"#, r#"left=[] right=["1"] x=[]"#],
+    )
     .await;
 }
 
-// DR-129: this test stays canonical under dev's random play order. The
-// scheduler runs the sends before the receives, so the first receive in path
-// order takes the datum and play meets no choice (spec runs 2026-10-13).
+// Changed by DR-132: racing evaluation runs the sends and the receives in any
+// order, so either the join or the single receive can take the datum on `x`.
+// The test moves to `assert_outcomes`.
+// // DR-129: this test stays canonical under dev's random play order. The
+// // scheduler runs the sends before the receives, so the first receive in path
+// // order takes the datum and play meets no choice (spec runs 2026-10-13).
+// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+// async fn overlapping_join_and_single_channel_consume_are_one_canonical_component() {
+//     assert_canonical_permutations(&[
+//         r#"@"x"!(1) | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | for (@c <- @"x") { @"single"!(c) }"#,
+//         r#"for (@c <- @"x") { @"single"!(c) } | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1)"#,
+//         r#"for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1) | for (@c <- @"x") { @"single"!(c) } | @"y"!(2)"#,
+//     ])
+//     .await;
+// }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn overlapping_join_and_single_channel_consume_are_one_canonical_component() {
-    assert_canonical_permutations(&[
-        r#"@"x"!(1) | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | for (@c <- @"x") { @"single"!(c) }"#,
-        r#"for (@c <- @"x") { @"single"!(c) } | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1)"#,
-        r#"for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1) | for (@c <- @"x") { @"single"!(c) } | @"y"!(2)"#,
-    ])
+async fn overlapping_join_and_single_channel_consume_end_in_either_outcome() {
+    assert_outcomes(
+        &[
+            r#"@"x"!(1) | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | for (@c <- @"x") { @"single"!(c) }"#,
+            r#"for (@c <- @"x") { @"single"!(c) } | @"y"!(2) | for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1)"#,
+            r#"for (@a <- @"x" & @b <- @"y") { @"join"!((a, b)) } | @"x"!(1) | for (@c <- @"x") { @"single"!(c) } | @"y"!(2)"#,
+        ],
+        &["join", "single", "x", "y"],
+        &[
+            r#"join=["(1, 2)"] single=[] x=[] y=[]"#,
+            r#"join=[] single=["1"] x=[] y=["2"]"#,
+        ],
+    )
     .await;
 }
 
@@ -427,12 +477,25 @@ async fn overlapping_join_and_single_channel_consume_are_one_canonical_component
 /// The guarded receive meets both data: when play tries 1 first, the guard
 /// vetoes it and play stores the receive without trying 2, as on dev. Each run
 /// replays its own record, and the runs show both outcomes.
+///
+/// Changed by DR-132: racing evaluation gives arrival-order logs, so the
+/// persistent half compares its one outcome and no longer the whole log.
+// async fn persistent_peek_is_canonical_and_guarded_match_ends_in_either_outcome() {
+//     assert_canonical_permutations(&[
+//         r#"@"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) } | for (@b <- @"x") { @"take"!(b) }"#,
+//         r#"for (@b <- @"x") { @"take"!(b) } | @"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) }"#,
+//     ])
+//     .await;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn persistent_peek_is_canonical_and_guarded_match_ends_in_either_outcome() {
-    assert_canonical_permutations(&[
-        r#"@"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) } | for (@b <- @"x") { @"take"!(b) }"#,
-        r#"for (@b <- @"x") { @"take"!(b) } | @"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) }"#,
-    ])
+async fn persistent_peek_has_one_outcome_and_guarded_match_ends_in_either_outcome() {
+    assert_outcomes(
+        &[
+            r#"@"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) } | for (@b <- @"x") { @"take"!(b) }"#,
+            r#"for (@b <- @"x") { @"take"!(b) } | @"x"!!(1) | for (@a <<- @"x") { @"peek"!(a) }"#,
+        ],
+        &["peek", "take", "x"],
+        &[r#"peek=["1"] take=["1"] x=["1"]"#],
+    )
     .await;
     assert_outcomes(
         &[

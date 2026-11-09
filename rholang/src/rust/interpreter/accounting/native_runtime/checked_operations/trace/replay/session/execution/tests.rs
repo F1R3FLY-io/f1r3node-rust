@@ -11,6 +11,8 @@ use tokio::sync::RwLock;
 
 use super::*;
 use crate::rust::interpreter::accounting::costs::Cost;
+// Added by DR-132 (T17): the failure classes of an error list.
+use crate::rust::interpreter::accounting::economic_failure::classify_errors;
 use crate::rust::interpreter::accounting::native_runtime::tests::{
     journal_limits, priced_config, with_priced_contract,
 };
@@ -20,13 +22,17 @@ use crate::rust::interpreter::compiler::compiler::Compiler;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::matcher::r#match::Matcher;
-use crate::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
+use crate::rust::interpreter::merging::mergeable_tags::{
+    default_mergeable_tags, non_negative_mergeable_tag_name,
+};
 use crate::rust::interpreter::rho_runtime::{create_native_replay_env, create_rho_env};
 use crate::rust::interpreter::system_processes::Definition;
 
 mod funding;
 // Added by DR-114: recorded external-service calls in native execution.
 mod recorded_calls;
+// Added by G3 (DR-135, S6): native replay of runs with owner funding.
+mod owner_replay;
 use funding::FundingFixture;
 
 fn extra_processes() -> Vec<Definition> {
@@ -64,6 +70,38 @@ fn extra_processes() -> Vec<Definition> {
     }]
 }
 
+/// Added by DR-132 (T17, A8): the errors of an evaluation result, with an
+/// aggregate flattened.
+fn result_errors(result: &Result<(), InterpreterError>) -> Vec<InterpreterError> {
+    match result {
+        Ok(()) => Vec::new(),
+        Err(InterpreterError::AggregateError { interpreter_errors }) => interpreter_errors.clone(),
+        Err(error) => vec![error.clone()],
+    }
+}
+
+/// Added by DR-132 (T17, A8): the debug forms of `errors` in a fixed order.
+/// Racing evaluation drains failures in completion order, so an aggregate can
+/// list its errors in any order. Casper reads the list only through
+/// `is_empty` and `classify_errors`.
+fn sorted_errors(errors: &[InterpreterError]) -> Vec<String> {
+    let mut forms: Vec<String> = errors.iter().map(|error| format!("{error:?}")).collect();
+    forms.sort();
+    forms
+}
+
+/// Added by DR-132 (DR-129 treatment): the rounds of a denial test. Racing
+/// evaluation can order the attempts of two plays of one term differently, so
+/// the limit that one play leaves before its first COMM with transfer bytes
+/// does not deny a COMM in every later play. Each round replays its own play,
+/// and some round must deny a COMM.
+const DENIAL_ROUNDS: usize = 32;
+
+/// The runtime binds only the bitmask mergeable tag, as dev does. The two
+/// terms with an IntegerAdd channel name its tag through this test URI, and
+/// the compiler injects the tag.
+const INTEGER_ADD_TAG_URI: &str = "rho:test:integerAddMergeableTag";
+
 async fn replay_process(term: &str, limit: u64) -> (Option<u64>, bool) {
     replay_process_with_context(term, limit, false, false, Interruption::None).await
 }
@@ -74,6 +112,8 @@ enum Interruption {
     Cancel,
     Export,
     ExportBeforeEvaluation,
+    /// Added by DR-132 (D2-B): the changed context must end in a stall.
+    Stall,
 }
 
 async fn replay_process_with_context(
@@ -94,6 +134,8 @@ async fn replay_process_with_context(
     .await
 }
 
+// Changed by DR-134 (DR-70): the body moved to `replay_process_logged`; the
+// harness replays without a logger.
 async fn replay_process_with_funding(
     term: &str,
     limit: u64,
@@ -102,8 +144,40 @@ async fn replay_process_with_funding(
     interruption: Interruption,
     funding: FundingFixture,
 ) -> (Option<u64>, bool) {
+    replay_process_logged(
+        term,
+        limit,
+        change_context,
+        check_authority,
+        interruption,
+        funding,
+        None,
+    )
+    .await
+}
+
+/// Added by DR-134 (DR-70): `replay_process_with_funding` whose native replay
+/// logs its stored and matched operations to `logger`, as a block report does.
+/// Every assertion of the harness compares the replay with play, so a run with
+/// a logger shows that the logger does not change the replay.
+async fn replay_process_logged(
+    term: &str,
+    limit: u64,
+    change_context: bool,
+    check_authority: bool,
+    interruption: Interruption,
+    funding: FundingFixture,
+    logger: Option<crate::rust::interpreter::rho_runtime::RhoSpaceLogger>,
+) -> (Option<u64>, bool) {
     let weights = funding.weights;
-    let parsed = Compiler::source_to_adt(term).unwrap();
+    let injection = match term.contains(INTEGER_ADD_TAG_URI) {
+        true => HashMap::from([(
+            INTEGER_ADD_TAG_URI.to_owned(),
+            non_negative_mergeable_tag_name(),
+        )]),
+        false => HashMap::new(),
+    };
+    let parsed = Compiler::source_to_adt_with_normalizer_env(term, injection).unwrap();
     let mut stores = InMemoryStoreManager::new();
     let (play, _) = RSpace::create_with_replay(
         stores.r_space_stores().await.unwrap(),
@@ -117,13 +191,17 @@ async fn replay_process_with_funding(
     let settings = priced_config(limit, weights, funding.price);
     budget.reset_for_native_execution(settings).unwrap();
     let play_mergeable = Arc::new(RwLock::new(HashMap::new()));
+    let space_runtime =
+        crate::rust::interpreter::reified::runtime::for_host(play.clone(), budget.clone());
     let (reducer, block_data, _, deploy_data) = create_rho_env(
         play.clone(),
+        space_runtime,
         play_mergeable.clone(),
         Arc::new(default_mergeable_tags()),
         &mut extra_processes(),
         budget.clone(),
         ExternalServices::noop(),
+        crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
     )
     .await
     .unwrap();
@@ -175,18 +253,22 @@ async fn replay_process_with_funding(
     replay_budget
         .reset_for_native_execution(replay_settings)
         .unwrap();
-    let mut environment = create_native_replay_env(
-        trace,
-        history.clone(),
-        Arc::new(Box::new(Matcher)),
-        Arc::new(RwLock::new(HashMap::new())),
-        Arc::new(default_mergeable_tags()),
-        &mut extra_processes(),
-        replay_budget,
-        ExternalServices::noop(),
-    )
-    .await
-    .unwrap();
+    // Changed by DR-134 (DR-70): the replay takes the optional logger.
+    let mut environment =
+        crate::rust::interpreter::rho_runtime::create_native_replay_env_with_logger(
+            trace,
+            history.clone(),
+            Arc::new(Box::new(Matcher)),
+            Arc::new(RwLock::new(HashMap::new())),
+            Arc::new(default_mergeable_tags()),
+            &mut extra_processes(),
+            replay_budget,
+            ExternalServices::noop(),
+            logger,
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        )
+        .await
+        .unwrap();
     assert_eq!(environment.urn_map(), reducer.urn_map.as_ref());
     assert_eq!(
         environment.mergeable_tags(),
@@ -222,9 +304,30 @@ async fn replay_process_with_funding(
     }
     if change_context {
         assert!(played.0.is_ok() && played.1 == Default::default());
-        assert!(environment.evaluate(parsed, rand()).await.is_err());
+        // Changed by DR-132 (D2-B): racing play can record the receive on
+        // `ack` after the reply. Replay of the changed reply then leaves the
+        // receive waiting, and replay declares a stall. A stalled replay
+        // refuses every boundary, so the environment cannot roll its budget
+        // back. Casper drops the environment after a failed evaluation
+        // (`replay.evaluate(..).await?`). A replay that fails without a stall
+        // rolls its budget back, as before.
+        // assert!(environment.evaluate(parsed, rand()).await.is_err());
+        let evaluated = environment.evaluate(parsed, rand()).await;
+        assert!(evaluated.is_err(), "a changed context is rejected");
         assert!(environment.completed_usage().await.is_err());
         assert!(environment.completed_evidence().await.is_err());
+        let stalled = format!("{:?}", evaluated.err()).contains("native replay stalled");
+        assert!(
+            stalled || interruption != Interruption::Stall,
+            "the changed context must end in a stall"
+        );
+        if stalled {
+            assert!(
+                environment.checkpoint().await.is_err(),
+                "a stalled replay refuses every boundary"
+            );
+            return (comm_limit, denied_comm);
+        }
         assert!(environment
             .accounting_budget()
             .authority_events()
@@ -242,7 +345,19 @@ async fn replay_process_with_funding(
     )
     .await
     .expect("native reducer must complete");
-    assert_eq!(replayed.0, played.0);
+    // Changed by DR-132 (T17, A8): replay and play compare the outcome, the
+    // failure classes and the sorted errors, and not the order of an error
+    // list.
+    // assert_eq!(replayed.0, played.0);
+    assert_eq!(replayed.0.is_ok(), played.0.is_ok());
+    assert_eq!(
+        sorted_errors(&result_errors(&replayed.0)),
+        sorted_errors(&result_errors(&played.0))
+    );
+    assert_eq!(
+        classify_errors(&result_errors(&replayed.0)).expect("the classification allocates"),
+        classify_errors(&result_errors(&played.0)).expect("the classification allocates")
+    );
     assert_eq!(replayed.1, played.1);
     environment.check_complete().await.unwrap();
     assert_eq!(environment.completed_usage().await.unwrap(), recording.used);
@@ -343,7 +458,13 @@ async fn replay_process_with_funding(
         Err(InterpreterError::AggregateError { interpreter_errors }) => interpreter_errors,
         Err(error) => vec![error],
     };
-    assert_eq!(repeated.errors, expected_errors);
+    // Changed by DR-132 (T17): the repeated evaluation can list its errors in
+    // another order.
+    // assert_eq!(repeated.errors, expected_errors);
+    assert_eq!(
+        sorted_errors(&repeated.errors),
+        sorted_errors(&expected_errors)
+    );
     assert_eq!(repeated.economic_failures, replayed.1);
     assert_eq!(repeated.cost, budget.total_cost());
     assert_eq!(repeated.native_phlo_usage, Some(recording.used));
@@ -446,10 +567,67 @@ proptest! {
             "new hash(`rho:crypto:{operation}`), echo(`rho:test:nativeEcho`), ack, echoed in {{ hash!(\"{payload}\".toByteArray(), *ack) | for (@digest <- ack) {{ echo!(digest, *echoed) }} | for (@result <- echoed) {{ @\"out\"!(result) }} }}"
         );
         tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap().block_on(async {
-            let (comm_limit, _) = replay_process(&term, 1_000_000).await;
-            assert!(replay_process(&term, comm_limit.unwrap()).await.1);
+            // Changed by DR-132 (DR-129 treatment): the limit of one play
+            // denies a COMM in a later play only when both order their
+            // attempts alike. Each round replays its own play.
+            // let (comm_limit, _) = replay_process(&term, 1_000_000).await;
+            // assert!(replay_process(&term, comm_limit.unwrap()).await.1);
+            let mut denied = false;
+            for _ in 0..DENIAL_ROUNDS {
+                let (comm_limit, _) = replay_process(&term, 1_000_000).await;
+                if replay_process(&term, comm_limit.expect("play records an attempt that transfers bytes")).await.1 {
+                    denied = true;
+                    break;
+                }
+            }
+            assert!(denied, "no round denied a COMM at its limit");
         });
     }
+}
+
+/// Added by DR-134 (DR-70): a native replay with dev's reporting logger passes
+/// every play-versus-replay assertion of the harness, so the logger does not
+/// change the replay. It logs each produce and each consume once, and each
+/// COMM once, whichever side of a COMM arrives first, as dev's ReplayRSpace
+/// logs them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reporting_logger_records_the_native_replay_without_changing_it() {
+    use rspace_plus_plus::rspace::reporting_rspace::{ReportingEvent, ReportingLogger};
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let logger: crate::rust::interpreter::rho_runtime::RhoSpaceLogger = Box::new(ReportingLogger {
+        report: Arc::new(std::sync::Mutex::new(Vec::new())),
+        soft_report: events.clone(),
+    });
+    replay_process_logged(
+        r#"new x in { x!(1) | for (@v <- x) { @"out"!(v) } }"#,
+        1_000_000,
+        false,
+        false,
+        Interruption::None,
+        FundingFixture::default(),
+        Some(logger),
+    )
+    .await;
+    // The harness evaluates the term twice: once, and again after it restores
+    // the checkpoint of the start. Each run has two produces, one consume and
+    // one COMM.
+    let events = events.lock().expect("the report buffer lock");
+    let count = |pick: fn(&ReportingEvent<_, _, _, _>) -> bool| {
+        events.iter().filter(|event| pick(event)).count()
+    };
+    assert_eq!(
+        count(|event| matches!(event, ReportingEvent::ReportingProduce(_))),
+        4
+    );
+    assert_eq!(
+        count(|event| matches!(event, ReportingEvent::ReportingConsume(_))),
+        2
+    );
+    assert_eq!(
+        count(|event| matches!(event, ReportingEvent::ReportingComm(_))),
+        2
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -461,17 +639,50 @@ async fn native_environment_replays_system_callbacks_and_rejects_changed_context
         r#"new block(`rho:block:data`), ack in { block!(*ack) | for (@number, @stamp, @sender <- ack) { @"out"!((number, stamp, sender)) } }"#,
         r#"new deploy(`rho:deploy:data`), ack in { deploy!(*ack) | for (@stamp, owner, id <- ack) { @"out"!(stamp) } }"#,
     ] {
-        let (comm_limit, _) = replay_process(term, 1_000_000).await;
+        // Changed by DR-132 (DR-129 treatment): the limit of one play denies
+        // a COMM in a later play only when both order their attempts alike.
+        // Each round replays its own play.
+        // let (comm_limit, _) = replay_process(term, 1_000_000).await;
+        // replay_process(term, 0).await;
+        // assert!(
+        //     replay_process(term, comm_limit.expect("callback COMM"))
+        //         .await
+        //         .1
+        // );
         replay_process(term, 0).await;
-        assert!(
-            replay_process(term, comm_limit.expect("callback COMM"))
+        let mut denied = false;
+        for _ in 0..DENIAL_ROUNDS {
+            let (comm_limit, _) = replay_process(term, 1_000_000).await;
+            if replay_process(term, comm_limit.expect("callback COMM"))
                 .await
                 .1
-        );
+            {
+                denied = true;
+                break;
+            }
+        }
+        assert!(denied, "no round denied a COMM at its limit for {term}");
         if term.contains("rho:block:data") || term.contains("rho:deploy:data") {
             replay_process_with_context(term, 1_000_000, true, false, Interruption::None).await;
         }
     }
+}
+
+/// Added by DR-132 (D2-B, review m10): on a current-thread runtime, play
+/// records the reply on `ack` before the receive. Replay of a changed block
+/// context then produces a reply that no row records, so the receive waits,
+/// and replay declares a stall. `evaluate` returns the stall, and the
+/// stalled environment refuses every boundary.
+#[tokio::test]
+async fn native_environment_stalls_on_a_changed_context_after_the_reply() {
+    replay_process_with_context(
+        r#"new block(`rho:block:data`), ack in { block!(*ack) | for (@number, @stamp, @sender <- ack) { @"out"!((number, stamp, sender)) } }"#,
+        1_000_000,
+        true,
+        false,
+        Interruption::Stall,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -515,174 +726,180 @@ async fn premeasured_introductions_replay_for_every_measured_shape() {
     .await;
 }
 
-/// Plays `term` natively with the legacy or the compacted splitter and
-/// returns the checkpoint root, the event log and the length of the longest
-/// recorded operation path (C9, DR-84). The session reads the splitter flag
-/// of this thread when it is built.
-async fn played_checkpoint(
-    term: &str,
-    legacy: bool,
-) -> (
-    rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash,
-    rspace_plus_plus::rspace::trace::Log,
-    usize,
-) {
-    struct ResetSplitter;
-    impl Drop for ResetSplitter {
-        fn drop(&mut self) {
-            crate::rust::interpreter::deterministic_reduction::LEGACY_SPLIT
-                .with(|flag| flag.set(false));
-        }
-    }
-    crate::rust::interpreter::deterministic_reduction::LEGACY_SPLIT.with(|flag| flag.set(legacy));
-    let _reset = ResetSplitter;
-    let funding = FundingFixture::default();
-    let (weights, limit) = (funding.weights, 1_000_000);
-    let parsed = Compiler::source_to_adt(term).unwrap();
-    let mut stores = InMemoryStoreManager::new();
-    let (play, _) = RSpace::create_with_replay(
-        stores.r_space_stores().await.unwrap(),
-        Arc::new(Box::new(Matcher)),
-    )
-    .unwrap();
-    play.create_checkpoint().await.unwrap();
-    let budget = RuntimeBudget::new(Cost::unsafe_max());
-    budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
-    let settings = priced_config(limit, weights, funding.price);
-    budget.reset_for_native_execution(settings).unwrap();
-    let (reducer, block_data, _, deploy_data) = create_rho_env(
-        play.clone(),
-        Arc::new(RwLock::new(HashMap::new())),
-        Arc::new(default_mergeable_tags()),
-        &mut extra_processes(),
-        budget.clone(),
-        ExternalServices::noop(),
-    )
-    .await
-    .unwrap();
-    block_data.write().await.block_number = 123;
-    deploy_data.write().await.timestamp = 456;
-    let scope = budget.enter_comm_accounting_scope();
-    let played = reducer
-        .inj_with_observation(
-            parsed,
-            Blake2b512Random::create_from_bytes(b"native-executor-regression"),
-        )
-        .await;
-    assert!(played.0.is_ok(), "{played:?}");
-    drop(scope);
-    let deepest = budget
-        .native_operation_recording()
-        .unwrap()
-        .unwrap()
-        .iter()
-        .map(|record| record.occurrence.path.depth())
-        .max()
-        .unwrap_or(0);
-    let checkpoint = play.create_checkpoint().await.unwrap();
-    (checkpoint.root, checkpoint.log, deepest)
-}
-
-/// C9 (DR-84): the compacted splitter keeps the forward lexicographic order
-/// of every generated path. Native play of each corpus term therefore fires
-/// the same COMMs in the same order and reaches the same root with the
-/// compacted splitter and with the legacy splitter.
-///
-/// Changed by DR-129: restored dev's randomized candidate order (user
-/// decision 2026-10-12). Play picks at random among candidates that match
-/// equally. In the second and third corpus terms play meets such choices, so
-/// two plays can fire their COMMs in other orders or pair other candidates,
-/// with either splitter. For those terms the plays must log the same produces
-/// and consumes, fire the same number of COMMs and reach the same root. The
-/// other terms offer play no choice and still compare their whole logs.
-#[tokio::test]
-async fn compacted_schedule_equals_legacy_schedule() {
-    // Changed by DR-129: each term carries whether play meets a choice.
-    let corpus = [
-        (
-            r#"new loop, a, b, c, d in {
-            contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(12) |
-            a!(1) | b!(2) | c!(3) | d!(4) |
-            for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
-        }"#,
-            false,
-        ),
-        (
-            r#"new fork, done in {
-            contract fork(@n) = { if (n > 0) { fork!(n - 1) | fork!(n - 1) } else { done!(n) } } |
-            fork!(4) | for (@x <= done) { Nil }
-        }"#,
-            true,
-        ),
-        (
-            r#"new a, b, ack in {
-            contract a(@x) = { ack!(x) } | a!(1) | a!(2) | b!(3) | b!(4) |
-            for (@x <- ack & @y <- b) { Nil } | for (@x <- ack & @y <- b) { Nil }
-        }"#,
-            true,
-        ),
-        (
-            r#"new c, d, e in {
-            c!!(1) | for (@x <<- c) { d!(x) } | for (@y <- c) { e!(y + 1) } |
-            for (@u <- d & @v <- e) { Nil }
-        }"#,
-            false,
-        ),
-    ];
-    // Added by DR-129: the produces and consumes of a log, in a fixed order,
-    // and the number of its COMMs.
-    let operations = |log: &rspace_plus_plus::rspace::trace::Log| {
-        let mut events: Vec<String> = log
-            .iter()
-            .filter(|event| {
-                !matches!(
-                    event,
-                    rspace_plus_plus::rspace::trace::event::Event::Comm(_)
-                )
-            })
-            .map(|event| format!("{event:?}"))
-            .collect();
-        events.sort();
-        events
-    };
-    let comms = |log: &rspace_plus_plus::rspace::trace::Log| {
-        log.iter()
-            .filter(|event| {
-                matches!(
-                    event,
-                    rspace_plus_plus::rspace::trace::event::Event::Comm(_)
-                )
-            })
-            .count()
-    };
-    // for term in corpus {
-    for (term, offers_choice) in corpus {
-        let (legacy_root, legacy_log, legacy_depth) = played_checkpoint(term, true).await;
-        let (compacted_root, compacted_log, compacted_depth) = played_checkpoint(term, false).await;
-        assert!(compacted_depth < legacy_depth, "{term}");
-        assert!(
-            legacy_log.iter().any(|event| matches!(
-                event,
-                rspace_plus_plus::rspace::trace::event::Event::Comm(_)
-            )),
-            "{term}"
-        );
-        // Changed by DR-129: whole logs only for a term without a choice.
-        // assert_eq!(compacted_log, legacy_log, "{term}");
-        match offers_choice {
-            false => assert_eq!(compacted_log, legacy_log, "{term}"),
-            true => {
-                assert_eq!(
-                    operations(&compacted_log),
-                    operations(&legacy_log),
-                    "{term}"
-                );
-                assert_eq!(comms(&compacted_log), comms(&legacy_log), "{term}");
-            }
-        }
-        assert_eq!(compacted_root, legacy_root, "{term}");
-    }
-}
+// Changed by DR-132 (T4): the splits went with the deterministic scheduler
+// (D3-A), so the legacy and the compacted splitter no longer exist.
+// /// Plays `term` natively with the legacy or the compacted splitter and
+// /// returns the checkpoint root, the event log and the length of the longest
+// /// recorded operation path (C9, DR-84). The session reads the splitter flag
+// /// of this thread when it is built.
+// async fn played_checkpoint(
+//     term: &str,
+//     legacy: bool,
+// ) -> (
+//     rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash,
+//     rspace_plus_plus::rspace::trace::Log,
+//     usize,
+// ) {
+//     struct ResetSplitter;
+//     impl Drop for ResetSplitter {
+//         fn drop(&mut self) {
+//             crate::rust::interpreter::deterministic_reduction::LEGACY_SPLIT
+//                 .with(|flag| flag.set(false));
+//         }
+//     }
+//     crate::rust::interpreter::deterministic_reduction::LEGACY_SPLIT.with(|flag| flag.set(legacy));
+//     let _reset = ResetSplitter;
+//     let funding = FundingFixture::default();
+//     let (weights, limit) = (funding.weights, 1_000_000);
+//     let parsed = Compiler::source_to_adt(term).unwrap();
+//     let mut stores = InMemoryStoreManager::new();
+//     let (play, _) = RSpace::create_with_replay(
+//         stores.r_space_stores().await.unwrap(),
+//         Arc::new(Box::new(Matcher)),
+//     )
+//     .unwrap();
+//     play.create_checkpoint().await.unwrap();
+//     let budget = RuntimeBudget::new(Cost::unsafe_max());
+//     budget.set_deploy_signature_funded(b"native-executor-regression", funding.authority());
+//     let settings = priced_config(limit, weights, funding.price);
+//     budget.reset_for_native_execution(settings).unwrap();
+//     let (reducer, block_data, _, deploy_data) = create_rho_env(
+//         play.clone(),
+//         Arc::new(RwLock::new(HashMap::new())),
+//         Arc::new(default_mergeable_tags()),
+//         &mut extra_processes(),
+//         budget.clone(),
+//         ExternalServices::noop(),
+//     )
+//     .await
+//     .unwrap();
+//     block_data.write().await.block_number = 123;
+//     deploy_data.write().await.timestamp = 456;
+//     let scope = budget.enter_comm_accounting_scope();
+//     let played = reducer
+//         .inj_with_observation(
+//             parsed,
+//             Blake2b512Random::create_from_bytes(b"native-executor-regression"),
+//         )
+//         .await;
+//     assert!(played.0.is_ok(), "{played:?}");
+//     drop(scope);
+//     let deepest = budget
+//         .native_operation_recording()
+//         .unwrap()
+//         .unwrap()
+//         .iter()
+//         .map(|record| record.occurrence.path.depth())
+//         .max()
+//         .unwrap_or(0);
+//     let checkpoint = play.create_checkpoint().await.unwrap();
+//     (checkpoint.root, checkpoint.log, deepest)
+// }
+//
+// /// C9 (DR-84): the compacted splitter keeps the forward lexicographic order
+// /// of every generated path. Native play of each corpus term therefore fires
+// /// the same COMMs in the same order and reaches the same root with the
+// /// compacted splitter and with the legacy splitter.
+// ///
+// /// Changed by DR-129: restored dev's randomized candidate order (user
+// /// decision 2026-10-12). Play picks at random among candidates that match
+// /// equally. In the second and third corpus terms play meets such choices, so
+// /// two plays can fire their COMMs in other orders or pair other candidates,
+// /// with either splitter. For those terms the plays must log the same produces
+// /// and consumes, fire the same number of COMMs and reach the same root. The
+// /// other terms offer play no choice and still compare their whole logs.
+// #[tokio::test]
+// async fn compacted_schedule_equals_legacy_schedule() {
+//     // Changed by DR-129: each term carries whether play meets a choice.
+//     let corpus = [
+//         (
+//             r#"new loop, a, b, c, d in {
+//             contract loop(@n) = { if (n > 0) { loop!(n - 1) } } | loop!(12) |
+//             a!(1) | b!(2) | c!(3) | d!(4) |
+//             for (_ <- a) { Nil } | for (_ <- b) { Nil } | for (_ <- c) { Nil } | for (_ <- d) { Nil }
+//         }"#,
+//             false,
+//         ),
+//         (
+//             r#"new fork, done in {
+//             contract fork(@n) = { if (n > 0) { fork!(n - 1) | fork!(n - 1) } else { done!(n) } } |
+//             fork!(4) | for (@x <= done) { Nil }
+//         }"#,
+//             true,
+//         ),
+//         (
+//             r#"new a, b, ack in {
+//             contract a(@x) = { ack!(x) } | a!(1) | a!(2) | b!(3) | b!(4) |
+//             for (@x <- ack & @y <- b) { Nil } | for (@x <- ack & @y <- b) { Nil }
+//         }"#,
+//             true,
+//         ),
+//         (
+//             r#"new c, d, e in {
+//             c!!(1) | for (@x <<- c) { d!(x) } | for (@y <- c) { e!(y + 1) } |
+//             for (@u <- d & @v <- e) { Nil }
+//         }"#,
+//             false,
+//         ),
+//     ];
+//     // Added by DR-129: the produces and consumes of a log, in a fixed order,
+//     // and the number of its COMMs.
+//     let operations = |log: &rspace_plus_plus::rspace::trace::Log| {
+//         let mut events: Vec<String> = log
+//             .iter()
+//             .filter(|event| {
+//                 !matches!(
+//                     event,
+//                     rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+//                 )
+//             })
+//             .map(|event| format!("{event:?}"))
+//             .collect();
+//         events.sort();
+//         events
+//     };
+//     let comms = |log: &rspace_plus_plus::rspace::trace::Log| {
+//         log.iter()
+//             .filter(|event| {
+//                 matches!(
+//                     event,
+//                     rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+//                 )
+//             })
+//             .count()
+//     };
+//     // for term in corpus {
+//     for (term, offers_choice) in corpus {
+//         let (legacy_root, legacy_log, legacy_depth) = played_checkpoint(term, true).await;
+//         let (compacted_root, compacted_log, compacted_depth) = played_checkpoint(term, false).await;
+//         // Changed by DR-132 (D1-A): the recorder names each row by its journal
+//         // index, so every recorded path has one segment with either splitter.
+//         // T4 retires this test with the splits in S3.
+//         // assert!(compacted_depth < legacy_depth, "{term}");
+//         assert_eq!((compacted_depth, legacy_depth), (1, 1), "{term}");
+//         assert!(
+//             legacy_log.iter().any(|event| matches!(
+//                 event,
+//                 rspace_plus_plus::rspace::trace::event::Event::Comm(_)
+//             )),
+//             "{term}"
+//         );
+//         // Changed by DR-129: whole logs only for a term without a choice.
+//         // assert_eq!(compacted_log, legacy_log, "{term}");
+//         match offers_choice {
+//             false => assert_eq!(compacted_log, legacy_log, "{term}"),
+//             true => {
+//                 assert_eq!(
+//                     operations(&compacted_log),
+//                     operations(&legacy_log),
+//                     "{term}"
+//                 );
+//                 assert_eq!(comms(&compacted_log), comms(&legacy_log), "{term}");
+//             }
+//         }
+//         assert_eq!(compacted_root, legacy_root, "{term}");
+//     }
+// }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancelled_native_evaluation_cannot_export_or_restore_partial_state() {
@@ -698,18 +915,44 @@ async fn native_export_binds_completed_accounting_to_the_recorded_state_root() {
         "Nil",
         r#"@"out"!!(7)"#,
         r#"@"a"!(7) | @"b"!(8) | for (@x <- @"a"; @y <- @"b") { @"out"!(x + y) }"#,
-        r#"new tag(`rho:system:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
+        r#"new tag(`rho:test:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
     ] {
-        let (comm_limit, _) =
-            replay_process_with_context(term, 1_000_000, false, false, Interruption::Export).await;
+        // Changed by DR-132 (DR-129 treatment): the limit of one play denies
+        // a COMM in a later play only when both order their attempts alike.
+        // Each round replays its own play.
+        // let (comm_limit, _) =
+        //     replay_process_with_context(term, 1_000_000, false, false, Interruption::Export).await;
+        // replay_process_with_context(term, 0, false, false, Interruption::Export).await;
+        // if let Some(limit) = comm_limit {
+        //     assert!(
+        //         replay_process_with_context(term, limit, false, false, Interruption::Export)
+        //             .await
+        //             .1
+        //     );
+        // }
         replay_process_with_context(term, 0, false, false, Interruption::Export).await;
-        if let Some(limit) = comm_limit {
-            assert!(
-                replay_process_with_context(term, limit, false, false, Interruption::Export)
-                    .await
-                    .1
-            );
+        let mut transfers = false;
+        let mut denied = false;
+        for _ in 0..DENIAL_ROUNDS {
+            let (comm_limit, _) =
+                replay_process_with_context(term, 1_000_000, false, false, Interruption::Export)
+                    .await;
+            let Some(limit) = comm_limit else {
+                break;
+            };
+            transfers = true;
+            if replay_process_with_context(term, limit, false, false, Interruption::Export)
+                .await
+                .1
+            {
+                denied = true;
+                break;
+            }
         }
+        assert_eq!(
+            denied, transfers,
+            "no round denied a COMM at its limit for {term}"
+        );
     }
 }
 
@@ -733,16 +976,37 @@ async fn native_executor_replays_parsed_processes_denied_comms_and_exact_usage()
         r#"@"a"!(7) | for (@x <- @"a") { @"out"!(x) }"#,
         r#"@"a"!(7) | @"b"!(8) | for (@x <- @"a"; @y <- @"b") { @"out"!(x + y) }"#,
         r#"@"left"!(1) | @"right"!(2)"#,
-        r#"new tag(`rho:system:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
+        r#"new tag(`rho:test:integerAddMergeableTag`) in { @(*tag, "counter")!(1) }"#,
         r#"new tag(`rho:system:bitmaskMergeableTag`) in { @(*tag, "counter")!(1) }"#,
     ] {
-        let (comm_limit, _) = replay_process(term, 1_000_000).await;
+        // Changed by DR-132 (DR-129 treatment): the limit of one play denies
+        // a COMM in a later play only when both order their attempts alike.
+        // Each round replays its own play.
+        // let (comm_limit, _) = replay_process(term, 1_000_000).await;
+        // replay_process(term, 0).await;
+        // if let Some(limit) = comm_limit {
+        //     assert!(
+        //         replay_process(term, limit).await.1,
+        //         "fixture must reject a COMM after accepted introductions"
+        //     );
+        // }
         replay_process(term, 0).await;
-        if let Some(limit) = comm_limit {
-            assert!(
-                replay_process(term, limit).await.1,
-                "fixture must reject a COMM after accepted introductions"
-            );
+        let mut transfers = false;
+        let mut denied = false;
+        for _ in 0..DENIAL_ROUNDS {
+            let (comm_limit, _) = replay_process(term, 1_000_000).await;
+            let Some(limit) = comm_limit else {
+                break;
+            };
+            transfers = true;
+            if replay_process(term, limit).await.1 {
+                denied = true;
+                break;
+            }
         }
+        assert_eq!(
+            denied, transfers,
+            "fixture must reject a COMM after accepted introductions: {term}"
+        );
     }
 }

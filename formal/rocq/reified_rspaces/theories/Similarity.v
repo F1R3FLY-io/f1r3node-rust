@@ -86,31 +86,31 @@
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code (rholang/src/rust/interpreter)
    ─────────────────────────────────────────────────────────────────────────
-   cosine_within             tensor/exact.rs:532-550 (the cosine arm of
+   cosine_within             tensor/exact.rs:471-489 (the cosine arm of
                              within: by the signs, and otherwise by the
                              squares, with N = ‖q‖²·‖e‖² from Query::new at
-                             tensor/exact.rs:151-170)
-   cosine_le                 tensor/exact.rs:480-498 (the cosine arm of
+                             tensor/exact.rs:148-163)
+   cosine_le                 tensor/exact.rs:428-445 (the cosine arm of
                              better, COSINE-BETTER: a pair is cosine_le
                              exactly when better is not Greater)
-   euclidean_within          tensor/exact.rs:557-564 (the euclidean arm of
+   euclidean_within          tensor/exact.rs:496-503 (the euclidean arm of
                              within: a negative radius admits nothing)
-   dot                       tensor/exact.rs:265-291 (dot, with the exact
-                             DYADIC-SUM of tensor/exact.rs:175-228)
-   dist2                     tensor/exact.rs:294-319 (distance2)
-   manhattan, rabs           tensor/exact.rs:322-348 (manhattan)
-   threshold_monotone        tensor/exact.rs:551-556 (the dot and jaccard
+   dot                       tensor/exact.rs:241-263 (dot, with the exact
+                             DYADIC-SUM of tensor/exact.rs:166-227)
+   dist2                     tensor/exact.rs:266-287 (distance2)
+   manhattan, rabs           tensor/exact.rs:290-314 (manhattan)
+   threshold_monotone        tensor/exact.rs:490-495 (the dot and jaccard
                              arms of within)
-   radius_monotone           tensor/exact.rs:565-571 (the manhattan and
+   radius_monotone           tensor/exact.rs:504-510 (the manhattan and
                              hamming arms of within)
-   ratio_le                  tensor/exact.rs:507-518 (the jaccard arm of
+   ratio_le                  tensor/exact.rs:452-462 (the jaccard arm of
                              better: inter·union' against inter'·union)
-   hamming, inter_count,     tensor/exact.rs:352-361, 378-394, 402-405 and
-   union_count               409-425 (bit_of_dyadic, bits, hamming and
+   hamming, inter_count,     tensor/exact.rs:318-327, 343-357, 365-367 and
+   union_count               371-382 (bit_of_dyadic, bits, hamming and
                              jaccard)
-   score_orders_total        tensor/exact.rs:478-521 (better), with the
-                             undefined scores of tensor/exact.rs:429-462
-   precedes, insertion_sort  tensor/exact.rs:605-610, 616-629 and 635-642
+   score_orders_total        tensor/exact.rs:426-465 (better), with the
+                             undefined scores of tensor/exact.rs:386-416
+   precedes, insertion_sort  tensor/exact.rs:542-547, 553-559 and 565-567
                              (Candidate, selection_order: the better score,
                              then the lower rank in the canonical order of
                              DR-75, and rank: the metered heap sort of the

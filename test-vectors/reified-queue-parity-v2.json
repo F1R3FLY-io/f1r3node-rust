@@ -1,0 +1,1999 @@
+{
+  "capture_command": "R1, release binary",
+  "captured_at_revision": "merge of 702496775 with decision 112",
+  "name": "reified_queue_parity_v2",
+  "retired_scenarios": {
+    "legacy_budget": {
+      "capture_command": "RRS_CAPTURE_QUEUE_PARITY_OUT=$PWD/target/verification/reified-rspaces/p5/parity-capture-1 cargo test -p rholang --test reified_queue_parity",
+      "captured_at_revision": "2c2b45bf552b9fafa31f819630e241cdfb12ba68",
+      "records": [
+        {
+          "charges": [
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              72
+            ],
+            [
+              "consume storage",
+              72
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "consume storage refund",
+              -72
+            ],
+            [
+              "consume storage refund",
+              -72
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              60
+            ],
+            [
+              "produces storage",
+              60
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "produces storage refund",
+              -60
+            ],
+            [
+              "produces storage refund",
+              -60
+            ],
+            [
+              "send eval",
+              11
+            ],
+            [
+              "send eval",
+              11
+            ],
+            [
+              "send eval",
+              11
+            ],
+            [
+              "send eval",
+              14
+            ],
+            [
+              "substitution",
+              4
+            ],
+            [
+              "substitution",
+              4
+            ],
+            [
+              "substitution",
+              4
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "var eval",
+              10
+            ],
+            [
+              "var eval",
+              10
+            ],
+            [
+              "var eval",
+              10
+            ]
+          ],
+          "cost": 2618,
+          "errors": [],
+          "events": [
+            "CONSUME b2277504178903275af96ac5d0ca2f915fbcf472e05e02f9d5dfbea9d3c3f142 on [e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6] persistent=false",
+            "COMM b2277504178903275af96ac5d0ca2f915fbcf472e05e02f9d5dfbea9d3c3f142 on [e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6] persistent=false with [b9cd8a6be0accabe1c3399f420269e80a2b213a36898d00b9854af5e31128fff on e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[b9cd8a6be0accabe1c3399f420269e80a2b213a36898d00b9854af5e31128fff=0]",
+            "PRODUCE 2cd21a17ccaaa6e493ae4f8877280e5d2af9c5114cab2bd850c5d15badb2a08f on e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6 persistent=false deterministic=true failed=false output=[]",
+            "PRODUCE 4dba798075b2b3ff76bba44bde5c408060e16370434da490d0558b91a470d28c on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]",
+            "PRODUCE 60925092b488bd12484b8ca395fc8cb5c5a359750022cb97b17858777d29378a on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=false deterministic=true failed=false output=[]",
+            "CONSUME f03baff4808039d0f09354ce769575221974afd68f02b1de57a12def5468cba5 on [e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6] persistent=false",
+            "COMM f03baff4808039d0f09354ce769575221974afd68f02b1de57a12def5468cba5 on [e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6] persistent=false with [2cd21a17ccaaa6e493ae4f8877280e5d2af9c5114cab2bd850c5d15badb2a08f on e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[2cd21a17ccaaa6e493ae4f8877280e5d2af9c5114cab2bd850c5d15badb2a08f=1]",
+            "PRODUCE 05a53d6f58c199f0bf255ba16aae4b5c1b7a9e05c9e640e560f8ab97f70372fa on e79f7e1456e3d5e934b94a161db841ffabc0087c17c254c9822be67c64882df6 persistent=false deterministic=true failed=false output=[]",
+            "PRODUCE a4b8037f2b93fd4f9e6bbd88f90a601b07aabe820638537f6e522a957751b89c on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
+            "PRODUCE ea7311a591e4d72acdfcc31f90a966efef5c20270db22b8d96d2295c26846627 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]",
+            "CONSUME 8cc9c2fefe0115efccd9a5c1833f04a10f91138ea97d9223a5b44eec5d366434 on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false",
+            "COMM 8cc9c2fefe0115efccd9a5c1833f04a10f91138ea97d9223a5b44eec5d366434 on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false with [a4b8037f2b93fd4f9e6bbd88f90a601b07aabe820638537f6e522a957751b89c on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[a4b8037f2b93fd4f9e6bbd88f90a601b07aabe820638537f6e522a957751b89c=1]",
+            "PRODUCE 1bb793647830eebfa623bd5c6a4646ee77f3370aa57b4996dbe658abf273c59d on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
+            "PRODUCE 134ed7320bb3a6a8aa1f22969d006eac07c66641e9d9863ae8ed47ee4ecfa315 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
+          ],
+          "label": "rrs-parity-legacy-sends",
+          "root": "e04d9b4e6d2dbb586392f9f66354c3d62b95633f7299542aa4ba0ec95b6f0c1a",
+          "storage_charges": [
+            [
+              "consume storage",
+              72
+            ],
+            [
+              "consume storage refund",
+              -72
+            ],
+            [
+              "produces storage refund",
+              -60
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              60
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              72
+            ],
+            [
+              "consume storage refund",
+              -72
+            ],
+            [
+              "produces storage refund",
+              -60
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              60
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "event storage cost",
+              64
+            ]
+          ]
+        },
+        {
+          "charges": [
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "receive eval",
+              11
+            ],
+            [
+              "receive eval",
+              11
+            ],
+            [
+              "send eval",
+              14
+            ],
+            [
+              "substitution",
+              0
+            ],
+            [
+              "substitution",
+              0
+            ],
+            [
+              "substitution",
+              11
+            ],
+            [
+              "substitution",
+              11
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "var eval",
+              10
+            ],
+            [
+              "var eval",
+              10
+            ]
+          ],
+          "cost": 620,
+          "errors": [],
+          "events": [
+            "CONSUME 1364f5f8f344253f8c3ce18e8bbff5246c755a0310cf237f637e27a469b26665 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false",
+            "COMM 1364f5f8f344253f8c3ce18e8bbff5246c755a0310cf237f637e27a469b26665 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false with [4dba798075b2b3ff76bba44bde5c408060e16370434da490d0558b91a470d28c on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[4dba798075b2b3ff76bba44bde5c408060e16370434da490d0558b91a470d28c=0]",
+            "PRODUCE 50b3fd3eeb56fd87cab180c07e31a7f739ed8d735e3de025dbaf518832b4c593 on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]",
+            "CONSUME 066a8d02a6d0c4ba12599a5f9fe020be6357c0c30406acd660bc301ecb4e03ae on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false",
+            "COMM 066a8d02a6d0c4ba12599a5f9fe020be6357c0c30406acd660bc301ecb4e03ae on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false with [60925092b488bd12484b8ca395fc8cb5c5a359750022cb97b17858777d29378a on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[60925092b488bd12484b8ca395fc8cb5c5a359750022cb97b17858777d29378a=0]",
+            "CONSUME 489f35db01a157396e529d4573ad6a437889d081766d031cbd2023ffc6e5a1c6 on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false",
+            "COMM 489f35db01a157396e529d4573ad6a437889d081766d031cbd2023ffc6e5a1c6 on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false with [1bb793647830eebfa623bd5c6a4646ee77f3370aa57b4996dbe658abf273c59d on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[1bb793647830eebfa623bd5c6a4646ee77f3370aa57b4996dbe658abf273c59d=0]",
+            "PRODUCE 106addfb6e0489bdd334e9c3ada64ec7b135fc7e238d3cf5d9be1aedb06e7ba8 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
+            "CONSUME a350b006b951b4007869c3646d0cacb153f1921847d26c91d0ee912d5e58341b on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false",
+            "COMM a350b006b951b4007869c3646d0cacb153f1921847d26c91d0ee912d5e58341b on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [ea7311a591e4d72acdfcc31f90a966efef5c20270db22b8d96d2295c26846627 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[ea7311a591e4d72acdfcc31f90a966efef5c20270db22b8d96d2295c26846627=0]"
+          ],
+          "label": "rrs-parity-legacy-receives",
+          "root": "fe9b823f84a3ee6de0872111f79372b9ebb1ec0b0997cef37abd1ca02be7e994",
+          "storage_charges": [
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ]
+          ]
+        },
+        {
+          "charges": [
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "receive eval",
+              11
+            ],
+            [
+              "send eval",
+              14
+            ],
+            [
+              "substitution",
+              0
+            ],
+            [
+              "substitution",
+              11
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "var eval",
+              10
+            ]
+          ],
+          "cost": 630,
+          "errors": [],
+          "events": [
+            "CONSUME 40b0c93f082d3d83c9bdbf727685adecf6998f70db995a182c81a9d061f9052b on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false",
+            "COMM 40b0c93f082d3d83c9bdbf727685adecf6998f70db995a182c81a9d061f9052b on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false with [106addfb6e0489bdd334e9c3ada64ec7b135fc7e238d3cf5d9be1aedb06e7ba8 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[106addfb6e0489bdd334e9c3ada64ec7b135fc7e238d3cf5d9be1aedb06e7ba8=0]",
+            "PRODUCE 5323c9299cb8166d246a1e85bf293a43546b4234331c8dfe53bab7b0356508f9 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
+            "CONSUME 0b251fd7f2c9c2261ffa610e0772fd76a71d47146d47a44c393d6617c52d5adb on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false",
+            "COMM 0b251fd7f2c9c2261ffa610e0772fd76a71d47146d47a44c393d6617c52d5adb on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=false with [134ed7320bb3a6a8aa1f22969d006eac07c66641e9d9863ae8ed47ee4ecfa315 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[134ed7320bb3a6a8aa1f22969d006eac07c66641e9d9863ae8ed47ee4ecfa315=0]",
+            "PRODUCE 134ed7320bb3a6a8aa1f22969d006eac07c66641e9d9863ae8ed47ee4ecfa315 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]"
+          ],
+          "label": "rrs-parity-legacy-peek",
+          "root": "2897e9d85e06b51f129f73a4e1b546b019bfd8b79e26f7fb7e0b2abac9fe58b4",
+          "storage_charges": [
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "event storage cost",
+              64
+            ]
+          ]
+        },
+        {
+          "charges": [
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "produces storage refund",
+              0
+            ],
+            [
+              "produces storage refund",
+              0
+            ],
+            [
+              "receive eval",
+              11
+            ],
+            [
+              "receive eval",
+              11
+            ],
+            [
+              "send eval",
+              11
+            ],
+            [
+              "send eval",
+              14
+            ],
+            [
+              "substitution",
+              0
+            ],
+            [
+              "substitution",
+              0
+            ],
+            [
+              "substitution",
+              4
+            ],
+            [
+              "substitution",
+              11
+            ],
+            [
+              "substitution",
+              11
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "var eval",
+              10
+            ],
+            [
+              "var eval",
+              10
+            ],
+            [
+              "var eval",
+              10
+            ]
+          ],
+          "cost": 1784,
+          "errors": [],
+          "events": [
+            "CONSUME a8d487b9d711b9aed117e20c0a7fd1dd61e9e656e5df2aebd917ccc313d02953 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false",
+            "COMM a8d487b9d711b9aed117e20c0a7fd1dd61e9e656e5df2aebd917ccc313d02953 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false with [50b3fd3eeb56fd87cab180c07e31a7f739ed8d735e3de025dbaf518832b4c593 on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[50b3fd3eeb56fd87cab180c07e31a7f739ed8d735e3de025dbaf518832b4c593=0]",
+            "PRODUCE 144802b5af889821de0d23c923f4cd3c08c82683164cf952e09715ef9480f25e on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]",
+            "PRODUCE 640228e41dba4a60bf9055c33bdd23b0fc9e446cfca74f0e9d817b85e63b9016 on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=true deterministic=true failed=false output=[]",
+            "CONSUME 4ebf5a2b9306d3efd63456725000fff2ffea11cc151ed0b2d2d29da9afbbc415 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false",
+            "COMM 4ebf5a2b9306d3efd63456725000fff2ffea11cc151ed0b2d2d29da9afbbc415 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false with [144802b5af889821de0d23c923f4cd3c08c82683164cf952e09715ef9480f25e on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[144802b5af889821de0d23c923f4cd3c08c82683164cf952e09715ef9480f25e=1]",
+            "PRODUCE 588a69ae9750ed612f64dc94ef98484d829b60403ca42b280c61aadab2b11e45 on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]",
+            "CONSUME 517e475a310dda2de6a4c268901697300bf255830b6209e9f177bc5cba5935a9 on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false",
+            "COMM 517e475a310dda2de6a4c268901697300bf255830b6209e9f177bc5cba5935a9 on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false with [640228e41dba4a60bf9055c33bdd23b0fc9e446cfca74f0e9d817b85e63b9016 on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=true deterministic=true failed=false output=[]] peeks=[] repeated=[640228e41dba4a60bf9055c33bdd23b0fc9e446cfca74f0e9d817b85e63b9016=0]",
+            "CONSUME ef6ea9af5cad7a6bbf55d09be4f96b3d834797ae87fcf10f53e6d48daf2dab30 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false",
+            "COMM ef6ea9af5cad7a6bbf55d09be4f96b3d834797ae87fcf10f53e6d48daf2dab30 on [c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413] persistent=false with [588a69ae9750ed612f64dc94ef98484d829b60403ca42b280c61aadab2b11e45 on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[588a69ae9750ed612f64dc94ef98484d829b60403ca42b280c61aadab2b11e45=1]",
+            "PRODUCE 3e7e6c570db8d5af63d0892eddfd857043a40e564fc315ca7c0b1db06c2d3f20 on c277a12ee69be67599182d2ac1e02bbf18296b136bf306bad562cb0858225413 persistent=false deterministic=true failed=false output=[]",
+            "CONSUME 94aa96b460b405555c35a72b95aa29bda4887bc4431f7c20737a8367759cadfe on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false",
+            "COMM 94aa96b460b405555c35a72b95aa29bda4887bc4431f7c20737a8367759cadfe on [485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880] persistent=false with [640228e41dba4a60bf9055c33bdd23b0fc9e446cfca74f0e9d817b85e63b9016 on 485fe2787fe63db540b6684139b14f04fe4d5a94ab8edbb99d1bc5ce41a7c880 persistent=true deterministic=true failed=false output=[]] peeks=[] repeated=[640228e41dba4a60bf9055c33bdd23b0fc9e446cfca74f0e9d817b85e63b9016=0]"
+          ],
+          "label": "rrs-parity-legacy-persistent",
+          "root": "4c2d8d4b1d6626c93a30308c389d2dd99e3ac0ddbd5ea76de11181bc9b5c80ee",
+          "storage_charges": [
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              249
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "produces storage refund",
+              0
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "produces storage refund",
+              0
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ]
+          ]
+        },
+        {
+          "charges": [
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "receive eval",
+              11
+            ],
+            [
+              "send eval",
+              14
+            ],
+            [
+              "substitution",
+              0
+            ],
+            [
+              "substitution",
+              11
+            ],
+            [
+              "substitution",
+              72
+            ],
+            [
+              "var eval",
+              10
+            ]
+          ],
+          "cost": 577,
+          "errors": [],
+          "events": [
+            "CONSUME 45cc5b789575fb4959ed886e5ef48852ca4a2cbcb3fcfc701cde0633bcee9497 on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false",
+            "COMM 45cc5b789575fb4959ed886e5ef48852ca4a2cbcb3fcfc701cde0633bcee9497 on [65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc] persistent=false with [5323c9299cb8166d246a1e85bf293a43546b4234331c8dfe53bab7b0356508f9 on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[5323c9299cb8166d246a1e85bf293a43546b4234331c8dfe53bab7b0356508f9=0]",
+            "PRODUCE a161af1e796a961dd53ce2e11964762c6de75be33eded1682e7bd0a5587d61cd on 65740dfb9ae7a4eff30331ee934a2224f45f9363a7eb3b950440b1c20f539cdc persistent=false deterministic=true failed=false output=[]",
+            "CONSUME fe1211a86289c498fb8bd40a54bbb872c14b17f6dc1dff079faebfe7edcaa3db on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=true",
+            "COMM fe1211a86289c498fb8bd40a54bbb872c14b17f6dc1dff079faebfe7edcaa3db on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=true with [134ed7320bb3a6a8aa1f22969d006eac07c66641e9d9863ae8ed47ee4ecfa315 on 9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[134ed7320bb3a6a8aa1f22969d006eac07c66641e9d9863ae8ed47ee4ecfa315=0]",
+            "CONSUME fe1211a86289c498fb8bd40a54bbb872c14b17f6dc1dff079faebfe7edcaa3db on [9c645537f788785f92c7b402dfd9d622ee25d98eac4f4c3fb06a90c4349dc135] persistent=true"
+          ],
+          "label": "rrs-parity-legacy-drain",
+          "root": "27a8291fb7ba78f88325be662f0b9338b1f71ac5dd0795cd2c18f6e18289a954",
+          "storage_charges": [
+            [
+              "consume storage",
+              251
+            ],
+            [
+              "consume storage refund",
+              -251
+            ],
+            [
+              "produces storage refund",
+              -239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "produces storage",
+              239
+            ],
+            [
+              "event storage cost",
+              64
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "consume storage refund",
+              -260
+            ],
+            [
+              "produces storage refund",
+              -249
+            ],
+            [
+              "comm event storage cost",
+              128
+            ],
+            [
+              "consume storage",
+              260
+            ],
+            [
+              "event storage cost",
+              64
+            ]
+          ]
+        }
+      ],
+      "rustc_version": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)"
+    }
+  },
+  "rustc_version": "rustc 1.95.0-nightly (6efa357bf 2026-02-08)",
+  "scenarios": {
+    "capped_persistent_send": [
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 66,
+          "CONSUME": 132,
+          "PRODUCE": 67
+        },
+        "label": "rrs-parity-capped-park",
+        "native_phlo_usage": 180907,
+        "state": {
+          "a": {
+            "counter": 66,
+            "parked": [
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false"
+            ],
+            "records": []
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 68,
+          "CONSUME": 2,
+          "PRODUCE": 69
+        },
+        "label": "rrs-parity-capped-send",
+        "native_phlo_usage": 83335,
+        "state": {
+          "a": {
+            "counter": 68,
+            "parked": [],
+            "records": [
+              "[2a021010] persistent=true"
+            ]
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      }
+    ],
+    "divergent_pair": [
+      {
+        "comm_events": 17,
+        "errors": [
+          "OutOfPhlogistonsError"
+        ],
+        "label": "rrs-parity-divergent",
+        "native_phlo_usage": 19805,
+        "state": {
+          "a": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      }
+    ],
+    "fifo_and_peek_restore": [
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 1,
+          "CONSUME": 1,
+          "PRODUCE": 3
+        },
+        "events": [
+          "CONSUME 9adebdf259f4cb652a0079f9b68fdee579f3d2dd90ac77d1a061944924e47d75 on [a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4] persistent=false",
+          "COMM 9adebdf259f4cb652a0079f9b68fdee579f3d2dd90ac77d1a061944924e47d75 on [a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4] persistent=false with [953aa92cfd2554bddb67dc47a31dbe1f242ecd3e24b83661c6b96af76105c61f on a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[953aa92cfd2554bddb67dc47a31dbe1f242ecd3e24b83661c6b96af76105c61f=0]",
+          "PRODUCE 9250d538dcb905d46ca42bbc6eda971cb7292d92cc737784a2205bfbf82ac4b7 on a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4 persistent=false deterministic=true failed=false output=[]",
+          "PRODUCE 968c7a498a3b75387579efe29da92e2f3fca68fc369419cee36aaf0ebfe7cb17 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "PRODUCE 58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179 on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]"
+        ],
+        "label": "rrs-parity-fifo-enqueue-5",
+        "native_phlo_usage": 3243,
+        "root": "fa1caf7e2915aefb9faa31752a07b41e5dcf54866ae29976fc9eb001d72dffef",
+        "state": {
+          "a": {
+            "counter": 1,
+            "parked": [],
+            "records": [
+              "[2a02100a] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 1,
+          "CONSUME": 1,
+          "PRODUCE": 2
+        },
+        "events": [
+          "CONSUME 6b4145b487daa61ee1caa4bac388f7c4eb8ca2dac12cb75a19624146ba17c8dd on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false",
+          "COMM 6b4145b487daa61ee1caa4bac388f7c4eb8ca2dac12cb75a19624146ba17c8dd on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false with [968c7a498a3b75387579efe29da92e2f3fca68fc369419cee36aaf0ebfe7cb17 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[968c7a498a3b75387579efe29da92e2f3fca68fc369419cee36aaf0ebfe7cb17=0]",
+          "PRODUCE 6497a62ae4b71ca7f71494db3f0b47ef9c4fa331f1ced88e6cc836e3c45560ff on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "PRODUCE e2fe27f694f43a80076d66e89533b214c947a13d7836a3593bbbe9ca6799bc1f on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]"
+        ],
+        "label": "rrs-parity-fifo-enqueue-6",
+        "native_phlo_usage": 2721,
+        "root": "17c2a105f92926d1b0bc3fd1b48d09d29ccaff7cbc33789813b89c3c6da6fd01",
+        "state": {
+          "a": {
+            "counter": 2,
+            "parked": [],
+            "records": [
+              "[2a02100a] persistent=false",
+              "[2a02100c] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 2,
+          "CONSUME": 2,
+          "PRODUCE": 2
+        },
+        "events": [
+          "CONSUME 9877c066b46b7609cba514fa4cab4a3006985f02cf9fb43dcb8c8d816188b54d on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false",
+          "COMM 9877c066b46b7609cba514fa4cab4a3006985f02cf9fb43dcb8c8d816188b54d on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false with [6497a62ae4b71ca7f71494db3f0b47ef9c4fa331f1ced88e6cc836e3c45560ff on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[6497a62ae4b71ca7f71494db3f0b47ef9c4fa331f1ced88e6cc836e3c45560ff=0]",
+          "PRODUCE 1857936ed1e978c85e3ecc7e42977d3970f943b3c3582d4b15b9699bac761423 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "CONSUME 8433f61dddd133168340a574c0d1670e792bc7a6c5a68e462c1f78f25b2f1cf1 on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false",
+          "COMM 8433f61dddd133168340a574c0d1670e792bc7a6c5a68e462c1f78f25b2f1cf1 on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false with [58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179 on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179=0]",
+          "PRODUCE 58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179 on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]"
+        ],
+        "label": "rrs-parity-fifo-peek-1",
+        "native_phlo_usage": 4843,
+        "root": "60cf42ef8bc716d7313ffc976917083e7326dc4294a4d2ef21d7093cc6662694",
+        "state": {
+          "a": {
+            "counter": 3,
+            "parked": [],
+            "records": [
+              "[2a02100a] persistent=false",
+              "[2a02100c] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 2,
+          "CONSUME": 2,
+          "PRODUCE": 2
+        },
+        "events": [
+          "CONSUME 0068b6957e1b36c4da103e6a5df3bcd27f90f0be85747836a865260d8a6d2158 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false",
+          "COMM 0068b6957e1b36c4da103e6a5df3bcd27f90f0be85747836a865260d8a6d2158 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false with [1857936ed1e978c85e3ecc7e42977d3970f943b3c3582d4b15b9699bac761423 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[1857936ed1e978c85e3ecc7e42977d3970f943b3c3582d4b15b9699bac761423=0]",
+          "PRODUCE d6717047b22c4e6d07fa082b3d3d9faf7800433bff8fc8aa80cbdf2d89e74603 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "CONSUME 5b549df1ea37737fda68c3d409de341d46b031120a17ead006120fcf2edacdd6 on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false",
+          "COMM 5b549df1ea37737fda68c3d409de341d46b031120a17ead006120fcf2edacdd6 on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false with [58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179 on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179=0]",
+          "PRODUCE 58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179 on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]"
+        ],
+        "label": "rrs-parity-fifo-peek-2",
+        "native_phlo_usage": 4843,
+        "root": "16856e18ae983b1ef3dda4fca7b20c5037a38505291cd3faeb3dd43249af9e88",
+        "state": {
+          "a": {
+            "counter": 4,
+            "parked": [],
+            "records": [
+              "[2a02100a] persistent=false",
+              "[2a02100c] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 4,
+          "CONSUME": 4,
+          "PRODUCE": 2
+        },
+        "events": [
+          "CONSUME 0179cab3ace3d705da08070c194321aa7a911b7d5afcbc136c8caa209fcdf2a1 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false",
+          "COMM 0179cab3ace3d705da08070c194321aa7a911b7d5afcbc136c8caa209fcdf2a1 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false with [d6717047b22c4e6d07fa082b3d3d9faf7800433bff8fc8aa80cbdf2d89e74603 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[d6717047b22c4e6d07fa082b3d3d9faf7800433bff8fc8aa80cbdf2d89e74603=0]",
+          "PRODUCE e61726b422d77396ec859606b3f3f8c5068b2282cde0a72f662712cf87e890ed on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "CONSUME 94311058e85161776194c2680a76f7adc745215fb34c9249ee39b6a1c36d1445 on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false",
+          "COMM 94311058e85161776194c2680a76f7adc745215fb34c9249ee39b6a1c36d1445 on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false with [58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179 on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[58f957f94268aedcfec45c310c93a2f766eb6efe0c15d4e2d57cd59b303bf179=0]",
+          "CONSUME b52dcba462182e719e4205086c44670dcb47ddf10950bbad0e7738cfe76c0619 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false",
+          "COMM b52dcba462182e719e4205086c44670dcb47ddf10950bbad0e7738cfe76c0619 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false with [e61726b422d77396ec859606b3f3f8c5068b2282cde0a72f662712cf87e890ed on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[e61726b422d77396ec859606b3f3f8c5068b2282cde0a72f662712cf87e890ed=1]",
+          "PRODUCE 6eaa98cb5977dd6919776d19644d00912e822eda5147294e17c67e5e2ec8c49e on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "CONSUME 5228e44a29b74c8f1612799d549f2ead4cf79786d3d1ab250825963d16d07fbd on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false",
+          "COMM 5228e44a29b74c8f1612799d549f2ead4cf79786d3d1ab250825963d16d07fbd on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false with [e2fe27f694f43a80076d66e89533b214c947a13d7836a3593bbbe9ca6799bc1f on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[e2fe27f694f43a80076d66e89533b214c947a13d7836a3593bbbe9ca6799bc1f=0]"
+        ],
+        "label": "rrs-parity-fifo-dequeue",
+        "native_phlo_usage": 7969,
+        "root": "92add3301bcea4f2ef4e1f18f954dc75bfb91198e4ddb1a1f29ce76da3044a71",
+        "state": {
+          "a": {
+            "counter": 6,
+            "parked": [],
+            "records": []
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      }
+    ],
+    "persistent_operations": [
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 3,
+          "CONSUME": 3,
+          "PRODUCE": 8
+        },
+        "label": "rrs-parity-persistent-fill",
+        "native_phlo_usage": 9207,
+        "state": {
+          "a": {
+            "counter": 2,
+            "parked": [],
+            "records": [
+              "[2a021002] persistent=false",
+              "[2a021004] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 1,
+            "parked": [],
+            "records": [
+              "[2a021006] persistent=false"
+            ]
+          }
+        }
+      },
+      {
+        "comm_events": 5,
+        "errors": [],
+        "label": "rrs-parity-persistent-send",
+        "native_phlo_usage": 10575,
+        "state": {
+          "a": {
+            "counter": 2,
+            "parked": [],
+            "records": [
+              "[2a021002] persistent=false",
+              "[2a021004] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 4,
+            "parked": [],
+            "records": [
+              "[2a021008] persistent=true"
+            ]
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 3,
+          "CONSUME": 4,
+          "PRODUCE": 1
+        },
+        "label": "rrs-parity-persistent-drain",
+        "native_phlo_usage": 5121,
+        "state": {
+          "a": {
+            "counter": 3,
+            "parked": [
+              "persistent=true peek=false"
+            ],
+            "records": []
+          },
+          "b": {
+            "counter": 4,
+            "parked": [],
+            "records": [
+              "[2a021008] persistent=true"
+            ]
+          }
+        }
+      }
+    ],
+    "produce_side_peek_reoffer": [
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 1,
+          "CONSUME": 2,
+          "PRODUCE": 2
+        },
+        "events": [
+          "CONSUME 62e2be23cb38348b0d5835b527f54eca703f40f2c1ef0f17ed2e6645fdd4081a on [a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4] persistent=false",
+          "COMM 62e2be23cb38348b0d5835b527f54eca703f40f2c1ef0f17ed2e6645fdd4081a on [a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4] persistent=false with [953aa92cfd2554bddb67dc47a31dbe1f242ecd3e24b83661c6b96af76105c61f on a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[953aa92cfd2554bddb67dc47a31dbe1f242ecd3e24b83661c6b96af76105c61f=0]",
+          "PRODUCE d00993406c46dc5d06d7643ba918f831085163b4e9e0dd23b570cd1d53c23786 on a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4 persistent=false deterministic=true failed=false output=[]",
+          "PRODUCE fd272ea105417a9c77e7bfb472778db6765791760585cfadc2bd1fdfab0e475c on d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3 persistent=false deterministic=true failed=false output=[]",
+          "CONSUME f17ee94284da98c73f306c1e980ac023fa889d840c66aa23a6af8e1eaf9e9ae3 on [30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83] persistent=false"
+        ],
+        "label": "rrs-parity-reoffer-peek",
+        "native_phlo_usage": 3255,
+        "root": "eb92efd31c401a583378da55c99f53556648e780d42823f5be31dc0f6d3c8dd3",
+        "state": {
+          "a": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          },
+          "b": {
+            "counter": 1,
+            "parked": [
+              "persistent=false peek=true"
+            ],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 1,
+          "CONSUME": 2,
+          "PRODUCE": 1
+        },
+        "events": [
+          "CONSUME 3cba307eeb002a63cb4b4a562713a1ffdece0c2c3ca044ca322986bec5bd15b4 on [d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3] persistent=false",
+          "COMM 3cba307eeb002a63cb4b4a562713a1ffdece0c2c3ca044ca322986bec5bd15b4 on [d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3] persistent=false with [fd272ea105417a9c77e7bfb472778db6765791760585cfadc2bd1fdfab0e475c on d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[fd272ea105417a9c77e7bfb472778db6765791760585cfadc2bd1fdfab0e475c=0]",
+          "PRODUCE 0305863a618e4e74681fc6088604d2ca58ed761337e36d3c218ae4f7b3bd3e43 on d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3 persistent=false deterministic=true failed=false output=[]",
+          "CONSUME 5c17893407218b057b2d6303436fb2605a0e9447eba050dd56076728b578307a on [30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83] persistent=false"
+        ],
+        "label": "rrs-parity-reoffer-take",
+        "native_phlo_usage": 2733,
+        "root": "cfce849e9f762730614aaa025faef46247f9fc6c1df5a4a319a28af8ed5623c2",
+        "state": {
+          "a": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          },
+          "b": {
+            "counter": 2,
+            "parked": [
+              "persistent=false peek=true",
+              "persistent=false peek=false"
+            ],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 3,
+          "CONSUME": 1,
+          "PRODUCE": 3
+        },
+        "events": [
+          "CONSUME 3a06f0afb9d26bd552172575a3b0a7916f19402ac7a866718da11088c98f7664 on [d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3] persistent=false",
+          "COMM 3a06f0afb9d26bd552172575a3b0a7916f19402ac7a866718da11088c98f7664 on [d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3] persistent=false with [0305863a618e4e74681fc6088604d2ca58ed761337e36d3c218ae4f7b3bd3e43 on d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[0305863a618e4e74681fc6088604d2ca58ed761337e36d3c218ae4f7b3bd3e43=0]",
+          "PRODUCE b0bc0af3e51c2b048cd134b34c8bbf2edabb3b724c8e5c4bb3cd2334c8a7dc66 on d8fb61d9f844eff312322e0bcdc31274e0cb3c8c58a52eb62fbeac740fcba6a3 persistent=false deterministic=true failed=false output=[]",
+          "PRODUCE b9cda7c646890cfb1fb7e8c8a1f6076cfaea20755a1b78cf6e550da5a8787e42 on 30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83 persistent=false deterministic=true failed=false output=[]",
+          "COMM f17ee94284da98c73f306c1e980ac023fa889d840c66aa23a6af8e1eaf9e9ae3 on [30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83] persistent=false with [b9cda7c646890cfb1fb7e8c8a1f6076cfaea20755a1b78cf6e550da5a8787e42 on 30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[b9cda7c646890cfb1fb7e8c8a1f6076cfaea20755a1b78cf6e550da5a8787e42=1]",
+          "PRODUCE b9cda7c646890cfb1fb7e8c8a1f6076cfaea20755a1b78cf6e550da5a8787e42 on 30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83 persistent=false deterministic=true failed=false output=[]",
+          "COMM 5c17893407218b057b2d6303436fb2605a0e9447eba050dd56076728b578307a on [30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83] persistent=false with [b9cda7c646890cfb1fb7e8c8a1f6076cfaea20755a1b78cf6e550da5a8787e42 on 30d1bad9d7d6e09f6f9bf7f887da8571898d777813e19d64ddb776758e074d83 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[b9cda7c646890cfb1fb7e8c8a1f6076cfaea20755a1b78cf6e550da5a8787e42=2]"
+        ],
+        "label": "rrs-parity-reoffer-send",
+        "native_phlo_usage": 6025,
+        "root": "8caf0f01b2e9cb7e86892c86bf65e6697c7b0e70828111d4a1e4460dff5fe78b",
+        "state": {
+          "a": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          },
+          "b": {
+            "counter": 3,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 1,
+          "CONSUME": 2,
+          "PRODUCE": 2
+        },
+        "events": [
+          "CONSUME 51d437a8f701f36264c14c8ca5ffb95171a98d87df73ac1525aa47ac1e21157a on [a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4] persistent=false",
+          "COMM 51d437a8f701f36264c14c8ca5ffb95171a98d87df73ac1525aa47ac1e21157a on [a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4] persistent=false with [d00993406c46dc5d06d7643ba918f831085163b4e9e0dd23b570cd1d53c23786 on a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4 persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[d00993406c46dc5d06d7643ba918f831085163b4e9e0dd23b570cd1d53c23786=0]",
+          "PRODUCE 579c1b6d3404c1ce53c7f3ab700319f87f38894c686d76b2a9df8dd038114b9a on a721f9cf12e627754a65ad040d4ff3e0cd187a9cc9eff2cddf1c34c5ab0b30e4 persistent=false deterministic=true failed=false output=[]",
+          "PRODUCE 0e69a0c762e481bc5ae964d8c4fc31a057726fbf750d6a309940baf59bad1b59 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "CONSUME 1202c18549f667953ce5dd42481c9b64f3ed38710deb942254c9006415983dca on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false"
+        ],
+        "label": "rrs-parity-reoffer-peek-a",
+        "native_phlo_usage": 3255,
+        "root": "b7248347b809d405062b348cbc02d94ef8fb4197ace5d0b00e9854ab538f4c1b",
+        "state": {
+          "a": {
+            "counter": 1,
+            "parked": [
+              "persistent=false peek=true"
+            ],
+            "records": []
+          },
+          "b": {
+            "counter": 3,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 2,
+          "CONSUME": 1,
+          "PRODUCE": 3
+        },
+        "events": [
+          "CONSUME 5c0742bcc2e47701074742e86643efcada29d9386e44221ffa8b9131017c5303 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false",
+          "COMM 5c0742bcc2e47701074742e86643efcada29d9386e44221ffa8b9131017c5303 on [3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec] persistent=false with [0e69a0c762e481bc5ae964d8c4fc31a057726fbf750d6a309940baf59bad1b59 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]] peeks=[] repeated=[0e69a0c762e481bc5ae964d8c4fc31a057726fbf750d6a309940baf59bad1b59=0]",
+          "PRODUCE 5ca3ecfb5ad9869b88efb2f79f02a9d70e46be37906e10351097f2b3297ef9b6 on 3931359b15b34cb9d7ac87c75c51fe79f0cc7eac46186294b255760bb3004aec persistent=false deterministic=true failed=false output=[]",
+          "PRODUCE fdc3a4b9a86765e7f285dcf4d5dabdd0506a9c23e7053f06928084f2ed447b3c on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]",
+          "COMM 1202c18549f667953ce5dd42481c9b64f3ed38710deb942254c9006415983dca on [8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5] persistent=false with [fdc3a4b9a86765e7f285dcf4d5dabdd0506a9c23e7053f06928084f2ed447b3c on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]] peeks=[0] repeated=[fdc3a4b9a86765e7f285dcf4d5dabdd0506a9c23e7053f06928084f2ed447b3c=1]",
+          "PRODUCE fdc3a4b9a86765e7f285dcf4d5dabdd0506a9c23e7053f06928084f2ed447b3c on 8a793523aff16ebfc8c2885b6b1131a06c344656a80f735c4f925d2fc46137a5 persistent=false deterministic=true failed=false output=[]"
+        ],
+        "label": "rrs-parity-reoffer-store",
+        "native_phlo_usage": 4831,
+        "root": "63274cd20d8d1143b20ea85745519431a76975062db9422717369ae305a39bf0",
+        "state": {
+          "a": {
+            "counter": 2,
+            "parked": [],
+            "records": [
+              "[2a02100c] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 3,
+            "parked": [],
+            "records": []
+          }
+        }
+      }
+    ],
+    "reentry": [
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 64,
+          "CONSUME": 128,
+          "PRODUCE": 65
+        },
+        "label": "rrs-parity-reentry-park",
+        "native_phlo_usage": 175533,
+        "state": {
+          "a": {
+            "counter": 64,
+            "parked": [
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false"
+            ],
+            "records": []
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 1,
+          "CONSUME": 2,
+          "PRODUCE": 1
+        },
+        "label": "rrs-parity-reentry-park-one",
+        "native_phlo_usage": 2727,
+        "state": {
+          "a": {
+            "counter": 65,
+            "parked": [
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false",
+              "persistent=false peek=false"
+            ],
+            "records": []
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      },
+      {
+        "errors": [],
+        "event_kinds": {
+          "COMM": 68,
+          "CONSUME": 3,
+          "PRODUCE": 70
+        },
+        "label": "rrs-parity-reentry-send",
+        "state": {
+          "a": {
+            "counter": 68,
+            "parked": [],
+            "records": [
+              "[2a021002] persistent=true",
+              "[2a0310c601] persistent=false"
+            ]
+          },
+          "b": {
+            "counter": 0,
+            "parked": [],
+            "records": []
+          }
+        }
+      }
+    ]
+  }
+}

@@ -97,6 +97,9 @@ fn term_count(par: &Par) -> usize {
     // a USE or NEWSPACE marker tuple as a term. The schedule check of `visit`
     // keeps the filter below, so it fails closed on a Par with such a tuple
     // (finding H-1).
+    // Changed by Reified RSpaces decision 90 (R-1): the schedule of `visit` and
+    // the test oracle use the same predicate now, so a Par with a marker tuple
+    // resolves instead of failing closed.
     // let dequotations = par
     //     .exprs
     //     .iter()
@@ -121,6 +124,7 @@ fn term_count(par: &Par) -> usize {
         + dequotations
         + par.cost_signed_terms.len()
         + par.cost_stacks.len()
+        + par.use_blocks.len()
 }
 
 /// The number of rebuilt children and resolved signatures that the rebuild of
@@ -139,7 +143,10 @@ fn rebuilt_parts(par: &Par) -> (usize, usize) {
             .count();
         children += usize::from(receive.body.is_some());
     }
-    for new in &par.news {
+    // Changed by decision 112 (ruling 1): the rebuild takes no child for a New with a space
+    // annotation, which it keeps whole. The text before:
+    // for new in &par.news {
+    for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
         children += usize::from(new.p.is_some());
     }
     for matched in &par.matches {
@@ -175,7 +182,14 @@ fn scheduled_tasks(par: &Par) -> usize {
     for receive in &par.receives {
         tasks += 3 + usize::from(receive.body.is_some());
     }
-    tasks += par.news.len();
+    // Changed by decision 112 (ruling 1): the visit schedules no task for a New with a space
+    // annotation, which it keeps whole. The text before:
+    // tasks += par.news.len();
+    tasks += par
+        .news
+        .iter()
+        .filter(|new| new.space_types.is_empty())
+        .count();
     for matched in &par.matches {
         for case in &matched.cases {
             tasks += 2 + usize::from(case.source.is_some());
@@ -212,6 +226,7 @@ fn merge_into(rebuilt: &mut Par, value: Par) {
         connective_used,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = value;
     rebuilt.sends.extend(sends);
     rebuilt.receives.extend(receives);
@@ -224,6 +239,7 @@ fn merge_into(rebuilt: &mut Par, value: Par) {
     rebuilt.conditionals.extend(conditionals);
     rebuilt.cost_signed_terms.extend(cost_signed_terms);
     rebuilt.cost_stacks.extend(cost_stacks);
+    rebuilt.use_blocks.extend(use_blocks);
     if !locally_free.is_empty() {
         rebuilt.locally_free = union(std::mem::take(&mut rebuilt.locally_free), locally_free);
     }
@@ -454,7 +470,13 @@ impl<'u> FundingResolver<'u> {
             index += 1;
         }
         for new in &par.news {
-            ordered.push(Task::Enter(new, split(index)?));
+            // Changed by decision 112 (ruling 1): the visit enters only a New without a space
+            // annotation, and the index of the schedule still advances. The text before:
+            // ordered.push(Task::Enter(new, split(index)?));
+            match new.space_types.as_slice() {
+                [] => ordered.push(Task::Enter(new, split(index)?)),
+                [..] => {}
+            }
             index += 1;
         }
         for matched in &par.matches {
@@ -489,15 +511,24 @@ impl<'u> FundingResolver<'u> {
             }
             index += 1;
         }
+        // Changed by Reified RSpaces decision 90 (R-1): the schedule counts a USE or
+        // NEWSPACE marker tuple with the predicate of the reducer, as `term_count`
+        // does, so the split index of every later term agrees with the reducer. A
+        // marker body is never walked (R-2), so the scope stack stays unchanged.
+        // index += par
+        //     .exprs
+        //     .iter()
+        //     .filter(|expr| {
+        //         matches!(
+        //             expr.expr_instance,
+        //             Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
+        //         )
+        //     })
+        //     .count();
         index += par
             .exprs
             .iter()
-            .filter(|expr| {
-                matches!(
-                    expr.expr_instance,
-                    Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
-                )
-            })
+            .filter(|expr| is_evaluated_process_expr(expr))
             .count();
         for signed in &par.cost_signed_terms {
             let body_position = split(index)?;
@@ -513,6 +544,7 @@ impl<'u> FundingResolver<'u> {
             ordered.push(Task::Cells(stack, resolving));
         }
         index += par.cost_stacks.len();
+        index += par.use_blocks.len();
         if position.is_some() && index != terms {
             return Err(InterpreterError::BugFoundError(
                 "funding resolver term schedule disagrees with reducer schedule".to_string(),
@@ -792,6 +824,7 @@ impl<'u> FundingResolver<'u> {
                 persistent: send.persistent,
                 locally_free: send.locally_free.clone(),
                 connective_used: send.connective_used,
+                params: send.params.clone(),
             });
         }
         let mut receives = Vec::with_capacity(par.receives.len());
@@ -808,6 +841,7 @@ impl<'u> FundingResolver<'u> {
                     remainder: bind.remainder,
                     free_count: bind.free_count,
                     cost_signature,
+                    query_spec: bind.query_spec.clone(),
                 });
             }
             let body = match receive.body {
@@ -827,6 +861,13 @@ impl<'u> FundingResolver<'u> {
         }
         let mut news = Vec::with_capacity(par.news.len());
         for new in &par.news {
+            match new.space_types.as_slice() {
+                [] => {}
+                [..] => {
+                    news.push(new.clone());
+                    continue;
+                }
+            }
             let p = match new.p {
                 Some(_) => Some(children.next().ok_or_else(missing)?),
                 None => None,
@@ -837,6 +878,7 @@ impl<'u> FundingResolver<'u> {
                 uri: new.uri.clone(),
                 injections: new.injections.clone(),
                 locally_free: new.locally_free.clone(),
+                space_types: Vec::new(),
             });
         }
         let mut matches = Vec::with_capacity(par.matches.len());
@@ -901,7 +943,14 @@ impl<'u> FundingResolver<'u> {
                 Some(_) => Some(children.next().ok_or_else(missing)?),
                 None => None,
             };
-            cost_signed_terms.push(CostSignedTerm { body, signature });
+            // Changed by G3 (DR-135, S3b): the rebuilt term keeps its held
+            // price.
+            // cost_signed_terms.push(CostSignedTerm { body, signature });
+            cost_signed_terms.push(CostSignedTerm {
+                body,
+                signature,
+                held_price: signed.held_price,
+            });
         }
         let mut cost_stacks = Vec::with_capacity(par.cost_stacks.len());
         for stack in &par.cost_stacks {
@@ -931,6 +980,7 @@ impl<'u> FundingResolver<'u> {
             connective_used: par.connective_used,
             cost_signed_terms,
             cost_stacks,
+            use_blocks: par.use_blocks.clone(),
         };
         for value in dequoted {
             merge_into(&mut rebuilt, value);
@@ -1036,6 +1086,13 @@ fn resolve_par(
     }
 
     for new in &mut par.news {
+        match new.space_types.as_slice() {
+            [] => {}
+            [..] => {
+                index += 1;
+                continue;
+            }
+        }
         let mut term_rand = evaluation_random(&rand, index, term_count)?;
         let env = allocate_new_bindings(new, &Env::new(), &mut term_rand, urn_map)?;
         let body = new.p.take().ok_or_else(|| {
@@ -1105,15 +1162,23 @@ fn resolve_par(
         index += 1;
     }
 
+    // Changed by Reified RSpaces decision 90 (R-1): the oracle skips a USE or
+    // NEWSPACE marker tuple with the predicate of the reducer, as `term_count`
+    // and the schedule of `visit` do.
+    // index += par
+    //     .exprs
+    //     .iter()
+    //     .filter(|expr| {
+    //         matches!(
+    //             expr.expr_instance,
+    //             Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
+    //         )
+    //     })
+    //     .count();
     index += par
         .exprs
         .iter()
-        .filter(|expr| {
-            matches!(
-                expr.expr_instance,
-                Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
-            )
-        })
+        .filter(|expr| is_evaluated_process_expr(expr))
         .count();
 
     for signed in &mut par.cost_signed_terms {
@@ -1131,6 +1196,7 @@ fn resolve_par(
     }
 
     index += par.cost_stacks.len();
+    index += par.use_blocks.len();
     if index != term_count {
         return Err(InterpreterError::BugFoundError(
             "funding resolver term schedule disagrees with reducer schedule".to_string(),
@@ -1243,7 +1309,15 @@ fn keep_unresolvable_quotes(program: &Par, resolved: &mut Par, resolving: bool) 
             keep_unresolvable_quotes(body, body_target, false);
         }
     }
-    for (new, target) in program.news.iter().zip(resolved.news.iter_mut()) {
+    // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+    // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+    // for (new, target) in program.news.iter().zip(resolved.news.iter_mut()) {
+    for (new, target) in program
+        .news
+        .iter()
+        .zip(resolved.news.iter_mut())
+        .filter(|(new, _)| new.space_types.is_empty())
+    {
         if let (Some(body), Some(body_target)) = (new.p.as_ref(), target.p.as_mut()) {
             keep_unresolvable_quotes(body, body_target, resolving);
         }
@@ -1477,5 +1551,28 @@ mod tests {
             resolve_lexical_names_for_funding(&program, rand.clone(), &HashMap::new()).unwrap();
         let twice = resolve_lexical_names_for_funding(&once, rand, &HashMap::new()).unwrap();
         assert_eq!(once, twice);
+    }
+
+    /// Added by G3 (DR-135, S3b): the rebuild keeps the held price of a held
+    /// term.
+    #[test]
+    fn resolution_keeps_the_held_price() {
+        let program = Par {
+            cost_signed_terms: vec![CostSignedTerm {
+                body: Some(Par::default()),
+                signature: Some(CostSignature {
+                    value: Some(Value::Ground(vec![7])),
+                }),
+                held_price: Some(9),
+            }],
+            ..Default::default()
+        };
+        let resolved = resolve_lexical_names_for_funding(
+            &program,
+            Blake2b512Random::create_from_bytes(b"held price"),
+            &HashMap::new(),
+        )
+        .expect("the program resolves");
+        assert_eq!(resolved.cost_signed_terms[0].held_price, Some(9));
     }
 }

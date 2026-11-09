@@ -94,10 +94,24 @@ async fn replay_history(inputs: &[(u8, u8)], persistent: bool) {
             .unwrap(),
     );
     let root = replay.checkpoint().await.unwrap();
+    // Changed by DR-132 (D1-A): replay gives a live produce the first open row
+    // of its recorded source, not the row of its name. A dependency wait thus
+    // needs the first row of a source with an earlier row on its channel. A
+    // persistent history puts one datum on each channel, so its rows of one
+    // channel share one source and never wait here.
+    // if let Some(index) = (1..inputs.len()).find(|index| {
+    //     inputs[..*index]
+    //         .iter()
+    //         .any(|(channel, _)| *channel % 4 == inputs[*index].0 % 4)
+    // }) {
+    let same_source = |left: usize, right: usize| {
+        inputs[left].0 % 4 == inputs[right].0 % 4 && data[left] == data[right]
+    };
     if let Some(index) = (1..inputs.len()).find(|index| {
-        inputs[..*index]
-            .iter()
-            .any(|(channel, _)| *channel % 4 == inputs[*index].0 % 4)
+        (0..*index).all(|earlier| !same_source(earlier, *index))
+            && inputs[..*index]
+                .iter()
+                .any(|(channel, _)| *channel % 4 == inputs[*index].0 % 4)
     }) {
         let mut cancelled = Box::pin(operation_context::scope(
             orders[index].clone(),

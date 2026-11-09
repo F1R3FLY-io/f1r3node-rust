@@ -9,20 +9,44 @@
 //! residue check of VR-2). The process restart of three children is in
 //! `reified_restart_rehydrate.rs`.
 //!
-//! A cost vector is the phlo usage of native play, its budget recording (usage, attempts and
-//! journal rows), and its authority events and byte observations.
+//! A cost vector is the phlo usage of native play and its budget recording: the usage, the
+//! budget attempts and the number of journal rows (`CostVector`). Racing evaluation orders the
+//! attempts, the journal rows, the authority events and the byte observations by arrival
+//! (decision 93). So a warm play and a cold play compare the events and the attempts in any
+//! order.
+// Changed by decision 93 (decision 111): racing evaluation orders the parts of a cost vector by
+// arrival. The old text follows.
+// //! A cost vector is the phlo usage of native play, its budget recording (usage, attempts and
+// //! journal rows), and its authority events and byte observations.
 //!
 //! | Test | Property |
 //! |---|---|
-//! | `space_lazy_attach` | Block 1 creates a queue, a set, a priority queue, a VectorDB space and a PathMap space with records and waiters. A restarted runtime holds no space channel before its first operation, and block 2 (a handle call `config`, a take, a fire of the stored waiter and a store) gives on it the outcome and the cost vector of the warm runtime (RH-1). |
-//! | `space_checkpoint_reset` | A reset to the root of block 1 restores the records, the waiters and the counters of block 1. Block 2 then reaches the root and the cost vector of its first play, and a restarted runtime reads the state of block 1 (RH-2). |
-//! | `space_attach_cost` | A handle call `config` and a send on an existing queue have the pinned cost vectors on the warm and on a cold runtime, and the accounting observer receives the cost of each COMM: one journal COMM record for each COMM of the log, each linked to a budget observation of the kind `Comm` (RH-4). |
-//! | `space_attach_warm_cold_cost_equal` | For each of the 24 families, block 2 over the state of the family program gives the same outcome and cost vector on the warm and on a cold runtime (RH-1, RH-4). |
-//! | `prop_attach_warm_cold_cost_equal` | The same equality for generated families, stored records and block-2 operations (NE-2). |
+//! | `space_lazy_attach` | On each racing runtime, block 1 creates a queue, a set, a priority queue, a VectorDB space and a PathMap space with records and waiters. A restarted runtime holds no space channel before its first operation. Block 2 (a handle call `config`, a take, a fire of the stored waiter and a store) certifies on it and delivers `config`, `take` and `fired`. When the warm and the cold play log the same events in any order, they have the same outcome and cost vector (RH-1, decision 93). |
+// Changed by decision 93 (decision 111): block 2 of the PathMap family races, so the plays
+// compare when they log the same events in any order. The old row follows.
+// //! | `space_lazy_attach` | Block 1 creates a queue, a set, a priority queue, a VectorDB space and a PathMap space with records and waiters. A restarted runtime holds no space channel before its first operation, and block 2 (a handle call `config`, a take, a fire of the stored waiter and a store) gives on it the outcome and the cost vector of the warm runtime (RH-1). |
+//! | `space_checkpoint_reset` | On each racing runtime, a reset to the root of block 1 restores the records, the waiters and the counters of block 1, and a restarted runtime reads the state of block 1. Block 2 certifies again after the reset. When both plays of block 2 log the same events in any order, they have the same outcome and cost vector (RH-2, decision 93). |
+// Changed by decision 93 (decision 111): block 2 of the PathMap family races, so the plays
+// compare when they log the same events in any order. The old row follows.
+// //! | `space_checkpoint_reset` | A reset to the root of block 1 restores the records, the waiters and the counters of block 1. Block 2 then reaches the root and the cost vector of its first play, and a restarted runtime reads the state of block 1 (RH-2). |
+//! | `space_attach_cost` | A handle call `config` and a send on an existing queue have the pinned phlo usage on the warm and on a cold runtime, and the accounting observer receives the cost of each COMM: one journal COMM record for each COMM of the log, each linked to a budget observation of the kind `Comm` (RH-4). |
+// Changed by decision 89 (step E): the pins hold the phlo usage alone, because DR-131 removed
+// host work. The old row follows.
+// //! | `space_attach_cost` | A handle call `config` and a send on an existing queue have the pinned cost vectors on the warm and on a cold runtime, and the accounting observer receives the cost of each COMM: one journal COMM record for each COMM of the log, each linked to a budget observation of the kind `Comm` (RH-4). |
+//! | `space_attach_warm_cold_cost_equal` | On each racing runtime, block 2 of each of the 24 families delivers the same labels warm and cold. When both plays log the same events in any order, they have the same outcome and cost vector (RH-1, RH-4, decision 93). |
+// Changed by decision 93 (decision 111): the plays compare when they log the same events in any
+// order. The old row follows.
+// //! | `space_attach_warm_cold_cost_equal` | For each of the 24 families, block 2 over the state of the family program gives the same outcome and cost vector on the warm and on a cold runtime (RH-1, RH-4). |
+//! | `prop_attach_warm_cold_cost_equal` | The same conditional equality for generated families, stored records and block-2 operations, on each racing runtime (NE-2, decision 93). |
+// Changed by decision 93 (decision 111): the same conditional equality. The old row follows.
+// //! | `prop_attach_warm_cold_cost_equal` | The same equality for generated families, stored records and block-2 operations (NE-2). |
 //! | `reducer_attach_costs` | A missing durable space (DG-2) fails each entry with one cost vector for any missing space id, on a fresh runtime and on a runtime that holds other spaces (DG-4). The handle calls `config` and `gensym` through a stored handle cost the same on the warm and on a cold runtime. |
 //! | `reified_handle_persisted_restart_replay` | A handle and a name stored in block 1 serve three handle calls on a restarted runtime. The calls reach `HANDLE_OP` through the stored handle continuation, and native replay from the history of the root of block 1 reproduces the play. |
-//! | `reducer_dangling_handle` | Every row of DG-1 and DG-2 fails with its code and names the space id (DG-3): the ids of a `temp` space of an ended deploy, and the ids of a durable space that does not exist. `getSpaceAgent` replies `DanglingHandle` with the space id, and `ann` replies `NotAVectorDbSpace`. Native replay reproduces each deploy. |
-//! | `reducer_space_costs` | Native play of parallel space work on two spaces gives the same outcome and cost vector on a current-thread and on a multi-thread tokio runtime, and native replay reproduces each play. |
+//! | `reducer_dangling_handle` | Every row of DG-1 and DG-2 fails with its code and names the space id (DG-3): the ids of a `temp` space of an ended deploy, and the ids of a durable space that does not exist. `getSpaceAgent` replies `DanglingHandle` with the space id. In a `chromadb` build, `ann` replies `EXT_BAD_ARG` with the message `vectordb_ann: invalid argument` (decision 105). Native replay reproduces each deploy. |
+//! | `reducer_space_costs` | Three runs on each racing runtime. Each native play of parallel space work on two spaces certifies and delivers an allowed outcome. Two plays with the same events in any order have the same outcome and cost vector (decision 93). |
+// Changed by decision 93 (decision 111): each run certifies and delivers an allowed outcome. The
+// old row follows.
+// //! | `reducer_space_costs` | Native play of parallel space work on two spaces gives the same outcome and cost vector on a current-thread and on a multi-thread tokio runtime, and native replay reproduces each play. |
 //! | `reified_factory_ephemeral_staging` | The factory stages the config, the space counter and the handle of a `temp` and of a `seq` space under lowercase KINDs, and of a `default` space under uppercase KINDs. The handle reply carries the KIND of its space, and only a `default` space leaves channels after its deploy. |
 //! | `reified_factory_theory_argument` | A theory argument persists in the config. After a restart, the first operation resolves the stored identity: a `Nat` value is admitted, a string fails with `TheoryRefuted`, and the `config` reply shows the identity. A `temp` space stages its theory too. |
 
@@ -30,6 +54,7 @@
 mod support;
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::Par;
@@ -41,7 +66,8 @@ use rholang::rust::interpreter::accounting::{
     NativeBudgetRecording, NativeObservationLink, NativeOperationRecord,
 };
 use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::reified::vectordb_services::ServiceReplyCode;
+// Retired by decision 105: `ann` replies the base code `EXT_BAD_ARG`.
+// use rholang::rust::interpreter::reified::vectordb_services::ServiceReplyCode;
 use rholang::rust::interpreter::spaces::namespace::{
     self, Durability, NameTail, NativeSpace, ReifiedId, SpaceId, SID_LEN,
 };
@@ -51,10 +77,12 @@ use support::family_programs::{
     space_program, Inner, Outer, StoredFamily, CONFIG_CALL, JOIN, STORED_FAMILIES,
 };
 use support::native::{
-    assert_reproduces, certify, footprint_channels, is_space_row, native_play, NativeChain, Played,
-    AMPLE_LIMIT, OUT,
+    assert_reproduces, certify, footprint_channels, is_space_row, native_play, unordered_log,
+    NativeChain, Played, AMPLE_LIMIT, OUT,
 };
-use support::props::{check, runtime_config, tokio_runtime};
+// Changed by decision 111: the tests run on the racing runtimes. The old import follows.
+// use support::props::{check, runtime_config, tokio_runtime};
+use support::props::{check, racing_runtime, runtime_config, RACING_RUNS, RACING_WORKERS};
 use support::session::{comms_on, error_codes, injected, native, Injections};
 
 // ─── Plays and cost vectors ────────────────────────────────────────────────────────────────────
@@ -110,12 +138,52 @@ fn journal(played: &Played) -> &[NativeOperationRecord] {
         .expect("native play records its operations")
 }
 
+// Changed by decision 93 (decision 111): racing evaluation orders the events, the attempts, the
+// journal rows, the authority events and the byte observations by arrival. The old check
+// follows.
+// /// Checks that the cold play `cold` equals the warm play `warm` from the same pre-state: the
+// /// outcome (errors, post-state root, event log, outputs) and the cost vector (RH-1, RH-4).
+// fn assert_same_play(label: &str, warm: &Played, cold: &Played) {
+//     assert_eq!(cold.result.errors, warm.result.errors, "{label}: errors");
+//     assert_eq!(cold.root, warm.root, "{label}: post-state root");
+//     assert_eq!(cold.log, warm.log, "{label}: event log");
+//     assert_eq!(cold.outputs, warm.outputs, "{label}: outputs");
+//     assert_eq!(
+//         cold.result.native_phlo_usage, warm.result.native_phlo_usage,
+//         "{label}: phlo usage"
+//     );
+//     assert_eq!(
+//         recording(cold).used,
+//         recording(warm).used,
+//         "{label}: budget usage"
+//     );
+//     assert_eq!(
+//         recording(cold).attempts,
+//         recording(warm).attempts,
+//         "{label}: budget attempts"
+//     );
+//     assert_eq!(journal(cold), journal(warm), "{label}: journal rows");
+//     assert_eq!(
+//         cold.result.authority_events, warm.result.authority_events,
+//         "{label}: authority events"
+//     );
+//     assert_eq!(
+//         cold.result.byte_observations, warm.result.byte_observations,
+//         "{label}: byte observations"
+//     );
+// }
+
 /// Checks that the cold play `cold` equals the warm play `warm` from the same pre-state: the
-/// outcome (errors, post-state root, event log, outputs) and the cost vector (RH-1, RH-4).
+/// errors, the post-state root, the events in any order and the outputs, and the cost vector
+/// with the budget attempts in any order (RH-1, RH-4, decision 93).
 fn assert_same_play(label: &str, warm: &Played, cold: &Played) {
     assert_eq!(cold.result.errors, warm.result.errors, "{label}: errors");
     assert_eq!(cold.root, warm.root, "{label}: post-state root");
-    assert_eq!(cold.log, warm.log, "{label}: event log");
+    assert_eq!(
+        unordered_log(&cold.log),
+        unordered_log(&warm.log),
+        "{label}: the events in any order"
+    );
     assert_eq!(cold.outputs, warm.outputs, "{label}: outputs");
     assert_eq!(
         cold.result.native_phlo_usage, warm.result.native_phlo_usage,
@@ -127,19 +195,22 @@ fn assert_same_play(label: &str, warm: &Played, cold: &Played) {
         "{label}: budget usage"
     );
     assert_eq!(
-        recording(cold).attempts,
-        recording(warm).attempts,
-        "{label}: budget attempts"
+        attempt_multiset(cold),
+        attempt_multiset(warm),
+        "{label}: budget attempts in any order"
     );
-    assert_eq!(journal(cold), journal(warm), "{label}: journal rows");
-    assert_eq!(
-        cold.result.authority_events, warm.result.authority_events,
-        "{label}: authority events"
-    );
-    assert_eq!(
-        cold.result.byte_observations, warm.result.byte_observations,
-        "{label}: byte observations"
-    );
+}
+
+/// Added by decision 93 (decision 111): the budget attempts of the cost vector of `played`, as
+/// sorted Debug forms.
+fn attempt_multiset(played: &Played) -> Vec<String> {
+    let mut attempts: Vec<String> = cost_vector(played)
+        .attempts
+        .iter()
+        .map(|attempt| format!("{attempt:?}"))
+        .collect();
+    attempts.sort_unstable();
+    attempts
 }
 
 /// The numeric cost vector of a play, which does not name channels: the phlo usage, the budget
@@ -254,10 +325,12 @@ fn messages(errors: &[InterpreterError]) -> Vec<String> {
 /// The channels of the space rows of `played`: every channel that its space transactions lock,
 /// decoded from the footprints of its journal rows.
 fn space_footprint(played: &Played) -> BTreeSet<Par> {
-    let recording = recording(played);
+    // Changed by decision 92: a space row names the counter channel of its space, so
+    // `is_space_row` reads only the row, not the recording.
+    // let recording = recording(played);
     journal(played)
         .iter()
-        .filter(|row| is_space_row(recording, row))
+        .filter(|row| is_space_row(row))
         .flat_map(footprint_channels)
         .collect()
 }
@@ -311,8 +384,28 @@ async fn stored_chain() -> (
 
 // ─── RH-1: lazy attach ─────────────────────────────────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_lazy_attach() {
+// Changed by decision 93 (decision 111): the take and the store of block 2 of the PathMap family
+// are two transactions of one space, and racing play runs them in arrival order. Their order
+// changes the events on the index channels and the root. So the test runs on each racing
+// runtime, and its body moved to `lazy_attach_run`. The old lines follow.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_lazy_attach() {
+#[test]
+fn space_lazy_attach() {
+    for workers in RACING_WORKERS {
+        let compared = racing_runtime(workers).block_on(lazy_attach_run());
+        assert!(
+            compared > 0,
+            "{workers} workers: some stored family logs the same events warm and cold"
+        );
+    }
+}
+
+/// Added by decision 93 (decision 111): block 2 of each stored family, warm and cold. Each play
+/// certifies, and the cold play delivers `config`, `take` and `fired`. Plays with the same events
+/// in any order have the same outcome and cost vector. The result is the number of such families.
+async fn lazy_attach_run() -> usize {
+    let mut compared = 0;
     let (mut warm, root) = stored_chain().await;
     let mut cold = warm.restarted(&root).await;
     assert!(
@@ -332,14 +425,41 @@ async fn space_lazy_attach() {
                 cold_run.outputs
             );
         }
-        assert_same_play(&label, &warm_run, &cold_run);
+        // Changed by decision 93 (decision 111): the plays compare when their events are the
+        // same in any order. The old line follows.
+        // assert_same_play(&label, &warm_run, &cold_run);
+        if unordered_log(&cold_run.log) == unordered_log(&warm_run.log) {
+            assert_same_play(&label, &warm_run, &cold_run);
+            compared += 1;
+        }
     }
+    compared
 }
 
 // ─── RH-2: checkpoint and reset ────────────────────────────────────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_checkpoint_reset() {
+// Changed by decision 93 (decision 111): block 2 of the PathMap family races as in
+// `space_lazy_attach`. So the test runs on each racing runtime, and its body moved to
+// `checkpoint_reset_run`. The old lines follow.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_checkpoint_reset() {
+#[test]
+fn space_checkpoint_reset() {
+    for workers in RACING_WORKERS {
+        let compared = racing_runtime(workers).block_on(checkpoint_reset_run());
+        assert!(
+            compared > 0,
+            "{workers} workers: some stored family logs the same events in both plays of block 2"
+        );
+    }
+}
+
+/// Added by decision 93 (decision 111): the reset to the root of block 1 of each stored family.
+/// The reset restores the state of block 1, and a restarted runtime reads it. Both plays of
+/// block 2 certify. Plays with the same events in any order have the same outcome and cost
+/// vector. The result is the number of such families.
+async fn checkpoint_reset_run() -> usize {
+    let mut compared = 0;
     for family in &STORED_FAMILIES {
         let label = family.label;
         let mut chain = NativeChain::new().await;
@@ -373,7 +493,13 @@ async fn space_checkpoint_reset() {
             "{label}: the reset restores the state of block 1"
         );
         let again = play_clean(&mut chain, &family.touching(), "touch").await;
-        assert_same_play(&format!("{label}: block 2 after the reset"), &first, &again);
+        // Changed by decision 93 (decision 111): the plays compare when their events are the
+        // same in any order. The old line follows.
+        // assert_same_play(&format!("{label}: block 2 after the reset"), &first, &again);
+        if unordered_log(&again.log) == unordered_log(&first.log) {
+            assert_same_play(&format!("{label}: block 2 after the reset"), &first, &again);
+            compared += 1;
+        }
         let restarted = chain.restarted(&root).await;
         assert_eq!(
             snapshot(&restarted, &channels).await,
@@ -381,6 +507,7 @@ async fn space_checkpoint_reset() {
             "{label}: a restarted runtime reads the state of block 1"
         );
     }
+    compared
 }
 
 // ─── RH-4: the attach cost ─────────────────────────────────────────────────────────────────────
@@ -392,18 +519,26 @@ struct PinnedCost {
     phlo: u64,
 }
 
-/// The attach programs of `space_attach_cost` over the stored queue, with the cost vectors that
-/// this build measures (P7 step 5).
+// Changed by decision 90 (step E): the merge with `feature/cost-accounted-rho` at `702496775`
+// changes the phlo of both attach programs. The old pins passed at the merge `b60e2e558`, whose
+// release suites pass every rholang test. This build measures 13,628 and 7,929 phlo, warm and
+// cold, in eight of eight runs. The old lines follow.
+// /// The attach programs of `space_attach_cost` over the stored queue, with the cost vectors that
+// /// this build measures (P7 step 5).
+/// The attach programs of `space_attach_cost` over the stored queue, with the phlo usage that
+/// this build measures (step E).
 const PINNED: [PinnedCost; 2] = [
     PinnedCost {
         label: "handle call config",
         body: CONFIG_CALL,
-        phlo: 13_594,
+        // phlo: 13_594,
+        phlo: 13_628,
     },
     PinnedCost {
         label: "send on a stored collection",
         body: "a!(4)",
-        phlo: 7_909,
+        // phlo: 7_909,
+        phlo: 7_929,
     },
 ];
 
@@ -505,8 +640,26 @@ fn family_touch(outer: Outer, inner: Inner) -> String {
     )
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_attach_warm_cold_cost_equal() {
+// Changed by decision 93 (decision 111): the test runs on each racing runtime, and its body moved
+// to `warm_cold_run`. The old lines follow.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_attach_warm_cold_cost_equal() {
+#[test]
+fn space_attach_warm_cold_cost_equal() {
+    for workers in RACING_WORKERS {
+        let compared = racing_runtime(workers).block_on(warm_cold_run());
+        assert!(
+            compared > 0,
+            "{workers} workers: some family logs the same events warm and cold"
+        );
+    }
+}
+
+/// Added by decision 93 (decision 111): block 2 of each of the 24 families, warm and cold. Both
+/// plays deliver the same labels. Plays with the same events in any order have the same outcome
+/// and cost vector. The result is the number of such families.
+async fn warm_cold_run() -> usize {
+    let mut compared = 0;
     for outer in Outer::ALL {
         for inner in Inner::ALL {
             let label = format!("{}:{}", outer.name(), inner.name());
@@ -521,9 +674,34 @@ async fn space_attach_warm_cold_cost_equal() {
             let term = family_touch(outer, inner);
             let warm_run = play_clean(&mut warm, &term, &label).await;
             let cold_run = play_clean(&mut cold, &term, &label).await;
-            assert_same_play(&label, &warm_run, &cold_run);
+            // Changed by decision 93 (decision 111): the plays compare when their events are the
+            // same in any order. The old line follows.
+            // assert_same_play(&label, &warm_run, &cold_run);
+            assert_eq!(
+                delivery_labels(&cold_run),
+                delivery_labels(&warm_run),
+                "{label}: the deliveries, warm and cold"
+            );
+            if unordered_log(&cold_run.log) == unordered_log(&warm_run.log) {
+                assert_same_play(&label, &warm_run, &cold_run);
+                compared += 1;
+            }
         }
     }
+    compared
+}
+
+/// Added by decision 93 (decision 111): the labels of the deliveries `[label, …]` on [`OUT`]
+/// after `played`, in bytewise order.
+fn delivery_labels(played: &Played) -> Vec<String> {
+    let mut labels: Vec<String> = played
+        .out
+        .iter()
+        .flatten()
+        .filter_map(|value| list(value)?.first().and_then(string).map(str::to_string))
+        .collect();
+    labels.sort();
+    labels
 }
 
 /// A block-2 operation of the property.
@@ -625,23 +803,42 @@ fn case_touch(case: &AttachCase) -> String {
 
 #[test]
 fn prop_attach_warm_cold_cost_equal() {
+    // Added by decision 93 (decision 111): the cases whose plays log the same events in any
+    // order, warm and cold.
+    let compared = AtomicUsize::new(0);
     check(runtime_config(), attach_cases(), |case| {
-        tokio_runtime().block_on(async {
-            let mut warm = NativeChain::new().await;
-            let created = play_certified(&mut warm, &case_creation(&case), "create", &none()).await;
-            proptest::prop_assert!(
-                created.result.errors.is_empty(),
-                "block 1 fails: {:?}",
-                created.result.errors
-            );
-            let mut cold = warm.restarted(&created.root).await;
-            let term = case_touch(&case);
-            let warm_run = play_certified(&mut warm, &term, "touch", &none()).await;
-            let cold_run = play_certified(&mut cold, &term, "touch", &none()).await;
-            assert_same_play("touch", &warm_run, &cold_run);
-            Ok::<(), TestCaseError>(())
-        })
+        // Changed by decision 111: each case runs on each racing runtime. The old line follows.
+        // tokio_runtime().block_on(async {
+        for workers in RACING_WORKERS {
+            racing_runtime(workers).block_on(async {
+                let mut warm = NativeChain::new().await;
+                let created =
+                    play_certified(&mut warm, &case_creation(&case), "create", &none()).await;
+                proptest::prop_assert!(
+                    created.result.errors.is_empty(),
+                    "block 1 fails: {:?}",
+                    created.result.errors
+                );
+                let mut cold = warm.restarted(&created.root).await;
+                let term = case_touch(&case);
+                let warm_run = play_certified(&mut warm, &term, "touch", &none()).await;
+                let cold_run = play_certified(&mut cold, &term, "touch", &none()).await;
+                // Changed by decision 93 (decision 111): the plays compare when their events are
+                // the same in any order. The old line follows.
+                // assert_same_play("touch", &warm_run, &cold_run);
+                if unordered_log(&cold_run.log) == unordered_log(&warm_run.log) {
+                    assert_same_play("touch", &warm_run, &cold_run);
+                    compared.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok::<(), TestCaseError>(())
+            })?;
+        }
+        Ok(())
     });
+    assert!(
+        compared.load(Ordering::Relaxed) > 0,
+        "some case logs the same events warm and cold"
+    );
 }
 
 // ─── Missing and restored handles ──────────────────────────────────────────────────────────────
@@ -881,12 +1078,32 @@ fn assert_dangling_reply(label: &str, reply: &Par, sid: SpaceId) {
     );
 }
 
-/// Checks that `reply` is the reply `NotAVectorDbSpace` of `ann`.
-fn assert_not_a_vectordb_reply(label: &str, reply: &Par) {
+// Changed by decision 105: `ann` replies the base code `EXT_BAD_ARG` to a call on a space that is
+// not a live VectorDB space.
+// /// Checks that `reply` is the reply `NotAVectorDbSpace` of `ann`.
+// fn assert_not_a_vectordb_reply(label: &str, reply: &Par) {
+//     let values = list(reply).expect("the reply of ann is a list");
+//     assert_eq!(
+//         values.get(1).and_then(string),
+//         Some(ServiceReplyCode::NotAVectorDbSpace.code()),
+//         "{label}: {reply:?}"
+//     );
+// }
+
+/// Added by decision 105: checks that `reply` is the reply `EXT_BAD_ARG` of `ann`, with the
+/// message that `native_failure_reply` builds.
+// Added by decision 113: only a chromadb build registers `ann`.
+#[cfg(feature = "chromadb")]
+fn assert_bad_argument_reply(label: &str, reply: &Par) {
     let values = list(reply).expect("the reply of ann is a list");
     assert_eq!(
         values.get(1).and_then(string),
-        Some(ServiceReplyCode::NotAVectorDbSpace.code()),
+        Some("EXT_BAD_ARG"),
+        "{label}: {reply:?}"
+    );
+    assert_eq!(
+        values.get(2).and_then(string),
+        Some("vectordb_ann: invalid argument"),
         "{label}: {reply:?}"
     );
 }
@@ -963,8 +1180,11 @@ async fn reducer_dangling_handle() {
         let term = format!("{MISSING} {body}");
         expect_dangling(&mut chain, &term, &label, &injections, code, missing.sid).await;
     }
+    // Changed by decision 105: `ann` answers `EXT_BAD_ARG`, and only a chromadb build registers it.
+    // // The typed replies: `getSpaceAgent` answers `DanglingHandle` with the space id (DG-1 and
+    // // DG-2), and `ann` answers `NotAVectorDbSpace` (decision 67 order).
     // The typed replies: `getSpaceAgent` answers `DanglingHandle` with the space id (DG-1 and
-    // DG-2), and `ann` answers `NotAVectorDbSpace` (decision 67 order).
+    // DG-2). In a chromadb build, `ann` answers `EXT_BAD_ARG`.
     let agent = |label: &str, binders: &str, space: &str| {
         format!(
             r#"{binders} {{ new gsa(`rho:space:getSpaceAgent`) in {{
@@ -972,6 +1192,8 @@ async fn reducer_dangling_handle() {
 }} }}"#
         )
     };
+    // Added by decision 113: only a chromadb build registers `ann`.
+    #[cfg(feature = "chromadb")]
     let ann = |label: &str, binders: &str, space: &str, name: &str| {
         format!(
             r#"{binders} {{ new ann(`rho:vectordb:ann`), r in {{
@@ -989,7 +1211,10 @@ async fn reducer_dangling_handle() {
             "DG-2 getSpaceAgent",
             agent("DG-2 getSpaceAgent", MISSING, "h"),
         ),
+        // Added by decision 113: only a chromadb build registers `ann`.
+        #[cfg(feature = "chromadb")]
         ("DG-1 ann", ann("DG-1 ann", &peek, "handle", "name")),
+        #[cfg(feature = "chromadb")]
         ("DG-2 ann", ann("DG-2 ann", MISSING, "h", "n")),
     ] {
         let played = play_certified(&mut chain, &term, label, &injections).await;
@@ -1009,11 +1234,17 @@ async fn reducer_dangling_handle() {
         &reply(&chain, "DG-2 getSpaceAgent").await,
         missing.sid,
     );
-    assert_not_a_vectordb_reply("DG-1 ann", &reply(&chain, "DG-1 ann").await);
-    assert_not_a_vectordb_reply("DG-2 ann", &reply(&chain, "DG-2 ann").await);
+    // Changed by decision 105: `ann` answers `EXT_BAD_ARG`, and only a chromadb build registers it.
+    // assert_not_a_vectordb_reply("DG-1 ann", &reply(&chain, "DG-1 ann").await);
+    // assert_not_a_vectordb_reply("DG-2 ann", &reply(&chain, "DG-2 ann").await);
+    #[cfg(feature = "chromadb")]
+    {
+        assert_bad_argument_reply("DG-1 ann", &reply(&chain, "DG-1 ann").await);
+        assert_bad_argument_reply("DG-2 ann", &reply(&chain, "DG-2 ann").await);
+    }
 }
 
-// ─── Child work under two schedules ──────────────────────────────────────────────────────────
+// ─── Child work on each racing runtime ───────────────────────────────────────────────────────
 
 /// Parallel space work on two spaces and a host channel.
 const PARALLEL: &str = r#"
@@ -1049,21 +1280,104 @@ fn parallel_run(runtime: tokio::runtime::Runtime) -> Played {
 
 #[test]
 fn reducer_space_costs() {
-    let current = parallel_run(
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build a current-thread tokio runtime"),
+    // Changed by decision 93 (decision 111): racing evaluation gives two runs other records, so
+    // each run certifies and delivers an allowed outcome. Two runs compare when their events are
+    // the same in any order. The old body follows.
+    // let current = parallel_run(
+    //     tokio::runtime::Builder::new_current_thread()
+    //         .enable_all()
+    //         .build()
+    //         .expect("build a current-thread tokio runtime"),
+    // );
+    // let multi = parallel_run(
+    //     tokio::runtime::Builder::new_multi_thread()
+    //         .worker_threads(4)
+    //         .enable_all()
+    //         .build()
+    //         .expect("build a multi-thread tokio runtime"),
+    // );
+    // assert_eq!(current.outputs.len(), 7, "{:?}", current.outputs);
+    // assert_same_play("current-thread and multi-thread", &current, &multi);
+    let mut runs: Vec<(String, Played)> = Vec::with_capacity(RACING_WORKERS.len() * RACING_RUNS);
+    let mut compared = 0;
+    for workers in RACING_WORKERS {
+        for run in 0..RACING_RUNS {
+            let label = format!("{workers} workers, run {run}");
+            let played = parallel_run(racing_runtime(workers));
+            assert_parallel_outcome(&label, &played);
+            for (earlier, before) in &runs {
+                if unordered_log(&before.log) == unordered_log(&played.log) {
+                    assert_same_play(&format!("{earlier} and {label}"), before, &played);
+                    compared += 1;
+                }
+            }
+            runs.push((label, played));
+        }
+    }
+    eprintln!("reducer_space_costs: {compared} pairs of runs log the same events in any order");
+}
+
+/// Added by decision 93 (decision 111): checks that `played` delivers an allowed outcome of
+/// [`PARALLEL`]. The two queue takes take two distinct values of 1 to 3, and the bag take and the
+/// peek see values of 4 to 6. The config, host and name deliveries carry 1, 7 and 8.
+fn assert_parallel_outcome(label: &str, played: &Played) {
+    let mut deliveries: Vec<(String, i64)> = played
+        .out
+        .iter()
+        .map(|pars| match pars.as_slice() {
+            [pair] => match list(pair).map(Vec::as_slice) {
+                Some([tag, value]) => (
+                    string(tag)
+                        .unwrap_or_else(|| panic!("{label}: a delivery has a string tag: {pair:?}"))
+                        .to_string(),
+                    integer(value),
+                ),
+                _ => panic!("{label}: a delivery is a pair: {pair:?}"),
+            },
+            _ => panic!("{label}: a delivery has one value: {pars:?}"),
+        })
+        .collect();
+    deliveries.sort();
+    let tags: Vec<&str> = deliveries.iter().map(|(tag, _)| tag.as_str()).collect();
+    assert_eq!(
+        tags,
+        ["bag", "config", "host", "name", "peek", "queue", "queue"],
+        "{label}: the deliveries"
     );
-    let multi = parallel_run(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .enable_all()
-            .build()
-            .expect("build a multi-thread tokio runtime"),
+    let values = |wanted: &str| -> Vec<i64> {
+        deliveries
+            .iter()
+            .filter(|(tag, _)| tag == wanted)
+            .map(|(_, value)| *value)
+            .collect()
+    };
+    let queue = values("queue");
+    assert!(
+        matches!(queue.as_slice(), [first, second] if first != second)
+            && queue.iter().all(|value| (1..=3).contains(value)),
+        "{label}: the queue takes take two distinct values of 1 to 3: {queue:?}"
     );
-    assert_eq!(current.outputs.len(), 7, "{:?}", current.outputs);
-    assert_same_play("current-thread and multi-thread", &current, &multi);
+    for tag in ["bag", "peek"] {
+        let seen = values(tag);
+        assert!(
+            seen.iter().all(|value| (4..=6).contains(value)),
+            "{label}: the {tag} sees a value of 4 to 6: {seen:?}"
+        );
+    }
+    assert_eq!(values("config"), [1], "{label}: the config delivery");
+    assert_eq!(values("host"), [7], "{label}: the host delivery");
+    assert_eq!(values("name"), [8], "{label}: the name delivery");
+}
+
+/// Added by decision 93 (decision 111): the integer of `par`.
+fn integer(par: &Par) -> i64 {
+    match par.exprs.as_slice() {
+        [expr] => match &expr.expr_instance {
+            Some(ExprInstance::GInt(value)) => *value,
+            other => panic!("an integer: {other:?}"),
+        },
+        other => panic!("one integer: {other:?}"),
+    }
 }
 
 // ─── The factory of P7 ─────────────────────────────────────────────────────────────────────────
@@ -1097,10 +1411,12 @@ async fn reified_factory_ephemeral_staging() {
         );
         // The staged rows of the creation touch the config, the space counter and the handle
         // of the space, each with the durability of the qualifier.
-        let recording = recording(&played);
+        // Changed by decision 92: a space row names the counter channel of its space, so
+        // `is_space_row` reads only the row, not the recording.
+        // let recording = recording(&played);
         let mut kinds = BTreeSet::new();
         for row in journal(&played) {
-            if !is_space_row(recording, row) {
+            if !is_space_row(row) {
                 continue;
             }
             for channel in footprint_channels(row) {

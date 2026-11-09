@@ -8,10 +8,10 @@
 ' and the arbitration of the seams of the join engine). It adds no new fact.
 '
 ' Reading order:
-'   1. CLASSIFY runs in the first transaction. It checks the paths, the
+'   1. CLASSIFY runs under phase A of the transaction. It checks the paths, the
 '      params and the joins, and it computes the prefix scope.
-'   2. Every PathMap operation escalates once: one transaction over the lock
-'      keys of the scope.
+'   2. Phase B of the same transaction locks every key of the scope in one sorted
+'      call (decision 94).
 '   3. RUN-JOIN keys each channel by its prefix and runs the engine with the
 '      prefix source: TOUCH, the windows of each path, OFFER and RECEIVE.
 '   4. A fire is one COMM on I(q). A peek owes the markers of its second
@@ -37,7 +37,9 @@ skinparam LegendBackgroundColor $ca_note_grey
 title One PathMap operation on the join engine through the prefix source (P5e, Phase 2)
 
 start
-partition "CLASSIFY: the first transaction" {
+' Changed by decision 94: the transaction stays open, and phase B extends its locks.
+' The text before: partition "CLASSIFY: the first transaction" {
+partition "CLASSIFY: phase A of the transaction" {
   :begin over the channels of the routed key
   read the config once; <<$rrs_substrate>>
   :check the path of each channel (check_key),
@@ -52,8 +54,11 @@ partition "CLASSIFY: the first transaction" {
   :PREFIX-SCOPE: the own prefixes (a send adds every prefix of its path),
   closed under the join groups of each index channel, and every prefix
   of every stored datum once a prefix holds a marker (one read of I(ε)); <<$rrs_agent>>
-  :ALWAYS_ESCALATES: drop the first transaction, then begin once
-  over C(sid), S(sid), D(p) of each data path and I(q) of each prefix; <<$rrs_substrate>>
+  ' Changed by decision 94: ALWAYS_ESCALATES is retired. The text before:
+  ' :ALWAYS_ESCALATES: drop the first transaction, then begin once
+  ' over C(sid), S(sid), D(p) of each data path and I(q) of each prefix; <<$rrs_substrate>>
+  :PHASE B: the same transaction locks C(sid), S(sid), D(p) of each data path
+  and I(q) of each prefix in one sorted call; <<$rrs_substrate>>
 }
 partition "RUN-JOIN with the prefix source" {
   :the key of each channel becomes [0x49] ‖ prefix_key(path)
@@ -82,8 +87,9 @@ partition "RUN-JOIN with the prefix source" {
   endif
 }
 partition "FINISH and COMMIT" {
+  ' Item O-2 is closed (section 12). The label before: "(only a stop at FIRE_ROUND_CAP owes one: open item O-2)".
   :FINISH: store again each marker that the transaction still owes
-  (only a stop at FIRE_ROUND_CAP owes one: open item O-2); <<$rrs_storage>>
+  (only a stop at FIRE_ROUND_CAP owes one: item O-2, closed); <<$rrs_storage>>
   if (a bag or a set changed the state?) then (yes)
     :bump S(sid) once (decision 51); <<$rrs_storage>>
   else (no)

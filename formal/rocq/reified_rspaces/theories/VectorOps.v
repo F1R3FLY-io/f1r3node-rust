@@ -35,7 +35,7 @@
                           wider kind of the two operands)
    val                    tensor/num.rs:243-292 (number_of: the exact value
                           of each numeric expression)
-   encode                 tensor/ops.rs:401-428 (number_par: GInt or GBigInt,
+   encode                 tensor/ops.rs:366-387 (number_par: GInt or GBigInt,
                           GBigRat, or the GDouble of round_to_f64)
    rnd                    tensor/num.rs:465-480 (round_to_f64, RN_53)
    qsum                   tensor/exact.rs:265-291 (dot: the exact sum of the

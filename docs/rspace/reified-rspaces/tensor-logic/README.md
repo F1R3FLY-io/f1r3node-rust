@@ -10,6 +10,8 @@ P12 starts only after the F1r3lang readiness signal SIG-F and the merge of F1r3l
 The open questions of the design are in [section 3 of the design rationale](design-rationale.md#3-open-questions).
 No code of this design exists yet, and no decision of the register records its approval.
 
+*Changed by [decision 89](../decision-register.md#decision-89): the base removed host-work metering, and Reified RSpaces removed its own. The figures of this proposal show no meter. The text still names host work, a meter, a demand bound and reservations, as the proposal had them. [Open question K17](design-rationale.md#3-open-questions) restates that cost model before any code.*
+
 ## Contents
 
 1. [The design in five points](#1-the-design-in-five-points)
@@ -31,7 +33,7 @@ The [references](#references) follow the last section.
 
 Figure TL1 shows the components from the source text to the stored records.
 
-![Component diagram of TensorLogic from end to end. A Rholang 1.4 deploy holds FLT terms of TensorLogic. The F1r3lang frontend lexes the FLT body with the installed TensorLogic language, parses it with the GSLT grammar and reflects it to a Par, whose tags carry the fingerprint of the language. The reducer passes the reflected term as a value, inside a VectorDB query or as an argument of rho:lang:vector. The TL engine decodes the term, normalizes it, checks it and evaluates it with the exact core of the tensor module and the correctly rounded functions, and it reserves host work on the meter before each step. The VectorDB agent scores records in RSpace with a tl:Score term, and the capability rho:lang:vector evaluates a tl:Program. The theory seam admits values with a tl:Check term. The registry publishes the language module, and the installer binds the handle.](../diagrams/35-tl-components.svg)
+![Component diagram of TensorLogic from end to end. A Rholang 1.4 deploy holds FLT terms of TensorLogic. The F1r3lang frontend lexes the FLT body with the installed TensorLogic language, parses it with the GSLT grammar and reflects it to a Par, whose tags carry the fingerprint of the language. The reducer passes the reflected term as a value, inside a VectorDB query or as an argument of rho:lang:vector. The TL engine decodes the term, normalizes it, checks it and evaluates it with the exact core of the tensor module and the correctly rounded functions, and no meter covers that work. The VectorDB agent scores records in RSpace with a tl:Score term, and the capability rho:lang:vector evaluates a tl:Program. The theory seam admits values with a tl:Check term. The registry publishes the language module, and the installer binds the handle.](../diagrams/35-tl-components.svg)
 
 *Figure TL1. Source: [diagrams/35-tl-components.puml](../diagrams/35-tl-components.puml), rendered by [diagrams/render.sh](../diagrams/render.sh).*
 

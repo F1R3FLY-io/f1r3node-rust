@@ -10,6 +10,7 @@
 - Step G1-4a implements the analysis, as decision record DR-122 (the linear cost estimate) records. Step G1-4b implements the check, as DR-123 (the check before execution) records.
 - Step G1-6 makes the check live in play and in every replay, as DR-124 (the live check of the client's demand) records. Since step G1-6, the check reserves only the client's demand (Section 6).
 - Step G1-7 enforces the guard of Section 8.3 for one offer per block. Implementation note 2 of DR-65 (same-block offers that share a purse) records it.
+- DR-134 (2026-10-18) implements several offers per block, gap G2. It caps the capacity of each member as Section 8.4 states, and Section 8.4 records its amendment. Implementation note 3 of DR-65 records the implementation.
 - This document is the reference for the amended linear cost estimate.
 
 **Basis.**
@@ -167,7 +168,7 @@ This section defines the names, terms and symbols that later sections use.
 
 ## 3. The flow at a glance
 
-![Activity diagram of the linear pre-execution cost estimate of one offered deploy, in six partitions. Partition 1 holds the inputs. The producer and every validator read the signed envelope and four consensus inputs. These are the schedule with its weights, the URN map, the host-work limits and the wallet snapshot at R0. In partition 2, the metered resolver binds the names of the deploy from the envelope seed. Partition 3 is the linear analysis. It gives every level a binder kind and sizes every send and receive. It counts COMMs and bytes for every region, with maxima at branches and joins as multisets. Then it computes the estimate B. Its decision asks whether rules X1 to X8 and the on-chain payer condition hold. The answer is its second output: the estimate is complete or incomplete. Partition 4 is the supply check at R0. First the check keeps the client lanes. It drops the demand of each foreign lane, and a dropped lane with counts makes the estimate incomplete. B then counts the client lanes only. If B exceeds phloLimit, the check rejects before execution with no effect and no charge. A complete estimate holds B times phloPrice plus 1 under the Certificate bound B. An incomplete estimate holds phloLimit times phloPrice plus 1 under the SignedLimit bound. The check places the known demand of each client lane and class, and it fills any remainder in custody order. If the holds do not fit, it rejects with the text insufficient phlogiston and no charge. Partition 5 is the execution. Use within the bound goes on to settlement. Exhaustion of the signed limit is a classified user failure that charges the billable work and the fee. A total use above B is a certificate failure with no charge. A host-work limit rejects with no charge. Partition 6 is settlement under the guard of DR-65 item 5. For each purse p in scope, the balance after execution minus the debit of member i must cover the holds of the later members j. If the guard holds, settlement charges the measured use plus the fee, with hold equal to debit. If it fails, the member is a charged user failure. Notes list what the estimate cannot see, the capacity cap of several offers per block and the interim rule B5. A legend explains the colours and defines every name.](../diagrams/linear-cost-estimate.svg)
+![Activity diagram of the linear pre-execution cost estimate of one offered deploy, in six partitions. Partition 1 holds the inputs. The producer and every validator read the signed envelope and four consensus inputs. These are the schedule with its weights, the URN map, the host-work limits and the wallet snapshot at R0. In partition 2, the metered resolver binds the names of the deploy from the envelope seed. Partition 3 is the linear analysis. It gives every level a binder kind and sizes every send and receive. It counts COMMs and bytes for every region, with maxima at branches and joins as multisets. Then it computes the estimate B. Its decision asks whether rules X1 to X8 and the on-chain payer condition hold. The answer is its second output: the estimate is complete or incomplete. Partition 4 is the supply check at R0. First the check keeps the client lanes. It drops the demand of each foreign lane, and a dropped lane with counts makes the estimate incomplete. B then counts the client lanes only. If B exceeds phloLimit, the check rejects before execution with no effect and no charge. A complete estimate holds B times phloPrice plus 1 under the Certificate bound B. An incomplete estimate holds phloLimit times phloPrice plus 1 under the SignedLimit bound. The check places the known demand of each client lane and class, and it fills any remainder in custody order. If the holds do not fit, it rejects with the text insufficient phlogiston and no charge. Partition 5 is the execution. Use within the bound goes on to settlement. Exhaustion of the signed limit is a classified user failure that charges the billable work and the fee. A use of the caller above B is a certificate failure with no charge. A host-work limit rejects with no charge. Partition 6 is settlement under the guard of DR-65 item 5. For each purse p in scope, the balance after execution minus the debit of member i must cover the holds of the later members j. If the guard holds, settlement charges the measured use plus the fee, with hold equal to debit. If it fails, the member is a charged user failure. Notes list what the estimate cannot see, the capacity cap of several offers per block, and the owner purses of G3 (DR-135): an owner pays its share at its own recorded price within its owner budget, and an interaction that the owner cannot pay does not fire and is recorded, which replaced the interim rule B5. A legend explains the colours and defines every name.](../diagrams/linear-cost-estimate.svg)
 
 *Source: [`../diagrams/linear-cost-estimate.puml`](../diagrams/linear-cost-estimate.puml). Render it with `./render.sh linear-cost-estimate.puml` in `docs/casper/theory/diagrams/`.*
 
@@ -516,7 +517,7 @@ For a typical deploy the nesting depth and the number of lanes are small, so the
 
 The code attributes the regions of the deploy's own terms as the papers do. An unsigned receive of the deploy opens a region of the deploy that runs it (`reduce.rs:1520-1531`), so its introduction is the client's demand. The normalizer desugars the lollipop as P1 defines it (`normalizer/cost_accounting/desugar.rs:66-85`). One case differs. A fired stored body runs with an empty authority, so its unsigned work charges the triggering deploy (DR-101, Section 13). An earlier draft of this design applied `def:funding-proof`, which covers every signature, at acceptance (P1:2047-2058).
 
-A lane is a client lane when a source is located at its purse or permits it for at least one class. The first implementation of step G1-6 counted located sources only, and the G1-6 fix corrects it (Section 16). A source is eligible for a class of a lane only when it permits that lane and class. So a class of a client lane with known demand and no permitting source rejects the offer (Section 6.3). Fewer permitted classes never exclude a lane that keeps one permission or a located source. They can only reject the offer before execution. Work of a foreign lane that runs in the deployment is token-gated by G3 (DR-68). Until G3, settlement keeps its behavior for that work (Section 7).
+A lane is a client lane when a source is located at its purse or permits it for at least one class. The first implementation of step G1-6 counted located sources only, and the G1-6 fix corrects it (Section 16). A source is eligible for a class of a lane only when it permits that lane and class. So a class of a client lane with known demand and no permitting source rejects the offer (Section 6.3). Fewer permitted classes never exclude a lane that keeps one permission or a located source. They can only reject the offer before execution. Work of a foreign lane that runs in the deployment is token-gated by G3 (DR-135). Its owner purse pays the owner's share within the owner budget, and an interaction that the owner cannot pay does not fire (Section 7, Section 8.5).
 
 ### 6.1 A complete estimate
 
@@ -533,7 +534,7 @@ The check reuses existing interfaces.
 3. `project_phlo_obligations` turns the witness into obligations for each lane and class, plus the fee (`obligations.rs:213`).
 4. `select_phlo_funding_family` places the obligations on the eligible sources at $`R_0`$, with one requirement (`family_policy.rs:426`).
 
-The permissions of the signed record decide which sources are eligible. They also make each permitted lane a client lane, so the demand of a sponsored lane lands on the sources that permit its classes (DR-124). Before execution, an on-chain purse funds nothing. No run has shown its authority, and `authorize_wallets` already forbids it the fee (`direct_wallet_funding.rs:237-240`). This rule is the gap fill G-5 of the implementation map of G1 (DR-123 item 6). P1 checks the tokens of a funding slot at acceptance (P1:1553-1555). A correction of G-5 for the funding slots of P1 is therefore pending (G3 and the proposal, §6.2).
+The permissions of the signed record decide which sources are eligible. They also make each permitted lane a client lane, so the demand of a sponsored lane lands on the sources that permit its classes (DR-124). Before execution, an on-chain purse funds nothing. No run has shown its authority, and `authorize_wallets` already forbids it the fee (`direct_wallet_funding.rs:237-240`). This rule is the gap fill G-5 of the implementation map of G1 (DR-123 item 6). P1 checks the tokens of a funding slot at acceptance (P1:1553-1555). G3 closes this gap for the funding slots of P1 (DR-135). A slot purse that owns a stored body pays the owner's share during execution, within its owner budget. The check before execution still gives it no hold, so G-5 stays as it is for the client's demand.
 
 The meter then runs under the bound $`B`$ with the bound source `Certificate`.
 
@@ -600,8 +601,8 @@ The meter enforces the bound that the check chose. The table lists every outcome
 | Usage stays within the bound | Either | Normal | Settlement under the guard (Section 8) |
 | Total usage passes $`B`$ | `Certificate` | Certificate failure | Reject, no charge. It means an analyzer defect, which DR-64 classifies as a correctness failure (DRs:3962-3964, DRs:12010). |
 | One lane and class pass their estimate, but the total stays within $`B`$ | `Certificate` | No meter event | Settlement charges the use when eligible sources have balance. Otherwise settlement is infeasible, and the deploy is rejected with no charge. Both cases mean an analyzer defect. |
-| Usage passes $`\mathrm{phloLimit}`$ | `SignedLimit` | Classified user failure | Roll back, charge the billable usage times the price plus 1, and publish as failed (DRs:12009) |
-| Work of a foreign lane runs within the bound | `SignedLimit` | Normal | G3 token-gates this work (DR-68). Until G3, settlement keeps its behavior. No source permits a foreign lane, so the selection after execution fails, and the deploy is rejected with no charge (DR-124). |
+| The caller's usage passes $`\mathrm{phloLimit}`$ (owner work at a price of 1 or more is not counted, DR-135 item 13) | `SignedLimit` | Classified user failure | Roll back, charge the billable usage times the price plus 1, and publish as failed (DRs:12009) |
+| Work of a foreign lane runs within the bound | `SignedLimit` | Normal | G3 token-gates this work (DR-135). The owner purse pays the owner's share within its owner budget. An interaction that the owner cannot pay does not fire, has no charge, and is recorded as a refusal. Owner work at a price of 1 or more does not count against the caller's bound (DR-135 item 13). The deploy settles its own lanes. (Before DR-135: no source permitted a foreign lane, so the selection after execution failed, and the deploy was rejected with no charge, DR-124.) |
 | A host-work limit | Either | Platform failure | Reject, no charge (DRs:12012) |
 
 The billable usage is the fresh usage that the run drew before it failed (`phlo_execution.rs:559-564`). The producer logs each correctness failure under `Certificate`: a total usage above $`B`$, and a selection that fails after execution (DR-124).
@@ -645,7 +646,7 @@ Every purse $`p`$ in the scope of the guard must satisfy:
 
 - **Two conditions in one.** The guard implies balance at least debit, because the holds are not negative. That is the condition under which SystemVault can reserve the debit. The guard also keeps the later holds covered.
 - **One offer per block.** The sum is 0, so the guard equals the condition of SystemVault.
-- **Scope.** The guard covers every purse that member $`i`$ debits, installer purses included. It also covers every purse that carries a later hold. It reads every balance at the settlement root of member $`i`$.
+- **Scope.** The guard covers every purse that member $`i`$ debits, installer purses included (owner purses under DR-135). It also covers every purse that carries a later hold. It reads every balance at the settlement root of member $`i`$.
 - **Failure.** If the guard fails, member $`i`$ is a charged user failure. It rolls back to its execution root and pays its billable work and fee from the restored balance (DR-65 item 5).
 
 **Example.** A purse has 1,000,000 atomic units at $`R_0`$. Member 1 holds 500,001 of them, and member 2 holds 390,001. The group check passes, because 890,002 is at most 1,000,000. During execution, the code of member 1 pays 600,000 out of the purse and leaves 400,000. Its measured charge is 20,000.
@@ -663,9 +664,14 @@ An earlier amendment, decision B3, also required the balance after execution to 
 - **Play.** The producer checks the guard right after the capture of the success path, before any state change. If the guard fails, the producer resets the run to its execution root. It drops the births of the run, its grant issuances, their log and its mergeable map. It then settles the run as a user failure, with the capacities at $`R_0`$ (Section 16, decision U3).
 - **Replay.** A committed `UserFailure` for a run without a user failure claims a guard failure. Replay recomputes the success path and the guard at the root after the run. It accepts the claim only if the guard fails, and then it settles the rollback from the execution root.
 
+**Status since DR-134.** Play and replay enforce the guard for every member of a batch, with the later holds of the member (implementation note 3 of DR-65). [C]
+
+- **The scope.** The guard covers each purse with a positive debit and each purse with a positive later hold (`guarded_purses` in `held_capacity.rs`). The balance reader takes the payer of a purse with only a later hold from the later holds.
+- **A committed success.** When the member has later holds, replay recomputes the guard of a committed success at the settlement root. A failing guard rejects the block. With no later holds, the wallet settlement still checks the condition of SystemVault, which is then the guard.
+
 ### 8.4 Several offers per block
 
-Several offers per block (G2) need one more rule, which replaces the floor. [I] Each member's funding capacity on each purse is capped, on the success path and on the rollback path. Let $`\mathrm{balance}(p)`$ be the balance of $`p`$ at the settlement root on the success path, and at $`R_{i-1}`$ on the rollback path. The cap of member $`i`$ on purse $`p`$ is:
+Several offers per block (G2) need one more rule, which replaces the floor. [P][D] Each member's funding capacity on each purse is capped, on the success path and on the rollback path. Let $`\mathrm{balance}(p)`$ be the balance of $`p`$ at $`R_{i-1}`$, the execution root of member $`i`$, on both paths. The cap of member $`i`$ on purse $`p`$ is:
 
 ```math
 \mathrm{cap}_i(p) \;=\; \mathrm{balance}(p) - \sum_{j > i} \mathrm{hold}_j(p).
@@ -676,14 +682,37 @@ Each source on $`p`$ also stays within its signed hold cap and debit cap.
 Without the cap, the selection could draw a purse that a later member holds. A rollback charge could also consume later holds. With the cap, induction keeps every later hold covered:
 
 1. **Base.** Let $`\mathrm{supply}_{R_0}(p)`$ be the balance of $`p`$ at $`R_0`$. The group check of DR-65 gives $`\mathrm{supply}_{R_0}(p) \geq \sum_{m} \mathrm{hold}_m(p)`$, where $`m`$ ranges over the members of the group.
-2. **Step.** Assume that the balance at $`R_{i-1}`$ is at least $`\sum_{j \geq i} \mathrm{hold}_j(p)`$. Member $`i`$ debits at most $`\mathrm{cap}_i(p)`$ on either path. So the balance after member $`i`$ is at least $`\sum_{j > i} \mathrm{hold}_j(p)`$.
-3. **Rollback fits.** On the rollback path, the capacity is at least $`\mathrm{hold}_i(p)`$. For a complete estimate, the placement of the check then dominates the rollback charge.
+2. **Step.** Assume that the balance at $`R_{i-1}`$ is at least $`\sum_{j \geq i} \mathrm{hold}_j(p)`$. Then the balance after member $`i`$ is at least $`\sum_{j > i} \mathrm{hold}_j(p)`$ on both paths:
+   - **The success path.** The run of member $`i`$ can lower $`p`$ before settlement, also when $`p`$ is not a source of member $`i`$. The guard of DR-65 item 5 covers every purse with a later hold, so it gives the bound at the settlement root.
+   - **The rollback path.** The rollback undoes the run, so the balance before the charge is the balance at $`R_{i-1}`$. Member $`i`$ debits at most $`\mathrm{cap}_i(p)`$, which gives the bound.
+3. **Rollback fits.** By the assumption of the step, $`\mathrm{cap}_i(p) \geq \mathrm{hold}_i(p)`$. For a complete estimate, the placement of the check then dominates the rollback charge.
 
-A single offer per block (G1) has no later members. It keeps the capacity of the selection of today, the balance of each purse at $`R_0`$, as the user decided on 2026-10-11 (Section 16). The guard then separates a deploy that spends funds it needs from a placement that never fit. The cap above applies from step G2-2 on, on both paths.
+Changed by DR-134: the step names the two paths. The adopted step said only that member $`i`$ debits at most $`\mathrm{cap}_i(p)`$ on either path, which misses a run that lowers $`p`$ before settlement.
+
+A single offer per block has no later members, and its execution root is $`R_0`$. So its cap is the balance of each purse at $`R_0`$. That is the capacity that the user chose for G1 on 2026-10-11 (decision U3, Section 16). One rule therefore covers one member and many members. The guard then separates a deploy that spends funds it needs from a placement that never fit.
+
+**Amendment (DR-134, 2026-10-18).** The adopted text read the balance at the settlement root on the success path. DR-134 reads it at $`R_{i-1}`$ on both paths (option B). [P][D]
+
+- **The reason.** At the settlement root, a member that spends funds that its settlement needs finds no placement. Settlement would then reject it with no charge after all its work ran (Section 9).
+- **The papers.** P1 requires that all work is paid (P1:1990-1992). It also requires that held resources stay unavailable until settlement (P1:2301-2302). With the balance at $`R_{i-1}`$, the guard at the settlement root makes the self-drain a charged user failure, as in the example of Section 8.3.
+- **One member.** The rule reduces to decision U3, so G1 keeps its behavior.
+- **The code.** `DirectWalletSnapshot::cap_by_later_holds` caps the capacity of each settlement source by the later holds on its custody, and `capped_capacity` computes the cap. A later hold above the range of `u64` leaves no capacity. Play and replay read the settlement snapshot at $`R_{i-1}`$ and cap it in the same way.
 
 ### 8.5 Installer purses
 
 No hold of the check covers a debit on an installer purse under G3. [D] If an installer purse is short, the approved interim rule B5 applies: the node rejects the triggering deploy with no charge. A later tuple-space veto can replace B5.
+
+**Amendment (DR-135).** B5 is replaced, and the tuple-space veto exists. [D][P]
+
+- **The budget.** The owner budget of purse $`p`$ for member $`i`$ is the cap of Section 8.4 minus the owner's own hold on $`p`$:
+
+  ```math
+  \mathrm{budget}_i(p) \;=\; \mathrm{cap}_i(p) - \mathrm{hold}_i(p).
+  ```
+
+  The budget is never negative: later holds or an own hold above the balance leave budget 0 (`owner_budget`, `snapshot.rs`). Only a purse that the run consults gets a budget, in the owner table of the member.
+- **A shortfall.** An interaction that an owner cannot pay does not fire and has no charge. The run continues and records the refusal, which replay checks (DR-135 items 5 and 6). This is the token gating of P1 Rule 4 (P1:893-906).
+- **The guard.** Owner debits join the guard of Section 8.3. A member that drains an owner purse fails the guard and settles as a charged user failure from the restored balance.
 
 ### 8.6 Amended wording of DR-64
 
@@ -871,10 +900,7 @@ Settlement charges the measured use. The guard protects the later holds of the b
 
 ```text
 ⟨settle under the guard⟩ ≡
-  if one offer per block (G1):                                        -- user decision U3
-    capacity(p) ← min(signed caps, balance of p at R_0)
-  else (G2-2 on):
-    capacity(p) ← min(signed caps, balance(p) − Σ_{j>i} hold_j(p))    -- Section 8.4
+  capacity(p) ← min(signed caps, balance of p at R_{i-1} − Σ_{j>i} hold_j(p))   -- Section 8.4
   debits ← select_phlo_funding_family(measured obligations, capacity)
   if no placement exists:
     reject with no charge                                             -- Section 14
@@ -883,9 +909,11 @@ Settlement charges the measured use. The guard protects the later holds of the b
   if every guard(p) holds:
     settle(debits), with hold = debit and refund = 0
   else:
-    roll back to the execution root
+    roll back to the execution root R_{i-1}
     charge billable work and fee from the restored balance, under the same capacity
 ```
+
+Changed by DR-134 (option B of Section 8.4). The adopted chunk had two branches. One offer per block read the balance at $`R_0`$ (decision U3). Several offers read the balance at the settlement root on the success path. The single branch above covers both cases, because the execution root of the only member is $`R_0`$ and it has no later holds. A capacity below zero is zero (`capped_capacity`).
 
 ---
 
@@ -1071,8 +1099,8 @@ The verification follows the bar of this branch: formal models with negative con
 - `EstimateBinderKinds.v` models the binder analysis over de Bruijn terms with the six kinds. Its lemmas are `kinds_channels_fresh`, `kinds_no_escape`, `kinds_poison_free_introductions` and `full_environment_matches_runtime_free_levels`. It reads a receive guard at the base of the bind count (DR-122 item 8). It models signatures, and `static_signature_names_one_lane` shows that a static signature has one value in every run (DR-122 item 11). `keep_until_compose` models the `locally_free` prefix of Section 5.6. Every outer level of a checked guard has a pattern kind (`checked_guard_levels_are_patterns`, DR-122 item 8).
 - `PlanComputeDominates.v` proves that the compute row of the plan is at least the row of the vector for every lane (`plan_compute_dominates_vector`). So the plan's row bounds the realized compute (`plan_bounds_realized_compute`, DR-122 item 7).
 - `BoundKindSoundness.v` proves that the check never treats an incomplete estimate as complete, and that a rollback after an overrun has no effect. Step G1-6 extends it to client and foreign lanes (DR-124). A certified estimate has demand on client lanes only (`certified_estimate_has_only_client_lanes`). A foreign lane with demand forces an incomplete estimate and a hold of the signed limit (`foreign_lane_forces_incomplete`, `foreign_lane_holds_the_signed_limit`). The limit test reads the client's demand (`limit_test_uses_client_demand`). A negative control keeps an estimate with a foreign lane complete, and its run passes the certified bound unpaid. The G1-6 fix makes a lane a client lane when a source is located at it or permits it (`client_iff_located_or_permitted`, `permitted_lane_is_client`). It adds the placement of the client lanes and proves dodge freedom: fewer permitted classes reject the offer or keep its decision (`narrowing_rejects_or_keeps_the_decision`). A sixth negative control excludes a permitted lane by class, and a narrowed offer lowers its certified bound and runs unpaid.
-- The guard lemmas of DR-65 are `group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds` and `group_decision_permutation_invariant`. They are restated for settlement without a floor, with the capacity cap of Section 8.4 on both paths.
-- `HeldCapacityGuard.v` (step G1-7) proves the guard of one member without a floor. It proves `held_capacity_guard_preserves_later_holds`, `guard_implies_vault_reservation`, `single_member_guard_is_vault_condition` and `rollback_charge_fits_restored_balance`. `replay_accepts_exactly_the_honest_class` shows that the replay of a committed outcome accepts exactly the class that an honest producer publishes. The group lemmas follow in steps G2-3 and G2-4.
+- The guard lemmas of DR-65 are `group_holds_prevent_overdraft`, `held_capacity_guard_preserves_later_holds` and `group_decision_permutation_invariant`. They are restated for settlement without a floor, with the capacity cap of Section 8.4 on both paths. `SameBlockFundingGroups.v` (DR-134) proves them with no axiom, together with the truncation facts `shipped_prefix_is_accepted` and `guard_monotone_in_later_holds` and four negative controls. `SameBlockFundingGroups.tla` checks the same rules under TLC and Apalache (implementation note 3 of DR-65).
+- `HeldCapacityGuard.v` (step G1-7) proves the guard of one member without a floor. It proves `held_capacity_guard_preserves_later_holds`, `guard_implies_vault_reservation`, `single_member_guard_is_vault_condition` and `rollback_charge_fits_restored_balance`. `replay_accepts_exactly_the_honest_class` shows that the replay of a committed outcome accepts exactly the class that an honest producer publishes. Since DR-134, `SameBlockFundingGroups.v` proves the group lemmas.
 
 **Negative controls.** Each control is a deliberately broken variant that a witness must refute.
 
@@ -1115,7 +1143,7 @@ The verification follows the bar of this branch: formal models with negative con
 - A self-drain becomes a charged user failure, and the receipts of producer and validators agree. Step G1-7 adds this test. The balance after the block is the restored balance minus the charge, and the drained transfer moves nothing.
 - A producer that claims a guard failure while the guard holds gets its block rejected by every validator (step G1-7).
 - Property tests of the guard (step G1-7). The guard equals the pointwise inequality. With no later holds, it equals the condition of SystemVault. The rollback charge fits the restored balance when realized use is at most the estimate.
-- A property test of feasibility. Assume that the realized use is at most the estimate for every lane and class, and that balances do not change. Then the post-execution selection succeeds. The capacity is the balance in G1, and the balance minus later holds in G2.
+- A property test of feasibility. Assume that the realized use is at most the estimate for every lane and class, and that balances do not change. Then the post-execution selection succeeds. The capacity is the balance in G1, and the balance minus later holds in G2. `realized_use_within_the_estimate_settles` covers G1. Since DR-134, `realized_use_within_the_estimate_settles_under_later_holds` covers G2: with later holds that fit the room at $`R_0`$, the selection succeeds under the capped capacity, and the guard holds over the unchanged balances. A non-vacuity test checks that its generator reaches tight capacities.
 - The 64-source test passes under the committed caps.
 - The tests of step G1-6 (DR-124):
   - an offer whose holds do not fit never enters the runtime, pays no fee and gets "insufficient phlogiston"
@@ -1222,7 +1250,7 @@ The meter keeps the total of all $`\delta_\theta`$ at or below $`\mathrm{phloLim
 
 ## 16. Decision history
 
-The user made these decisions on 2026-10-10, and the last two on 2026-10-11. Times are in coordinated universal time (UTC). The quotations are the user's words or the user's selected answers, verbatim.
+The user made these decisions on 2026-10-10, and the next two on 2026-10-11. The last three rows record the G3 decisions of 2026-10-13, 2026-10-19 and 2026-10-20. Times are in coordinated universal time (UTC). The quotations are the user's words or the user's selected answers, verbatim.
 
 | Time | Decision |
 |---|---|
@@ -1237,6 +1265,9 @@ The user made these decisions on 2026-10-10, and the last two on 2026-10-11. Tim
 | 00:09 on 2026-10-11 | **U3, the capacity of the selection in G1.** The user chose "Balance at R0 (Recommended)". With one offer per block, the selection after execution caps each source by its balance at $`R_0`$, as today. The guard then separates a self-drain from a placement that never fit. The cap of Section 8.4 applies from step G2-2 on (Sections 8.4 and 9). |
 | Later on 2026-10-11 | **Hold only the client's demand.** The user chose "Hold only the client's $`\Delta_c`$ (Recommended)". The check holds the demand of the client lanes only, as P1's acceptance protocol does (P1:2191-2200). A foreign lane leaves the holds and makes the estimate incomplete. The user added: "So long as you stay true to Greg's publications about cost-accounting and its new syntax semantics." Section 6 states the basis in P1 and P2, and DR-124 records the decision. |
 | Later on 2026-10-11, correction | **The lanes that the sources may pay.** As the coordinator relayed it, the user's option said "hold only the lanes the envelope's sources may pay". The first implementation counted only the lanes at whose purses a source is located. The 64-source test showed the gap, because four of its sources permit its lane `payer`. A signed permission is how a client sponsors a lane, so P2's local proof per purse covers it (P2:1520-1527). The G1-6 fix makes every permitted lane a client lane. DR-124 records the correction. |
+| 2026-10-13 | **G3, decisions a to d.** The user approved the narrow G3 design. Any number of owners, each with its own wallet (P1 Rules 2 and 3). An interaction that an owner cannot pay does not fire, has no charge, and the run continues with a recorded refusal. This replaces B5. A fired body is charged to its owner. The lollipop transfer works. Excluded: a wake, standing allowances and prepaid byte cells. DR-135 records the decisions. |
+| 2026-10-19 | **G3, the owner's price.** "Process owners set the price! That should already be implemented!" and "Process owners pay for the process!" Each owner pays at the price that its stored region recorded (Section 8.5, DR-135 item 4). |
+| 2026-10-20 | **G3, the caller's bound.** The user chose "Caller reserves own work": the caller's signed limit and its hold before execution cover only the work that the caller pays, and each owner's work counts only against that owner's budget. For owner work at price 0 the user chose "Keep today's rule for 0", so that work still counts against the caller's bound. For the cost estimate: "Stick as close to dev's behavior as possible and make as few changes as possible! Keep the current behavior unless it needs to change." The check before execution and the dry run do not change (DR-135 item 13). |
 
 A second independent check of the design followed on the same day. Its corrections are part of this document.
 
@@ -1247,7 +1278,7 @@ A second independent check of the design followed on the same day. Its correctio
 - Several offers per block cap the funding capacity on both paths (Section 8.4).
 - Only a total overrun of a complete estimate is a certificate failure. Drift detection rests on three checks (Sections 6.4 and 7).
 - The guard is DR-65 item 5 exactly, and its scope includes installer purses (Section 8.3).
-- An installer shortfall follows B5 (Section 8.5).
+- An installer shortfall follows B5 (Section 8.5). DR-135 later replaced B5 with a recorded refusal.
 - The client rule covers incomplete estimates with several sources (Section 14).
 
 An independent review of the G1-4a commit followed on 2026-10-11. The G1-4a fix corrects the implementation and this document. DR-122 names each finding.

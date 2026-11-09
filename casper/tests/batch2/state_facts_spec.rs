@@ -13,14 +13,18 @@ use casper::rust::block_status::{BlockError, InvalidBlock};
 use casper::rust::casper::{Casper, MultiParentCasper};
 use casper::rust::finality::floor::floor_of_block;
 use casper::rust::safety::clique_oracle::FtThreshold;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::proto_util;
 use casper::rust::util::rholang::interpreter_util;
-use casper::rust::util::{construct_deploy, proto_util};
 use models::rust::casper::protocol::casper_message::{Body, F1r3flyState, Header, Justification};
 use prost::bytes::Bytes;
 use rholang::rust::interpreter::system_processes::BlockData;
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
+use crate::helper::offered_deploy as construct_deploy;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -50,11 +54,13 @@ async fn two_validator_network() -> (Vec<TestNode>, String, Bytes) {
 async fn checkpoint_block_with(
     node: &mut TestNode,
     shard_id: &str,
-    deploys: Vec<
-        crypto::rust::signatures::signed::Signed<
-            models::rust::casper::protocol::casper_message::DeployData,
-        >,
-    >,
+    // Changed by DR-134 (DR-66 item 1): offered deploys.
+    // deploys: Vec<
+    //     crypto::rust::signatures::signed::Signed<
+    //         models::rust::casper::protocol::casper_message::DeployData,
+    //     >,
+    // >,
+    deploys: Vec<OfferedDeploy>,
     tamper: impl FnOnce(&mut Body),
 ) -> models::rust::casper::protocol::casper_message::BlockMessage {
     let snapshot = node.casper.get_snapshot().await.expect("snapshot");
@@ -79,13 +85,31 @@ async fn checkpoint_block_with(
         sender: validator_identity.public_key.clone(),
         seq_num: next_seq_num,
     };
-    let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    // Changed by DR-134 (DR-66 item 1): the offered checkpoint.
+    // let checkpoint = interpreter_util::compute_deploys_checkpoint(
+    //     &mut node.block_store,
+    //     snapshot.parents.clone(),
+    //     deploys,
+    //     Vec::new(),
+    //     &snapshot,
+    //     &runtime_manager,
+    //     block_data,
+    let adopted_casper = node.casper.clone();
+    let checkpoint = interpreter_util::compute_deploys_checkpoint_envelopes(
         &mut node.block_store,
         snapshot.parents.clone(),
-        deploys,
+        deploys
+            .into_iter()
+            .map(|deploy| {
+                block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate::Envelope(
+                    deploy.envelope,
+                )
+            })
+            .collect(),
         Vec::new(),
         &snapshot,
         &runtime_manager,
+        adopted_casper.adopted_resource_policy.as_ref(),
         block_data,
         HashMap::new(),
         None,
@@ -101,7 +125,10 @@ async fn checkpoint_block_with(
             bonds: checkpoint.bonds,
             block_number: next_block_num,
         },
-        deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
+        // Changed by DR-134 (DR-66 item 1): the envelope checkpoint holds
+        // processed user deploys.
+        // deploys: checkpoint.deploys.into_iter().map(Into::into).collect(),
+        deploys: checkpoint.deploys,
         rejected_deploys: checkpoint.rejected_deploys,
         system_deploys: checkpoint.system_deploys,
         extra_bytes: Bytes::new(),
@@ -116,7 +143,9 @@ async fn checkpoint_block_with(
             .map(|p| p.block_hash.clone())
             .collect(),
         timestamp: now_millis,
-        version: 1,
+        // Changed by DR-134 (DR-66 item 1): the block carries the genesis version.
+        // version: 1,
+        version: node.genesis.header.version,
         extra_bytes: Bytes::new(),
     };
     let justifications: Vec<Justification> = snapshot.justifications.iter().cloned().collect();

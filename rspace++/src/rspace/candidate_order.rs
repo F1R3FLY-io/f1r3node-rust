@@ -17,6 +17,12 @@
 //! that channel by source hash (E1 of DR-129, `space_matcher.rs`), which
 //! agrees with this order.
 //!
+//! Changed by decision 123 (plan v4, V3-8): the random play order is the free
+//! `shuffle_with_index` of this module. `RSpace::shuffle_with_index`
+//! forwards to it, and the Reified disciplines reach it through
+//! `space_store_handle::play_order`, so native play and Reified play shuffle
+//! with one function.
+//!
 //! Formal model:
 //! `formal/rocq/cost_accounted_rho/theories/CandidateSourceOrder.v`
 //! (`lazy_two_phase_is_canonical`, `phase_one_ignores_digests`,
@@ -26,10 +32,14 @@
 
 use std::sync::Arc;
 
+// Added by decision 123 (plan v4, V3-8): the play shuffle moved here.
+use rand::seq::SliceRandom;
 use serde::Serialize;
 
 use super::hashing::blake2b256_hash::Blake2b256Hash;
 use super::internal::{Datum, WaitingContinuation};
+// Added by decision 123 (plan v4, V3-8): the named-record test of replay.
+use super::trace::event::Produce;
 
 pub(crate) trait CandidateSource {
     fn source_hash(&self) -> &Blake2b256Hash;
@@ -123,6 +133,54 @@ pub(crate) fn canonical_candidates<D: CandidateSource + Serialize>(
     values: Vec<D>,
 ) -> Vec<(D, i32)> {
     canonical_order(values, &candidate_digest)
+}
+
+/// Added by decision 123 (plan v4, V3-8): the random play order of DR-129.
+/// It pairs each entry of `t` with its index in `t` and shuffles the pairs
+/// with the thread generator, only when there are two or more. The body is
+/// the base `RSpace::shuffle_with_index` (`ops_produce.rs`), which forwards
+/// here.
+pub(crate) fn shuffle_with_index<D>(t: Vec<D>) -> Vec<(D, i32)> {
+    let mut indexed_vec = t
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| (d, i as i32))
+        .collect::<Vec<_>>();
+    if indexed_vec.len() >= 2 {
+        indexed_vec.shuffle(&mut rand::rng());
+    }
+    indexed_vec
+}
+
+/// Added by decision 123 (plan v4, V3-8): the test of replay that the stored
+/// record `datum` is a candidate of the recorded COMM. `named` tells whether
+/// the COMM names the source produce of the record, and a named persistent
+/// record is a candidate. Otherwise the produce count of the source must
+/// equal the repetition that the COMM records. The count is one more when
+/// `incoming` is true, that is, when the incoming produce is the source of
+/// the record. `Ok(None)` is a counter overflow. The body is the base
+/// `ReplayRSpace::candidate_matches` (`native_candidate.rs`), which forwards
+/// here and maps an overflow to false.
+pub(crate) fn candidate_matches_with<A: Clone, E>(
+    datum: &Datum<A>,
+    incoming: bool,
+    named: impl FnOnce(&Produce) -> bool,
+    repetition: impl FnOnce(&Produce) -> Option<i32>,
+    count: impl FnOnce(&Produce) -> Result<i32, E>,
+) -> Result<Option<bool>, E> {
+    if !named(&datum.source) {
+        return Ok(Some(false));
+    }
+    if datum.persist {
+        return Ok(Some(true));
+    }
+    let count = count(&datum.source)?;
+    let count = if incoming {
+        count.checked_add(1)
+    } else {
+        Some(count)
+    };
+    Ok(count.map(|count| repetition(&datum.source) == Some(count)))
 }
 
 #[cfg(test)]

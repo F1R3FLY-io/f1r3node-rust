@@ -4,8 +4,13 @@ use std::sync::Arc;
 use crypto::rust::hash::blake2b256::Blake2b256;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::g_unforgeable::UnfInstance;
+// Changed by G3 (DR-135): the canonical regions keep the caller of a region.
+// use models::rhoapi::{
+//     CostAuthority, CostRegion, CostSignature, CostSignatureCompound, GPrivate, GUnforgeable, Par,
+// };
 use models::rhoapi::{
-    CostAuthority, CostRegion, CostSignature, CostSignatureCompound, GPrivate, GUnforgeable, Par,
+    CostAuthority, CostCaller, CostRegion, CostSignature, CostSignatureCompound, GPrivate,
+    GUnforgeable, Par,
 };
 use models::rust::rholang::sorter::cost_accounting_sorter::sort_signature;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -20,9 +25,15 @@ mod monetary;
 mod residue;
 mod valuation;
 pub use monetary::monetary_funding_signatures;
+// Changed by G3 (DR-135): a system body that runs for a caller records it in
+// its residue (A1).
+// pub use residue::{
+//     is_system_seal, is_unit_cost_signature, resolve_system_residue, system_residue_authority,
+//     system_residue_region, ResidueContext,
+// };
 pub use residue::{
     is_system_seal, is_unit_cost_signature, resolve_system_residue, system_residue_authority,
-    system_residue_region, ResidueContext,
+    system_residue_authority_with_caller, system_residue_region, ResidueContext,
 };
 pub use valuation::AuthorityResourceDemand;
 
@@ -161,10 +172,33 @@ pub fn cost_region(
     bytes.extend_from_slice(&discriminator.to_le_bytes());
     bytes.extend_from_slice(&(signature_bytes.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&signature_bytes);
+    // Changed by G3 (DR-135): the region has no price and no caller. A
+    // creating context with a price uses `priced_cost_region`.
+    // Ok(CostRegion {
+    //     instance_id: Blake2b256::hash(bytes),
+    //     signature: Some(signature),
+    // })
     Ok(CostRegion {
         instance_id: Blake2b256::hash(bytes),
         signature: Some(signature),
+        price: 0,
+        caller: None,
     })
+}
+
+/// Added by G3 (DR-135): the region of `cost_region` with the signed price of
+/// the context that creates it (R4). The identity keeps its preimage, because
+/// one context always derives one price, so the price adds nothing to the
+/// identity.
+pub fn priced_cost_region(
+    signature: &CostSignature,
+    entropy: &[u8],
+    discriminator: u32,
+    price: u64,
+) -> Result<CostRegion, AuthorityError> {
+    let mut region = cost_region(signature, entropy, discriminator)?;
+    region.price = price;
+    Ok(region)
 }
 
 /// Added by D-F1 (DR-117): an authority that canonicalization produced. Its
@@ -196,7 +230,11 @@ pub fn canonical_authority(authority: &CostAuthority) -> Result<CostAuthority, A
 pub(crate) fn canonical_regions<'a>(
     input: impl IntoIterator<Item = &'a CostRegion>,
 ) -> Result<CanonicalAuthority, AuthorityError> {
-    let mut regions = BTreeMap::<Vec<u8>, CostSignature>::new();
+    // Changed by G3 (DR-135): an identity keeps its price and its caller, so
+    // a merge never drops the price. A repeated identity with another price
+    // or caller is a conflict, as one with another signature is (SA2).
+    // let mut regions = BTreeMap::<Vec<u8>, CostSignature>::new();
+    let mut regions = BTreeMap::<Vec<u8>, RegionTerms>::new();
     for region in input {
         if region.instance_id.len() != 32 {
             return Err(AuthorityError::InvalidRegionIdentity);
@@ -207,25 +245,81 @@ pub(crate) fn canonical_regions<'a>(
                 .as_ref()
                 .ok_or(AuthorityError::MissingSignature)?,
         )?;
+        // Changed by G3 (DR-135): the comparison covers the price and the
+        // caller.
+        // match regions.get(&region.instance_id) {
+        //     Some(existing) if existing != &signature => {
+        //         return Err(AuthorityError::RegionIdentityConflict)
+        //     }
+        //     Some(_) => {}
+        //     None => {
+        //         regions.insert(region.instance_id.clone(), signature);
+        //     }
+        // }
         match regions.get(&region.instance_id) {
-            Some(existing) if existing != &signature => {
+            Some(existing) if !existing.matches(&signature, region) => {
                 return Err(AuthorityError::RegionIdentityConflict)
             }
             Some(_) => {}
             None => {
-                regions.insert(region.instance_id.clone(), signature);
+                regions.insert(
+                    region.instance_id.clone(),
+                    RegionTerms::of(signature, region),
+                );
             }
         }
     }
+    // Changed by G3 (DR-135): the rebuilt region keeps its price and caller.
+    // Ok(CanonicalAuthority(CostAuthority {
+    //     regions: regions
+    //         .into_iter()
+    //         .map(|(instance_id, signature)| CostRegion {
+    //             instance_id,
+    //             signature: Some(signature),
+    //         })
+    //         .collect(),
+    // }))
     Ok(CanonicalAuthority(CostAuthority {
         regions: regions
             .into_iter()
-            .map(|(instance_id, signature)| CostRegion {
-                instance_id,
-                signature: Some(signature),
-            })
+            .map(|(instance_id, terms)| terms.into_region(instance_id))
             .collect(),
     }))
+}
+
+/// Added by G3 (DR-135): the terms of a region besides its identity: the
+/// canonical signature, the price and the caller. Two regions with one
+/// identity must agree on all three (SA2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RegionTerms {
+    signature: CostSignature,
+    price: u64,
+    caller: Option<CostCaller>,
+}
+
+impl RegionTerms {
+    /// The terms of `region` with its canonical `signature`.
+    fn of(signature: CostSignature, region: &CostRegion) -> Self {
+        Self {
+            signature,
+            price: region.price,
+            caller: region.caller.clone(),
+        }
+    }
+
+    /// Whether `region`, with its canonical `signature`, has these terms.
+    fn matches(&self, signature: &CostSignature, region: &CostRegion) -> bool {
+        &self.signature == signature && self.price == region.price && self.caller == region.caller
+    }
+
+    fn into_region(self, instance_id: Vec<u8>) -> CostRegion {
+        CostRegion {
+            instance_id,
+            signature: Some(self.signature),
+            price: self.price,
+            caller: self.caller,
+        }
+    }
 }
 
 /// Added by D-F1 (DR-117): the canonical merge of `authorities`, read in
@@ -815,29 +909,57 @@ pub(crate) fn instantiate_persistent_regions_canonical(
     persistent_regions: &BTreeSet<[u8; 32]>,
     occurrence: [u8; 32],
 ) -> Result<CanonicalAuthority, AuthorityError> {
-    let regions = authority_regions(authority)?;
-    let instantiated = CostAuthority {
-        regions: regions
-            .into_iter()
-            .map(|(instance_id, signature)| {
-                let instance_id = if persistent_regions.contains(&instance_id) {
-                    let mut bytes = Vec::with_capacity(
-                        REGION_OCCURRENCE_DOMAIN.len() + instance_id.len() + occurrence.len(),
-                    );
-                    bytes.extend_from_slice(REGION_OCCURRENCE_DOMAIN);
-                    bytes.extend_from_slice(&instance_id);
-                    bytes.extend_from_slice(&occurrence);
-                    Blake2b256::hash(bytes)
-                } else {
-                    instance_id.to_vec()
-                };
-                CostRegion {
-                    instance_id,
-                    signature: Some(signature),
-                }
-            })
-            .collect(),
+    // Changed by G3 (DR-135): the instantiation reads the canonical regions
+    // themselves, so each keeps its price and caller (SA2). The
+    // canonicalization and its errors are those of `authority_regions`.
+    // let regions = authority_regions(authority)?;
+    // let instantiated = CostAuthority {
+    //     regions: regions
+    //         .into_iter()
+    //         .map(|(instance_id, signature)| {
+    //             let instance_id = if persistent_regions.contains(&instance_id) {
+    //                 let mut bytes = Vec::with_capacity(
+    //                     REGION_OCCURRENCE_DOMAIN.len() + instance_id.len() + occurrence.len(),
+    //                 );
+    //                 bytes.extend_from_slice(REGION_OCCURRENCE_DOMAIN);
+    //                 bytes.extend_from_slice(&instance_id);
+    //                 bytes.extend_from_slice(&occurrence);
+    //                 Blake2b256::hash(bytes)
+    //             } else {
+    //                 instance_id.to_vec()
+    //             };
+    //             CostRegion {
+    //                 instance_id,
+    //                 signature: Some(signature),
+    //             }
+    //         })
+    //         .collect(),
+    // };
+    let regions = canonical_authority(authority)?.regions;
+    let mut instantiated = CostAuthority {
+        regions: Vec::with_capacity(regions.len()),
     };
+    for region in regions {
+        let key: [u8; 32] = region
+            .instance_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| AuthorityError::InvalidRegionIdentity)?;
+        let instance_id = if persistent_regions.contains(&key) {
+            let mut bytes =
+                Vec::with_capacity(REGION_OCCURRENCE_DOMAIN.len() + key.len() + occurrence.len());
+            bytes.extend_from_slice(REGION_OCCURRENCE_DOMAIN);
+            bytes.extend_from_slice(&key);
+            bytes.extend_from_slice(&occurrence);
+            Blake2b256::hash(bytes)
+        } else {
+            region.instance_id
+        };
+        instantiated.regions.push(CostRegion {
+            instance_id,
+            ..region
+        });
+    }
     canonical_regions(&instantiated.regions)
 }
 
@@ -877,27 +999,52 @@ fn rekey_by(
     witness: CanonicalAuthority,
     mut new_identity: impl FnMut(Vec<u8>) -> Result<Vec<u8>, AuthorityError>,
 ) -> Result<CanonicalAuthority, AuthorityError> {
-    let mut regions = BTreeMap::<Vec<u8>, CostSignature>::new();
+    // Changed by G3 (DR-135): a new identity keeps the price and the caller of
+    // its region, and a collision with other terms is a conflict (SA2).
+    // let mut regions = BTreeMap::<Vec<u8>, CostSignature>::new();
+    // for region in witness.0.regions {
+    //     let signature = region.signature.ok_or(AuthorityError::MissingSignature)?;
+    //     let instance_id = new_identity(region.instance_id)?;
+    //     match regions.get(&instance_id) {
+    //         Some(existing) => {
+    //             if existing != &signature {
+    //                 return Err(AuthorityError::RegionIdentityConflict);
+    //             }
+    //         }
+    //         None => {
+    //             regions.insert(instance_id, signature);
+    //         }
+    //     }
+    // }
+    // let mut sorted = Vec::with_capacity(regions.len());
+    // for (instance_id, signature) in regions {
+    //     sorted.push(CostRegion {
+    //         instance_id,
+    //         signature: Some(signature),
+    //     });
+    // }
+    let mut regions = BTreeMap::<Vec<u8>, RegionTerms>::new();
     for region in witness.0.regions {
-        let signature = region.signature.ok_or(AuthorityError::MissingSignature)?;
+        let terms = RegionTerms {
+            signature: region.signature.ok_or(AuthorityError::MissingSignature)?,
+            price: region.price,
+            caller: region.caller,
+        };
         let instance_id = new_identity(region.instance_id)?;
         match regions.get(&instance_id) {
             Some(existing) => {
-                if existing != &signature {
+                if existing != &terms {
                     return Err(AuthorityError::RegionIdentityConflict);
                 }
             }
             None => {
-                regions.insert(instance_id, signature);
+                regions.insert(instance_id, terms);
             }
         }
     }
     let mut sorted = Vec::with_capacity(regions.len());
-    for (instance_id, signature) in regions {
-        sorted.push(CostRegion {
-            instance_id,
-            signature: Some(signature),
-        });
+    for (instance_id, terms) in regions {
+        sorted.push(terms.into_region(instance_id));
     }
     Ok(CanonicalAuthority(CostAuthority { regions: sorted }))
 }
@@ -2449,6 +2596,8 @@ mod tests {
             regions: vec![CostRegion {
                 instance_id: first.instance_id,
                 signature: Some(ground(b"different")),
+                // Added by G3 (DR-135): no price and no caller.
+                ..Default::default()
             }],
         };
         assert_eq!(
@@ -4519,6 +4668,8 @@ mod tests {
                                 vec![identity; 32]
                             },
                             signature,
+                            // Added by G3 (DR-135): no price and no caller.
+                            ..Default::default()
                         })
                         .collect(),
                 })
@@ -4558,6 +4709,8 @@ mod tests {
                 regions: vec![CostRegion {
                     instance_id: vec![identity; 32],
                     signature: Some(quoted_chain(usize::from(identity))),
+                    // Added by G3 (DR-135): no price and no caller.
+                    ..Default::default()
                 }],
             })
             .collect();
@@ -4597,6 +4750,8 @@ mod tests {
         let region = |identity: u8, signature: CostSignature| CostRegion {
             instance_id: vec![identity; 32],
             signature: Some(signature),
+            // Added by G3 (DR-135): no price and no caller.
+            ..Default::default()
         };
         let collide = |_: Vec<u8>| Ok(vec![9; 32]);
         let different = canonical_regions(&[region(1, ground(&[1])), region(2, ground(&[2]))])
@@ -4609,5 +4764,189 @@ mod tests {
             .expect("canonical");
         let merged = rekey_by(equal, collide).expect("equal signatures merge");
         assert_eq!(merged.as_authority().regions, vec![region(9, ground(&[1]))]);
+    }
+
+    /// Added by G3 (DR-135): every canonicalization keeps the price and the
+    /// caller of a region (SA2): the canonical authority, the merge of
+    /// participants, the instantiation and the rekey of persistent regions. A
+    /// repeated identity with another price or another caller conflicts, as
+    /// one with another signature does.
+    #[test]
+    fn canonical_merge_keeps_prices_and_rejects_a_price_conflict() {
+        let caller = CostCaller {
+            signature: Some(ground(b"caller")),
+            price: 9,
+        };
+        let priced = priced_cost_region(&ground(b"a"), b"redex", 0, 3).expect("a region");
+        let called = CostRegion {
+            caller: Some(caller.clone()),
+            ..priced_cost_region(&ground(b"b"), b"redex", 1, 0).expect("a region")
+        };
+        let plain = cost_region(&ground(b"c"), b"redex", 2).expect("a region");
+        let left = CostAuthority {
+            regions: vec![called.clone(), priced.clone(), called.clone()],
+        };
+        let right = CostAuthority {
+            regions: vec![plain.clone(), priced.clone()],
+        };
+
+        let canonical = canonical_authority(&left).expect("canonical");
+        assert_eq!(canonical.regions.len(), 2);
+        assert!(canonical.regions.contains(&priced));
+        assert!(canonical.regions.contains(&called));
+
+        let merged = merge_authorities([&left, &right]).expect("a merge");
+        let witness = merge_canonical([&left, &right]).expect("a merge");
+        assert_eq!(witness.clone().into_authority(), merged);
+        assert_eq!(merged.regions.len(), 3);
+        for region in [&priced, &called, &plain] {
+            assert!(merged.regions.contains(region));
+        }
+
+        let persistent: BTreeSet<[u8; 32]> = [priced
+            .instance_id
+            .as_slice()
+            .try_into()
+            .expect("a 32-byte identity")]
+        .into();
+        let occurrence = [4; 32];
+        let instantiated =
+            instantiate_persistent_regions(&merged, &persistent, occurrence).expect("instantiated");
+        let rekeyed = rekey(witness, &persistent, occurrence)
+            .expect("rekeyed")
+            .into_authority();
+        assert_eq!(rekeyed, instantiated);
+        assert!(!instantiated.regions.contains(&priced));
+        let fresh = instantiated
+            .regions
+            .iter()
+            .find(|region| region.signature == priced.signature)
+            .expect("the persistent region has a fresh identity");
+        assert_ne!(fresh.instance_id, priced.instance_id);
+        assert_eq!(fresh.price, 3);
+        assert_eq!(fresh.caller, None);
+        assert!(instantiated.regions.contains(&called));
+        assert!(instantiated.regions.contains(&plain));
+
+        for conflict in [
+            CostRegion {
+                price: 4,
+                ..priced.clone()
+            },
+            CostRegion {
+                caller: Some(caller.clone()),
+                ..priced.clone()
+            },
+            CostRegion {
+                caller: Some(CostCaller {
+                    price: 10,
+                    ..caller.clone()
+                }),
+                ..called.clone()
+            },
+            CostRegion {
+                caller: None,
+                ..called.clone()
+            },
+        ] {
+            let conflicting = CostAuthority {
+                regions: vec![conflict],
+            };
+            assert_eq!(
+                merge_authorities([&merged, &conflicting]),
+                Err(AuthorityError::RegionIdentityConflict)
+            );
+            assert_eq!(
+                merge_canonical([&merged, &conflicting]).map(CanonicalAuthority::into_authority),
+                Err(AuthorityError::RegionIdentityConflict)
+            );
+        }
+
+        let collide = |_: Vec<u8>| Ok(vec![9; 32]);
+        let priced_at = |entropy: &[u8], price: u64| {
+            priced_cost_region(&ground(b"a"), entropy, 0, price).expect("a region")
+        };
+        let other_prices =
+            canonical_regions(&[priced_at(b"one", 1), priced_at(b"two", 2)]).expect("canonical");
+        assert!(matches!(
+            rekey_by(other_prices, collide),
+            Err(AuthorityError::RegionIdentityConflict)
+        ));
+        let equal_prices =
+            canonical_regions(&[priced_at(b"one", 2), priced_at(b"two", 2)]).expect("canonical");
+        let rekeyed = rekey_by(equal_prices, collide).expect("equal terms merge");
+        assert_eq!(rekeyed.as_authority().regions, vec![CostRegion {
+            instance_id: vec![9; 32],
+            ..priced_at(b"one", 2)
+        }]);
+    }
+
+    /// Added by G3 (DR-135): a region without a price and a caller encodes to
+    /// the prost bytes of a region before G3, field 1 (the identity) and
+    /// field 2 (the signature), and those bytes decode to it. Prost omits a
+    /// zero price and an absent caller, so genesis and system work keep their
+    /// observation bytes. A price appends field 3 and a caller field 4. The
+    /// price is not part of the identity.
+    #[test]
+    fn unpriced_regions_keep_their_prost_bytes() {
+        fn legacy_bytes(region: &CostRegion) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            prost::encoding::bytes::encode(1, &region.instance_id, &mut bytes);
+            if let Some(signature) = region.signature.as_ref() {
+                prost::encoding::message::encode(2, signature, &mut bytes);
+            }
+            bytes
+        }
+        let signatures = [
+            ground(b"a"),
+            private_name(&[7; 32]),
+            compound_cost_signatures(&ground(b"a"), &private_name(&[7; 32])).expect("a compound"),
+            CostSignature {
+                value: Some(CostSignatureValue::Unit(true)),
+            },
+        ];
+        for signature in &signatures {
+            for discriminator in [0, 1, u32::MAX] {
+                let region = cost_region(signature, b"entropy", discriminator).expect("a region");
+                assert_eq!(
+                    priced_cost_region(signature, b"entropy", discriminator, 0).expect("a region"),
+                    region
+                );
+                let legacy = legacy_bytes(&region);
+                assert_eq!(region.encode_to_vec(), legacy);
+                assert_eq!(
+                    CostRegion::decode(legacy.as_slice()).expect("legacy bytes decode"),
+                    region
+                );
+                let mut legacy_authority = Vec::new();
+                prost::encoding::bytes::encode(1, &legacy, &mut legacy_authority);
+                assert_eq!(
+                    CostAuthority {
+                        regions: vec![region.clone()],
+                    }
+                    .encode_to_vec(),
+                    legacy_authority
+                );
+                for price in [1, 127, 128, u64::MAX] {
+                    let priced = priced_cost_region(signature, b"entropy", discriminator, price)
+                        .expect("a region");
+                    assert_eq!(priced.instance_id, region.instance_id);
+                    let mut expected = legacy.clone();
+                    prost::encoding::uint64::encode(3, &price, &mut expected);
+                    assert_eq!(priced.encode_to_vec(), expected);
+                }
+                let caller = CostCaller {
+                    signature: Some(signature.clone()),
+                    price: 5,
+                };
+                let called = CostRegion {
+                    caller: Some(caller.clone()),
+                    ..region.clone()
+                };
+                let mut expected = legacy.clone();
+                prost::encoding::message::encode(4, &caller, &mut expected);
+                assert_eq!(called.encode_to_vec(), expected);
+            }
+        }
     }
 }

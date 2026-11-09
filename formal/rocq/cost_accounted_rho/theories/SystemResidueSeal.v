@@ -288,3 +288,181 @@ Theorem never_resolving_loses_in_deploy_charges :
 Proof.
   exists 1, 0, 0. simpl. discriminate.
 Qed.
+
+(* G3 step S3b (DR-135), Rule H: a held process runs for the sender of its
+   value (design g3-s3b-rule-h.md, section 13.2, parts H1 to H4).
+
+   A value that a COMM binds keeps the provenance of its datum (P1
+   rem:signed-subst: "There is no unwrapping"). Its holder is a signature
+   with the price that the holder recorded. Running the value as a process
+   charges the holder at that price when the holder differs from the body
+   context (H1, H4). Otherwise the context pays at its own price. A nested
+   receive that a body stores wraps each held use whose holder differs from
+   the future context in a held term (H2). The future context of a system
+   seal has the Unit signature, so a system seal wraps every held use of a
+   party. A literal of a body is the context's own code, and a match on a
+   literal gives its parts no holder (H3).
+
+   Results, with no axiom:
+   - held_wrap_charges_the_holder: a stored held use charges its holder,
+     at the holder's price when the holder differs from the stored
+     context, in every later firing of the stored body.
+   - literal_never_takes_a_holder: a literal match target has no holder,
+     so its parts run for the context at the context price.
+   - held_price_is_independent_of_context: a held run charges the holder at
+     the holder's recorded price in every context that differs from the
+     holder, and a stored held term does so in every context.
+   - Negative controls: nc_unwrapped_subst_charges_the_body_owner (a
+     substitution with no held term charges the stored body's owner) and
+     nc_literal_laundering_charges_the_caller (a literal that takes the
+     caller's holder charges the caller for the owner's code).
+
+   Formulations rejected before any proof attempt (reasoned):
+   - A price for a held run taken from the context makes the holder's
+     charge depend on who runs the value, which contradicts section 3 of
+     the design. The holder record carries its price instead.
+   - Computing with sig_eq_dec does not reduce, because the module closes
+     its proof as opaque. The proofs destruct the decision instead.
+
+   Rust correspondence: accounting/owner_funding.rs (held_reducer,
+   wrap_held_uses, datum_holder) and reduce.rs (the EVarBody and EMethodBody
+   exits, eval_receive, eval_match, eval_cost_signed_term). TLA+ companion:
+   formal/tlaplus/cost_accounted_rho/HeldProvenance.tla. *)
+
+(* A holder (RegionOwner): a signature and the price that it recorded. *)
+Record holder := { holder_sig : sig; holder_price : nat }.
+
+(* The context of a body: its signature and its price. *)
+Record context := { context_sig : sig; context_price : nat }.
+
+(* A charge: the signature that pays and the price of the charge. *)
+Record charge := { charge_sig : sig; charge_price : nat }.
+
+Definition context_charge (ctx : context) : charge :=
+  {| charge_sig := context_sig ctx; charge_price := context_price ctx |}.
+
+Definition holder_charge (h : holder) : charge :=
+  {| charge_sig := holder_sig h; charge_price := holder_price h |}.
+
+(* H1 and H4: a value whose holder differs from the context runs in
+   held_reducer(holder) at the holder's price. *)
+Definition run_value (ctx : context) (held : option holder) : charge :=
+  match held with
+  | Some h =>
+      if sig_eq_dec (holder_sig h) (context_sig ctx)
+      then context_charge ctx
+      else holder_charge h
+  | None => context_charge ctx
+  end.
+
+(* H2: the stored form of a held use. *)
+Inductive stored_use := HeldTerm (h : holder) | Bare.
+
+Definition wrap_use (future : sig) (held : option holder) : stored_use :=
+  match held with
+  | Some h => if sig_eq_dec (holder_sig h) future then Bare else HeldTerm h
+  | None => Bare
+  end.
+
+(* H4: a stored use when the stored body fires in the context ctx. *)
+Definition run_stored (ctx : context) (use : stored_use) : charge :=
+  match use with
+  | HeldTerm h => holder_charge h
+  | Bare => context_charge ctx
+  end.
+
+(* H3: the holder that a match gives its parts. *)
+Inductive match_target := BoundTarget (held : option holder) | LiteralTarget.
+
+Definition target_holder (target : match_target) : option holder :=
+  match target with
+  | BoundTarget held => held
+  | LiteralTarget => None
+  end.
+
+Theorem held_wrap_charges_the_holder :
+  forall future h ctx,
+    context_sig ctx = future ->
+    charge_sig (run_stored ctx (wrap_use future (Some h))) = holder_sig h /\
+    (holder_sig h <> future ->
+       charge_price (run_stored ctx (wrap_use future (Some h))) = holder_price h).
+Proof.
+  intros future h ctx stored_context.
+  unfold wrap_use; simpl.
+  destruct (sig_eq_dec (holder_sig h) future) as [same | different].
+  - split.
+    + simpl. rewrite stored_context. symmetry. exact same.
+    + intros different. contradiction.
+  - split; intros; reflexivity.
+Qed.
+
+Theorem literal_never_takes_a_holder :
+  forall ctx,
+    target_holder LiteralTarget = None /\
+    run_value ctx (target_holder LiteralTarget) = context_charge ctx.
+Proof.
+  intros ctx.
+  split; reflexivity.
+Qed.
+
+Theorem held_price_is_independent_of_context :
+  forall h ctx ctx',
+    holder_sig h <> context_sig ctx ->
+    holder_sig h <> context_sig ctx' ->
+    run_value ctx (Some h) = run_value ctx' (Some h) /\
+    charge_price (run_value ctx (Some h)) = holder_price h /\
+    run_stored ctx (HeldTerm h) = run_stored ctx' (HeldTerm h).
+Proof.
+  intros h ctx ctx' different different'.
+  unfold run_value; simpl.
+  destruct (sig_eq_dec (holder_sig h) (context_sig ctx)) as [same | _];
+    [contradiction |].
+  destruct (sig_eq_dec (holder_sig h) (context_sig ctx')) as [same' | _];
+    [contradiction |].
+  repeat split; reflexivity.
+Qed.
+
+(* Negative control: a substitution that merges the held value into the
+   stored body (no held term) charges the stored body's owner. *)
+Definition unwrapped_subst (future : sig) (held : option holder) : stored_use := Bare.
+
+Theorem nc_unwrapped_subst_charges_the_body_owner :
+  exists h ctx,
+    holder_sig h <> context_sig ctx /\
+    charge_sig (run_stored ctx (unwrapped_subst (context_sig ctx) (Some h)))
+      = context_sig ctx /\
+    charge_sig (run_stored ctx (wrap_use (context_sig ctx) (Some h)))
+      = holder_sig h.
+Proof.
+  exists {| holder_sig := Ground 2; holder_price := 2 |},
+         {| context_sig := Ground 1; context_price := 1 |}.
+  split; [discriminate |].
+  split; [reflexivity |].
+  exact (proj1 (held_wrap_charges_the_holder _ _ _ eq_refl)).
+Qed.
+
+(* Negative control: a rule that gives a literal target the caller's holder
+   charges the caller for the owner's literal. *)
+Definition laundering_target_holder (caller : holder) (target : match_target)
+    : option holder :=
+  match target with
+  | BoundTarget held => held
+  | LiteralTarget => Some caller
+  end.
+
+Theorem nc_literal_laundering_charges_the_caller :
+  exists caller ctx,
+    holder_sig caller <> context_sig ctx /\
+    charge_sig (run_value ctx (laundering_target_holder caller LiteralTarget))
+      = holder_sig caller /\
+    charge_sig (run_value ctx (target_holder LiteralTarget)) = context_sig ctx.
+Proof.
+  exists {| holder_sig := Ground 2; holder_price := 2 |},
+         {| context_sig := Ground 1; context_price := 1 |}.
+  split; [discriminate |].
+  split.
+  - unfold run_value, laundering_target_holder; simpl.
+    destruct (sig_eq_dec (Ground 2) (Ground 1)) as [same | _];
+      [discriminate | reflexivity].
+  - reflexivity.
+Qed.

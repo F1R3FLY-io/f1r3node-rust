@@ -32,6 +32,12 @@ pub struct DeployData {
     pub expiration_timestamp: Option<i64>,
     #[serde(default, rename = "authorityPresentations")]
     pub authority_presentations: Vec<crate::rhoapi::CostSignature>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::rust::deploy_parameters::deserialize_parameters"
+    )]
+    pub parameters: Vec<crate::rust::deploy_parameters::DeployParameter>,
 }
 
 impl ToMessage for DeployData {
@@ -39,6 +45,8 @@ impl ToMessage for DeployData {
     fn to_message(&self) -> Self::Type { DeployData::_to_proto(self.clone()) }
     fn envelope_intent_v61(&self) -> Result<Vec<u8>, String> {
         self.validate_authority_presentations()?;
+        crate::rust::deploy_parameters::validate_parameters(&self.parameters)
+            .map_err(|error| error.to_string())?;
         if self.language != "rholang" {
             return Err("protocol-v6 deploy language must be rholang".to_string());
         }
@@ -69,6 +77,18 @@ impl ToMessage for DeployData {
         intent.extend_from_slice(&(self.authority_presentations.len() as u32).to_be_bytes());
         for presentation in &self.authority_presentations {
             append_deploy_intent_field(&mut intent, &canonical_cost_signature_bytes(presentation)?);
+        }
+        if !self.parameters.is_empty() {
+            let parameters = DeployDataProto {
+                parameters: self
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.to_proto())
+                    .collect(),
+                ..Default::default()
+            }
+            .encode_to_vec();
+            append_deploy_intent_field(&mut intent, &parameters);
         }
         Ok(intent)
     }
@@ -202,13 +222,15 @@ impl DeployData {
         let proto = DeployDataProto::decode(&a[..])
             .map_err(|e| format!("Failed to decode DeployData: {}", e))?;
         Self::reject_funding_intent(&proto)?;
-        let data = DeployData::_from_proto(proto);
+        let data = DeployData::_from_proto(proto)?;
         data.validate_authority_presentations()?;
         Ok(data)
     }
 
-    pub(crate) fn _from_proto(proto: DeployDataProto) -> Self {
-        Self {
+    pub(crate) fn _from_proto(proto: DeployDataProto) -> Result<Self, String> {
+        let parameters = crate::rust::deploy_parameters::parameters_from_proto(proto.parameters)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
             term: proto.term,
             language: proto.language,
             time_stamp: proto.timestamp,
@@ -221,7 +243,8 @@ impl DeployData {
                 Some(proto.expiration_timestamp)
             },
             authority_presentations: proto.authority_presentations,
-        }
+            parameters,
+        })
     }
 
     fn validate_authority_presentations(&self) -> Result<(), String> {
@@ -285,7 +308,7 @@ impl DeployData {
 
         let sig = proto.sig.clone();
         let pk = PublicKey::from_bytes(&proto.deployer);
-        let data = DeployData::_from_proto(proto);
+        let data = DeployData::_from_proto(proto)?;
         data.validate_authority_presentations()?;
         let signed = Signed::from_signed_data(data, pk, sig, algorithm)?;
 
@@ -320,7 +343,7 @@ impl DeployData {
         }
 
         if let Some(sig_algebra) = proto.sig_algebra.clone() {
-            let data = DeployData::_from_proto(proto);
+            let data = DeployData::_from_proto(proto)?;
             data.validate_authority_presentations()?;
             return Self::from_proto_cosigned_with_sig_algebra(data, &sig_algebra);
         }
@@ -366,7 +389,7 @@ impl DeployData {
             });
         }
 
-        let data = DeployData::_from_proto(proto);
+        let data = DeployData::_from_proto(proto)?;
         data.validate_authority_presentations()?;
         if cosigner_threshold == 0 {
             Cosigned::from_signed_data(data, signers).map_err(|e| {
@@ -391,7 +414,7 @@ impl DeployData {
     ) -> Result<crypto::rust::signatures::signed::Cosigned<DeployData>, String> {
         Self::reject_funding_intent(&proto)?;
         Self::from_proto_envelope(proto, 0x0006_0001, |proto| {
-            let data = Self::_from_proto(proto);
+            let data = Self::_from_proto(proto)?;
             data.validate_authority_presentations()?;
             Ok(data)
         })
@@ -707,6 +730,11 @@ impl DeployData {
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.expiration_timestamp.unwrap_or(0),
             authority_presentations: dd.authority_presentations,
+            parameters: dd
+                .parameters
+                .iter()
+                .map(|parameter| parameter.to_proto())
+                .collect(),
             ..Default::default()
         }
     }
@@ -726,6 +754,12 @@ impl DeployData {
             // Only include expirationTimestamp if set to maintain backward compatibility
             expiration_timestamp: dd.data.expiration_timestamp.unwrap_or(0),
             authority_presentations: dd.data.authority_presentations.clone(),
+            parameters: dd
+                .data
+                .parameters
+                .iter()
+                .map(|parameter| parameter.to_proto())
+                .collect(),
             ..Default::default()
         }
     }
@@ -751,6 +785,12 @@ impl DeployData {
                 sig_algorithm: primary.sig_algorithm.name(),
                 expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
                 authority_presentations: cosigned.data.authority_presentations.clone(),
+                parameters: cosigned
+                    .data
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.to_proto())
+                    .collect(),
                 cosigners: cosigned
                     .signers()
                     .iter()
@@ -775,6 +815,12 @@ impl DeployData {
             shard_id: cosigned.data.shard_id.clone(),
             expiration_timestamp: cosigned.data.expiration_timestamp.unwrap_or(0),
             authority_presentations: cosigned.data.authority_presentations.clone(),
+            parameters: cosigned
+                .data
+                .parameters
+                .iter()
+                .map(|parameter| parameter.to_proto())
+                .collect(),
             ..Default::default()
         };
         Self::to_proto_envelope(cosigned, proto, 0x0006_0001)

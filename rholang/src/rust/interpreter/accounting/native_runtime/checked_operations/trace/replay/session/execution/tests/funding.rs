@@ -341,10 +341,24 @@ proptest! {
         let term = format!("@\"a\"!({value}) | @\"b\"!(1) | for (@x <- @\"a\"; @y <- @\"b\") {{ @\"out\"!(x + y) }}");
         tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap().block_on(async {
             let funding = FundingFixture { owners, price, weights: [2, 1, 1, 1] };
-            let (denial_limit, _) = replay_process_with_funding(&term, 1_000_000, false, true, Interruption::Export, funding).await;
-            if let Some(limit) = denial_limit {
-                assert!(replay_process_with_funding(&term, limit, false, false, Interruption::None, funding).await.1);
+            // Changed by DR-132 (DR-129 treatment): the limit of one play
+            // denies a COMM in a later play only when both order their
+            // attempts alike. Each round replays its own play.
+            // let (denial_limit, _) = replay_process_with_funding(&term, 1_000_000, false, true, Interruption::Export, funding).await;
+            // if let Some(limit) = denial_limit {
+            //     assert!(replay_process_with_funding(&term, limit, false, false, Interruption::None, funding).await.1);
+            // }
+            let mut denied = None;
+            for _ in 0..super::DENIAL_ROUNDS {
+                let (denial_limit, _) = replay_process_with_funding(&term, 1_000_000, false, true, Interruption::Export, funding).await;
+                let Some(limit) = denial_limit else { break };
+                if replay_process_with_funding(&term, limit, false, false, Interruption::None, funding).await.1 {
+                    denied = Some(true);
+                    break;
+                }
+                denied = Some(false);
             }
+            assert_ne!(denied, Some(false), "no round denied a COMM at its limit");
         });
     }
 }

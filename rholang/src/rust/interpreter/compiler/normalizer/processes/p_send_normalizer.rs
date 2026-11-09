@@ -56,13 +56,25 @@ pub fn normalize_p_send<'ast>(
         acc.3 = acc.3 || proc_match_result.par.connective_used;
     }
 
-    let (trailing_params, params_free_map) =
+    // Changed by decision 112: the params are a field of the send, not a datum. The text before:
+    // ```
+    // let (trailing_params, params_free_map) =
+    //     normalize_send_params(params, &input.bound_map_chain, acc.1.free_map, env, parser)?;
+    // acc.1.free_map = params_free_map;
+    // if let Some(params_par) = trailing_params {
+    //     acc.2 = union(acc.2, params_par.locally_free.clone());
+    //     acc.3 = acc.3 || params_par.connective_used;
+    //     acc.0.push(params_par);
+    // }
+    // ```
+    let (send_params, params_free_map) =
         normalize_send_params(params, &input.bound_map_chain, acc.1.free_map, env, parser)?;
     acc.1.free_map = params_free_map;
-    if let Some(params_par) = trailing_params {
-        acc.2 = union(acc.2, params_par.locally_free.clone());
-        acc.3 = acc.3 || params_par.connective_used;
-        acc.0.push(params_par);
+    if let Some(params) = &send_params {
+        for value in params.positional.iter().chain(params.named.values()) {
+            acc.2 = union(acc.2, value.locally_free.clone());
+            acc.3 = acc.3 || value.connective_used;
+        }
     }
 
     let persistent = match send_type {
@@ -85,6 +97,7 @@ pub fn normalize_p_send<'ast>(
             .par
             .connective_used(name_match_result.par.clone())
             || acc.3,
+        params: send_params,
     };
 
     let updated_par = input.par.clone().prepend_send(send);

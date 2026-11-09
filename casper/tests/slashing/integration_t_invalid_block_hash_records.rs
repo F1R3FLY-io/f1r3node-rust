@@ -22,12 +22,15 @@
 // UC-35 from docs/casper/theory/slashing/slashing-specification.md §12.
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::casper::Casper;
-use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::{canonical_validator_order, production_snapshot_at};
 use super::observer::SlashingObserver;
+// Changed by DR-134 (DR-66 item 1): the deploy goes through TestNode::deploy.
+// use casper::rust::casper::Casper;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -49,10 +52,11 @@ async fn integration_t_invalid_block_hash_records() {
     // Round 1: v0 produces a well-formed block.
     let deploy_data =
         construct_deploy::basic_deploy_data(0, None, Some(shard_id.clone())).expect("deploy_data");
-    nodes[0]
-        .casper
-        .deploy(deploy_data)
-        .expect("deploy should succeed");
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits both formats.
+    // nodes[0]
+    //     .casper
+    //     .deploy(deploy_data)
+    nodes[0].deploy(deploy_data).expect("deploy should succeed");
     let signed_block = nodes[0]
         .create_block_unsafe(&[])
         .await

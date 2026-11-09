@@ -118,19 +118,37 @@
 //! The legacy charges of decision 45 (Option P) apply to each staged operation, because a settle
 //! stages only through `Cx`.
 
+// Added by decision 124 (plan v4 C7.11, ruling RADD2 1.3): `restored_send` re-issues a send
+// with no params.
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+// Added by decision 124 (plan v2 C7.10): the body test of `machinery_shape` reads one expression.
+use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::tagged_continuation::TaggedCont;
 use models::rhoapi::{
     BindPattern, CostAuthority, ListParWithRandom, Par, ParWithRandom, TaggedContinuation,
 };
 use models::rust::utils::{new_elist_par, new_freevar_var, new_gint_par};
 use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
+// Added by decision 124 (plan v4 C7.11, ruling RADD 1.4): the tail read of a head row.
+use rspace_plus_plus::rspace::space_store_handle::TailRead;
 
 use super::agent::{ConsumeOp, ProduceOp, SettleOp, SpaceOp, SpaceReissue};
+// Added by decision 124 (plan v2 C7.10): `machinery_shape` tests the retire pattern.
+use super::disciplines::scan::RETIRE_PATTERN;
 use super::errors::SpaceError;
-use super::generic::{Cx, OfferFire, OpView, ParCandidate, ParDatum, ParWaiter};
+// Changed by decision 102 (plan v4 C7.22): the settle names the datum that a fire offers.
+// use super::generic::{Cx, OfferFire, OpView, ParCandidate, ParDatum, ParWaiter};
+// Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the settle views read the store
+// through `StoreView` and name their discipline.
+use super::generic::{
+    Cx, Discipline, OfferFire, Offered, OpView, ParCandidate, ParDatum, ParWaiter, StoreView,
+};
+// Added by decision 124 (plan v4 C7.11, ruling RADD2 1.3): `restored_send` names the collection
+// of the receive.
+use super::namespace::CollectionKey;
 use super::namespace::RandomPurpose;
 use super::record;
 use crate::rust::interpreter::reified::costs::{FireStep, ReissueCause, FIRE_ROUND_CAP};
@@ -195,6 +213,45 @@ pub fn lift_continuation(
 
 /// The template of the lift pattern.
 static LIFT_PATTERN: LazyLock<BindPattern> = LazyLock::new(lift_pattern);
+
+/// Added by decision 124 (plan v2 C7.10, decision 100): true when `waiter` is an inert
+/// machinery waiter, a `K_retire` or a `K_lift` that a refused machinery row parked (CR-16). Its
+/// one pattern is the retire or the lift pattern, and its body is the body of a `K_retire` or
+/// of a `K_lift`. A reader of waiters skips it. Any other waiter that a reader cannot decode
+/// still fails.
+pub fn machinery_shape(waiter: &ParWaiter) -> bool {
+    match waiter.patterns.as_slice() {
+        [pattern] if *pattern == *RETIRE_PATTERN || *pattern == *LIFT_PATTERN => {
+            machinery_body(&waiter.continuation)
+        }
+        _ => false,
+    }
+}
+
+/// Added by decision 124 (plan v2 C7.10): true when the body of `continuation` is the body of a
+/// `K_retire`, one byte array (`retire_continuation`), or of a `K_lift`, a list of two integers
+/// ([`lift_body`]). The body of a wrapped continuation record is a list of four items.
+fn machinery_body(continuation: &TaggedContinuation) -> bool {
+    let body = match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom {
+            body: Some(body), ..
+        })) => body,
+        Some(TaggedCont::ParBody(ParWithRandom { body: None, .. }))
+        | Some(TaggedCont::ScalaBodyRef(_))
+        | None => return false,
+    };
+    match record::sole_expr(body) {
+        Some(ExprInstance::GByteArray(_)) => true,
+        Some(ExprInstance::EListBody(list)) => match list.ps.as_slice() {
+            [counter, step] => matches!(
+                (record::sole_expr(counter), record::sole_expr(step)),
+                (Some(ExprInstance::GInt(_)), Some(ExprInstance::GInt(_)))
+            ),
+            _ => false,
+        },
+        _ => false,
+    }
+}
 
 /// The operation that runs a settle: what each `K_lift` of the settle takes from it.
 #[derive(Clone, Copy, Debug)]
@@ -355,12 +412,21 @@ impl FirePlan {
 
 /// The canonical order in which a collection settles: the next fire that it owes.
 pub trait SettleView {
+    /// Added by decision 124 (plan v4 C7.11, ruling RADD 1.4): the discipline of the collection.
+    /// The settle offer gives it to its head search (`Cx::head_offer_search`).
+    type Discipline: Discipline;
+
     /// The next fire that the collection owes, or `None` when no pair of heads matches. When a
     /// record is in flight (`in_flight`), the view treats it as an entry of its side, at its order.
     /// A plan that binds that record marks it [`BoundRecord::InFlight`]. The view stages nothing.
-    fn next_fire(
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD 1.4): the reads of this fn go through
+    // the view `view` in place of `cx`: the staged view in the settle loop, and the store of the
+    // commit in a tail read. The comment above a changed line keeps its text before.
+    // fn next_fire(
+    fn next_fire<V: StoreView>(
         &self,
-        cx: &mut Cx<'_, '_>,
+        // cx: &mut Cx<'_, '_>,
+        view: &mut V,
         in_flight: &InFlight,
     ) -> Result<Option<FirePlan>, SpaceError>;
 }
@@ -427,10 +493,17 @@ pub fn settle<V: SettleView>(
                 }
             },
             BoundRecord::Stored { datum, view_index } => {
+                // Added by decision 124 (L6, CR30 D-b): the fire takes the lease of the stored
+                // datum that the check proved (VJ V11): after the re-plan and the cap
+                // (the checks in `next_fire` of stack.rs and priority_queue.rs).
+                cx.lease_stored(1);
                 let lifted = !datum.persist;
                 if lifted {
                     let step = lift_step(cx.rounds().fired())?;
-                    lift(
+                    // Changed by decision 124 (plan v4 C7.11, ruling RADD2 1.6): the lift names
+                    // the discipline of the view. The text before:
+                    // lift(
+                    lift::<V::Discipline>(
                         cx,
                         &channel,
                         &datum,
@@ -439,6 +512,9 @@ pub fn settle<V: SettleView>(
                         step,
                         &mut lift_random,
                     )?;
+                    // Added by decision 124 (plan v2 C7.5, F5): the lift records the pair of its
+                    // record and the waiter of the settle (CR-20).
+                    cx.record_lift((datum.source.hash.clone(), waiter.source.hash.clone()));
                 }
                 Incoming { datum, lifted }
             }
@@ -447,12 +523,34 @@ pub fn settle<V: SettleView>(
         let spent = !datum.persist && waiter.peeks.is_empty();
         let stays = waiter.persist;
         let introduction = cx.introduction().for_record(&datum.a)?;
+        // Added by decision 124 (plan v4 C7.11, ruling RADD 1.4): the fire count before this
+        // fire, for the tail read of its head search.
+        let fires_before = cx.rounds().fired();
         let step = cx.rounds().after_fire(spent, stays);
-        let fire = OfferFire {
+        // Changed by decision 124 (plan v4 C7.9 and C7.11, rulings D-1 and RADD 1.4): the fire
+        // carries the head search of the discipline of the settle view, which the line after the
+        // literal sets. The text before:
+        // let fire = OfferFire {
+        let mut fire = OfferFire {
             persistent: datum.persist,
             waiter,
             matched,
+            // Added by decision 102 (plan v4 C7.22, rule CR-19 case 3): a record that is not
+            // lifted is a stored persistent record, which the re-offer leaves in place. Every
+            // other record of a fire is in flight.
+            offered: match lifted {
+                true => Offered::InFlight,
+                false => Offered::StoredPersistent,
+            },
+            search: None,
         };
+        fire.search = cx.head_offer_search::<V::Discipline>(
+            &channel,
+            &fire,
+            &datum.source,
+            &datum.a,
+            fires_before,
+        );
         match lifted && !spent {
             true => {
                 // The lifted record stays in flight after this fire, so the fire takes copies.
@@ -497,7 +595,10 @@ fn land(cx: &mut Cx<'_, '_>, mut in_flight: InFlight) -> Result<(), SpaceError> 
 /// `channel`: a consume fire of `K_lift` with the step `step`, which removes the record and is
 /// never dispatched. The random state of `K_lift` is derived once for a settle and kept in
 /// `lift_random`.
-fn lift(
+// Changed by decision 124 (plan v4 C7.11, ruling RADD2 1.6): the lift names the discipline `D` of
+// the collection, which its machinery search keeps. The text before:
+// fn lift(
+fn lift<D: Discipline>(
     cx: &mut Cx<'_, '_>,
     channel: &Par,
     datum: &ParDatum,
@@ -517,7 +618,10 @@ fn lift(
     let random = lift_random.get_or_insert_with(|| {
         RandomPurpose::Lift.derive(&Blake2b512Random::from_bytes(origin.random_state))
     });
-    let cost_authority = origin.authority.cloned();
+    // Changed by decision 124 (plan v2 C7.5, decision 99): `K_lift` takes the machinery seal.
+    // The text before:
+    // let cost_authority = origin.authority.cloned();
+    let cost_authority = cx.introduction().seal_of(origin.authority)?;
     let continuation = lift_continuation(counter, step, random, cost_authority);
     let mut channels = Vec::<Par>::with_capacity(1);
     channels.push(channel.clone());
@@ -534,7 +638,10 @@ fn lift(
         removed_datum: datum.a.clone(),
         datum_index: view_index,
     });
-    cx.lift(channels, patterns, continuation, candidates)
+    // Changed by decision 124 (plan v4 C7.11, ruling RADD2 1.6): the lift names `D`. The text
+    // before:
+    // cx.lift(channels, patterns, continuation, candidates)
+    cx.lift::<D>(channels, patterns, continuation, candidates)
 }
 
 /// The settle that a discipline owes before the plan of the operation `op`, in the order of
@@ -547,7 +654,14 @@ pub fn settle_before_plan<V: SettleView>(
     op: OpView<'_>,
 ) -> Result<Option<SpaceReissue>, SpaceError> {
     let origin = SettleOrigin::of_operation(op);
-    match settle(view, cx, &origin, InFlight::none())? {
+    // Changed by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.3): the rows of the
+    // settle before the plan take the class of B.6 row 1, also when a record end stops the
+    // settle. The text before:
+    // match settle(view, cx, &origin, InFlight::none())? {
+    let start = cx.staged_rows();
+    let end = settle(view, cx, &origin, InFlight::none());
+    cx.settle_rows(start, true);
+    match end? {
         SettleEnd::Quiescent => Ok(None),
         SettleEnd::Reissue(cause) => {
             let reissued = reissued_operation(op, cx.bumped());
@@ -566,7 +680,14 @@ pub fn settle_after_plan<V: SettleView>(
     op: OpView<'_>,
 ) -> Result<Option<SpaceReissue>, SpaceError> {
     let origin = SettleOrigin::of_operation(op);
-    match settle(view, cx, &origin, InFlight::none())? {
+    // Changed by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.3): the rows of the
+    // settle after the plan take the class of B.6 row 9, also when a record end stops the
+    // settle. The text before:
+    // match settle(view, cx, &origin, InFlight::none())? {
+    let start = cx.staged_rows();
+    let end = settle(view, cx, &origin, InFlight::none());
+    cx.settle_rows(start, false);
+    match end? {
         SettleEnd::Quiescent => Ok(None),
         SettleEnd::Reissue(cause) => {
             let settle_op = settle_operation(op);
@@ -583,10 +704,45 @@ pub fn settle_job<V: SettleView>(
     cx: &mut Cx<'_, '_>,
     op: SettleOp,
 ) -> Result<Option<SpaceReissue>, SpaceError> {
-    let end = settle(view, cx, &SettleOrigin::of_settle(&op), InFlight::none())?;
-    match end {
+    // Changed by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.3): the rows of the
+    // settle job take the class of B.6 row 9, also when a record end stops the settle. The text
+    // before:
+    // let end = settle(view, cx, &SettleOrigin::of_settle(&op), InFlight::none())?;
+    // match end {
+    let start = cx.staged_rows();
+    let end = settle(view, cx, &SettleOrigin::of_settle(&op), InFlight::none());
+    cx.settle_rows(start, false);
+    match end? {
         SettleEnd::Quiescent => Ok(None),
         SettleEnd::Reissue(cause) => Ok(Some(cx.reissue(SpaceOp::Settle(op), cause))),
+    }
+}
+
+/// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): the tail read of a head
+/// row of a discipline that settles: the first step of [`settle`] in the order of `settle_view`,
+/// over the store view `view`, from the element in flight `in_flight`, with the fire count
+/// `fired` (the table of ADD A2.8). It runs `next_fire` and the form check of the loop, and it
+/// stages nothing. The step that follows is `land`, the round cap or a fire. `Ends` means that
+/// no step follows, `Reissues` that the cap re-issues with nothing to land, and `Stages` that
+/// one more step follows, whether it stages or fails (CR-31). An error of a read fails the read,
+/// as it fails the loop.
+pub(crate) fn tail_read<S: SettleView, V: StoreView>(
+    settle_view: &S,
+    view: &mut V,
+    in_flight: &InFlight,
+    fired: usize,
+) -> Result<TailRead, SpaceError> {
+    let Some(plan) = settle_view.next_fire(view, in_flight)? else {
+        return match in_flight.is_some() {
+            false => Ok(TailRead::Ends),
+            true => Ok(TailRead::Stages),
+        };
+    };
+    plan.into_channel_fire()?;
+    match (in_flight.is_some(), fired >= FIRE_ROUND_CAP) {
+        (true, _) => Ok(TailRead::Stages),
+        (false, false) => Ok(TailRead::Stages),
+        (false, true) => Ok(TailRead::Reissues),
     }
 }
 
@@ -625,6 +781,26 @@ pub fn reissued_operation(op: OpView<'_>, bumped: Option<i64>) -> SpaceOp {
     }
 }
 
+/// Added by decision 124 (plan v4 C7.11, rule CR-31, rulings RADD2 1.1 and RADD2v2 6.1): the
+/// operation `op` again with no order, as a plan of a collection whose records hold the order 0
+/// re-issues an element that did not settle: a produce and a consume carry no order (decision
+/// 43), so the record keeps its identity. The plans and the tail read of such a row, and E4.5
+/// at the lift of a cascade, build their re-issue with it, so the rule has one text.
+pub fn reissued_without_order(op: SpaceOp) -> SpaceOp {
+    match op {
+        SpaceOp::Produce(op) => SpaceOp::Produce(ProduceOp {
+            reissued_ord: None,
+            ..op
+        }),
+        SpaceOp::Consume(op) => SpaceOp::Consume(ConsumeOp {
+            reissued_ord: None,
+            ..op
+        }),
+        SpaceOp::Settle(op) => SpaceOp::Settle(op),
+        SpaceOp::Join(op) => SpaceOp::Join(op),
+    }
+}
+
 /// The settle job that continues the settle after the operation `op`: the space, the key and
 /// the channel of the operation, its random state, its cost authority and its introduction
 /// authority. The settle job bumps the counter with this random state and these authorities,
@@ -655,6 +831,31 @@ pub fn settle_operation(op: OpView<'_>) -> SettleOp {
     }
 }
 
+/// The produce that re-issues a restored record whose payload is `payload`: the collection and
+/// the channel of the receive `op`, not persistent, no params, the authority of the record, and
+/// no carried order. Its record is the restored record, because the `ord` of a discipline
+/// without a counter is 0. Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD2 1.3):
+/// shared here, so the restore rule of a discipline and the finish of a deviating commit (C2
+/// E4.5) re-issue the second send of Rule E in one form.
+pub fn restored_send(op: &ConsumeOp, payload: ListParWithRandom) -> Result<ProduceOp, SpaceError> {
+    let key = CollectionKey::from_bytes(op.key.as_bytes().to_vec())
+        .ok_or(SpaceError::Inconsistent("a collection key is empty"))?;
+    let authority = match &payload.cost_authority {
+        Some(authority) => authority.clone(),
+        None => CostAuthority::default(),
+    };
+    Ok(ProduceOp {
+        space: op.space,
+        key,
+        channel: op.channel.clone(),
+        data: payload,
+        persistent: false,
+        params: BTreeMap::new(),
+        authority,
+        reissued_ord: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -663,11 +864,16 @@ mod tests {
     use models::rhoapi::{CostRegion, EList, Expr};
     use models::rust::utils::{new_freevar_par, new_gstring_par};
     use rspace_plus_plus::rspace::r#match::Match;
+    // Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): the store view of the
+    // test of the tail read names the source of an operation.
+    use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationSource;
     use rspace_plus_plus::rspace::trace::event::{Consume, Produce};
 
     use super::*;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::spaces::agent::QueryParams;
+    // Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): see the view above.
+    use crate::rust::interpreter::spaces::generic::StoredMatch;
     use crate::rust::interpreter::spaces::namespace::{
         CollectionKey, Durability, NativeSpace, SID_LEN,
     };
@@ -686,6 +892,10 @@ mod tests {
             regions: vec![CostRegion {
                 instance_id: vec![byte; 32],
                 signature: None,
+                // Added by decision 90 (DR-135): an unpriced region, as outside native
+                // execution.
+                price: 0,
+                caller: None,
             }],
         }
     }
@@ -888,6 +1098,69 @@ mod tests {
         );
     }
 
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD2v2 6.1): the moved rule of the
+    /// plans of a collection whose records hold the order 0. A produce and a consume lose their
+    /// order and keep every other field, and a settle job stays as it is.
+    #[test]
+    fn reissued_without_order_keeps_the_identity_of_the_operation() {
+        for persistent in [false, true] {
+            let produce = produce_op(persistent, Some(4));
+            assert_eq!(
+                reissued_without_order(SpaceOp::Produce(produce.clone())),
+                SpaceOp::Produce(ProduceOp {
+                    reissued_ord: None,
+                    ..produce
+                })
+            );
+            let consume = consume_op(persistent, Some(4));
+            assert_eq!(
+                reissued_without_order(SpaceOp::Consume(consume.clone())),
+                SpaceOp::Consume(ConsumeOp {
+                    reissued_ord: None,
+                    ..consume
+                })
+            );
+        }
+        let settle = SpaceOp::Settle(settle_operation(OpView::Produce(&produce_op(false, None))));
+        assert_eq!(reissued_without_order(settle.clone()), settle);
+    }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD2 1.3): the send that
+    /// re-issues a restored record moved here from the scan discipline unchanged. For a consume
+    /// that is persistent or not, it is the send of the payload on the collection and the channel
+    /// of the consume, not persistent, with no params, the authority of the record and no carried
+    /// order. A payload without an authority takes the default authority.
+    #[test]
+    fn restored_send_moved_unchanged() {
+        for persistent in [false, true] {
+            for (cost_authority, authority) in [
+                (Some(region(8)), region(8)),
+                (None, CostAuthority::default()),
+            ] {
+                let payload = ListParWithRandom {
+                    pars: vec![int(5)],
+                    random_state: vec![1, 2, 3],
+                    cost_authority,
+                    cost_stack: None,
+                };
+                assert_eq!(
+                    restored_send(&consume_op(persistent, Some(4)), payload.clone())
+                        .expect("the collection key of the consume is not empty"),
+                    ProduceOp {
+                        space: SPACE,
+                        key: key(),
+                        channel: channel(),
+                        data: payload,
+                        persistent: false,
+                        params: BTreeMap::new(),
+                        authority,
+                        reissued_ord: None,
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn space_settle_operation_carries_the_settle_inputs_of_its_operation() {
         let produce = produce_op(true, Some(1));
@@ -984,5 +1257,483 @@ mod tests {
         assert_eq!(taken.datum.source, datum.source);
         assert!(!in_flight.is_some(), "taking leaves nothing in flight");
         assert!(!InFlight::default().is_some());
+    }
+
+    // ── Decision 124: the machinery shape and the machinery seal of a lift ─────────────────
+
+    // Added by decision 124 (plan v2 C7.5 and C7.10, decision 99): the check of the lift seal
+    // runs a stack space, whose settle lifts, and reads its event log. SETTLE has no agent
+    // harness, so the helpers of that check follow those of the stack tests.
+    use std::sync::Arc;
+
+    use models::rhoapi::cost_signature::Value as CostSignatureValue;
+    use models::rhoapi::CostSignature;
+    use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
+    use rspace_plus_plus::rspace::rspace::RSpace;
+    use rspace_plus_plus::rspace::rspace_interface::ISpace;
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;
+    use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+
+    // Added by decision 124 (plan v2 C7.5 and C7.10, decision 99): the check of the machinery
+    // shape builds a `K_retire` waiter, and the check of the lift seal builds the seal.
+    use crate::rust::interpreter::accounting::authority::system_residue_authority_with_caller;
+    use crate::rust::interpreter::accounting::costs::Cost;
+    use crate::rust::interpreter::accounting::RuntimeBudget;
+    use crate::rust::interpreter::spaces::agent::{run_op, SpaceAgent, SpaceCreation, SpaceEnv};
+    use crate::rust::interpreter::spaces::disciplines::scan::{
+        retire_continuation, retire_pattern,
+    };
+    use crate::rust::interpreter::spaces::disciplines::stack::StackDiscipline;
+    use crate::rust::interpreter::spaces::generic::{
+        CollectionChannels, Discipline, GenericSpace, OuterStore,
+    };
+    use crate::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
+    use crate::rust::interpreter::spaces::types::config::SpaceConfig;
+    use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
+
+    /// Added by decision 124 (plan v2 C7.10, RC2v2 m-9): `machinery_shape` is true for a
+    /// `K_retire` waiter and a `K_lift` waiter. It is false for a user waiter whose receive has
+    /// only a remainder, with a PQ level record or with a VectorDB policy record, and for a join
+    /// waiter.
+    #[test]
+    fn machinery_shape_needs_a_machinery_body() {
+        let waiter = |patterns: Vec<BindPattern>, continuation: TaggedContinuation| ParWaiter {
+            source: Consume::create(
+                &vec![channel(); patterns.len()],
+                &patterns,
+                &continuation,
+                false,
+            ),
+            patterns,
+            continuation,
+            persist: false,
+            peeks: Default::default(),
+        };
+        let random = Blake2b512Random::create_from_bytes(b"machinery shape");
+        let member = Produce::create(&channel(), &record_of(1, vec![int(1)]), false);
+        let retire = retire_continuation(&member.hash, &random, None);
+        assert!(machinery_shape(&waiter(vec![retire_pattern()], retire)));
+        let lift = lift_continuation(1, 2, &random, None);
+        assert!(machinery_shape(&waiter(vec![lift_pattern()], lift)));
+        // A receive with only a remainder has the pattern of a `K_retire` and of a `K_lift`.
+        let user = TaggedContinuation {
+            tagged_cont: Some(TaggedCont::ParBody(ParWithRandom {
+                body: Some(string("body")),
+                random_state: vec![4, 5],
+            })),
+            guard: None,
+            cost_authority: None,
+        };
+        let leveled = record::wrap_pq_continuation(0, Some(1), &user).expect("a PQ level record");
+        assert!(!machinery_shape(&waiter(vec![lift_pattern()], leveled)));
+        let query =
+            record::WaiterPolicy::Query(Box::new(BTreeMap::from([("k".to_string(), int(2))])));
+        let queried =
+            record::wrap_policy_continuation(0, &query, &user).expect("a VectorDB policy record");
+        assert!(!machinery_shape(&waiter(vec![lift_pattern()], queried)));
+        let slots = [
+            record::JoinSlot {
+                ord: 0,
+                bind: 0,
+                policy: record::WaiterPolicy::None,
+            },
+            record::JoinSlot {
+                ord: 0,
+                bind: 1,
+                policy: record::WaiterPolicy::None,
+            },
+        ];
+        let join = record::wrap_join_continuation(&slots, &user).expect("a join record");
+        assert!(!machinery_shape(&waiter(vec![lift_pattern(); 2], join)));
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): the stack space of the check of the
+    /// lift seal.
+    type Stack = GenericSpace<HashMapOuter, StackDiscipline>;
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): the in-memory play space of the check
+    /// of the lift seal.
+    type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): an unpriced region with a ground
+    /// signature, so its system residue builds. The region of `region` has no signature.
+    fn signed_region(byte: u8) -> CostAuthority {
+        CostAuthority {
+            regions: vec![CostRegion {
+                instance_id: vec![byte; 32],
+                signature: Some(CostSignature {
+                    value: Some(CostSignatureValue::Ground(vec![byte])),
+                }),
+                price: 0,
+                caller: None,
+            }],
+        }
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): the channels of the collection.
+    fn channels() -> CollectionChannels { CollectionChannels::new(&HashMapOuter, SPACE, &key()) }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): the body `name`, with a random state of
+    /// its own.
+    fn named(name: &str) -> ParWithRandom {
+        ParWithRandom {
+            body: Some(string(name)),
+            random_state: Blake2b512Random::create_from_bytes(name.as_bytes()).to_bytes(),
+        }
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): a fresh stack space over an in-memory
+    /// play space, with an empty event log.
+    async fn stack_fixture() -> (ParRSpace, SpaceEnv) {
+        let mut stores = InMemoryStoreManager::new();
+        let space = ParRSpace::create(
+            stores.r_space_stores().await.expect("in-memory stores"),
+            Arc::new(Box::new(Matcher)),
+        )
+        .expect("an in-memory space");
+        let env = SpaceEnv {
+            store: SpaceStoreHandle::new(space.clone()),
+            budget: RuntimeBudget::new(Cost::create(1_000_000, "settle agent test")),
+            volatile: Default::default(),
+            origin: Default::default(),
+        };
+        let config = SpaceConfig::new(
+            SPACE.sid,
+            HashMapOuter::NAME,
+            StackDiscipline::NAME,
+            SpaceQualifier::Default,
+        )
+        .to_par();
+        Stack::default()
+            .prepare_create(&env, SpaceCreation {
+                space: SPACE,
+                config,
+                handle_pattern: BindPattern {
+                    patterns: Vec::new(),
+                    remainder: Some(new_freevar_var(0)),
+                    free_count: 1,
+                },
+                handle_continuation: TaggedContinuation {
+                    tagged_cont: Some(TaggedCont::ParBody(named("handle"))),
+                    guard: None,
+                    cost_authority: None,
+                },
+                random: Blake2b512Random::create_from_bytes(b"settle factory call"),
+                authority: CostAuthority::default(),
+                family: SpaceFactoryUrn {
+                    outer: SpaceOuter::HashMap,
+                    inner: SpaceInner::Stack,
+                },
+            })
+            .await
+            .expect("the creation stages")
+            .commit()
+            .await
+            .expect("the creation commits");
+        space.take_event_log().await;
+        (space, env)
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): a send of `value` with no cost
+    /// authority.
+    fn stack_send(value: i64) -> ProduceOp {
+        ProduceOp {
+            space: SPACE,
+            key: key(),
+            channel: channel(),
+            data: ListParWithRandom {
+                pars: vec![int(value)],
+                random_state: Blake2b512Random::create_from_bytes(
+                    format!("settle send {value}").as_bytes(),
+                )
+                .to_bytes(),
+                cost_authority: None,
+                cost_stack: None,
+            },
+            persistent: false,
+            params: BTreeMap::new(),
+            authority: CostAuthority::default(),
+            reissued_ord: None,
+        }
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): the pattern that binds `value` only.
+    fn exactly(value: i64) -> BindPattern {
+        BindPattern {
+            patterns: vec![int(value)],
+            remainder: None,
+            free_count: 0,
+        }
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): a receive of `pattern` with the body
+    /// `name`.
+    fn stack_receive(name: &str, pattern: BindPattern) -> ConsumeOp {
+        ConsumeOp {
+            space: SPACE,
+            key: key(),
+            channel: channel(),
+            pattern,
+            body: named(name),
+            persistent: false,
+            peek: false,
+            guard: None,
+            query: None,
+            authority: CostAuthority::default(),
+            introduction_authority: CostAuthority::default(),
+            reissued_ord: None,
+        }
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): runs `op` on the stack space, and the
+    /// operation commits.
+    async fn stack_run(env: &SpaceEnv, op: SpaceOp) {
+        run_op(&Stack::default(), env, op)
+            .await
+            .expect("the operation commits");
+    }
+
+    /// Added by decision 124 (plan v2 C7.5, decision 99): the `K_lift` of a lift carries the
+    /// machinery seal of the authority of its operation, an authority with a region. W2(1) and
+    /// W(2) park, h(1) is stored under the top waiter W, and the send d(2), whose datum carries
+    /// the authority, fires W. The settle after the plan lifts h with the counter value 3 of the
+    /// round of d and the step 1.
+    #[tokio::test]
+    async fn settle_lift_takes_the_seal() {
+        let (space, env) = stack_fixture().await;
+        stack_run(&env, SpaceOp::Consume(stack_receive("w2", exactly(1)))).await;
+        stack_run(&env, SpaceOp::Consume(stack_receive("w", exactly(2)))).await;
+        stack_run(&env, SpaceOp::Produce(stack_send(1))).await;
+        let authority = signed_region(2);
+        let seal = system_residue_authority_with_caller(&authority, &env.budget.deploy_id(), None)
+            .expect("the residue of a signed region");
+        let d = ProduceOp {
+            data: ListParWithRandom {
+                cost_authority: Some(authority),
+                ..stack_send(2).data
+            },
+            ..stack_send(2)
+        };
+        let random =
+            RandomPurpose::Lift.derive(&Blake2b512Random::from_bytes(&d.data.random_state));
+        space.take_event_log().await;
+        stack_run(&env, SpaceOp::Produce(d)).await;
+        let k_lift = Consume::create(
+            &vec![channels().data().clone()],
+            &vec![lift_pattern()],
+            &lift_continuation(3, 1, &random, Some(seal)),
+            false,
+        );
+        let log = space.take_event_log().await;
+        assert!(
+            log.contains(&Event::IoEvent(IOEvent::Consume(k_lift))),
+            "the lift stages K_lift with the seal"
+        );
+    }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): the answer of the next
+    /// fire of a scripted settle.
+    type SettleScript = fn() -> Result<Option<FirePlan>, SpaceError>;
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): a settle view whose
+    /// next fire answers from the script. It reads no store.
+    struct ScriptedSettle(SettleScript);
+
+    impl SettleView for ScriptedSettle {
+        type Discipline = StackDiscipline;
+
+        fn next_fire<V: StoreView>(
+            &self,
+            _view: &mut V,
+            _in_flight: &InFlight,
+        ) -> Result<Option<FirePlan>, SpaceError> {
+            (self.0)()
+        }
+    }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): a read of the store
+    /// view, which the scripted settle does not make.
+    fn unread<T>() -> Result<T, SpaceError> { Err(SpaceError::Inconsistent("an unexpected read")) }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): a store view that the
+    /// scripted settle does not read.
+    struct UnreadView;
+
+    impl StoreView for UnreadView {
+        fn data_on(&mut self, _channel: &Par) -> Result<&[ParDatum], SpaceError> { unread() }
+
+        fn waiters_on(&mut self, _channel: &Par) -> Result<&[ParWaiter], SpaceError> { unread() }
+
+        fn joins_on(&mut self, _channel: &Par) -> Result<&[Vec<Par>], SpaceError> { unread() }
+
+        fn group_waiters(&mut self, _group: &[Par]) -> Result<&[ParWaiter], SpaceError> { unread() }
+
+        fn canonical_data_order(&mut self, _channel: &Par) -> Result<Vec<usize>, SpaceError> {
+            unread()
+        }
+
+        fn pick_data_order(
+            &mut self,
+            _channel: &Par,
+            _source: RSpaceOperationSource<'_>,
+        ) -> Result<Vec<usize>, SpaceError> {
+            unread()
+        }
+
+        fn pick_data_order_with(
+            &mut self,
+            _channel: &Par,
+            _extra: &ParDatum,
+            _source: RSpaceOperationSource<'_>,
+        ) -> Result<Vec<usize>, SpaceError> {
+            unread()
+        }
+
+        fn bind(
+            &self,
+            _pattern: &BindPattern,
+            _data: &ListParWithRandom,
+        ) -> Option<ListParWithRandom> {
+            None
+        }
+
+        fn bind_item(
+            &self,
+            _pattern: &BindPattern,
+            _data: &ListParWithRandom,
+            _persist: bool,
+        ) -> Result<Option<ListParWithRandom>, SpaceError> {
+            unread()
+        }
+
+        fn has_theory(&self) -> bool { false }
+
+        fn tests_items(&self) -> bool { false }
+
+        fn admits_all(
+            &mut self,
+            _continuation: &TaggedContinuation,
+            _matched: &[ListParWithRandom],
+            _stored: &[StoredMatch<'_>],
+        ) -> Result<bool, SpaceError> {
+            unread()
+        }
+
+        fn admits_records<T>(
+            &mut self,
+            _continuation: &TaggedContinuation,
+            _matched: &ListParWithRandom,
+            _members: &[T],
+            _stored: impl Fn(&T) -> Option<&ListParWithRandom>,
+            _payload_of: fn(&ListParWithRandom) -> Result<ListParWithRandom, SpaceError>,
+        ) -> Result<bool, SpaceError> {
+            unread()
+        }
+
+        fn theory_admits(&self, _stored: &[StoredMatch<'_>]) -> Result<bool, SpaceError> {
+            unread()
+        }
+
+        fn booked(&self, _record: &Produce, _waiter: &Consume) -> bool { false }
+
+        fn data_channel(&self) -> Result<&Par, SpaceError> { unread() }
+
+        fn data(&mut self) -> Result<&[ParDatum], SpaceError> { unread() }
+
+        fn waiters(&mut self) -> Result<&[ParWaiter], SpaceError> { unread() }
+    }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): the stored record of
+    /// a planned fire, which also serves as the record in flight.
+    fn planned_record() -> ParDatum {
+        let record = record_of(3, vec![int(1)]);
+        let source = Produce::create(&channel(), &record, false);
+        ParDatum {
+            a: record,
+            persist: false,
+            source,
+        }
+    }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): a plan of one fire
+    /// that binds `record`.
+    fn plan_of(record: BoundRecord) -> FirePlan {
+        FirePlan {
+            group: vec![channel()],
+            waiter: waiter_of(1),
+            bound: vec![Bound {
+                record,
+                matched: ListParWithRandom::default(),
+            }],
+        }
+    }
+
+    /// Added by decision 124 (plan v4 C7.11, rule CR-31, ruling RADD 1.4): the tail read of a
+    /// head row answers the first step of the settle loop by the table of ADD A2.8. A read that
+    /// fails and a plan that the loop refuses fail it, as they fail the loop.
+    #[test]
+    fn settle_tail_read_follows_the_a2_8_table() {
+        let no_plan: SettleScript = || Ok(None);
+        let binds_stored: SettleScript = || {
+            Ok(Some(plan_of(BoundRecord::Stored {
+                datum: planned_record(),
+                view_index: 0,
+            })))
+        };
+        let binds_flying: SettleScript = || Ok(Some(plan_of(BoundRecord::InFlight)));
+        for (script, flying, fired, expected) in [
+            // No plan and nothing in flight: the loop ends.
+            (no_plan, false, 0, TailRead::Ends),
+            // No plan and a record in flight: `land` stores it.
+            (no_plan, true, 0, TailRead::Stages),
+            // A stored record bound with a record in flight: `land`, then the loop plans again.
+            (binds_stored, true, 0, TailRead::Stages),
+            // The cap with nothing in flight: the loop re-issues and stages nothing.
+            (binds_stored, false, FIRE_ROUND_CAP, TailRead::Reissues),
+            // The cap with a record in flight: `land` stores it before the re-issue.
+            (binds_flying, true, FIRE_ROUND_CAP, TailRead::Stages),
+            // A fire below the cap.
+            (binds_stored, false, 0, TailRead::Stages),
+            (binds_stored, false, FIRE_ROUND_CAP - 1, TailRead::Stages),
+            (binds_flying, true, 0, TailRead::Stages),
+        ] {
+            let element = match flying {
+                false => InFlight::none(),
+                true => InFlight::lifted(Lifted {
+                    channel: channel(),
+                    datum: planned_record(),
+                }),
+            };
+            assert_eq!(
+                tail_read(&ScriptedSettle(script), &mut UnreadView, &element, fired),
+                Ok(expected),
+                "a record in flight: {flying}, fires before: {fired}"
+            );
+        }
+        // The form check of the loop fails the read, and so does a read that fails.
+        let malformed: SettleScript = || {
+            Ok(Some(FirePlan {
+                group: vec![channel(); 2],
+                waiter: waiter_of(2),
+                bound: vec![bound(), bound()],
+            }))
+        };
+        let failing: SettleScript = || Err(SpaceError::Inconsistent("a read of the settle fails"));
+        for (script, error) in [
+            (malformed, "a settle fire binds one record on one channel"),
+            (failing, "a read of the settle fails"),
+        ] {
+            assert_eq!(
+                tail_read(
+                    &ScriptedSettle(script),
+                    &mut UnreadView,
+                    &InFlight::none(),
+                    0
+                ),
+                Err(SpaceError::Inconsistent(error))
+            );
+        }
     }
 }

@@ -9,13 +9,16 @@ use std::collections::HashSet;
 use block_storage::rust::dag::block_dag_key_value_storage::{
     DeployId, InsertMode, KeyValueDagRepresentation,
 };
+// Added by DR-134 (DR-66): a pending deploy is a legacy deploy or an offered
+// envelope.
+use block_storage::rust::deploy::key_value_deploy_storage::PendingDeployCandidate;
 use comm::rust::transport::transport_layer::TransportLayer;
 use crypto::rust::signatures::signed::Signed;
 use models::rust::block_hash::{BlockHash, BlockHashSerde};
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData};
 use models::rust::deploy_envelope::{DeployEnvelope, DeployEnvelopeFormat};
-use models::rust::normalizer_env::{normalizer_env_from_deploy, normalizer_env_from_envelope};
+use models::rust::normalizer_env::normalizer_env_from_envelope;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -55,57 +58,35 @@ pub(crate) fn admit_buffer_contains<T: TransportLayer + Send + Sync>(
     this.casper_buffer_storage.contains(&block_hash_serde)
 }
 
+pub(crate) fn admit_buffer_waits_on_dependency<T: TransportLayer + Send + Sync>(
+    this: &MultiParentCasperImpl<T>,
+    hash: &BlockHash,
+) -> bool {
+    this.casper_buffer_storage
+        .get_parents(&BlockHashSerde(hash.clone()))
+        .is_some_and(|parents| {
+            parents
+                .iter()
+                .any(|parent| !admit_dag_contains(this, &BlockHash::from(parent.0.clone())))
+        })
+}
+
 pub(crate) fn admit_get_approved_block<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
 ) -> Result<&BlockMessage, CasperError> {
     Ok(&this.approved_block)
 }
 
+// Changed by DR-134 (DR-66 items 2 and 5): only offered-funded deploys are
+// accepted, on every shard. A body-only deploy is refused before any check;
+// the body-only admission of the legacy meter is deleted.
 pub(crate) fn admit_deploy<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    deploy: Signed<DeployData>,
+    _this: &MultiParentCasperImpl<T>,
+    _deploy: Signed<DeployData>,
 ) -> Result<Either<DeployError, DeployId>, CasperError> {
-    if this.offered_funded_active {
-        return Err(CasperError::RuntimeError(
-            "new deploys require offered-funded cost accounting".to_string(),
-        ));
-    }
-    let deploy_id = deploy.sig.to_vec();
-    // This fast path avoids parsing known deploys; reserve_deploy performs the authoritative check.
-    if deploy_is_known(this, &deploy_id)? {
-        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
-    }
-
-    // Create normalizer environment from deploy
-    let normalizer_env = normalizer_env_from_deploy(&deploy);
-    let parse_started_at = std::time::Instant::now();
-
-    // Try to parse the deploy term
-    match interpreter_util::mk_term(&deploy.data.term, normalizer_env) {
-        Err(interpreter_error) => {
-            tracing::debug!(
-                target: "f1r3fly.casper.deploy.timing",
-                parse_ms = parse_started_at.elapsed().as_millis(),
-                "Deploy parse failed"
-            );
-            Ok(Either::Left(DeployError::parsing_error(format!(
-                "Error in parsing term: \n{}",
-                interpreter_error
-            ))))
-        }
-        Ok(_parsed_term) => {
-            let parse_elapsed_ms = parse_started_at.elapsed().as_millis();
-            let add_started_at = std::time::Instant::now();
-            let deploy_result = add_deploy(this, deploy)?;
-            tracing::debug!(
-                target: "f1r3fly.casper.deploy.timing",
-                parse_ms = parse_elapsed_ms,
-                add_deploy_ms = add_started_at.elapsed().as_millis(),
-                "Deploy parse/add completed"
-            );
-            Ok(deploy_result)
-        }
-    }
+    Err(CasperError::RuntimeError(
+        "new deploys require offered-funded cost accounting".to_string(),
+    ))
 }
 
 pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
@@ -141,7 +122,8 @@ pub(crate) fn admit_deploy_envelope<T: TransportLayer + Send + Sync>(
     if deploy_is_known(this, &deploy_id)? {
         return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
     }
-    let normalizer_env = normalizer_env_from_envelope(&envelope);
+    let normalizer_env = normalizer_env_from_envelope(&envelope)
+        .map_err(|error| CasperError::RuntimeError(error.to_string()))?;
     if let Err(interpreter_error) = interpreter_util::mk_term(&envelope.body().term, normalizer_env)
     {
         return Ok(Either::Left(DeployError::parsing_error(format!(
@@ -184,34 +166,9 @@ fn deploy_is_known<T: TransportLayer + Send + Sync>(
         return Ok(true);
     }
     this.rejected_deploy_buffer
-        .lock()
-        .map_err(|error| CasperError::LockError(error.to_string()))?
+        .lock()?
         .contains_sig(deploy_id)
         .map_err(Into::into)
-}
-
-fn reserve_deploy<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    deploy: Signed<DeployData>,
-) -> Result<bool, CasperError> {
-    let deploy_id = deploy.sig.to_vec();
-    if this
-        .block_dag_storage
-        .deploy_canonical_appearance(&deploy_id)?
-        .is_some()
-    {
-        return Ok(false);
-    }
-
-    let mut deploy_storage = this.deploy_storage.lock();
-    let rejected_deploys = this
-        .rejected_deploy_buffer
-        .lock()
-        .map_err(|error| CasperError::LockError(error.to_string()))?;
-    if rejected_deploys.contains_sig(&deploy_id)? {
-        return Ok(false);
-    }
-    deploy_storage.add_if_absent(deploy).map_err(Into::into)
 }
 
 pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
@@ -228,6 +185,7 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     // finalization_runner), so an accepted-but-orphaned deploy can be
     // re-proposed via the canonical-won record before it is lost.
     let block_hash_serde = BlockHashSerde(block.block_hash.clone());
+    let insert_start = std::time::Instant::now();
     let updated_dag = block_storage::rust::dag::buffer_dag_transition::atomic_insert_then_buffer(
         &this.block_dag_storage,
         block,
@@ -237,6 +195,15 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
             block_hash_serde,
         ),
     )?;
+    let insert_ms = insert_start.elapsed().as_millis();
+    if insert_ms >= 1_000 {
+        tracing::warn!(
+            target: "f1r3fly.casper.lifecycle.timing",
+            "DAG insert slow: block_number={}, insert_ms={}",
+            block.body.state.block_number,
+            insert_ms
+        );
+    }
     record_dag_cardinality_metrics(&updated_dag);
 
     // Advance the deploy-lifecycle register: the insert above already
@@ -296,35 +263,6 @@ pub(crate) async fn admit_handle_valid_block<T: TransportLayer + Send + Sync>(
     Ok(updated_dag)
 }
 
-pub(crate) fn add_deploy<T: TransportLayer + Send + Sync>(
-    this: &MultiParentCasperImpl<T>,
-    deploy: Signed<DeployData>,
-) -> Result<Either<DeployError, DeployId>, CasperError> {
-    let deploy_id = deploy.sig.to_vec();
-    if !reserve_deploy(this, deploy.clone())? {
-        return Ok(Either::Left(DeployError::duplicate_deploy(deploy_id)));
-    }
-
-    // Log the received deploy
-    let deploy_info = PrettyPrinter::build_string_signed_deploy_data(&deploy);
-    tracing::info!("Received {}", deploy_info);
-
-    // Wake the heartbeat immediately so it picks up the new deploy without
-    // waiting for the next timer tick (up to check_interval seconds).
-    // Phase 8 (C-4): operator-controlled via CasperShardConf rather than a
-    // hardcoded predicate.
-    if this.casper_shard_conf.deploy_heartbeat_wake_enabled {
-        if let Some(signal) = this.heartbeat_signal_ref.get() {
-            tracing::debug!("Triggering heartbeat wake for immediate block proposal");
-            signal.trigger_wake();
-        } else {
-            tracing::debug!("No heartbeat signal available (heartbeat may be disabled)");
-        }
-    }
-
-    Ok(Either::Right(deploy_id))
-}
-
 fn stored_deploy_is_pending_for_snapshot(
     snapshot: &CasperSnapshot,
     latest_block_number: i64,
@@ -373,6 +311,28 @@ fn stored_deploy_is_queued(
 
     let already_in_scope = snapshot.deploys_in_scope.contains(&deploy.sig)
         && !snapshot.rejected_in_scope.contains(&deploy.sig);
+    !already_in_scope
+}
+
+/// Added by DR-134 (DR-66): `stored_deploy_is_queued` for an offered
+/// envelope. An envelope keys the scope by its deploy id, as the block creator
+/// does.
+fn stored_envelope_is_queued(
+    snapshot: &CasperSnapshot,
+    earliest_block_number: i64,
+    current_time_millis: i64,
+    envelope: &DeployEnvelope,
+) -> bool {
+    let body = envelope.body();
+    let block_expired = body.valid_after_block_number <= earliest_block_number;
+    let time_expired = body.is_expired_at(current_time_millis);
+    if block_expired || time_expired {
+        return false;
+    }
+
+    let identity = Bytes::copy_from_slice(envelope.identity().as_bytes());
+    let already_in_scope = snapshot.deploys_in_scope.contains(&identity)
+        && !snapshot.rejected_in_scope.contains(&identity);
     !already_in_scope
 }
 
@@ -446,9 +406,14 @@ pub(crate) async fn admit_has_pending_deploys_in_storage_for_snapshot<
 /// ahead of the tip, a block-expired one, and a time-expired one are each
 /// excluded. A signature that sits in both pools is emitted once, with
 /// `is_rejected = true` (the buffer dedups storage in its first clause).
+// Changed by DR-134 (DR-66): the listing returns legacy deploys and offered
+// envelopes; on protocol 6 the pool holds only offered envelopes.
+// pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
+//     this: &MultiParentCasperImpl<T>,
+// ) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
 pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
     this: &MultiParentCasperImpl<T>,
-) -> Result<Vec<(Signed<DeployData>, bool)>, CasperError> {
+) -> Result<Vec<(PendingDeployCandidate, bool)>, CasperError> {
     let snapshot = this.get_snapshot().await?;
     let latest_block_number = snapshot.dag.latest_block_number();
     let earliest_block_number = crate::rust::util::deploy_window::earliest_valid_after(
@@ -468,15 +433,16 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
 
     let rejected = this
         .rejected_deploy_buffer
-        .lock()
-        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .lock()?
         .read_all()
         .map_err(|e| {
             CasperError::RuntimeError(format!("Failed to read rejected deploy buffer: {:?}", e))
         })?;
     let buffered_sigs: HashSet<Bytes> = rejected.iter().map(|d| d.sig.clone()).collect();
 
-    let mut out: Vec<(Signed<DeployData>, bool)> = Vec::with_capacity(rejected.len());
+    // Changed by DR-134 (DR-66): the entries carry both formats.
+    // let mut out: Vec<(Signed<DeployData>, bool)> = Vec::with_capacity(rejected.len());
+    let mut out: Vec<(PendingDeployCandidate, bool)> = Vec::with_capacity(rejected.len());
 
     let fresh = this.deploy_storage.lock().read_all().map_err(|e| {
         CasperError::RuntimeError(format!("Failed to read deploy storage: {:?}", e))
@@ -491,7 +457,9 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((deploy, false));
+            // Changed by DR-134 (DR-66).
+            // out.push((deploy, false));
+            out.push((PendingDeployCandidate::Legacy(deploy), false));
         }
     }
 
@@ -507,7 +475,63 @@ pub(crate) async fn admit_list_pending_deploys<T: TransportLayer + Send + Sync>(
             current_time_millis,
             &deploy,
         ) {
-            out.push((deploy, true));
+            // Changed by DR-134 (DR-66).
+            // out.push((deploy, true));
+            out.push((PendingDeployCandidate::Legacy(deploy), true));
+        }
+    }
+
+    // Added by DR-134 (DR-66): the offered envelopes of both pools, under the
+    // rules of the legacy deploys above. An envelope in both pools is emitted
+    // once, as rejected.
+    let envelope_limits = models::rust::cost_protocol_limits::offered_funded_v6_limits().envelope;
+    let rejected_envelopes = this
+        .rejected_deploy_buffer
+        .lock()
+        .map_err(|e| CasperError::LockError(e.to_string()))?
+        .read_all_envelopes(envelope_limits)
+        .map_err(|e| {
+            CasperError::RuntimeError(format!(
+                "Failed to read rejected deploy buffer envelopes: {:?}",
+                e
+            ))
+        })?;
+    let buffered_ids: HashSet<Vec<u8>> = rejected_envelopes
+        .iter()
+        .map(|envelope| envelope.identity().as_bytes().to_vec())
+        .collect();
+    let fresh_envelopes = this
+        .deploy_storage
+        .lock()
+        .read_all_envelopes(envelope_limits)
+        .map_err(|e| {
+            CasperError::RuntimeError(format!("Failed to read deploy storage envelopes: {:?}", e))
+        })?;
+    out.reserve(fresh_envelopes.len() + rejected_envelopes.len());
+    for candidate in fresh_envelopes {
+        let PendingDeployCandidate::Envelope(envelope) = candidate else {
+            continue;
+        };
+        if buffered_ids.contains(envelope.identity().as_bytes()) {
+            continue;
+        }
+        if stored_envelope_is_queued(
+            &snapshot,
+            earliest_block_number,
+            current_time_millis,
+            &envelope,
+        ) {
+            out.push((PendingDeployCandidate::Envelope(envelope), false));
+        }
+    }
+    for envelope in rejected_envelopes {
+        if stored_envelope_is_queued(
+            &snapshot,
+            earliest_block_number,
+            current_time_millis,
+            &envelope,
+        ) {
+            out.push((PendingDeployCandidate::Envelope(envelope), true));
         }
     }
 

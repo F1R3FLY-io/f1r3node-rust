@@ -61,19 +61,19 @@
                             earlier index on a tie, and Best::challenge)
    reaches_head             spaces/disciplines/queue.rs:62 (queued == 0)
    fire_round_cap, after_fire
-                            reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP =
+                            reified/costs.rs:17, 71-82 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
-   offer, offer_loop        spaces/generic.rs:1723-1791 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:3812-3899 (offer_head, the
                             head driver of Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:1800-1884 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:3908-4020 (receive_head, the
                             head driver of Discipline::receive. The row of
                             code_ops covers its re-store of decision 45.)
-   head_waiter, head_record spaces/generic.rs:1001-1017, 1021-1034, 1038-1049
+   head_waiter, head_record spaces/generic.rs:2384-2400, 2404-2417, 1037-1048
                             (Cx::scan_head, Cx::head_waiter, Cx::head_datum)
-   bump                     spaces/counter.rs:165-245 (the ord is the
+   bump                     spaces/counter.rs:165-244 (the ord is the
                             counter value, and the first operation takes 0
                             and opens the counter at 1)
-   produce, consume         spaces/generic.rs:2544-2714 (run_with of
+   produce, consume         spaces/generic.rs:2543-2710 (run_with of
                             FamilySpace: bump, then plan)
    legacy_offer             the legacy waiter scan (the legacy
                             GenericRSpace find_fireable_continuation_with_
@@ -82,26 +82,26 @@
                             (ProduceOp::reissued_ord and
                             ConsumeOp::reissued_ord: the first-round ord of
                             a re-issued persistent operation)
-   operation_ord            spaces/generic.rs:1915-1943 (the check
+   operation_ord            spaces/generic.rs:1914-1942 (the check
                             0 <= reissued_ord < bump.ord, else
                             Inconsistent, and the bump value for a fresh
                             operation)
    ord_precedes             spaces/disciplines/queue.rs:65-74
                             (QueueDiscipline::precedes: ord < head)
-   reentry_at_head          spaces/generic.rs:1090-1111, 1053-1073
+   reentry_at_head          spaces/generic.rs:1089-1110, 1052-1072
                             (Cx::at_head and Cx::head_ord: an empty side,
                             or an ord that precedes the head, and
                             Inconsistent on an equal ord)
    reenter_offer, reenter_receive
-                            spaces/generic.rs:1723-1791, 1800-1884
+                            spaces/generic.rs:3812-3899, 3908-4020
                             (offer_head and receive_head: store or park at
                             its place when not at the head, else the loop)
    reenter_produce, reenter_consume
-                            spaces/generic.rs:2544-2714 (run_with of
+                            spaces/generic.rs:2543-2710 (run_with of
                             FamilySpace with a reissued_ord: bump, then
                             operation_ord, then the plan)
    reissued_ord, flight_after
-                            spaces/generic.rs:1783, 1876 (offer_head and
+                            spaces/generic.rs:1782, 1875 (offer_head and
                             receive_head: the re-issue sets
                             reissued_ord: op.persistent.then_some(ord))
    round, run_rounds        reified/reducer_hooks.rs:1240-1296
@@ -109,8 +109,8 @@
                             Intent::Space, the last dispatch branch of the
                             same deploy)
    code_staged, code_of, code_ops
-                            spaces/generic.rs:1266-1277, 1920-1929, 1875-1880
-                            and 1821-1850 (Cx::restore and Cx::restore_on
+                            spaces/generic.rs:1265-1276, 1919-1928, 4105-4110
+                            and 1820-1849 (Cx::restore and Cx::restore_on
                             stage a Store of the same record bytes with
                             persist = false, and restore_peeked calls
                             Discipline::restore, whose default is
@@ -119,7 +119,7 @@
                             Each FireStep branch calls fire_receive, then
                             restore_peeked.)
    remove_key, sub_step, sub_records
-                            rspace/space_play.rs:148, 208, 307,
+                            rspace/space_play.rs:137, 197, 277,
                             space_store_handle.rs:3248-3265, 3268-3292, 3339-3355,
                             replay_rspace/space_replay.rs:197, 299-300 and
                             442, and hot_store.rs:879-897 (a Store calls
@@ -131,7 +131,7 @@
                             The incoming datum of a produce-side fire has
                             no index, so no stored record leaves.)
    retention_step, retention_records
-                            rspace/space_play.rs:198-207, 298-306 and
+                            rspace/space_play.rs:187-196, 268-276 and
                             replay_rspace/space_replay.rs:283-298, 433-441
                             (the retention before decision 45, kept as
                             comments: a peek fire kept its records)
@@ -555,7 +555,11 @@ Section Queue.
   (* ── 5. Well-formed states ───────────────────────────────────────── *)
 
   (* A well-formed collection: the ords of each side are distinct, and every
-     ord is below the counter value (the next ord). *)
+     ord is below the counter value (the next ord). A refused persistent
+     re-offer in a head-only collection stores a copy with the same
+     identity, so production can hold equal persistent copies. wf does not
+     model these copies. A head reader gives one head for equal entries
+     (spaces/disciplines/queue.rs:14). This is a document note only (C4). *)
   Definition wf (st : qstate) : Prop :=
     NoDup (map r_ord (q_records st)) /\ NoDup (map w_ord (q_waiters st)) /\
     (forall r, In r (q_records st) -> r_ord r < bump_ord (q_counter st)) /\

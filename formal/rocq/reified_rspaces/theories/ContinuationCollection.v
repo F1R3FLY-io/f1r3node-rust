@@ -39,11 +39,11 @@
    park                     space_store_handle.rs put_continuation: no
                             insert when a waiter with the same identity is
                             parked (F14)
-   fits, offer_choice       scan.rs:533-565 (first_admitting_waiter: the
+   fits, offer_choice       scan.rs:527-559 (first_admitting_waiter: the
                             pattern copy and the metered match of each
                             tested waiter, the guard of a waiter that
                             binds, and the next waiter on a refusal)
-   candidates               scan.rs:408-499 (Scan: every waiter in
+   candidates               scan.rs:408-493 (Scan: every waiter in
                             canonical order) and generic.rs offer_head
                             with Cx::head_waiter (Head: the head waiter
                             only, decision 11)
@@ -333,7 +333,8 @@ Section Waiters.
   (* F15 waiter_visit_order_canonical: the waiter order is sorted by key,
      holds the waiters, and does not depend on the list order of the store.
      A send fires the first waiter in that order that fits, so every earlier
-     waiter fails its pattern or its guard (decision 37, the produce side). *)
+     waiter fails its pattern or its guard (decision 37, the produce side).
+     This order is also the replay order (decision 102). *)
   Theorem waiter_visit_order_canonical : forall x ws ws',
     Sorted le (visit ws) /\ Permutation ws (visit ws) /\
     (Permutation ws ws' -> offer_choice x ws = offer_choice x ws') /\

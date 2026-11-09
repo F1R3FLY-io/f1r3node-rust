@@ -12,6 +12,8 @@
 use std::borrow::Cow;
 
 use super::*;
+// Added by G3 (DR-135): the caller that a system body records (A1).
+use crate::rust::interpreter::accounting::owner_funding::RegionOwner;
 
 const SYSTEM_RESIDUE_DOMAIN: &[u8] = b"f1r3node:cost-accounted-rho:system-residue:v1";
 
@@ -42,6 +44,10 @@ pub fn is_system_seal(seal: &CostAuthority) -> bool {
 pub struct ResidueContext {
     payer: CostSignature,
     deploy_id: [u8; 32],
+    /// Added by G3 (DR-135): the region price of the deployment. A resolved
+    /// payer region carries it, as the region that the deployment opened did
+    /// (R4).
+    price: u64,
 }
 
 impl ResidueContext {
@@ -49,6 +55,9 @@ impl ResidueContext {
         Ok(Self {
             payer: sig_to_cost_signature(payer)?,
             deploy_id,
+            // Added by G3 (DR-135): a context without a price, as outside
+            // native execution.
+            price: 0,
         })
     }
 
@@ -57,7 +66,16 @@ impl ResidueContext {
         Self {
             payer: unit_cost_signature(),
             deploy_id: [0; 32],
+            // Added by G3 (DR-135).
+            price: 0,
         }
+    }
+
+    /// Added by G3 (DR-135): this context with the region price of its
+    /// deployment (R4).
+    pub fn with_price(mut self, price: u64) -> Self {
+        self.price = price;
+        self
     }
 
     fn resolves(&self) -> bool { !is_unit_cost_signature(&self.payer) }
@@ -99,9 +117,17 @@ pub fn system_residue_region(
         .signature
         .as_ref()
         .ok_or(AuthorityError::MissingSignature)?;
+    // Changed by G3 (DR-135): a residue region has no price and no caller.
+    // S3 records the caller of a system body (A1).
+    // Ok(CostRegion {
+    //     instance_id: residue_identity(deploy_id, payer_region)?,
+    //     signature: Some(unit_cost_signature()),
+    // })
     Ok(CostRegion {
         instance_id: residue_identity(deploy_id, payer_region)?,
         signature: Some(unit_cost_signature()),
+        price: 0,
+        caller: None,
     })
 }
 
@@ -110,11 +136,40 @@ pub fn system_residue_authority(
     introduction: &CostAuthority,
     deploy_id: &[u8; 32],
 ) -> Result<CostAuthority, AuthorityError> {
-    let regions = introduction
-        .regions
-        .iter()
-        .map(|region| system_residue_region(region, deploy_id))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Changed by G3 (DR-135): the body moved, unchanged for a body without a
+    // caller, into `system_residue_authority_with_caller`.
+    // let regions = introduction
+    //     .regions
+    //     .iter()
+    //     .map(|region| system_residue_region(region, deploy_id))
+    //     .collect::<Result<Vec<_>, _>>()?;
+    // canonical_authority(&CostAuthority { regions })
+    system_residue_authority_with_caller(introduction, deploy_id, None)
+}
+
+/// Added by G3 (DR-135): `system_residue_authority` for a system body that
+/// runs for `caller` (A1). Each residue region that a payer region becomes
+/// records the caller, so a later firing of the residue knows for whom the
+/// body ran. A Unit region is already system residue and stays as it is. A
+/// body without a caller stores the residue of dev.
+pub fn system_residue_authority_with_caller(
+    introduction: &CostAuthority,
+    deploy_id: &[u8; 32],
+    caller: Option<&RegionOwner>,
+) -> Result<CostAuthority, AuthorityError> {
+    let mut regions = Vec::with_capacity(introduction.regions.len());
+    for region in &introduction.regions {
+        let mut residue = system_residue_region(region, deploy_id)?;
+        if let Some(caller) = caller {
+            if !is_unit_region(region) {
+                residue.caller = Some(CostCaller {
+                    signature: Some(caller.signature.clone()),
+                    price: caller.price,
+                });
+            }
+        }
+        regions.push(residue);
+    }
     canonical_authority(&CostAuthority { regions })
 }
 
@@ -145,7 +200,11 @@ pub fn resolve_system_residue<'a>(
     if !context.resolves() || !seal.regions.iter().any(is_unit_region) {
         return Ok(Cow::Borrowed(seal));
     }
-    let payer_region = cost_region(&context.payer, entropy, 0)?;
+    // Changed by G3 (DR-135): the resolved payer region has the price of the
+    // deployment, as the region that the deployment opened has. The price is
+    // not part of the identity, so the expected residue identity stays.
+    // let payer_region = cost_region(&context.payer, entropy, 0)?;
+    let payer_region = priced_cost_region(&context.payer, entropy, 0, context.price)?;
     let expected = residue_identity(&context.deploy_id, &payer_region)?;
     match residue_index(seal, &expected) {
         None => Ok(Cow::Borrowed(seal)),

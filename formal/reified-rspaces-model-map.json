@@ -268,8 +268,6 @@
       "title": "Trigger-key replay pairing",
       "review": "D3",
       "items": [
-        "TxnCore::verify",
-        "binding_multiplicity",
         "HostTxn::recorded_comms",
         "SpaceTxnError::ReplayDivergence"
       ],
@@ -285,10 +283,8 @@
       "review": "D4",
       "items": [
         "LockCoverage",
-        "LockCoverage::new",
+        "LockCoverage::of",
         "LockCoverage::require",
-        "HeldStripes::holds",
-        "LockUse",
         "TxnCore::admit_group",
         "TxnCore::stage_produce",
         "TxnCore::stage_consume",
@@ -416,7 +412,7 @@
       "supersedes": "The storing of the incoming datum of a produce-side peek fire (P1 §6, plan decision 19).",
       "items": [
         "TxnCore::stage_produce",
-        "TxnCore::apply_fire_to_view",
+        "TxnView::apply_fire_to_view",
         "PlayBackend::apply_op",
         "PlayBackend::produce_fire",
         "ReplayBackend::apply_op",
@@ -538,42 +534,6 @@
       ]
     },
     {
-      "item": "TxnCore::verify",
-      "required": true,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
-      "scope": "TxnCore",
-      "kind": "fn",
-      "name": "verify",
-      "line": 2297,
-      "role": "Replay pairing under the trigger key only (FR-3): Produce(source) for a produce-side fire, Consume(source) for a consume-side fire. The COMM pairs while paired < count / binding_multiplicity. Decision 36: it returns the recorded COMM or None and never fails, so an unpaired fire stages as in play and replay staging equals play staging.",
-      "rocq": [
-        "verify",
-        "available",
-        "trigger_key",
-        "verify_any_key",
-        "verify_literal",
-        "keys",
-        "mult",
-        "pair_step",
-        "stage_fire",
-        "stage_without_trigger_unpaired",
-        "replay_stage_sim"
-      ],
-      "tla": [
-        "Grants",
-        "ReplayStage",
-        "ReplayApply"
-      ],
-      "covers": [
-        "H4",
-        "H5",
-        "T3",
-        "H23",
-        "H29",
-        "T6"
-      ]
-    },
-    {
       "item": "StagedFire",
       "required": false,
       "file": "rspace++/src/rspace/space_store_handle.rs",
@@ -615,29 +575,6 @@
         "H4",
         "H23",
         "H29"
-      ]
-    },
-    {
-      "item": "binding_multiplicity",
-      "required": false,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
-      "scope": null,
-      "kind": "fn",
-      "name": "binding_multiplicity",
-      "line": 1509,
-      "role": "The bindings that one recorded COMM occurrence adds under a key in rig.",
-      "rocq": [
-        "mult",
-        "available",
-        "rig_comm",
-        "unbind"
-      ],
-      "tla": [
-        "Rig"
-      ],
-      "covers": [
-        "H4",
-        "H5"
       ]
     },
     {
@@ -849,8 +786,8 @@
       "file": "rspace++/src/rspace/replay_rspace/space_replay.rs",
       "scope": "ReportingRspace",
       "kind": "fn",
-      "name": "begin",
-      "line": 575,
+      "name": "begin_phase_a",
+      "line": 651,
       "role": "The reporting mode: begin_replay with SpaceMode::Reporting, so apply_op is ReplayBackend::apply_op (design §2.3).",
       "rocq": [
         "backend",
@@ -1531,14 +1468,14 @@
       ]
     },
     {
-      "item": "LockCoverage::new",
+      "item": "LockCoverage::of",
       "required": false,
       "file": "rspace++/src/rspace/space_store_handle.rs",
       "scope": "LockCoverage",
       "kind": "fn",
-      "name": "new",
-      "line": 1393,
-      "role": "FR-4: records the stripes of the lock keys for both phases, as striped_locks::consume_lock takes them.",
+      "name": "of",
+      "line": 1616,
+      "role": "FR-4: records the channel keys of phase B (decision 94).",
       "rocq": [],
       "tla": [
         "Begin"
@@ -1560,41 +1497,6 @@
       "tla": [
         "CoveredAt",
         "Stage",
-        "HostStripes"
-      ],
-      "covers": [
-        "T5"
-      ]
-    },
-    {
-      "item": "HeldStripes::holds",
-      "required": false,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
-      "scope": "HeldStripes",
-      "kind": "fn",
-      "name": "holds",
-      "line": 1363,
-      "role": "FR-4: membership of a channel hash in the held stripes of one phase.",
-      "rocq": [],
-      "tla": [
-        "CoveredAt"
-      ],
-      "covers": [
-        "T5"
-      ]
-    },
-    {
-      "item": "LockUse",
-      "required": false,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
-      "scope": null,
-      "kind": "struct",
-      "name": "LockUse",
-      "line": 1375,
-      "role": "FR-4: how the host locks a touched channel: Produced, Joined or Consumed.",
-      "rocq": [],
-      "tla": [
-        "CoveredAt",
         "HostStripes"
       ],
       "covers": [
@@ -1907,13 +1809,13 @@
       ]
     },
     {
-      "item": "TxnCore::apply_fire_to_view",
+      "item": "TxnView::apply_fire_to_view",
       "required": false,
       "file": "rspace++/src/rspace/space_store_handle.rs",
-      "scope": "TxnCore",
+      "scope": "TxnView",
       "kind": "fn",
       "name": "apply_fire_to_view",
-      "line": 2529,
+      "line": 2254,
       "role": "The view effects of a produce-side fire: the continuation removal, the removed records and the fired joins. FR-10 removed its key and incoming parameters, so it never stores the incoming datum.",
       "rocq": [
         "vpf_effects",

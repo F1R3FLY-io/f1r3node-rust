@@ -110,7 +110,7 @@
   "allowed_expect": "\\.expect\\(\"[^\"]* lock\"\\)",
   "test_region_start": "^#\\[cfg\\(test\\)\\]\\s*$",
   "production_scan": {
-    "description": "Plan grep gate: no production source holds a consensus token.",
+    "description": "Plan grep gate: no production source holds a consensus token. Decision 112 retired the K15 rules for use_blocks and e_free_body, because the Reified syntax now uses those protobuf fields.",
     "roots": [
       "casper/src",
       "comm/src",
@@ -209,14 +209,6 @@
       {
         "pattern": "BagReservation",
         "reason": "decision 1: Bag work belongs to the Bag campaign"
-      },
-      {
-        "pattern": "use_blocks",
-        "reason": "item 16 and decision 18: no K15 protobuf field"
-      },
-      {
-        "pattern": "e_free_body",
-        "reason": "item 16 and decision 18: no K15 protobuf field"
       },
       {
         "pattern": "event_coverage",
@@ -926,6 +918,7 @@
         "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/set.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs",
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/outer/array.rs",
         "rholang/src/rust/interpreter/spaces/outer/vector.rs",
@@ -943,7 +936,7 @@
       "entry_points": [
         {
           "file": "rholang/tests/reified_queue_parity.rs",
-          "pattern": "const CORPUS: &str = \"test-vectors/reified-queue-parity-v1.json\";"
+          "pattern": "const CORPUS: &str = \"test-vectors/reified-queue-parity-v2.json\";"
         },
         {
           "file": "scripts/verify-reified/merge-queue-parity-capture.py",
@@ -1199,7 +1192,7 @@
         },
         {
           "file": "rholang/tests/reified_determinism.rs",
-          "pattern": "async fn space_canonical_iteration_bag_views() {"
+          "pattern": "fn space_canonical_iteration_bag_views() {"
         },
         {
           "file": "rholang/tests/reified_determinism.rs",
@@ -1211,7 +1204,7 @@
         },
         {
           "file": "rholang/tests/reified_pattern_enforcement.rs",
-          "pattern": "async fn pattern_enforcement_qualifiers_fail_closed() {"
+          "pattern": "async fn pattern_enforcement_seq_rows() {"
         },
         {
           "file": "rholang/tests/reified_merge_p5.rs",
@@ -1423,7 +1416,7 @@
       "property_files": []
     },
     "p6": {
-      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin. Step 6 adds rho:lang:vector: add, scale, dot, norm and distance, exact in the widest kind of the inputs, the replies [true, value] and [false, code, detail], the packing of a call into [ret, [op, x…]] and the metering of the process. Step 7a adds the recorded processes rho:vectordb:embed and rho:vectordb:ann with their replies [true, ...] and [false, code, detail], the node-local services with the unavailable defaults and the feature-gated SBERT and ChromaDB backends, the checks of an ann call in play and in replay, and the mirror entry of the config reply. Step 7b adds the mirror journal: the capture of the net writes of a transaction of a mirrored space, the journal of an evaluation, the publication of the journal with a final result without errors (M1), and the mirror writer with its bounded queue, its bounded retry and its dirty collections. Step 7c adds the mirror reconciler: the channel registry in the collection metadata, the repair of every registered channel to the finalized state (orphans deleted, missing records added, the watermark set, dirty collections repaired), the coalescing loop over the BlockFinalised events, and the node state of two read-only closures.",
+      "description": "Phase P6, the VectorDB family and its ChromaDB search backend (design v3). Step 1 adds the generic prerequisites: the config of a plan, the waiter policy of version 1 and of a join slot (Nil, a priority-queue level, a VectorDB query), the record codecs of a VectorDB space, and the bound of a side with CapacityExceeded. Step 2 adds the exact numeric core: the ingress of every number kind, the exact kernels, the squared-form decisions, the score orders, the selection order and the correctly rounded delivered values. Step 3 (design steps 3 and 4) adds the VectorDB driver and its paths in the join engine: the config, the query checks, the records, the selection, single mode, list mode, OFFER-VDB, LIST-CASCADE, Rule E with the carry at the round cap, the family and the factory rows, and ListModeInJoin. Step 6 adds rho:lang:vector: add, scale, dot, norm and distance, exact in the widest kind of the inputs, the replies [true, value] and [false, code, detail], the packing of a call into [ret, [op, x…]] and the metering of the process. Step 7a adds the recorded processes rho:vectordb:embed and rho:vectordb:ann, which only a build with the feature chromadb registers (decision 113). Their replies are [true, ...] and the base failure reply [false, code, message] with EXT_BAD_ARG or EXT_FAILED (decision 105). Play checks an ann call and records the reply by the base rules of native play (decision 104). Replay makes no checks and delivers the recorded reply (decision 116). The step also adds the node-local services with the unavailable defaults, the feature-gated SBERT and ChromaDB backends, and the mirror entry of the config reply. Step 7b adds the mirror publication: the capture of the net writes of a transaction of a mirrored space, and the batch of each commit. A commit of a play publishes its batch before its hold drops, and replay, reporting and native replay publish nothing (decision 98). The mirror writer has a bounded queue and a bounded retry, and it drops a refused or failed batch (decision 114). Decision 114 retired step 7c, the mirror reconciler, with the watermark, the channel registry and the dirty collections.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/record.rs",
         "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1435,6 +1428,7 @@
         "rholang/src/rust/interpreter/tensor/exact.rs",
         "rholang/src/rust/interpreter/tensor/costs.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/similarity.rs",
         "rholang/src/rust/interpreter/spaces/families.rs",
         "rholang/src/rust/interpreter/spaces/factory/defaults.rs",
         "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
@@ -1451,8 +1445,7 @@
         "rholang/src/rust/interpreter/spaces/namespace.rs",
         "rholang/src/rust/interpreter/spaces/mirror.rs",
         "rholang/src/rust/interpreter/reified/runtime.rs",
-        "rholang/src/rust/interpreter/spaces/agent.rs",
-        "rholang/src/rust/interpreter/reified/mirror_reconciler.rs"
+        "rholang/src/rust/interpreter/spaces/agent.rs"
       ],
       "entry_points": [
         {
@@ -1585,11 +1578,11 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
-          "pattern": "    fn similarity_bind("
+          "pattern": "    fn similarity_bind<V: StoreView>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
-          "pattern": "    fn offer_list("
+          "pattern": "    fn offer_list<V: StoreView>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
@@ -1597,7 +1590,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
-          "pattern": "    fn list_cascade_fire("
+          "pattern": "    fn list_cascade_fire<V: StoreView>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/join.rs",
@@ -1653,7 +1646,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
-          "pattern": "pub enum ServiceReplyCode {"
+          "pattern": "pub fn ok_reply(values: Vec<Par>) -> Par {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
@@ -1705,7 +1698,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_processes.rs",
-          "pattern": "async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Par {"
+          "pattern": "async fn ann_answer(services: &VectorDbServices, request: AnnRequest) -> Option<Par> {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
@@ -1749,11 +1742,11 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
-          "pattern": "pub struct MirrorJournal {"
+          "pattern": "impl From<MirrorWrites> for MirrorBatch {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
-          "pattern": "    pub fn take(&self) -> Vec<MirrorBatch> {"
+          "pattern": "    fn from(writes: MirrorWrites) -> Self {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
@@ -1769,7 +1762,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
-          "pattern": "    pub fn take_dirty(&self) -> BTreeMap<String, DirtyCollection> {"
+          "pattern": "    pub fn publish(&self, batches: Vec<MirrorBatch>) {"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
@@ -1777,7 +1770,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/reified/runtime.rs",
-          "pattern": "    pub fn settle_mirror_journal(&self, result: &Result<EvaluateResult, InterpreterError>) {"
+          "pattern": "    pub async fn run_op("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1786,38 +1779,6 @@
         {
           "file": "rholang/src/rust/interpreter/spaces/agent.rs",
           "pattern": "    pub mirror: Option<MirrorWrites>,"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-          "pattern": "pub trait FinalizedState: Send + Sync {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-          "pattern": "pub struct ClosureState<P, R> {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-          "pattern": "pub async fn reconcile("
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-          "pattern": "pub fn spawn(events: &F1r3flyEvents, state: Arc<dyn FinalizedState>) {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/mirror_reconciler.rs",
-          "pattern": "pub fn start(events: &F1r3flyEvents, state: Arc<dyn FinalizedState>) {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
-          "pattern": "pub struct MirrorRegistry {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
-          "pattern": "pub struct DirtyCollection {"
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/vectordb_services.rs",
-          "pattern": "pub fn registry_of<'m>("
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/mirror.rs",
@@ -1839,8 +1800,7 @@
         "rholang/tests/support/backends.rs",
         "rholang/src/rust/interpreter/spaces/mirror.rs",
         "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
-        "rholang/tests/support/native.rs",
-        "rholang/src/rust/interpreter/reified/mirror_reconciler.rs"
+        "rholang/tests/support/native.rs"
       ],
       "property_files": [
         "rholang/src/rust/interpreter/tensor/exact.rs",
@@ -1848,7 +1808,7 @@
       ]
     },
     "p7": {
-      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call. Step 2 adds the Seq rules: gate 3 in the execution model of the deploy (QT-5), the send rule of seq names (SQ-1, SQ-2), the claims of each channel of a seq space with their store after a successful commit (SQ-3, SQ-4), the internal origin of re-issues (A3), and the charges of the checks (SQ-8). Step 3 adds the HashSet store (HS-1 to HS-8): the HashSet outer store with the key, the channels and the names of the HashMap store, the payload and pattern hooks of the outer stores before any staging (PayloadNotEmpty, PatternNotEmpty), and the six HashSet families with their schemas, dispatch arms, factory rows and system channels. Step 4 adds the theory seam (TH-1 to TH-10): the builtin theories and their structural checks, the theory identity with its canonical bytes in the config (decision 74), the resolution of each config read, gate 4 of the factory, the admission of each value of a send before any staging, the check of each stored datum of a match after the guard at every user-match site, and the commit guard of two or more leases. Step 5 adds the evidence of rehydration and charging (RH-1 to RH-4) and of every dangling row of DG-1 and DG-2: the rehydration suite and the restart suite of three processes over the shared native harness. Step 6 adds the native rows of N3 for temp, seq and HashSet spaces, and the mutant controls of design v3 section 11.",
+      "description": "Phase P7, the deploy-scoped qualifiers, the volatile sweep, dangling ids, Seq, HashSet and the theory seam (design v3). Step 1 adds the temp qualifier, the per-evaluation volatile registry (VR-1, VR-2), the sweep at the end of each root evaluation under the boundary guard (VR-3 to VR-8), and the dangling checks of DG-1 to DG-4: DanglingHandle and DanglingName with the space id, the getSpaceAgent reply with the space id, and the check of each route, use block and handle call. Step 2 adds the Seq rules: the seq qualifier at gate 3 (QT-5), the send rule of seq names (SQ-1, SQ-2), the claims of each channel of a seq space with their store after a successful commit (SQ-3, SQ-4), the internal origin of re-issues (A3), and the charges of the checks (SQ-8). Step 3 adds the HashSet store (HS-1 to HS-8): the HashSet outer store with the key, the channels and the names of the HashMap store, the payload and pattern hooks of the outer stores before any staging (PayloadNotEmpty, PatternNotEmpty), and the six HashSet families with their schemas, dispatch arms, factory rows and system channels. Step 4 adds the theory seam (TH-1 to TH-10): the builtin theories and their structural checks, the theory identity with its canonical bytes in the config (decision 74), the resolution of each config read, gate 4 of the factory, the admission of each value of a send before any staging, the check of each stored datum of a match after the guard at every user-match site, and the commit guard of two or more leases. Step 5 adds the evidence of rehydration and charging (RH-1 to RH-4) and of every dangling row of DG-1 and DG-2: the rehydration suite and the restart suite of three processes over the shared native harness. Step 6 adds the native rows of N3 for temp, seq and HashSet spaces, and the mutant controls of design v3 section 11. Decision 90 (C6, step D) retired the execution model of gate 3 and QualifierUnavailable, because spaces run only in native execution.",
       "sources": [
         "rholang/src/rust/interpreter/spaces/ephemeral.rs",
         "rholang/src/rust/interpreter/spaces/agent.rs",
@@ -1876,6 +1836,8 @@
         "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
         "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/similarity.rs",
+        "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs",
         "rholang/src/rust/interpreter/reified/handle.rs"
       ],
       "entry_points": [
@@ -1997,15 +1959,11 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
-          "pattern": "pub enum Execution {"
+          "pattern": "if !family.supports_qualifier(qualifier) {"
         },
         {
-          "file": "rholang/src/rust/interpreter/spaces/factory/constructor.rs",
-          "pattern": "pub fn validate_in("
-        },
-        {
-          "file": "rholang/src/rust/interpreter/reified/runtime.rs",
-          "pattern": "pub fn execution(&self) -> Result<Execution, SpaceError> {"
+          "file": "rholang/src/rust/interpreter/reified/factory.rs",
+          "pattern": "        self.runtime.ensure_available()?;\n        let constructor = FactoryConstructor::validate(self.family, ctor)?;"
         },
         {
           "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
@@ -2113,7 +2071,7 @@
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-          "pattern": "pub(crate) fn theory_admits(&mut self, stored: &[StoredMatch<'_>]) -> Result<bool, SpaceError> {"
+          "pattern": "pub(crate) fn theory_admits(&self, stored: &[StoredMatch<'_>]) -> Result<bool, SpaceError> {"
         },
         {
           "file": "rholang/src/rust/interpreter/spaces/generic.rs",

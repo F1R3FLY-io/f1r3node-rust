@@ -220,10 +220,12 @@ services:
   readonly:
     <<: *default-rnode
     container_name: ${READONLY_HOST:-rnode.readonly}
-    environment:
-      <<: *rnode-environment
-      # Each node keeps its own mirror database.
-      CHROMA_DATABASE: rnode-readonly
+    # Retired by decision 109: an observer installs the unavailable VectorDB services, so it keeps
+    # no mirror database.
+    # environment:
+    #   <<: *rnode-environment
+    #   # Each node keeps its own mirror database.
+    #   CHROMA_DATABASE: rnode-readonly
     command:
       - --log-sink=stdout
       - run

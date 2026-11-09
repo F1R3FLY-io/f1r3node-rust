@@ -47,6 +47,15 @@ message Par {
   bool connective_used = 10;
   repeated CostSignedTerm cost_signed_terms = 13;
   repeated CostStack cost_stacks = 14;
+  // Added by decision 112: the use blocks of the Reified syntax. Declared
+  // last, so the serde order of the other fields stays.
+  repeated UseBlock use_blocks = 15;
+}
+
+// Added by decision 112: `use space { body }`.
+message UseBlock {
+  Par space = 1 [(scalapb.field).no_box = true];
+  Par body = 2 [(scalapb.field).no_box = true];
 }
 
 message CostSignature {
@@ -67,11 +76,27 @@ message CostSignatureCompound {
 message CostSignedTerm {
   Par body = 1;
   CostSignature signature = 2;
+  // Added by G3 (DR-135, S3b): the price of the holder of a held term (Rule
+  // H). Only the reducer sets it, on the held terms that it makes. A signed
+  // term of the surface syntax has no held price, which prost omits.
+  optional uint64 held_price = 3;
 }
 
 message CostRegion {
   bytes instance_id = 1;
   CostSignature signature = 2;
+  // Added by G3 (DR-135): the signed price of the context that created the
+  // region (R4). Zero outside native execution, which prost omits.
+  uint64 price = 3;
+  // Added by G3 (DR-135): on a system residue region, the caller of the system
+  // body (A1). Absent everywhere else.
+  CostCaller caller = 4;
+}
+
+// Added by G3 (DR-135): an owner with its signed price (A1).
+message CostCaller {
+  CostSignature signature = 1;
+  uint64 price = 2;
 }
 
 message CostAuthority {
@@ -162,6 +187,14 @@ message Send {
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
   bool connective_used = 6;
+  // Added by decision 112: the params section, absent without params.
+  SendParams params = 8;
+}
+
+// Added by decision 112: the params of a send, and the EParams transport.
+message SendParams {
+  repeated Par positional = 1;
+  map<string, Par> named = 2;
 }
 
 message ReceiveBind {
@@ -170,6 +203,14 @@ message ReceiveBind {
   Var remainder = 3;
   int32 freeCount = 4;
   CostSignature cost_signature = 5;
+  // Added by decision 112: the query of the bind, absent without `~`.
+  QuerySpec query_spec = 6;
+}
+
+// Added by decision 112.
+message QuerySpec {
+  repeated Par payload = 1;
+  map<string, Par> named = 2;
 }
 
 message BindPattern {
@@ -222,6 +263,13 @@ message New {
   bytes locallyFree = 5
       [(scalapb.field).type =
            "coop.rchain.models.AlwaysEqual[scala.collection.immutable.BitSet]"];
+  // Added by decision 112: empty, or one entry for each plain binder.
+  repeated SpaceAnnotation space_types = 6;
+}
+
+// Added by decision 112: an absent space is a binder without an annotation.
+message SpaceAnnotation {
+  Par space = 1;
 }
 
 message MatchCase {
@@ -315,7 +363,17 @@ message Expr {
     uint32 g_uint32 = 41;          // Unsigned 32-bit integer (u32 suffix)
     uint32 g_uint16 = 42;          // Unsigned 16-bit integer (u16 suffix), always <= u16::MAX
     uint32 g_uint8 = 43;           // Unsigned 8-bit integer (u8 suffix), always <= u8::MAX
+    // Added by decision 112: the value `free Th(args)`.
+    EFree e_free_body = 44;
+    // Added by decision 112 (O-1): params that the reducer forwards.
+    SendParams e_params_body = 45;
   }
+}
+
+// Added by decision 112. No derived flags, as EPlus and EMatches.
+message EFree {
+  string theory = 1;
+  repeated Par args = 2;
 }
 
 message GBigRational {
@@ -380,14 +438,14 @@ message EPathMap {
 message EZipper {
   // The underlying PathMap being navigated
   EPathMap pathmap = 1;
-
+  
   // Current path position in the zipper (list of path segments as bytes)
   // Each segment is encoded as bytes representing a Par value
   repeated bytes current_path = 2;
-
+  
   // Whether this is a write zipper (true) or read zipper (false)
   bool is_write_zipper = 3;
-
+  
   // Metadata from the PathMap
   bytes locallyFree = 4
       [(scalapb.field).type =

@@ -31,8 +31,12 @@ use crate::rust::interpreter::reified::system_channels::{
     VECTOR_CELL_FACTORY, VECTOR_PRIORITY_QUEUE_FACTORY, VECTOR_QUEUE_FACTORY, VECTOR_SET_FACTORY,
     VECTOR_STACK_FACTORY, VECTOR_VECTORDB_FACTORY,
 };
-use crate::rust::interpreter::spaces::families::Family;
-use crate::rust::interpreter::spaces::namespace;
+// Changed by decision 127 (kind registry): the rows of the registered kinds. The text before:
+// use crate::rust::interpreter::spaces::families::Family;
+use crate::rust::interpreter::spaces::families::{kind_families, Family};
+// Changed by decision 127 (kind registry): the factory channel comes from the registry. The text
+// before:
+// use crate::rust::interpreter::spaces::namespace;
 
 /// The families that P4 registers, with their factory system channels.
 pub const REGISTERED_FAMILIES: [(SpaceFactoryUrn, SystemChannel); 1] =
@@ -226,14 +230,26 @@ pub fn registered_p7_families() -> impl Iterator<Item = (SpaceFactoryUrn, System
         .filter(|(family, _)| is_wired(*family))
 }
 
+/// Added by decision 127 (kind registry): the families of the registered kinds with their
+/// factory system channels, in op order. The built-in families are not among them (ruling D3).
+pub fn registered_kind_families() -> impl Iterator<Item = (SpaceFactoryUrn, SystemChannel)> {
+    let mut rows: Vec<(SpaceFactoryUrn, SystemChannel)> = kind_families()
+        .map(|family| (family.urn(), family.factory()))
+        .collect();
+    rows.sort_by_key(|(_, channel)| channel.op);
+    rows.into_iter()
+}
+
 /// Every registered family with its factory system channel: the families of P4, then the
 /// registered families of P5, P6 and P7.
+/// Added by decision 127 (kind registry): then the families of the registered kinds.
 pub fn registered_families() -> impl Iterator<Item = (SpaceFactoryUrn, SystemChannel)> {
     REGISTERED_FAMILIES
         .into_iter()
         .chain(registered_p5_families())
         .chain(registered_p6_families())
         .chain(registered_p7_families())
+        .chain(registered_kind_families())
 }
 
 /// The registered aliases: the rows of [`P5_ALIAS_ROWS`] whose family is registered, in row
@@ -253,9 +269,14 @@ pub fn registered_channel(family: SpaceFactoryUrn) -> Option<SystemChannel> {
 
 /// The factory channel `[0xE0, i]` of a family with the index `i`.
 pub fn factory_channel(family: SpaceFactoryUrn) -> Option<Par> {
-    family
-        .family_index()
-        .map(|index| namespace::gprivate(namespace::op_channel(index)))
+    // Changed by decision 127 (kind registry): the channel of the registered family. A built-in
+    // family has its index as its op. The text before:
+    // ```
+    // family
+    //     .family_index()
+    //     .map(|index| namespace::gprivate(namespace::op_channel(index)))
+    // ```
+    Family::of_urn(family).map(|family| family.factory().channel())
 }
 
 /// The factory capability of a family: `bundle+{[0xE0, i]}`. It equals the urn map value of
@@ -394,5 +415,20 @@ mod tests {
             })
             .collect();
         assert_eq!(capabilities.len(), SpaceFactoryUrn::all().count());
+    }
+
+    /// Added by decision 127 (kind registry): without a registered kind, the registered rows are
+    /// the 32 built-in families, and the registry gives each row its factory.
+    #[test]
+    fn space_factory_rows_are_the_registered_factories() {
+        assert_eq!(registered_kind_families().count(), 0);
+        assert_eq!(registered_families().count(), 32);
+        for (family, channel) in registered_families() {
+            assert_eq!(
+                Family::of_urn(family).map(Family::factory),
+                Some(channel),
+                "{family}"
+            );
+        }
     }
 }

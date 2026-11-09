@@ -15,6 +15,8 @@ use crate::rspace::trace::event::{Event, IOEvent};
 mod checkpoint_failure_tests;
 // Added by DR-129 (M34): F1-F3 and F7 of the random-order restoration.
 mod random_candidate_order_tests;
+// Added by G3 (DR-135, S5): the owner checks of the play matcher.
+mod owner_matching_tests;
 
 // ── minimal types ─────────────────────────────────────────────────────────
 

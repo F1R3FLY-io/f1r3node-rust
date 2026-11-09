@@ -8,7 +8,7 @@
 ' Reading order:
 '   1. R and the delta start with the facts and the non-recursive rules.
 '   2. Each round evaluates the rules with at least one atom from the delta,
-'      in canonical order, and reserves the work of each join first.
+'      in canonical order. Decision 89 removed the reservation of each join.
 '   3. The new delta is the derived tuples that are not in R, and R grows.
 '   4. An empty delta ends the loop: R is the least fixpoint.
 '
@@ -34,8 +34,9 @@ start
 :<latex>R \leftarrow \Delta \leftarrow</latex> the facts and the
 non-recursive rules of C; <<$rrs_tl_engine>>
 while (<latex>\Delta \neq \emptyset</latex>?) is (yes)
-  :reserve the work of each join
-  before it runs; <<$rrs_meter>>
+  ' Changed by decision 89: the node has no host-work budget, so a join reserves nothing. The text before:
+  ' :reserve the work of each join
+  ' before it runs; <<$rrs_meter>>
   :<latex>N \leftarrow</latex> the rules of C, evaluated with
   at least one atom from <latex>\Delta</latex>, in canonical order; <<$rrs_tl_engine>>
   :<latex>\Delta \leftarrow N \setminus R</latex>
@@ -50,11 +51,12 @@ note right
 end note
 stop
 
+' Changed by decision 89: the node has no host-work meter, so the legend has no meter row. The row before:
+' |<$rrs_meter>     | a reservation on the host-work meter |
 legend bottom
 **Concept colors**
 |<$rrs_tl_term>   | the component |
 |<$rrs_tl_engine> | a step of the iteration |
-|<$rrs_meter>     | a reservation on the host-work meter |
 |<$rrs_effect>    | the result |
 endlegend
 @enduml

@@ -3,9 +3,16 @@ use std::collections::HashMap;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::g_unforgeable::UnfInstance;
+// Changed by decision 112: a use block is a term of a process. The text before:
+// ```
+// use models::rhoapi::{
+//     Bundle, Connective, CostSignedTerm, CostStack, Expr, GPrivate, GUnforgeable, If, Match, New,
+//     Par, Receive, Send,
+// };
+// ```
 use models::rhoapi::{
     Bundle, Connective, CostSignedTerm, CostStack, Expr, GPrivate, GUnforgeable, If, Match, New,
-    Par, Receive, Send,
+    Par, Receive, Send, UseBlock,
 };
 use models::rust::utils::union;
 use prost::Message;
@@ -33,6 +40,7 @@ pub enum GeneratedMessage {
     If(If),
     CostSignedTerm(CostSignedTerm),
     CostStack(CostStack),
+    UseBlock(UseBlock),
 }
 
 impl GeneratedMessage {
@@ -47,18 +55,27 @@ impl GeneratedMessage {
             Self::If(value) => value.encoded_len(),
             Self::CostSignedTerm(value) => value.encoded_len(),
             Self::CostStack(value) => value.encoded_len(),
+            Self::UseBlock(value) => value.encoded_len(),
         }
     }
 }
 
-/// True when the reducer evaluates `expr` as a term of its process `Par`: a variable, a
-/// method call, or a USE or NEWSPACE marker tuple (Reified RSpaces hook H1).
+// Changed by decision 112: no marker tuple is a process. The text before:
+// ```
+// /// True when the reducer evaluates `expr` as a term of its process `Par`: a variable, a
+// /// method call, or a USE or NEWSPACE marker tuple (Reified RSpaces hook H1).
+// ```
+/// True when the reducer evaluates `expr` as a term of its process `Par`: a variable or a
+/// method call (Reified RSpaces hook H1).
 pub fn is_evaluated_process_expr(expr: &Expr) -> bool {
     match &expr.expr_instance {
         Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_)) => true,
-        Some(ExprInstance::ETupleBody(tuple)) => {
-            models::rust::reified::encoding::is_process_marker_tuple(tuple)
-        }
+        // Retired by decision 112: a use block is a Par field, and no marker tuple is a process.
+        // ```
+        // Some(ExprInstance::ETupleBody(tuple)) => {
+        //     models::rust::reified::encoding::is_process_marker_tuple(tuple)
+        // }
+        // ```
         _ => false,
     }
 }
@@ -97,6 +114,14 @@ pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {
             .collect(),
         par.exprs
             .iter()
+            // Changed by Reified RSpaces (decision 22, hook H1): one shared predicate replaces
+            // both copies of this filter.
+            // .filter(|expr| {
+            //     matches!(
+            //         expr.expr_instance,
+            //         Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
+            //     )
+            // })
             .filter(|expr| is_evaluated_process_expr(expr))
             .cloned()
             .map(GeneratedMessage::Expr)
@@ -110,6 +135,11 @@ pub fn evaluation_terms(par: &Par) -> Vec<GeneratedMessage> {
             .iter()
             .cloned()
             .map(GeneratedMessage::CostStack)
+            .collect(),
+        par.use_blocks
+            .iter()
+            .cloned()
+            .map(GeneratedMessage::UseBlock)
             .collect(),
     ]
     .into_iter()
@@ -142,6 +172,14 @@ pub fn owned_evaluation_terms(par: Par) -> Vec<GeneratedMessage> {
             .collect(),
         par.exprs
             .into_iter()
+            // Changed by Reified RSpaces (decision 22, hook H1): one shared predicate replaces
+            // both copies of this filter.
+            // .filter(|expr| {
+            //     matches!(
+            //         expr.expr_instance,
+            //         Some(ExprInstance::EVarBody(_)) | Some(ExprInstance::EMethodBody(_))
+            //     )
+            // })
             .filter(|expr| is_evaluated_process_expr(expr))
             .map(GeneratedMessage::Expr)
             .collect(),
@@ -152,6 +190,10 @@ pub fn owned_evaluation_terms(par: Par) -> Vec<GeneratedMessage> {
         par.cost_stacks
             .into_iter()
             .map(GeneratedMessage::CostStack)
+            .collect(),
+        par.use_blocks
+            .into_iter()
+            .map(GeneratedMessage::UseBlock)
             .collect(),
     ]
     .into_iter()
@@ -207,7 +249,9 @@ pub fn allocate_new_bindings(
             Some(value) => value.clone(),
             None => match new.injections.get(urn) {
                 Some(value) => {
-                    if let Some(unforgeable) = RhoUnforgeable::unapply(value) {
+                    if value == &Par::default() {
+                        Par::default()
+                    } else if let Some(unforgeable) = RhoUnforgeable::unapply(value) {
                         let instance = unforgeable.unf_instance.ok_or_else(|| {
                             InterpreterError::BugFoundError(
                                 "unf_instance field is None".to_string(),

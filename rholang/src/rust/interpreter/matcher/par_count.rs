@@ -13,6 +13,7 @@ pub struct ParCount {
     pub conditionals: usize,
     pub cost_signed_terms: usize,
     pub cost_stacks: usize,
+    pub use_blocks: usize,
 }
 
 impl ParCount {
@@ -28,6 +29,7 @@ impl ParCount {
             conditionals: par.conditionals.len(),
             cost_signed_terms: par.cost_signed_terms.len(),
             cost_stacks: par.cost_stacks.len(),
+            use_blocks: par.use_blocks.len(),
         }
     }
 
@@ -62,6 +64,7 @@ impl ParCount {
             conditionals: 0,
             cost_signed_terms: 0,
             cost_stacks: 0,
+            use_blocks: 0,
         }
     }
 
@@ -77,6 +80,7 @@ impl ParCount {
             conditionals: self.conditionals.max(other.conditionals),
             cost_signed_terms: self.cost_signed_terms.max(other.cost_signed_terms),
             cost_stacks: self.cost_stacks.max(other.cost_stacks),
+            use_blocks: self.use_blocks.max(other.use_blocks),
         }
     }
 
@@ -92,6 +96,7 @@ impl ParCount {
             conditionals: 1000,
             cost_signed_terms: 1000,
             cost_stacks: 1000,
+            use_blocks: 1000,
         }
     }
 
@@ -107,6 +112,7 @@ impl ParCount {
             conditionals: self.conditionals.min(other.conditionals),
             cost_signed_terms: self.cost_signed_terms.min(other.cost_signed_terms),
             cost_stacks: self.cost_stacks.min(other.cost_stacks),
+            use_blocks: self.use_blocks.min(other.use_blocks),
         }
     }
 
@@ -124,6 +130,7 @@ impl ParCount {
                 .cost_signed_terms
                 .saturating_add(other.cost_signed_terms),
             cost_stacks: self.cost_stacks.saturating_add(other.cost_stacks),
+            use_blocks: self.use_blocks.saturating_add(other.use_blocks),
         }
     }
 

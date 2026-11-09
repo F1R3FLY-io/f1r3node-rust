@@ -21,6 +21,9 @@ fn evidence<'a>(payload: &'a [u8]) -> NativeCostEvidenceV1<'a> {
         phlo_limit: 23,
         phlo_price: 7,
         fee_rev: 11,
+        // Added by G3 (DR-135, S7): no owner funding.
+        owner_phlo: 0,
+        owner_rev: 0,
         failure_class: NativeCostFailureClass::Success,
         wallet_settlement_log_events: 5,
         budget_recording: payload,
@@ -105,5 +108,104 @@ fn evidence_prices_fresh_and_retained_phlo_within_the_execution_limit() {
     assert_eq!(
         record.encode(limits()),
         Err(NativeCostEvidenceError::PhloBreakdown)
+    );
+}
+
+/// Added by G3 (DR-135, S7): the v1 encoding of `record`, which has no owner
+/// terms.
+fn encode_v1(record: &NativeCostEvidenceV1<'_>) -> Vec<u8> {
+    let mut wire = PhloWireEncoder::new(limits());
+    for field in [
+        NATIVE_COST_EVIDENCE_V1_DOMAIN,
+        &record.envelope_commitment,
+        &record.genesis_policy_commitment,
+        &record.schedule_commitment,
+        &record.original_funding_root,
+        &record.settlement_runtime_root,
+        &record.post_state_root,
+        &record.phlo_used.to_be_bytes(),
+        &record.fresh_phlo.to_be_bytes(),
+        &record.retained_phlo.to_be_bytes(),
+        &record.phlo_limit.to_be_bytes(),
+        &record.phlo_price.to_be_bytes(),
+        &record.fee_rev.to_be_bytes(),
+        &[record.failure_class.as_byte()],
+        &record.wallet_settlement_log_events.to_be_bytes(),
+        record.budget_recording,
+        record.operation_journal,
+        record.funding_case,
+        record.prepaid_delta,
+        record.wallet_settlement,
+    ] {
+        wire.bytes(field).expect("a v1 field fits the limits");
+    }
+    wire.into_bytes()
+}
+
+/// Added by G3 (DR-135, S7): v2 evidence commits the owner phlo and the owner
+/// REV (plan §5). The client pays the fresh phlo that no owner paid at the
+/// signed price, and the owners pay the owner REV at their own prices. With
+/// equal prices the v1 amount holds. A v1 record decodes with no owner terms.
+#[test]
+fn evidence_v2_resource_rev_counts_owner_rev() {
+    let mut record = evidence(b"bounded");
+    record.fresh_phlo = 12;
+    record.retained_phlo = 3;
+    record.owner_phlo = 5;
+    record.owner_rev = 5 * 9;
+    assert_eq!(record.resource_rev().unwrap(), (12 - 5 + 3) * 7 + 5 * 9);
+    assert_eq!(record.rev_spent().unwrap(), (12 - 5 + 3) * 7 + 5 * 9 + 11);
+    let encoded = record.encode(limits()).unwrap();
+    assert_eq!(record.encoded_len(limits()).unwrap(), encoded.len());
+    assert_eq!(
+        NativeCostEvidenceV1::decode(&encoded, limits()).unwrap(),
+        record
+    );
+    record.owner_rev = 5 * 7;
+    assert_eq!(record.resource_rev().unwrap(), (12 + 3) * 7);
+    record.owner_phlo = 13;
+    assert_eq!(
+        record.encode(limits()),
+        Err(NativeCostEvidenceError::OwnerPhlo)
+    );
+    let v1 = evidence(b"bounded");
+    assert_eq!(
+        NativeCostEvidenceV1::decode(&encode_v1(&v1), limits()).unwrap(),
+        v1
+    );
+}
+
+/// Added by G3 (DR-135, S11): item 13. The signed limit bounds only the
+/// caller's part of the used phlo. A run that uses 5 past the limit is
+/// accepted when its owners paid those 5, and it exceeds the limit when
+/// they paid 4. An owner part above the used phlo is rejected.
+#[test]
+fn the_signed_limit_bounds_only_the_client_part() {
+    let mut record = evidence(b"bounded");
+    record.phlo_limit = record.phlo_used - 5;
+    record.owner_phlo = 5;
+    record.owner_rev = 5 * 9;
+    assert_eq!(
+        record
+            .resource_rev()
+            .expect("the owners paid the 5 past the limit"),
+        (17 - 5) * 7 + 5 * 9
+    );
+    let encoded = record
+        .encode(limits())
+        .expect("the client part fits the limit");
+    assert_eq!(
+        NativeCostEvidenceV1::decode(&encoded, limits()).expect("the evidence decodes"),
+        record
+    );
+    record.owner_phlo = 4;
+    assert_eq!(
+        record.encode(limits()),
+        Err(NativeCostEvidenceError::PhloLimit)
+    );
+    record.owner_phlo = record.phlo_used + 1;
+    assert_eq!(
+        record.encode(limits()),
+        Err(NativeCostEvidenceError::OwnerPhlo)
     );
 }

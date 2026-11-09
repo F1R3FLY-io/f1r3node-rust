@@ -29,8 +29,10 @@
 //       fix engages on registry but the rejection is on a different shared
 //       channel (vault, gas accumulator, etc.).
 
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
 
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -126,12 +128,15 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
     );
     // Third sibling deploy so all three validators have a sibling block,
     // ensuring fork choice on the merge proposer multi-parents over them.
-    let nil_sibling_deploy = deploy(
-        "Nil".to_string(),
-        1_000_000,
-        construct_deploy::DEFAULT_SEC2.clone(),
-        3,
-    );
+    // Changed by DR-134 (DR-66 item 1): a block that only fills a sibling slot
+    // carries no offer. Two offers of one signer share a cost cursor, and
+    // DEFAULT_SEC2 also signs bridge2 in the unrelated sibling block2.
+    // let nil_sibling_deploy = deploy(
+    //     "Nil".to_string(),
+    //     1_000_000,
+    //     construct_deploy::DEFAULT_SEC2.clone(),
+    //     3,
+    // );
 
     let bridge1_sig = bridge1_deploy.sig.clone();
     let bridge2_sig = bridge2_deploy.sig.clone();
@@ -146,8 +151,14 @@ async fn two_concurrent_bridges_should_merge_without_rejection() {
         .add_block_from_deploys(std::slice::from_ref(&bridge2_deploy))
         .await
         .expect("validator 1 propose bridge2");
+    // Changed by DR-134 (DR-66 item 1): the third sibling is an empty block,
+    // which heartbeat mode allows.
+    // let block3 = nodes[2]
+    //     .add_block_from_deploys(std::slice::from_ref(&nil_sibling_deploy))
+    //     .await
+    //     .expect("validator 2 propose third sibling");
     let block3 = nodes[2]
-        .add_block_from_deploys(std::slice::from_ref(&nil_sibling_deploy))
+        .add_block_from_deploys(&[])
         .await
         .expect("validator 2 propose third sibling");
 

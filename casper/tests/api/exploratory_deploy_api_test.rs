@@ -6,12 +6,16 @@
 use std::collections::HashMap;
 
 use casper::rust::api::block_api::BlockAPI;
-use casper::rust::util::construct_deploy;
 use casper::rust::util::construct_deploy::{DEFAULT_PUB, DEFAULT_PUB2, DEFAULT_SEC};
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::g_unforgeable::UnfInstance;
 use models::rhoapi::{GDeployId, Par};
 
+// Changed by DR-134 (DR-66 item 1): the tests create their blocks from offered
+// deploys, because Casper refuses body-only deploys. The offered builders keep
+// the signatures of the legacy builders.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -452,7 +456,18 @@ async fn estimate_cost_with_deployer_matches_real_deploy_cost() {
         !transfer_block.body.deploys.is_empty(),
         "Block should contain the deploy"
     );
-    let actual_cost = transfer_block.body.deploys[0].cost().cost;
+    // Changed by DR-134 (DR-66 item 1): the real cost of an offered deploy is
+    // the measured phlo of its settlement receipt. DR-71 makes the exploratory
+    // estimate of the same term, key and root equal to that phlo.
+    // let actual_cost = transfer_block.body.deploys[0].cost().cost;
+    let actual_cost = BlockAPI::find_offered_settlement_receipt(
+        &nodes[0].engine_cell,
+        &transfer_block.body.deploys[0].identity_bytes().to_vec(),
+    )
+    .await
+    .expect("the settlement receipt query should succeed")
+    .expect("the transfer block should hold the settlement receipt of the offer")
+    .phlo_used;
     tracing::info!("Real deploy cost: {}", actual_cost);
 
     // Step 2: Get the parent block's post-state hash (state before the transfer)

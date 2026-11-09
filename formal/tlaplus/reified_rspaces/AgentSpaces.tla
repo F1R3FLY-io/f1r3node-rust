@@ -65,7 +65,7 @@
 (*                         the other invariants hold                       *)
 (*                                                                         *)
 (* Code (paths under rholang/src/rust/interpreter):                        *)
-(*   Route            reified/route.rs:126-160 (classify_channel),         *)
+(*   Route            reified/route.rs:128-162 (classify_channel),         *)
 (*                    173-227 (route)                                      *)
 (*   JoinOutcome      reified/reducer_hooks.rs:1444-1484 (join_route),     *)
 (*                    1452-1471 (one_agent)                                *)

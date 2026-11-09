@@ -26,13 +26,22 @@
 //!   fails at `new` and leaves no space data. A creation or a stored config that names one fails
 //!   in the family agent with `FamilyUnavailable`.
 //! * The six HashSet families (P7 step 3, HS-6) with a qualifier other than `seq`: their factory
-//!   refuses `default` and `temp` with `BadConstructorArgument`. Legacy execution also refuses
-//!   `seq` (QT-5), so the legacy rows create no HashSet space. The HashSet rows of the matrix run
-//!   in native execution (below).
+//!   refuses `default` and `temp` with `BadConstructorArgument`. The HashSet rows of the matrix
+//!   run in `seq` spaces (below).
 //!
-//! **Qualifiers.** The rows above run in legacy execution, which refuses the `seq` qualifier with
-//! `QualifierUnavailable` on every factory of this wave, before the gates of the params (P7,
-//! design v3 QT-5).
+//! **Qualifiers.** The rows above run in native execution, the one execution model of spaces
+//! (decision 90, C6). No factory refuses a qualifier that its store takes, so the native rows
+//! below run the wired families in `temp` and `seq` spaces.
+// Changed by decision 90 (C6, step D): the session runs native deploys, and gate 3 reads no
+// execution model. The legacy text follows.
+// //! * The six HashSet families (P7 step 3, HS-6) with a qualifier other than `seq`: their factory
+// //!   refuses `default` and `temp` with `BadConstructorArgument`. Legacy execution also refuses
+// //!   `seq` (QT-5), so the legacy rows create no HashSet space. The HashSet rows of the matrix run
+// //!   in native execution (below).
+// //!
+// //! **Qualifiers.** The rows above run in legacy execution, which refuses the `seq` qualifier with
+// //! `QualifierUnavailable` on every factory of this wave, before the gates of the params (P7,
+// //! design v3 QT-5).
 //!
 //! **The native rows of P7 (design v3 section 10, A7; F17 of decision 39).** A `temp` or `seq`
 //! space lives for one deploy, so each of these rows runs in one native deploy that certifies
@@ -72,7 +81,9 @@ use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::agent::{SpaceAgent, SpaceOp};
 use rholang::rust::interpreter::spaces::errors::SpaceError;
-use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+// Changed by decision 90 (C6, step D): the factory reads no execution model.
+// use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
 use rholang::rust::interpreter::spaces::factory::defaults::constructor_schema;
 use rholang::rust::interpreter::spaces::factory::urn::registered_channel;
 use rholang::rust::interpreter::spaces::families::{send_params, Family, FamilyAgent};
@@ -657,6 +668,9 @@ fn config_qualifier(family: SpaceFactoryUrn) -> ConfigQualifier {
         SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector => {
             ConfigQualifier::Default
         }
+        // Added by decision 127 (kind registry): `SpaceOuter` is a name, so the match needs a
+        // wildcard. No family of the suite reaches it.
+        _ => ConfigQualifier::Default,
     }
 }
 
@@ -668,19 +682,34 @@ fn unavailable(outer: SpaceOuter, inner: SpaceInner) -> SpaceError {
     }
 }
 
+// Changed by decision 90 (C6, step D): gate 3 reads no execution model, and the session runs
+// native deploys. The legacy text follows.
+//
+// /// The pairs that the URN grammar refuses, and the HashSet families with a qualifier other than
+// /// `seq`, reject before any space exists, at every layer:
+// ///
+// /// * The URN parser refuses the pairs of [`REFUSED_PAIRS`] with `UnsupportedPair`.
+// /// * Each HashSet family has a registered factory, a dispatch arm, a send schema and a
+// ///   constructor schema (P7 step 3). Its constructor refuses `default` and `temp` with
+// ///   `BadConstructorArgument` in both execution models, and legacy execution refuses `seq` with
+// ///   `QualifierUnavailable` (QT-5).
+// /// * The family agent refuses the creation of each refused pair with `FamilyUnavailable`, and it
+// ///   stores nothing. A send on a space whose stored config names the pair fails the same way.
+// /// * A Rholang deploy that names the factory of a refused pair fails at `new`, before any space
+// ///   work. A legacy deploy that calls a HashSet factory fails with the code of its qualifier. No
+// ///   deploy leaves space data.
 /// The pairs that the URN grammar refuses, and the HashSet families with a qualifier other than
 /// `seq`, reject before any space exists, at every layer:
 ///
 /// * The URN parser refuses the pairs of [`REFUSED_PAIRS`] with `UnsupportedPair`.
 /// * Each HashSet family has a registered factory, a dispatch arm, a send schema and a
-///   constructor schema (P7 step 3). Its constructor refuses `default` and `temp` with
-///   `BadConstructorArgument` in both execution models, and legacy execution refuses `seq` with
-///   `QualifierUnavailable` (QT-5).
+///   constructor schema (P7 step 3). Its constructor takes `seq`, and it refuses `default` and
+///   `temp` with `BadConstructorArgument`.
 /// * The family agent refuses the creation of each refused pair with `FamilyUnavailable`, and it
 ///   stores nothing. A send on a space whose stored config names the pair fails the same way.
 /// * A Rholang deploy that names the factory of a refused pair fails at `new`, before any space
-///   work. A legacy deploy that calls a HashSet factory fails with the code of its qualifier. No
-///   deploy leaves space data.
+///   work. A deploy that calls a HashSet factory with `default` or `temp` fails with
+///   `BadConstructorArgument`. No deploy leaves space data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pattern_enforcement_unsupported_pairs_reject() {
     // Changed by P7 step 3 (design v3 HS-7): the HashSet families are registered.
@@ -738,25 +767,39 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
                 Vec::new(),
                 false,
             );
-            for execution in [Execution::Native, Execution::Legacy] {
-                let validated = FactoryConstructor::validate_in(*family, &ctor, execution);
-                match (qualifier, execution) {
-                    (SpaceQualifier::Seq, Execution::Native) => {
-                        assert!(validated.is_ok(), "{family} {qualifier}: {validated:?}")
-                    }
-                    (SpaceQualifier::Seq, Execution::Legacy) => assert_eq!(
-                        validated,
-                        Err(SpaceError::QualifierUnavailable("seq".to_string())),
-                        "{family}"
-                    ),
-                    (SpaceQualifier::Default | SpaceQualifier::Temp, _) => assert_eq!(
-                        validated,
-                        Err(SpaceError::BadConstructorArgument(format!(
-                            "the hashset outer store does not take the {qualifier} qualifier"
-                        ))),
-                        "{family} {qualifier} {execution:?}"
-                    ),
+            // Changed by decision 90 (C6, step D): gate 3 reads no execution model.
+            // for execution in [Execution::Native, Execution::Legacy] {
+            //     let validated = FactoryConstructor::validate_in(*family, &ctor, execution);
+            //     match (qualifier, execution) {
+            //         (SpaceQualifier::Seq, Execution::Native) => {
+            //             assert!(validated.is_ok(), "{family} {qualifier}: {validated:?}")
+            //         }
+            //         (SpaceQualifier::Seq, Execution::Legacy) => assert_eq!(
+            //             validated,
+            //             Err(SpaceError::QualifierUnavailable("seq".to_string())),
+            //             "{family}"
+            //         ),
+            //         (SpaceQualifier::Default | SpaceQualifier::Temp, _) => assert_eq!(
+            //             validated,
+            //             Err(SpaceError::BadConstructorArgument(format!(
+            //                 "the hashset outer store does not take the {qualifier} qualifier"
+            //             ))),
+            //             "{family} {qualifier} {execution:?}"
+            //         ),
+            //     }
+            // }
+            let validated = FactoryConstructor::validate(*family, &ctor);
+            match qualifier {
+                SpaceQualifier::Seq => {
+                    assert!(validated.is_ok(), "{family} {qualifier}: {validated:?}")
                 }
+                SpaceQualifier::Default | SpaceQualifier::Temp => assert_eq!(
+                    validated,
+                    Err(SpaceError::BadConstructorArgument(format!(
+                        "the hashset outer store does not take the {qualifier} qualifier"
+                    ))),
+                    "{family} {qualifier}"
+                ),
             }
         }
     }
@@ -851,13 +894,18 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
             assert!(deploy.residue.is_empty(), "{urn} {qualifier}");
         }
     }
-    // A legacy deploy that calls a HashSet factory fails with the code of its qualifier and
-    // leaves no space data.
+    // Changed by decision 90 (C6, step D): the session runs native deploys, where a HashSet
+    // factory creates a seq space. The legacy comment follows.
+    // // A legacy deploy that calls a HashSet factory fails with the code of its qualifier and
+    // // leaves no space data.
+    // A deploy that calls a HashSet factory with `default` or `temp` fails with
+    // `BadConstructorArgument` and leaves no space data.
     for family in &hashsets {
         for (qualifier, code) in [
             ("default", "BadConstructorArgument"),
             ("temp", "BadConstructorArgument"),
-            ("seq", "QualifierUnavailable"),
+            // Retired by decision 90 (C6, step D): a native deploy creates a seq HashSet space.
+            // ("seq", "QualifierUnavailable"),
         ] {
             let source = format!(
                 r#"new factory(`{family}`) in {{ for (space <- factory!?("{qualifier}")) {{ for (a <- space!?("gensym")) {{ for ( <- a) {{ @"{GOT}"!(["unsupported", 42]) }} | a!() }} }} }}"#
@@ -877,75 +925,83 @@ async fn pattern_enforcement_unsupported_pairs_reject() {
 
 // ─── Qualifiers ──────────────────────────────────────────────────────────────────────────────
 
-/// Legacy execution refuses the `seq` qualifier with `QualifierUnavailable`, because its rules
-/// need the job order of native execution (P7, design v3 QT-5). The constructor of every family
-/// with a schema refuses it in legacy execution, before its params: an Array factory without
-/// its required `size` reports the qualifier, not the missing param. Every factory of the rows
-/// of this wave refuses it in a legacy Rholang deploy, which leaves no space data and runs no
-/// body. P7 step 1 makes `temp` available (design v3 QT-1). Its rows of the matrix follow F17.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pattern_enforcement_qualifiers_fail_closed() {
-    for family in SpaceFactoryUrn::all().filter(|family| constructor_schema(*family).is_some()) {
-        // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
-        // for qualifier in [SpaceQualifier::Temp, SpaceQualifier::Seq] {
-        // Changed by P7 step 6: a loop over `seq` alone has one element, which clippy rejects
-        // (single_element_loop), so the qualifier is a binding.
-        // for qualifier in [SpaceQualifier::Seq] {
-        {
-            let qualifier = SpaceQualifier::Seq;
-            let ctor = new_elist_par(
-                vec![gstring(qualifier.as_str())],
-                Vec::new(),
-                false,
-                None,
-                Vec::new(),
-                false,
-            );
-            // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`, so the
-            // check names the legacy model.
-            // assert_eq!(
-            //     FactoryConstructor::validate(family, &ctor),
-            assert_eq!(
-                FactoryConstructor::validate_in(family, &ctor, Execution::Legacy),
-                Err(SpaceError::QualifierUnavailable(
-                    qualifier.as_str().to_string()
-                )),
-                "{family} {qualifier}"
-            );
-        }
-    }
-    let mut session = Session::new().await;
-    for row in ROWS {
-        let urn = row.family().to_string();
-        // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
-        // for qualifier in ["temp", "seq"] {
-        // Changed by P7 step 6: a loop over `seq` alone has one element, which clippy rejects
-        // (single_element_loop), so the qualifier is a binding.
-        // for qualifier in ["seq"] {
-        {
-            let qualifier = "seq";
-            let mut ctors = vec![row.constructor.replace("default", qualifier)];
-            let without_params = format!(r#""{qualifier}""#);
-            if !ctors.contains(&without_params) {
-                ctors.push(without_params);
-            }
-            for ctor in ctors {
-                let source = format!(
-                    r#"new factory(`{urn}`) in {{ for (space <- factory!?({ctor})) {{ @"{GOT}"!(["created", 0]) }} }}"#
-                );
-                session
-                    .fail_with(
-                        &source,
-                        &format!("rrs-n3 qualifier {urn} {ctor}"),
-                        &Injections::new(),
-                        &["QualifierUnavailable"],
-                    )
-                    .await;
-            }
-        }
-    }
-    assert!(session.values(GOT).await.is_empty());
-}
+// Disabled by decision 90 (C6, step D): spaces run only in native execution, so no factory
+// refuses `seq`, and the session runs native deploys. Its successors are
+// `pattern_enforcement_seq_rows`, which creates a seq space of every wired family, and the
+// factory tests of `reified/factory.rs`. Outside native execution, a factory call fails with
+// `RuntimeUnavailable` before every gate.
+//
+// ```
+// /// Legacy execution refuses the `seq` qualifier with `QualifierUnavailable`, because its rules
+// /// need the job order of native execution (P7, design v3 QT-5). The constructor of every family
+// /// with a schema refuses it in legacy execution, before its params: an Array factory without
+// /// its required `size` reports the qualifier, not the missing param. Every factory of the rows
+// /// of this wave refuses it in a legacy Rholang deploy, which leaves no space data and runs no
+// /// body. P7 step 1 makes `temp` available (design v3 QT-1). Its rows of the matrix follow F17.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn pattern_enforcement_qualifiers_fail_closed() {
+//     for family in SpaceFactoryUrn::all().filter(|family| constructor_schema(*family).is_some()) {
+//         // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
+//         // for qualifier in [SpaceQualifier::Temp, SpaceQualifier::Seq] {
+//         // Changed by P7 step 6: a loop over `seq` alone has one element, which clippy rejects
+//         // (single_element_loop), so the qualifier is a binding.
+//         // for qualifier in [SpaceQualifier::Seq] {
+//         {
+//             let qualifier = SpaceQualifier::Seq;
+//             let ctor = new_elist_par(
+//                 vec![gstring(qualifier.as_str())],
+//                 Vec::new(),
+//                 false,
+//                 None,
+//                 Vec::new(),
+//                 false,
+//             );
+//             // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`, so the
+//             // check names the legacy model.
+//             // assert_eq!(
+//             //     FactoryConstructor::validate(family, &ctor),
+//             assert_eq!(
+//                 FactoryConstructor::validate_in(family, &ctor, Execution::Legacy),
+//                 Err(SpaceError::QualifierUnavailable(
+//                     qualifier.as_str().to_string()
+//                 )),
+//                 "{family} {qualifier}"
+//             );
+//         }
+//     }
+//     let mut session = Session::new().await;
+//     for row in ROWS {
+//         let urn = row.family().to_string();
+//         // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
+//         // for qualifier in ["temp", "seq"] {
+//         // Changed by P7 step 6: a loop over `seq` alone has one element, which clippy rejects
+//         // (single_element_loop), so the qualifier is a binding.
+//         // for qualifier in ["seq"] {
+//         {
+//             let qualifier = "seq";
+//             let mut ctors = vec![row.constructor.replace("default", qualifier)];
+//             let without_params = format!(r#""{qualifier}""#);
+//             if !ctors.contains(&without_params) {
+//                 ctors.push(without_params);
+//             }
+//             for ctor in ctors {
+//                 let source = format!(
+//                     r#"new factory(`{urn}`) in {{ for (space <- factory!?({ctor})) {{ @"{GOT}"!(["created", 0]) }} }}"#
+//                 );
+//                 session
+//                     .fail_with(
+//                         &source,
+//                         &format!("rrs-n3 qualifier {urn} {ctor}"),
+//                         &Injections::new(),
+//                         &["QualifierUnavailable"],
+//                     )
+//                     .await;
+//             }
+//         }
+//     }
+//     assert!(session.values(GOT).await.is_empty());
+// }
+// ```
 
 // ─── Property ────────────────────────────────────────────────────────────────────────────────
 
@@ -1423,11 +1479,13 @@ fn seq_row_events(label: &str, played: &Played) -> (usize, usize, usize) {
 
 /// The hashes of the data and index channels of `space` that the space rows of `played` lock.
 fn stored_hashes_of(played: &Played, space: NativeSpace) -> Vec<Blake2b256Hash> {
-    let recording = played
-        .result
-        .native_budget_recording
-        .as_ref()
-        .expect("native play records its budget");
+    // Changed by decision 92: a space row names the counter channel of its space, so
+    // `is_space_row` reads only the row, not the recording.
+    // let recording = played
+    //     .result
+    //     .native_budget_recording
+    //     .as_ref()
+    //     .expect("native play records its budget");
     let journal = played
         .result
         .native_operation_recording
@@ -1435,7 +1493,7 @@ fn stored_hashes_of(played: &Played, space: NativeSpace) -> Vec<Blake2b256Hash> 
         .expect("native play records its operations");
     let mut hashes: Vec<Blake2b256Hash> = journal
         .iter()
-        .filter(|row| is_space_row(recording, row))
+        .filter(|row| is_space_row(row))
         .flat_map(footprint_channels)
         .filter(|channel| {
             matches!(

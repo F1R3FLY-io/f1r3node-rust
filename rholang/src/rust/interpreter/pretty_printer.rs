@@ -375,6 +375,28 @@ impl PrettyPrinter {
                     Ok(format!("({})", self.build_vec(ps),))
                 }
 
+                ExprInstance::EFreeBody(free) => Ok(format!(
+                    "free {}({})",
+                    free.theory,
+                    self.build_vec(&free.args)
+                )),
+
+                ExprInstance::EParamsBody(params) => {
+                    let named = params
+                        .named
+                        .iter()
+                        .map(|(key, value)| {
+                            format!("{} = {}", key, self.build_string_from_message(value))
+                        })
+                        .collect::<Vec<String>>()
+                        .join(", ");
+                    Ok(format!(
+                        "({}; {})",
+                        self.build_vec(&params.positional),
+                        named
+                    ))
+                }
+
                 ExprInstance::ESetBody(eset) => {
                     let par_set = ParSetTypeMapper::eset_to_par_set(eset.clone());
                     let pars = par_set.ps;
@@ -909,6 +931,28 @@ impl PrettyPrinter {
                 },
                 None => Ok(String::new()),
             }
+        } else if let Some(block) = m.downcast_ref::<models::rhoapi::UseBlock>() {
+            let space = self._build_channel_string(
+                block
+                    .space
+                    .as_ref()
+                    .expect("space field on UseBlock was None, should be Some"),
+                indent,
+            )?;
+            let body = self._build_string_from_message(
+                block
+                    .body
+                    .as_ref()
+                    .expect("body field on UseBlock was None, should be Some"),
+                indent + 1,
+            )?;
+            Ok(format!(
+                "use {} {{\n{}{}\n{}}}",
+                space,
+                self.indent_string().repeat(indent + 1),
+                body,
+                self.indent_string().repeat(indent)
+            ))
         } else if let Some(p) = m.downcast_ref::<Par>() {
             if self.is_empty_par(p) {
                 Ok(String::from("Nil"))
@@ -1035,6 +1079,21 @@ impl PrettyPrinter {
                                 .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
                         }
                     }
+                    prev_non_empty = true;
+                }
+
+                // Process use blocks
+                if !p.use_blocks.is_empty() {
+                    if prev_non_empty {
+                        result.push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                    }
+                    for (index, block) in p.use_blocks.iter().enumerate() {
+                        result.push_str(&self._build_string_from_message(block, indent)?);
+                        if index != p.use_blocks.len() - 1 {
+                            result
+                                .push_str(&format!(" |\n{}", self.indent_string().repeat(indent)));
+                        }
+                    }
                 }
 
                 Ok(result)
@@ -1154,6 +1213,7 @@ impl PrettyPrinter {
             && p.unforgeables.is_empty()
             && p.bundles.is_empty()
             && p.connectives.is_empty()
+            && p.use_blocks.is_empty()
     }
 
     fn is_new_var(level: &i32, news_shift_indices: Vec<i32>, bound_shift: i32) -> bool {
@@ -1815,6 +1875,7 @@ mod tests {
                     persistent,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    params: None,
                 }],
                 ..Default::default()
             };
@@ -1905,6 +1966,7 @@ mod tests {
                         remainder: None,
                         free_count: 1,
                         cost_signature: None,
+                        query_spec: None,
                     }],
                     body: Some(Par::default()),
                     persistent,
@@ -1939,6 +2001,7 @@ mod tests {
                     persistent: false,
                     locally_free: Vec::new(),
                     connective_used: false,
+                    params: None,
                 }],
                 exprs: vec![expr(ExprInstance::GInt(1))],
                 ..Default::default()

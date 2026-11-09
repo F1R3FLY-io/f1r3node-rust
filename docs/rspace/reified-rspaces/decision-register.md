@@ -22,7 +22,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 
 - **Plan:** the realignment and completion plan [[PLAN](#ref-plan)].
 - **Ledger:** the design ledger of 2026-08-15 in the [design record](design-record/2026-08-15-design-ledger.md). It is history, not a specification.
-- **Baseline:** the node code without the campaign changes. The plan calls it HEAD. It was the commit `e748426` until the merge of [decision 44](#decision-44), and it is the commit `4d67b5ccc` since that merge.
+- **Baseline:** the node code without the campaign changes. The plan calls it HEAD. It was the commit `e748426` until the merge of [decision 44](#decision-44), and the commit `4d67b5ccc` from that merge to merge 1. Merge 1 moved it to `4c58a925f` ([decision 89](#decision-89)), and merge 2 moves it to `702496775` ([decision 90](#decision-90)).
 - **Codex:** the earlier agent session that ran the campaign from 2026-10-01 to 2026-10-03 and diverged from the design.
 - **Phase:** one of the plan steps P0 to P12. The [README](README.md#campaign-phases) lists them.
 - **pgmcp:** the service that indexes the workspace and holds the tracker of the campaign.
@@ -42,6 +42,14 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 - **FLT:** a Foreign Language Term, which is a scoped term of an installed guest language in F1r3lang.
 - **GSLT:** a graph-structured lambda theory: the form in which F1r3lang defines a language, with its sorts, term constructors, equations and rewrites.
 - **URI binder:** a `new` binder with a URN, such as ``new x(`rho:io:stdout`)``.
+- **Base:** the branch `feature/cost-accounted-rho`, which this branch merges. Merge 1 took it at `4c58a925f` ([decision 89](#decision-89)), and merge 2 takes it at `702496775` ([decision 90](#decision-90)).
+- **DR file:** the decision records of the base, `docs/casper/theory/cost-accounting-decision-records.md`. A cite such as "DR file, lines 12959-12961" names lines of this file, which merge 2 takes unchanged from `702496775`.
+- **Labels of the base:** DR-75 to DR-135 are decision records in the DR file. A label such as DR-114 T7, DR-129 E1 or DR-135 R4 names an item of a record. The rule P2 of DR-114 and the test F7 of DR-129 are such items. P-1 and P-6 are properties of DR-132.
+- **C4 labels:** C4 is the work item of merge 2 for owner refusals inside a space transaction. Its design report asks the questions Q1 and Q2. Its arbitration gives the findings F1 to F13 and the classification B1, by which the machinery continuations are system work.
+- **Labels of decisions 117 to 121:** one design covers decisions 102 and 103 and the item C4. Its open points are Q-102-1 to Q-102-3, Q-103-1 to Q-103-4 and Q-C4-1. G1 to G10 name the defects and the gaps of its arbitration, and S1 to S6 name the reductions. R-A and R-B are the options of question Q-102-3. O-1 to O-5 are the open points of decision 112, and B-1 is an item of its plan. R0 and R1 are the captures of decision 120.
+- **Machinery continuation:** a continuation that the Reified agent synthesizes to keep the protocol state of a space. `K(v)` takes the counter record (`spaces/counter.rs`), and `K_anchor` consumes the config record (`spaces/anchor.rs`, [decision 92](#decision-92)). `K_lift` lifts a stored record for a settle (`spaces/settle.rs`), and `K_retire` retires one stored record (`spaces/disciplines/scan.rs`).
+- **Positional failure:** an error of a staging that depends on the state of the space at the place of its transaction. A later state can remove it. The errors are `CellOccupied`, `CapacityExceeded` and `NestedCommitGuard` (`spaces/errors.rs:350-354`). Such a transaction commits only its anchor ([decision 92](#decision-92)).
+- **Oracle mode:** the mode of the File I/O FIPS in which each node owns its external store. Play calls the service once for each call and records the reply, and replay delivers the record. Nothing undoes an external write (DR-114).
 - **Acronyms:** API is application programming interface, ABI is application binary interface, AST is abstract syntax tree, and CLI is command-line interface. TLA+ is the specification language of the TLA model checks.
 
 ## Index
@@ -53,7 +61,7 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 3](#decision-3) | F1r3lang ownership | 2026-10-03 | In force |
 | [Decision 4](#decision-4) | Parser isolation | 2026-10-03 | In force |
 | [Decision 5](#decision-5) | Realignment method | 2026-10-03 | In force |
-| [Decision 6](#decision-6) | Milestone commits | 2026-10-03 | Fixture part superseded by decision 18 |
+| [Decision 6](#decision-6) | Milestone commits | 2026-10-03 | Fixture part superseded by decision 18. [Decision 112](#decision-112) needs the fixture commit again |
 | [Decision 7](#decision-7) | Namespace tag 0xE0 | 2026-10-03 | In force |
 | [Decision 8](#decision-8) | Agent-shaped API | 2026-10-03 | In force |
 | [Decision 9](#decision-9) | Approved design proposals | 2026-10-03 | In force. Item 1 (the theory seam) implemented in P7 step 4, with the slot of decision 74 |
@@ -62,24 +70,24 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 12](#decision-12) | Lane rule | 2026-10-04 | In force |
 | [Decision 13](#decision-13) | Verification command defaults | 2026-10-04 | In force |
 | [Decision 14](#decision-14) | Rocq line-reference audit | 2026-10-04 | In force |
-| [Decision 15](#decision-15) | Empty-state hash fixture | 2026-10-04 | Fixture commit superseded by decision 18 |
+| [Decision 15](#decision-15) | Empty-state hash fixture | 2026-10-04 | Fixture commit superseded by decision 18. [Decision 112](#decision-112) changes the hash once |
 | [Decision 16](#decision-16) | Tracker dispositions | 2026-10-04 | In force |
 | [Decision 17](#decision-17) | Runtime space registration postponed | 2026-10-04 | In force |
-| [Decision 18](#decision-18) | Marker-tagged tuples | 2026-10-04 | In force. [Decision 81](#decision-81) approved one `casper/src` exception, and [decision 84](#decision-84) reverted it |
+| [Decision 18](#decision-18) | Marker-tagged tuples | 2026-10-04 | Superseded by [decision 112](#decision-112) on 2026-10-27. Merge 2 implemented decision 112. [Decision 81](#decision-81) approved one `casper/src` exception, and [decision 84](#decision-84) reverted it |
 | [Decision 19](#decision-19) | P1 substrate | 2026-10-04 | In force, amended by decisions 30 and 36 |
 | [Decision 20](#decision-20) | Tracker leftovers of TRI-1 | 2026-10-04 | In force |
-| [Decision 21](#decision-21) | Corrected encoding table | 2026-10-04 | In force |
-| [Decision 22](#decision-22) | P2 hooks | 2026-10-04 | In force |
+| [Decision 21](#decision-21) | Corrected encoding table | 2026-10-04 | In force. [Decision 112](#decision-112) replaces its marker tuples with protobuf fields |
+| [Decision 22](#decision-22) | P2 hooks | 2026-10-04 | In force. [Decision 112](#decision-112) amends its hooks |
 | [Decision 23](#decision-23) | P3 parser design | 2026-10-04 | In force |
 | [Decision 24](#decision-24) | Keywords by lookahead | 2026-10-04 | In force |
 | [Decision 25](#decision-25) | Parser-branch commits (UD-9) | 2026-10-04 | In force |
 | [Decision 26](#decision-26) | Completion goal | 2026-10-04 | In force |
 | [Decision 27](#decision-27) | Activation and rollout out of scope | 2026-10-04 | In force |
-| [Decision 28](#decision-28) | Repeated channels in a group | 2026-10-04 | In force |
+| [Decision 28](#decision-28) | Repeated channels in a group | 2026-10-04 | In force. [Decision 103](#decision-103) replaces two clauses, and [decision 118](#decision-118) amends decision 103 |
 | [Decision 29](#decision-29) | Joins into ordered collections in P5 | 2026-10-04 | In force. Implemented in P5 wave W3 |
 | [Decision 30](#decision-30) | Peek fires re-offer the sent value | 2026-10-04 | In force |
 | [Decision 31](#decision-31) | Every operation on an ordered collection bumps its counter | 2026-10-04 | In force |
-| [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force. Its open P8 item is settled by decision 77 |
+| [Decision 32](#decision-32) | P4 plan-text changes | 2026-10-04 | In force. Its open P8 item is settled by decision 77. [Decision 106](#decision-106) replaces item A21 for `embed` and `ann` |
 | [Decision 33](#decision-33) | assertEqual has arity 3 | 2026-10-04 | In force |
 | [Decision 34](#decision-34) | P4 detail items | 2026-10-04 | In force |
 | [Decision 35](#decision-35) | P1 close-out scope: lean, verify at P4 | 2026-10-04 | In force. Its shared freeze moved to P11 by decision 75 |
@@ -87,14 +95,14 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 37](#decision-37) | Receive selection follows the F1r3lang rule from the F1r3lang merge on | 2026-10-05 | In force. Implemented in P12 |
 | [Decision 38](#decision-38) | Priority-queue waiters wait in one queue per level | 2026-10-05 | In force |
 | [Decision 39](#decision-39) | P5 design choices F1 to F17 and F20, without F21 | 2026-10-05 | In force, vetoable value of F9 |
-| [Decision 40](#decision-40) | Space charging follows the cost-accounted-rho policy | 2026-10-05 | In force. Applied in P5 |
-| [Decision 41](#decision-41) | Bag and set spaces order candidates by source hash | 2026-10-05 | In force. Applied in P5a |
-| [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | In force. Implemented |
+| [Decision 40](#decision-40) | Space charging follows the cost-accounted-rho policy | 2026-10-05 | Retired by [decision 89](#decision-89). It was applied in P5 |
+| [Decision 41](#decision-41) | Bag and set spaces order candidates by source hash | 2026-10-05 | Superseded by [decision 102](#decision-102) on 2026-10-27. It was applied in P5a |
+| [Decision 42](#decision-42) | The queue agent's metering is aligned now | 2026-10-05 | Retired by [decision 89](#decision-89). It was implemented |
 | [Decision 43](#decision-43) | A re-issued persistent operation keeps its first-round identity | 2026-10-05 | In force. Implemented |
 | [Decision 44](#decision-44) | Merge of feature/cost-accounted-rho at 4d67b5ccc | 2026-10-05 | In force |
-| [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force. Rule E and Option P implemented |
+| [Decision 45](#decision-45) | Space operations pay the legacy storage charges of the host | 2026-10-06 | In force for Rule E, which is implemented. [Decision 90](#decision-90) removes Option P, as [decision 69](#decision-69) planned |
 | [Decision 46](#decision-46) | Spaces fail closed in native execution | 2026-10-06 | Superseded by decision 47 on 2026-10-07 |
-| [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Implemented on 2026-10-07 |
+| [Decision 47](#decision-47) | Full native support for spaces is its own phase | 2026-10-06 | In force. Implemented on 2026-10-07. [Decision 89](#decision-89) retires its metered view reads |
 | [Decision 48](#decision-48) | The work order after decision 43 | 2026-10-06 | In force |
 | [Decision 49](#decision-49) | One fire count for each space transaction | 2026-10-06 | In force. Implemented in P5 wave W2 |
 | [Decision 50](#decision-50) | Joined set collections cascade | 2026-10-07 | In force. Implemented in P5 wave W3 |
@@ -104,38 +112,83 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [Decision 54](#decision-54) | The number model of tensor logic | 2026-10-07 | In force for P6 decisions. TL-only functions moved to P12 by decision 65 |
 | [Decision 55](#decision-55) | The tensor-logic syntax | 2026-10-07 | Superseded by decision 62 on 2026-10-07 |
 | [Decision 56](#decision-56) | The VectorDB vocabulary | 2026-10-07 | In force, amended by decisions 62 and 66 |
-| [Decision 57](#decision-57) | The recorded processes `embed` and `ann` | 2026-10-07 | In force. Implemented in P6. Native clause superseded by decision 68 |
-| [Decision 58](#decision-58) | The ChromaDB mirror is a hint index | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 57](#decision-57) | The recorded processes `embed` and `ann` | 2026-10-07 | In force. Implemented in P6. Native clause superseded by decision 68. Decisions [105](#decision-105), [113](#decision-113) and [114](#decision-114) amend its replies and its builds |
+| [Decision 58](#decision-58) | The ChromaDB mirror is a hint index | 2026-10-07 | In force. Implementation in P6. Decisions [98](#decision-98), [105](#decision-105) and [114](#decision-114) replace its publication, its failure code and its reconciler |
 | [Decision 59](#decision-59) | The test policy for live services | 2026-10-07 | In force. Implementation in P6 |
-| [Decision 60](#decision-60) | The VectorDB tie-break follows decision 41 | 2026-10-07 | In force. Implementation in P6 |
-| [Decision 61](#decision-61) | Footprint exceptions for the ChromaDB mirror | 2026-10-07 | In force. Implementation in P6 |
+| [Decision 60](#decision-60) | The VectorDB tie-break follows decision 41 | 2026-10-07 | Superseded by [decision 102](#decision-102) on 2026-10-27 |
+| [Decision 61](#decision-61) | Footprint exceptions for the ChromaDB mirror | 2026-10-07 | In force. Implementation in P6. [Decision 114](#decision-114) retires its reconciler spawn, and [decision 109](#decision-109) amends the environment of the nodes |
 | [Decision 62](#decision-62) | Tensor-logic equations are FLT terms of a TensorLogic GSLT | 2026-10-07 | In force. Implementation at P12, after SIG-F |
 | [Decision 63](#decision-63) | The TensorLogic GSLT has an index-notation core and familiar sugar | 2026-10-07 | In force. Implementation at P12 |
 | [Decision 64](#decision-64) | The TensorLogic surface is paper-first, functional and Rholang-flavored | 2026-10-07 | In force. Implementation at P12 |
 | [Decision 65](#decision-65) | The TensorLogic language waits for F1r3lang and does not block VectorDB | 2026-10-07 | In force |
-| [Decision 66](#decision-66) | The answers of the P6 design refresh | 2026-10-08 | In force. Native answer superseded by decision 68 |
-| [Decision 67](#decision-67) | The checks of an `ann` call run in play and in replay | 2026-10-08 | In force |
-| [Decision 68](#decision-68) | `embed` and `ann` leave the native ban | 2026-10-08 | In force |
+| [Decision 66](#decision-66) | The answers of the P6 design refresh | 2026-10-08 | In force. Native answer superseded by decision 68. [Decision 98](#decision-98) replaces the answer M1, and [decision 114](#decision-114) retires the reconciler answer |
+| [Decision 67](#decision-67) | The checks of an `ann` call run in play and in replay | 2026-10-08 | Superseded by [decision 104](#decision-104) on 2026-10-27 |
+| [Decision 68](#decision-68) | `embed` and `ann` leave the native ban | 2026-10-08 | In force. [Decision 89](#decision-89) does its last clause |
 | [Decision 69](#decision-69) | Only the latest execution model | 2026-10-08 | In force |
-| [Decision 70](#decision-70) | Reified RSpaces only | 2026-10-08 | In force |
+| [Decision 70](#decision-70) | Reified RSpaces only | 2026-10-08 | In force. [Decision 114](#decision-114) retires the reconciler of its example |
 | [Decision 71](#decision-71) | `capacity` is a soft bound under merges | 2026-10-08 | In force |
 | [Decision 72](#decision-72) | The P7 design process | 2026-10-09 | In force |
-| [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store) |
+| [Decision 73](#decision-73) | P7 design v2, Seq claims per channel, HashSet on units | 2026-10-09 | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store). [Decision 91](#decision-91) amends the basis of its Seq claims |
 | [Decision 74](#decision-74) | The config persists the theory identity as compact bytes | 2026-10-09 | In force. Implemented in P7 step 4 |
 | [Decision 75](#decision-75) | One pgmcp freeze at P11 | 2026-10-09 | In force |
 | [Decision 76](#decision-76) | The P8 design process | 2026-10-09 | In force |
 | [Decision 77](#decision-77) | P8 design v2, the URNs of the internal ops, the space-view clause | 2026-10-10 | In force |
-| [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 1 |
-| [Decision 79](#decision-79) | The conformance kit keeps the v6 host-work limits | 2026-10-10 | In force. Implemented in P8 step 5 |
+| [Decision 78](#decision-78) | One native replay test runs at the v6 host-work limits | 2026-10-10 | Retired by [decision 89](#decision-89). It was implemented in P8 step 1 |
+| [Decision 79](#decision-79) | The conformance kit keeps the v6 host-work limits | 2026-10-10 | Retired by [decision 89](#decision-89). It was implemented in P8 step 5 |
 | [Decision 80](#decision-80) | The P9 design process | 2026-10-11 | In force |
 | [Decision 81](#decision-81) | Backport the DR-119 fix of bug 11004 | 2026-10-11 | Reverted by [decision 84](#decision-84). It was implemented in P9 step 0 |
-| [Decision 82](#decision-82) | N4 fits three facts of Casper | 2026-10-11 | In force. [Decision 84](#decision-84) disables its concurrent row |
+| [Decision 82](#decision-82) | N4 fits three facts of Casper | 2026-10-11 | In force. [Decision 84](#decision-84) disabled its concurrent row, and [decision 108](#decision-108) restores it |
 | [Decision 83](#decision-83) | The creation job records a seq space | 2026-10-12 | In force. Its second half is a recorded follow-up |
-| [Decision 84](#decision-84) | Revert the DR-119 backport | 2026-10-12 | In force |
+| [Decision 84](#decision-84) | Revert the DR-119 backport | 2026-10-12 | In force. [Decision 108](#decision-108) restores its concurrent row |
 | [Decision 85](#decision-85) | P10 design v2 | 2026-10-12 | In force |
-| [Decision 86](#decision-86) | The gate of the node command line waits for its repair | 2026-10-12 | In force |
-| [Decision 87](#decision-87) | No new capacity param | 2026-10-12 | In force |
+| [Decision 86](#decision-86) | The gate of the node command line waits for its repair | 2026-10-12 | In force. Amended by [decision 89](#decision-89) |
+| [Decision 87](#decision-87) | No new capacity param | 2026-10-12 | In force. Amended by [decision 89](#decision-89) |
 | [Decision 88](#decision-88) | The legacy vector operations come with tensor logic | 2026-10-12 | In force |
+| [Decision 89](#decision-89) | The base removed host-work metering, so Reified RSpaces removes its own | 2026-10-16 | In force. Decisions [96](#decision-96), [102](#decision-102), [105](#decision-105) and [107](#decision-107) amend it |
+| [Decision 90](#decision-90) | The merge 2 plan for `feature/cost-accounted-rho` at `702496775` | 2026-10-25 | In force. [Decision 95](#decision-95) replaces its item on the test attributes of `session.rs`, and [decision 98](#decision-98) changes its mirror item |
+| [Decision 91](#decision-91) | The seq rule uses causal histories | 2026-10-25 | In force |
+| [Decision 92](#decision-92) | The replay order of space transactions uses ordinary events | 2026-10-26 | In force. [Decision 94](#decision-94) replaces its escalation re-check, and [decision 99](#decision-99) replaces its anchor payer |
+| [Decision 93](#decision-93) | Racing tests stay multi-thread | 2026-10-26 | In force. [Decision 111](#decision-111) adds the current-thread runtime |
+| [Decision 94](#decision-94) | Escalation to a join scope takes a two-phase lock | 2026-10-26 | In force |
+| [Decision 95](#decision-95) | The space readiness check reaches the replay journal through the native epoch trait | 2026-10-26 | In force. [Decision 99](#decision-99) replaces its related correction |
+| [Decision 96](#decision-96) | `AgentReadCoverage.v` is deleted, as the base deleted its host-work theories | 2026-10-27 | In force |
+| [Decision 97](#decision-97) | The base branch decides the design, also for the earlier decisions | 2026-10-27 | In force |
+| [Decision 98](#decision-98) | The mirror follows the oracle mode of the base (DR-114) | 2026-10-27 | In force |
+| [Decision 99](#decision-99) | The machinery of a space runs as system work, and the firing deployment pays | 2026-10-27 | In force |
+| [Decision 100](#decision-100) | A refused lift or retire parks inert | 2026-10-27 | In force |
+| [Decision 101](#decision-101) | A receive with several members runs the item test of each member during the search, as the base does | 2026-10-27 | In force |
+| [Decision 102](#decision-102) | Play picks among candidates at random, and replay follows the recorded pick (DR-129) | 2026-10-27 | In force |
+| [Decision 103](#decision-103) | A join that names one channel more than once assigns data as the base does (DR-129 E1) | 2026-10-27 | In force. [Decision 118](#decision-118) amends it |
+| [Decision 104](#decision-104) | `embed` and `ann` replay their records as the base driver does (DR-114) | 2026-10-27 | In force. [Decision 116](#decision-116) amends its mechanism clause |
+| [Decision 105](#decision-105) | The failure replies of `embed` and `ann` use the base codes, and every reply must be plain data | 2026-10-27 | In force |
+| [Decision 106](#decision-106) | A persistent send to `embed` or `ann` fails at the fire, as rule P2 of the base does | 2026-10-27 | In force |
+| [Decision 107](#decision-107) | The seal of a re-stored record resolves with the region price (DR-135 R4) | 2026-10-27 | In force |
+| [Decision 108](#decision-108) | The N4 row `n4_concurrent_space_blocks_agree` returns | 2026-10-27 | In force |
+| [Decision 109](#decision-109) | Observers get no VectorDB services, as observers of the base get the no-op Chroma service | 2026-10-27 | In force |
+| [Decision 110](#decision-110) | Bare floats keep the forms of the base | 2026-10-27 | In force |
+| [Decision 111](#decision-111) | The racing tests also run on a current-thread runtime, as the base does | 2026-10-27 | In force |
+| [Decision 112](#decision-112) | The Reified syntax uses protobuf fields, as the base carries its new syntax | 2026-10-27 | In force. Merge 2 implemented it |
+| [Decision 113](#decision-113) | `embed` and `ann` exist only in a `chromadb` build, and the VectorDB space type exists in every build | 2026-10-27 | In force |
+| [Decision 114](#decision-114) | The mirror is an oracle store with no repair, as the oracle mode of File I/O | 2026-10-27 | In force |
+| [Decision 115](#decision-115) | The reply channel of `embed` and `ann` stays first, as the File I/O sugar requires | 2026-10-27 | In force |
+| [Decision 116](#decision-116) | `embed` and `ann` keep their own handlers and take the DR-114 contract from one helper of the base | 2026-10-27 | In force |
+| [Decision 117](#decision-117) | A positional failure after a random pick stages the operation again in DR-75 order (R-A) | 2026-10-28 | In force |
+| [Decision 118](#decision-118) | The throughput rule of decision 117 also decides the join rules of decision 103 | 2026-10-28 | In force |
+| [Decision 119](#decision-119) | The design of decisions 102, 103 and C4 takes the changes of the arbiter | 2026-10-28 | In force |
+| [Decision 120](#decision-120) | The open points of decision 112 follow the base | 2026-10-28 | In force |
+| [Decision 121](#decision-121) | Decision 112 also changes two Casper source files beyond the constant | 2026-10-28 | In force |
+| [Decision 122](#decision-122) | The open points U1, U4 and U5 of C4 follow the base and dev | 2026-10-29 | In force |
+| [Decision 123](#decision-123) | Consensus behavior that Reified needs comes from dev and base code behind traits | 2026-10-29 | In force |
+| [Decision 124](#decision-124) | The determinism rules state record and replay, as the base does | 2026-10-29 | In force |
+| [Decision 125](#decision-125) | A legacy replay test that fails is restated at the step where it fails | 2026-11-01 | In force |
+| [Decision 126](#decision-126) | Behavior that varies by space kind goes through trait interfaces | 2026-11-01 | In force |
+| [Decision 127](#decision-127) | The registry of space kinds and the VectorDB services generalize to arbitrary Reified RSpaces | 2026-11-01 | In force |
+| [Decision 128](#decision-128) | The shared engine reaches kind-specific behavior through the existing traits | 2026-11-01 | In force |
+| [Decision 129](#decision-129) | The finish after a deviating row follows the rule of the base for a refused tuple | 2026-11-03 | In force |
+| [Decision 132](#decision-132) | Plan item C7.12 is withdrawn, so decision 43 stays in every kind | 2026-11-04 | In force |
+| [Decision 133](#decision-133) | The unit loop commits the finish rows of a cut row, and native replay follows them | 2026-11-04 | In force |
+| [Decision 134](#decision-134) | The end of a refused lift varies through the trait `RowEnd` | 2026-11-04 | In force |
+| [Decision 135](#decision-135) | Three divergent SCAN chain cases leave the run | 2026-11-08 | In force |
 | [M-1](#m-1) | Counter meta-channels and merge check #1 | 2026-10-04 | In force, scope widened by decision 31 |
 | [M-2](#m-2) | Space-owned record envelope | 2026-10-04 | In force |
 | [M-3](#m-3) | Charging through the accounting observer | 2026-10-04 | In force, revised 2026-10-04 |
@@ -147,21 +200,23 @@ The minimal-footprint revision (M-1 to M-5) overrides the target architecture of
 | [I-4](#i-4) | Deploy-scoped temp and seq spaces | 2026-10-04 | In force, revised 2026-10-04 |
 | [I-5](#i-5) | Metadata in the envelope | 2026-10-04 | In force |
 | [I-6](#i-6) | Canonical COMM produce sort | 2026-10-04 | In force |
-| [I-7](#i-7) | Bare floats in the parser | 2026-10-04 | In force |
-| [I-8](#i-8) | Params only on factories and handles | 2026-10-04 | In force |
+| [I-7](#i-7) | Bare floats in the parser | 2026-10-04 | Superseded by [decision 110](#decision-110) on 2026-10-27 |
+| [I-8](#i-8) | Params only on factories and handles | 2026-10-04 | In force. [Decision 112](#decision-112) changes the carrier of the params |
 | [I-9](#i-9) | Sequential kernels without ndarray | 2026-10-04 | In force |
 | [I-10](#i-10) | Optional priority bound | 2026-10-04 | In force |
-| [I-11](#i-11) | Per-space scheduler footprint | 2026-10-04 | In force. Basis of decision 47 |
-| [I-12](#i-12) | Charging rules | 2026-10-04 | In force, revised 2026-10-04, noted 2026-10-07 by decision 47 |
+| [I-11](#i-11) | Per-space scheduler footprint | 2026-10-04 | Retired by [decision 90](#decision-90). It was the basis of decision 47. [Decision 92](#decision-92) takes its role in native replay |
+| [I-12](#i-12) | Charging rules | 2026-10-04 | In force, revised 2026-10-04, noted 2026-10-07 by decision 47. [Decision 89](#decision-89) retires its host-work clauses, and [decision 90](#decision-90) removes its legacy clause |
 | [I-13](#i-13) | Native replay fails closed for spaces | 2026-10-04 | Superseded by decision 47 on 2026-10-07 |
-| [I-14](#i-14) | Unchanged empty-state hash | 2026-10-04 | In force, revised 2026-10-04 |
+| [I-14](#i-14) | Unchanged empty-state hash | 2026-10-04 | In force, revised 2026-10-04. [Decision 112](#decision-112) changes the hash once |
 | [I-15](#i-15) | Self-describing matchers | 2026-10-04 | In force |
 | [I-16](#i-16) | No multi-channel join in synthesized machinery | 2026-10-04 | In force |
 | [I-17](#i-17) | Config as a canonical Par record | 2026-10-04 | In force |
 | [I-18](#i-18) | Fixed-arity system processes | 2026-10-04 | In force, revised 2026-10-04 |
 | [I-19](#i-19) | Space id derivation | 2026-10-04 | In force, reason corrected by decision 32 |
-| [I-20](#i-20) | Derived flags refreshed before the strict decode | 2026-10-05 | In force |
+| [I-20](#i-20) | Derived flags refreshed before the strict decode | 2026-10-05 | Retired by [decision 112](#decision-112) |
 | [I-21](#i-21) | Fire-round cap of a space transaction | 2026-10-05 | In force, vetoable value |
+
+Decisions 130 and 131 set the order of the work and change no design, so the register has no entry for them.
 
 ## User decisions 1 to 18
 
@@ -279,7 +334,7 @@ Its tracker restructuring dates decisions 11 to 18 on 2026-10-04.
 | Field | Value |
 |---|---|
 | Date | 2026-10-03 |
-| Status | In force. The fixture commit that this decision gated is no longer needed ([decision 18](#decision-18)). |
+| Status | In force. The fixture commit that this decision gated was not needed under [decision 18](#decision-18). [Decision 112](#decision-112) needs it again, and the user approved it. |
 | Supersedes | None |
 | Superseded by | Fixture part: [decision 18](#decision-18) |
 | Related | [Decision 25](#decision-25), [I-14](#i-14) |
@@ -491,7 +546,7 @@ The four proposals follow the words and the reason.
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | The fixture commit is superseded by decision 18. The regression rule below is in force. |
+| Status | The fixture commit is superseded by decision 18. The regression rule below is in force. [Decision 112](#decision-112) changes the hash once. |
 | Superseded by | [Decision 18](#decision-18) |
 | Related | [I-14](#i-14) |
 
@@ -501,6 +556,8 @@ The four proposals follow the words and the reason.
 - The baseline test `empty_state_hash_should_be_the_same_as_hard_coded_cached_value` must stay green at every milestone.
 - The second hard-coded hash in `runtime_spec.rs` must stay green too.
 - If either test fails, the work stops and the user gets a report. Nobody edits the constants.
+
+*Amended by [decision 112](#decision-112): the protobuf fields change every state root once, so merge 2 edits both constants once. The base did the same in commit `d367bc11a` (DR-135 item 12). After that edit, the rule applies again.*
 
 **User's words.** The plan quotes no words for this decision.
 
@@ -560,7 +617,7 @@ The four proposals follow the words and the reason.
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force. [Decision 81](#decision-81) approved one `casper/src` exception, the backport of the DR-119 fix of bug 11004, and [decision 84](#decision-84) reverted it |
+| Status | Superseded by [decision 112](#decision-112) on 2026-10-27. Merge 2 implemented decision 112. Before, [decision 81](#decision-81) approved one `casper/src` exception, the backport of the DR-119 fix of bug 11004, and [decision 84](#decision-84) reverted it |
 | Supersedes | The ledger K15 protobuf fields `Par.use_blocks = 15`, `New.space_types = 6`, `Send.params = 8`, `ReceiveBind.query_spec = 6`, and `Expr.e_free_body = 38` |
 | Changes | The fixture parts of [decision 6](#decision-6), [decision 15](#decision-15), and [I-14](#i-14) |
 | Related | [Decision 21](#decision-21), [marker tuple](glossary.md#marker-tuple), [recognized position](glossary.md#recognized-position) |
@@ -573,6 +630,8 @@ The four proposals follow the words and the reason.
 - The baseline fixture test becomes a regression gate, and `casper/src` does not change at all.
 - Decisions 6 and 15 and I-14 lose their fixture parts.
 - [Decision 21](#decision-21) gives the corrected encoding table.
+
+*Superseded by [decision 112](#decision-112) on 2026-10-27: the Reified syntax takes protobuf fields, as the base carries its new syntax. Every state root then changes once.*
 
 **User's words.** The user chose "Marker tuples".
 
@@ -599,13 +658,13 @@ These decisions override the earlier plan sections where they conflict.
 - D1: The volatile sweep runs at the end of `ReducerCore::inj_with_observation` and `ReducerCore::inj` (`reduce.rs`), in P7. Every play, replay, reporting, and native-replay path passes there, under the evaluation guard.
 - D2: `SpaceStoreHandle` is a struct over `Arc<dyn SpaceTxnHost<C, P, A, K>>`. `SpaceTxn` takes whole operations with an explicit outcome (`ProduceOutcome::{Store, Fire}`, `ConsumeOutcome::{Park, Fire}`) and `commit`.
   `SpaceTxn` has no raw `put`, `remove`, or `log` methods and no `replay()`. The traits are generic over `C, P, A, K`, because rspace++ cannot name `Par`.
-- D3: Each operation of a transaction runs under its own sub-order $`\mathit{parent} \mathbin{+\!\!+} [(i, 2)]`$, where 2 is `SUB_OPERATION_TAG`. Native phlo recording rejects two operations under one order (`accounting/native_runtime/operations.rs:265`).
+- D3: Each operation of a transaction runs under its own sub-order $`\mathit{parent} \mathbin{+\!\!+} [(i, 2)]`$, where 2 is `SUB_OPERATION_TAG`. Native phlo recording rejects two operations under one order (`accounting/native_runtime/operations.rs:214`).
 - D4: A native replay directive fails the space operation closed (`NativeReplayDirectiveUnsupported`).
 - D5: `root_leaf_record_count` counts the records in the outer frame of the leaf (`get_data_proj_binary`). No history module changes.
 - D6: Commit is prefix-atomic. If the observer rejects operation $`i`$, the operations before $`i`$ stay applied, as in the equivalent host program. The deploy fails, and the soft-checkpoint revert removes them.
 - D7: `matches`, `was_repeated_enough_times`, and `get_comm_or_candidate` are re-stated over the staged view. All other M-4 helpers are reused.
   In play, the store steps `store_data`, `remove_matched_datum_and_join`, `store_waiting_continuation`, and `store_persistent_data` are private to sibling modules. So `space_play` re-states them over the public `HotStore` API.
-- Correction: codex inverted six baseline peek tests, not five. They are `storage_actions_test.rs:323` and `:370`, `comm_observer_tests.rs:470`, and `replay_rspace_tests.rs:472`, `:545`, and `:607`.
+- Correction: codex inverted six baseline peek tests, not five. They are `storage_actions_test.rs:323` and `:370`, `comm_observer_tests.rs:446`, and `replay_rspace_tests.rs:472`, `:545`, and `:607`.
 
 **User's words.** "Approve (Recommended)", for the API, the rules, and the placement.
 
@@ -643,7 +702,7 @@ These decisions override the earlier plan sections where they conflict.
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. [Decision 112](#decision-112) replaces its marker tuples with protobuf fields |
 | Supersedes | The encoding table under "Frontend-neutral syntax layer" in the plan |
 | Related | [Decision 18](#decision-18), [decision 27](#decision-27) (identifier rule), [canonical form](glossary.md#canonical-form) |
 
@@ -668,6 +727,8 @@ The full encoding table after this decision:
 | `for (y <- ch ~ (q…; k=v…)) P`, bare `~ e` as `[e]` | receive source `(QUERY, ch, [q…], {k: v…})` | QUERY = `[0xE0, 0xD3]` | `unbundle_receive` (evaluated bind source) |
 | `free Th(args)` | the value `(FREE, "Th", [args…])` | FREE = `[0xE0, 0xD4]` | factories (inert data elsewhere) |
 
+*Amended by [decision 112](#decision-112): the Reified syntax leaves these marker tuples and takes protobuf fields. The canonical rules of this entry stay, and [decision 120](#decision-120) settles the open points of the new encoding.*
+
 **User's words.** "Approve corrected (Recommended)"
 
 **Reason.** The P2 design pass (items C1 to C3) found that the earlier table did not fit the code.
@@ -677,7 +738,7 @@ The full encoding table after this decision:
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. [Decision 112](#decision-112) amends its hooks |
 | Supersedes | None |
 | Related | [Decision 18](#decision-18), [recognized position](glossary.md#recognized-position) |
 
@@ -687,11 +748,14 @@ The full encoding table after this decision:
 - Until P4 enables them, the hooks fail closed with `RuntimeUnavailable`, `ParamsUnsupported`, and `QuerySpecUnsupported`.
 - One shared predicate, `is_evaluated_process_expr`, replaces both filter copies in `util/mod.rs`.
 - `accounting/` stays byte-identical. So the funding resolver `accounting/lexical.rs` fails closed (`BugFoundError`) on Reified terms. It has no production caller.
+  *Changed by [decision 89](#decision-89) and [decision 90](#decision-90): `accounting/` is no longer byte-identical. The merges add the marker support of the funding resolver and of the estimate.*
 - Two findings go to the cost-accounting owner: the filter twin in `lexical.rs` (H-1), and the demand analyses that do not see marker bodies (H-2).
 - The plan applies the wording corrections C6 and C10 under "Frontend-neutral syntax layer".
 - Fact C7: `space_factory_urn.rs` exists only in the backup.
 - Fact C8: `models` has `doctest = false`, so the encoding examples live in tests.
 - Fact C9: gates build in `RRS_SCRATCH`, never in the source tree or in `/tmp`.
+
+*Amended by [decision 112](#decision-112): the Reified syntax leaves the marker tuples, so the four hooks read the protobuf fields of decision 112.*
 
 **User's words.** "Approve (Recommended)"
 
@@ -799,9 +863,9 @@ The full encoding table after this decision:
 The plan keeps this technical background for the operations owners:
 
 - Replay executes each deploy again from its source text.
-- A pre-upgrade deploy that names a new URN passes admission, because the normalizer does not check URNs. It fails at run time (`util/mod.rs:234`), so an upgraded node would compute a different post-state for it.
-- New nodes replay only above the LFS horizon (`initializing.rs:775-812`).
-- The `header.version` of a block must equal the genesis version (`block_processor.rs:316`).
+- A pre-upgrade deploy that names a new URN passes admission, because the normalizer does not check URNs. It fails at run time (`util/mod.rs:278`), so an upgraded node would compute a different post-state for it.
+- New nodes replay only above the LFS horizon (`initializing.rs:773-810`).
+- The `header.version` of a block must equal the genesis version (`block_processor.rs:399`).
 
 The plan also records two items under this decision:
 
@@ -831,7 +895,7 @@ These decisions override the earlier plan sections where they conflict, as decis
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. [Decision 103](#decision-103) replaces two clauses, and [decision 118](#decision-118) amends decision 103 |
 | Supersedes | The rule of fix rule FR-1 that rejected a repeated channel (`DuplicateChannelInGroup`) |
 | Related | [Decision 19](#decision-19), [canonical group](glossary.md#canonical-group), [store identity](glossary.md#store-identity) |
 
@@ -841,12 +905,15 @@ These decisions override the earlier plan sections where they conflict, as decis
 - A channel group may name one channel more than once.
 - Every group with two or more channels is non-decreasing by `stable_hash_provider::hash`, so a channel multiset has exactly one canonical order (fix rule FR-1').
 - A group that names a channel $`k`$ times binds $`k`$ distinct records on it.
+  *Replaced by [decision 103](#decision-103): a persistent record can bind several positions, as in the base ([decision 118](#decision-118)).*
 - In a produce-side fire, the incoming datum binds exactly once.
+  *Replaced by [decision 103](#decision-103): the data of a repeated channel bind as in the base, so a persistent incoming datum can bind several positions. [Decision 118](#decision-118) keeps the retry of the incoming datum at each of its positions (rule JN-9).*
 
 **User's words.** "Allow, canonical order (Recommended)"
 
 **Reason.** Runtime aliasing can create a join that names one channel twice.
 The FIPS gives each pair of a matcher and a channel its own message, so the repeated channel binds distinct records.
+*[Decision 103](#decision-103) found that the consume clause of the FIPS does not say this (`Reifying RSpaces.md:131-143`).*
 A sorted list is the only non-decreasing arrangement of its elements, so the hot store never holds one channel multiset under two keys.
 Two keys for one multiset would make the checkpoint refuse two actions on one history key.
 
@@ -896,7 +963,7 @@ A join into an ordered collection needs an envelope with several `ord` values an
 
 **Reason.** With a peek waiter at the head of a queue, a stored copy of the datum can match the next waiter.
 That pending match breaks the no-pending-match invariant of the space.
-The re-offer equals the re-produce of the baseline reducer (`reduce.rs:986-1021`), so the events and the observer calls stay equal to those of the host.
+The re-offer equals the re-produce of the baseline reducer (`reduce.rs:1627-1689`), so the events and the observer calls stay equal to those of the host.
 
 ### <a id="decision-31"></a>Decision 31: Every operation on an ordered collection bumps its counter
 
@@ -929,20 +996,21 @@ With a counter step on every operation, both cases race on the counters, and mer
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force. Its open P8 item is settled by [decision 77](#decision-77) |
+| Status | In force. Its open P8 item is settled by [decision 77](#decision-77). [Decision 106](#decision-106) replaces item A21 for `embed` and `ann` |
 | Supersedes | The forwarder argument `GByteArray(sid)` of [I-2](#i-2), and the claim of [I-19](#i-19) that `SpaceAlreadyExists` stops the `Factory!!(…)` re-produce loop |
 | Related | [Decision 18](#decision-18), [decision 22](#decision-22), [internal operation](glossary.md#internal-operation), [handle](glossary.md#handle) |
 
 **Statement.** The user approved four changes of the plan text, items A5, A6, A7, and A21 of the P4 design.
 
 - A5: `canonical_inner_channel_bytes` is the bincode of the sorted Par, which is the preimage of the store identity. Protocol Buffers encodes `locally_free`, so prost bytes would split one store channel into two keys.
-- A6: `HANDLE_OP` is bound to the URN `rho:reified:internal:handleOp`. The baseline binds every system definition to a URN (`rho_runtime.rs:1578-1584`), and `registry_lookup` serves any key.
+- A6: `HANDLE_OP` is bound to the URN `rho:reified:internal:handleOp`. The baseline binds every system definition to a URN (`rho_runtime.rs:1942-1948`), and `registry_lookup` serves any key.
 - A6, continued: the operation accepts a call only with the unforgeable `this`. It must be a `GPrivate` of exactly 34 bytes with KIND H or h, and its config record `C(sid)` must exist.
 - A6, continued: this replaces the `GByteArray(sid)` forwarder of I-2, which would leak the capability through `config` and `toByteArray`.
 - A7: P2 implements the send hook as the same-signature swap of `self.produce(` for `self.reified_produce(`. The function `reified_produce` splits the trailing params first, and it fails closed as decision 22 says.
 - A7, continued: the H2 arm is one line without a guard, of at most 100 columns, for example `eval_marker`. The reason is that H1 admits only marker tuples into process position.
 - A21: a persistent send (`!!`) to a two-byte `0xE0` operation channel, or to an H or h handle, aborts the deploy. The two-byte channels are the factories, `getSpaceAgent`, `assertEqual`, `vector`, and the internal operations.
-- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:722-788`, `1023-1044`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
+  *Changed by [decision 106](#decision-106): a persistent send to `embed` or `ann` passes the send. It fails at its fire with `SystemProcessShapeError`, by rule P2 of DR-114. The abort at the send stays for the other operations.*
+- A21, continued: the baseline never cancels the re-produce sibling of a persistent send (`reduce.rs:1306-1392`, `1691-1741`). So the claim of I-19 that `SpaceAlreadyExists` stops the loop was wrong.
 
 **User's words.** "Approve all four (Recommended)"
 
@@ -1081,7 +1149,7 @@ An unpaired fire never logs, removes, or unbinds anything, so each recorded COMM
 **Statement.**
 
 - **Timing.** The rule below is the target semantics of spaces. The register records it now, and the pgmcp leaf `rrs-f1r3lang-space-where-semantics` holds the notes. The campaign implements it only after F1r3lang is finalized and becomes the frontend of F1r3node, in P12, which waits for SIG-F.
-- **Until then**, space receives use the current guard rule of this tree, as the host does. A consume takes the first spatial match of each bind and checks the guard once, and a refusal parks the waiter (`ops_consume.rs:111-153`). On the produce side, a guard refusal moves to the next waiter (`space_matcher.rs:193-200`). Head-only disciplines test only the head, so both rules agree for the queue, the stack, and the priority queue.
+- **Until then**, space receives use the current guard rule of this tree, as the host does. A consume takes the first spatial match of each bind and checks the guard once, and a refusal parks the waiter (`ops_consume.rs:250-301`). On the produce side, a guard refusal moves to the next waiter (`space_matcher.rs:351-360`). Head-only disciplines test only the head, so both rules agree for the queue, the stack, and the priority queue.
 - **The set discipline under the current rule** (readiness review S3, option (a)). A guarded waiter can park while a stored member passes its guard. A later send of an equal member then fires the waiter with the incoming member. The agent then retires the stored members of that class with single-channel `K_retire` COMMs, so the class leaves the set. Only a `where` guard reaches this case. Under the rule of F1r3lang it cannot arise, because the consume selects the passing member.
 - **The target rule (notes for P12).** F1r3lang records the guard rule of the host as its defect D1, and it fixes the rule. In the fixed rule, a `where` guard takes part in candidate selection, and a guard failure counts as a pattern non-match. A receive fires with the lexicographically least selection whose data match spatially and pass the guard, over the canonical candidate order. The repository `f1r3node-rust-f1r3lang` implements this search in lines 380 to 470 of `rspace++/src/rspace/space_matcher.rs`.
 - At P12, spaces adopt the rule in their own agents, with no host change. Single-bind receives take the first candidate, in discipline order, that matches and passes the guard. Head-only disciplines test only the head, so a head that fails the guard blocks ([decision 11](#decision-11)). Joins use the complete search of F1r3lang, with its second repair. In that repair, a spatial dead end at a later bind backtracks to the next datum of an earlier bind. The `K_retire` step of the set then becomes unreachable for single-bind receives.
@@ -1139,7 +1207,7 @@ A waiter queue for each level gives each queue one head, and the order rule deci
 - F8: a forged channel in an Array or Vector space aborts with `NotAnIndexName`.
 - F9: the PathMap depth cap is 64, with the abort `PathTooDeep`. The value is vetoable.
 - F10: at the round cap, the original operation is re-issued, as in P4.
-- F11: a `new` inside `use` of an Array or Vector space runs one allocation job. The hot line `reduce.rs:1650` gains `.await`.
+- F11: a `new` inside `use` of an Array or Vector space runs one allocation job. The hot line `reduce.rs:2655` gains `.await`.
 - F12: the tracker leaf `rrs-spaces-determinism-collision-ties` completes in P6.
 - F13: the legacy Rocq modules get the dispositions that the P5 design report lists, with the changes of its readiness review. The port drops the axiom `FunctionalExtensionality`.
 - F14: two set waiters are equal only when they are byte-identical.
@@ -1160,7 +1228,7 @@ A receive has one peek flag for all its binds, so no program can make mixed peek
 | Field | Value |
 |---|---|
 | Date | 2026-10-05 |
-| Status | In force. P5 applies it. |
+| Status | Retired by [decision 89](#decision-89). P5 applied it. |
 | Supersedes | The phrase "per-operation candidate-scan caps" of the plan sections "Bounded work" and I-12, and the matching words of [decision 34](#decision-34) |
 | Related | [Decision 41](#decision-41), [decision 42](#decision-42), [I-12](#i-12), [I-21](#i-21), [M-3](#m-3) |
 
@@ -1184,7 +1252,7 @@ DR-47 of that branch charges a send its introduction whether the send is deliver
 | Field | Value |
 |---|---|
 | Date | 2026-10-05 |
-| Status | In force. P5a applies it. |
+| Status | Superseded by [decision 102](#decision-102) on 2026-10-27. P5a applied it, and [decision 89](#decision-89) amended its reason. |
 | Supersedes | "Ascending record bytes" for the bag, and the key order of set classes, in the disciplines table of the plan |
 | Related | [Decision 40](#decision-40), [decision 44](#decision-44) |
 
@@ -1196,13 +1264,18 @@ The rule is the canonical order of `rspace++/src/rspace/candidate_order.rs`, whi
 
 **Reason.** The order reads only precomputed hashes for distinct sources, so its work does not grow with the payloads.
 The host and the spaces use one order, so a space operation and its equivalent host program choose the same candidate.
+*Amended by [decision 89](#decision-89): since DR-129, host play picks at random among the candidates, and replay keeps the canonical order as its own order.*
+*The spaces keep the canonical order, because each choice of a space must be a function of its entries (DT-1 of the specification).*
+*The tests that compare a space with its host program pin host play to the canonical choice.*
+
+*Superseded by [decision 102](#decision-102) on 2026-10-27: the spaces also pick at random in play, as the host does since DR-129. Replay follows the recorded pick. The design of decision 102 restates the rule DT-1.*
 
 ### <a id="decision-42"></a>Decision 42: The queue agent's metering is aligned now
 
 | Field | Value |
 |---|---|
 | Date | 2026-10-05 |
-| Status | In force. Implemented with the model `AgentReadCoverage.v`. |
+| Status | Retired by [decision 89](#decision-89). It was implemented with the model `AgentReadCoverage.v`. |
 | Supersedes | The one-dimension `ScanMeter` of P4, which charged `SearchCandidates` for each matcher call |
 | Related | [Decision 40](#decision-40), [I-12](#i-12), [M-3](#m-3) |
 
@@ -1289,7 +1362,7 @@ The tests compare them on one base.
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force. Rule E and Option P are implemented. |
+| Status | In force for Rule E, which is implemented. [Decision 90](#decision-90) removes Option P, as [decision 69](#decision-69) planned. |
 | Amends | [Decision 30](#decision-30), its consume-side clause, and the retention rule FR-10 of [decision 19](#decision-19) |
 | Related | [Decision 40](#decision-40), [M-3](#m-3) |
 
@@ -1329,11 +1402,16 @@ The agent stores each removed non-persistent record of a peek again, in the same
 
 **Implementation of Option P.**
 
+*Removed by [decision 90](#decision-90): DR-134 of the base deletes the legacy meter.*
+*So the merge of `702496775` removes Option P with its chain, its model and its tests, as [decision 69](#decision-69) planned.*
+*The list below describes Option P before that merge. Rule E stays in force.*
+
 - `reified/legacy_charges.rs` computes the [legacy charges](glossary.md#legacy-charge) of each staged operation: `produce_charges` and `consume_charges` restate `ChargingRSpace` and its `handle_result`.
 - `LegacyChain` stages every operation of a space job. The callback of an operation charges the carried post-charges of the operation before it, then registers the introduction, then charges the pre-charge.
 - `LegacyChain::finish` charges the post-charges of the last operation after the commit, in the finish step of the prepared job.
 - The chain is active only in a legacy deploy with a metered budget. The counter bump, the plans of the queue, the re-store, and the creation of a space all stage through it.
 - The design is section [N10](design.md#n10-legacy-charges) of the design, with Figure N10.
+  *Changed by [decision 90](#decision-90): section N10 now states the retirement of these charges, and the design has no Figure N10. The file [diagrams/17-legacy-charge-chain.puml](diagrams/17-legacy-charge-chain.puml) keeps the figure.*
 - The evidence is section [11.14](verification.md#1114-legacy-charges-of-decision-45) of the verification dossier. It holds `LegacyCharges.v` (Q79 and Q80), the invariant `LegacyChargesFollowHost` of `CheckpointReplay.tla` (U13), the tests, and the controls.
 
 ### <a id="decision-46"></a>Decision 46: Spaces fail closed in native execution
@@ -1361,7 +1439,7 @@ One rule for play and replay makes the deploy fail in play, and native replay re
 | Field | Value |
 |---|---|
 | Date | 2026-10-06 |
-| Status | In force. Implemented on 2026-10-07. [Decision 48](#decision-48) moved the phase after P5. [Decision 78](#decision-78) adds one test edit to the accounting module. |
+| Status | In force. Implemented on 2026-10-07. [Decision 48](#decision-48) moved the phase after P5. [Decision 78](#decision-78) adds one test edit to the accounting module. [Decision 89](#decision-89) retires the metered view reads. |
 | Amends | [M-3](#m-3), for one accessor. It supersedes [decision 46](#decision-46) and [I-13](#i-13). |
 | Related | [Decision 46](#decision-46), [decision 48](#decision-48), [I-11](#i-11), [I-12](#i-12) |
 
@@ -1382,6 +1460,7 @@ The user then approved design v2 ("Approve v2 (Recommended)").
 **Implementation (2026-10-07).** Six steps implement design v2:
 
 1. The substrate meters the space view in native execution (commit `9ddcaa127`).
+   *Retired by [decision 89](#decision-89): the merge of `4c58a925f` removes the metered view reads, with the H27 headline and the RH-3 tests.*
 2. The native replay backend of spaces replays each staged operation against its journal row (commit `9d9f31b7d`).
 3. The accessor `space_store`, the bound state of the runtime and the bind call run spaces in native execution (commit `9390408c4`).
 4. The integration suite certifies space deploys at the v6 limits (commit `bbe6d03d2`).
@@ -1393,6 +1472,7 @@ The models of design v2 section 5 are in a new module, so `CheckpointReplay.tla`
 
 **Epoch closure.** A probe of step 4 showed that a forged journal could hang native replay of a space deploy: 64 of 109 forgeries hung.
 Commit `c6cb371ba` closes the epoch when a native space operation fails, except after a published denial.
+*Retired by [decision 124](#decision-124): no failure closes the epoch now. A waiter of a failed row parks as a counted waiter of the base stall rule.*
 The [findings](findings/native-execution-cost-accounting.md) record the same lost wake-up in the host path as F-47-4, with F-47-1 to F-47-3 and the measurement M-47-1.
 
 ### <a id="decision-48"></a>Decision 48: The work order after decision 43
@@ -1649,22 +1729,26 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implemented in P6. The clause "both fail in native execution" is superseded by [decision 68](#decision-68) on 2026-10-08 |
+| Status | In force. Implemented in P6. The clause "both fail in native execution" is superseded by [decision 68](#decision-68) on 2026-10-08. Decisions [105](#decision-105), [113](#decision-113) and [114](#decision-114) amend its replies and its builds on 2026-10-27 |
 | Amends | The op table of the namespace (two new ops) |
 | Related | [Decision 52](#decision-52), [decision 46](#decision-46) |
 
 **Statement.**
 
 - `rho:vectordb:embed` uses the op `[0xE0, 0x24]` and the body reference 236. It replies `[true, vector, model]` or `[false, code, detail]`.
+  *Changed by [decision 105](#decision-105): a failure reply is `[false, code, message]`, with a code and a fixed message of DR-114.*
 - `rho:vectordb:ann` uses the op `[0xE0, 0x25]` and the body reference 237. It replies `[true, ids, distances, watermark]` or `[false, code, detail]`.
+  *Changed by [decision 114](#decision-114) and [decision 105](#decision-105): the reply is `[true, ids, distances]`, with no watermark, and a failure reply uses a code of DR-114.*
 - Both processes are in `non_deterministic_ops()`, so replay reuses their recorded outputs.
 - Both exist in every build, and both fail in native execution.
+  *Replaced by [decision 113](#decision-113): both exist only in a `chromadb` build. [Decision 68](#decision-68) superseded the native clause.*
 - Every new reply has the reply channel first and the shape `[ok, ...]`, so `!?` and `try` apply.
 - The marker range `0xD5` to `0xDF` is reserved for future syntax markers.
 
 **Reason.**
 
 - A recorded output gives replay the proposer's answer. A process that exists in every build lets every validator replay that answer.
+  *[Decision 113](#decision-113) replaces the clause on every build, because the base registers its Chroma processes only with their feature.*
 - `ann` returns ids, never payloads. Only the exact query param `ids=` can turn them into a decision, and the exact order still decides.
 
 ### <a id="decision-58"></a>Decision 58: The ChromaDB mirror is a hint index
@@ -1672,7 +1756,7 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6 |
+| Status | In force. Implementation in P6. Decisions [98](#decision-98), [105](#decision-105) and [114](#decision-114) replace its publication, its failure code and its reconciler |
 | Amends | none |
 | Related | [Decision 52](#decision-52), [decision 45](#decision-45) |
 
@@ -1681,9 +1765,12 @@ Its main terms are these:
 - The mirror of a VectorDB space is node-local and is never consensus state.
 - The factory param `mirror="chroma"` turns it on. Temp and seq spaces cannot have a mirror.
 - At the end of a successful deploy, the node publishes the writes of the deploy to the mirror. A failed deploy publishes nothing.
+  *Replaced by [decision 98](#decision-98): a play publishes the writes of each commit at the commit, whatever the result of the deploy. Replay never publishes.*
 - A peek re-store of Rule E writes nothing to the mirror.
 - A reconciler reads the finalized state and repairs the mirror. It removes orphan records and adds missing ones.
+  *Retired by [decision 114](#decision-114): nothing repairs the mirror, as in the oracle mode of File I/O.*
 - When ChromaDB is unavailable, writes wait in a bounded buffer, and a deploy never waits. `ann` then replies `MirrorUnavailable`, and replay reuses that reply.
+  *Changed by [decision 105](#decision-105): `ann` replies `EXT_FAILED` in place of `MirrorUnavailable`, and replay delivers that record. [Decision 114](#decision-114) drops a batch that finds the queue full.*
 
 **Reason.** The native engine decides every match, so a stale mirror can only give weaker advice. It can never change consensus state.
 
@@ -1709,11 +1796,13 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6 |
+| Status | Superseded by [decision 102](#decision-102) on 2026-10-27 |
 | Amends | The VectorDB row of the discipline table ("Blake2b256(record), then full bytes") |
 | Related | [Decision 41](#decision-41) |
 
 **Statement.** Two VectorDB records with equal scores are ordered by the hash of their source produce, then by their full digest.
+
+*Superseded by [decision 102](#decision-102) on 2026-10-27: play picks at random among records with equal scores, and replay follows the recorded pick.*
 
 **Reason.** Bag and set spaces already use this order ([decision 41](#decision-41)), so one order serves every unordered discipline.
 
@@ -1722,14 +1811,16 @@ Its main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-07 |
-| Status | In force. Implementation in P6 |
+| Status | In force. Implementation in P6. [Decision 114](#decision-114) retires its reconciler spawn, and [decision 109](#decision-109) amends the environment of the nodes |
 | Amends | The plan statement "node: no change expected" |
 | Related | [Decision 58](#decision-58) |
 
 **Statement.**
 
 - `node/src/rust/runtime/setup.rs` gains one task spawn for the mirror reconciler.
+  *Retired by [decision 114](#decision-114): nothing repairs the mirror, so the spawn stays as a comment with a restore note.*
 - `docker/shard.yml` pins the ChromaDB image by digest and passes its environment to the nodes.
+  *Amended by [decision 109](#decision-109): the read-only node keeps no mirror database, because an observer installs the unavailable services.*
 
 **Reason.** The reconciler runs on finalized blocks, and the node starts the existing tasks of that kind. A pinned image makes the live leg reproducible.
 
@@ -1874,7 +1965,7 @@ Their main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-08 |
-| Status | In force. The native-execution answer is superseded by decision 68 on 2026-10-08. The reconciler sentence is corrected by decision 70 on 2026-10-08. |
+| Status | In force. The native-execution answer is superseded by decision 68 on 2026-10-08. The reconciler sentence is corrected by decision 70 on 2026-10-08. [Decision 98](#decision-98) replaces the answer M1, and [decision 114](#decision-114) retires the reconciler answer, on 2026-10-27. |
 | Amends | [Decision 56](#decision-56) (`precision` leaves P6), [decision 58](#decision-58) (the publication point) |
 | Related | [Decision 37](#decision-37), [decision 45](#decision-45), [decision 49](#decision-49), [decision 50](#decision-50), [decision 57](#decision-57) |
 
@@ -1895,10 +1986,12 @@ Their main terms are these:
   - A deploy publishes its mirror journal only when its final evaluation result has no errors.
   - The two settle points are the result of `interpreter.rs`, after the host-work check, and the native path of `rho_runtime.rs`.
   - The `p6` footprint policy records these hot-file lines.
+  - *Replaced by [decision 98](#decision-98): a play publishes the net writes of each commit at the commit. So the journal and its two settle points are retired.*
 - **The reconciler repairs the journaled channels.**
   - The reconciler repairs the channels that the journal of the node touched. The collection metadata keeps them.
   - It repairs them to the view of the last finalized block.
   - After an LFS bootstrap, the mirror lacks the records that are older than the bootstrap, until they change again.
+  - *Retired by [decision 114](#decision-114): nothing repairs the mirror. After an LFS bootstrap, the mirror holds no record of the imported state.*
 - **`embed` and `ann` in native execution.** This answer kept the native ban of [decision 57](#decision-57), with a finding for the cost-accounting owner. [Decision 68](#decision-68) supersedes it.
 
 **User's words.**
@@ -1924,7 +2017,7 @@ Their main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-08 |
-| Status | In force |
+| Status | Superseded by [decision 104](#decision-104) on 2026-10-27 |
 | Amends | Design v3 section 4.9 ("replay returns the recorded output first") and arbitration amendment A8 with its note G9 |
 | Related | [Decision 57](#decision-57), [decision 69](#decision-69) |
 
@@ -1939,6 +2032,8 @@ Their main terms are these:
 - `embed` reads no consensus state, so it has no such checks.
 - In native execution, each check is a journaled native operation. A native replay that skips a check fails its certification with an incomplete journal. The native replay tests of the suite therefore cover this rule ([decision 69](#decision-69)).
 
+*Superseded by [decision 104](#decision-104) on 2026-10-27: play makes the checks of the call. Replay delivers the record with no check of the call, as the base driver does (DR-114). The reason of this decision, equal host work, lapsed with DR-131 ([decision 89](#decision-89)).*
+
 **User's words.** "Checks in both modes (Recommended)"
 
 **Reason.** Play read the config through a read-only space job, which reserves host work. Replay returned the recorded output first. So one call made play reserve 1,815,346 VerificationBytes, 11,909 VerificationOperations and 59,288 SearchStateBytes more than replay. That gap is a divergence of play and replay as soon as a deploy carries a budget.
@@ -1948,7 +2043,7 @@ Their main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-08 |
-| Status | In force |
+| Status | In force. [Decision 89](#decision-89) does its last clause. |
 | Amends | [Decision 57](#decision-57) (the clause "both fail in native execution"), the native answer of [decision 66](#decision-66) |
 | Related | [Decision 69](#decision-69) |
 
@@ -1958,6 +2053,7 @@ Their main terms are these:
 - Both processes run in native execution as recorded processes. The hot-file edit of `interpreter/system_processes.rs` is two lines.
 - The cost-accounting owner removes the whole `forbidden` list.
 - When the record-and-replay mechanism for external services reaches this branch, both processes move to it. The campaign does not implement that mechanism.
+  *Done by [decision 89](#decision-89): DR-114 reached the branch with the merge of `4c58a925f`, and both processes moved to it.*
 
 **User's words.**
 
@@ -1993,7 +2089,7 @@ Their main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-08 |
-| Status | In force |
+| Status | In force. [Decision 114](#decision-114) retires the reconciler of its example |
 | Amends | The reconciler sentence of [decision 66](#decision-66), the N4 leaf of the tracker |
 | Related | [Decision 12](#decision-12), [decision 18](#decision-18) |
 
@@ -2002,6 +2098,7 @@ Their main terms are these:
 - No design plans a Casper change that is not directly Reified work.
 - The campaign opens no question of finality, fork choice or the block lifecycle.
 - It uses Casper state only through read-only interfaces where an approved design needs it. For example, the reconciler reads the finalized state through `RuntimeManager`.
+  *Changed by [decision 114](#decision-114): the reconciler is retired, so this example no longer applies.*
 - The campaign does not hunt, analyze, file or fix latent defects of other owners, unless they block the Reified work. The findings that it filed before stay as records.
 
 **User's words.**
@@ -2061,7 +2158,7 @@ Their main terms are these:
 | Field | Value |
 |---|---|
 | Date | 2026-10-09 |
-| Status | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store) |
+| Status | In force. Implemented in P7 steps 2 (the Seq claims) and 3 (the HashSet store). [Decision 91](#decision-91) amends the basis of its Seq claims, and [decision 90](#decision-90) retires its clause on legacy execution |
 | Amends | The plan sentence "the atomic Seq guard enforces exclusive use" (exclusive use holds for each channel) |
 | Related | [I-4](#i-4), [decision 39](#decision-39) (F1, F17), [decision 47](#decision-47), [decision 69](#decision-69) |
 
@@ -2069,8 +2166,10 @@ Their main terms are these:
 
 - The user approves P7 design v2, which applies the 26 amendments of the arbitration.
 - Each channel of a seq space has its own causal-lineage claim. A use of a channel must descend from the previous use of that channel, else the deploy aborts with `SeqConcurrent`.
+  *Amended by [decision 91](#decision-91): the causal history of the use decides the descent. A use descends from the previous use when that use is in its history (`SeqHistory`).*
 - Operations that touch no channel of the space (`gensym`, `config`, `qualifier`, allocations) and internal jobs (re-issues, settle jobs) are not checked.
 - The seq qualifier, and so every HashSet family, runs only in native execution. Legacy execution keeps `QualifierUnavailable` for it.
+  *Amended by [decision 90](#decision-90) (C6, step D): spaces run only in native execution, so a factory call outside it fails with `RuntimeUnavailable` before every gate. Gate 3 reads no execution model, and `QualifierUnavailable` is retired.*
 - The HashSet store is the default space restricted to empty messages. A send with data aborts with `PayloadNotEmpty`, and a receive with a binder aborts with `PatternNotEmpty`.
 
 **User's words.**
@@ -2083,6 +2182,7 @@ Their main terms are these:
 
 - The FIPS restricts each seq channel ("you cannot use it in a concurrent process"), and the channels of the default space are independent.
 - Legacy host operations bypass the scheduler, so a causal-lineage claim is deterministic only in native execution.
+  *Amended by [decision 91](#decision-91): DR-132 of the base removes the scheduler and its participant paths. A causal history depends only on the program and its recorded matches, so the claim is deterministic under racing evaluation.*
 - An empty pattern already matches exactly an empty message in the default space, so the HashSet store needs no change to matching.
 
 **Implementation.** P7 step 3 records the two codes of HS-8 exactly as design v3 states them ([specification 2.7](specification.md#27-hashset)):
@@ -2204,7 +2304,7 @@ Both checks run before any staging, in the driver and in the join engine.
 | Field | Value |
 |---|---|
 | Date | 2026-10-10 |
-| Status | In force. Implemented in P8 step 1 |
+| Status | Retired by [decision 89](#decision-89). It was implemented in P8 step 1 |
 | Amends | [Decision 47](#decision-47) (its sentence "That accessor is the only exception to M-3"), [M-3](#m-3), and item 21 of the consensus-preservation checklist, for one test edit |
 | Related | [Decision 77](#decision-77), [I-12](#i-12), [host work](glossary.md#host-work) |
 
@@ -2240,7 +2340,7 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 | Field | Value |
 |---|---|
 | Date | 2026-10-10 |
-| Status | In force. Implemented in P8 step 5 |
+| Status | Retired by [decision 89](#decision-89). It was implemented in P8 step 5 |
 | Amends | None |
 | Related | [Decision 77](#decision-77), [Decision 78](#decision-78), [host work](glossary.md#host-work), [conformance kit](glossary.md#conformance-kit) |
 
@@ -2311,7 +2411,7 @@ The footprint policy `p8` approves the edit, and checklist items 11 and 21 name 
 **User's words.** "Can you backport the fixes to Bug 11004 from feature/cost-accounted-rho?", and then "Backport DR-119 (Recommended)".
 
 *Correction ([decision 84](#decision-84), 2026-10-12).* The backport was the main session's recommendation, and the user asked only whether a backport was possible.
-The recommendation did not state that `SystemVault.rho` is a genesis contract (`standard_deploys.rs:195`), so the backport changed the genesis state of new networks.
+The recommendation did not state that `SystemVault.rho` is a genesis contract (`standard_deploys.rs:206`), so the backport changed the genesis state of new networks.
 The user: "I did not ask you to change Genesis, you asked me to change genesis."
 
 **Reason.**
@@ -2333,7 +2433,7 @@ The user: "I did not ask you to change Genesis, you asked me to change genesis."
 | Field | Value |
 |---|---|
 | Date | 2026-10-11 |
-| Status | In force. [Decision 84](#decision-84) disables its concurrent row |
+| Status | In force. [Decision 84](#decision-84) disabled its concurrent row, and [decision 108](#decision-108) restores it |
 | Amends | Section 8 of the P9 design v2 (alternating proposers), and the effect of [decision 81](#decision-81) on N4 (two payers on one space) |
 | Related | [Decision 70](#decision-70), [decision 80](#decision-80), [M-1](#m-1) |
 
@@ -2349,6 +2449,9 @@ The user: "I did not ask you to change Genesis, you asked me to change genesis."
 *Amended by [decision 84](#decision-84) (2026-10-12).* This tree has no DR-119 fix again.
 So the merge of two paid siblings rejects one of them, and the sender of the rejected sibling fails the merge block (gap G6).
 `n4_concurrent_space_blocks_agree` is disabled, and the merge row takes two labeled payers.
+
+*Amended by [decision 108](#decision-108) (2026-10-27).* The merged base changes the facts that disabled the row, so `n4_concurrent_space_blocks_agree` runs again.
+The rows keep the form of this decision.
 
 **User's words.** "Adjust N4 (Recommended)".
 
@@ -2418,7 +2521,7 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 | Field | Value |
 |---|---|
 | Date | 2026-10-12 |
-| Status | In force |
+| Status | In force. [Decision 108](#decision-108) restores its concurrent row |
 | Reverts | [Decision 81](#decision-81) |
 | Amends | [Decision 18](#decision-18) (its `casper/src` exception ends), and [decision 82](#decision-82) (its concurrent row) |
 | Related | [Decision 70](#decision-70), [decision 80](#decision-80) |
@@ -2432,13 +2535,14 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 - The completeness phase `p9` held only the files of the backport. It now holds the Reified changes of P9, because the checklist checks a phase for each milestone.
 - `casper/src` matches the base again. The only Casper changes of the campaign are the N4 test files and their one `mod` line.
 - `n4_concurrent_space_blocks_agree` is disabled, with its reason at the test. The merge row takes two labeled payers, and no bucket search chooses them.
+  *Amended by [decision 108](#decision-108): the merged base changes the facts that disabled the row, so the row runs again.*
 
 **User's words.** "I did not ask you to change Genesis, you asked me to change genesis.", then "Revert it if it does not directly relate to Reified RSpaces and is not a technical blocker. This campaign is only focused on completing support for Reified RSpaces, nothing else should be investigated, changed, or implemented unless it is a technical blocker.", and "If a change to casper is necessary for the correct implementation of Reified RSpaces, then that is okay, but do not randomize on unrelated work!"
 
 **Reason.**
 
 - DR-119 fixes a defect of the vault (bug 11004), not a defect of Reified RSpaces. Reified code never touches the vault.
-- `SystemVault.rho` is a genesis contract (`standard_deploys.rs:195`), so the backport changed the genesis state of new networks.
+- `SystemVault.rho` is a genesis contract (`standard_deploys.rs:206`), so the backport changed the genesis state of new networks.
 - The backport was the main session's recommendation, and the recommendation did not state this effect.
 - The fix is not a technical blocker of Reified RSpaces. The N4 acceptance needs equal blocks, roots, event logs and costs on two nodes.
   It also needs a merge across blocks, and invalid traces that fail without a panic.
@@ -2453,7 +2557,7 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 
 **Evidence.** The N4 runs without the fix, before and after the adaptation, and the byte comparison of the reverted files with the base (verification.md, section 34.10).
 
-## User decisions 85 to 88
+## User decisions 85 to 95
 
 ### <a id="decision-85"></a>Decision 85: P10 design v2
 
@@ -2482,15 +2586,17 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 | Field | Value |
 |---|---|
 | Date | 2026-10-12 |
-| Status | In force |
+| Status | In force. Amended by [decision 89](#decision-89). |
 | Amends | [Decision 13](#decision-13) (the timing of the gate of the node command line) |
 | Related | [Decision 69](#decision-69) |
 
 **Statement.**
 
-- With offered funding active, the node refuses legacy deploys and rejects a block that holds one (`casper/src/rust/api/block_api.rs:823`, `validation_dispatcher.rs:123`).
+- With offered funding active, the node refuses legacy deploys and rejects a block that holds one (`casper/src/rust/api/block_api.rs:712-716`, `validation_dispatcher.rs:124-130`).
+  *Changed by DR-134 of the base, which merge 2 takes: the node refuses legacy deploys on every shard.*
 - On this branch and on feature/cost-accounted-rho, `node deploy` builds a legacy deploy and `node eval` evaluates on the legacy path. Only the HTTP route `/deploy/offered` and the gRPC deploy service take offered deploys.
 - P10 verifies every example in the native harness, with native play and native-replay certification at the v6 limits.
+  *Amended by [decision 89](#decision-89): the v6 limits have no host-work limits, so the harness certifies at the phlo limits only.*
 - The gate of decision 13 is written against the repaired command line and runs every example after the repair reaches this branch. The campaign changes no file of `node/src` for it.
 
 **User's words.** "I am repairing the node CLI with the cost-accounting agent"
@@ -2502,7 +2608,7 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 | Field | Value |
 |---|---|
 | Date | 2026-10-12 |
-| Status | In force |
+| Status | In force. Amended by [decision 89](#decision-89). |
 | Related | [Decision 39](#decision-39) (F7, the `size` of an Array), [decision 71](#decision-71) |
 
 **Statement.**
@@ -2511,6 +2617,7 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 - The features of the legacy branch must exist here, but the API does not have to match the legacy API.
 - The FIPS matrix records four passages with these dispositions. They are the main session's recommendation, and the user's answers leave them in place.
 - Vector out of memory (FIPS line 209) is a deviation. The deploy fails deterministically when it exceeds its phlo or host-work budget, because memory exhaustion cannot be a consensus outcome.
+  *Amended by [decision 89](#decision-89): there is no host-work budget, so the deploy fails on its phlo budget only.*
 - The quantale semantics (lines 187 to 193, and 269) is informative. The FIPS states it as an open question, and the follow-up `rrs-fu-quantale-unification` routes it to the FIPS authors.
 - Majority and the elementwise sigmoid (line 261) come at P12 with tensor logic (decisions 62 to 65, and decision 88).
 - "Others" (lines 263 to 265) is informative. Its fixed-size versions exist where the legacy branch had them: the `size` of an Array and the `capacity` of a VectorDB collection.
@@ -2537,6 +2644,1411 @@ Native replay runs under the same scheduler as play, so the fix makes both deter
 **User's words.** "Keep them for P12", then "I didn't say they needed to exist before their dependencies were ready ...". The main session had recommended adding them in P10.
 
 **Reason.** The legacy operations depend on the work of tensor logic, which depends on F1r3lang. A legacy feature must exist when its dependencies are ready.
+
+### <a id="decision-89"></a>Decision 89: The base removed host-work metering, so Reified RSpaces removes its own
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-16 |
+| Status | In force. Decisions [96](#decision-96), [102](#decision-102), [105](#decision-105) and [107](#decision-107) amend it |
+| Retires | [Decision 40](#decision-40), [decision 42](#decision-42), the metered view reads of [decision 47](#decision-47), [decision 78](#decision-78) and [decision 79](#decision-79), and the host-work clauses of [I-12](#i-12) |
+| Amends | The reason of [decision 41](#decision-41), the last clause of [decision 68](#decision-68), [decision 86](#decision-86) (the harness certifies without host-work limits) and [decision 87](#decision-87) (a deploy fails on its phlo only) |
+| Related | DR-131 of `feature/cost-accounted-rho` (commit `75de2dc39`, its records in `4c58a925f`), and DR-101, DR-114, DR-121, DR-128 and DR-129 of that branch |
+
+**Statement.**
+
+- A space operation meters only what the equivalent host operation meters: its COMMs (compute) and the bytes that it stores (storage). It uses the same observer calls (the phlo clause of [I-12](#i-12)).
+- Nothing else is metered: no read, copy, decode, sort, scan, match, guard or similarity work.
+- The merge of `feature/cost-accounted-rho` at `4c58a925f` deletes the host-work metering of the space substrate and of the rholang space code in one merge commit. The commit message gives the command that restores it.
+  *Amended by [decision 96](#decision-96): merge 2 also deletes the host-work model `AgentReadCoverage.v`, and six host-work headlines of other modules become comments.*
+- These parts stay:
+  - the phlo clause of I-12
+  - the fire-round cap of [I-21](#i-21), which is a liveness bound
+  - the canonical order of [decision 41](#decision-41), which is semantics
+    - *Replaced by [decision 102](#decision-102): the spaces pick at random in play, as the host does since DR-129.*
+  - the protocol size limits
+  - the native replay backend of spaces, with its accessor and bind call ([decision 47](#decision-47))
+  - the bench harness of P10 step S8.
+- [Decision 74](#decision-74) keeps its compact config bytes, because they are a state format. Only its reason lapses.
+
+**User's words.** "The host work metering has been removed from feature/cost-accounted-rho, you should git-commit any outstanding changes and then git-merge from feature/cost-accounted-rho and revise your plan accordingly. There are two classes of metering in cost-accounted rholang/f1r3lang: compute and storage. Compute metering is done purely over COMMs and storage metering is computed over the required bytes. That is it, there is not supposed to be any other forms of metering."
+
+**Reason.** The base has no host-work budget after DR-131, so a space reservation has no meter. One metering model keeps the phlo of a space operation equal to the phlo of its host program.
+
+**The merge adaptations.** The merge also brings five rules of the base, and the Reified code follows each of them.
+
+- The stack-safe funding resolver of the base (`accounting/lexical.rs`) counts a USE or NEWSPACE marker tuple as a term, as the reducer does (hook H1). So it fails closed on a marker at a resolving position (finding H-1). Since DR-121, a receive body is not a resolving position, so a marker there resolves.
+- DR-128: the read rule of a space channel (`readable_channel`) raises `BundlePermissionError`, which the failure classifier maps to a user failure.
+- DR-101: the re-store of a peeked record (`Introduction::for_record`) resolves the residue seal of the record in its deployment, as `produce_peeks` does. A seal that does not resolve is `Inconsistent`.
+  *Amended by [decision 107](#decision-107): the seal also resolves with the region price of the budget, as `produce_peeks` does (DR-135 R4).*
+- DR-114: `embed` and `ann` move to the record-and-replay mechanism of native execution ([decision 68](#decision-68)). A reply takes record room, a reply that does not fit becomes `OutputTooLarge`, and a replayed call without its record is a bug.
+  *Changed by [decision 105](#decision-105): a reply that does not fit becomes `EXT_OUTPUT_TOO_LARGE`, the code of the base.*
+- DR-129: host play picks at random again, and the spaces keep the canonical order of decision 41. A test that compares a space with a host program pins host play to the canonical choice. A test that replays a host log draws a fresh host replay.
+  *Replaced by [decision 102](#decision-102): the spaces also pick at random in play, and replay follows the recorded pick (DR-129).*
+
+**The answers of 2026-10-25.** The user answered the open questions of the merge on 2026-10-25.
+
+- User failures (task 14): "Classify them as user failures (Recommended)".
+  A deterministic space error that the program causes becomes the interpreter error `SpaceUserError` (`interpreter/errors.rs`).
+  The failure classifier maps it to a user failure, as DR-128 does for `BundlePermissionError` (`accounting/economic_failure.rs`).
+  `Inconsistent` stays a platform failure.
+- The funding resolver: "Why would you recommend fail-closed and keep reified rspaces broken? What needs to be done in the base branch to support these properly?"
+  The answer is the marker support of [decision 90](#decision-90) (R-1, R-2 and E-1).
+  The base gets no Reified knowledge, only the shared predicate at two more sites and one arm of the estimate.
+- The footprint data and the Python checkers: "do not commit them to the main repo", then "Untrack, keep local (Recommended)".
+  Commit `6bf10a721` untracks the 23 Python scripts with their tests and fixtures, `footprint-policies.json` and the two head-file-digest files.
+  The local copies stay, and `.git/info/exclude` hides them.
+- The merge order: "Commit merge 1, then merge (Recommended)".
+  Merge 1 is commit `b60e2e558`, and [decision 90](#decision-90) plans merge 2.
+
+### <a id="decision-90"></a>Decision 90: The merge 2 plan for `feature/cost-accounted-rho` at `702496775`
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-25 |
+| Status | In force. [Decision 95](#decision-95) replaces its item on the test attributes of `session.rs`. [Decision 98](#decision-98) changes its mirror item. |
+| Retires | [I-11](#i-11), Option P of [decision 45](#decision-45) (as [decision 69](#decision-69) planned), and the legacy clause of [I-12](#i-12) |
+| Amends | Item D3 of [decision 19](#decision-19) (the sub-order) and fix rule FR-5' of [decision 34](#decision-34). Both are unreachable after DR-132, and the merge comments them out. |
+| Correction | *The merge kept both as live code, and only tests reach them ([design S5.7](design.md#s57-parent-tracking-fr-5)).* |
+| Related | DR-132 to DR-135 of `feature/cost-accounted-rho`, [decision 73](#decision-73), [decisions 91 to 95](#decision-91), design v2 of merge 2 (pgmcp artifact 1086) |
+
+**Statement.** The user approves design v2 of merge 2.
+The merge takes the base at `702496775`, which has 781 commits after `4c58a925f`.
+Four decision records of the base change Reified RSpaces:
+
+- DR-132: racing evaluation replaces the deterministic scheduler, and each journal row takes an operation name.
+- DR-133: the dev-parity trim.
+- DR-134: the node takes only offered deploys, and the legacy meter is deleted.
+- DR-135: owners fund their processes with held prices.
+
+**Overlap with the base.** Since `4c58a925f`, 18 files changed on both sides, and no file has two fixes of one defect.
+The merge reuses the base mechanisms that now do Reified work:
+
+- the drain of `inj_with_observation`, which replaces `enter_boundary` for the volatile sweep
+- the counted readiness wait of native replay, which now also covers space transactions
+- `run_parallel_dispatches`, which `dispatch_space_outcome` calls for every dispatch
+- the owner hooks of DR-135, which give the owner checks of space rows
+- the I5 guard `native_evaluation_spawns_only_counted_tasks`, which now also scans the Reified directories.
+
+The stack-safe sorter of `702496775` reaches the Reified code through `ParSortMatcher`, and this branch has no copy of the sorter.
+
+**Base edits.** The user approves these edits of base files, which are the minimum that Reified RSpaces needs:
+
+1. The conflict resolutions keep the base text of `reduce.rs` and `rho_runtime.rs` and add only the Reified fields, hooks and calls.
+2. `session.rs` loses three `#[cfg(test)]` attributes of the replay accessor. [Decision 95](#decision-95) replaces this item.
+3. `session/execution.rs` gets one `mod` line for the Reified readiness check.
+4. `lexical.rs` uses the shared marker predicate at two more sites (R-1).
+5. `estimate.rs` gets one arm and one new reason (E-1).
+6. The test `racing_evaluation.rs` adds the Reified directories to the I5 guard.
+7. With [decision 91](#decision-91), the spawn helper and the fired-body dispatch carry causal histories.
+
+**Required changes.** These changes follow from the base, with no choice:
+
+- Space jobs run inline in the counted task, so `reified/schedule.rs` goes with its five callers.
+- The space backends adopt the operation names of DR-132. The observed body and the finish run inside `named`.
+- Option P goes ([decision 69](#decision-69)): `reified/legacy_charges.rs`, the legacy chain, `LegacyCharges.v`, the Legacy mode of `CheckpointReplay.tla`, the legacy-mode tests and the `legacy_budget` scenario.
+- The test literals of `CostRegion` take `price` and `caller`, and three child walks match `held_price: _`.
+- The funding resolver and the estimate support the markers:
+  - R-1: the shared predicate also counts the markers in the schedule of `visit` and in its test oracle.
+  - R-2: a marker body is never walked, so the resolver claims no name inside it. R-2 needs no code.
+  - E-1: the estimate treats a marker as unmodeled demand with the new reason `SpaceConstruct`, so the gate holds the signed limit.
+- User failures map to `SpaceUserError` (the answers of 2026-10-25 in [decision 89](#decision-89)).
+- The volatile sweep runs once after the drain, and `enter_boundary` has no successor.
+- The mirror journal records the writes of a VectorDB space inside the commit, so the publication order is the commit order.
+  *Changed by [decision 98](#decision-98): the commit itself publishes its writes in play, so the journal is retired. The publication order stays the commit order.*
+- The live ChromaDB script uses the cache variable of rust-bert, because the dev-parity trim of the base returns to the embedder of dev.
+- DR-135 moves the Reified pins of bytes, costs and roots: 9 bytes for each region and 1 byte for each signed term. Each moved pin is classified before it changes.
+
+**Decided by existing rules.**
+
+- The replay order of space transactions: no option that only Reified RSpaces has is correct. The readiness wait extends the counted park of the base, and [decision 92](#decision-92) gives the order rule.
+- Owner funding: each staged row runs the owner checks of the base inside its own row. A refusal gives the host outcome, so a produce stores and a consume parks (SM-8, and item D6 of [decision 19](#decision-19)).
+- One execution model ([decision 69](#decision-69)): the legacy-mode suites move to native play with native replay certification. Outside native execution, every space entry point fails closed, as the grant issuance of the base does.
+- FR-5' and the sub-order are unreachable after DR-132, and the merge comments them out with a reason.
+  *Correction: the merge kept both as live code, and only tests reach them ([design S5.7](design.md#s57-parent-tracking-fr-5)).*
+
+**Order of work.** The conflicts and the compile come first.
+Then come the models, each with negative controls: `NativeReplay.tla`, `SpaceCoordination.tla` and the owner rows.
+The code transcribes the models.
+Then come the resolver and the estimate, the user failures, the tests, the documents and all suites.
+The merge commit waits for the consent of the user.
+
+**User's words.** "Approve the plan (Recommended)". The directives of the user on the same day are these:
+
+- "restrict any changes to concensus to the absolute minimum necessary for reified rspaces, you are not tasked with fixing concensus bugs or making improvements to casper"
+- "If the base branch fixes any of the same bugs as this branch, take the base branch's versions and amend them as needed for reified rspaces"
+- "pgmcp may be freely used as a memory server and for effectively infinite context"
+
+**Reason.** After DR-132 to DR-135, the base has mechanisms for most of the Reified work. Their reuse keeps the edits of base files to the minimum that the directives ask for.
+
+### <a id="decision-91"></a>Decision 91: The seq rule uses causal histories
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-25 |
+| Status | In force |
+| Amends | The basis of the Seq claims of [decision 73](#decision-73): causal histories replace the participant paths of the scheduler |
+| Related | DR-132 of `feature/cost-accounted-rho`, [decision 90](#decision-90), [I-4](#i-4) |
+
+**Statement.**
+
+- [Decision 73](#decision-73) based QF-15 ("each channel has one chain of uses") on the participant paths of the scheduler. DR-132 removes these paths.
+- Each task, stored record and waiter now carries the uses that happened before it, as a clock for each seq channel (`SeqHistory` in `reified/seq.rs`).
+- A use is admitted when the last use of its channel is in its history (`SeqHistory::knows`).
+- A fired body takes the union of the histories of its participants.
+- So the verdict depends only on the program and the recorded matches, and play and replay agree under racing evaluation.
+- The rule of decision 73 and the FIPS sentence "it is not used in a concurrent process" stay.
+- The spawn helper and the fired-body dispatch of the base carry the histories (base edit 7 of [decision 90](#decision-90)).
+
+**Model.** `SpaceCoordination.tla` checks two invariants together.
+`HistIsCausalPast` says that each kept history is the causal past of its participant.
+`NoFalseRefusal` says that the history of a refused use misses the last use of its channel.
+With both invariants, a refused use is concurrent with the last use of its channel, so no refusal is false.
+
+The control `NoMergeUnsafe` (a fired body does not take the union) refutes `HistIsCausalPast`.
+The control `NoInheritUnsafe` (a new task does not keep the history of its parent) also refutes `HistIsCausalPast`.
+The control `ClaimsNeedContextUnsafe` (the first use of a channel is refused) refutes `NoFalseRefusal`.
+
+**User's words.** "Causal histories (Recommended)".
+One other option was a refusal of seq in protocol 6, which removes every HashSet family.
+The last option was a rule without QF-15, which allows concurrent uses against the FIPS.
+
+**Reason.** A causal history is a function of the program and of its recorded matches, not of the thread schedule.
+So each play and its replay give the same verdict.
+The hypothesis to test is that the existing seq tests keep their verdicts.
+
+### <a id="decision-92"></a>Decision 92: The replay order of space transactions uses ordinary events
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-26 |
+| Status | In force. [Decision 94](#decision-94) replaces its escalation re-check. [Decision 99](#decision-99) replaces its anchor payer. |
+| Replaces | The role of [I-11](#i-11) in native replay |
+| Related | [Decision 31](#decision-31), [decision 47](#decision-47), [decision 90](#decision-90), [M-1](#m-1), DR-114 and DR-132 of `feature/cost-accounted-rho` |
+
+**Question and answer.** The user asked "what is the most Casper-faithful mechanism? I do not want to turn Casper into a new protocol, how does it handle similar replay semantics on dev and feature/cost-accounted-rho?".
+The answer was this:
+
+- Dev rigs the replay space with the event log of the block, so a COMM fires only as recorded (`replay_rspace.rs:413-490`).
+- Every order-dependent choice of a Rholang program is a COMM, and every read of shared state is a consume or a peek.
+- The base adds the operation journal of DR-132, with rows by source and predecessors by channel.
+- The base also adds native records for choices that are not RSpace events: G3 refusals, DR-114 calls and DR-113 grants.
+
+**Statement.**
+
+- Each row of a space transaction names the counter channel `S(sid)` of its space in its footprint, as one more join group.
+  The predecessor rule of the base then replays the transactions of one space in play order.
+  The recorder takes the footprint from the caller (`accounting/native_runtime/operations.rs`).
+- The first row of a transaction must be unique to its job (finding CE1).
+  A transaction records its read with an anchor before its other rows when it has no such first row:
+  - a stage-time failure that depends on the state of the space
+  - a step that changes nothing
+  - a settle with no row of its own
+  - a first row that another job can also stage.
+- An anchor is one consume without a peek on the persistent config record `C(sid)` of the space. Its COMM changes no state.
+- Merge check 1 ignores persistent produces, so anchors cause no merge conflicts.
+- A positional failure (`CellOccupied`, `CapacityExceeded` or `NestedCommitGuard`) discards its staged operations. The transaction then commits the anchor alone and returns the error.
+- Native replay checks the readiness of the first row of a space transaction only.
+  A missing first row makes the transaction park and stage again. A missing or unfit later row fails the commit closed at that row.
+- Rejected: a new journal record, which needs a new record kind in wire version 4 and a replay concept that dev does not have.
+- Accepted cost: an anchored transaction pays one consume introduction and one COMM, as the counter events of [decision 31](#decision-31) do.
+  The estimate covers anchors, because every space route makes the estimate incomplete. So the gate holds the signed limit.
+
+**Design details.** The implementation design (pgmcp artifact 1106) fixes these points:
+
+- Allocations and config reads also lock `S(sid)`, so their rows name it too.
+- An anchor pays with the authority of its operation, as the counter events of decision 31 do (`spaces/counter.rs`). [Decision 95](#decision-95) records this correction.
+  *Replaced by [decision 99](#decision-99): an anchor carries the residue seal of DR-101, so the running deployment pays for it.*
+- The identity of an anchor derives from the random state of its job (`RandomPurpose::Anchor`).
+- The anchors live in the new module `spaces/anchor.rs`.
+- The model `cost_accounted_rho/NativeReplayStall.tla` gets the anchor rows in its section for space transactions.
+
+**Arbitration.** An independent review (agent `ae11054e91fb3310e`, "approve with amendments") adds these items:
+
+- CE1: the first row of each transaction is unique to its job.
+- A failure discards its staged operations and stages the anchor in the same transaction.
+- The escalation re-check compares exact channel sets. [Decision 94](#decision-94) replaces this item.
+- `NestedCommitGuard` gets an anchor.
+- CE2: an owner refusal inside a space commit stalls replay, because `outcome_fits` has no case for `SkippedIntroduction`. The owner checks of space rows fix it ([decision 90](#decision-90)).
+
+**Model.** `SpaceReplayOrder.tla` checks four invariants on every play order: `NoStall`, `NoFailClosed`, `Agreement` and `ExactRows`.
+The controls `NoFootprintKeyUnsafe` and `NoAnchorRowlessUnsafe` refute `NoStall`.
+The controls `AnchorAppendedUnsafe` and `UnknownSourceFailsUnsafe` refute `NoFailClosed`.
+The racing tests `space_racing_replay_*` of `rholang/tests/reified_native_spaces.rs` check the four invariants on the code.
+
+**User's words.** "Ordinary events (Recommended)".
+
+**Reason.** Dev and the base replay every order-dependent choice through ordinary events.
+An anchor is such an event, so the replay of spaces adds no concept to the protocol.
+
+### <a id="decision-93"></a>Decision 93: Racing tests stay multi-thread
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-26 |
+| Status | In force. [Decision 111](#decision-111) adds the current-thread runtime |
+| Amends | The rules DT-3 and DT-5 and the row N9 of the [specification](specification.md), for racing evaluation |
+| Related | DR-132 of `feature/cost-accounted-rho` (commit `97d020154`), [decision 90](#decision-90), [decision 92](#decision-92) |
+
+**Statement.**
+
+- No test uses a single-thread runtime to fix an interleaving.
+  *Amended by [decision 111](#decision-111): the racing tests also run on a current-thread runtime, as the base does. No test depends on that runtime to pass.*
+- The rule of the base applies (DR-132, commit `97d020154`): "racing evaluation gives arrival-order logs, so no test compares whole logs across runs".
+- Each run replays its own record instead, and its outcome must be an allowed outcome.
+- The goldens of ordinary execution keep every field that every interleaving gives: roots, leaf bytes, state dumps, costs and the COMM structure.
+- Three multi-thread runs of the clean base vary only in four fields, which become checks of each run:
+  - the arrival order of three parallel sends (R1)
+  - the order of the event kinds (R4, R8 and R9)
+  - the length of the log (R9)
+  - the operation count of the persistent-send and persistent-receive programs (R6).
+- The equality tests of two runs become replay checks of each run with allowed outcomes. These are N9, the determinism suite, the rehydrate tests, the examples and the serial properties of P4.
+- The specification restates the rules DT-3 and DT-5 and the row N9 for racing evaluation.
+
+**Implementation.** The racing tests of [decision 92](#decision-92) run on runtimes with 2 and 8 workers, three runs each, and each run certifies its own play.
+The tests follow the form of the base property P-1 (`racing_native_play_agrees_with_native_replay`), without its current-thread runtime.
+*Changed by [decision 111](#decision-111): the racing tests run on the runtimes `[0, 2, 8]`, where 0 is the current-thread runtime.*
+
+**User's words.** "Whoah, whoah, whoah, whoah! Why are you mentioning single-threading?!? Rholand and F1r3node are inherently concurrent!"
+The main session had proposed to check goldens on a single-thread runtime.
+
+**Reason.** Rholang and F1r3node are concurrent.
+A single-thread runtime shows one interleaving only, but consensus must hold for every interleaving.
+
+### <a id="decision-94"></a>Decision 94: Escalation to a join scope takes a two-phase lock
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-26 |
+| Status | In force |
+| Replaces | The escalation re-check of [decision 92](#decision-92), which dropped the transaction, began again over the union and classified again |
+| Related | `produce_lock` of dev and of `feature/cost-accounted-rho` (`rspace++/src/rspace/locks.rs`, with F1 of DR-132 in the base), [lock coverage](glossary.md#lock-coverage) |
+
+**Statement.**
+
+- Phase A: a collection transaction locks its own keys, with `C(sid)`. It classifies the operation and reads the join scope under phase A.
+- Phase B: the transaction then locks every key of the operation and of the scope in one sorted call. This is the form of `produce_lock` in dev and in the base.
+- The scope stays valid, because every space transaction locks `C(sid)`. So the phase A lock on `C(sid)` blocks every other transaction of the space between the scope read and the phase B lock.
+- No deadlock, by the argument of dev: every transaction takes phase A before phase B. It never waits for phase A while it holds phase B, and it takes each phase in one sorted call.
+- Lock coverage stays exact on keys, so no outcome depends on lock stripes.
+- Scope: the begin API of the Reified substrate (`space_store_handle.rs`, `space_play.rs`, `space_replay.rs` and `native_session/space.rs`) and `prepare_collection_op`. No base file changes.
+
+**Model.** `JoinScopeLock.tla` checks `NoStaleScope`, `NoFalseRefusal` and `NoDeadlock` for two transactions of one space and one host produce, under every stripe map.
+`EscalationRebeginUnsafe` (the code before this decision) and `PhaseAWithoutConfigUnsafe` refute `NoStaleScope`.
+`PhaseBSplitUnsafe` and `PhaseAAfterPhaseBUnsafe` refute `NoDeadlock`, and `CoverageByHostUseUnsafe` refutes `NoFalseRefusal`.
+
+**User's words.** "Two-phase lock, as dev (Recommended)". The recommendation was the main session's.
+The user had asked "What were the results of your design and whether it needs to be amended to more closely align with dev and feature/cost-accounted-rho?"
+
+**Reason.** The host produce already locks in two phases.
+The same form keeps the scope of an escalation valid without a retry loop, and the argument of dev shows that it cannot deadlock.
+
+### <a id="decision-95"></a>Decision 95: The space readiness check reaches the replay journal through the native epoch trait
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-26 |
+| Status | In force. [Decision 99](#decision-99) replaces its related correction |
+| Replaces | The item of [decision 90](#decision-90) that removes three `#[cfg(test)]` attributes of `session.rs` |
+| Related | [Decision 31](#decision-31), [decision 92](#decision-92), DR-132 and DR-135 of `feature/cost-accounted-rho` |
+
+**Statement.**
+
+- The base trait `NativeOperationEpoch` (`rspace++/src/rspace/replay_rspace/native_epoch.rs`) gets two methods with default bodies that fail closed: `space_transaction_ready` and `wait_space_change`.
+- `SessionEpoch` implements them through its replay (`session/operations.rs`).
+- The space session calls them through `session.epoch`, as `native_session/space.rs` does for the other epoch calls.
+- The three `#[cfg(test)]` attributes of the `replay` accessor of `session.rs` stay, so the accessor is test-only, as in the base.
+- The base files that change are `native_epoch.rs` and `session/operations.rs`.
+
+**Related correction.** The rules decide this point without a question.
+An anchor of [decision 92](#decision-92) pays with the authority of its operation, as the counter events of [decision 31](#decision-31) do (`spaces/counter.rs`).
+Owners pay for their processes (DR-135). The suggestion of the design agent that the running deployment pays is not adopted.
+
+*Replaced by [decision 99](#decision-99) on 2026-10-27: the machinery continuations, the anchor included, carry the residue seal of DR-101. So the running deployment pays for them, as DR-101 item 2 says.*
+
+**User's words.** "Epoch trait, as base (Recommended)". The recommendation was the main session's.
+
+**Reason.** The space session already reaches the replay through the epoch trait for its other calls.
+Two defaulted methods keep the replay accessor test-only and change no behavior of the base.
+
+## User decisions 96 to 135
+
+The merge 2 review of 2026-10-27 aligned the earlier decisions with the [base](#terms-used-in-this-register) at `702496775` ([decision 97](#decision-97)).
+Decisions 96 to 121 record its results and the answers of the user on 2026-10-27 and 2026-10-28.
+Decisions 122 to 124 record the results of 2026-10-29.
+Decisions 125 to 129 and 132 to 135 record the answers of the user from 2026-11-01 to 2026-11-08.
+These decisions override the earlier decisions where they conflict.
+Each entry names the decisions and the clauses that it replaces, and the old entries keep their text with a note.
+
+### <a id="decision-96"></a>Decision 96: `AgentReadCoverage.v` is deleted, as the base deleted its host-work theories
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | [Decision 89](#decision-89): step M2 of its plan retired the headline H27, but no other host-work theory |
+| Related | [Decision 42](#decision-42), [decision 97](#decision-97), DR-88 and DR-131 of the base (commit `75de2dc39`) |
+
+**Statement.**
+
+- Decision 89 retired the queue metering of decision 42, and `AgentReadCoverage.v` is its Rocq model.
+- All 9 headlines of the module are laws of host-work reservations, and no module imports it.
+- DR-131 of the base deleted its host-work theories, among them `CandidateReadCoverage.v` of DR-88, which `AgentReadCoverage.v` restates.
+- Merge 2 deletes the file. The command `git show 6bf10a721:formal/rocq/reified_rspaces/theories/AgentReadCoverage.v` restores it.
+- `_CoqProject`, the gate count and the negative controls keep the module as comments with a restore note.
+
+**The same rule for six more headlines.** Six headlines of other modules restate the rule of `AgentReadCoverage.v` for their own traces.
+They are `settle_trace_covered`, `alloc_trace_covered`, `set_key_trace_covered`, `scan_trace_covered`, `level_scan_trace_covered` and `prefix_scan_trace_covered`.
+The base deleted every theory of its host-work meter, so these headlines go too, as H27 went ([decision 97](#decision-97)).
+With H27 and the 9 headlines of the module, the gate then expects $`306 - 9 - 1 - 6 = 290`$ headlines.
+
+Each module keeps the section as a comment that starts with a note of decision 96.
+To restore a section, remove that note and the closing marker of its comment.
+The negative controls of the six headlines go with the headlines.
+
+**User's words.** "Delete it, as base did (Recommended)". The recommendation was the main session's, from the rule of [decision 97](#decision-97).
+
+**Reason.** The module and the six headlines prove laws of a meter that no longer exists.
+The base deleted the same kind of theory, so a kept theory would only check rules that no code follows.
+
+### <a id="decision-97"></a>Decision 97: The base branch decides the design, also for the earlier decisions
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | Every earlier decision that the base models in another way. Decisions 98 to 121 name each change |
+| Related | [Decision 70](#decision-70), [decision 90](#decision-90) |
+
+**Statement.**
+
+- For each design point, the campaign finds the mechanism of the base and adopts it. The sources are the decision records of the base and its code at `702496775`.
+- The record of each decision names the rule of the base with its file and line.
+- When the base models a recorded decision in another way, the base decides the point again, with no question. The new decision names what it replaces.
+- A question goes to the user when the base has no mechanism for the point.
+- A question also goes to the user when the mechanism of the base conflicts with explicit words of the user or with another standing directive.
+
+**Review.** Four read-only agents compared decisions 1 to 96, the I-rows and the M-rows with the base.
+The main session checked each reported divergence against `702496775` before it recorded decisions 98 to 121 (pgmcp note 25218 and the later notes).
+
+**User's words.**
+
+- "Align with the base branch as closely as possible -- let that be your guide while making design decisions and ask me if the base branch truly does not model the issue"
+- "that goes for all previously answered questions that are better answered by aligning with the base feature/cost-accounted-rho branch"
+
+**Reason.** Reified RSpaces builds on the base.
+A mechanism of the base needs no second design, and one rule on both sides keeps the differences from the base small.
+
+### <a id="decision-98"></a>Decision 98: The mirror follows the oracle mode of the base (DR-114)
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | The M1 answer of [decision 66](#decision-66), the publication sentence of [decision 58](#decision-58), the mirror item of the required changes of [decision 90](#decision-90), and the former rules MR-2 (the journal) and MR-3 (the settle, and the publication of native replay) of the [specification](specification.md#10-the-chromadb-mirror) |
+| Related | [Decision 97](#decision-97), [decision 114](#decision-114), DR-114 of the base |
+
+**Base facts.**
+
+- A play runtime calls the services of the node once for each recorded call, and every replay keeps the no-op services (`runtime_manager.rs:939-951`).
+- The batch pass gives the play services to the play role and the no-op services to the replay role (`offered_batch.rs:420-429`).
+- The dry run of an exploratory deploy spawns the play runtime (`dry_run.rs:185`).
+- The reporting runtime gets the no-op services (`node/src/rust/runtime/setup.rs:568`).
+- An oracular file operation echoes its recorded reply in replay (`io/mod.rs:42-46`, `fs_handler.rs:8-10, 55-58`).
+- DR-114 says: "Nothing external is undone on rejection or orphaning" (DR file, lines 12959-12961).
+
+**Statement.**
+
+- A play publishes the net writes of each commit of a mirrored space at the commit, before the commit releases its stripes. It publishes whatever the final result of its deploy.
+- Only the store mode `Play` publishes. The modes `Replay`, `Reporting` and `NativeReplay` never publish.
+- A mirror write gives no reply to the program, so nothing is recorded, as for a print (DR-114 T7).
+- `embed` and `ann` stay recorded processes (rule SP-5), and replay produces their recorded replies.
+- A failed deploy, a dry run and the play of a block that consensus does not keep leave their writes in the mirror. The mirror of a node gets only the writes of the deploys that the node plays. [Decision 114](#decision-114) decides that nothing repairs these effects.
+
+**Code.** `ReifiedRuntime::run_op` publishes the batch of a commit in play, before it drops the hold of the commit (`reified/runtime.rs:355-425`).
+The journal, `settle_mirror_journal`, the clear of `begin_evaluation_scope` and the two settle calls of `interpreter.rs` and `rho_runtime.rs` stay as comments with their restore notes.
+
+**Model.** `ChromaMirror.tla` retires `PublishOnlyOnSuccess` with its controls `PublishFailedDeployUnsafe` and `BeginScopeKeepsJournalUnsafe`.
+It adds `ReplayNeverPublishes`, which the control `ReplayPublishesUnsafe` refutes.
+It also adds `OnePublicationPerCommit`, which the control `SettleAlsoPublishesUnsafe` refutes (pgmcp notes 25208 and 25218).
+
+**User's words.** "For external dependencies like Chroma DB, shouldn't they be written to immediately (during play, I guess?) and then recorded so replay merely replays their recordings? Isn't that how the File I/O API works? What are your thoughts?"
+
+**Reason.** The base calls an external service only in play, and it never undoes the call.
+The mirror is such a service, so the same rule applies, and no replay writes the mirror.
+
+### <a id="decision-99"></a>Decision 99: The machinery of a space runs as system work, and the firing deployment pays
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | The related correction of [decision 95](#decision-95), by which an anchor pays with the authority of its operation, and the anchor payer of [decision 92](#decision-92) |
+| Related | [Decision 31](#decision-31), [decision 100](#decision-100), DR-101 item 2 and DR-135 R1 of the base |
+
+**Base facts.**
+
+- A continuation whose seal has only Unit regions runs a system body (`rholang/src/rust/interpreter/dispatch.rs:52-56`, `residue.rs:38`).
+- A system body has no owner (`owner_funding.rs:1211-1218`). So the payer of the running deployment pays at the budget price (`owner_funding.rs:1546-1569`).
+- DR-101 item 2 says: "The deployment that fires the body pays for the work of the body". DR-135 R1 keeps this residue mode for system bodies.
+
+**Statement.** The [machinery continuations](#terms-used-in-this-register) `K(v)`, `K_anchor`, `K_lift` and `K_retire` carry the residue seal of DR-101.
+So the running deployment pays for their introductions and their shares of a COMM, also inside the body of an owner.
+An owner still pays for its own records, continuations and fired bodies, at its own price.
+This is classification B1 of the C4 arbitration, for its finding F2.
+
+**User's words.** "Align with the base feature/cost-accounted-rho branch as closely as possible"
+
+**Reason.** The machinery keeps shared protocol state and never runs a body, as the registry bodies of DR-101 do.
+The base runs such work as system work, so the same rule needs no new payer.
+Decision 31 predates the owner funding of DR-135, so it did not decide this point.
+
+### <a id="decision-100"></a>Decision 100: A refused lift or retire parks inert
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Related | [Decision 39](#decision-39) (the settle and the retires of the P5 design), [decision 99](#decision-99), [lift](glossary.md#lift), [settle](glossary.md#settle) |
+
+**Statement.**
+
+- Under [decision 99](#decision-99), an owner can refuse only a `K_lift` or a `K_retire`, through the owner share of the user record that it consumes.
+- A refused lift or retire parks its continuation inert on the channel of the collection.
+- Every reader of the waiters of a collection skips the two machinery shapes. It still fails on any other waiter that it cannot decode.
+- A refused lift books the settle pair of the record and its waiter (finding F5). So the settle does not propose that pair again in the same run.
+- A run without refusals changes no bytes.
+
+**User's words.** "Park it inert (Recommended)". The recommendation was the main session's, option A of question Q1 of the C4 design report, narrowed by B1.
+
+**Reason.** Option A keeps the rule of DR-135 that the run continues after a refusal, and it changes no consensus bytes when nothing is refused.
+A failed deploy (option C) would let the shortfall of one owner fail the deploy of another party.
+Ground patterns (option B) would change every machinery event and still need the reader filter.
+
+### <a id="decision-101"></a>Decision 101: A receive with several members runs the item test of each member during the search, as the base does
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Related | [Decision 50](#decision-50), [decision 66](#decision-66) (list mode), DR-135 R5 and R6 of the base |
+
+**Base facts.**
+
+- The item test of an owner runs right after the pattern test of each datum (`space_matcher.rs:444-449`).
+- A refused tuple rolls back, and the search tries the next candidate (`space_matcher.rs:351-360`, `ops_consume.rs:228-240, 265-278`).
+
+**Statement.** A set class receive and a VectorDB list receive run the item test of each member during the search.
+A refused tuple keeps all its members stored, and the receive waits, as on a miss.
+This is option A of question Q2 of the C4 design report, which the arbitration recommends (finding F3).
+
+**User's words.** "Align with the base feature/cost-accounted-rho branch as closely as possible."
+
+**Reason.** The base tests each datum during the search, so a refusal acts as a miss and the search goes on.
+The same rule keeps every park of a collection at one bind, so the join groups of the collection never change.
+
+### <a id="decision-102"></a>Decision 102: Play picks among candidates at random, and replay follows the recorded pick (DR-129)
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | [Decision 41](#decision-41), [decision 60](#decision-60), and the clause of [decision 89](#decision-89) that keeps the canonical order |
+| Related | [Decision 11](#decision-11), [decision 117](#decision-117), [decision 119](#decision-119), DR-75, DR-129 and DR-132 of the base |
+
+**Base facts.**
+
+- Play shuffles the candidates with `rand::rng()` (`ops_produce.rs:552-752`, `ops_consume.rs:313-325`).
+- Replay keeps the order of DR-75 as its internal order (`candidate_order.rs:132`, `native_candidate.rs:95, 153`).
+- DR-129 says: "Every replay role follows the recorded pick" (DR file, lines 16143-16145).
+- DR-132 says: "The record decides every order-dependent choice" (DR file, lines 16833-16834).
+
+**Statement.**
+
+- A bag space, a set space, a join window and a tie of two equal VectorDB scores pick at random in play.
+- Replay finds the recorded pick, and it does not compute a canonical one.
+- The ordered disciplines (queue, stack and priority queue) keep their order, because their head is the only candidate ([decision 11](#decision-11)). The base has no ordered collections.
+
+**Requirement check.** Row RR-22 of the FIPS asks for the multiset semantics of the default space: "Bags have the default multiset semantics" (`Reifying RSpaces.md:229-231`).
+No row of the FIPS requires a canonical pick.
+
+**Design.** A Plan agent designs decisions 102 and 103 together with C4, model first.
+The design covers the rules DT-1, BG-1, ST-3, VD-4 and JN-6, the proofs `selection_total_order` and `topk_deterministic`, the set cascade and the pin tests.
+[Decision 119](#decision-119) records the changes of the arbiter.
+
+**Basis.** [Decision 97](#decision-97), with the user decision of 2026-10-12 that DR-129 records: "restored dev's randomized candidate order".
+The user words of decision 89 concern metering only (the statement of [decision 89](#decision-89)).
+
+**Reason.** The reason of decision 41 was one order for the host and the spaces.
+Since DR-129 the host picks at random, so the same reason now asks for random picks in the spaces.
+
+### <a id="decision-103"></a>Decision 103: A join that names one channel more than once assigns data as the base does (DR-129 E1)
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force. [Decision 118](#decision-118) amends it |
+| Replaces | The clauses of [decision 28](#decision-28) "binds $`k`$ distinct records" and "the incoming datum binds exactly once", with the rules JN-3 and JN-9 |
+| Related | [Decision 102](#decision-102), [decision 119](#decision-119), DR-129 E1 and DR-135 R6 of the base |
+
+**Base facts.**
+
+- One greedy pass in pattern order runs over a list that puts the incoming datum first and then orders by source hash (`space_matcher.rs:25-64, 489-541`).
+- A persistent datum stays in the list, so it can bind several positions (`space_matcher.rs:452-460`).
+- The pass never retries the incoming datum at a later position.
+- Under owner funding, the tuple must hold the incoming datum (R6, `space_matcher.rs:355-360`).
+
+**Statement.** A join that names one channel more than once assigns its data as the base does.
+The rest of decision 28 stays: a group may repeat a channel, and the canonical group order (FR-1') holds.
+
+**Requirement check.** The reason of decision 28 reads the FIPS as one message for each pair of a matcher and a channel.
+The consume clause of the FIPS does not say this (`Reifying RSpaces.md:131-143`), and the bag clause asks for the default semantics (lines 229-231).
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** The base already assigns the data of a repeated channel, and its replay finds the same assignment from the record.
+
+### <a id="decision-104"></a>Decision 104: `embed` and `ann` replay their records as the base driver does (DR-114)
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force. [Decision 116](#decision-116) amends its mechanism clause |
+| Replaces | [Decision 67](#decision-67) |
+| Related | [Decision 57](#decision-57), [decision 105](#decision-105), [recorded process](glossary.md#recorded-process), DR-114 and DR-135 item 10 of the base |
+
+**Base facts.** `native_recorded_call` checks the arity (`interpreter/system_processes.rs:1356-1435`).
+Replay then rejects an empty record with `BugFoundError`, and a reply that is not plain data (DR-135 item 10), and it delivers the record.
+Replay makes no check against consensus state.
+
+**Statement.** Play makes the checks of the call, and replay delivers the record with no check of the call.
+The mechanism clause planned the base form of `is_native_external_process`. [Decision 116](#decision-116) replaces it with one shared helper of the base.
+
+**Model.** `ChromaMirror.tla` retires `EqualHostWork` with its control `AnnChecksOnlyInPlayUnsafe`.
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** The reason of decision 67 was equal host work in play and in replay, and that reason lapsed with DR-131 ([decision 89](#decision-89)).
+The base replays a recorded reply with no check, so two nodes with other services compute the same state.
+
+### <a id="decision-105"></a>Decision 105: The failure replies of `embed` and `ann` use the base codes, and every reply must be plain data
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | The failure codes of the former rules SP-3 and SP-4 of the [specification](specification.md), the failure reply `[false, code, detail]` of [decision 57](#decision-57), `MirrorUnavailable` of [decision 58](#decision-58), and `OutputTooLarge` of the DR-114 adaptation of [decision 89](#decision-89) |
+| Related | [Decision 104](#decision-104), [decision 116](#decision-116), DR-114 item 4 and DR-135 item 10 of the base |
+
+**Base facts.**
+
+- DR-114 item 4 gives the codes `EXT_BAD_ARG`, `EXT_FAILED` and `EXT_OUTPUT_TOO_LARGE` (DR file, lines 12840-12852, `interpreter/system_processes.rs:675-680`).
+- Their messages are fixed: "<process>: invalid argument", "<process>: external service failed" and "<process>: external output exceeds the record room" (`interpreter/system_processes.rs:722-728`).
+- DR-135 item 10 applies always (DR file, lines 17706-17715). Play replaces a reply that is not plain data with the paid `EXT_FAILED` reply (`native_played_reply`, `interpreter/system_processes.rs:736-758`).
+
+**Statement.**
+
+- A failed check of the arguments or of consensus state gives `EXT_BAD_ARG`.
+- A service that fails or gives a bad answer gives `EXT_FAILED`.
+- A reply past the record room gives `EXT_OUTPUT_TOO_LARGE`.
+- `rho:lang:vector` keeps its codes, because it calls no service (rule SP-2).
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** One failure vocabulary serves every external service of the node.
+A fixed message never carries the text of the provider, because "provider errors can echo masked keys" (`interpreter/system_processes.rs:668-670`).
+
+### <a id="decision-106"></a>Decision 106: A persistent send to `embed` or `ann` fails at the fire, as rule P2 of the base does
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | The clause A21 of [decision 32](#decision-32) and of rule SP-1 for the body references 236 and 237 |
+| Related | [Decision 104](#decision-104), DR-114 and DR-132 of the base |
+
+**Base facts.** Rule P2 raises `SystemProcessShapeError` for a persistent send to a recorded process (`interpreter/reduce.rs:1306-1322`, DR file, line 12892).
+It runs at the fire in native execution, before any service call.
+`is_native_recorded_op` already holds the body references 236 and 237 (`interpreter/system_processes.rs:622-646`).
+
+**Statement.**
+
+- Rule A21 no longer judges `embed` and `ann`, so `check_persistent_send` lets a persistent send to them pass (`reified/system_channels.rs:152-170`).
+- Rule A21 keeps its abort at the send for the other Reified operations. The base has no rule for a persistent send to a process that is not recorded.
+- DR-132 calls that loop a defect, and it leaves the loop as it is (DR file, lines 17156-17165).
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** The base already fails a persistent send to every recorded process, before any service call.
+A second rule for the same send would give two errors for one fault.
+
+### <a id="decision-107"></a>Decision 107: The seal of a re-stored record resolves with the region price (DR-135 R4)
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | The re-store of a peeked record in the DR-101 adaptation of [decision 89](#decision-89) |
+| Related | [Decision 45](#decision-45), DR-101 and DR-135 R4 of the base |
+
+**Base facts.** `produce_peeks` resolves the residue seal with `.with_price(budget.region_price())` (`interpreter/reduce.rs:1652-1670`, DR file, lines 17648-17655).
+
+**Statement.** `Introduction::for_record` adds the same price (`spaces/record.rs:1630-1638`).
+Its doc comment claims parity with `produce_peeks`, and the price makes the claim true.
+
+**Basis.** [Decision 97](#decision-97), with the words of decision 45: "Re-store as the host (Recommended)" and "Apply everywhere (Recommended)".
+
+**Reason.** The resolved region must equal the region that the deployment opened, and a second registration of one identity must carry the same authority.
+So without the price, a re-store of such a record in the same deployment can fail with `EventIdentityConflict`.
+This is finding F10 of the C4 arbitration, and it is an inference.
+
+### <a id="decision-108"></a>Decision 108: The N4 row `n4_concurrent_space_blocks_agree` returns
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | [Decision 84](#decision-84), which disabled the row |
+| Related | [Decision 82](#decision-82), DR-116, DR-119, DR-134 and DR-135 of the base |
+
+**Base facts.** The facts of Casper that [decision 82](#decision-82) fitted changed:
+
+- DR-116 item 8 counts offered envelopes in the fallback (DR file, lines 13323-13325, `block_creator.rs:2863-2867`).
+- DR-134 item 9 puts several offers in one block (DR file, line 17418).
+- DR-135 lets owners fund their stored processes (DR file, line 17562).
+- DR-116 removed the error of the envelope buffer (`interpreter_util.rs:2254-2262`).
+
+**Statement.** The row runs again in `casper/tests/reified/n4.rs`, and it probes these facts on the merged tree.
+Decision 108 changes no Casper source file.
+
+**Basis.** [Decision 97](#decision-97). The record of decision 84 says that the row "can return with the merge of that branch" ([verification 34.10](verification.md#3410-the-revert-of-the-dr-119-backport)).
+
+**Reason.** The defects that disabled the row are fixed in the base, so the row can check the agreement of concurrent space blocks again.
+
+### <a id="decision-109"></a>Decision 109: Observers get no VectorDB services, as observers of the base get the no-op Chroma service
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | The environment of the nodes in [decision 61](#decision-61) |
+| Related | [Decision 98](#decision-98), [decision 113](#decision-113), [decision 114](#decision-114) |
+
+**Base facts.** `for_observer` disables the services of an observer "for security", and it gives the observer the no-op Chroma service (`external_services.rs:46-57`).
+`for_node_type` chooses by the validator key (`external_services.rs:74-86`, `node/src/rust/runtime/setup.rs:452, 474`).
+
+**Statement.** Only a validator installs `node_services()`.
+An observer installs the unavailable services, so it has no embedder, no mirror and no writer (`node/src/rust/runtime/setup.rs:1058-1061`).
+An observer never plays, so it never publishes ([decision 98](#decision-98)).
+The read-only node of `docker/shard.yml` keeps no mirror database.
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** The base disables the external services of an observer "for security".
+An observer never plays, so it has no use for an embedder or a mirror.
+
+### <a id="decision-110"></a>Decision 110: Bare floats keep the forms of the base
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | [I-7](#i-7), and the sentence "A bare float needs a digit after its dot" of the [syntax contract](syntax-contract.md) |
+| Related | [Decision 23](#decision-23) |
+
+**Base facts.** `preprocess_floats` accepts `5.`, `5.e3` and `.5` (`compiler/compiler.rs:17-50, 63`).
+The vector `test-vectors/ordinary-float-forms-v1.json` was captured at `702496775`, and it records these forms as `ok`.
+
+**Statement.** The node keeps `preprocess_floats`, so every float form of the base stays valid.
+The planned retirement of I-7 at the final parser pin is dropped.
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** The base accepts these forms, and a deploy that is valid on the base must stay valid here.
+
+### <a id="decision-111"></a>Decision 111: The racing tests also run on a current-thread runtime, as the base does
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | [Decision 93](#decision-93) (`RACING_WORKERS`, `rholang/tests/reified_native_spaces.rs:2120-2122`), and the restatements of the rules DT-3 and DT-5 and the row N9 |
+| Related | DR-132 of the base |
+
+**Base facts.** The properties P-1 and P-6 run on a current-thread runtime and on runtimes with 2 and 8 workers.
+The sources are the DR file (lines 17145-17156), `random_candidate_order.rs:690-699` and `owner_replay.rs:516`.
+
+**Statement.**
+
+- Each racing test runs on the runtimes `[0, 2, 8]`, where 0 is the current-thread runtime.
+- Every run replays its own record.
+- No test depends on the current-thread runtime to pass.
+
+**User's words.** "Add it, as base (Recommended)". The recommendation was the main session's.
+
+**Reason.** The current-thread runtime adds one more schedule to the runs.
+No test depends on it, so the reason of decision 93 still holds: consensus must hold for every interleaving.
+
+### <a id="decision-112"></a>Decision 112: The Reified syntax uses protobuf fields, as the base carries its new syntax
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force. Merge 2 implemented it ([decision 120](#decision-120)) |
+| Replaces | [Decision 18](#decision-18) |
+| Amends | [Decision 6](#decision-6) (its fixture commit), [decision 15](#decision-15), [decision 21](#decision-21), [decision 22](#decision-22), [I-8](#i-8) and [I-14](#i-14) |
+| Retires | [I-20](#i-20), in merge 2 |
+| Related | [Decision 121](#decision-121), DR-135 item 12 of the base |
+
+**Base facts.** The base adds protobuf fields for its syntax (`RhoTypes.proto:48-49, 73`, commit `d367bc11a`).
+Every state root then changes once (DR-135 item 12).
+That commit changed `empty_state_hash_fixed` and called the change "a coordinated state-format upgrade".
+
+**Statement.** The Reified syntax leaves the marker tuples and takes protobuf fields.
+The question named the `casper/src` change of `empty_state_hash_fixed`, so the answer approves that edit.
+A Plan agent designs the change, and [decision 120](#decision-120) settles its open points.
+
+**User's words.** "Protobuf fields, as base".
+
+**Reason.** The base carries its new syntax in protobuf fields and accepts one change of every state root.
+The same form gives the Reified syntax the encoding rule of every other syntax of the node.
+
+### <a id="decision-113"></a>Decision 113: `embed` and `ann` exist only in a `chromadb` build, and the VectorDB space type exists in every build
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | The clause "Both exist in every build" of [decision 57](#decision-57), and the former rule MR-7 of the [specification](specification.md#10-the-chromadb-mirror) |
+| Related | [Decision 52](#decision-52), [decision 109](#decision-109) |
+
+**Facts.**
+
+- The only embedder of `embed` is SBERT from `rust-bert`, and the only index of `ann` is the Chroma mirror.
+- Both crates come only with the feature `chromadb` (`rholang/Cargo.toml:100`).
+- The base registers its Chroma processes only with the feature (`interpreter/rho_runtime.rs:1513-1514, 1604-1605`).
+
+**Answer to "why not".** The main session had two reasons for every build: a replay never calls a service, and the mock suite ran by default.
+These reasons do not justify a divergence from the base.
+
+**Statement.**
+
+- The registration of `embed` and `ann` and their channel rows depend on the feature (`P6_PROCESSES`, `reified/system_channels.rs:488-493`).
+- The VectorDB factory, its exact queries, the query param `ids=` and its config stay in every build.
+- The tests of `embed` and `ann` need `--features chromadb`.
+
+**User's words.** "I don't quite follow. If embed and ann are chroma-specific then shouldn't they be gated behind its feature flag? If not, why not? Also, the VectorDB Reified RSpace type is not coupled with ChromaDB and it, itself, should not be gated by the chroma feature flag."
+
+**Reason.** The two processes need the crates of the feature, as the Chroma processes of the base do.
+The VectorDB space type needs neither crate, so it stays in every build.
+
+### <a id="decision-114"></a>Decision 114: The mirror is an oracle store with no repair, as the oracle mode of File I/O
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Replaces | The reconciler sentence of [decision 58](#decision-58), the watermark of the reply of `ann` in [decision 57](#decision-57), the reconciler spawn of [decision 61](#decision-61), the reconciler answer of [decision 66](#decision-66), and the reconciler example of [decision 70](#decision-70) |
+| Retires | The reconciler, the watermark, the dirty marks of the writer and the channel registration of the former rules MR-4 to MR-6 |
+| Related | [Decision 98](#decision-98), [decision 109](#decision-109), [decision 115](#decision-115), DR-114 of the base |
+
+**Facts.**
+
+- The oracle mode of the File I/O FIPS lets a node own its store. The other nodes check the processing, not the accuracy (`2026-02-06-File-IO.md:35-37`).
+- The FIPS defers the sync mode (`2026-02-06-File-IO.md:39-44`).
+- The File I/O code of the base undoes no file content after a failure or an orphan, in either mode. Only the descriptor table rolls back (`io/handle_table.rs:915-919, 1041-1054`).
+- DR-114 runs the Chroma writes in play only, and "Nothing external is undone on rejection or orphaning" (DR file, lines 12801 and 12959-12961).
+- The prediction-markets paper asks for a non-repudiable commitment, not replicated determinism (`prediction_markets_cost_accounted_rho_20260629.tex:354-389`).
+
+**Statement.**
+
+- Only a play writes the mirror ([decision 98](#decision-98)), and nothing repairs it.
+- The writes of failed deploys, dry runs and dropped blocks stay, and the records of other proposers never arrive.
+- Retired: the [reconciler](glossary.md#reconciler) (former rule MR-5, `mirror_reconciler.rs` and its spawn in `node/src/rust/runtime/setup.rs`).
+- Retired: the [watermark](glossary.md#watermark) (former rule MR-6, and the last field of the reply of `ann`).
+- Retired: the [dirty marks](glossary.md#dirty-collection) of the writer, and the channel registration that only the reconciler read (former rule MR-4).
+- A batch that finds the queue full, or that fails after its attempts, is dropped.
+- Kept: the bounded queue of the writer, its attempts, and the rule of decision 58 that a publication never waits (rule MR-4).
+
+**Code.** The line `pub mod mirror_reconciler;` stays as a comment with a restore note, and the file stays ([decision 120](#decision-120)).
+
+**Model.** `ChromaMirror.tla` retires `ReconciledEqualsFinalizedView` and `WatermarkHonest` with their controls `OrphansKeptUnsafe` and `WatermarkAfterFailureUnsafe`.
+
+**User's words.**
+
+- "Model external service integration like Chroma DB after Mike's File I/O FIPS and implementation and any related publications (../publications/). If the desired behavior is not clear from the File I/O API, then ask again."
+- "Oracle, no repair (Recommended)". The recommendation was the main session's.
+
+**Reason.** The File I/O FIPS and DR-114 give one rule for an external store: play writes it, and nothing undoes the write.
+The mirror is such a store, and only the query param `ids=` turns its advice into a decision, so consensus needs no repair.
+
+### <a id="decision-115"></a>Decision 115: The reply channel of `embed` and `ann` stays first, as the File I/O sugar requires
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | None. It confirms rule SP-1 of the [specification](specification.md) |
+| Related | [Decision 57](#decision-57), [decision 114](#decision-114), [decision 116](#decision-116) |
+
+**Base facts.**
+
+- The user call form of File I/O puts the reply channel first.
+- The desugaring of a send-receive puts the temporary name first: "x <- name!(args) becomes new temp in { name!(temp, args) | x <- temp }" (`p_input_normalizer.rs:174`).
+- A method send puts the temporary name first and the method literal second (the `SourceDesc::SM` form of the parser).
+- The native File I/O layer takes its acknowledgement last (`io/handler_trait/dispatch.rs`, `File.rho` and the signature table of DR-114).
+- Only genesis uses that layer, because `eval_new` filters the `rho:io:fs:native:` names from user deploys (`io/mod.rs:94-108`, `interpreter/reduce.rs:2606-2627`).
+
+**Statement.** `embed` and `ann` are user processes, so rule SP-1 stays: the reply channel comes first.
+The reply shapes `[true, ...values]` and `[false, code, msg]` of the base stay (`io/response.rs:1-6`).
+The evidence is in pgmcp note 25265 (items 1 and 2), and the plan of the mirror cluster confirms it.
+
+**User's words.** "Settle design decisions about external services like chroma db with the file i/o api everywhere possible"
+
+**Reason.** A user program calls `embed` and `ann` with the same call forms as the user calls of File I/O.
+Those forms put the reply channel first.
+
+### <a id="decision-116"></a>Decision 116: `embed` and `ann` keep their own handlers and take the DR-114 contract from one helper of the base
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-27 |
+| Status | In force |
+| Amends | The mechanism clause of [decision 104](#decision-104). The behavior of decision 104 stays |
+| Related | [Decision 105](#decision-105), [decision 115](#decision-115), DR-114 of the base |
+
+**Base facts.**
+
+- The File I/O handlers keep state (`FsProcesses`), their own closures and their own dispatcher (`fs_handlers_to_definitions`, `interpreter/rho_runtime.rs:1637-1644`).
+- They are not in `is_native_external_process`.
+- `embed` and `ann` keep state in the same way.
+- The checks of `ann` in play need the Reified runtime and its agent, and `SystemProcesses` has no Reified runtime (`interpreter/system_processes.rs:1099-1114`).
+- So the driver `native_recorded_call` of the base cannot serve them.
+
+**Statement.** The two processes keep their closures and take the contract of DR-114:
+
+- the check of the arity
+- in replay, `BugFoundError` for an empty record and for a reply that is not plain data
+- in replay, the delivery of any other record, with no check of consensus state
+- in play, the checks, the service call, `native_played_reply` and the codes of [decision 105](#decision-105).
+
+**Mechanism (option A1).** A new helper of the base, `native_replayed_reply`, holds the two checks of replay (`interpreter/system_processes.rs:763-781`).
+`native_recorded_call` and the two Reified handlers call it.
+The codes `EXT_BAD_ARG` and `EXT_FAILED` and the helper `native_failure_reply` become `pub(crate)`.
+`is_native_external_process` keeps its Reified exclusion, with a new reason (`interpreter/system_processes.rs:650-666`).
+
+**User's words.** The directive of [decision 115](#decision-115), with [decision 97](#decision-97).
+
+**Reason.** The File I/O processes show the form of the base for processes with state: their own handlers.
+One shared helper gives the two Reified handlers the exact replay checks of the base.
+
+### <a id="decision-117"></a>Decision 117: A positional failure after a random pick stages the operation again in DR-75 order (R-A)
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-28 |
+| Status | In force |
+| Related | [Decision 37](#decision-37), [decision 92](#decision-92), [decision 94](#decision-94), [decision 102](#decision-102), [decision 118](#decision-118) |
+
+**User's words.** The user answered question Q-102-3 three times:
+
+1. "Why is it that the base branch does not model similar behavior? Is it that the behavior does not need to be modeled? Answer me and ask the question again."
+2. "If it is a guarded join, why not take the elements of the join as they arrive to maximize throughput?"
+3. "Go with your recommendation so-long as it maximizes parallelism/concurrency, throughput, and minimizes blocking time. Otherwise, go with the option that does. F1r3node is inherently concurrent and maximizing parallelism/concurrency and throughput and minimizing blocking time and ultimately time-to-completion are first-class design and architectural concerns. Never serialize or oversimplify a solution for convenience, but keep solutions minimalistic while achieving their goals. These are not paradoxical as Occam's Razor states solutions should be kept as simple as possible but no simpler!"
+
+**Base facts.**
+
+- An operation of the base pays its introduction before the search (`RejectedIntroduction`, `rspace++/src/rspace/replay_rspace/native_directive.rs:168, 262`).
+- A refused guard tries the next continuation (`space_matcher.rs:357-360`).
+- A store of the base has no bound and no later charge, so it cannot fail. Replay checks `Stored` with E3-a (`native_candidate.rs:86-89`).
+- So the base has no positional failure.
+
+**Reified facts.**
+
+- Bounded collections (the VectorDB capacity and the cell) and theory leases (TH-9) can fail a staging.
+- [Decision 92](#decision-92) then commits only the anchor (`prepare_failure`, `spaces/generic.rs:4953-4978`).
+- In production, only a guarded join in a bounded VectorDB space can fail in this way, after a pick among tied scores.
+
+**Statement.**
+
+- A [positional failure](#terms-used-in-this-register) is `CellOccupied`, `CapacityExceeded` or `NestedCommitGuard` (`spaces/errors.rs:350-354`).
+- When a staging after a random pick fails with a positional failure, play stages the operation again in DR-75 order.
+- That staging commits, or it fails with its own error through `prepare_failure`.
+- The replay already stages an operation without a recorded pick in DR-75 order. So the retry needs no new rule in replay (S5 of [decision 119](#decision-119)).
+
+**Comparison by the criteria of the user.**
+
+- R-B (DR-75 order for the score ties of guarded joins) fixes the order of ties. Concurrent guarded joins then pick the same record and conflict at merge.
+- The guard search of [decision 37](#decision-37) grows with the product of the candidate counts, and it has no phlo charge (DR-131).
+- That search runs under the space token `C(sid)` in play and in replay ([decision 94](#decision-94)). So it adds blocking time to every deploy of the space.
+- R-A keeps the random picks, adds one staging only after a positional failure, and adds no work to replay.
+
+**Kept.** The guard rule of decision 37 stays at P12 (pgmcp note 25365).
+
+**Reason.** R-A meets the criteria of the user best: it keeps concurrent picks apart, and it adds work only on a rare failure path.
+
+### <a id="decision-118"></a>Decision 118: The throughput rule of decision 117 also decides the join rules of decision 103
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-28 |
+| Status | In force |
+| Amends | [Decision 103](#decision-103): the fact of the base "the pass never retries the incoming datum at a later position" is not a Reified rule |
+| Replaces | Option A of the arbiter for question Q-103-3, and the comment-out of the set cascade by the arbiter (question Q-103-4) |
+| Related | [Decision 50](#decision-50), [decision 117](#decision-117), [decision 119](#decision-119) |
+
+**Statement.**
+
+- Kept: the retry of the incoming datum at each of its positions (rule JN-9), rule JN-14 and invariant V26 as a whole.
+- Kept: the set cascade (rule JN-10).
+- Each kept mechanism removes a pending match that would block a waiter.
+- Adopted from the base: a persistent entry is never claimed, so it can bind several positions (`space_matcher.rs:452-460`). This rule adds fires.
+- Replay: the repeated collections of a join replay with the same deterministic lists of E1.
+
+**User's words.** Words 3 of [decision 117](#decision-117).
+
+**Reason.** Each kept mechanism fires a match that would otherwise wait, so it adds throughput and removes blocking time.
+The base rule for persistent entries also adds fires.
+
+### <a id="decision-119"></a>Decision 119: The design of decisions 102, 103 and C4 takes the changes of the arbiter
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-28 |
+| Status | In force |
+| Related | [Decisions 99 to 103](#decision-99), [decision 111](#decision-111), [decision 117](#decision-117), [decision 118](#decision-118) |
+
+**Fix of the blocking defect G1.**
+
+- `class_candidates` puts the representative first (`join.rs:6215-6278`), and a fire of width 1 dispatches only the first result (`spaces/generic.rs:2854-2965`).
+- A COMM names its produces as a sorted set (`event.rs:56-61`), so replay cannot find a random representative.
+- Rule: every member, the representative included, takes its place in DR-75 order, and the fire dispatches the first.
+- The rule goes into `join.rs`, so the PathMap store gets it too. Rule ST-5 is restated.
+
+**Reductions.**
+
+- S1: `recorded_comms` and `admits` also serve native replay, with one query for the end of the record.
+- S2: one method of a base trait, with a default body, returns an `Option`. The record holds no identities of refusals.
+- S3: the E3-a check of the base, word for word. The risk K6 of the design plan, the proof `stored_check_sound` and the invariant `StoredIsHonest` are dropped.
+- S4: one shuffle for each pick with `rand::rng()`, with no seed and no rank.
+- S5: the replay half of R-A needs no new rule.
+- S6: the model M1 of the design plan is dropped.
+- G7: `select_slot` maps `Unavailable` to `None`.
+
+**Gaps to close.**
+
+- G2: [decision 118](#decision-118) restates it. V26 stays whole, and its bounds count the persistent records at several positions.
+- G3: the lane window takes the incoming datum first.
+- G4: a test of a persistent loop.
+- G5: peeks under Rule E with two waiters.
+- G6: a scenario of `SpaceReplayOrder.tla` for the risk K8 of the design plan.
+- G8: the cost.
+- G9: a theory as a veto in joins.
+- G10: the case of the cell, which is empty.
+
+**Open points that the base decides.**
+
+- Q-102-1: DR-75 order for the members of a list and for ties.
+- Q-102-2: random picks.
+- Q-C4-1: the anchor first for a deviation job, and the scenario for K8.
+- Q-103-1: the incoming datum first, then the head order.
+- Q-103-2: rule R6 in every mode.
+
+**Tests.**
+
+- the runtimes `[0, 2, 8]` of [decision 111](#decision-111)
+- the analog of the test F7 of DR-129: a vetoed bag join on `[c, c]` restores every datum, in 64 runs
+- the analog of the racing test of DR-132
+- the analog of the test F6 of DR-129, with a check that it is not vacuous
+- in that test, each random family shows at least 2 picks, and each head-only family shows exactly 1
+- a negative test with a forged `Stored`
+- equal charges, and run counts with bounds on the misses.
+
+**Basis.** [Decision 97](#decision-97). The main session checked each load-bearing claim of the arbiter on the tree (pgmcp note 25284).
+
+**Reason.** The defect G1 blocks the replay of a random set member, so its fix is required.
+The reductions remove parts of the design that the base already provides.
+
+### <a id="decision-120"></a>Decision 120: The open points of decision 112 follow the base
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-28 |
+| Status | In force |
+| Related | [Decision 112](#decision-112), [decision 114](#decision-114), [decision 121](#decision-121) |
+
+**Statement.**
+
+- O-1, the transport of params: an `Expr` arm `e_params_body = 45` of the type `SendParams`. Only the reducer writes it, for factories and handles. An internal PARAMS tuple would keep marker code live.
+- O-2, Reified forms in patterns: the normalizer rejects them, as the base rejects its cost syntax in a pattern (`pattern_guard.rs:1-78`). No source of the 44 rows of the corpus has such a form in a pattern.
+- The forms of O-2 are a use block, a free theory, params on a send, a bind with a query and an annotated name declaration.
+- O-3, the estimate: params take the size rule of the datum (`estimate.rs:1716-1739`), and a query takes the rule of its bind (`estimate.rs:1856-1887`). The escape check runs on their names, and the present classes stay.
+- O-4: `Send` gets no `reserved 4;`. The statement changes no byte, and no rule asks for it.
+- O-5, the branch of `new`: `eval_new` runs the fs-native filter of the base on every `new`. Then it branches to `eval_new_space` for an annotated `new`.
+- The base filters every `new` "so user code cannot bypass Fs.rho's sandbox" (`interpreter/reduce.rs:2606-2627`). Today `eval_new_space` resolves URIs through `allocate_new_bindings` without the filter (`reducer_hooks.rs:1351-1360`). A test proves that an annotated `new` with an fs-native URN fails.
+
+**Captures.** R0 is the merged working tree right before the edits of decision 112, and R1 is the same tree after them.
+No other edit comes between the two captures.
+The precedent is `reified-queue-parity-v1.json`, which records `"captured_at_revision": "merge of 702496775"`. So the merge commit does not have to come first.
+
+**The retirement of the mirror reconciler.** The line `pub mod mirror_reconciler;` stays as a comment with a restore note, and the file stays (option R2).
+This follows the user rule "Never "disable" code by deleting it!".
+
+**Order of work.** The protobuf change comes after the other merge decisions, as one block.
+Then R0 holds every other change, and the masked comparison of the v1 and v2 vectors shows only the effects of decision 112.
+Before that block, a change that alters a vector captures it again in place, as the merge did.
+[Decision 121](#decision-121) decides item B-1 of the plan.
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** The base already answers each open point with a mechanism of its own, so the protobuf change needs no new rule.
+
+### <a id="decision-121"></a>Decision 121: Decision 112 also changes two Casper source files beyond the constant
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-28 |
+| Status | In force |
+| Amends | [Decision 112](#decision-112), which approved only the change of `empty_state_hash_fixed` in `casper/src` |
+| Related | [Decision 70](#decision-70), [decision 120](#decision-120) |
+
+**Statement.**
+
+- `casper/src/rust/util/rholang/costacc/vault_payer.rs`: `single_private_name` adds `&& par.use_blocks.is_empty()`.
+- The test of the base lists every field of `Par`, its own new fields included (`cost_signed_terms`, `cost_stacks` and `conditionals`). Without the line, a `Par` with one private name and a use block would become a valid payer.
+- `casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/gate/tests.rs`: the literals of `Send` (line 910), `ReceiveBind` (lines 920-926) and `New` (lines 935-941 and 1088-1094) name the new empty fields. Then the Casper tests compile.
+- No other file of `casper/src` changes, except for `empty_state_hash_fixed` ([decision 112](#decision-112)).
+- Each edit keeps the old text as a comment with a "Changed by decision 112" note.
+
+**User's words.** "Approve both edits (Recommended)". The recommendation was the main session's.
+
+**Reason.** The test of the base asks for every field of `Par`, so a new field needs its line.
+The literals of the test name every field, so the tests compile only with the new fields.
+
+### <a id="decision-122"></a>Decision 122: The open points U1, U4 and U5 of C4 follow the base and dev
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-29 |
+| Status | In force |
+| Related | [Decision 90](#decision-90), [decision 91](#decision-91), [decision 92](#decision-92), [decision 100](#decision-100), [decision 117](#decision-117), [decision 119](#decision-119), [decision 123](#decision-123) |
+
+**Base facts** at `702496775`. The snapshot S_r of a row r is the owner ledger at the budget start of r.
+
+- B1: a row tests its candidates in the random order of play. An item failure at S_r is a miss. A refused tuple is recorded, and the search tries the next continuation (`NativeOwnerRefusal.tla:46-62`, `rspace/accounting.rs:248-277` and `native_runtime/operations.rs:364-365`).
+- B2: a refused consume waits (`ops_consume.rs:272-274`).
+- B3: a COMM removes its matched data in the same locked operation (`ops_produce.rs:374-377`).
+- B4: replay is a function of the record. It follows the recorded pick (`ops_produce.rs:553`, DR-129), and it reads no live ledger (`NativeOwnerRefusal.tla:85`). Its Stored check skips the continuations that can veto (E3-a, `rspace/match.rs:26-33`).
+
+**Statement.**
+
+- U1 is option K of the arbiter, by B3. The retire group of the actual fire commits in the transaction of the fire, right after the fire row. A refused retire parks inert ([decision 100](#decision-100)).
+- U4 is option (B) of the arbiter, the finish with no mark, by B4. After a deviating row, play finishes with the same function of the actual receipt that replay computes.
+  - Where the plan stages nothing more after the actual outcome, play ends with the return of the plan.
+  - Where the plan would stage more, play stops. It builds the re-issue as replay builds it at the stage call that answers `RecordEnded`.
+- CE1 of [decision 92](#decision-92) decides every anchor. Rule CR-19 applies to a re-issue that a stop creates, because the first row of that re-issue is not unique to its job.
+- U5 is yes, by the replay half of [decision 117](#decision-117) and by [decision 91](#decision-91). R-A also applies to `SeqConcurrent` after a random pick. The abort of a seq space stays.
+- U2 stays option (a) ([decision 90](#decision-90)). U3 stays option (i), as in the base (`space_matcher.rs:452-460`).
+- The base rules reject three options:
+  - re-planned rows in the same transaction after the deviating row, because they need a resumption of the plan, and the plan code is straight-line
+  - end anchors, because they add one COMM to each transaction
+  - a replay probe, because it is unsound when the job commits nothing.
+
+**Process.** A Plan agent writes the plan of C4. An independent arbiter checks each version of the plan before the implementation starts.
+
+**User's words.** For U1: "What is the closest behavior on dev or feature/cost-accounted-rho? If there is similar behavior, align with it!" For U4: "… align with dev and feature/cost-accounted-rho, all the edge cases should already be modeled!" For U5: "… align with dev and feature/cost-accounted-rho!" Then: "Align everything related to casper/consensus as closely as possible with dev and feature/cost-accounted-rho, there should be no need to reinvent the wheel!"
+
+**Basis.** [Decision 97](#decision-97). The evidence is pgmcp note 25521.
+
+**Reason.** The base already models each case. B3 decides U1, B4 decides U4, and decisions 117 and 91 decide U5. So C4 needs no new mechanism for these points.
+
+### <a id="decision-123"></a>Decision 123: Consensus behavior that Reified needs comes from dev and base code behind traits
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-29 |
+| Status | In force |
+| Related | [Decision 108](#decision-108), [decision 112](#decision-112), [decision 121](#decision-121), [decision 122](#decision-122) |
+
+**Statement.**
+
+- The owner checks, the refusal records, the candidate order, and the Stored and refusal checks of native replay come from base functions behind traits.
+- Native RSpace and the Reified disciplines then run the same code. Native behavior stays identical, and the existing base tests and models show it.
+- The targets are these base functions:
+  - the produce and consume searches with their admissions (`ops_produce.rs`, `ops_consume.rs` and `MatchAdmission`)
+  - the commit steps (`process_match_found`)
+  - the replay selection (`native_candidate.rs` and `native_candidate/selection.rs`).
+- The comments of the Reified copies in `space_play.rs` and `native_session/space.rs` say that they mirror these functions. These copies call the generalized code instead.
+- A Reified-only mechanism stays only where no base trait can carry it, with its reason. The finish after a deviating row ([decision 122](#decision-122)) is the expected case.
+- No consensus source file changes beyond [decision 112](#decision-112) and [decision 121](#decision-121). No consensus test changes unless Reified needs the change. The offer to restore the alternating proposers of the N4 chain row ([decision 108](#decision-108)) is withdrawn.
+
+**User's words.** "you seem really invested in casper / consensus for some reason, even though it has very little to do with reified rspaces; if you are insistent on doing things with casper / consensus, then you should work on generalizing the dev / feature/cost-accounted-rho behavior with traits and reusability patterns!"
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** One code path for native and Reified rows keeps their behavior equal by construction. The base tests and models then check the shared code, and no Reified copy can drift from it.
+
+### <a id="decision-124"></a>Decision 124: The determinism rules state record and replay, as the base does
+
+| Field | Value |
+|---|---|
+| Date | 2026-10-29 |
+| Status | In force |
+| Amends | The rules DT-1, DT-4 and DT-7 of the [specification](specification.md) and the control SC-18 of the [security document](security.md), for racing evaluation |
+| Related | [Decision 89](#decision-89), [decision 92](#decision-92), [decision 93](#decision-93), [decision 111](#decision-111), DR-132 of `feature/cost-accounted-rho` (commit `97d020154`) |
+
+**Base facts** at `702496775`.
+
+- The consensus proposal: "Under the random pick, two honest executors can reach different roots. Since 2026-10-13, §7 therefore records and replays (§7.1)." (`docs/casper/theory/cost-accounting-consensus-proposal.md:706`)
+- DR-132: "The record decides every order-dependent choice: the DR-113 grants, the DR-114 room race and the DR-129 pick." (`docs/casper/theory/cost-accounting-decision-records.md:16833-16834`)
+- Theorem 4 of DR-132: "All replay schedules of one journal and one term reach the same verdict." (`docs/casper/theory/cost-accounting-decision-records.md:16975-16976`)
+
+**Statement.**
+
+- Racing play decides which entries each operation sees. The journal of the deploy records that interleaving ([decision 92](#decision-92)), and native replay makes each choice of play again.
+- Rule DT-1 holds for the entries that an operation sees. No such choice depends on the order of a list in memory, on the order of a hash map, or on the timing of threads.
+- Rule DT-4: the cost of a deploy is a function of the deploy, its pre-state and its journal. Replay of the journal reproduces that cost (rule NE-3).
+- Rule DT-7: for one journal, a restarted node pays what a node without a restart pays, and both reach the same root.
+- Control SC-18: every choice of a space depends only on the entries that it sees and on the deploy. Replay makes each choice of play, whatever its timing. The test `space_racing_replay_agrees_with_play` joins the evidence of the control.
+- No failure closes the epoch of a replay session. A failed operation ends with its own error, and a waiter of its row parks as a counted waiter of the base stall rule. A forged record ends the replay with `Incomplete` or `Stalled`.
+- [Decision 93](#decision-93) restates the rules DT-3 and DT-5 for racing evaluation. [Decision 89](#decision-89) retires the host-work sentences of the rules DT-4, DT-5, DT-7 and NE-2, and the host-work row of Table 12.
+
+**Measured.** Two plays of one deploy from one pre-state can reach different roots in this branch too.
+Block 2 of the stored PathMap family runs a take on the prefix `a` and a store on the path `[b, 3]`.
+These operations are two transactions of one space.
+
+In 20 diagnostic runs of `space_lazy_attach`, the warm play and the cold play reached different roots in some runs.
+The roots differed exactly in the runs where the two plays did not log the same events in any order.
+The deliveries were the same in every run, and every play certified.
+The evidence is in pgmcp notes 25608, 25618 and 25622.
+
+**Basis.** [Decision 97](#decision-97).
+
+**Reason.** The base already models racing determinism by record and replay. So the determinism rules state the same model, and Reified adds no mechanism for it.
+
+### <a id="decision-125"></a>Decision 125: A legacy replay test that fails is restated at the step where it fails
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-01 |
+| Status | In force |
+| Amends | None. It sets when a legacy test moves to native replay under [decision 90](#decision-90) |
+| Related | [Decision 69](#decision-69), [decision 90](#decision-90), [decision 118](#decision-118) |
+
+**Statement.**
+
+- Merge 2 restates a test of the legacy replay modes at the step where the test fails.
+- That step moves the test to native replay through the harness of `rholang/tests/support/native.rs`, or it retires the test.
+- The harness has the functions `native_play`, `certify` and `assert_reproduces`.
+- The modes `SpaceMode::Replay` and `SpaceMode::Reporting` stayed unchanged until [decision 90](#decision-90) (C6, step D) retired them.
+- The test `pathmap_replay_equal` of `rholang/tests/reified_pathmap.rs` now certifies each PathMap case through native replay.
+- The test `join_seams_keyed_differential` of `rholang/tests/reified_join_props.rs` stays as a comment, under a label that names this decision.
+
+**User's words.** "Restate when they fail (Recommended)". The option read: a legacy replay test that fails is restated at the step where it fails (native replay, or retired).
+
+**Reason.** Merge 2 retires the legacy modes anyway, so a test that fails there takes its planned restatement at once.
+The legacy modes then need no repair.
+The golden vector and the stored logs of `join_seams_keyed_differential` predate [decision 118](#decision-118), and its replay half needs a mode that merge 2 retires.
+
+### <a id="decision-126"></a>Decision 126: Behavior that varies by space kind goes through trait interfaces
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-01 |
+| Status | In force |
+| Amends | None |
+| Related | [Decision 123](#decision-123), [decision 127](#decision-127), [decision 128](#decision-128), [decision 134](#decision-134) |
+
+**Statement.**
+
+- Behavior that varies by space kind goes behind a method of an existing trait.
+- The method has a default for the common case and an override for each kind that differs.
+- A new trait comes only when no existing trait can carry the variation. `RowEnd` of [decision 134](#decision-134) is such a trait.
+- New code in a shared layer names no space kind and adds no branch on a kind.
+- The shared layers are `rspace++/src`, `casper/src`, the native runtime under `rholang/src/rust/interpreter/accounting/` and the shared engine in `spaces/generic.rs`, `spaces/join.rs`, `spaces/record.rs`, `spaces/counter.rs` and `spaces/settle.rs`.
+- The existing traits are these:
+  - `OuterStore` and `Discipline` in `spaces/generic.rs`
+  - `JoinSource` in `spaces/join.rs`, `ScanDiscipline` in `spaces/disciplines/scan.rs` and `SpaceTheory` in `spaces/theory/mod.rs`
+  - `SpaceTxn`, `SpaceTxnHost`, `TxnStore`, `TxnBackend`, `RowSearch` and `RowItemRule` in `rspace++/src/rspace/space_store_handle.rs`.
+
+**User's words.** "You are generalizing the code you absolutely must amend for reified rspaces to use abstraction and good engineering / design / architectural patterns that will scale to new reified rspaces, right? Things like traits and such are being used as interfaces, right?" and "Are the refactors you've made outside of the reified rspace implementations, themselves, already generalized to arbitrary reified rspaces including those that have not been implemented yet?"
+
+**Reason.** A kind that does not exist yet then needs no edit of a shared layer.
+[Decision 127](#decision-127) applies the rule to the registry of kinds, and [decision 128](#decision-128) applies it to the shared engine.
+
+### <a id="decision-127"></a>Decision 127: The registry of space kinds and the VectorDB services generalize to arbitrary Reified RSpaces
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-01 |
+| Status | In force |
+| Amends | None |
+| Related | [Decision 109](#decision-109), [decision 126](#decision-126), [decision 128](#decision-128) |
+
+**Statement.**
+
+- A new Reified space kind plugs in with trait implementations and one registration. It edits no shared layer unless it brings a new join window or bound type ([decision 128](#decision-128)).
+- The registration is one `#[distributed_slice(SPACE_KINDS)]` static of the type `SpaceKind` in `spaces/families.rs`, as an FS handler registers in `FS_HANDLERS`.
+- `SpaceKind` names the families of the kind, its system processes and the installer of its external services.
+- The installer takes `is_validator`, so an observer installs the unavailable services ([decision 109](#decision-109)).
+- The closed enums are gone: `SpaceOuter` and `SpaceInner` of `models/src/rust/space_factory_urn.rs` are name newtypes, and `Family::new` builds a `Family` struct.
+- The built-in families stay in the const `Family::WIRED`, and `Family::registered` chains them with the families of the registered kinds.
+- In production the slice holds one entry, `VECTORDB_KIND` of `reified/vectordb_services.rs`, the installer of the VectorDB services.
+- The library test `space_kind_registry_holds_the_wired_families` pins this state: without a plug-in, the registry is the wired families in order.
+- `check_space_kinds` checks the registry in the form of the base check of `CONSENSUS_FOLD`: unique URNs, unique free ops and the factory of each family.
+- `setup_node_program` runs that check at node start, before any store opens, and a broken registry stops the start.
+- The test `rholang/tests/reified_kind_plugin.rs` registers a kind with a new outer store, a new discipline, a recorded system process and an installer of services.
+
+**User's words.** "they need to be generalized -- use a plan agent to generalize them and stick to the minimalism I have enforced: only change what is necessary for the completion of the reified rspaces including their generalized integration into all of f1r3node, but only change what is absolutely necessary and keep the behavior aligned with dev and feature/cost-accounted-rho (change as little as possible while completing my requirements)".
+
+**Reason.** The closed enums of the kinds and the VectorDB runtime services named specific kinds, so a new kind needed edits of shared code.
+The base and dev register their FS handlers through a distributed slice (`FS_HANDLERS`), so the registry takes the same form.
+
+### <a id="decision-128"></a>Decision 128: The shared engine reaches kind-specific behavior through the existing traits
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-01 |
+| Status | In force |
+| Amends | None |
+| Related | [Decision 126](#decision-126), [decision 127](#decision-127), [decision 134](#decision-134) |
+
+**Statement.**
+
+- The engine spots that named a kind go behind defaulted methods of the existing traits `Discipline` and `OuterStore`, with the same behavior.
+- `OuterStore` gives the routed layout and the random-tail names as defaults, so `HashMapOuter` of `spaces/outer/hashmap.rs` declares only its name.
+- `Discipline` gives the steps of the lanes window and of the similarity window. The defaults fail closed for a discipline without the window.
+- The modules `spaces/disciplines/lanes.rs` and `spaces/disciplines/similarity.rs` own the window types, and the kind modules re-export them under their old names.
+- The associated type `JoinSource::Discipline` names the discipline of a source, and the engine calls the steps of the window through it.
+- `families::is_policy_key` gives the query keys of a parked waiter in place of the constant `VDB_QUERY_KEYS`.
+- A new join window or a new side bound needs an edit of the engine, because it is new engine semantics. `JoinWindow` and `SideBound` of `spaces/generic.rs` are these types.
+
+**User's words.** "Route via traits (Recommended)".
+
+**Reason.** The verification of [decision 127](#decision-127) found engine spots that still named a kind.
+The existing traits carry these spots, so the engine no longer names a kind, and the step adds no new trait and no new mechanism.
+
+### <a id="decision-129"></a>Decision 129: The finish after a deviating row follows the rule of the base for a refused tuple
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-03 |
+| Status | In force |
+| Amends | None. It keeps U4 of [decision 122](#decision-122) |
+| Related | [Decision 122](#decision-122), [decision 123](#decision-123), [decision 133](#decision-133) |
+
+**Statement.**
+
+- A row deviates when its commit gives an outcome other than the staged one, for example after an owner refusal.
+- The base decides the follow-up of a refused tuple inside the same locked operation (rule B1 of [decision 122](#decision-122)).
+- The finish after a deviating row follows that rule.
+- The parts of the finish that read the store run read-only at the commit of the row, under the same commit hold.
+- These parts are the settle of the stack and of the priority queue, the cascade of a join and the list tail of VectorDB.
+- Each part answers through `RowSearch::tail_read`, and its default answers `TailRead::Ends`.
+- The receipt carries the answer in the field `tail_read` of `RowDeviation`, beside the field `vetoing`.
+- The parts that read nothing stay pure functions of the receipt: `after_fire` with the fire count, and the restore rule of a scan.
+
+**User's words.** "dev and feature/cost-accounted-rho might not have this specific case, but I would be surprised if they don't have a similar case for the default bag-based rnode; review again and ask again only if it is not solved by dev or feature/cost-accounted-rho; dev is mirrored to `the mirror of dev`".
+
+**Reason.** The base decides this follow-up under the lock of the operation, so merge 2 needs no new rule.
+The question did not return to the user.
+A form that stops after the deviating row is unsound, because play would record a job that replay never runs.
+
+### <a id="decision-132"></a>Decision 132: Plan item C7.12 is withdrawn, so decision 43 stays in every kind
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-04 |
+| Status | In force |
+| Amends | None. It keeps [decision 43](#decision-43) |
+| Related | [Decision 43](#decision-43), [I-21](#i-21) |
+
+**Statement.**
+
+- C7.12 was an item of the plan of merge 2. It made a re-issued offer keep its `ord` when the element was not persistent and the fire did not spend it.
+- The user withdrew the item, so a re-issued element that is not persistent takes a fresh `ord` in every kind.
+- `offer_head` of `spaces/generic.rs` and `offer_pq` of `spaces/disciplines/priority_queue.rs` keep `reissued_ord: op.persistent.then_some(ord)`.
+- `resume` of `spaces/join.rs` keeps `reissued_ord: produce.persistent.then_some(ord)`.
+- The three tests of the item stay as comments under the label "Disabled by decision 132". They are `reissue_keeps_the_ord_of_an_unspent_element`, `priority_queue_reissue_keeps_the_ord_of_an_unspent_element` and `join_reissue_keeps_the_ord_of_an_unspent_element`.
+- The test `space_queue_nonpersistent_reissue_takes_a_fresh_ord` of `spaces/generic.rs` and the property `prop_queue_nonpersistent_reissue_fresh_ord` of `rholang/tests/reified_p4_props.rs` pin the rule of [decision 43](#decision-43).
+
+**User's words.** "Withdraw C7.12 (Recommended)".
+
+**Reason.** The plan item changed every run, also a run without owner funding.
+The theorem `nonpersistent_first_ord_reentry_breaks_quiescent_inv` of `HeadOnlyDisciplines.v` proves the fault: a non-persistent element that keeps its first `ord` breaks the quiescent invariant at a deploy boundary.
+
+### <a id="decision-133"></a>Decision 133: The unit loop commits the finish rows of a cut row, and native replay follows them
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-04 |
+| Status | In force |
+| Amends | None |
+| Related | [Decision 122](#decision-122), [decision 123](#decision-123), [decision 124](#decision-124), [decision 129](#decision-129), [decision 134](#decision-134) |
+
+**Statement.**
+
+- The commit of a space transaction can stop at a row, for example after an owner refusal. That row is the cut row.
+- The row search of a cut row builds its finish rows at the commit (`RowSearch::finish_rows` and `FinishRow`).
+- The default of `finish_rows` answers that the row owes no finish.
+- The unit loop of `rspace++/src/rspace/space_store_handle.rs` stages each finish row and commits it after the group of the cut row.
+- A PathMap join gives these rows: the restore of each owed marker, then the bump of the token when one is due (`PrefixSource::finish_rows`).
+- In native replay, the unit of a cut row also holds the later staged rows whose sources follow its finish rows (`follows_finish`).
+- After a record end, the last row with a search can be the cut row when its later rows follow its finish rows (`tail_candidate`).
+- A run without owner funding has no row search, so it does no new work.
+
+**User's words.** "Extend the unit loop (Recommended)".
+
+**Reason.** A cut PathMap row owes the restores of its markers and the bump of its token.
+Without these rows, a later read of a datum whose marker was not restored fails with `Inconsistent` (`locate_marker`).
+The change adds one defaulted method of `RowSearch`, one arm of the unit loop and one rule of native replay.
+
+### <a id="decision-134"></a>Decision 134: The end of a refused lift varies through the trait `RowEnd`
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-04 |
+| Status | In force |
+| Amends | None |
+| Related | [Decision 123](#decision-123), [decision 126](#decision-126), [decision 128](#decision-128), [decision 129](#decision-129), [decision 133](#decision-133) |
+
+**Statement.**
+
+- A join can see its cascade lift row refused at the commit. The row then ends with the stop of the engine at the lift.
+- `StagedRowSearch<D: Discipline, E = ()>` of `spaces/generic.rs` takes an end `E: RowEnd`.
+- The trait `RowEnd` has the methods `tail_read`, `tail_reissue` and `finish_rows`.
+- The impl for `()` gives the base answers: `TailRead::Ends`, no re-issue and no finish rows.
+- Each join kind writes only its end: `KeyedLiftEnd` in `spaces/join.rs` and `PrefixLiftEnd` in `spaces/pathmap/join.rs`.
+- `JoinSource::lift_search` has no default, so the build of a new join kind fails until the kind gives its own end.
+- No production type forwards the methods of `RowSearch` or wraps the search.
+
+**User's words.** "Go with the most principled and generalized solution, use a plan agent if needed".
+
+**Reason.** The row search already varies its tail read through the type parameter `D`.
+A second parameter with a default varies the end in the same way.
+`RowEnd` is one new trait, because no existing trait can carry the end: `RowSearch` would need forwards or a second box.
+
+### <a id="decision-135"></a>Decision 135: Three divergent SCAN chain cases leave the run
+
+| Field | Value |
+|---|---|
+| Date | 2026-11-08 |
+| Status | In force |
+| Amends | None |
+| Related | [Decision 43](#decision-43), [decision 102](#decision-102), [decision 124](#decision-124) |
+
+**Statement.**
+
+- The chain cases `T-C4-21 SCAN set S1` and `T-C4-21 SCAN bag B1` and the set re-pick Return case (`send_repick_return_case`) leave the run of `rholang/tests/reified_native_owner_rows.rs`.
+- The three cases stay in that file as comments, under a label that names this decision.
+- The cases S2, S3, B2 and B3 stay in the run.
+- The production code does not change.
+- The unit tests of the re-issue with the cause `ReissueCause::DivergentPair` in `spaces/disciplines/scan.rs` and `spaces/generic.rs` keep the rule covered.
+
+**User's words.** "Retire the 3 cases (Recommended)".
+
+**Reason.** Each retired case runs a persistent send against a persistent receive on a kind without a counter.
+The recorder of the base treats each round of that pair as a free retry (`try_record_retry` in `accounting/native_runtime/recording.rs`), so phlo cannot end the run.
 
 ## Minimal-footprint revision: M-1 to M-5
 
@@ -2790,11 +4302,13 @@ The column "Amends" of the plan names the contract text that each decision chang
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | Superseded by [decision 110](#decision-110) on 2026-10-27 |
 | Amends | Keeps `rrs-parser-grammar (5)` |
 | Related | [Decision 23](#decision-23) |
 
 **Statement.** The tree-sitter parser implements bare floats as the contract says, which is a small change. `preprocess_floats` retires at the final pin.
+
+*Superseded by [decision 110](#decision-110) on 2026-10-27: the node keeps `preprocess_floats`, so every float form of the base stays valid. The retirement at the final pin is dropped.*
 
 **Reason.** The design agent suggested a deferral. The plan overrides that suggestion to avoid a known workaround.
 
@@ -2803,11 +4317,13 @@ The column "Amends" of the plan names the contract text that each decision chang
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | In force. [Decision 112](#decision-112) changes the carrier of the params |
 | Amends | `rrs-reducer (6)` |
 | Related | [Decision 18](#decision-18), [inert](glossary.md#inert) |
 
 **Statement.** Params are allowed on system channels only for factory and handle channels. The `PARAMS` tuple of [decision 18](#decision-18) carries them.
+
+*Amended by [decision 112](#decision-112): the field `Send.params` carries the params in place of the `PARAMS` tuple. The reducer forwards them in a new `Expr` arm (O-1 of [decision 120](#decision-120)). The rule of this entry stays.*
 
 **Reason.** Constructor keyword arguments need params. Every other system channel rejects params.
 
@@ -2842,7 +4358,7 @@ The column "Amends" of the plan names the contract text that each decision chang
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force |
+| Status | Retired by [decision 90](#decision-90). [Decision 92](#decision-92) takes its role in native replay. |
 | Amends | `rrs-reducer (2)` |
 | Related | [Space transaction](glossary.md#space-transaction) |
 
@@ -2855,12 +4371,19 @@ The key keeps the transactions of one space in one conflict group, in operation 
 So every predecessor of a space row is complete when the row begins.
 `NativeReplay.tla` checks `NoBlockedReadiness` with this key alone, without the native key [2, 0].
 
+**Retirement (decision 90, 2026-10-25).** DR-132 of the base replaces the deterministic scheduler with racing evaluation, so no scheduler footprint exists.
+Native replay of space transactions loses the ordering premise of this key, and the note of decision 47 lapses with it.
+`NativeReplay.tla` no longer checks `ScheduleSpec`, which stays in the model as a comment.
+
+[Decision 92](#decision-92) takes the role of the key in native replay. Each row of a space transaction names the counter channel `S(sid)` of its space.
+The predecessor rule of the base then orders the transactions of one space, and `SpaceReplayOrder.tla` checks that replay does not stall.
+
 ### <a id="i-12"></a>I-12: Charging rules
 
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force, revised 2026-10-04 |
+| Status | In force, revised 2026-10-04. [Decision 89](#decision-89) retires its host-work clauses, and [decision 90](#decision-90) removes its legacy clause. |
 | Amends | `rrs-reducer (7)` |
 | Related | [M-3](#m-3), [phlo](glossary.md#phlo), [host work](glossary.md#host-work) |
 
@@ -2873,6 +4396,12 @@ So every predecessor of a space row is complete when the row begins.
 - Charges never depend on cache state.
 - The Reified host-work cost functions live in the new `reified/costs.rs`.
 - Legacy deploys: each staged space operation pays the legacy charges of `ChargingRSpace` for its equivalent host call ([decision 45](#decision-45), Option P).
+
+*Retired by [decision 89](#decision-89): DR-131 of the base removes host-work metering.*
+*So the clauses on liveness, matching, similarity and guard costs, and the host-work cost functions lapse.*
+*The phlo clause stays: a space operation meters its COMMs and the bytes that it stores. Its charges still never depend on cache state.*
+*`reified/costs.rs` now holds only the fire-round cap of [I-21](#i-21), which is a liveness bound.*
+*Removed by [decision 90](#decision-90): DR-134 of the base deletes the legacy meter, so the clause on legacy deploys lapses with Option P.*
 
 **Reason.** The rule needs no edit of the cost-accounting module. `reserve_primitive` is diagnostic only at the baseline, so it is not a charging path.
 
@@ -2904,11 +4433,13 @@ One rule for play and replay makes a native space deploy fail in play, and nativ
 | Field | Value |
 |---|---|
 | Date | 2026-10-04 |
-| Status | In force, revised 2026-10-04 by [decision 18](#decision-18) |
+| Status | In force, revised 2026-10-04 by [decision 18](#decision-18). [Decision 112](#decision-112) changes the hash once |
 | Amends | None |
 | Related | [Decision 6](#decision-6), [decision 15](#decision-15) |
 
 **Statement.** `empty_state_hash_fixed` does not change ([decision 18](#decision-18)), and its baseline test is a regression gate at every milestone. Milestone commits exclude only `Cargo.toml` (the `[patch]`) and `Cargo.lock`.
+
+*Amended by [decision 112](#decision-112): `empty_state_hash_fixed` changes once, at the commit of decision 112, as in commit `d367bc11a` of the base. After that commit, its test is a regression gate again.*
 
 **Reason.** Marker tuples leave every ordinary hash unchanged.
 
@@ -3001,7 +4532,7 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 | Field | Value |
 |---|---|
 | Date | 2026-10-05 |
-| Status | In force |
+| Status | Retired by [decision 112](#decision-112) |
 | Amends | [Decision 21](#decision-21), the rule "decoders reject every non-canonical form" |
 | Related | [Decision 18](#decision-18), [decision 22](#decision-22), [canonical form](glossary.md#canonical-form), [marker tuple](glossary.md#marker-tuple) |
 
@@ -3016,11 +4547,13 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 - The decoder still accepts only the exact canonical image of its encoder ([decision 21](#decision-21)).
 - P4 batch 4C implements the rule. Batch 4E-F refines `Encoding.v`: its note on the abstraction function and the premises of substitution.
 
+*Retired by [decision 112](#decision-112): the new protobuf messages have no derived flags, and no decoder reads a derived flag. So the refresh has nothing to refresh.*
+
 **Reason.**
 
 - A P2 finding: the evaluation and the substitution of the baseline keep the flag `connective_used` of a tuple, a list, or a map. They keep it also when the children of the container change.
-- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:3119-3141`, `3143-3164`, and `3135-3155`.
-- The substitution keeps them at `rholang/src/rust/interpreter/substitute.rs:1342-1363`, `1365-1384`, and `1405-1428`.
+- The evaluation keeps the flags at `rholang/src/rust/interpreter/reduce.rs:4130-4152`, `4154-4175`, and `4137-4157`.
+- The substitution keeps them at `rholang/src/rust/interpreter/substitute.rs:1573-1594`, `1596-1615`, and `1515-1538`.
 - Ordinary data can use connectives, as in `x!(Int)`. Without the refresh, a legal `use` body could fail closed as `NonCanonical`.
 - Only the top level of a marker tuple can hold a stale flag, so the refresh costs time linear in the width of the tuple.
 - To ignore the flags instead would weaken the contract of the decoder.
@@ -3037,7 +4570,7 @@ A second creation of the same `sid` aborts with `SpaceAlreadyExists`.
 
 **Statement.**
 
-- One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:44`).
+- One space transaction runs at most `FIRE_ROUND_CAP = 64` fire rounds (`rholang/src/rust/interpreter/reified/costs.rs:17`).
 - At the cap, the agent commits the staged prefix and re-issues the rest of the operation as a new `Intent::Space`. This is the re-issue path of A10.
 - A re-issued persistent operation keeps the `ord` of its first round, and it re-enters at its place ([decision 43](#decision-43)).
 

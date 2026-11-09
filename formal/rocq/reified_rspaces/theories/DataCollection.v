@@ -20,6 +20,8 @@
      RECEIVE-SCAN, RESTORE-SCAN, the defined effects of the bag), A.12 (the
      effects of decisions 42, 43 and 45), A.13 (this module: F1 to F5 and
      scan_trace_covered). The P5 design v2, 2.8.1 (F1 to F5).
+     Decision 96 (decision 89, DR-131) disables scan_trace_covered with the
+     host-work metering.
    - Plan: decisions 37 (the current guard rule), 41 (source-hash order), 42
      (reserve before each read) and 45 (Rule E).
    - Code: rholang/src/rust/interpreter/spaces/disciplines/scan.rs and
@@ -45,7 +47,7 @@
                             stored) and FireSt (Cx::fire_receive_group: the
                             bound record leaves unless it is persistent,
                             space_store_handle.rs removed_records)
-   fits, offer_pass, offer  scan.rs:408-499 (offer_scan with
+   fits, offer_pass, offer  scan.rs:408-493 (offer_scan with
                             first_admitting_waiter at 497-528: one pass
                             over the waiters in canonical order, a guard
                             refusal moves on, after_fire of FireRounds)
@@ -57,7 +59,7 @@
                             persistent datum or of a peek waiter
                             (reduce.rs continue_produce_process,
                             produce_peeks)
-   peek_plan                scan.rs:229-321, 709-719 and 730-762 (receive
+   peek_plan                scan.rs:229-321, 703-713 and 724-756 (receive
                             with restore_in and restore_scan: the second
                             send of the removed record with
                             Introduction::for_record), and 723-744
@@ -101,6 +103,8 @@
      then reads them, and a trace is covered when every prefix reads at most
      what it reserved. The model counts one host-work dimension. Each
      dimension satisfies the rule on its own.
+     Changed by decision 96 (decision 89, DR-131): AgentReadCoverage.v is
+     deleted, and section 4 goes with the host-work metering.
 
    Headline theorems (each one has a Print Assumptions line at the end)
     1. bag_visit_order_canonical         F1: the order is sorted, a
@@ -125,6 +129,9 @@
                                          that no waiter takes is stored again
     7. scan_trace_covered                decision 42: the trace of a scan
                                          reads after it reserves
+                                         Decision 96 (decision 89, DR-131)
+                                         disables this headline with the
+                                         host-work metering.
 
    The negative controls of scripts/verify-reified/rocq-negative-controls.py
    (fragment of the BAG batch) mutate one rule each: the order by list
@@ -234,12 +241,13 @@ Proof.
 Qed.
 
 (* The order in which the driver visits the records of a collection: the
-   canonical order (Cx::canonical_data_order). *)
+   canonical order (Cx::canonical_data_order). This order is also the
+   replay order (decision 102). *)
 Definition visit (l : list nat) : list nat := canon l.
 
 (* F1 bag_visit_order_canonical: the visit order of the records is sorted by
    source key, holds the records, and does not depend on the list order of
-   the store. *)
+   the store. This order is also the replay order (decision 102). *)
 Theorem bag_visit_order_canonical : forall l l',
   Sorted le (visit l) /\ Permutation l (visit l) /\
   (Permutation l l' -> visit l = visit l').
@@ -754,6 +762,8 @@ Section Bag.
   Qed.
 End Bag.
 
+(* Disabled by decision 96 (decision 89, DR-131): scan_trace_covered goes
+   with the host-work metering. The section stays below as a comment.
 (* ── 4. Metering of the scan driver (decision 42) ────────────────────────── *)
 
 (* The metering rule of DR-88, restated from AgentReadCoverage.v: a trace of
@@ -876,6 +886,7 @@ Proof.
   change ([Reserve (outcome s)] ++ [Read (outcome s)]) with (step (outcome s)).
   apply step_covered.
 Qed.
+*)
 
 Print Assumptions bag_visit_order_canonical.
 Print Assumptions bag_consume_first_spatial_match.
@@ -883,4 +894,7 @@ Print Assumptions bag_persistent_match_not_removed.
 Print Assumptions bag_multiplicity_preserved.
 Print Assumptions bag_removal_keeps_equal_duplicate.
 Print Assumptions bag_peek_restore_is_host_second_send.
+(* Disabled by decision 96 (decision 89, DR-131): scan_trace_covered goes
+   with the host-work metering.
 Print Assumptions scan_trace_covered.
+*)

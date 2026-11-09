@@ -60,6 +60,10 @@ pub struct OfferedCandidateRejection {
     pub deploy_id: DeployIdV6,
     pub pre_state_root: StateHash,
     pub reason: String,
+    /// Added by DR-134 (DR-65 item 4, O-5): the other members of the rejected
+    /// funding groups of a batch, which the proposer quarantines with
+    /// `deploy_id`. A rejection of one candidate alone names none.
+    pub group: Vec<DeployIdV6>,
 }
 
 impl fmt::Display for CasperError {

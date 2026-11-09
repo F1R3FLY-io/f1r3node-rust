@@ -114,7 +114,7 @@ async fn key_landed(node: &TestNode, state_hash: &prost::bytes::Bytes, key: &str
     );
     match node
         .runtime_manager
-        .play_exploratory_deploy(term, state_hash, None)
+        .play_exploratory_deploy(term, state_hash, None, node.adopted_policy())
         .await
     {
         Ok((res, _)) => res.first().and_then(par_to_i64) != Some(-999),
@@ -136,8 +136,10 @@ async fn three_validator_neutral_base_applies_prior_loss_priority() {
 
     let starved_sec = construct_deploy::DEFAULT_SEC.clone();
     // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
-    // let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
-    let contender_sec = construct_deploy::DEFAULT_SEC.clone();
+    // Changed by G3 (DR-135): dev's signer returns, and the writer's purse
+    // funds the read.
+    // let contender_sec = construct_deploy::DEFAULT_SEC.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
     let init = construct_deploy::source_deploy_now_full(
         r#"@"m"!({})"#.to_string(),
         None,
@@ -343,8 +345,10 @@ async fn repeatedly_rejected_deploy_gains_priority_and_lands() {
     }
     let starved_sec = construct_deploy::DEFAULT_SEC.clone();
     // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
-    // let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
-    let contender_sec = construct_deploy::DEFAULT_SEC.clone();
+    // Changed by G3 (DR-135): dev's signer returns, and the writer's purse
+    // funds the read.
+    // let contender_sec = construct_deploy::DEFAULT_SEC.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
 
     // Initialize the single-value cell and distribute.
     let init = construct_deploy::source_deploy_now_full(
@@ -496,8 +500,10 @@ async fn rotating_merge_proposers_land_repeatedly_rejected_deploy_before_expiry(
     }
     let starved_sec = construct_deploy::DEFAULT_SEC.clone();
     // Changed by DR-116 (gap G6): one key signs the cell seed and its readers until gap G3.
-    // let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
-    let contender_sec = construct_deploy::DEFAULT_SEC.clone();
+    // Changed by G3 (DR-135): dev's signer returns, and the writer's purse
+    // funds the read.
+    // let contender_sec = construct_deploy::DEFAULT_SEC.clone();
+    let contender_sec = construct_deploy::DEFAULT_SEC2.clone();
 
     let init = construct_deploy::source_deploy_now_full(
         r#"@"m"!({})"#.to_string(),

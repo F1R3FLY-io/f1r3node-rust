@@ -6,6 +6,7 @@ if [[ "${1:-}" == --inside ]]; then
     cd /case
     mkdir -p evidence bin harness tmp runner node/docker
     printf '{"services":{"writer":{"image":"fixture-unused"}}}\n' >node/docker/shard.yml
+    printf 'services: {}\n' >node/docker/ci-ports.shard.yml
     trap 'printf "ERROR: The benchmark monitor-death fixture failed before its behavioral verdict.\n" >&2; exit 2' ERR
     cat >evidence/writer.sh <<'SH'
 #!/usr/bin/env bash

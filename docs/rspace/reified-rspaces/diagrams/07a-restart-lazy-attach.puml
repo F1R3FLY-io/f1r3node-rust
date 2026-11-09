@@ -12,8 +12,8 @@
 '      checkpoints the spaces into the LMDB store: root R1.
 '   2. Process 2 opens the store at R1. Its hot store is empty, and no Reified
 '      state outlives an evaluation (F18). The first operation reads the
-'      config and the records through the metered view, which charges the key
-'      and the value of each load, the same on a cold load and a warm load
+'      config and the records through the store of the host. A read charges
+'      nothing, the same on a cold load and a warm load
 '      (rule NE-2). Block 2 reaches R2, and process 2 writes the evidence
 '      bytes, the event log and the cost vector of each deploy.
 '   3. Process 3 certifies block 2 from its pre-state, as a validator does.
@@ -47,7 +47,7 @@ participant "Process 1\nblock 1" as P1 $rrs_host
 database "LMDB store\nhistory trie" as STORE $rrs_storage
 participant "Process 2\nrestarted node" as P2 $rrs_host
 participant "Space agent\n(no cache, F18)" as AGENT $rrs_agent
-participant "Metered view" as VIEW $rrs_substrate
+participant "Store of the host" as VIEW $rrs_substrate
 participant "Process 3\nvalidator" as P3 $rrs_host
 participant "Parent process\nwarm run" as WARM $rrs_host
 
@@ -66,8 +66,8 @@ end note
 P2 -[$rrs_flow]> AGENT : the first operation on a space
 AGENT -[$rrs_flow]> VIEW : read the config C(sid)
 VIEW -[$rrs_relation]> STORE : cold load (history read-through)
-VIEW -[$rrs_relation]> VIEW : reserve the work of the load:\n<latex>\mathrm{charge}(\mathrm{hit}) = \mathrm{charge}(\mathrm{miss}) = f(\mathit{key}, \mathit{value})</latex>
-AGENT -[$rrs_flow]> VIEW : read the records and the waiters\nof the operation, each reserved first
+VIEW -[$rrs_relation]> VIEW : the read charges nothing (rule NE-2)
+AGENT -[$rrs_flow]> VIEW : read the records and the waiters\nof the operation
 AGENT -[$rrs_flow]> P2 : stage and commit, with the\nobserver calls of play (revised M-3)
 P2 -[$rrs_effect]> STORE : create_checkpoint(): root R2
 P2 -[$rrs_relation]> P2 : write each deploy record: roots,\ncost vector, evidence bytes, event log
@@ -86,7 +86,7 @@ legend bottom
 **Concept colors**
 |<$rrs_host>       | host at the baseline: processes, runtime, reducer |
 |<$rrs_agent>      | space agent |
-|<$rrs_substrate>  | storage substrate and its metered view |
+|<$rrs_substrate>  | storage substrate and the store of the host |
 |<$rrs_storage>    | stored state |
 **Arrows**
 |<$rrs_flow>       | call or return |

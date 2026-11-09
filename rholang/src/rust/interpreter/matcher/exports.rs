@@ -2,22 +2,44 @@ pub use models::rhoapi::connective::ConnectiveInstance::{
     ConnAndBody, ConnBool, ConnByteArray, ConnInt, ConnNotBody, ConnOrBody, ConnString, ConnUri,
     VarRefBody,
 };
+// Changed by decision 112: the new expression forms join the exports. The text before:
+// ```
+// pub use models::rhoapi::expr::ExprInstance::{
+//     EAndBody, EDivBody, EEqBody, EGtBody, EGteBody, EListBody, ELtBody, ELteBody, EMapBody,
+//     EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody, EMultBody, ENegBody,
+//     ENeqBody, ENotBody, EOrBody, EPathmapBody, EPercentPercentBody, EPlusBody, EPlusPlusBody,
+//     ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool, GByteArray, GDouble,
+//     GFixedPoint, GFloat32, GInt, GInt32, GString, GUint16, GUint32, GUint64, GUint8, GUri,
+// };
+// ```
 pub use models::rhoapi::expr::ExprInstance::{
-    EAndBody, EDivBody, EEqBody, EGtBody, EGteBody, EListBody, ELtBody, ELteBody, EMapBody,
-    EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody, EMultBody, ENegBody,
-    ENeqBody, ENotBody, EOrBody, EPathmapBody, EPercentPercentBody, EPlusBody, EPlusPlusBody,
-    ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool, GByteArray, GDouble,
-    GFixedPoint, GFloat32, GInt, GInt32, GString, GUint16, GUint32, GUint64, GUint8, GUri,
+    EAndBody, EDivBody, EEqBody, EFreeBody, EGtBody, EGteBody, EListBody, ELtBody, ELteBody,
+    EMapBody, EMatchesBody, EMethodBody, EMinusBody, EMinusMinusBody, EModBody, EMultBody,
+    ENegBody, ENeqBody, ENotBody, EOrBody, EParamsBody, EPathmapBody, EPercentPercentBody,
+    EPlusBody, EPlusPlusBody, ESetBody, ETupleBody, EVarBody, EZipperBody, GBigInt, GBigRat, GBool,
+    GByteArray, GDouble, GFixedPoint, GFloat32, GInt, GInt32, GString, GUint16, GUint32, GUint64,
+    GUint8, GUri,
 };
 pub use models::rhoapi::g_unforgeable::UnfInstance::{GDeployerIdBody, GPrivateBody};
 pub use models::rhoapi::var::VarInstance::{BoundVar, FreeVar, Wildcard};
 pub use models::rhoapi::var::{VarInstance, WildcardMsg};
+// Changed by decision 112: the new messages join the exports. The text before:
+// ```
+// pub use models::rhoapi::{
+//     BindPattern, Bundle, Connective, ConnectiveBody, CostSignature, CostSignedTerm, CostStack,
+//     EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMinus, EMinusMinus, EMod, EMult,
+//     ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, Expr,
+//     GBigRational, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
+//     New, Par, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+// };
+// ```
 pub use models::rhoapi::{
     BindPattern, Bundle, Connective, ConnectiveBody, CostSignature, CostSignedTerm, CostStack,
-    EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMinus, EMinusMinus, EMod, EMult,
-    ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar, Expr,
-    GBigRational, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match, MatchCase,
-    New, Par, Receive, ReceiveBind, Send, TaggedContinuation, Var, VarRef,
+    EAnd, EDiv, EEq, EFree, EGt, EGte, EList, ELt, ELte, EMap, EMatches, EMinus, EMinusMinus, EMod,
+    EMult, ENeg, ENeq, ENot, EOr, EPathMap, EPercentPercent, EPlus, EPlusPlus, ESet, ETuple, EVar,
+    Expr, GBigRational, GPrivate, GUnforgeable, If, KeyValuePair, ListParWithRandom, Match,
+    MatchCase, New, Par, QuerySpec, Receive, ReceiveBind, Send, SendParams, TaggedContinuation,
+    UseBlock, Var, VarRef,
 };
 
 pub use crate::rust::interpreter::matcher::maximum_bipartite_match::MaximumBipartiteMatch;

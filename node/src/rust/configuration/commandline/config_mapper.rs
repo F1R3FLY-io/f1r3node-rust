@@ -399,6 +399,19 @@ impl ConfigMapper<Options> for NodeConf {
                     .empty_frontier_max_unfinalized_blocks,
                 run.heartbeat_advanced_empty_frontier_max_unfinalized_blocks,
             );
+
+            // File I/O FIP static-provisioning CLI vecs.  Move the
+            // parsed `Vec<CliStatic{File,Dir}Arg>` off `RunOptions`
+            // into `Storage` so `setup_node_program` can thread them
+            // into `merge_and_validate` without reaching back into
+            // the clap options struct.  Replace semantics: a CLI
+            // invocation always sets the slot (empty vec included),
+            // mirroring the "last run wins" posture of the other
+            // overrides.
+            self.storage.cli_oracle_static_files = run.oracle_static_files;
+            self.storage.cli_oracle_static_dirs = run.oracle_static_dirs;
+            self.storage.cli_consensus_static_files = run.consensus_static_files;
+            self.storage.cli_consensus_static_dirs = run.consensus_static_dirs;
         }
     }
 
@@ -714,6 +727,10 @@ mod tests {
                 heartbeat_advanced_empty_frontier_max_unfinalized_blocks: Some(444),
                 synchrony_finalized_baseline_enabled: Some(false),
                 synchrony_finalized_baseline_max_distance: Some(666666),
+                oracle_static_files: Vec::new(),
+                oracle_static_dirs: Vec::new(),
+                consensus_static_files: Vec::new(),
+                consensus_static_dirs: Vec::new(),
             })),
         };
 
@@ -775,6 +792,11 @@ mod tests {
             },
             storage: crate::rust::configuration::model::Storage {
                 data_dir: PathBuf::from("/var/lib/rnode"),
+                file_io_provisioning: Default::default(),
+                cli_oracle_static_files: Vec::new(),
+                cli_oracle_static_dirs: Vec::new(),
+                cli_consensus_static_files: Vec::new(),
+                cli_consensus_static_dirs: Vec::new(),
             },
             tls: crate::rust::configuration::model::TlsConf {
                 certificate_path: PathBuf::from("/var/lib/rnode/node.certificate.pem"),
@@ -1208,5 +1230,77 @@ mod tests {
                 .genesis_ceremony
                 .genesis_validator_mode
         );
+    }
+
+    /// `--*-static-{file,dir}` CLI vecs flow from `RunOptions` into
+    /// `Storage.cli_*` so `setup_node_program` can thread them into
+    /// `merge_and_validate` alongside the HOCON entries.  Without
+    /// this wire-up the four `Vec<CliStatic{File,Dir}Arg>` would
+    /// be dropped on the floor at config-mapping time and the
+    /// `--consensus-static-file` / `--oracle-static-dir` CLI
+    /// surface would silently no-op.
+    ///
+    /// Drives the production boot path (`builder::build`) which runs
+    /// HOCON load + `override_config_values` + validation — same
+    /// pipeline `setup_node_program` consumes.
+    #[test]
+    fn test_cli_static_provisioning_vecs_flow_into_storage() {
+        use crate::rust::configuration::commandline::cli_static_provisioning::{
+            CliStaticDirArg, CliStaticFileArg,
+        };
+        use crate::rust::configuration::file_io_provisioning::{StaticDirEntry, StaticFileEntry};
+
+        let argv = vec![
+            "rnode",
+            "run",
+            "--oracle-static-file",
+            r#"cfg={"path":"/etc/cfg","mode":"r"}"#,
+            "--oracle-static-dir",
+            r#"share={"path":"/srv/share","mode":"r+"}"#,
+            "--consensus-static-file",
+            r#"state={"path":"/var/state","mode":"r+"}"#,
+            "--consensus-static-dir",
+            r#"work={"path":"/var/work","mode":"r+"}"#,
+        ];
+        let options = Options::try_parse_from(argv).expect("clap parse");
+        let (cfg, _profile, _config_file, _warnings) =
+            crate::rust::configuration::builder::build(options).expect("builder::build");
+
+        assert_eq!(
+            cfg.storage.cli_oracle_static_files,
+            vec![CliStaticFileArg {
+                logical_name: "cfg".into(),
+                entry: StaticFileEntry {
+                    path: PathBuf::from("/etc/cfg"),
+                    mode: "r".into(),
+                },
+            }],
+            "oracle_static_files must land in storage.cli_oracle_static_files",
+        );
+        assert_eq!(cfg.storage.cli_oracle_static_dirs, vec![CliStaticDirArg {
+            logical_name: "share".into(),
+            entry: StaticDirEntry {
+                path: PathBuf::from("/srv/share"),
+                mode: "r+".into(),
+            },
+        }],);
+        assert_eq!(cfg.storage.cli_consensus_static_files, vec![
+            CliStaticFileArg {
+                logical_name: "state".into(),
+                entry: StaticFileEntry {
+                    path: PathBuf::from("/var/state"),
+                    mode: "r+".into(),
+                },
+            }
+        ],);
+        assert_eq!(cfg.storage.cli_consensus_static_dirs, vec![
+            CliStaticDirArg {
+                logical_name: "work".into(),
+                entry: StaticDirEntry {
+                    path: PathBuf::from("/var/work"),
+                    mode: "r+".into(),
+                },
+            }
+        ],);
     }
 }

@@ -27,12 +27,14 @@
 //                THE PIN: M must form and validate.)
 
 use casper::rust::casper::MultiParentCasper;
-use casper::rust::util::construct_deploy;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use rspace_plus_plus::rspace::history::Either;
 use serial_test::serial;
 
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
+use crate::helper::offered_deploy as construct_deploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::GenesisBuilder;
 
@@ -93,6 +95,11 @@ async fn netted_install_fire_pair_merges_as_a_noop() {
             r#"@"nn_cell"!(42)"#.to_string(),
             None,
             None,
+            // Changed by DR-134 (gap G3): the fire consumes the installer's
+            // continuation, so the installer's key signs it.
+            // Changed by G3 (DR-135): dev's signer returns, and the installer's
+            // purse funds the fire.
+            // Some(construct_deploy::DEFAULT_SEC.clone()),
             Some(construct_deploy::DEFAULT_SEC2.clone()),
             Some(0),
             Some(shard_id.clone()),
@@ -109,6 +116,12 @@ async fn netted_install_fire_pair_merges_as_a_noop() {
         tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         construct_deploy::basic_deploy_data(
             7,
+            // Changed by DR-134 (DR-66 item 1): two offers of one signer share
+            // a cost cursor, so the unrelated sibling uses the other key.
+            // Some(construct_deploy::DEFAULT_SEC.clone()),
+            // Changed by G3 (DR-135, S9): dev's signer returns, because the
+            // fire uses DEFAULT_SEC2 again.
+            // Some(construct_deploy::DEFAULT_SEC2.clone()),
             Some(construct_deploy::DEFAULT_SEC.clone()),
             Some(shard_id.clone()),
         )

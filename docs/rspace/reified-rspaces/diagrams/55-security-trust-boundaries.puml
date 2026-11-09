@@ -59,7 +59,7 @@ package "Untrusted inputs" as INPUTS $rrs_reject {
 package "Node: program boundary" as NODE $rrs_host {
   component NORMALIZER $rrs_syntax [
   **Normalizer and decoders**
-  marker tuples: exactly the
+  fields of a construct: exactly the
   canonical image (SC-1)
   ]
   component HOOKS $rrs_host [
@@ -76,7 +76,7 @@ package "Node: program boundary" as NODE $rrs_host {
   component AGENTS $rrs_agent [
   **Space agents**
   theories fail closed (SC-9)
-  bounds and metered reads (SC-13)
+  bounds of each operation (SC-13)
   deterministic choices (SC-18)
   ]
   database SUBSTRATE $rrs_substrate [
@@ -124,7 +124,7 @@ the exact engine decides (SC-22)
 PROGRAM -[$rrs_flow]-> NORMALIZER : source text
 NORMALIZER -[$rrs_flow]-> HOOKS : normalized Par
 HOOKS -[$rrs_flow]-> PROCESSES : calls on op channels and handles
-PROCESSES -[$rrs_flow]-> AGENTS : space intents
+PROCESSES -[$rrs_flow]-> AGENTS : space jobs
 HOOKS -[$rrs_flow]-> AGENTS : routed sends and receives
 AGENTS -[$rrs_effect]-> SUBSTRATE : staged operations, one commit
 AGENTCODE -[$rrs_flow]-> CAPS : calls on the capabilities

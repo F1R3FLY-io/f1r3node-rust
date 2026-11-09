@@ -73,7 +73,7 @@
 // bytes, odd-tail treatment, empty sentinel) is a hard fork —
 // pinned by `merkle_tree_shape_pinned_by_golden_hex`.
 
-use crypto::rust::hash::blake2b256::Blake2b256;
+use crypto::rust::hash::merkle::{self, MerkleParams};
 
 /// Chunk size for snapshot fetch.  4 MiB per chunk.  See file-level
 /// docstring for the rationale.  Hard-fork surface.
@@ -84,7 +84,7 @@ pub const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 /// Blake2b256 is preimage-resistant AND every real leaf/interior
 /// hash is domain-tagged (see `LEAF_DOMAIN` / `INTERIOR_DOMAIN`
 /// below).
-pub const EMPTY_SNAPSHOT_ROOT: [u8; 32] = [0u8; 32];
+pub const EMPTY_SNAPSHOT_ROOT: [u8; 32] = merkle::EMPTY_ROOT;
 
 /// Domain-separation byte prepended to chunk bytes before hashing
 /// to produce a leaf hash.  Distinguishes leaf inputs from interior
@@ -100,6 +100,11 @@ const LEAF_DOMAIN: u8 = 0x00;
 /// concatenation before hashing to produce an interior node hash.
 /// See `LEAF_DOMAIN`.  Hard-fork surface.
 const INTERIOR_DOMAIN: u8 = 0x01;
+
+/// Params routed to `crypto::rust::hash::merkle::*`.  The snapshot
+/// Merkle shape is pinned by `merkle_tree_shape_pinned_by_golden_hex`;
+/// changing `INTERIOR_DOMAIN` or extraction behavior would trip it.
+const MERKLE_PARAMS: MerkleParams = MerkleParams::new(INTERIOR_DOMAIN);
 
 /// A single 4 MiB chunk of a snapshot, plus its Blake2b256 hash.
 /// Owned bytes so callers can freely move chunks across threads /
@@ -142,24 +147,7 @@ pub fn chunk_snapshot(bytes: &[u8]) -> Vec<SnapshotChunk> {
 /// across validators for identical input.  The empty case returns
 /// `EMPTY_SNAPSHOT_ROOT`.
 pub fn snapshot_merkle_root(chunk_hashes: &[[u8; 32]]) -> [u8; 32] {
-    if chunk_hashes.is_empty() {
-        return EMPTY_SNAPSHOT_ROOT;
-    }
-    let mut level: Vec<[u8; 32]> = chunk_hashes.to_vec();
-    while level.len() > 1 {
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        let mut i = 0;
-        while i + 1 < level.len() {
-            next.push(hash_interior(&level[i], &level[i + 1]));
-            i += 2;
-        }
-        // Odd tail: promote unchanged (no duplicate-and-hash).
-        if i < level.len() {
-            next.push(level[i]);
-        }
-        level = next;
-    }
-    level[0]
+    merkle::merkle_root(&MERKLE_PARAMS, chunk_hashes)
 }
 
 /// Verify a chunk against its claimed hash.  Returns `true` if
@@ -173,101 +161,25 @@ pub fn snapshot_merkle_root(chunk_hashes: &[[u8; 32]]) -> [u8; 32] {
 /// learns nothing from timing that they don't already know.
 pub fn verify_chunk_hash(chunk: &SnapshotChunk) -> bool { hash_leaf(&chunk.bytes) == chunk.hash }
 
-/// Merkle inclusion proof for a single chunk.  Enough to verify
-/// that a chunk with hash `chunk_hash` at index `index` participates
-/// in the Merkle tree rooted at `root`.
-///
-/// `siblings` is bottom-up (leaf-level first, root's-child last).
-/// Each entry is `(sibling_hash, is_right)` where `is_right`
-/// indicates whether the sibling is the RIGHT child (in which case
-/// we concatenate `current || sibling`) or LEFT (`sibling || current`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MerkleProof {
-    pub index: u32,
-    pub siblings: Vec<([u8; 32], bool)>,
-}
+/// Re-export of the shared Merkle proof struct so callers continue to
+/// name `snapshot_chunk::MerkleProof`.
+pub type MerkleProof = merkle::MerkleProof;
 
 /// Build the inclusion proof for `index` in a snapshot with the
 /// given `chunk_hashes` sequence.  Returns None if `index` is out
 /// of range.
 pub fn build_merkle_proof(chunk_hashes: &[[u8; 32]], index: u32) -> Option<MerkleProof> {
-    let index_usize = usize::try_from(index).ok()?;
-    if chunk_hashes.is_empty() || index_usize >= chunk_hashes.len() {
-        return None;
-    }
-    let mut siblings = Vec::new();
-    let mut level: Vec<[u8; 32]> = chunk_hashes.to_vec();
-    let mut idx = index_usize;
-    while level.len() > 1 {
-        // Sibling of idx at this level.
-        let is_idx_left = idx % 2 == 0;
-        let sib_idx = if is_idx_left { idx + 1 } else { idx - 1 };
-        if sib_idx < level.len() {
-            // sibling is on the RIGHT if the target is left-of-pair.
-            siblings.push((level[sib_idx], is_idx_left));
-        }
-        // Fold up the next level.
-        let mut next = Vec::with_capacity(level.len().div_ceil(2));
-        let mut i = 0;
-        while i + 1 < level.len() {
-            next.push(hash_interior(&level[i], &level[i + 1]));
-            i += 2;
-        }
-        if i < level.len() {
-            next.push(level[i]);
-        }
-        idx /= 2;
-        level = next;
-    }
-    Some(MerkleProof { index, siblings })
+    merkle::build_proof(&MERKLE_PARAMS, chunk_hashes, index)
 }
 
 /// Verify that `chunk_hash` at `proof.index` participates in the
 /// Merkle tree rooted at `root`.  Constant work per proof step.
 pub fn verify_merkle_proof(root: &[u8; 32], chunk_hash: &[u8; 32], proof: &MerkleProof) -> bool {
-    let mut current = *chunk_hash;
-    for (sibling, sibling_is_right) in &proof.siblings {
-        current = if *sibling_is_right {
-            hash_interior(&current, sibling)
-        } else {
-            hash_interior(sibling, &current)
-        };
-    }
-    current == *root
+    merkle::verify_proof(&MERKLE_PARAMS, root, chunk_hash, proof)
 }
 
 /// Domain-tagged leaf hash: `Blake2b256(LEAF_DOMAIN || bytes)`.
-///
-/// TODO(follow-up): the underlying `Blake2b256::hash(Vec<u8>)` API
-/// forces a `.to_vec()` copy on every call (see the internal
-/// helper below).  Fixing the crypto crate's API to accept
-/// `&[u8]` would eliminate a full 4 MiB copy per chunk hash on the
-/// send path.  Tracked separately since it crosses the crate
-/// boundary.
-fn hash_leaf(bytes: &[u8]) -> [u8; 32] {
-    let mut input = Vec::with_capacity(1 + bytes.len());
-    input.push(LEAF_DOMAIN);
-    input.extend_from_slice(bytes);
-    hash_owned(input)
-}
-
-/// Domain-tagged interior hash:
-/// `Blake2b256(INTERIOR_DOMAIN || left || right)`.
-fn hash_interior(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut input = [0u8; 1 + 32 + 32];
-    input[0] = INTERIOR_DOMAIN;
-    input[1..33].copy_from_slice(left);
-    input[33..].copy_from_slice(right);
-    hash_owned(input.to_vec())
-}
-
-fn hash_owned(input: Vec<u8>) -> [u8; 32] {
-    let h = Blake2b256::hash(input);
-    assert_eq!(h.len(), 32, "Blake2b256 must produce 32-byte digest");
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&h);
-    out
-}
+fn hash_leaf(bytes: &[u8]) -> [u8; 32] { merkle::hash_leaf_tagged(LEAF_DOMAIN, bytes) }
 
 #[cfg(test)]
 mod tests {

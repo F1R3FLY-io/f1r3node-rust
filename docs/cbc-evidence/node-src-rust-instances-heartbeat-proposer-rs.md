@@ -1,1 +1,0 @@
-../casper/cbc-evidence/node-src-rust-instances-heartbeat-proposer-rs.md

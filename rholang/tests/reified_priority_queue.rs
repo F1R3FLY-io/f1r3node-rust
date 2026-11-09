@@ -21,7 +21,9 @@
 //!   keeps its seniority.
 //! * One counter serves the whole priority queue (decision 31), so two branches race on it.
 //!   Replay reproduces play, and the order survives a restart.
-//! * The legacy charges of Option P (decision 45).
+//! * The observer calls of the settle: each staged operation makes the observer calls of its host
+//!   call (decision 90, decision 69). They replace the legacy charges of Option P (decision 45),
+//!   which DR-134 deleted with the legacy meter.
 //!
 //! Each property below states an invariant of `PriorityQueue.v` or `PriorityQueue.tla`:
 //!
@@ -44,6 +46,7 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
@@ -61,13 +64,16 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::accounting::authority::AuthorityByteEventKind;
 use rholang::rust::interpreter::accounting::byte_accounting::produce_introduction_identity;
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::RuntimeBudget;
+// Changed by decision 90 (decision 69): the legacy meter, its budgets and the module
+// `reified::legacy_charges` of Option P are deleted (DR-134). The settle differential records
+// observer calls, and the harness names the staged produce over `Par` (`support::agent`).
+// use rholang::rust::interpreter::accounting::costs::Cost;
+// use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
-use rholang::rust::interpreter::reified::legacy_charges::{
-    consume_charges, produce_charges, ParSpaceConsume, ParSpaceProduce,
-};
+// use rholang::rust::interpreter::reified::legacy_charges::{
+//     consume_charges, produce_charges, ParSpaceConsume, ParSpaceProduce,
+// };
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, ProduceOp, QueryParams, SettleOp, SpaceCreation, SpaceEnv, SpaceOp, SpaceOutcome,
     SpaceReissue,
@@ -93,26 +99,49 @@ use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern};
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rspace_plus_plus::rspace::checkpoint::Checkpoint;
+// Retired by decision 90 (C6, step D): the retired replay test was the last user of `Checkpoint`.
+// The text before:
+// use rspace_plus_plus::rspace::checkpoint::Checkpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider;
-use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
+// Changed by decision 90 (decision 69): the staged take and lift of the retired Option P test
+// built their candidates by hand.
+// use rspace_plus_plus::rspace::internal::{ConsumeCandidate, Datum};
 use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
 use rspace_plus_plus::rspace::merger::merging_logic::{
     conflict_reason, conflicts, NumberChannelsDiff,
 };
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
-use rspace_plus_plus::rspace::space_store_handle::{
-    incoming_candidate, ConsumeOutcome, ProduceOutcome,
-};
+// Changed by decision 90 (decision 69): the staged take and lift of the retired Option P test
+// named their outcomes.
+// use rspace_plus_plus::rspace::space_store_handle::{
+//     incoming_candidate, ConsumeOutcome, ProduceOutcome,
+// };
+use rspace_plus_plus::rspace::space_store_handle::{incoming_candidate, ProduceOutcome};
 use rspace_plus_plus::rspace::trace::event::{Consume, Event, IOEvent, Produce};
+// Changed by decision 90 (C6, step D): the rigged replay modes retire, so this file no longer uses
+// `play_and_replay`. The text before:
+// ```
+// use support::agent::{
+//     any, body_name, budget, counter, counter_channel, create, creation, data_channel, env_over,
+//     exactly, fired, int, key_of, named, play, play_and_replay, receive_on, run, send_on,
+//     space_counter_channel, string, ParRSpace,
+// };
+// ```
 use support::agent::{
     any, body_name, budget, counter, counter_channel, create, creation, data_channel, env_over,
-    exactly, fired, int, key_of, named, play, play_and_replay, receive_on, run, send_on,
-    space_counter_channel, string, ParRSpace,
+    exactly, fired, int, key_of, named, play, receive_on, run, send_on, space_counter_channel,
+    string, ParRSpace, ParSpaceProduce,
 };
-use support::legacy::{charging_host, host_consume, host_produce, split};
+// Changed by decision 90 (decision 69): the hosts record their observer calls.
+// use support::legacy::{charging_host, host_consume, host_produce, split};
+use support::legacy::{
+    host_consume, host_produce, lone_host_produce, observed_host, open_waiter,
+    pinned_observed_host, Pin,
+};
+// Changed by decision 92: the host differential removes the footprint group of the space.
+use support::observed::{observed, operations, without_footprint, Recorder};
 use support::props::{check, pure_config, tokio_runtime};
 use support::session::{with_space, Injections, Session};
 
@@ -460,6 +489,10 @@ fn region(byte: u8) -> CostAuthority {
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![byte])),
             }),
+            // Added by decision 90 (DR-135): an unpriced region, as outside native
+            // execution.
+            price: 0,
+            caller: None,
         }],
     }
 }
@@ -1009,7 +1042,10 @@ async fn space_disciplines_pq_removal_exposes_next_waiter_settles() {
             "produce D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D"
         ])
@@ -1033,7 +1069,10 @@ async fn space_disciplines_pq_removal_exposes_next_waiter_settles() {
             "consume D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D"
         ])
@@ -1125,11 +1164,17 @@ async fn space_disciplines_pq_settle_oldest_first() {
             "produce D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D",
             "consume D",
-            "comm D",
+            // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel. The text before:
+            // "comm D",
+            "comm D peek",
             "produce D",
             "comm D"
         ])
@@ -1400,7 +1445,10 @@ async fn space_disciplines_pq_round_cap_reissues_a_settle() {
     assert_eq!(rest.reissue, None);
     assert_eq!(
         labels(&space.take_event_log().await),
-        bumped(&["consume D", "comm D", "produce D", "comm D"])
+        // Changed by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire peeks
+        // its channel. The text before:
+        // bumped(&["consume D", "comm D", "produce D", "comm D"])
+        bumped(&["consume D", "comm D peek", "produce D", "comm D"])
     );
     assert!(records(&space).await.is_empty());
     assert_eq!(waiters(&space).await, vec![wtr(1, None, "w", true, false)]);
@@ -1541,146 +1589,154 @@ async fn space_disciplines_pq_restart_order() {
     )]);
 }
 
-/// Runs `op` of a script with the priority queue agent.
-async fn script_op(env: &SpaceEnv, op: SpaceOp) -> Result<SpaceOutcome, SpaceError> {
-    run(&pq(), env, op).await
-}
-
-/// A send of `value` at the level `level` on the channel `name`.
-fn send_to(name: &str, value: i64, level: Option<i64>, persistent: bool) -> SpaceOp {
-    let channel = string(name);
-    SpaceOp::Produce(ProduceOp {
-        params: level.map(priority).unwrap_or_default(),
-        ..send_on(SPACE, &channel, value, persistent)
-    })
-}
-
-/// A receive on the channel `name`.
-fn receive_to(
-    name: &str,
-    body: &str,
-    pattern: BindPattern,
-    lane: Option<i64>,
-    persistent: bool,
-    peek: bool,
-) -> SpaceOp {
-    SpaceOp::Consume(ConsumeOp {
-        query: lane_query(lane),
-        persistent,
-        peek,
-        ..receive_on(SPACE, &string(name), body, pattern)
-    })
-}
-
-/// A script over six collections: the ascending levels, the contested settle of S4, a peek, a
-/// produce-side peek, a guarded unrestricted receive, and a stored divergent pair for three
-/// rounds.
-async fn run_script(env: &SpaceEnv) -> Result<Vec<SpaceOutcome>, SpaceError> {
-    let mut ops = Vec::new();
-    for (value, level) in [(30, None), (20, Some(2)), (0, Some(0))] {
-        ops.push(send_to("levels", value, level, false));
-    }
-    for name in ["a", "b", "c"] {
-        ops.push(receive_to("levels", name, any(), None, false, false));
-    }
-    ops.push(send_to("contest", 1, Some(1), false));
-    ops.push(send_to("contest", 2, Some(1), false));
-    ops.push(receive_to("contest", "b", exactly(0), None, false, false));
-    ops.push(receive_to("contest", "u", exactly(1), None, false, false));
-    ops.push(receive_to(
-        "contest",
-        "r",
-        exactly(2),
-        Some(1),
-        false,
-        false,
-    ));
-    ops.push(receive_to("contest", "u2", exactly(2), None, false, false));
-    ops.push(send_to("contest", 0, Some(0), false));
-    ops.push(send_to("peeking", 5, Some(3), false));
-    ops.push(receive_to("peeking", "p", any(), None, false, true));
-    ops.push(receive_to("flight", "p", any(), Some(0), false, true));
-    ops.push(send_to("flight", 4, Some(0), false));
-    ops.push(send_to("guard", 1, Some(0), false));
-    ops.push(send_to("guard", 2, Some(1), false));
-    ops.push(SpaceOp::Consume(ConsumeOp {
-        guard: Some(bound_equals(2)),
-        ..receive_on(SPACE, &string("guard"), "g", any())
-    }));
-    let mut outcomes = Vec::with_capacity(ops.len() + 6);
-    for op in ops {
-        outcomes.push(script_op(env, op).await?);
-    }
-    for op in [
-        receive_to("divergent", "b", exactly(999), None, false, false),
-        receive_to("divergent", "w", any(), None, true, false),
-        send_to("divergent", 1, Some(0), true),
-    ] {
-        outcomes.push(script_op(env, op).await?);
-    }
-    let mut next = Some(send_to("divergent", 999, Some(1), false));
-    for _ in 0..3 {
-        let Some(op) = next.take() else {
-            break;
-        };
-        let outcome = script_op(env, op).await?;
-        next = outcome.reissue.as_ref().map(|reissue| reissue.op.clone());
-        outcomes.push(outcome);
-    }
-    Ok(outcomes)
-}
-
-#[tokio::test]
-async fn space_disciplines_pq_replay_equal() {
-    let (play, replay) = play_and_replay().await;
-    let play_env = env_over(play.clone(), &budget());
-    create(&pq(), &play_env, pq_creation(None)).await;
-    let start = play
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let played = run_script(&play_env).await.expect("the script plays");
-    assert_eq!(
-        played
-            .iter()
-            .map(|outcome| outcome.fires.len())
-            .sum::<usize>(),
-        12,
-        "the script fires the levels, the contest, the peeks and the divergent rounds"
-    );
-    assert!(played
-        .last()
-        .is_some_and(|outcome| outcome.reissue.is_some()));
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-
-    replay
-        .rig_and_reset(start.clone(), log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_env = env_over(replay.clone(), &budget());
-    let replayed = run_script(&replay_env).await.expect("the script replays");
-    assert_eq!(replayed, played);
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired, the lifts and the repeated ones included");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
-    );
-
-    replay
-        .rig_and_reset(start, Vec::new())
-        .await
-        .expect("the replay rigs an empty log");
-    match run_script(&replay_env).await {
-        Err(error @ SpaceError::ReplayDivergence(_)) => {
-            assert_eq!(error.code(), "ReplayDivergence")
-        }
-        other => panic!("negative control: a log without the COMMs diverges: {other:?}"),
-    }
-}
+// Retired by decision 90 (C6, step D): `space_disciplines_pq_replay_equal` and its script helpers
+// ran through the rigged replay modes, which retire (decision 125). Native replay: the family
+// matrix `space_native_replay_equal_{hashmap,pathmap,array,vector}`. Its negative controls:
+// `space_native_forged_predecessor_fails_closed`,
+// `native_space_replay_rejects_a_tampered_candidate`,
+// `native_space_replay_rejects_an_outcome_that_does_not_fit`. The text before:
+// ```
+// /// Runs `op` of a script with the priority queue agent.
+// async fn script_op(env: &SpaceEnv, op: SpaceOp) -> Result<SpaceOutcome, SpaceError> {
+//     run(&pq(), env, op).await
+// }
+//
+// /// A send of `value` at the level `level` on the channel `name`.
+// fn send_to(name: &str, value: i64, level: Option<i64>, persistent: bool) -> SpaceOp {
+//     let channel = string(name);
+//     SpaceOp::Produce(ProduceOp {
+//         params: level.map(priority).unwrap_or_default(),
+//         ..send_on(SPACE, &channel, value, persistent)
+//     })
+// }
+//
+// /// A receive on the channel `name`.
+// fn receive_to(
+//     name: &str,
+//     body: &str,
+//     pattern: BindPattern,
+//     lane: Option<i64>,
+//     persistent: bool,
+//     peek: bool,
+// ) -> SpaceOp {
+//     SpaceOp::Consume(ConsumeOp {
+//         query: lane_query(lane),
+//         persistent,
+//         peek,
+//         ..receive_on(SPACE, &string(name), body, pattern)
+//     })
+// }
+//
+// /// A script over six collections: the ascending levels, the contested settle of S4, a peek, a
+// /// produce-side peek, a guarded unrestricted receive, and a stored divergent pair for three
+// /// rounds.
+// async fn run_script(env: &SpaceEnv) -> Result<Vec<SpaceOutcome>, SpaceError> {
+//     let mut ops = Vec::new();
+//     for (value, level) in [(30, None), (20, Some(2)), (0, Some(0))] {
+//         ops.push(send_to("levels", value, level, false));
+//     }
+//     for name in ["a", "b", "c"] {
+//         ops.push(receive_to("levels", name, any(), None, false, false));
+//     }
+//     ops.push(send_to("contest", 1, Some(1), false));
+//     ops.push(send_to("contest", 2, Some(1), false));
+//     ops.push(receive_to("contest", "b", exactly(0), None, false, false));
+//     ops.push(receive_to("contest", "u", exactly(1), None, false, false));
+//     ops.push(receive_to(
+//         "contest",
+//         "r",
+//         exactly(2),
+//         Some(1),
+//         false,
+//         false,
+//     ));
+//     ops.push(receive_to("contest", "u2", exactly(2), None, false, false));
+//     ops.push(send_to("contest", 0, Some(0), false));
+//     ops.push(send_to("peeking", 5, Some(3), false));
+//     ops.push(receive_to("peeking", "p", any(), None, false, true));
+//     ops.push(receive_to("flight", "p", any(), Some(0), false, true));
+//     ops.push(send_to("flight", 4, Some(0), false));
+//     ops.push(send_to("guard", 1, Some(0), false));
+//     ops.push(send_to("guard", 2, Some(1), false));
+//     ops.push(SpaceOp::Consume(ConsumeOp {
+//         guard: Some(bound_equals(2)),
+//         ..receive_on(SPACE, &string("guard"), "g", any())
+//     }));
+//     let mut outcomes = Vec::with_capacity(ops.len() + 6);
+//     for op in ops {
+//         outcomes.push(script_op(env, op).await?);
+//     }
+//     for op in [
+//         receive_to("divergent", "b", exactly(999), None, false, false),
+//         receive_to("divergent", "w", any(), None, true, false),
+//         send_to("divergent", 1, Some(0), true),
+//     ] {
+//         outcomes.push(script_op(env, op).await?);
+//     }
+//     let mut next = Some(send_to("divergent", 999, Some(1), false));
+//     for _ in 0..3 {
+//         let Some(op) = next.take() else {
+//             break;
+//         };
+//         let outcome = script_op(env, op).await?;
+//         next = outcome.reissue.as_ref().map(|reissue| reissue.op.clone());
+//         outcomes.push(outcome);
+//     }
+//     Ok(outcomes)
+// }
+//
+// #[tokio::test]
+// async fn space_disciplines_pq_replay_equal() {
+//     let (play, replay) = play_and_replay().await;
+//     let play_env = env_over(play.clone(), &budget());
+//     create(&pq(), &play_env, pq_creation(None)).await;
+//     let start = play
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint after the creation")
+//         .root;
+//     let played = run_script(&play_env).await.expect("the script plays");
+//     assert_eq!(
+//         played
+//             .iter()
+//             .map(|outcome| outcome.fires.len())
+//             .sum::<usize>(),
+//         12,
+//         "the script fires the levels, the contest, the peeks and the divergent rounds"
+//     );
+//     assert!(played
+//         .last()
+//         .is_some_and(|outcome| outcome.reissue.is_some()));
+//     let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+//
+//     replay
+//         .rig_and_reset(start.clone(), log)
+//         .await
+//         .expect("the replay rigs the play log");
+//     let replay_env = env_over(replay.clone(), &budget());
+//     let replayed = run_script(&replay_env).await.expect("the script replays");
+//     assert_eq!(replayed, played);
+//     replay
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired, the lifts and the repeated ones included");
+//     assert_eq!(
+//         replay.create_checkpoint().await.expect("a checkpoint").root,
+//         root
+//     );
+//
+//     replay
+//         .rig_and_reset(start, Vec::new())
+//         .await
+//         .expect("the replay rigs an empty log");
+//     match run_script(&replay_env).await {
+//         Err(error @ SpaceError::ReplayDivergence(_)) => {
+//             assert_eq!(error.code(), "ReplayDivergence")
+//         }
+//         other => panic!("negative control: a log without the COMMs diverges: {other:?}"),
+//     }
+// }
+// ```
 
 /// The merge index of a branch log over the pre-state `root`, with the pre-state closures of
 /// Casper (`block_index.rs`, `create_event_log_index`).
@@ -1822,14 +1878,25 @@ async fn space_disciplines_pq_send_fires_the_plan_and_the_settle() {
     assert_eq!(fired(&outcome), vec![literal("b"), literal("u")]);
 }
 
-/// A fresh legacy budget and a charging host over it.
-async fn legacy_host() -> (
-    RuntimeBudget,
-    impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-) {
-    let budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs pq legacy host"));
-    let host = charging_host(&budget).await;
-    (budget, host)
+// Changed by decision 90 (decision 69): a fresh host records its observer calls, because DR-134
+// deleted the legacy meter and `ChargingRSpace` (`recorded_host`).
+//
+// /// A fresh legacy budget and a charging host over it.
+// async fn legacy_host() -> (
+//     RuntimeBudget,
+//     impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+// ) {
+//     let budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs pq legacy host"));
+//     let host = charging_host(&budget).await;
+//     (budget, host)
+// }
+
+/// Added by decision 90 (decision 69): a fresh host with the Rholang matcher, and the recorder of
+/// its observer calls.
+async fn recorded_host() -> (Arc<Recorder>, ParRSpace) {
+    let recorder = Recorder::new();
+    let host = observed_host(&recorder).await;
+    (recorder, host)
 }
 
 /// The waiting continuation of the receive `name` with the pattern `pattern`, parked in the
@@ -1864,22 +1931,210 @@ fn offer_fire(
             data: vec![incoming_candidate(data(), source, record, false, matched)],
         },
         before_observe: None,
+        own: false,
+        // Added by decision 123 (plan v4, V3-9): no row search.
+        search: None,
     }
 }
 
-/// `legacy_rebracket_eq_host` for the settle of a priority queue (decision 45, Option P): in a
-/// legacy deploy each staged operation pays what `ChargingRSpace` charges for the equivalent host
-/// call, in staging order. The send of 0 stages five operations: the take and the put of the
-/// counter, its fire of b, the lift of the record 1 and its re-offer to u. The host runs the
-/// three shapes that a host can run alone (the take, the put and the lift), and its entries equal
-/// the charges of the same shapes. The host cannot run a produce-side fire of a space record
-/// alone, because the host matches the whole record and the agent matches its payload.
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+// Its host differential continues in `space_disciplines_pq_observer_calls_equal_host`.
+//
+// /// `legacy_rebracket_eq_host` for the settle of a priority queue (decision 45, Option P): in a
+// /// legacy deploy each staged operation pays what `ChargingRSpace` charges for the equivalent host
+// /// call, in staging order. The send of 0 stages five operations: the take and the put of the
+// /// counter, its fire of b, the lift of the record 1 and its re-offer to u. The host runs the
+// /// three shapes that a host can run alone (the take, the put and the lift), and its entries equal
+// /// the charges of the same shapes. The host cannot run a produce-side fire of a space record
+// /// alone, because the host matches the whole record and the agent matches its payload.
+// #[tokio::test]
+// async fn space_disciplines_pq_legacy_charges_equal_host() {
+//     let space = play().await;
+//     let budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs pq legacy agent"));
+//     let _legacy = budget.enter_legacy_scope();
+//     let env = env_over(space.clone(), &budget);
+//     create(&pq(), &env, pq_creation(None)).await;
+//     let h = ProduceOp {
+//         authority: region(2),
+//         data: ListParWithRandom {
+//             cost_authority: Some(region(2)),
+//             ..send_at(1, Some(1)).data
+//         },
+//         ..send_at(1, Some(1))
+//     };
+//     produce(&env, h.clone()).await;
+//     let b = receive_at("b", exactly(0), None);
+//     let u = receive_at("u", exactly(1), None);
+//     consume(&env, b).await;
+//     consume(&env, u.clone()).await;
+//     let d = send_at(0, Some(0));
+//     let before = budget.get_log().len();
+//     assert_eq!(fired(&produce(&env, d.clone()).await), vec![
+//         literal("b"),
+//         literal("u")
+//     ]);
+//     let agent_log = budget.get_log()[before..].to_vec();
+//
+//     // The counter record that the bump of u stored, and the records of the round of d.
+//     let random_u = Blake2b512Random::from_bytes(&u.body.random_state);
+//     let random_d = Blake2b512Random::from_bytes(&d.data.random_state);
+//     let stored_counter = record::counter_record(
+//         3,
+//         &RandomPurpose::Counter.derive(&random_u).split_byte(1),
+//         None,
+//     );
+//     let take_continuation = counter_continuation(
+//         3,
+//         &RandomPurpose::Counter.derive(&random_d).split_byte(0),
+//         None,
+//     );
+//     let next_counter = record::counter_record(
+//         4,
+//         &RandomPurpose::Counter.derive(&random_d).split_byte(1),
+//         None,
+//     );
+//     let record_d = record::wrap_pq_datum(3, Some(0), &d.data);
+//     let record_h = record::wrap_pq_datum(0, Some(1), &h.data);
+//     let k_lift = lift_continuation(3, 1, &lift_random(&d.data.random_state), None);
+//
+//     let counter_source = Produce::create(&counter_ch(), &stored_counter, false);
+//     let take = ParSpaceConsume {
+//         channels: vec![counter_ch()],
+//         patterns: vec![counter_pattern()],
+//         continuation: take_continuation.clone(),
+//         persist: false,
+//         peeks: BTreeSet::new(),
+//         outcome: ConsumeOutcome::Fire {
+//             data: vec![ConsumeCandidate {
+//                 channel: counter_ch(),
+//                 datum: Datum {
+//                     a: ListParWithRandom::default(),
+//                     persist: false,
+//                     source: counter_source,
+//                 },
+//                 removed_datum: stored_counter.clone(),
+//                 datum_index: 0,
+//             }],
+//         },
+//         before_observe: None,
+//     };
+//     let put = ParSpaceProduce {
+//         channel: counter_ch(),
+//         data: next_counter.clone(),
+//         persist: false,
+//         outcome: ProduceOutcome::Store,
+//         before_observe: None,
+//     };
+//     let plan_fire = offer_fire(
+//         record_d,
+//         parked_waiter(1, "b", exactly(0)),
+//         ListParWithRandom::default(),
+//     );
+//     let lift = ParSpaceConsume {
+//         channels: vec![data()],
+//         patterns: vec![lift_pattern()],
+//         continuation: k_lift.clone(),
+//         persist: false,
+//         peeks: BTreeSet::new(),
+//         outcome: ConsumeOutcome::Fire {
+//             data: vec![ConsumeCandidate {
+//                 channel: data(),
+//                 datum: Datum {
+//                     a: ListParWithRandom::default(),
+//                     persist: false,
+//                     source: Produce::create(&data(), &record_h, false),
+//                 },
+//                 removed_datum: record_h.clone(),
+//                 datum_index: 0,
+//             }],
+//         },
+//         before_observe: None,
+//     };
+//     let reoffer = offer_fire(
+//         record_h.clone(),
+//         parked_waiter(2, "u", exactly(1)),
+//         ListParWithRandom::default(),
+//     );
+//     let charges = [
+//         consume_charges(&take).expect("the charges of the take"),
+//         produce_charges(&put).expect("the charges of the put"),
+//         produce_charges(&plan_fire).expect("the charges of the plan fire"),
+//         consume_charges(&lift).expect("the charges of the lift"),
+//         produce_charges(&reoffer).expect("the charges of the re-offer"),
+//     ];
+//     let expected: Vec<Cost> = charges.iter().cloned().flat_map(split).collect();
+//     assert_eq!(
+//         agent_log, expected,
+//         "the chain of the staged operations, in staging order"
+//     );
+//
+//     // The host charges the three shapes that it can run alone as the formulas do.
+//     {
+//         let (host_budget, host) = legacy_host().await;
+//         let _scope = host_budget.enter_legacy_scope();
+//         host.produce(counter_ch(), stored_counter, false)
+//             .await
+//             .expect("the counter record");
+//         let run = host_consume(
+//             &host,
+//             &host_budget,
+//             vec![counter_ch()],
+//             vec![counter_pattern()],
+//             take_continuation,
+//             false,
+//             false,
+//         )
+//         .await;
+//         assert!(run.fired.is_some(), "the take fires");
+//         assert_eq!(run.entries, split(charges[0].clone()), "the take");
+//     }
+//     {
+//         let (host_budget, host) = legacy_host().await;
+//         let _scope = host_budget.enter_legacy_scope();
+//         let run = host_produce(&host, &host_budget, counter_ch(), next_counter, false).await;
+//         assert!(run.fired.is_none(), "the put stores");
+//         assert_eq!(run.entries, split(charges[1].clone()), "the put");
+//     }
+//     {
+//         let (host_budget, host) = legacy_host().await;
+//         let _scope = host_budget.enter_legacy_scope();
+//         host.produce(data(), record_h, false)
+//             .await
+//             .expect("the store of h");
+//         let run = host_consume(
+//             &host,
+//             &host_budget,
+//             vec![data()],
+//             vec![lift_pattern()],
+//             k_lift,
+//             false,
+//             false,
+//         )
+//         .await;
+//         assert!(run.fired.is_some(), "the lift fires");
+//         assert_eq!(run.entries, split(charges[3].clone()), "the lift");
+//     }
+// }
+
+/// Added by decision 90 (decision 69): the host differential of the retired
+/// `space_disciplines_pq_legacy_charges_equal_host` compares the observer calls. The send of 0
+/// stages five operations: the take and the put of the counter, its fire of b, the lift of the
+/// record 1 and its re-offer to u. The agent makes the observer calls of five operations in
+/// staging order. Each operation makes the observer calls of its host call, with the same
+/// arguments:
+///
+/// * the take, the put and the lift: on a fresh host that holds the record that the call binds;
+/// * the plan fire: on a lone host that holds b (`lone_host_produce`);
+/// * the re-offer: on a host that stored the record 1, lifted it and holds u. The COMM of the
+///   re-offer counts the earlier store of the record in its `times_repeated`, so the host makes
+///   that store too.
+///
+/// Each row of the space names the footprint group of decision 92, which the host calls do not
+/// have. So the comparison removes that group from the calls of the agent (`without_footprint`).
 #[tokio::test]
-async fn space_disciplines_pq_legacy_charges_equal_host() {
+async fn space_disciplines_pq_observer_calls_equal_host() {
     let space = play().await;
-    let budget = RuntimeBudget::new(Cost::create(i64::MAX / 4, "rrs pq legacy agent"));
-    let _legacy = budget.enter_legacy_scope();
-    let env = env_over(space.clone(), &budget);
+    let env = env_over(space.clone(), &budget());
     create(&pq(), &env, pq_creation(None)).await;
     let h = ProduceOp {
         authority: region(2),
@@ -1895,12 +2150,18 @@ async fn space_disciplines_pq_legacy_charges_equal_host() {
     consume(&env, b).await;
     consume(&env, u.clone()).await;
     let d = send_at(0, Some(0));
-    let before = budget.get_log().len();
+    let recorder = observed(&space);
     assert_eq!(fired(&produce(&env, d.clone()).await), vec![
         literal("b"),
         literal("u")
     ]);
-    let agent_log = budget.get_log()[before..].to_vec();
+    // Changed by decision 92: each row of the space names the footprint group, which the host
+    // calls do not have.
+    let agent = operations(&without_footprint(
+        &recorder.take(),
+        &space_counter_channel(SPACE),
+    ));
+    assert_eq!(agent.len(), 5, "the send stages five operations");
 
     // The counter record that the bump of u stored, and the records of the round of d.
     let random_u = Blake2b512Random::from_bytes(&u.body.random_state);
@@ -1924,87 +2185,15 @@ async fn space_disciplines_pq_legacy_charges_equal_host() {
     let record_h = record::wrap_pq_datum(0, Some(1), &h.data);
     let k_lift = lift_continuation(3, 1, &lift_random(&d.data.random_state), None);
 
-    let counter_source = Produce::create(&counter_ch(), &stored_counter, false);
-    let take = ParSpaceConsume {
-        channels: vec![counter_ch()],
-        patterns: vec![counter_pattern()],
-        continuation: take_continuation.clone(),
-        persist: false,
-        peeks: BTreeSet::new(),
-        outcome: ConsumeOutcome::Fire {
-            data: vec![ConsumeCandidate {
-                channel: counter_ch(),
-                datum: Datum {
-                    a: ListParWithRandom::default(),
-                    persist: false,
-                    source: counter_source,
-                },
-                removed_datum: stored_counter.clone(),
-                datum_index: 0,
-            }],
-        },
-        before_observe: None,
-    };
-    let put = ParSpaceProduce {
-        channel: counter_ch(),
-        data: next_counter.clone(),
-        persist: false,
-        outcome: ProduceOutcome::Store,
-        before_observe: None,
-    };
-    let plan_fire = offer_fire(
-        record_d,
-        parked_waiter(1, "b", exactly(0)),
-        ListParWithRandom::default(),
-    );
-    let lift = ParSpaceConsume {
-        channels: vec![data()],
-        patterns: vec![lift_pattern()],
-        continuation: k_lift.clone(),
-        persist: false,
-        peeks: BTreeSet::new(),
-        outcome: ConsumeOutcome::Fire {
-            data: vec![ConsumeCandidate {
-                channel: data(),
-                datum: Datum {
-                    a: ListParWithRandom::default(),
-                    persist: false,
-                    source: Produce::create(&data(), &record_h, false),
-                },
-                removed_datum: record_h.clone(),
-                datum_index: 0,
-            }],
-        },
-        before_observe: None,
-    };
-    let reoffer = offer_fire(
-        record_h.clone(),
-        parked_waiter(2, "u", exactly(1)),
-        ListParWithRandom::default(),
-    );
-    let charges = [
-        consume_charges(&take).expect("the charges of the take"),
-        produce_charges(&put).expect("the charges of the put"),
-        produce_charges(&plan_fire).expect("the charges of the plan fire"),
-        consume_charges(&lift).expect("the charges of the lift"),
-        produce_charges(&reoffer).expect("the charges of the re-offer"),
-    ];
-    let expected: Vec<Cost> = charges.iter().cloned().flat_map(split).collect();
-    assert_eq!(
-        agent_log, expected,
-        "the chain of the staged operations, in staging order"
-    );
-
-    // The host charges the three shapes that it can run alone as the formulas do.
+    // The take of the counter record.
     {
-        let (host_budget, host) = legacy_host().await;
-        let _scope = host_budget.enter_legacy_scope();
+        let (host_recorder, host) = recorded_host().await;
         host.produce(counter_ch(), stored_counter, false)
             .await
             .expect("the counter record");
         let run = host_consume(
             &host,
-            &host_budget,
+            &host_recorder,
             vec![counter_ch()],
             vec![counter_pattern()],
             take_continuation,
@@ -2013,33 +2202,81 @@ async fn space_disciplines_pq_legacy_charges_equal_host() {
         )
         .await;
         assert!(run.fired.is_some(), "the take fires");
-        assert_eq!(run.entries, split(charges[0].clone()), "the take");
+        assert_eq!(run.calls, agent[0], "the take");
     }
+    // The put of the next counter record.
     {
-        let (host_budget, host) = legacy_host().await;
-        let _scope = host_budget.enter_legacy_scope();
-        let run = host_produce(&host, &host_budget, counter_ch(), next_counter, false).await;
+        let (host_recorder, host) = recorded_host().await;
+        let run = host_produce(&host, &host_recorder, counter_ch(), next_counter, false).await;
         assert!(run.fired.is_none(), "the put stores");
-        assert_eq!(run.entries, split(charges[1].clone()), "the put");
+        assert_eq!(run.calls, agent[1], "the put");
     }
+    // The plan fire of b.
+    let plan_fire = offer_fire(
+        record_d,
+        parked_waiter(1, "b", exactly(0)),
+        ListParWithRandom::default(),
+    );
+    assert_eq!(
+        lone_host_produce(&plan_fire).await,
+        agent[2],
+        "the plan fire"
+    );
+    // The lift of the record 1.
     {
-        let (host_budget, host) = legacy_host().await;
-        let _scope = host_budget.enter_legacy_scope();
-        host.produce(data(), record_h, false)
+        let (host_recorder, host) = recorded_host().await;
+        host.produce(data(), record_h.clone(), false)
             .await
             .expect("the store of h");
         let run = host_consume(
             &host,
-            &host_budget,
+            &host_recorder,
             vec![data()],
             vec![lift_pattern()],
-            k_lift,
+            k_lift.clone(),
             false,
-            false,
+            // Added by decision 124 (plan v2 C7.5, rule CR-21): the COMM of a `K_lift` fire
+            // peeks its channel, so the host lift peeks too.
+            true,
         )
         .await;
         assert!(run.fired.is_some(), "the lift fires");
-        assert_eq!(run.entries, split(charges[3].clone()), "the lift");
+        assert_eq!(run.calls, agent[3], "the lift");
+    }
+    // The re-offer of the record 1 to u. The host matches payloads, as the agent matches them.
+    {
+        let host_recorder = Recorder::new();
+        let pin: Pin = Arc::new(Mutex::new(None));
+        let host = pinned_observed_host(&host_recorder, &pin, &open_waiter()).await;
+        host.produce(data(), record_h.clone(), false)
+            .await
+            .expect("the store of h");
+        let lifted = host
+            .consume(
+                vec![data()],
+                vec![lift_pattern()],
+                k_lift,
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("the lift of h");
+        assert!(lifted.is_some(), "the lift fires");
+        let waiter_u = parked_waiter(2, "u", exactly(1));
+        let parked = host
+            .consume(
+                vec![data()],
+                waiter_u.patterns,
+                waiter_u.continuation,
+                false,
+                BTreeSet::new(),
+            )
+            .await
+            .expect("the park of u");
+        assert!(parked.is_none(), "u parks");
+        let run = host_produce(&host, &host_recorder, data(), record_h, false).await;
+        assert!(run.fired.is_some(), "the re-offer fires u");
+        assert_eq!(run.calls, agent[4], "the re-offer");
     }
 }
 

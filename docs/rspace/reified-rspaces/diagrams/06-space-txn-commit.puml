@@ -22,7 +22,7 @@
 '   5. In native replay (decision 47), operation i takes the ticket of its
 '      journal row instead of the observer start. A row that is not ready, a
 '      forged footprint, an outcome that does not fit, and another candidate
-'      fail closed and close the epoch, so no operation waits for the row.
+'      fail closed, and the stall rule of the base ends the waiters of the row.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 06-space-txn-commit.puml   Check: ./render.sh --check
@@ -72,7 +72,9 @@ else (no)
   :commit untracked, with no sub-orders; <<$rrs_substrate>>
 endif
 while (next staged operation i, in staging order?) is (yes)
-  partition "Operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>" {
+  ' Changed by decision 90 (DR-132): no production caller installs an order scope. The text before:
+  '   partition "Operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>" {
+  partition "Operation i (under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex> only in a test scope)" {
     :read-only checks of the changed entries (FR-7'):
     joins of the produce channel unchanged,
     room in the host counter of a non-persistent produce,
@@ -91,7 +93,7 @@ while (next staged operation i, in staging order?) is (yes)
       if (the row is ready, its footprint is the locked footprint,
       and its outcome fits the staged kind?) then (yes)
       else (no)
-        :fail closed with a mismatch and **close the epoch**
+        :fail closed with a mismatch
         no effect, operations 0 to i - 1 stay applied; <<$rrs_reject>>
         stop
       endif
@@ -118,7 +120,7 @@ while (next staged operation i, in staging order?) is (yes)
       put_continuation, then put_join for each channel; <<$rrs_storage>>
     case (Fire)
       if (native replay, and the staged COMM is not the recorded candidate?) then (yes)
-        :fail closed with a mismatch and **close the epoch**
+        :fail closed with a mismatch
         no COMM observation, no effect; <<$rrs_reject>>
         stop
       else (no)
@@ -169,9 +171,9 @@ a rejected call gives the error and the cost of play.
 After every error, the commit releases the locks
 and then the registration.
 In native replay, a recorded denial publishes its
-row and fails with OutOfPhlogistons, as play fails,
-and keeps the epoch open. Every other failure closes
-the epoch, so every waiting operation fails (Closed).
+row and fails with OutOfPhlogistons, as play fails
+(decision 124): no failure closes the epoch. A waiter of
+the row parks counted, and the stall rule ends the wait.
 end note
 
 legend bottom

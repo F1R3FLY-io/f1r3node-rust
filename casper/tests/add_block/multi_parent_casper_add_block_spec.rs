@@ -6,22 +6,34 @@ use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
 use casper::rust::casper::{Casper, DeployError, MultiParentCasper};
 use casper::rust::errors::CasperError;
 use casper::rust::util::rholang::tools::Tools;
-use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::{construct_deploy, proto_util, rspace_util};
+use casper::rust::util::{proto_util, rspace_util};
 use casper::rust::validator_identity::ValidatorIdentity;
 use casper::rust::ValidBlockProcessing;
 use comm::rust::rp::protocol_helper;
 use comm::rust::transport::transport_layer::TransportLayer;
+// Added by DR-134 (DR-66 item 1): each validator of the parent-estimate test
+// signs its offers with its own funded key.
+use crypto::rust::private_key::PrivateKey;
 use crypto::rust::signatures::secp256k1::Secp256k1;
 use crypto::rust::signatures::signatures_alg::SignaturesAlg;
-use crypto::rust::signatures::signed::Signed;
+// Changed by DR-134 (DR-66 item 1): no test of this file signs a body-only
+// deploy by hand.
+// use crypto::rust::signatures::signed::Signed;
 use models::rhoapi::PCost;
-use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, ProcessedDeploy};
+// Changed by DR-134 (DR-66 item 1): only the never-executed synthetic body
+// keeps body-only deploys, and it names no `DeployData` type.
+// use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, ProcessedDeploy};
+use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedDeploy};
 use models::rust::validator::Validator;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use ValidBlock::Valid;
 
 use crate::helper::block_util::resign_block;
+use crate::helper::offered_deploy as construct_deploy;
+use crate::helper::offered_deploy::OfferedDeploy;
 use crate::helper::test_node::TestNode;
 use crate::util::genesis_builder::{GenesisBuilder, GenesisContext};
 
@@ -98,7 +110,10 @@ async fn multi_parent_casper_should_be_able_to_create_a_chain_of_blocks_from_dif
     let mut dag = node.casper.block_dag().await.unwrap();
     let estimate = node.casper.estimator(&mut dag).await.unwrap();
 
-    let unforgeable_id = Tools::unforgeable_name_rng(&deploy2.pk, deploy2.data.time_stamp).next();
+    // Changed by DR-134 (DR-66 item 1): an offered deploy seeds its names from
+    // its identity (`Tools::user_envelope_rng`).
+    // let unforgeable_id = Tools::unforgeable_name_rng(&deploy2.pk, deploy2.data.time_stamp).next();
+    let unforgeable_id = Tools::user_envelope_rng(&deploy2.envelope).next();
     let unforgeable_id_u8: Vec<u8> = unforgeable_id.iter().map(|&b| b as u8).collect();
 
     let data = rspace_util::get_data_at_private_channel(
@@ -133,16 +148,43 @@ async fn multi_parent_casper_should_allow_multiple_deploys_in_a_single_block() {
 
     let source = " for(@x <- @0){ @0!(x) } | @0!(0) ";
 
-    let deploys: Vec<_> = vec![source, source]
+    // Changed by DR-134 (DR-65, gap G2): a block holds a batch of offered
+    // deploys. The two offers take distinct timestamps, so they are distinct
+    // envelopes of one signer.
+    // let deploys: Vec<_> = vec![source, source]
+    //     .into_iter()
+    //     .map(|s| {
+    //         // Changed by DR-134 (gap G2): a block holds one offered deploy
+    //         // until gap G2 lands, so this test of two deploys in one block
+    //         // keeps the body-only builder.
+    //         // construct_deploy::source_deploy_now(
+    //         casper::rust::util::construct_deploy::source_deploy_now(
+    //             s.to_string(),
+    //             None,
+    //             None,
+    //             Some(ctx.shard_id.clone()),
+    //         )
+    //         .unwrap()
+    //     })
+    //     .collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_millis() as i64;
+    let deploys: Vec<_> = [source, source]
         .into_iter()
-        .map(|s| {
-            construct_deploy::source_deploy_now(
+        .zip(0i64..)
+        .map(|(s, offset)| {
+            construct_deploy::source_deploy(
                 s.to_string(),
+                now + offset,
+                None,
+                None,
                 None,
                 None,
                 Some(ctx.shard_id.clone()),
             )
-            .unwrap()
+            .expect("an offered deploy builds")
         })
         .collect();
 
@@ -160,8 +202,24 @@ async fn multi_parent_casper_should_not_allow_empty_blocks_with_multiple_parents
         .await
         .unwrap();
 
+    // Changed by DR-134 (DR-66 item 1): two offers of one signer share a cost
+    // cursor, so the two unrelated sibling blocks take different signers.
+    // let deploy_datas: Vec<_> = (0..=1)
+    //     .map(|i| construct_deploy::basic_deploy_data(i, None, Some(ctx.shard_id.clone())).unwrap())
+    //     .collect();
+    let sibling_signers = [
+        construct_deploy::DEFAULT_SEC.clone(),
+        construct_deploy::DEFAULT_SEC2.clone(),
+    ];
     let deploy_datas: Vec<_> = (0..=1)
-        .map(|i| construct_deploy::basic_deploy_data(i, None, Some(ctx.shard_id.clone())).unwrap())
+        .map(|i| {
+            construct_deploy::basic_deploy_data(
+                i,
+                Some(sibling_signers[i as usize].clone()),
+                Some(ctx.shard_id.clone()),
+            )
+            .unwrap()
+        })
         .collect();
 
     let _block0 = nodes[0]
@@ -325,6 +383,8 @@ async fn multi_parent_casper_should_propose_blocks_it_adds_to_peers() {
 /// value (adopted from chain), and a verdict that only logs lets a
 /// misconfigured or malicious proposer ship underpriced work every node then
 /// executes for free.
+/// Changed by DR-134 (DR-66 item 1): an offer below the minimum price is
+/// refused before execution, so no block can carry it (see the test body).
 #[tokio::test]
 async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
     let ctx = TestContext::new().await;
@@ -335,30 +395,75 @@ async fn multi_parent_casper_should_reject_block_carrying_underpriced_deploy() {
 
     // Below the fixture's shard-conf floor (min_phlo_price = 1); the deploy
     // enters the pool directly, modeling a proposer that skipped the API gate.
-    let underpriced = construct_deploy::source_deploy_now_full(
+    // Changed by DR-134 (DR-66 item 1): only offered deploys execute, so the
+    // body-only deploy and its LowDeployCost verdict are replaced below.
+    // // let underpriced = construct_deploy::source_deploy_now_full(
+    // let underpriced = casper::rust::util::construct_deploy::source_deploy_now_full(
+    //     "Nil".to_string(),
+    //     None,
+    //     Some(0),
+    //     None,
+    //     None,
+    //     Some(ctx.shard_id.clone()),
+    // )
+    // .unwrap();
+    //
+    // let result = nodes[0]
+    //     .add_block_status(&[underpriced], |s| {
+    //         matches!(
+    //             s,
+    //             Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
+    //         )
+    //     })
+    //     .await;
+    //
+    // assert!(
+    //     result.is_ok(),
+    //     "a block carrying an underpriced deploy must validate as LowDeployCost, got: {:?}",
+    //     result.err()
+    // );
+    //
+    // Added by DR-134 (DR-66 item 1): an offer signed below the adopted minimum
+    // price enters the pool through Casper admission, which skips the price
+    // check of the API, as a proposer that skipped the API gate would. The
+    // offer-term check before execution refuses it (acceptance.rs,
+    // `prepare_offered_candidate` with the genesis minimum price), so the
+    // proposer creates no block and quarantines the offer with a rejection
+    // entry. A validator's offered replay runs the same check before the
+    // LowDeployCost step, so no block that carries the offer is accepted.
+    let time_stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_millis() as i64;
+    let underpriced = OfferedDeploy::from_proto(crate::helper::offered_deploy::owner_offer_priced(
+        &ctx.genesis.genesis_vaults[0],
+        time_stamp,
         "Nil".to_string(),
-        None,
-        Some(0),
-        None,
-        None,
-        Some(ctx.shard_id.clone()),
-    )
-    .unwrap();
+        0,
+    ));
+    let underpriced_id = models::rust::deploy_id::DeployIdV6::try_from(underpriced.sig.to_vec())
+        .expect("an offered deploy id has 32 bytes");
 
     let result = nodes[0]
-        .add_block_status(&[underpriced], |s| {
-            matches!(
-                s,
-                Either::Left(BlockError::Invalid(InvalidBlock::LowDeployCost))
-            )
-        })
-        .await;
-
+        .create_block(std::slice::from_ref(&underpriced))
+        .await
+        .expect("block creation runs");
     assert!(
-        result.is_ok(),
-        "a block carrying an underpriced deploy must validate as LowDeployCost, got: {:?}",
-        result.err()
+        matches!(result, BlockCreatorResult::NoNewDeploys),
+        "no block may carry an underpriced offer, got: {:?}",
+        result
     );
+    let storage = nodes[0].deploy_storage.lock();
+    assert!(
+        !storage
+            .contains_envelope_id(&underpriced_id)
+            .expect("pending envelope lookup succeeds"),
+        "the underpriced offer leaves the pool"
+    );
+    let rejection = storage
+        .envelope_rejection(&underpriced_id)
+        .expect("the underpriced offer has a rejection entry");
+    assert!(!rejection.reason.is_empty());
 }
 
 #[tokio::test]
@@ -421,15 +526,31 @@ async fn multi_parent_casper_should_reject_add_block_when_there_exist_deploy_by_
         .map(|i| construct_deploy::basic_deploy_data(i, None, Some(ctx.shard_id.clone())).unwrap())
         .collect();
 
+    // Changed by DR-134 (DR-66 item 1): an offered deploy is signed when it is
+    // built, so deploy_prim0 is built from the body of deploy_datas[1] with
+    // the timestamp of deploy_datas[0].
+    // let deploy_prim0 = {
+    //     let mut data = deploy_datas[1].data.clone();
+    //     data.time_stamp = deploy_datas[0].data.time_stamp;
+    //
+    //     let secp256k1 = Secp256k1;
+    //     Signed::create(
+    //         data,
+    //         Box::new(secp256k1),
+    //         construct_deploy::DEFAULT_SEC.clone(),
+    //     )
+    //     .unwrap()
+    // };
     let deploy_prim0 = {
-        let mut data = deploy_datas[1].data.clone();
-        data.time_stamp = deploy_datas[0].data.time_stamp;
-
-        let secp256k1 = Secp256k1;
-        Signed::create(
-            data,
-            Box::new(secp256k1),
-            construct_deploy::DEFAULT_SEC.clone(),
+        let body = deploy_datas[1].envelope.body();
+        construct_deploy::source_deploy(
+            body.term.clone(),
+            deploy_datas[0].envelope.body().time_stamp,
+            None,
+            None,
+            Some(construct_deploy::DEFAULT_SEC.clone()),
+            Some(body.valid_after_block_number),
+            Some(body.shard_id.clone()),
         )
         .unwrap()
     };
@@ -776,8 +897,14 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
         .await
         .unwrap();
 
+    // Changed by DR-134 (DR-66 item 1): the synthetic body of
+    // `build_block_with_invalid_justification` is never executed, so it keeps
+    // body-only deploys.
+    // let deploys: Vec<_> = (0..=5)
+    //     .map(|i| construct_deploy::basic_deploy_data(i, None, None).unwrap())
+    //     .collect();
     let deploys: Vec<_> = (0..=5)
-        .map(|i| construct_deploy::basic_deploy_data(i, None, None).unwrap())
+        .map(|i| casper::rust::util::construct_deploy::basic_deploy_data(i, None, None).unwrap())
         .collect();
 
     let deploys_with_cost: Vec<_> = deploys
@@ -791,8 +918,15 @@ async fn multi_parent_casper_drops_an_invalid_pointer_without_minting_evidence()
         })
         .collect();
 
+    // Changed by DR-134 (DR-66 item 1): node 0 executes this block, so it
+    // takes an offered deploy.
+    // let signed_block = nodes[0]
+    //     .create_block_unsafe(&[deploys[0].clone()])
+    //     .await
+    //     .unwrap();
+    let executed_deploy = construct_deploy::basic_deploy_data(0, None, None).unwrap();
     let signed_block = nodes[0]
-        .create_block_unsafe(&[deploys[0].clone()])
+        .create_block_unsafe(&[executed_deploy])
         .await
         .unwrap();
 
@@ -868,23 +1002,49 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
         .map(|(_, pk)| pk.clone())
         .collect();
 
-    fn deployment(ts: i64, shard_id: &str) -> Result<Signed<DeployData>, CasperError> {
+    // Changed by DR-134 (DR-66 item 1): offered deploys. Two offers of one
+    // signer share a cost cursor, and the three validators propose unrelated
+    // sibling blocks, so each validator's offers take their own funded signer.
+    // fn deployment(ts: i64, shard_id: &str) -> Result<Signed<DeployData>, CasperError> {
+    //     construct_deploy::source_deploy(
+    //         "new x in { x!(0) }".to_string(),
+    //         ts,
+    //         None,
+    //         None,
+    //         None,
+    //         None,
+    //         Some(shard_id.to_string()),
+    //     )
+    // }
+    fn deployment(
+        ts: i64,
+        shard_id: &str,
+        signer: &PrivateKey,
+    ) -> Result<OfferedDeploy, CasperError> {
         construct_deploy::source_deploy(
             "new x in { x!(0) }".to_string(),
             ts,
             None,
             None,
-            None,
+            Some(signer.clone()),
             None,
             Some(shard_id.to_string()),
         )
     }
 
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an offered
+    // envelope.
+    // fn deploy(
+    //     node: &mut TestNode,
+    //     dd: Signed<DeployData>,
+    // ) -> Result<Either<DeployError, DeployId>, CasperError> {
+    //     node.casper.deploy(dd)
+    // }
     fn deploy(
         node: &mut TestNode,
-        dd: Signed<DeployData>,
+        dd: OfferedDeploy,
     ) -> Result<Either<DeployError, DeployId>, CasperError> {
-        node.casper.deploy(dd)
+        node.deploy(dd)
     }
 
     async fn create(node: &mut TestNode) -> Result<BlockMessage, CasperError> {
@@ -917,12 +1077,21 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
 
     let shard_id = genesis.genesis_block.shard_id.clone();
 
+    // Added by DR-134 (DR-66 item 1): the funded signer of each validator's
+    // offers. The genesis funds DEFAULT_SEC, DEFAULT_SEC2 and the extra vault
+    // keys.
+    let v1_signer: &PrivateKey = &construct_deploy::DEFAULT_SEC;
+    let v2_signer: &PrivateKey = &construct_deploy::DEFAULT_SEC2;
+    let v3_signer: &PrivateKey = &crate::util::genesis_builder::EXTRA_GENESIS_VAULT_KEY_PAIRS[0].0;
+
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
         .unwrap();
 
     {
-        let dd = deployment(1, &shard_id).unwrap();
+        // Changed by DR-134 (DR-66 item 1): V1 signs its own offers.
+        // let dd = deployment(1, &shard_id).unwrap();
+        let dd = deployment(1, &shard_id, v1_signer).unwrap();
         deploy(&mut nodes[0], dd).expect("V1 deploy should succeed");
         let v1c1 = create(&mut nodes[0]).await.unwrap();
         add(&mut nodes[0], v1c1)
@@ -931,7 +1100,9 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
     }
 
     let v2c1 = {
-        let dd = deployment(2, &shard_id).unwrap();
+        // Changed by DR-134 (DR-66 item 1): V2 signs its own offers.
+        // let dd = deployment(2, &shard_id).unwrap();
+        let dd = deployment(2, &shard_id, v2_signer).unwrap();
         deploy(&mut nodes[1], dd).expect("V2 deploy should succeed");
         create(&mut nodes[1]).await.unwrap()
     };
@@ -947,7 +1118,9 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
         .expect("V3 handle receive should succeed");
 
     {
-        let dd = deployment(4, &shard_id).unwrap();
+        // Changed by DR-134 (DR-66 item 1): V1 signs its own offers.
+        // let dd = deployment(4, &shard_id).unwrap();
+        let dd = deployment(4, &shard_id, v1_signer).unwrap();
         deploy(&mut nodes[0], dd).expect("V1 deploy should succeed");
         let v1c2 = create(&mut nodes[0]).await.unwrap();
         add(&mut nodes[0], v1c2)
@@ -956,7 +1129,9 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
     }
 
     let v3c2 = {
-        let dd = deployment(5, &shard_id).unwrap();
+        // Changed by DR-134 (DR-66 item 1): V3 signs its own offers.
+        // let dd = deployment(5, &shard_id).unwrap();
+        let dd = deployment(5, &shard_id, v3_signer).unwrap();
         deploy(&mut nodes[2], dd).expect("V3 deploy should succeed");
         create(&mut nodes[2]).await.unwrap()
     };
@@ -980,7 +1155,9 @@ async fn multi_parent_casper_should_estimate_parent_properly() {
         .expect("V3 handle receive should succeed");
 
     let r = {
-        let dd = deployment(6, &shard_id).unwrap();
+        // Changed by DR-134 (DR-66 item 1): V3 signs its own offers.
+        // let dd = deployment(6, &shard_id).unwrap();
+        let dd = deployment(6, &shard_id, v3_signer).unwrap();
         deploy(&mut nodes[2], dd).expect("V3 deploy should succeed");
         let b = create(&mut nodes[2]).await.unwrap();
         add(&mut nodes[2], b).await
@@ -1005,10 +1182,13 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
         construct_deploy::basic_deploy_data(0, None, Some(ctx.shard_id.clone())).unwrap();
 
     let signed_block = {
-        nodes[0]
-            .casper
-            .deploy(deploy_data)
-            .expect("Deploy should succeed");
+        // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an
+        // offered envelope.
+        // nodes[0]
+        //     .casper
+        //     .deploy(deploy_data)
+        //     .expect("Deploy should succeed");
+        nodes[0].deploy(deploy_data).expect("Deploy should succeed");
         nodes[0].create_block_unsafe(&[]).await.unwrap()
     };
 
@@ -1024,8 +1204,13 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
 
     let deploy_data2 =
         construct_deploy::basic_deploy_data(1, None, Some(ctx.shard_id.clone())).unwrap();
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an offered
+    // envelope.
+    // nodes[1]
+    //     .casper
+    //     .deploy(deploy_data2)
+    //     .expect("Second deploy should succeed");
     nodes[1]
-        .casper
         .deploy(deploy_data2)
         .expect("Second deploy should succeed");
     let signed_block2 = nodes[1].create_block_unsafe(&[]).await.unwrap();
@@ -1055,8 +1240,13 @@ async fn multi_parent_casper_should_succeed_at_slashing() {
 
     let deploy_data3 =
         construct_deploy::basic_deploy_data(2, None, Some(ctx.shard_id.clone())).unwrap();
+    // Changed by DR-134 (DR-66 item 1): TestNode::deploy submits an offered
+    // envelope.
+    // nodes[2]
+    //     .casper
+    //     .deploy(deploy_data3)
+    //     .expect("Third deploy should succeed");
     nodes[2]
-        .casper
         .deploy(deploy_data3)
         .expect("Third deploy should succeed");
     let signed_block3 = nodes[2].create_block_unsafe(&[]).await.unwrap();

@@ -1,0 +1,51 @@
+name: CI Heavy Label
+
+# Reruns CI when the ci-heavy label is added to a pull request.
+#
+# ci.yml does not run on labeled events. A labeled run replaces the checks of
+# the pull request head with pending checks. The merge queue adds the queued
+# label when it queues a pull request, so the required checks became pending,
+# the merge failed, and the dequeued label started another run (pull request
+# #826, 2026-10-23). Only the ci-heavy label changes what CI does, so only that
+# label reruns CI here. The rerun keeps the pull_request event of the run, and
+# build_base reads the current labels to start the heavy pipeline.
+#
+# pull_request_target runs this file and the checked-out script from the base
+# branch, never from the pull request, so the actions token never meets code
+# that the pull request changed. A pull request from a fork gets no heavy run.
+on:
+  pull_request_target:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: ci-heavy-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    name: Rerun CI for ci-heavy
+    if: >-
+      github.event.label.name == 'ci-heavy' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # No ref: under pull_request_target, checkout fetches the base branch.
+      - name: Checkout base branch scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Rerun the newest CI run of the pull request head
+        shell: bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash .github/scripts/rerun-ci-for-heavy-label.sh

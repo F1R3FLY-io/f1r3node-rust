@@ -11,8 +11,10 @@
 # Namespace.v (11), RecordEnvelope.v (8, 10 in P5), CounterConflict.v (9, 15 in P5),
 # HeadOnlyDisciplines.v (9, 10 of decision 43 and 1 of decision 45),
 # SpaceRefs.v (10, and 1 of decision 46) and SpaceFactory.v (8). Decision 42
-# adds AgentReadCoverage.v (8). Option P of decision 45 adds
-# LegacyCharges.v (2: Q79 and Q80). P6 step 2 adds Similarity.v (20: S1-S20).
+# adds AgentReadCoverage.v (8), and decision 96 deletes it with the host-work
+# metering (decision 89, DR-131). Option P of decision 45 adds
+# LegacyCharges.v (2: Q79 and Q80), and decision 90 removes it with Option P
+# (DR-134 deletes the legacy meter). P6 step 2 adds Similarity.v (20: S1-S20).
 # P6 step 8 adds headline 14 of SpaceFactory.v (vectordb_params_validated) and
 # headline 16 of CounterConflict.v (capped_writes_soft_bound, decision 71).
 # P6 step 8b adds VectorDbDiscipline.v (5: S21-S25), and step 8d adds
@@ -24,7 +26,11 @@
 # adds H28 to H30 of EventCorrelation.v (coverage_commit,
 # two_block_replay_preserves_roots and two_block_native_replay_preserves_roots,
 # amendment A10). P10 step S7 adds Checkpoint.v (8: C1 to C8), the successor
-# of the legacy Checkpoint.v, and leg 8, the axiom control.
+# of the legacy Checkpoint.v, and leg 8, the axiom control. Decision 112 takes
+# Encoding.v (15 headlines) out of the gate, and the file stays on disk as the
+# frozen evidence of the marker encoding. Decision 112 adds SyntaxFields.v
+# (15), the model of the Reified syntax as protobuf fields, so the gate still
+# has 28 modules.
 #
 # The gate copies the formal tree into a scratch directory and builds it
 # there. It never builds in the source tree. Legs:
@@ -50,10 +56,13 @@
 #                 of a P4 rule (counter bumps, head-only plans, routing,
 #                 factory and envelope checks, the I-20 refresh, the
 #                 metering rule of decision 42) and of decision 45 (Rule
-#                 E, and the legacy charges of Option P: the tail, the
+#                 E) must fail to compile inside its expected lemma, after
+#                 the pristine modules compile. Changed by decision 90: the
+#                 controls of the legacy charges of Option P (the tail, the
 #                 carry, the place of the pre-charge, the replay premises)
-#                 must fail to compile inside its expected lemma, after the
-#                 pristine modules compile
+#                 go with LegacyCharges.v. Changed by decision 112: the
+#                 controls of the I-20 refresh go with Encoding.v, and the
+#                 controls of the fields of SyntaxFields.v join them
 #   8. axiom    - the fixture formal/rocq/reified_rspaces/controls/
 #                 AxiomControl.v states one Axiom on purpose: the hygiene
 #                 check must report an axiom declaration, and rocqchk must
@@ -63,7 +72,9 @@
 # A missing tool is a FAIL, never a SKIP.
 #
 # Environment:
-#   RRS_EXPECTED_CLOSED  total closed headlines (default 300: 23 for P1 with
+# Changed by decision 103 (decision 118): the default is 293. The text before:
+# #   RRS_EXPECTED_CLOSED  total closed headlines (default 300: 23 for P1 with
+#   RRS_EXPECTED_CLOSED  total closed headlines (default 293: 23 for P1 with
 #                        H23 of decision 36, the 15 headlines of Encoding.v
 #                        for P2 and I-20, 67 for the six P4 modules with
 #                        the native headline of decision 46 in SpaceRefs.v,
@@ -113,7 +124,26 @@
 #                        resume_binds_innermost of AgentTranslation.v,
 #                        and 3 for P9 step 8: H28 to H30 of
 #                        EventCorrelation.v, and 8 for P10 step S7: C1
-#                        to C8 of Checkpoint.v)
+#                        to C8 of Checkpoint.v). Changed by decision 90:
+#                        the default is 306, because the 2 headlines of
+#                        LegacyCharges.v go with Option P. Changed by
+#                        decisions 89 and 96: the default is 296,
+#                        because the 9 headlines of AgentReadCoverage.v
+#                        and H27 of EventCorrelation.v go with the
+#                        host-work metering (DR-131). Changed by
+#                        decision 96 (decision 89): the default is 290.
+#                        The six metering headlines of DataCollection.v,
+#                        OuterStorage.v, PathMapPrefix.v,
+#                        PriorityQueue.v, SetDiscipline.v and
+#                        StackDiscipline.v go with the host-work
+#                        metering (DR-131). Changed by decision 103
+#                        (decision 118): the default is 293, because
+#                        JoinCascade.v adds join_incoming_held,
+#                        join_nonpersistent_bound_once and
+#                        cascade_restores_inv_pers. Decision 112 keeps the
+#                        default at 293, because SyntaxFields.v (15) takes
+#                        the place of Encoding.v (15). The sum of
+#                        EXPECTED_PER_MODULE below is the default.
 #   RRS_SANDBOX=1        the job runs inside the verifier scope: no
 #                        systemd-run, logs under $RRS_SCRATCH/logs
 #   RRS_SCRATCH          scratch root (default <repo>/target/verification/
@@ -132,37 +162,64 @@ if [[ "${RRS_SANDBOX:-}" == "1" ]]; then
 else
   LOG_DIR="$ROOT/target/verification/reified-rspaces/logs/proofs"
 fi
-EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-308}"
+# Changed by decision 90: LegacyCharges.v (2 headlines) is removed with Option P.
+# EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-308}"
+# Changed by decisions 89 and 96: AgentReadCoverage.v (9) and H27 go with the host-work metering.
+# Changed by decision 96 (decision 89): six P5 metering headlines go with the host-work metering.
+# Changed by decision 103 (decision 118): JoinCascade.v adds join_incoming_held,
+# join_nonpersistent_bound_once and cascade_restores_inv_pers.
+# Decision 112 keeps 293: SyntaxFields.v (15) replaces Encoding.v (15), so 293 - 15 + 15 = 293.
+EXPECTED_CLOSED="${RRS_EXPECTED_CLOSED:-293}"
 RRS_MEMORY_MAX="${RRS_MEMORY_MAX:-6G}"
 RRS_CPU_QUOTA="${RRS_CPU_QUOTA:-400%}"
 
 # The headline count of each module. A module in _CoqProject without an
 # entry here fails the gate.
 declare -A EXPECTED_PER_MODULE=(
-  [EventCorrelation]=24
+  # Changed by decision 89 (DR-131, step M2): H27 is disabled, because no view load is metered.
+  # [EventCorrelation]=24
+  [EventCorrelation]=23
   [VolatileSweep]=8
-  [Encoding]=15
+  # Retired from the gate by decision 112: SyntaxFields.v models the fields, and the file stays on disk.
+  # [Encoding]=15
+  [SyntaxFields]=15
   [Namespace]=12
   [RecordEnvelope]=11
   [CounterConflict]=16
   [HeadOnlyDisciplines]=20
   [SpaceRefs]=15
   [SpaceFactory]=15
-  [AgentReadCoverage]=9
-  [LegacyCharges]=2
+  # Removed by decision 96 (decision 89): AgentReadCoverage.v is deleted with the host-work metering.
+  # [AgentReadCoverage]=9
+  # Removed by decision 90 (decision 69): Option P is gone with the legacy meter (DR-134).
+  # [LegacyCharges]=2
   [CellDiscipline]=3
-  [DataCollection]=7
+  # Changed by decision 96 (decision 89): scan_trace_covered goes with the host-work metering.
+  # [DataCollection]=7
+  [DataCollection]=6
   [ContinuationCollection]=5
   [Match]=4
   [GenericRSpace]=5
-  [OuterStorage]=8
+  # Changed by decision 96 (decision 89): alloc_trace_covered goes with the host-work metering.
+  # [OuterStorage]=8
+  [OuterStorage]=7
   [VectorStore]=3
   [HashMapStore]=3
-  [PathMapPrefix]=17
-  [StackDiscipline]=13
-  [SetDiscipline]=8
-  [PriorityQueue]=20
-  [JoinCascade]=17
+  # Changed by decision 96 (decision 89): prefix_scan_trace_covered goes with the host-work metering.
+  # [PathMapPrefix]=17
+  [PathMapPrefix]=16
+  # Changed by decision 96 (decision 89): settle_trace_covered goes with the host-work metering.
+  # [StackDiscipline]=13
+  [StackDiscipline]=12
+  # Changed by decision 96 (decision 89): set_key_trace_covered goes with the host-work metering.
+  # [SetDiscipline]=8
+  [SetDiscipline]=7
+  # Changed by decision 96 (decision 89): level_scan_trace_covered goes with the host-work metering.
+  # [PriorityQueue]=20
+  [PriorityQueue]=19
+  # Changed by decision 103 (decision 118): three headlines over the claim rule of decision 118.
+  # [JoinCascade]=17
+  [JoinCascade]=20
   [Similarity]=20
   [VectorDbDiscipline]=5
   [VectorOps]=2

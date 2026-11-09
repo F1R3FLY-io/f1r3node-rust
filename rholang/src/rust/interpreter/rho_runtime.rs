@@ -39,16 +39,20 @@ use super::accounting::{
     BillableTokenEvent, CheckedNativeOperationTrace, NativeRuntimeConfig,
     NativeRuntimeReplaySession, RuntimeBudget,
 };
-use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
+// Changed by DR-132 (P16): the deterministic scheduler is gone (D3-A).
+// use super::deterministic_reduction::{DeterministicRSpace, ReductionCoordinator};
 use super::dispatch::{RhoDispatch, RholangAndScalaDispatcher};
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::execution_space::ExecutionSpace;
 use super::interpreter::{EvaluateResult, Interpreter, InterpreterImpl};
+use super::merging::mergeable_tags::bitmask_or_tag;
 use super::reduce::{DebruijnInterpreter, ReducerCore};
 use super::registry::registry_bootstrap::ast;
 use super::reified;
-use super::storage::charging_rspace::ChargingRSpace;
+// Changed by DR-134 (DR-66 item 3): the charging space is deleted with the
+// legacy meter.
+// use super::storage::charging_rspace::ChargingRSpace;
 use super::substitute::Substitute;
 use super::system_processes::{
     Arity, BlockData, BodyRef, Definition, DeployData, InvalidBlocks, Name, ProcessContext,
@@ -57,7 +61,6 @@ use super::system_processes::{
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 use crate::rust::interpreter::external_services::ExternalServices;
 use crate::rust::interpreter::grpc_client_service::GrpcClientService;
-use crate::rust::interpreter::merging::mergeable_tags::mergeable_tag_uri_bindings;
 use crate::rust::interpreter::metrics_constants::{
     CREATE_CHECKPOINT_TIME_METRIC, CREATE_SOFT_CHECKPOINT_TIME_METRIC, EVALUATE_TIME_METRIC,
     RUNTIME_CHECKPOINT_TOTAL_METRIC, RUNTIME_METRICS_SOURCE,
@@ -145,12 +148,17 @@ pub trait RhoRuntime: HasCost {
     }
 
     /**
-     * Inject an already-normalized process into the current runtime state.
+     * The function would execute the par regardless setting cost which would possibly cause
+     * [[coop.rchain.rholang.interpreter.errors.OutOfPhlogistonsError]]. Because of that, use this
+     * function in some situation which is not cost sensitive.
      *
-     * Ordinary user deploys must enter through `evaluate`, which constructs the
-     * signed metered process and initializes the token budget. This lower-level
-     * entry point is kept for tests, bootstrap, and system paths that have
-     * already selected their budget mode explicitly.
+     * This function would change the state in the runtime.
+     *
+     * Ideally, this function should be removed or hack the runtime without cost accounting in the future .
+     * @param par [[coop.rchain.models.Par]] for the execution
+     * @param env additional env for execution
+     * @param rand random seed for rholang execution
+     * @return
      */
     async fn inj(
         &self,
@@ -214,6 +222,17 @@ pub trait RhoRuntime: HasCost {
      */
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>>;
 
+    /**
+     * Get data as it was at `soft_checkpoint`, without reverting to it.
+     *
+     * This function would not change the state in the runtime
+     */
+    async fn get_data_at(
+        &self,
+        soft_checkpoint: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        channel: &Par,
+    ) -> Vec<Datum<ListParWithRandom>>;
+
     async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>>;
 
     /**
@@ -267,6 +286,51 @@ pub struct RhoRuntimeImpl {
     pub invalid_blocks_param: InvalidBlocks,
     pub deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
     pub(crate) merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    /// Per-runtime FS handle table — fds allocated by `fs_open` live
+    /// here, visible to downstream `fs_read` / `fs_close` / etc.
+    /// Shared with every FS native handler's `FsProcesses` dispatch
+    /// surface via `Arc` under the hood, so a single Arc-bump at
+    /// construction time threads the same table through every
+    /// handler.  Public so test harnesses + the soft-checkpoint
+    /// fd-snapshot wiring can inspect and manipulate the table
+    /// directly.
+    pub fs_handles: super::io::handle_table::FileHandleTable,
+    /// Stack of file-fd counter snapshots captured at soft-checkpoint
+    /// time.  On revert we pop the innermost snapshot and truncate
+    /// the fd table to it, freeing every fd allocated after the
+    /// checkpoint (spec §Fd-table lifecycle).  Stack (not single
+    /// slot) so nested `create_soft_checkpoint` calls preserve the
+    /// outer marks — H4/M1 review fix (slice 29 round 2).  Pre-fix
+    /// design was `Option<u64>` which silently dropped the outer
+    /// mark on the inner `create`.
+    fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// Stack of dir-stream fd-counter snapshots captured at soft-
+    /// checkpoint time.  Companion to `fs_snapshot_stack` — same
+    /// push-on-create / pop-on-revert / clear-on-reset semantics,
+    /// applied to `fs_handles.dir_handles`.  Kept as its own stack
+    /// (rather than a tuple in `fs_snapshot_stack`) so a revert that
+    /// touches only one table doesn't accidentally pop the other's
+    /// mark.  Streaming-backing slice Step 4 (2026-08-25).
+    dir_fs_snapshot_stack: Arc<std::sync::Mutex<Vec<u64>>>,
+    /// Stack of consensus-WAL length marks captured at soft-
+    /// checkpoint time.  On revert we pop the innermost mark and
+    /// `fs_handles.wal.truncate_to(mark)`, discarding any WAL
+    /// entries appended during the failed deploy.  Prevents
+    /// divergence where a leader's reverted-but-journaled write
+    /// would be replayed by followers.  H-29-1 review fix; nested-
+    /// stack semantics from the H4/M1 round-2 fix.
+    wal_snapshot_stack: Arc<std::sync::Mutex<Vec<super::io::wal::WalMark>>>,
+    /// Slice 30b (H-30b-2 round-2 fix): optional snapshot writer,
+    /// configured at boot from `storage.consensus-fs-snapshot-
+    /// {cadence,dir}`.  `None` inside the RwLock when the operator
+    /// has no consensus-static provisioning.  Public so test
+    /// harnesses can inspect it directly; writers go through
+    /// [`set_fs_snapshot_writer`] which acquires the write guard.
+    ///
+    /// `play_deploys_for_state` reads via `.read().await` on every
+    /// call; many runtimes can read concurrently.  Only boot-time
+    /// set is a writer.
+    pub fs_snapshot_writer: Arc<tokio::sync::RwLock<Option<super::io::snapshot::SnapshotWriter>>>,
 }
 
 impl RhoRuntimeImpl {
@@ -309,6 +373,7 @@ impl RhoRuntimeImpl {
         invalid_blocks_param: InvalidBlocks,
         deploy_data_ref: Arc<tokio::sync::RwLock<DeployData>>,
         merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+        fs_handles: super::io::handle_table::FileHandleTable,
     ) -> RhoRuntimeImpl {
         RhoRuntimeImpl {
             reducer,
@@ -317,7 +382,27 @@ impl RhoRuntimeImpl {
             invalid_blocks_param,
             deploy_data_ref,
             merge_chs,
+            fs_handles,
+            fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            dir_fs_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            wal_snapshot_stack: Arc::new(std::sync::Mutex::new(Vec::new())),
+            fs_snapshot_writer: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// Boot-time setter for the optional consensus-WAL snapshot
+    /// writer.  `None` disables snapshot persistence (default).
+    /// `Some(writer)` enables cadence-based snapshot writes to the
+    /// writer's configured directory via `writer.maybe_write(block,
+    /// &entries)`.
+    ///
+    /// Acquires the write guard synchronously; callers hold the
+    /// guard only across the single `*guard = writer` assignment.
+    pub async fn set_fs_snapshot_writer(
+        &self,
+        writer: Option<super::io::snapshot::SnapshotWriter>,
+    ) {
+        *self.fs_snapshot_writer.write().await = writer;
     }
 
     pub fn get_cost_log(&self) -> Vec<Cost> { self.cost.get_log() }
@@ -325,6 +410,51 @@ impl RhoRuntimeImpl {
     pub fn get_cost_event_log(&self) -> Vec<BillableTokenEvent> { self.cost.get_event_log() }
 
     pub fn clear_cost_log(&self) { self.cost.clear_log() }
+
+    /// Enable the rho:io:fs:native:* URN filter.  Every subsequent
+    /// `new x(`rho:io:fs:native:...`)` inside a deploy returns
+    /// `TermStructureError` from `eval_new`. This is the default state.
+    /// Idempotent.
+    pub fn enable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Disable the rho:io:fs:native:* URN filter for the duration
+    /// of a genesis-composition run (or a test harness).  MUST be
+    /// re-enabled via `enable_fs_native_urn_filter` after the
+    /// scope exits — leaving it disabled would expose raw fs
+    /// syscalls to every subsequent user deploy on this runtime.
+    /// Prefer [`exempt_fs_native_urn_filter`] when a lexical scope
+    /// bounds the exemption; it uses RAII to re-enable on Drop.
+    pub fn disable_fs_native_urn_filter(&self) {
+        self.reducer
+            .filter_fs_native_urns
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// RAII exemption guard for the `rho:io:fs:native:*` URN
+    /// filter.  Disables the filter on construction and re-enables
+    /// on Drop — including panics and tokio-task cancellation.
+    /// Caller holds the returned guard for the lifetime of the
+    /// exemption scope; dropping it immediately after construction
+    /// re-enables the filter before any enclosed code sees it off.
+    pub fn exempt_fs_native_urn_filter(&self) -> FsNativeUrnFilterExemption {
+        self.disable_fs_native_urn_filter();
+        FsNativeUrnFilterExemption {
+            flag: self.reducer.filter_fs_native_urns.clone(),
+        }
+    }
+
+    /// Introspection helper for tests and diagnostics.  Returns
+    /// `true` iff `rho:io:fs:native:*` URN resolution is blocked
+    /// in `eval_new`.
+    pub fn fs_native_urn_filter_enabled(&self) -> bool {
+        self.reducer
+            .filter_fs_native_urns
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 
     pub fn clear_cost_event_log(&self) { self.cost.clear_event_log() }
 
@@ -381,6 +511,34 @@ impl RhoRuntime for RhoRuntimeImpl {
     ) -> SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
         let start = Instant::now();
         let checkpoint = self.reducer.space.create_soft_checkpoint().await;
+        // Snapshot the fd counter so an evaluation error can roll back
+        // any opens issued during the deploy — spec §Phase 1 fd-table
+        // lifecycle.  Monotonic counter guarantees no fd aliasing across
+        // rollback boundaries.
+        // H4/M1 review fix (round 2): PUSH onto a stack rather than
+        // overwriting a single slot, so nested soft-checkpoints
+        // preserve outer marks.  Revert POPs the innermost.
+        {
+            let mut stack = self.fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.snapshot_next_fd());
+        }
+        // Streaming-backing slice Step 4: mirror the file-fd stack for
+        // dir-stream fds so a reverted deploy sweeps stream fds it
+        // opened between checkpoint and revert.  Same nested-stack
+        // semantics as fs_snapshot_stack — the inner create pushes on
+        // top of the outer mark; each revert pops one.
+        {
+            let mut stack = self.dir_fs_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.dir_handles.snapshot_next_fd());
+        }
+        // H-29-1 review fix: snapshot the consensus WAL length
+        // alongside the fd counters so revert can truncate the WAL
+        // back to this mark too.  Keeps leader/follower WAL byte-
+        // identity even across reverted deploys.
+        {
+            let mut stack = self.wal_snapshot_stack.lock().unwrap();
+            stack.push(self.fs_handles.wal.snapshot_mark());
+        }
         metrics::histogram!(CREATE_SOFT_CHECKPOINT_TIME_METRIC, "source" => RUNTIME_METRICS_SOURCE)
             .record(start.elapsed().as_secs_f64());
         metrics::counter!(RUNTIME_SOFT_CHECKPOINT_TOTAL_METRIC, "source" => RUNTIME_METRICS_SOURCE)
@@ -417,6 +575,32 @@ impl RhoRuntime for RhoRuntimeImpl {
             "source" => RUNTIME_METRICS_SOURCE
         )
         .increment(1);
+        // Roll back the fd table to the snapshot captured at
+        // create_soft_checkpoint time.  Any fds opened during the failed
+        // eval are closed and removed; the monotonic counter is not
+        // rewound so stale fds observed by any caller reliably see
+        // FSERR_CLOSED rather than aliasing a later open.
+        // H4/M1 round-2 fix: POP the innermost snapshot from the stack
+        // so nested checkpoints unwind correctly.  A revert without a
+        // matching create is a no-op (defensive against unbalanced calls).
+        let snap = { self.fs_snapshot_stack.lock().unwrap().pop() };
+        if let Some(s) = snap {
+            self.fs_handles.truncate_to(s).await;
+        }
+        // Streaming-backing slice Step 4: symmetric pop + truncate for
+        // the dir-stream fd table.  Unbalanced revert (no matching
+        // create) is a no-op, same defensive posture as the file-fd
+        // stack.
+        let dir_snap = { self.dir_fs_snapshot_stack.lock().unwrap().pop() };
+        if let Some(s) = dir_snap {
+            self.fs_handles.dir_handles.truncate_to(s).await;
+        }
+        // H-29-1: pop the WAL mark and truncate.  Same unbalanced-no-op
+        // posture as the fd stacks.
+        let wal_snap = { self.wal_snapshot_stack.lock().unwrap().pop() };
+        if let Some(mark) = wal_snap {
+            self.fs_handles.wal.truncate_to(mark);
+        }
         self.reducer
             .space
             .revert_to_soft_checkpoint(soft_checkpoint)
@@ -436,6 +620,52 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn reset(&mut self, root: &Blake2b256Hash) -> Result<(), InterpreterError> {
         self.reducer.space.reset(root).await?;
+        // PB-M-13 / Slice 28: seed FileHandleTable::next_fd from the
+        // state root.  Every block boundary triggers a reset via this
+        // path (see `casper::rholang::runtime::play_deploys_for_state`,
+        // `play_deploys_for_genesis`, `play_system_deploy`), and every
+        // validator resetting to the same root computes the same
+        // watermark — so fd values captured by the leader are
+        // reproducibly replayable by followers.
+        //
+        // **Consensus commitment**: fd values are consensus-observable
+        // via Rholang tuplespace state (`fdP` cells inside File
+        // agents).  This seed derivation is therefore an implicit
+        // consensus commitment — any future change to
+        // `seed_next_fd_from_state_hash`'s derivation constants or
+        // hash algorithm is a hard fork.
+        //
+        // **Aliasing prevention**: a fresh runtime spawned per block
+        // (via `RuntimeManager::spawn_runtime`) starts fd allocation
+        // from the state-hash-derived watermark, NOT from `next_fd =
+        // 1`.  Two independent runtimes at the same state hash
+        // allocate identical fd sequences (leader/follower replay).
+        self.fs_handles.seed_next_fd_from_state_hash(&root.bytes());
+        // Streaming-backing slice (2026-08-25): seed the dir-stream
+        // fd counter from the same state hash.  Same PB-M-13 aliasing
+        // threat as file fds — dir-stream fd values flow through the
+        // tuplespace as GInt, so a joining validator (or restart) that
+        // allocated fresh dir-stream fds starting from 1 could alias a
+        // stream fd a prior lifetime stashed in tuplespace state.
+        self.fs_handles
+            .dir_handles
+            .seed_next_fd_from_state_hash(&root.bytes());
+        // H-29-F2 review fix (defense in depth): clear the consensus
+        // WAL on reset.  All correctness paths drain the WAL per-
+        // deploy via `Wal::take_deploy_entries`; this clear guarantees
+        // that if a caller resets to a state root without first
+        // draining, the follower observes an empty WAL — no ghost
+        // entries from an earlier block leak into the next.
+        self.fs_handles.wal.clear();
+        // M6 round-2 fix: also clear stashed checkpoint marks so a
+        // subsequent revert doesn't pop a stale mark (which would
+        // truncate the fd table to a pre-reset watermark or the WAL
+        // to a length below the cleared zero).  A reset semantically
+        // means "start fresh at this state root"; leaving a mark
+        // stashed is inconsistent with that.
+        self.fs_snapshot_stack.lock().unwrap().clear();
+        self.dir_fs_snapshot_stack.lock().unwrap().clear();
+        self.wal_snapshot_stack.lock().unwrap().clear();
         Ok(())
     }
 
@@ -449,6 +679,17 @@ impl RhoRuntime for RhoRuntimeImpl {
 
     async fn get_data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
         self.reducer.space.get_data(channel).await
+    }
+
+    async fn get_data_at(
+        &self,
+        soft_checkpoint: &SoftCheckpoint<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+        channel: &Par,
+    ) -> Vec<Datum<ListParWithRandom>> {
+        self.reducer
+            .space
+            .get_data_at(soft_checkpoint, channel)
+            .await
     }
 
     async fn get_joins(&self, channel: Par) -> Vec<Vec<Par>> {
@@ -499,6 +740,23 @@ impl HasCost for RhoRuntimeImpl {
     fn cost(&self) -> &RuntimeBudget { &self.cost }
 }
 
+/// RAII guard returned by
+/// [`RhoRuntimeImpl::exempt_fs_native_urn_filter`].  Owns an Arc
+/// clone of the filter flag (not a borrow of the runtime) so the
+/// caller can still exercise `&mut self` on the runtime during the
+/// exemption.  The filter re-enables on Drop — including panics
+/// and tokio-task cancellation.
+#[must_use = "the exemption ends when the guard is dropped; letting it drop \
+              immediately after construction re-enables the filter and \
+              the enclosed code sees the filter ON"]
+pub struct FsNativeUrnFilterExemption {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for FsNativeUrnFilterExemption {
+    fn drop(&mut self) { self.flag.store(true, std::sync::atomic::Ordering::Release); }
+}
+
 pub type RhoTuplespace =
     Arc<Box<dyn Tuplespace<Par, BindPattern, ListParWithRandom, TaggedContinuation> + Send + Sync>>;
 
@@ -534,15 +792,35 @@ pub(crate) fn test_accounting_observer(
 impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinuation>
     for RhoCommObserver
 {
+    // Changed by DR-132: the start returns the name of the recorded row.
+    // ) -> Result<(), RSpaceError> {
     fn observe_operation_start(
         &self,
         source: RSpaceOperationSource<'_>,
         channels: &[Par],
         joins: &[Vec<Par>],
-    ) -> Result<(), RSpaceError> {
-        self.budget
-            .start_native_operation(source, channels, joins)
-            .map_err(RSpaceError::from)
+    ) -> Result<Option<rspace_plus_plus::rspace::operation_context::OperationOrder>, RSpaceError>
+    {
+        // Changed by G3 (DR-135, S5): the start also returns the owner checks
+        // of the operation. The thread-local handle holds them until the
+        // finish hook, because RSpace runs the locked operation synchronously
+        // between the two hooks (plan §12 risk 5).
+        // self.budget
+        //     .start_native_operation(source, channels, joins)
+        //     .map_err(RSpaceError::from)
+        match self
+            .budget
+            .start_native_owner_operation(source, channels, joins)
+        {
+            Ok((name, handle)) => {
+                super::accounting::owner_funding::enter_owner_operation(handle);
+                Ok(name)
+            }
+            Err(error) => {
+                super::accounting::owner_funding::enter_owner_operation(None);
+                Err(RSpaceError::from(error))
+            }
+        }
     }
 
     fn observe_operation_finish(
@@ -550,7 +828,71 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
         source: RSpaceOperationSource<'_>,
         completion: RSpaceOperationCompletion,
     ) {
+        // Added by G3 (DR-135, S5): the owner checks end with the operation.
+        super::accounting::owner_funding::leave_owner_operation();
         self.budget.finish_native_operation(source, completion);
+    }
+
+    /// Added by G3 (DR-135, S5): an operation of a run with owner funding
+    /// checks owners (R5, R6).
+    fn owner_checks_active(&self) -> bool {
+        super::accounting::owner_funding::current_owner_operation().is_some()
+    }
+
+    /// Added by G3 (DR-135, S5): the item test of the operation's owner
+    /// checks (R5).
+    fn admit_item(
+        &self,
+        continuation: &TaggedContinuation,
+        continuation_persistent: bool,
+        channel_count: usize,
+        datum: &ListParWithRandom,
+        datum_persistent: bool,
+    ) -> Result<bool, RSpaceError> {
+        match super::accounting::owner_funding::current_owner_operation() {
+            Some(handle) => handle.admit_item(
+                continuation,
+                continuation_persistent,
+                channel_count,
+                datum,
+                datum_persistent,
+            ),
+            None => Ok(true),
+        }
+    }
+
+    /// Added by G3 (DR-135, S5): with owner funding, the COMM carries the A5
+    /// transferee and the R9 restorations to the recorder. Without it, the
+    /// COMM is observed as on dev.
+    fn observe_comm_participants(
+        &self,
+        comm: &COMM,
+        continuation: &TaggedContinuation,
+        continuation_persistent: bool,
+        participants: &[rspace_plus_plus::rspace::rspace_interface::CommParticipant<
+            '_,
+            Par,
+            ListParWithRandom,
+        >],
+    ) -> Result<(), RSpaceError> {
+        match super::accounting::owner_funding::current_owner_operation() {
+            Some(handle) => self.budget.observe_owned_comm(
+                &handle,
+                comm,
+                continuation,
+                continuation_persistent,
+                participants,
+            ),
+            None => {
+                let mut data = Vec::with_capacity(participants.len());
+                data.extend(
+                    participants
+                        .iter()
+                        .map(|participant| (participant.matched, participant.persistent)),
+                );
+                self.observe_comm(comm, continuation, continuation_persistent, &data)
+            }
+        }
     }
 
     fn observe_produce(
@@ -678,11 +1020,18 @@ impl RSpaceAccountingObserver<Par, BindPattern, ListParWithRandom, TaggedContinu
             .observe_native_comm_source(comm)
             .map_err(RSpaceError::from)?;
         // DR-101: the deployment that resolves residue seals.
+        // Changed by G3 (DR-135): with the region price of the deployment.
+        // let residue = super::accounting::authority::ResidueContext::new(
+        //     &self.budget.signature(),
+        //     self.budget.deploy_id(),
+        // )
+        // .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
         let residue = super::accounting::authority::ResidueContext::new(
             &self.budget.signature(),
             self.budget.deploy_id(),
         )
-        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?;
+        .map_err(|error| RSpaceError::InterpreterError(error.to_string()))?
+        .with_price(self.budget.region_price());
         let observed = super::accounting::observation_construction::comm(
             comm,
             continuation,
@@ -1255,6 +1604,80 @@ fn std_rho_chroma_processes() -> Vec<Definition> {
 #[cfg(not(feature = "chromadb"))]
 fn std_rho_chroma_processes() -> Vec<Definition> { vec![] }
 
+/// Build `Definition` rows for every entry in the `FS_HANDLERS`
+/// distributed slice.  Each definition adapts the typed per-handler
+/// `dispatch` fn-pointer (which takes an `FsProcesses` + the triple
+/// `(args, is_replay, previous)`) into the `Definition` handler
+/// contract (which takes a `ProcessContext` and returns a per-call
+/// inner closure).
+///
+/// The adaptation strategy: construct ONE `FsProcesses` instance up
+/// front, Arc-clone it into each per-handler closure.  This gives
+/// every fs native URN access to the same `FileHandleTable` + mode
+/// + metering surface — critical for state continuity across
+/// handler invocations (fds opened by `fs_open` must be seen by
+/// `fs_read`, etc.).  Mode defaults to `Consensus` and metering to
+/// `NoopMetering` for the Wave 4 posture; later slices rewire these
+/// when the real cost-accounted-rho API lands.
+///
+/// `fs_remove_dir` is trait-exempt (DD-RemoveDirReplyShape complexity)
+/// and NOT in `FS_HANDLERS`; it gets a dedicated `Definition` row
+/// built by `dispatch_table_creator` using the `FsProcesses` handle
+/// returned alongside the trait-handler Vec.  Both paths share the
+/// SAME `FsProcesses` instance so state continuity (fd table, mode,
+/// metering) spans the trait-registered 27 handlers plus the
+/// trait-exempt one.
+///
+/// Called by `dispatch_table_creator` to register every fs native
+/// URN into the runtime's dispatch map.  Phase-scoped visibility
+/// is enforced inside the reducer by `filter_fs_native_urns`
+/// (slice 5.32): user deploys get a `TermStructureError`; genesis gets
+/// unfiltered access via the toggle in `play_deploys_for_genesis`
+/// (slice 5.33).
+fn fs_handlers_to_definitions(
+    dispatcher: RhoDispatch,
+    space: ExecutionSpace,
+    fs_handles: super::io::handle_table::FileHandleTable,
+) -> (
+    Vec<Definition>,
+    super::io::handler_trait::fs_processes::FsProcesses,
+) {
+    use super::accounting::noop::{Metering, NoopMetering};
+    use super::io::handler_trait::fs_processes::FsProcesses;
+    use super::io::handler_trait::FS_HANDLERS;
+    use super::io::{ConsensusMode, FS_NATIVE_URN_PREFIX_VERSIONED as FS_NATIVE_URN_PREFIX};
+
+    let fs_metering: Arc<dyn Metering> = Arc::new(NoopMetering);
+    let fs_processes = FsProcesses::new(
+        dispatcher,
+        space,
+        fs_handles,
+        ConsensusMode::Consensus,
+        fs_metering,
+    );
+
+    let defs = FS_HANDLERS
+        .iter()
+        .map(|entry| {
+            let fs_processes = fs_processes.clone();
+            let dispatch = entry.dispatch;
+            Definition {
+                urn: format!("{FS_NATIVE_URN_PREFIX}{}", entry.urn_suffix),
+                fixed_channel: (entry.fixed_channel)(),
+                arity: entry.arity as Arity,
+                body_ref: entry.body_ref,
+                handler: Box::new(move |_ctx| {
+                    let fs_processes = fs_processes.clone();
+                    Box::new(move |args| dispatch(fs_processes.clone(), args))
+                }),
+                remainder: None,
+            }
+        })
+        .collect();
+
+    (defs, fs_processes)
+}
+
 fn dispatch_table_creator(
     space: ExecutionSpace,
     dispatcher: RhoDispatch,
@@ -1268,6 +1691,7 @@ fn dispatch_table_creator(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1278,6 +1702,48 @@ fn dispatch_table_creator(
     all_processes.extend(std_rho_crypto_processes());
     all_processes.extend(std_rho_ai_processes());
     all_processes.extend(std_rho_chroma_processes());
+
+    // File I/O native URNs — one Definition per entry in the
+    // FS_HANDLERS distributed slice.  Registration is unconditional
+    // (same posture as the stdio / crypto / ai processes); phase-
+    // scoped visibility is enforced inside the reducer by
+    // `filter_fs_native_urns` (slice 5.32).  User deploys attempting
+    // to bind these URNs via `new x(\`rho:io:fs:native:1.0.0/...\`)`
+    // get a `TermStructureError`; genesis composition toggles the filter
+    // off (slice 5.33's `play_deploys_for_genesis`).
+    //
+    // The dispatcher clone threaded here is the same `RhoDispatch`
+    // instance that every other Definition's handler receives
+    // through its `ProcessContext`, so the fs native handlers see
+    // the same reducer / space / dispatcher as the rest of the
+    // system-processes layer.
+    let (fs_defs, fs_processes) =
+        fs_handlers_to_definitions(dispatcher.clone(), space.clone(), fs_handles);
+    all_processes.extend(fs_defs);
+
+    // Trait-exempt fs_remove_dir handler: slice 5.43 registered the
+    // URN + fixed_channel + proc_defs so FsGenesis composition could
+    // resolve the URN at genesis-time; slice 5.44 added a stub
+    // replying FSERR_UNSUPPORTED so user-held Dir caps got a
+    // well-formed error.  Slice 5.142 swaps the stub for the real
+    // handler ported in slices 5.136–5.141 (DD-RemoveDirReplyShape
+    // with its 4 divergence reply shapes).  The `fs_processes`
+    // handle is shared with the 27 trait-registered handlers, so
+    // state continuity (fd table, mode, metering) spans both.
+    all_processes.push(Definition {
+        urn: format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
+        fixed_channel: FixedChannels::fs_remove_dir(),
+        arity: 5,
+        body_ref: BodyRefs::FS_REMOVE_DIR,
+        handler: Box::new(move |_ctx| {
+            let fs_processes = fs_processes.clone();
+            Box::new(move |args| {
+                let fs_processes = fs_processes.clone();
+                Box::pin(async move { fs_processes.fs_remove_dir(args).await })
+            })
+        }),
+        remainder: None,
+    });
 
     all_processes.append(extra_system_processes);
 
@@ -1374,7 +1840,9 @@ async fn setup_reducer(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     cost: RuntimeBudget,
-    reduction_coordinator: ReductionCoordinator,
+    // Changed by DR-132 (P16): no coordinator (D3-A).
+    // reduction_coordinator: ReductionCoordinator,
+    fs_handles: super::io::handle_table::FileHandleTable,
     reified_runtime: Arc<reified::runtime::ReifiedRuntime>,
 ) -> Arc<ReducerCore> {
     let reducer_cell = Arc::new(std::sync::OnceLock::new());
@@ -1391,6 +1859,9 @@ async fn setup_reducer(
     let urn_map = Arc::new(urn_map);
 
     let replay_dispatch_table = dispatch_table_creator(
+        // Changed by Reified RSpaces (decision 34 item A18): the system processes reply through
+        // the R7 backend, which routes each reply by the routing rules without a use context.
+        // rspace.clone(),
         reified::execution::wrap(rspace.clone(), &reified_runtime, &reducer_cell),
         temp_dispatcher.clone(),
         block_data_ref,
@@ -1403,6 +1874,7 @@ async fn setup_reducer(
         grpc_client_service,
         chromadb_service,
         cost.clone(),
+        fs_handles,
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {
@@ -1422,10 +1894,17 @@ async fn setup_reducer(
         single_term_evaluations: Arc::new(AtomicU64::new(0)),
         yielded_single_term_evaluations: Arc::new(AtomicU64::new(0)),
         spawned_eval_tasks: Arc::new(AtomicU64::new(0)),
-        reduction_coordinator,
+        // Changed by DR-132 (P16): no coordinator (D3-A).
+        // reduction_coordinator,
         space_ctx: Default::default(),
         reified: reified_runtime,
         residue_seal: false,
+        // Added by G3 (DR-135): the root reducer has no owner and no caller.
+        owner: None,
+        caller: None,
+        // Added by G3 (DR-135, S3b): nor held values.
+        held: super::accounting::owner_funding::HeldMap::default(),
+        filter_fs_native_urns: Arc::new(std::sync::atomic::AtomicBool::new(true)),
     });
 
     reducer_cell.set(Arc::downgrade(&core)).ok().unwrap();
@@ -1468,10 +1947,68 @@ fn setup_maps_and_refs(
             urn_map.insert(key, value);
         });
 
-    let proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
+    let mut proc_defs: Vec<(Par, i32, Option<Var>, i64)> = combined_processes
         .iter()
         .map(|process| process.to_proc_defs())
         .collect();
+
+    // File I/O native URNs — must land in `urn_map` (so the reducer's
+    // `eval_new` can resolve `new x(`rho:io:fs:native:1.0.0/...`)` to
+    // the handler's fixed_channel bundle) AND in `proc_defs` (so
+    // `introduce_system_process` installs the per-channel reader that
+    // the dispatcher drives via `body_ref`).  Slice 5.34 wired the fs
+    // handlers into `dispatch_table_creator` but omitted this half
+    // of the registration, so genesis composition (where the filter
+    // is toggled off and FsGenesis tries to bind the raw primitives)
+    // tripped at `urn_map.contains_key(urn) == false`.
+    //
+    // Fields read from each `FsHandlerEntry`: `urn_suffix`,
+    // `fixed_channel`, `arity`, `body_ref`.  The handler closure is
+    // NOT touched here — it lives only on the Definition produced by
+    // `fs_handlers_to_definitions` for the dispatch table.
+    for entry in super::io::handler_trait::FS_HANDLERS.iter() {
+        let urn = format!(
+            "{}{}",
+            super::io::FS_NATIVE_URN_PREFIX_VERSIONED,
+            entry.urn_suffix
+        );
+        let fixed_channel: Par = (entry.fixed_channel)();
+        let bundle: Par = Par::default().with_bundles(vec![Bundle {
+            body: Some(fixed_channel.clone()),
+            write_flag: true,
+            read_flag: false,
+        }]);
+        urn_map.insert(urn, bundle);
+        proc_defs.push((fixed_channel, entry.arity as Arity, None, entry.body_ref));
+    }
+
+    // Trait-exempt FS native URN: `fs_remove_dir` is intentionally
+    // NOT in `FS_HANDLERS` (its four divergence reply shapes don't
+    // fit the `FsHandler` trait — see `handler_trait::fs_handler`
+    // docstring).  The real dispatcher wiring lands at a future
+    // Wave 4 handler slice.  Register the URN here so FsGenesis
+    // composition (slice 5.36) can bind `new fsRemoveDir(
+    // `rho:io:fs:native:1.0.0/removeDir`)` without tripping
+    // `eval_new`'s "No value set for URN" check.  Dir.rho sends to
+    // this channel inside its `removeDir` method only fire when a
+    // user-held Dir cap invokes removeDir — not during genesis
+    // composition.
+    {
+        let fixed_channel = FixedChannels::fs_remove_dir();
+        let bundle: Par = Par::default().with_bundles(vec![Bundle {
+            body: Some(fixed_channel.clone()),
+            write_flag: true,
+            read_flag: false,
+        }]);
+        urn_map.insert(
+            format!("{}removeDir", super::io::FS_NATIVE_URN_PREFIX_VERSIONED),
+            bundle,
+        );
+        // Arity 5 = (rootCanon, rel, recursive, cmode, ack); matches
+        // the Dir.rho call-site `fsRemoveDir!(canonRoot, joined, b,
+        // cmode, *retCh)`.
+        proc_defs.push((fixed_channel, 5 as Arity, None, BodyRefs::FS_REMOVE_DIR));
+    }
 
     (
         block_data_ref,
@@ -1480,33 +2017,6 @@ fn setup_maps_and_refs(
         urn_map,
         proc_defs,
     )
-}
-
-fn insert_mergeable_bindings(
-    urn_map: &mut HashMap<String, Par>,
-    mergeable_tags: &HashMap<Par, MergeType>,
-) -> Result<(), InterpreterError> {
-    let conflict =
-        |uri| InterpreterError::SetupError(format!("duplicate mergeable tag URI: {uri}"));
-    let tag_uri_bindings = mergeable_tag_uri_bindings(mergeable_tags).map_err(conflict)?;
-    for (uri, tag_par) in tag_uri_bindings {
-        let merge_type = mergeable_tags
-            .get(&tag_par)
-            .expect("mergeable URI binding references configured tag");
-        tracing::info!(
-            target: "f1r3fly.merge.tag_check.validation",
-            uri,
-            merge_type = ?merge_type,
-            unforgeables = tag_par.unforgeables.len(),
-            exprs = tag_par.exprs.len(),
-            bundles = tag_par.bundles.len(),
-            "Mergeable tag URI binding inserted"
-        );
-        if urn_map.insert(uri.to_string(), tag_par).is_some() {
-            return Err(conflict(uri));
-        }
-    }
-    Ok(())
 }
 
 fn invalid_blocks_par(invalid_blocks: HashMap<BlockHash, Validator>) -> Par {
@@ -1532,6 +2042,7 @@ fn invalid_blocks_par(invalid_blocks: HashMap<BlockHash, Validator>) -> Par {
 }
 
 pub struct NativeReplayEnvironment {
+    fs_handles: super::io::handle_table::FileHandleTable,
     session:
         Arc<NativeRuntimeReplaySession<Par, BindPattern, ListParWithRandom, TaggedContinuation>>,
     reducer: Arc<ReducerCore>,
@@ -1545,6 +2056,9 @@ pub struct NativeReplayEnvironment {
 }
 
 pub struct NativeReplayEnvironmentCheckpoint {
+    file_mark: u64,
+    dir_mark: u64,
+    wal_mark: super::io::wal::WalMark,
     session: super::accounting::NativeRuntimeReplayCheckpoint<
         Par,
         BindPattern,
@@ -1605,6 +2119,9 @@ impl NativeReplayEnvironment {
         let mergeable = self.merge_chs.read().await;
         let mergeable = mergeable.clone();
         Ok(NativeReplayEnvironmentCheckpoint {
+            file_mark: self.fs_handles.snapshot_next_fd(),
+            dir_mark: self.fs_handles.dir_handles.snapshot_next_fd(),
+            wal_mark: self.fs_handles.wal.snapshot_mark(),
             session,
             authority,
             mergeable,
@@ -1633,6 +2150,12 @@ impl NativeReplayEnvironment {
             self.session.close().await?;
             return Err(error);
         }
+        self.fs_handles.truncate_to(checkpoint.file_mark).await;
+        self.fs_handles
+            .dir_handles
+            .truncate_to(checkpoint.dir_mark)
+            .await;
+        self.fs_handles.wal.truncate_to(checkpoint.wal_mark);
         *self.merge_chs.write().await = checkpoint.mergeable;
         self.evaluation_started = checkpoint.evaluation_started;
         self.unavailable = false;
@@ -1665,7 +2188,9 @@ impl NativeReplayEnvironment {
         if result.is_err() {
             self.restore_state(checkpoint).await?;
         }
-        self.reducer.reified.settle_mirror_journal(&result);
+        // Retired by Reified RSpaces decision 98: native replay publishes nothing, as no base
+        // replay calls a service.
+        // self.reducer.reified.settle_mirror_journal(&result);
         self.unavailable = false;
         result
     }
@@ -1693,6 +2218,22 @@ impl NativeReplayEnvironment {
         let result = self.reducer.inj_with_observation(par, rand).await;
         self.unavailable = false;
         result
+    }
+
+    /// Added by DR-132 (D2-B): the progress word of the session is idle.
+    #[cfg(test)]
+    pub(crate) fn progress_idle(&self) -> bool { self.session.progress_idle() }
+
+    /// Added by DR-132 (D2-B): a new evaluation can begin on the session, and
+    /// its end leaves the word idle again.
+    #[cfg(test)]
+    pub(crate) fn progress_begins_again(&self) -> bool {
+        let progress = self.session.evaluation_progress();
+        if progress.begin().is_err() {
+            return false;
+        }
+        progress.finish();
+        self.session.progress_idle()
     }
 
     pub fn urn_map(&self) -> &HashMap<String, Par> { &self.reducer.urn_map }
@@ -1742,6 +2283,18 @@ impl NativeReplayEnvironment {
     }
 }
 
+/// Added by DR-134 (DR-70): the logger of a native replay for a block report.
+pub type RhoSpaceLogger = Box<
+    dyn rspace_plus_plus::rspace::logging::RSpaceLogger<
+        Par,
+        BindPattern,
+        ListParWithRandom,
+        TaggedContinuation,
+    >,
+>;
+
+// Changed by DR-134 (DR-70): the body moved to
+// `create_native_replay_env_with_logger`; validation and play pass no logger.
 pub async fn create_native_replay_env(
     trace: CheckedNativeOperationTrace,
     history: RhoHistoryRepository,
@@ -1751,6 +2304,36 @@ pub async fn create_native_replay_env(
     extra_system_processes: &mut Vec<Definition>,
     cost: RuntimeBudget,
     external_services: ExternalServices,
+) -> Result<NativeReplayEnvironment, InterpreterError> {
+    create_native_replay_env_with_logger(
+        trace,
+        history,
+        matcher,
+        merge_chs,
+        mergeable_tags,
+        extra_system_processes,
+        cost,
+        external_services,
+        None,
+        super::io::handle_table::FileHandleTable::new(),
+    )
+    .await
+}
+
+/// Added by DR-134 (DR-70): `create_native_replay_env` whose session logs its
+/// stored and matched operations to `logger`, for block reports. Without a
+/// logger the environment is the environment of `create_native_replay_env`.
+pub async fn create_native_replay_env_with_logger(
+    trace: CheckedNativeOperationTrace,
+    history: RhoHistoryRepository,
+    matcher: Arc<Box<dyn Match<BindPattern, ListParWithRandom, TaggedContinuation>>>,
+    merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
+    mergeable_tags: Arc<HashMap<Par, MergeType>>,
+    extra_system_processes: &mut Vec<Definition>,
+    cost: RuntimeBudget,
+    external_services: ExternalServices,
+    logger: Option<RhoSpaceLogger>,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Result<NativeReplayEnvironment, InterpreterError> {
     if !cost.has_exclusive_authority_owner() {
         return Err(InterpreterError::ReduceError(
@@ -1764,9 +2347,18 @@ pub async fn create_native_replay_env(
     }
     let native_space_runtime = reified::runtime::native_replay();
     reified::system_processes::register(extra_system_processes, &native_space_runtime);
+    fs_handles.seed_next_fd_from_state_hash(&history.root().bytes());
+    fs_handles
+        .dir_handles
+        .seed_next_fd_from_state_hash(&history.root().bytes());
     let (block_data, invalid_blocks, deploy_data, mut urn_map, proc_defs) =
         setup_maps_and_refs(extra_system_processes);
-    insert_mergeable_bindings(&mut urn_map, &mergeable_tags)?;
+    if let Some(tag_par) = bitmask_or_tag(&mergeable_tags)? {
+        urn_map.insert(
+            "rho:system:bitmaskMergeableTag".to_string(),
+            tag_par.clone(),
+        );
+    }
     let installations = proc_defs
         .into_iter()
         .map(system_process_install)
@@ -1775,8 +2367,16 @@ pub async fn create_native_replay_env(
     // play guards the channels of its installs.
     let installed = installed_channel_keys(installations.iter().map(|(channels, _)| channels))
         .map_err(RSpaceError::from)?;
-    let session =
-        Arc::new(trace.into_runtime_session(history, matcher, installations, cost.clone())?);
+    // Changed by DR-134 (DR-70): the session takes the optional logger.
+    // let session =
+    //     Arc::new(trace.into_runtime_session(history, matcher, installations, cost.clone())?);
+    let session = Arc::new(trace.into_runtime_session_with_logger(
+        history,
+        matcher,
+        installations,
+        cost.clone(),
+        logger,
+    )?);
     native_space_runtime
         .bind_native_replay(session.space_store(cost.clone(), installed), cost.clone())?;
     let reducer = setup_reducer(
@@ -1793,11 +2393,14 @@ pub async fn create_native_replay_env(
         external_services.grpc_client,
         external_services.chroma,
         cost.clone(),
-        ReductionCoordinator::default(),
+        fs_handles.clone(),
+        // Changed by DR-132 (P16): no coordinator (D3-A).
+        // ReductionCoordinator::default(),
         native_space_runtime,
     )
     .await;
     Ok(NativeReplayEnvironment {
+        fs_handles,
         session,
         reducer,
         budget: cost,
@@ -1812,11 +2415,15 @@ pub async fn create_native_replay_env(
 
 pub async fn create_rho_env<T>(
     mut rspace: T,
+    // Added by decision 90 (C6, step D): the caller gives the runtime of the space, because a
+    // rigged replay space no longer implements `SpaceTxnHost`.
+    space_runtime: Arc<reified::runtime::ReifiedRuntime>,
     merge_chs: Arc<tokio::sync::RwLock<HashMap<Par, MergeType>>>,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     extra_system_processes: &mut Vec<Definition>,
     cost: RuntimeBudget,
     external_services: ExternalServices,
+    fs_handles: super::io::handle_table::FileHandleTable,
 ) -> Result<
     (
         Arc<DebruijnInterpreter>,
@@ -1828,18 +2435,39 @@ pub async fn create_rho_env<T>(
 >
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        // Retired by decision 90 (C6, step D): `create_rho_runtime` keeps this bound. The text
+        // before:
+        // + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
         + 'static,
 {
-    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());
+    // Changed by decision 90 (C6, step D): the caller gives the runtime of the space. The text
+    // before:
+    // let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());
     reified::system_processes::register(extra_system_processes, &space_runtime);
     let maps_and_refs = setup_maps_and_refs(extra_system_processes);
     let (block_data_ref, invalid_blocks, deploy_data_ref, mut urn_map, proc_defs) = maps_and_refs;
 
-    insert_mergeable_bindings(&mut urn_map, &mergeable_tags)?;
+    // Expose the bitmask-OR mergeable tag to system contracts (Registry.rho)
+    // via a URI binding. Genesis-defined tags are unforgeable names; they must
+    // be created at runtime startup and threaded into both the merge engine's
+    // tag registry and the URN map so contracts can bind them via
+    // `bootstrapName(`rho:system:...`)`.
+    if let Some(tag_par) = bitmask_or_tag(&mergeable_tags)? {
+        tracing::debug!(
+            target: "f1r3fly.merge.tag_check.validation",
+            "URI binding inserted: rho:system:bitmaskMergeableTag -> Par(unforgeables={}, exprs={}, bundles={})",
+            tag_par.unforgeables.len(),
+            tag_par.exprs.len(),
+            tag_par.bundles.len(),
+        );
+        urn_map.insert(
+            "rho:system:bitmaskMergeableTag".to_string(),
+            tag_par.clone(),
+        );
+    }
 
     let res = introduce_system_process(vec![&mut rspace], proc_defs).await;
     assert!(res.iter().all(|s| s.is_none()));
@@ -1848,15 +2476,27 @@ where
     raw_rspace.set_accounting_observer(Some(Arc::new(RhoCommObserver {
         budget: cost.clone(),
     })));
-    let reduction_coordinator = ReductionCoordinator::default();
-    let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
-        raw_rspace,
-        reduction_coordinator.clone(),
-    )));
-    let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
-        scheduled_rspace,
-        cost.clone(),
-    )));
+    // Changed by DR-132 (P16): dev's wiring, `ChargingRSpace` over the
+    // observed raw space (dev `rho_runtime.rs:1688-1691`). The scheduler space
+    // and its coordinator are gone (D3-A).
+    // let reduction_coordinator = ReductionCoordinator::default();
+    // let scheduled_rspace: RhoISpace = Arc::new(Box::new(DeterministicRSpace::new(
+    //     raw_rspace,
+    //     reduction_coordinator.clone(),
+    // )));
+    // let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+    //     scheduled_rspace,
+    //     cost.clone(),
+    // )));
+    // Changed by DR-134 (DR-66 item 3): the legacy meter and its charging space
+    // are deleted, so the reducer uses the observed raw space. Every space
+    // that the wrapper wrapped implements `consume_result` as the wrapper did
+    // (consume with the default continuation, then unpack), and the wrapper
+    // only delegated outside a legacy scope, so the behavior is unchanged.
+    // let charging_rspace: RhoISpace = Arc::new(Box::new(ChargingRSpace::charging_rspace(
+    //     raw_rspace,
+    //     cost.clone(),
+    // )));
 
     // Use services from ExternalServices
     let openai_service = external_services.openai.clone();
@@ -1864,7 +2504,9 @@ where
     let grpc_client_service = external_services.grpc_client.clone();
     let chromadb_service = external_services.chroma.clone();
     let core = setup_reducer(
-        charging_rspace.clone().into(),
+        // Changed by DR-134 (DR-66 item 3).
+        // charging_rspace.clone().into(),
+        raw_rspace.clone().into(),
         block_data_ref.clone(),
         invalid_blocks.clone(),
         deploy_data_ref.clone(),
@@ -1877,12 +2519,16 @@ where
         grpc_client_service,
         chromadb_service,
         cost,
-        reduction_coordinator,
+        // Changed by DR-132 (P16): no coordinator (D3-A).
+        // reduction_coordinator,
+        fs_handles,
         space_runtime,
     )
     .await;
     let reducer = Arc::new(DebruijnInterpreter {
-        space: charging_rspace,
+        // Changed by DR-134 (DR-66 item 3).
+        // space: charging_rspace,
+        space: raw_rspace,
         core,
     });
 
@@ -1908,29 +2554,46 @@ pub async fn bootstrap_registry(runtime: &RhoRuntimeImpl) -> () {
 
 async fn create_runtime<T>(
     rspace: T,
+    // Added by decision 90 (C6, step D): the caller gives the runtime of the space, because a
+    // rigged replay space no longer implements `SpaceTxnHost`, and the budget `cost`, which the
+    // runtime of a play space holds.
+    space_runtime: Arc<reified::runtime::ReifiedRuntime>,
     extra_system_processes: &mut Vec<Definition>,
     init_registry: bool,
     mergeable_tags: Arc<HashMap<Par, MergeType>>,
     external_services: ExternalServices,
+    cost: RuntimeBudget,
 ) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        // Retired by decision 90 (C6, step D): the text before:
+        // + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
         + 'static,
 {
-    let cost = CostAccounting::empty_cost();
+    // Changed by decision 90 (C6, step D): the caller makes the budget, so that it can give the
+    // runtime of the space the budget of the runtime. The text before:
+    // let cost = CostAccounting::empty_cost();
     let merge_chs = Arc::new(tokio::sync::RwLock::new(HashMap::<Par, MergeType>::new()));
+    // One FS handle table per runtime, shared by the dispatch-table-
+    // side `FsProcesses` (via a clone) and exposed as a public field
+    // on `RhoRuntimeImpl` for test harnesses + the (yet-to-land)
+    // soft-checkpoint fd-snapshot wiring.  FileHandleTable is
+    // Arc-backed internally so clones are cheap and point at the
+    // same underlying state.
+    let fs_handles = super::io::handle_table::FileHandleTable::new();
 
     let rho_env = create_rho_env(
         rspace,
+        space_runtime,
         merge_chs.clone(),
         mergeable_tags,
         extra_system_processes,
         cost.clone(),
         external_services,
+        fs_handles.clone(),
     )
     .await?;
 
@@ -1942,6 +2605,7 @@ where
         invalid_blocks,
         deploy_ref,
         merge_chs,
+        fs_handles,
     );
 
     if init_registry {
@@ -1991,12 +2655,18 @@ where
         + Sync
         + 'static,
 {
+    // Changed by decision 90 (C6, step D): the play space makes its `Host` runtime here, with the
+    // budget of the runtime.
+    let cost = CostAccounting::empty_cost();
+    let space_runtime = reified::runtime::for_host(rspace.clone(), cost.clone());
     create_runtime(
         rspace,
+        space_runtime,
         extra_system_processes,
         init_registry,
         mergeable_tags,
         external_services,
+        cost,
     )
     .await
 }
@@ -2028,7 +2698,9 @@ pub async fn create_replay_rho_runtime<T>(
 ) -> Result<RhoRuntimeImpl, InterpreterError>
 where
     T: ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        // Retired by decision 90 (C6, step D): a rigged replay space no longer implements
+        // `SpaceTxnHost`. The text before:
+        // + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
@@ -2036,10 +2708,15 @@ where
 {
     create_runtime(
         rspace,
+        // Changed by decision 90 (C6, step D): a rigged replay space has a `Detached` runtime:
+        // every space operation of it fails closed outside native replay, as a `Host` runtime
+        // outside native execution did.
+        reified::runtime::unavailable(),
         extra_system_processes,
         init_registry,
         mergeable_tags,
         external_services,
+        CostAccounting::empty_cost(),
     )
     .await
 }
@@ -2060,7 +2737,9 @@ where
         + Sync
         + 'static,
     R: IReplayRSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>
-        + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
+        // Retired by decision 90 (C6, step D): a rigged replay space no longer implements
+        // `SpaceTxnHost`. The text before:
+        // + SpaceTxnHost<Par, BindPattern, ListParWithRandom, TaggedContinuation>
         + Clone
         + Send
         + Sync
@@ -2111,4 +2790,309 @@ pub async fn create_runtime_from_kv_store(
         external_services,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+
+    use super::*;
+    use crate::rust::interpreter::io::handler_trait::{
+        EXPECTED_MIGRATED_HANDLER_COUNT, FS_HANDLERS,
+    };
+    use crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX as FS_NATIVE_URN_FILTER_PREFIX;
+    use crate::rust::interpreter::matcher::r#match::Matcher;
+
+    async fn minimal_dispatch_and_space() -> (RhoDispatch, RhoISpace) {
+        let reducer_cell = Arc::new(std::sync::OnceLock::new());
+        let dispatcher: RhoDispatch = Arc::new(RholangAndScalaDispatcher {
+            _dispatch_table: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            reducer: reducer_cell,
+        });
+
+        let mut kvm = InMemoryStoreManager::new();
+        let store = kvm.r_space_stores().await.unwrap();
+        let space = RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create(
+            store,
+            Arc::new(Box::new(Matcher)),
+        )
+        .unwrap();
+        let rspace: RhoISpace = Arc::new(Box::new(space));
+
+        (dispatcher, rspace)
+    }
+
+    /// Registration-count regression gate: walking `FS_HANDLERS` via
+    /// `fs_handlers_to_definitions` must produce exactly
+    /// `EXPECTED_MIGRATED_HANDLER_COUNT` rows.  This is distinct from
+    /// `fs_handlers::fs_handlers_count_matches_migrated_pinned` (which
+    /// pins the slice length): it defends against a regression in
+    /// `fs_handlers_to_definitions` itself — e.g., a `.filter(...)`
+    /// chained in, a stray `.take(N)`, or a short-circuit that drops
+    /// entries after `FsProcesses` construction.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_count_matches_registry() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
+            dispatcher,
+            space.into(),
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
+        assert_eq!(
+            defs.len(),
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+            "fs_handlers_to_definitions produced {} definitions but \
+             EXPECTED_MIGRATED_HANDLER_COUNT is {}.  A regression in \
+             the FS_HANDLERS → Definition mapping is dropping entries \
+             — handler dispatch will silently no-op for the missing \
+             URNs.",
+            defs.len(),
+            EXPECTED_MIGRATED_HANDLER_COUNT,
+        );
+    }
+
+    /// Every produced URN must be unique.  Two entries sharing a
+    /// `urn_suffix` would collide in `RhoDispatchMap`, clobbering one
+    /// handler at registration — a silent dispatch regression.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_urns_unique() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
+            dispatcher,
+            space.into(),
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
+        let mut seen = std::collections::HashSet::new();
+        for def in &defs {
+            assert!(
+                seen.insert(def.urn.clone()),
+                "duplicate FS native URN `{}` in fs_handlers_to_definitions \
+                 output — two FS_HANDLERS entries share a `urn_suffix`, \
+                 which would clobber one handler at RhoDispatchMap \
+                 registration.",
+                def.urn,
+            );
+        }
+    }
+
+    /// Every produced URN must start with the shared
+    /// `io::FS_NATIVE_URN_PREFIX` ("rho:io:fs:native:").  The reducer's
+    /// `filter_fs_native_urns` check in `eval_new` tests
+    /// `urn.starts_with(FS_NATIVE_URN_PREFIX)` — a regression where
+    /// the local versioned prefix in `fs_handlers_to_definitions`
+    /// drifts to something that no longer starts with the shared
+    /// prefix would silently bypass the filter: user deploys could
+    /// bind the FS native URNs directly, defeating the phase-scoped
+    /// visibility gate (slices 5.32/5.33/5.35).
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_urns_match_filter_prefix() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
+            dispatcher,
+            space.into(),
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
+        for def in &defs {
+            assert!(
+                def.urn.starts_with(FS_NATIVE_URN_FILTER_PREFIX),
+                "FS native URN `{}` does not start with the shared \
+                 filter prefix `{}` — the reducer's \
+                 `filter_fs_native_urns` check in `eval_new` would \
+                 fail to reject this URN in user deploys, silently \
+                 bypassing phase-scoped visibility.",
+                def.urn,
+                FS_NATIVE_URN_FILTER_PREFIX,
+            );
+        }
+    }
+
+    /// Every registered URN suffix in `FS_HANDLERS` must be reachable
+    /// from the Definition output.  Walking FS_HANDLERS and matching
+    /// against produced URNs confirms the mapping is total — no entry
+    /// is silently dropped between `FS_HANDLERS.iter()` and the
+    /// returned Vec.
+    #[tokio::test]
+    async fn fs_handlers_to_definitions_covers_every_registry_entry() {
+        let (dispatcher, space) = minimal_dispatch_and_space().await;
+        let (defs, _fs_processes) = fs_handlers_to_definitions(
+            dispatcher,
+            space.into(),
+            crate::rust::interpreter::io::handle_table::FileHandleTable::new(),
+        );
+        let def_urns: std::collections::HashSet<&str> =
+            defs.iter().map(|d| d.urn.as_str()).collect();
+        for entry in FS_HANDLERS.iter() {
+            let expected_urn = format!("rho:io:fs:native:1.0.0/{}", entry.urn_suffix);
+            assert!(
+                def_urns.contains(expected_urn.as_str()),
+                "FS_HANDLERS entry `{}` (urn_suffix=`{}`) is missing \
+                 from fs_handlers_to_definitions output — the \
+                 FS_HANDLERS → Definition mapping is not total.  \
+                 Expected URN: `{}`",
+                entry.name,
+                entry.urn_suffix,
+                expected_urn,
+            );
+        }
+    }
+
+    /// Trait-exempt `fs_remove_dir` URN must appear in `urn_map`
+    /// after `setup_maps_and_refs` runs.  Slice 5.43 added the
+    /// registration so FsGenesis composition can bind
+    /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)` without
+    /// tripping eval_new's "No value set for URN" check.  Pinning the
+    /// urn_map entry here catches a regression that removes the
+    /// explicit registration (which is NOT auto-generated from
+    /// FS_HANDLERS — the handler is trait-exempt).
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_urn() {
+        let (_, _, _, urn_map, _) = setup_maps_and_refs(&Vec::new());
+        let expected_urn = format!(
+            "{}removeDir",
+            crate::rust::interpreter::io::FS_NATIVE_URN_PREFIX_VERSIONED
+        );
+        assert!(
+            urn_map.contains_key(&expected_urn),
+            "urn_map missing `{expected_urn}`.  Trait-exempt fs_remove_dir \
+             registration (slice 5.43) was removed — FsGenesis composition \
+             will trip `BugFoundError` on `new fsRemoveDir(`...`)` at \
+             genesis-time.  See `setup_maps_and_refs` for the explicit \
+             registration site."
+        );
+    }
+
+    /// Trait-exempt `fs_remove_dir` proc_def must carry arity 5 (so
+    /// `fsRemoveDir!(rootCanon, rel, recursive, cmode, ack)` matches
+    /// the system-process reader) and `BodyRefs::FS_REMOVE_DIR` =
+    /// 58 (so the dispatcher routes to the stub handler registered
+    /// in `dispatch_table_creator`).  Slice 5.44 added the stub
+    /// handler to prevent a user-held Dir cap from hitting
+    /// "dispatch: no function for 58" when invoking `removeDir` at
+    /// state-execution; this test catches a regression that reverts
+    /// the proc_def entry or renumbers the body_ref.
+    #[test]
+    fn setup_maps_and_refs_registers_fs_remove_dir_proc_def() {
+        let (_, _, _, _, proc_defs) = setup_maps_and_refs(&Vec::new());
+        let expected_fixed_channel = FixedChannels::fs_remove_dir();
+        let found = proc_defs
+            .iter()
+            .find(|(fc, _, _, br)| *fc == expected_fixed_channel && *br == BodyRefs::FS_REMOVE_DIR);
+        let Some((_, arity, remainder, body_ref)) = found else {
+            panic!(
+                "proc_defs missing an entry with fixed_channel = \
+                 FixedChannels::fs_remove_dir() AND body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}).  Trait-exempt \
+                 fs_remove_dir registration (slice 5.43) was removed; \
+                 Dir.rho's `fsRemoveDir!(...)` would hit \"dispatch: \
+                 no function for {}\".",
+                BodyRefs::FS_REMOVE_DIR,
+                BodyRefs::FS_REMOVE_DIR,
+            );
+        };
+        assert_eq!(
+            *arity, 5,
+            "fs_remove_dir proc_def arity must be 5 to match \
+             Dir.rho's `fsRemoveDir!(canonRoot, rel, recursive, \
+             cmode, *retCh)` call site; got {}",
+            arity
+        );
+        assert!(
+            remainder.is_none(),
+            "fs_remove_dir proc_def remainder must be None (no \
+             rest-pattern); got {remainder:?}"
+        );
+        assert_eq!(*body_ref, BodyRefs::FS_REMOVE_DIR);
+    }
+
+    /// Every `FS_HANDLERS` entry's `arity` (declared `usize`) must
+    /// fit in the `Arity` type (currently `i32`) WITHOUT truncation
+    /// on the `as Arity` cast performed by `fs_handlers_to_definitions`
+    /// (slice 5.31) and `setup_maps_and_refs` (slice 5.43).  Rust's
+    /// `as` conversion on an out-of-range `usize → i32` silently
+    /// wraps (two's-complement) rather than panicking.  Current
+    /// handler arities fall in `[1, 7]` — far from `i32::MAX` — but a
+    /// defensive pin keeps the compiler-silent wrap from surfacing as
+    /// a hard-to-diagnose "dispatcher mismatch on arity" at runtime.
+    ///
+    /// If this test fires, either the `FsHandlerEntry::arity` field
+    /// gained an entry out of `[0, i32::MAX]`, OR the `Arity` type
+    /// alias was renarrowed (e.g., `i16`).  In either case the
+    /// dispatcher's arity match would silently see the wrapped
+    /// value.  Fix: widen `Arity` to accommodate, or audit the new
+    /// entry.
+    #[test]
+    fn fs_handlers_arity_fits_in_arity_type() {
+        let max_arity: usize = Arity::MAX as usize;
+        for entry in FS_HANDLERS.iter() {
+            assert!(
+                entry.arity <= max_arity,
+                "FS_HANDLERS entry `{}` (urn_suffix = `{}`) has \
+                 arity = {}, which overflows the dispatcher's Arity \
+                 type (max = {}).  The `as Arity` cast in \
+                 fs_handlers_to_definitions + setup_maps_and_refs \
+                 would silently wrap this value, producing a \
+                 negative arity in the Definition.  Widen the Arity \
+                 type alias in system_processes.rs or correct the \
+                 entry.",
+                entry.name,
+                entry.urn_suffix,
+                entry.arity,
+                max_arity,
+            );
+        }
+    }
+
+    /// `fs_remove_dir` is trait-exempt — its four divergence reply
+    /// shapes don't fit the `FsHandler` trait (see
+    /// `handler_trait::fs_handler` docstring "Trait-exempt handler
+    /// (fs_remove_dir)").  It MUST NOT appear in `FS_HANDLERS`
+    /// because the trait-exempt `FsProcesses::fs_remove_dir` method
+    /// (ported in slices 5.136-5.141, URN-registered in slice 5.142)
+    /// is registered separately in `dispatch_table_creator`.  If both
+    /// were registered, the dispatcher's `HashMap<body_ref, handler>`
+    /// insert would silently clobber one with the other — depending
+    /// on insertion order, callers might get either the trait-based
+    /// response or the trait-exempt handler's divergence-reply-shape
+    /// response, with no compile-time or load-time warning.
+    ///
+    /// This test catches a regression where someone adds a
+    /// `fs_remove_dir` entry to `FS_HANDLERS` without first removing
+    /// the explicit trait-exempt registration in
+    /// `dispatch_table_creator`.  Pins both axes:
+    /// `urn_suffix == "removeDir"` AND `body_ref ==
+    /// BodyRefs::FS_REMOVE_DIR` — either match would collide.
+    #[test]
+    fn fs_remove_dir_stays_trait_exempt_in_fs_handlers() {
+        for entry in FS_HANDLERS.iter() {
+            assert_ne!(
+                entry.urn_suffix, "removeDir",
+                "FS_HANDLERS contains an entry with urn_suffix = \
+                 \"removeDir\" (name = `{}`).  fs_remove_dir is \
+                 trait-exempt; the explicit trait-exempt registration \
+                 in `dispatch_table_creator` would collide at the \
+                 dispatcher's body_ref HashMap, silently clobbering \
+                 one handler with the other.  Either (a) remove the \
+                 new FS_HANDLERS entry if fs_remove_dir still needs \
+                 the four divergence reply shapes, or (b) if the \
+                 handler is refactored to fit the FsHandler trait, \
+                 remove the explicit trait-exempt registration in \
+                 `dispatch_table_creator` and this test.",
+                entry.name,
+            );
+            assert_ne!(
+                entry.body_ref,
+                BodyRefs::FS_REMOVE_DIR,
+                "FS_HANDLERS contains an entry with body_ref = \
+                 BodyRefs::FS_REMOVE_DIR ({}) (name = `{}`, \
+                 urn_suffix = `{}`).  fs_remove_dir is trait-exempt; \
+                 the body_ref slot is reserved for the explicit \
+                 trait-exempt registration (slice 5.142) and must \
+                 not be reused.",
+                BodyRefs::FS_REMOVE_DIR,
+                entry.name,
+                entry.urn_suffix,
+            );
+        }
+    }
 }

@@ -12,6 +12,8 @@ pub struct Policy {
     pub manifests: Vec<String>,
     pub scanner: Scanner,
     pub exceptions: BTreeMap<String, Exception>,
+    #[serde(default)]
+    pub yanked: BTreeMap<String, Yanked>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -31,6 +33,14 @@ pub struct Exception {
     pub review_by: toml::value::Datetime,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Yanked {
+    pub owner: String,
+    #[serde(rename = "review-by")]
+    pub review_by: toml::value::Datetime,
+}
+
 pub fn load(path: &Path) -> Result<Policy> { Ok(toml::from_str(&std::fs::read_to_string(path)?)?) }
 
 fn required<'a>(value: &'a Value, path: &str) -> Result<&'a Value> {
@@ -41,13 +51,12 @@ fn required<'a>(value: &'a Value, path: &str) -> Result<&'a Value> {
     })
 }
 
-fn review_date(id: &str, entry: &Exception) -> Result<NaiveDate> {
-    let date = entry
-        .review_by
+fn review_date(id: &str, review_by: &toml::value::Datetime) -> Result<NaiveDate> {
+    let date = review_by
         .date
         .ok_or_else(|| eyre!("{id}: a review date is required."))?;
     ensure!(
-        entry.review_by.time.is_none() && entry.review_by.offset.is_none(),
+        review_by.time.is_none() && review_by.offset.is_none(),
         "{id}: a date without a time is required."
     );
     NaiveDate::from_ymd_opt(date.year.into(), date.month.into(), date.day.into())
@@ -60,8 +69,13 @@ pub fn reviews_due(
     days: i64,
 ) -> Result<Vec<(String, NaiveDate)>> {
     let mut due = Vec::new();
-    for (id, entry) in &policy.exceptions {
-        let deadline = review_date(id, entry)?;
+    let records = policy
+        .exceptions
+        .iter()
+        .map(|(id, e)| (id, &e.review_by))
+        .chain(policy.yanked.iter().map(|(spec, y)| (spec, &y.review_by)));
+    for (id, review_by) in records {
+        let deadline = review_date(id, review_by)?;
         if (deadline - today).num_days() <= days {
             due.push((id.clone(), deadline));
         }
@@ -70,32 +84,69 @@ pub fn reviews_due(
     Ok(due)
 }
 
+fn exact_crate_spec(spec: &str) -> bool {
+    spec.split_once('@').is_some_and(|(name, version)| {
+        !name.is_empty()
+            && !name.chars().any(char::is_whitespace)
+            && semver::Version::parse(version).is_ok()
+    })
+}
+
 pub fn validate(policy: &Policy, deny: &Value, today: NaiveDate) -> Result<()> {
     let ignored = required(deny, "advisories.ignore")?
         .as_array()
         .ok_or_else(|| eyre!("Invalid advisory exceptions."))?;
     let mut ids = BTreeSet::new();
+    let mut yanked = BTreeSet::new();
     for entry in ignored {
-        let id = entry
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| eyre!("Every advisory exception requires an ID."))?;
+        let (key, seen) = match (
+            entry.get("id").and_then(Value::as_str),
+            entry.get("crate").and_then(Value::as_str),
+        ) {
+            (Some(id), None) => (id, &mut ids),
+            (None, Some(spec)) => {
+                ensure!(
+                    exact_crate_spec(spec),
+                    "{spec}: a yanked-crate exception requires name@exact-version."
+                );
+                (spec, &mut yanked)
+            }
+            _ => eyre::bail!("Every advisory exception requires exactly one of an ID or a crate."),
+        };
         ensure!(
             entry
                 .get("reason")
                 .and_then(Value::as_str)
                 .is_some_and(|s| !s.trim().is_empty()),
-            "{id}: a reason is required."
+            "{key}: a reason is required."
         );
         ensure!(
-            ids.insert(id.to_string()),
-            "Duplicate advisory exception: {id}"
+            seen.insert(key.to_string()),
+            "Duplicate advisory exception: {key}"
         );
     }
     ensure!(
         ids == policy.exceptions.keys().cloned().collect(),
         "Advisory exceptions must match supply-chain/policy.toml exactly."
     );
+    ensure!(
+        yanked == policy.yanked.keys().cloned().collect(),
+        "Yanked-crate exceptions must match supply-chain/policy.toml exactly."
+    );
+    for (spec, entry) in &policy.yanked {
+        ensure!(
+            exact_crate_spec(spec),
+            "{spec}: a yanked-crate exception requires name@exact-version."
+        );
+        ensure!(
+            !entry.owner.trim().is_empty(),
+            "{spec}: an owner is required."
+        );
+        ensure!(
+            review_date(spec, &entry.review_by)? > today,
+            "{spec}: the exception requires review."
+        );
+    }
     for (id, entry) in &policy.exceptions {
         ensure!(
             !entry.owner.trim().is_empty() && !entry.package.trim().is_empty(),
@@ -110,7 +161,7 @@ pub fn validate(policy: &Policy, deny: &Value, today: NaiveDate) -> Result<()> {
             "{id}: exact package versions are required."
         );
         ensure!(
-            review_date(id, entry)? > today,
+            review_date(id, &entry.review_by)? > today,
             "{id}: the exception requires review."
         );
     }

@@ -3,8 +3,13 @@
 //! `ReducerCore` holds the immutable field `space_ctx`. `use s { P }` evaluates `P` with a
 //! context that names the space `s`: a native space, or a user agent (P8). `with_metering_child`
 //! clones the context into parallel branches. A body that the reducer stores for later
-//! evaluation under a context is wrapped in a USE tuple, so the context returns when the body
-//! runs (a lexical closure).
+// Changed by decision 112: the wrapper of a stored body is a use block field. The text before:
+// ```
+// //! evaluation under a context is wrapped in a USE tuple, so the context returns when the body
+// //! runs (a lexical closure).
+// ```
+//! evaluation under a context is wrapped in a use block (`Par.use_blocks`), so the context
+//! returns when the body runs (a lexical closure).
 //!
 //! A user agent is named by its reference as the program evaluated it, with its bundle (AG-3).
 //! A call on the agent is an ordinary send, so it follows the bundle rule of `eval_send`
@@ -115,6 +120,7 @@ fn is_empty(par: &Par) -> bool {
         connective_used: _,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     sends.is_empty()
         && receives.is_empty()
@@ -125,6 +131,7 @@ fn is_empty(par: &Par) -> bool {
         && bundles.is_empty()
         && connectives.is_empty()
         && conditionals.is_empty()
+        && use_blocks.is_empty()
         && cost_signed_terms.is_empty()
         && cost_stacks.is_empty()
 }
@@ -179,12 +186,26 @@ pub fn call_channel(agent: &Par) -> Result<Par, SpaceRefError> {
     }
 }
 
-/// Wraps a body that the reducer stores for later evaluation in the USE tuple of the
-/// context, `Par{exprs: [(USE, ctx.space, body)]}`. Without a context the body is unchanged.
+// Changed by decision 112: the wrapper of a stored body is a use block field. The text before:
+// ```
+// /// Wraps a body that the reducer stores for later evaluation in the USE tuple of the
+// /// context, `Par{exprs: [(USE, ctx.space, body)]}`. Without a context the body is unchanged.
+// /// The wrapper is one term, so the reducer evaluates it with the random state of the body.
+// ```
+/// Wraps a body that the reducer stores for later evaluation in a use block of the context,
+/// `Par{use_blocks: [UseBlock{ctx.space, body}]}`. Without a context the body is unchanged.
 /// The wrapper is one term, so the reducer evaluates it with the random state of the body.
 pub fn wrap_body(ctx: &SpaceCtx, body: Par) -> Par {
     match ctx {
-        Some(target) => builders::push_process_expr(
+        // Changed by decision 112: the wrapper of a stored body is a use block field. The text
+        // before:
+        // ```
+        // Some(target) => builders::push_process_expr(
+        //     Par::default(),
+        //     builders::use_block(target.space.clone(), body),
+        // ),
+        // ```
+        Some(target) => builders::push_use_block(
             Par::default(),
             builders::use_block(target.space.clone(), body),
         ),
@@ -194,8 +215,11 @@ pub fn wrap_body(ctx: &SpaceCtx, body: Par) -> Par {
 
 #[cfg(test)]
 mod tests {
-    use models::rhoapi::expr::ExprInstance;
-    use models::rust::reified::encoding::{decode_process_tuple, ProcessConstruct, UseBlock};
+    // Retired by decision 112: the tests read the use block field.
+    // use models::rhoapi::expr::ExprInstance;
+    // Changed by decision 112: the wrapper is a use block field. The text before:
+    // use models::rust::reified::encoding::{decode_process_tuple, ProcessConstruct, UseBlock};
+    use models::rust::reified::encoding::{decode_use_block, UseBlock};
     use models::rust::utils::{new_boundvar_par, new_bundle_par, new_gint_par, new_gstring_par};
 
     use super::*;
@@ -313,17 +337,29 @@ mod tests {
             kind: UseKind::Native(native(Durability::Durable)),
         };
         let wrapped = wrap_body(&Some(Arc::new(target.clone())), body.clone());
-        assert_eq!(wrapped.exprs.len(), 1);
+        // Changed by decision 112: the wrapper is a use block field. The text before:
+        // ```
+        // assert_eq!(wrapped.exprs.len(), 1);
+        // assert_eq!(wrapped.locally_free, body.locally_free);
+        // let Some(ExprInstance::ETupleBody(tuple)) = &wrapped.exprs[0].expr_instance else {
+        //     panic!("the wrapper is not a tuple: {wrapped:?}");
+        // };
+        // assert_eq!(
+        //     decode_process_tuple(tuple),
+        //     Ok(ProcessConstruct::Use(UseBlock {
+        //         space: target.space.clone(),
+        //         body,
+        //     }))
+        // );
+        // ```
+        assert_eq!(wrapped.use_blocks.len(), 1);
         assert_eq!(wrapped.locally_free, body.locally_free);
-        let Some(ExprInstance::ETupleBody(tuple)) = &wrapped.exprs[0].expr_instance else {
-            panic!("the wrapper is not a tuple: {wrapped:?}");
-        };
         assert_eq!(
-            decode_process_tuple(tuple),
-            Ok(ProcessConstruct::Use(UseBlock {
+            decode_use_block(&wrapped.use_blocks[0]),
+            Ok(UseBlock {
                 space: target.space.clone(),
                 body,
-            }))
+            })
         );
         assert_eq!(
             classify_space_ref(&target.space),

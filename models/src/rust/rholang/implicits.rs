@@ -23,6 +23,7 @@ pub fn vector_par(_locally_free: Vec<u8>, _connective_used: bool) -> Par {
         connective_used: _connective_used,
         cost_signed_terms: Vec::new(),
         cost_stacks: Vec::new(),
+        use_blocks: Vec::new(),
     }
 }
 
@@ -52,6 +53,7 @@ pub fn single_expr(p: &Par) -> Option<Expr> {
         && p.news.is_empty()
         && p.matches.is_empty()
         && p.bundles.is_empty()
+        && p.use_blocks.is_empty()
     {
         match &p.exprs {
             vec if vec.len() == 1 => vec.first().cloned(),
@@ -70,6 +72,7 @@ pub fn single_bundle(p: &Par) -> Option<Bundle> {
         && p.matches.is_empty()
         && p.unforgeables.is_empty()
         && p.connectives.is_empty()
+        && p.use_blocks.is_empty()
     {
         match &p.bundles {
             vec if vec.len() == 1 => vec.first().cloned(),
@@ -88,6 +91,7 @@ pub fn single_unforgeable(p: &Par) -> Option<GUnforgeable> {
         && p.matches.is_empty()
         && p.bundles.is_empty()
         && p.connectives.is_empty()
+        && p.use_blocks.is_empty()
     {
         match &p.unforgeables {
             vec if vec.len() == 1 => vec.first().cloned(),
@@ -123,6 +127,7 @@ pub fn concatenate_pars(p: Par, that: Par) -> Par {
             .chain(p.cost_signed_terms)
             .collect(),
         cost_stacks: that.cost_stacks.into_iter().chain(p.cost_stacks).collect(),
+        use_blocks: that.use_blocks.into_iter().chain(p.use_blocks).collect(),
         locally_free: union(that.locally_free, p.locally_free),
         connective_used: that.connective_used || p.connective_used,
     }

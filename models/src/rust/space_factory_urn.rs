@@ -15,9 +15,15 @@
 //! | `hashset` | 26 to 31       | bag to priorityqueue, with the `seq` qualifier only |
 //!
 //! A factory call carries its constructor as one list. The list holds an optional qualifier
-//! string, an optional FREE tuple and an optional PARAMS tuple, in this order. The FREE and
-//! PARAMS tuples use the strict decoders of `reified::encoding`, so a constructor has one
-//! canonical form.
+// Changed by decision 112: the free theory and the params are `Expr` arms. The text before:
+// ```
+// //! string, an optional FREE tuple and an optional PARAMS tuple, in this order. The FREE and
+// //! PARAMS tuples use the strict decoders of `reified::encoding`, so a constructor has one
+// //! canonical form.
+// ```
+//! string, an optional free-theory value (`EFreeBody`) and an optional params value
+//! (`EParamsBody`), in this order. The free-theory value and the params value use the strict
+//! decoders of `reified::encoding`, so a constructor has one canonical form.
 
 use std::fmt;
 
@@ -42,15 +48,38 @@ pub const FACTORY_FAMILY_COUNT: u8 = 32;
 
 /// The outer store of a space: the map from channels to collections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SpaceOuter {
-    HashMap,
-    PathMap,
-    Array,
-    Vector,
-    HashSet,
-}
+// Changed by decision 127 (kind registry): an outer store is its name. A registered kind names
+// its own store (`SpaceOuter::named`), and the built-in stores are constants with the names of
+// the old variants. The text before:
+// ```
+// pub enum SpaceOuter {
+//     HashMap,
+//     PathMap,
+//     Array,
+//     Vector,
+//     HashSet,
+// }
+// ```
+pub struct SpaceOuter(&'static str);
 
+// Added by decision 127 (kind registry): the constants keep the names of the old variants.
+#[allow(non_upper_case_globals)]
 impl SpaceOuter {
+    /// The HashMap store.
+    pub const HashMap: SpaceOuter = SpaceOuter("hashmap");
+    /// The PathMap store.
+    pub const PathMap: SpaceOuter = SpaceOuter("pathmap");
+    /// The Array store.
+    pub const Array: SpaceOuter = SpaceOuter("array");
+    /// The Vector store.
+    pub const Vector: SpaceOuter = SpaceOuter("vector");
+    /// The HashSet store.
+    pub const HashSet: SpaceOuter = SpaceOuter("hashset");
+
+    /// Added by decision 127 (kind registry): the outer store with the name `name`
+    /// (`OuterStore::NAME`).
+    pub const fn named(name: &'static str) -> SpaceOuter { SpaceOuter(name) }
+
     /// Every outer store, in family order.
     pub const ALL: [SpaceOuter; 5] = [
         SpaceOuter::HashMap,
@@ -61,15 +90,19 @@ impl SpaceOuter {
     ];
 
     /// The name of the outer store in a URN and in a space config.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            SpaceOuter::HashMap => "hashmap",
-            SpaceOuter::PathMap => "pathmap",
-            SpaceOuter::Array => "array",
-            SpaceOuter::Vector => "vector",
-            SpaceOuter::HashSet => "hashset",
-        }
-    }
+    // Changed by decision 127 (kind registry): the name is the value. The text before:
+    // ```
+    // pub const fn as_str(self) -> &'static str {
+    //     match self {
+    //         SpaceOuter::HashMap => "hashmap",
+    //         SpaceOuter::PathMap => "pathmap",
+    //         SpaceOuter::Array => "array",
+    //         SpaceOuter::Vector => "vector",
+    //         SpaceOuter::HashSet => "hashset",
+    //     }
+    // }
+    // ```
+    pub const fn as_str(self) -> &'static str { self.0 }
 
     /// The outer store with the name `value`.
     pub fn parse(value: &str) -> Option<SpaceOuter> {
@@ -79,30 +112,71 @@ impl SpaceOuter {
     }
 
     /// The first family index of the outer store.
-    const fn family_base(self) -> u8 {
+    // Changed by decision 127 (kind registry): a store of a registered kind has no built-in
+    // index, and a match on a name is not const. The text before:
+    // ```
+    // const fn family_base(self) -> u8 {
+    //     match self {
+    //         SpaceOuter::HashMap => 0,
+    //         SpaceOuter::PathMap => 7,
+    //         SpaceOuter::Array => 13,
+    //         SpaceOuter::Vector => 19,
+    //         SpaceOuter::HashSet => 26,
+    //     }
+    // }
+    // ```
+    fn family_base(self) -> Option<u8> {
         match self {
-            SpaceOuter::HashMap => 0,
-            SpaceOuter::PathMap => 7,
-            SpaceOuter::Array => 13,
-            SpaceOuter::Vector => 19,
-            SpaceOuter::HashSet => 26,
+            SpaceOuter::HashMap => Some(0),
+            SpaceOuter::PathMap => Some(7),
+            SpaceOuter::Array => Some(13),
+            SpaceOuter::Vector => Some(19),
+            SpaceOuter::HashSet => Some(26),
+            _ => None,
         }
     }
 }
 
 /// The inner collection of a space: the discipline of each collection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SpaceInner {
-    Bag,
-    Queue,
-    Stack,
-    Set,
-    Cell,
-    PriorityQueue,
-    VectorDb,
-}
+// Changed by decision 127 (kind registry): an inner collection is its name. A registered kind
+// names its own collection (`SpaceInner::named`), and the built-in collections are constants
+// with the names of the old variants. The text before:
+// ```
+// pub enum SpaceInner {
+//     Bag,
+//     Queue,
+//     Stack,
+//     Set,
+//     Cell,
+//     PriorityQueue,
+//     VectorDb,
+// }
+// ```
+pub struct SpaceInner(&'static str);
 
+// Added by decision 127 (kind registry): the constants keep the names of the old variants.
+#[allow(non_upper_case_globals)]
 impl SpaceInner {
+    /// The bag collection.
+    pub const Bag: SpaceInner = SpaceInner("bag");
+    /// The queue collection.
+    pub const Queue: SpaceInner = SpaceInner("queue");
+    /// The stack collection.
+    pub const Stack: SpaceInner = SpaceInner("stack");
+    /// The set collection.
+    pub const Set: SpaceInner = SpaceInner("set");
+    /// The cell collection.
+    pub const Cell: SpaceInner = SpaceInner("cell");
+    /// The priority queue collection.
+    pub const PriorityQueue: SpaceInner = SpaceInner("priorityqueue");
+    /// The VectorDB collection.
+    pub const VectorDb: SpaceInner = SpaceInner("vectordb");
+
+    /// Added by decision 127 (kind registry): the inner collection with the name `name`
+    /// (`Discipline::NAME`).
+    pub const fn named(name: &'static str) -> SpaceInner { SpaceInner(name) }
+
     /// Every inner collection, in family order.
     pub const ALL: [SpaceInner; 7] = [
         SpaceInner::Bag,
@@ -115,17 +189,21 @@ impl SpaceInner {
     ];
 
     /// The name of the inner collection in a URN and in a space config.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            SpaceInner::Bag => "bag",
-            SpaceInner::Queue => "queue",
-            SpaceInner::Stack => "stack",
-            SpaceInner::Set => "set",
-            SpaceInner::Cell => "cell",
-            SpaceInner::PriorityQueue => "priorityqueue",
-            SpaceInner::VectorDb => "vectordb",
-        }
-    }
+    // Changed by decision 127 (kind registry): the name is the value. The text before:
+    // ```
+    // pub const fn as_str(self) -> &'static str {
+    //     match self {
+    //         SpaceInner::Bag => "bag",
+    //         SpaceInner::Queue => "queue",
+    //         SpaceInner::Stack => "stack",
+    //         SpaceInner::Set => "set",
+    //         SpaceInner::Cell => "cell",
+    //         SpaceInner::PriorityQueue => "priorityqueue",
+    //         SpaceInner::VectorDb => "vectordb",
+    //     }
+    // }
+    // ```
+    pub const fn as_str(self) -> &'static str { self.0 }
 
     /// The inner collection with the name `value`.
     pub fn parse(value: &str) -> Option<SpaceInner> {
@@ -135,15 +213,31 @@ impl SpaceInner {
     }
 
     /// The offset of the inner collection in the families of an outer store.
-    const fn ordinal(self) -> u8 {
+    // Changed by decision 127 (kind registry): a collection of a registered kind has no built-in
+    // offset, and a match on a name is not const. The text before:
+    // ```
+    // const fn ordinal(self) -> u8 {
+    //     match self {
+    //         SpaceInner::Bag => 0,
+    //         SpaceInner::Queue => 1,
+    //         SpaceInner::Stack => 2,
+    //         SpaceInner::Set => 3,
+    //         SpaceInner::Cell => 4,
+    //         SpaceInner::PriorityQueue => 5,
+    //         SpaceInner::VectorDb => 6,
+    //     }
+    // }
+    // ```
+    fn ordinal(self) -> Option<u8> {
         match self {
-            SpaceInner::Bag => 0,
-            SpaceInner::Queue => 1,
-            SpaceInner::Stack => 2,
-            SpaceInner::Set => 3,
-            SpaceInner::Cell => 4,
-            SpaceInner::PriorityQueue => 5,
-            SpaceInner::VectorDb => 6,
+            SpaceInner::Bag => Some(0),
+            SpaceInner::Queue => Some(1),
+            SpaceInner::Stack => Some(2),
+            SpaceInner::Set => Some(3),
+            SpaceInner::Cell => Some(4),
+            SpaceInner::PriorityQueue => Some(5),
+            SpaceInner::VectorDb => Some(6),
+            _ => None,
         }
     }
 }
@@ -264,7 +358,11 @@ impl SpaceFactoryUrn {
 
     /// True when the outer store can hold the inner collection. The VectorDB collection needs
     /// the HashMap or the Vector store.
-    pub const fn is_supported_pair(self) -> bool {
+    // Changed by decision 127 (kind registry): a match on a name is not const. A pair with a
+    // name of a registered kind has no built-in rule, and the registry decides its pairs
+    // (`Family::of_urn`). The text before:
+    // pub const fn is_supported_pair(self) -> bool {
+    pub fn is_supported_pair(self) -> bool {
         match (self.outer, self.inner) {
             (SpaceOuter::HashMap | SpaceOuter::Vector, _) => true,
             (
@@ -272,12 +370,16 @@ impl SpaceFactoryUrn {
                 SpaceInner::VectorDb,
             ) => false,
             (SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::HashSet, _) => true,
+            // Added by decision 127 (kind registry): a name of a registered kind.
+            _ => true,
         }
     }
 
     /// True when a space of this family can have the qualifier. The HashSet store takes the
     /// `seq` qualifier only.
-    pub const fn supports_qualifier(self, qualifier: SpaceQualifier) -> bool {
+    // Changed by decision 127 (kind registry): a match on a name is not const. The text before:
+    // pub const fn supports_qualifier(self, qualifier: SpaceQualifier) -> bool {
+    pub fn supports_qualifier(self, qualifier: SpaceQualifier) -> bool {
         match (self.outer, qualifier) {
             (SpaceOuter::HashSet, SpaceQualifier::Seq) => true,
             (SpaceOuter::HashSet, SpaceQualifier::Default | SpaceQualifier::Temp) => false,
@@ -285,14 +387,31 @@ impl SpaceFactoryUrn {
                 SpaceOuter::HashMap | SpaceOuter::PathMap | SpaceOuter::Array | SpaceOuter::Vector,
                 _,
             ) => true,
+            // Added by decision 127 (kind registry): the store of a registered kind declares its
+            // qualifiers (`OuterStore::QUALIFIERS`), and gate 3 reads them.
+            _ => true,
         }
     }
 
     /// The family index, the op of the factory channel `[0xE0, index]`. An unsupported pair
     /// has none.
-    pub const fn family_index(self) -> Option<u8> {
+    // Changed by decision 127 (kind registry): a family of a registered kind has no built-in
+    // index. Its factory op is in the registry (`Family::factory`). The text before:
+    // ```
+    // pub const fn family_index(self) -> Option<u8> {
+    //     match self.is_supported_pair() {
+    //         true => Some(self.outer.family_base() + self.inner.ordinal()),
+    //         false => None,
+    //     }
+    // }
+    // ```
+    pub fn family_index(self) -> Option<u8> {
         match self.is_supported_pair() {
-            true => Some(self.outer.family_base() + self.inner.ordinal()),
+            true => self
+                .outer
+                .family_base()
+                .zip(self.inner.ordinal())
+                .map(|(base, ordinal)| base + ordinal),
             false => None,
         }
     }
@@ -363,8 +482,13 @@ impl SpaceFactoryConstructor {
         }
     }
 
-    /// Parses the elements of a constructor list. The PARAMS tuple is the last element, the
-    /// FREE tuple precedes it, and the qualifier string comes first.
+    // Changed by decision 112: the free theory and the params are `Expr` arms. The text before:
+    // ```
+    // /// Parses the elements of a constructor list. The PARAMS tuple is the last element, the
+    // /// FREE tuple precedes it, and the qualifier string comes first.
+    // ```
+    /// Parses the elements of a constructor list. The params value is the last element, the
+    /// free-theory value precedes it, and the qualifier string comes first.
     pub fn parse_elements(
         elements: &[Par],
     ) -> Result<SpaceFactoryConstructor, SpaceFactoryConstructorError> {
@@ -462,7 +586,17 @@ mod tests {
     }
 
     fn params(params: Vec<SendParam>) -> Par {
-        builders::send_params(params)
+        // Changed by decision 112: the builder returns the message, and the constructor list
+        // holds its `Par` form. The text before:
+        // ```
+        // builders::send_params(params)
+        //     .expect("valid params")
+        //     .expect("non-empty params")
+        // ```
+        let params = builders::send_params(params)
+            .expect("valid params")
+            .expect("non-empty params");
+        encode_params(&params)
             .expect("valid params")
             .expect("non-empty params")
     }

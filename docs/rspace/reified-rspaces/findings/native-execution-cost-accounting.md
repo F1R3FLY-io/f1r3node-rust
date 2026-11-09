@@ -37,7 +37,7 @@ Decision 47 fixed the space instance of F-47-4 in its own backend (commit `c6cb3
 
 ## 3. F-47-1: space errors have no typed class
 
-A space error that is not a host error becomes `InterpreterError::ReduceError("reified:…")` (`rholang/src/rust/interpreter/spaces/errors.rs:294-301`).
+A space error that is not a host error becomes `InterpreterError::ReduceError("reified:…")` (`rholang/src/rust/interpreter/spaces/errors.rs:297-304`).
 The economic failure policy classifies a `ReduceError` as Unclassified, and an Unclassified failure prevents the economic publication (`docs/casper/theory/cost-accounting-impl/economic-failure-observation.md:29`).
 The production check of an offered witness rejects every failure that is not a user failure.
 So a native deploy that fails with a space error, for example `CellOccupied` or `DanglingHandle`, is never charged.
@@ -47,8 +47,8 @@ A typed class for space errors is the "more precise typed contract" of the Uncla
 
 ## 4. F-47-2: the session charge depends on the thread count
 
-The native replay session reserves the cost of its constructor from the layout of its hot store (`rspace++/src/rspace/replay_rspace/native_session.rs:149-182`).
-That layout uses `native_cache_shards` (`rspace++/src/rspace/hot_store.rs:1538-1543`), which multiplies `std::thread::available_parallelism` by four.
+The native replay session reserves the cost of its constructor from the layout of its hot store (`rspace++/src/rspace/replay_rspace/native_session.rs:152-185`).
+That layout uses `native_cache_shards` (`rspace++/src/rspace/hot_store.rs` at the date of this record), which multiplies `std::thread::available_parallelism` by four.
 So two validators with different thread counts reserve different amounts.
 A budget near its limit can then accept the construction on one validator and reject it on another.
 The host-work rule forbids this: allocator layout and validator-local values must never control the verdict (`docs/casper/theory/host-work-budget.md:178-185`).
@@ -56,10 +56,10 @@ The host-work rule forbids this: allocator layout and validator-local values mus
 ## 5. F-47-3: two readers for host continuations
 
 For a host operation, native play reads continuations and joins through the plain hot-store reader.
-Native replay reads them through the native history reader, which stops a record decode at nesting depth 128 (`rspace++/src/rspace/history/native_reader/typed.rs:15`).
+Native replay reads them through the native history reader, which stops a record decode at nesting depth 128 (`rspace++/src/rspace/history/native_reader/typed.rs` at the date of this record).
 A continuation nested deeper than that limit could therefore load in play and fail in replay.
 This item was not checked for reachability.
-Decision 47 removes the difference for space transactions: both backends load a cold view through one native-reader helper (`history_records`, `rspace++/src/rspace/space_store_handle.rs:1117`).
+Decision 47 removes the difference for space transactions: both backends load a cold view through one native-reader helper (`history_records`, `rspace++/src/rspace/space_store_handle.rs:1677`).
 
 ## 6. F-47-4: a failed host operation leaves its waiters waiting
 
@@ -82,6 +82,8 @@ The same probe found 64 hangs among 109 forgeries of a space row (`hang-probe-sw
 The test `space_native_forged_footprints_never_hang` replays every forgery of a space row on a later host row and requires each replay to end and to be rejected.
 With the closure disabled, the test fails, and the TLA+ control `NoInvalidateUnsafe` of `NativeReplay.tla` refutes `NoDeadlock`.
 The host path needs the same closure, and the owner decides it. The tracker holds this finding as a bug item of the project.
+
+*Retired by [decision 124](../decision-register.md#decision-124): the epoch closure and its control are gone. A forged record now ends the replay with `Incomplete` or `Stalled` under the base stall rule.*
 
 ## 7. M-47-1: verification bytes of native replay
 

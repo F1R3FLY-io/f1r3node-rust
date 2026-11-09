@@ -32,33 +32,33 @@
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
    rec, wtr, vst            rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1239-1252 (Element: a record, its
+                            vectordb.rs:1767-1780 (Element: a record, its
                             source and its persistence), the records and the
                             waiters of the staged view of a collection
    elig, esort              rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:881-952 (eligible: the score, the
+                            vectordb.rs:1028-1129 (eligible: the score, the
                             bound and the ids, then the selection order of
                             tensor/exact.rs, Similarity.v S13 to S15)
    sel, fires               rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1655-1707, 1068-1117
+                            vectordb.rs:1651-1703, 1064-1113
                             (receive_selection, list_selection)
    osel, ofires             rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1484-1540, 1123-1142
+                            vectordb.rs:1480-1536, 1119-1138
                             (first_offer_target, list_offer)
    after_fire               rholang/src/rust/interpreter/reified/costs.rs:
-                            322-333 (FireRounds::after_fire)
+                            71-82 (FireRounds::after_fire)
    retired                  rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1151-1194 (retire_members)
+                            vectordb.rs:1147-1190 (retire_members)
    offer                    rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1422-1471 (offer_vdb)
+                            vectordb.rs:1418-1467 (offer_vdb)
    receive                  rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1554-1644 (receive_plan)
+                            vectordb.rs:1550-1640 (receive_plan)
    first_cascade, tail      rholang/src/rust/interpreter/spaces/disciplines/
-                            vectordb.rs:1791-1826, 1878-1926, 1933-1978
+                            vectordb.rs:1787-1822, 1874-1922, 1929-1974
                             (run_tail, first_cascade_target,
                             lift_and_reoffer)
    jfill, first_fit         rholang/src/rust/interpreter/spaces/join.rs:
-                            3095-3208, 3403-3471, 1693-1788 (search: the
+                            3081-3194, 3389-3457, 1679-1774 (search: the
                             greedy search of the engine; similarity_bind:
                             the first record of the selection order of a
                             bind that its pattern binds, without the claimed

@@ -13,7 +13,7 @@
 '   3. The dispatch sends each Reified AST part to its arm. An arm normalizes
 '      the parts in the scope of the syntax contract and calls one builder.
 '   4. The builders and the validators re-check every parser guarantee.
-'   5. The sorter puts the marker tuples in canonical order, and prost gives
+'   5. The sorter puts the fields of a Par in canonical order, and prost gives
 '      the bytes that the dual-frontend corpus pins.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
@@ -35,8 +35,10 @@ title Normalization of the Reified syntax: Compiler::source_to_adt
 
 start
 :source text; <<$rrs_host>>
+' Changed by decision 110: the node keeps preprocess_floats. Before, the label said
+' "(retired at the final parser pin)".
 :preprocess_floats: the baseline rewrite of unsuffixed floats to f64
-(retired at the final parser pin); <<$rrs_host>>
+(kept, so every float form of the base stays valid); <<$rrs_host>>
 partition "v3 parser (tree-sitter grammar, external scanner, AST builder)" {
   :the scanner reads `use` and `free`:
   a keyword only when the next text can never continue a baseline program,
@@ -88,16 +90,16 @@ if (a builder or a validator rejects the parts?) then (yes)
   stop
 else (no)
 endif
-:marker tuples in their recognized positions:
-USE and NEWSPACE in Par.exprs, PARAMS as the last data element,
-QUERY as the bind source, FREE as a value; <<$rrs_syntax>>
-:ParSortMatcher sorts the Par: the marker tuples need no new sort score; <<$rrs_host>>
-:prost bytes of the Par, pinned by test-vectors/reified-syntax-corpus-v1.json; <<$rrs_host>>
+:the fields of each construct in the Par:
+Par.use_blocks, New.space_types, Send.params,
+ReceiveBind.query_spec, EFreeBody in Par.exprs; <<$rrs_syntax>>
+:ParSortMatcher sorts the Par and its fields; <<$rrs_host>>
+:prost bytes of the Par, pinned by test-vectors/reified-syntax-corpus-v2.json; <<$rrs_host>>
 stop
 
 legend bottom
 **Concept colors**
-|<$rrs_syntax>     | Reified syntax: parser, normalizer arms, builders, marker tuples |
+|<$rrs_syntax>     | Reified syntax: parser, normalizer arms, builders, fields of each construct |
 |<$rrs_host>       | baseline code that the campaign does not change |
 |<$rrs_reject>     | rejection: the source gives no Par |
 endlegend

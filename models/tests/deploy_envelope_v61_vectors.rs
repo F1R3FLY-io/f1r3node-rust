@@ -33,6 +33,7 @@ fn rust_consumes_the_canonical_v61_threshold_vector() {
     assert_eq!(integer(&vectors, "authorizationFormatVersion"), 0x0006_0001);
     let vector = &field(&vectors, "positive")["threshold2Of3Selected0And2"];
     let data = DeployData {
+        parameters: Vec::new(),
         term: string(vector, "term"),
         language: string(vector, "language"),
         time_stamp: integer(vector, "timestamp"),

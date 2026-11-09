@@ -6,10 +6,18 @@
 // recognized construct fails closed with a typed `reified:<Code>:` error, or it translates. No
 // space reference of a fixture names a native space (P4 design C.2 and C.3). The empty Par
 // gives `EmptySpaceRef`. Every other value names a user agent, and from P8 step 4 the construct
-// translates: a USE block runs its body in the context of the agent, and a NEWSPACE tuple with
-// an agent annotation makes a gensym call and parks its resume term (`hook_outcome`). Before
-// the strict decode, the hooks recompute the flags that the encoder derives (I-20). Two tests
-// check consensus checklist items 18 and 19 for P2.
+// Changed by decision 112: the Reified syntax lives in protobuf fields, so no hook refreshes a flag
+// and an annotated `new` replaces the NEWSPACE tuple. The text before:
+// ```
+// // translates: a USE block runs its body in the context of the agent, and a NEWSPACE tuple with
+// // an agent annotation makes a gensym call and parks its resume term (`hook_outcome`). Before
+// // the strict decode, the hooks recompute the flags that the encoder derives (I-20). Two tests
+// // check consensus checklist items 18 and 19 for P2.
+// ```
+// translates: a USE block runs its body in the context of the agent, and an annotated `new` with
+// an agent annotation makes a gensym call and parks its resume term (`hook_outcome`). The
+// Reified syntax lives in protobuf fields (decision 112), so a tuple with a former marker head
+// is an ordinary tuple. Two tests check consensus checklist items 18 and 19 for P2.
 
 #[path = "../../models/tests/support/reified_strategies.rs"]
 mod reified_strategies;
@@ -20,25 +28,47 @@ use std::sync::Arc;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::{VarInstance, WildcardMsg};
+// Changed by decision 112: the tests read the protobuf fields through the field decoders.
+// The text before:
+// ```
+// use models::rhoapi::{
+//     BindPattern, Bundle, EEq, EMethod, ETuple, EVar, Expr, If, ListParWithRandom, Match, MatchCase,
+//     New, Par, Receive, ReceiveBind, TaggedContinuation, Var,
+// };
+// use models::rust::reified::builders::{push_process_expr, send_params, use_block};
+// use models::rust::reified::encoding::{
+//     decode_free_value, decode_process_tuple, decode_query_source, encode, encode_new_space,
+//     marker_of, split_trailing_params, Marker, NewSpace, ReifiedConstruct, ReifiedDecodeError,
+// };
+// ```
 use models::rhoapi::{
     BindPattern, Bundle, EEq, EMethod, ETuple, EVar, Expr, If, ListParWithRandom, Match, MatchCase,
-    New, Par, Receive, ReceiveBind, TaggedContinuation, Var,
+    New, Par, QuerySpec, Receive, ReceiveBind, SendParams, TaggedContinuation, Var,
 };
-use models::rust::reified::builders::{push_process_expr, send_params, use_block};
+use models::rust::reified::builders::{push_use_block, query_spec, send_params, use_block};
 use models::rust::reified::encoding::{
-    decode_free_value, decode_process_tuple, decode_query_source, encode, encode_new_space,
-    marker_of, split_trailing_params, Marker, NewSpace, ReifiedConstruct, ReifiedDecodeError,
+    check_query_spec, decode_free_value, decode_new_space, decode_use_block, split_trailing_params,
+    Marker, NewSpace, ReifiedConstruct,
 };
 use models::rust::reified::params::SendParam;
 use models::rust::rholang::implicits::concatenate_pars;
+use models::rust::utils::union;
 use proptest::prelude::*;
 use proptest::sample::select;
 use proptest::test_runner::{RngSeed, TestRunner};
 use prost::Message;
+// Changed by decision 112: the restated tests no longer read `int_connective`. The text before:
+// ```
+// use reified_strategies::{
+//     arb_construct, arb_ground_construct, arb_ground_par, arb_named, arb_par, bound_var,
+//     contains_marker, gbool, gint, gstring, int_connective, list, map, new_term, position_par,
+//     private_name, send, sole_tuple, tuple,
+// };
+// ```
 use reified_strategies::{
     arb_construct, arb_ground_construct, arb_ground_par, arb_named, arb_par, bound_var,
-    contains_marker, gbool, gint, gstring, int_connective, list, map, new_term, position_par,
-    private_name, send, sole_tuple, tuple,
+    contains_marker, gbool, gint, gstring, list, map, new_term, position_par, private_name, send,
+    sole_tuple, tuple,
 };
 use rholang::rust::interpreter::accounting::cost_accounting::CostAccounting;
 use rholang::rust::interpreter::accounting::costs::Cost;
@@ -71,7 +101,8 @@ use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreMana
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
 
 const PROPERTY_SEED: u64 = 0x0E0D_2026_1004_0007;
-const LEXICAL_DISAGREEMENT: &str = "funding resolver term schedule disagrees with reducer schedule";
+// Disabled by decision 90 (R-1): no test expects the resolver to fail closed on a marker now.
+// const LEXICAL_DISAGREEMENT: &str = "funding resolver term schedule disagrees with reducer schedule";
 /// The contract of the second HEAD empty-state test (casper/tests/util/rholang/runtime_spec.rs).
 const RUNTIME_SPEC_CONTRACT: &str = r#"new a in {
            @"2"!(10)|
@@ -176,7 +207,12 @@ impl Outcome {
 
 fn error_text(error: &InterpreterError) -> String {
     match error {
-        InterpreterError::ReduceError(message) => message.clone(),
+        // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): a user failure of
+        // a space is a `SpaceUserError` with the text of its reduce error.
+        // InterpreterError::ReduceError(message) => message.clone(),
+        InterpreterError::ReduceError(message) | InterpreterError::SpaceUserError(message) => {
+            message.clone()
+        }
         InterpreterError::AggregateError { interpreter_errors } => interpreter_errors
             .iter()
             .map(error_text)
@@ -338,6 +374,7 @@ fn join(binds: Vec<(Par, Vec<Par>, i32)>, body: Par, persistent: bool, peek: boo
             remainder: None,
             free_count,
             cost_signature: None,
+            query_spec: None,
         })
         .collect();
     Par {
@@ -363,6 +400,29 @@ fn persistent_send(chan: Par, data: Vec<Par>) -> Par {
     par
 }
 
+/// `par` with `params` in the `params` field of its first send.
+fn with_params(mut par: Par, params: SendParams) -> Par {
+    par.sends[0].params = Some(params);
+    par
+}
+
+/// `par` with `query` in the `query_spec` field of the bind `index` of its first receive.
+fn with_query(mut par: Par, index: usize, query: QuerySpec) -> Par {
+    par.receives[0].binds[index].query_spec = Some(query);
+    par
+}
+
+/// A use block without a body, which no frontend builds.
+fn malformed_use_block() -> Par {
+    Par {
+        use_blocks: vec![models::rhoapi::UseBlock {
+            space: Some(gint(1)),
+            body: None,
+        }],
+        ..Par::default()
+    }
+}
+
 fn new_par(bind_count: i32, body: Par) -> Par {
     Par {
         news: vec![New {
@@ -371,6 +431,7 @@ fn new_par(bind_count: i32, body: Par) -> Par {
             uri: Vec::new(),
             injections: Default::default(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         }],
         ..Par::default()
     }
@@ -452,7 +513,10 @@ fn tuple_expr(tuple: ETuple) -> Expr {
     }
 }
 
-fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
+// Changed by decision 112: the tuple builder retires, so `prepend_expr` adds the tuple.
+// The text before:
+// fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
+fn process(tuple: ETuple) -> Par { prepend_expr(Par::default(), tuple_expr(tuple), 0) }
 
 /// The typed error of a USE or NEWSPACE hook for a reference without components.
 const EMPTY_SPACE_REF: &str = "reified:EmptySpaceRef: the space reference is empty";
@@ -572,29 +636,65 @@ fn marker_tuple(marker: Marker, fields: Vec<Par>) -> Par {
     tuple(ps)
 }
 
+// Changed by decision 112: the samples are the field forms and the values that the hooks read.
+// The text before:
+// ```
+// fn sample_use() -> Par {
+//     marker_tuple(Marker::Use, vec![
+//         private_name(vec![3; 32]),
+//         send(gint(1), vec![gint(2)]),
+//     ])
+// }
+//
+// fn sample_new_space() -> Par {
+//     process(
+//         match encode_new_space(&NewSpace {
+//             annotations: vec![Some(private_name(vec![4; 32]))],
+//             new: new_term(1, Vec::new(), send(gint(1), vec![gint(2)])),
+//         })
+//         .expect("an annotated new encodes")
+//         .expr_instance
+//         {
+//             Some(ExprInstance::ETupleBody(tuple)) => tuple,
+//             other => panic!("encode_new_space returned {other:?}"),
+//         },
+//     )
+// }
+//
+// fn sample_params() -> Par {
+//     send_params(vec![
+//         SendParam::Positional(gint(3)),
+//         SendParam::Named("priority".to_owned(), gint(4)),
+//     ])
+//     .expect("params build")
+//     .expect("params are not empty")
+// }
+//
+// fn sample_query() -> Par {
+//     marker_tuple(Marker::Query, vec![
+//         gstring("rrs-p2-query"),
+//         list(vec![gint(5)]),
+//         map(vec![("k".to_owned(), gint(1))]),
+//     ])
+// }
+// ```
 fn sample_use() -> Par {
-    marker_tuple(Marker::Use, vec![
-        private_name(vec![3; 32]),
-        send(gint(1), vec![gint(2)]),
-    ])
+    position_par(&ReifiedConstruct::Use(
+        models::rust::reified::encoding::UseBlock {
+            space: private_name(vec![3; 32]),
+            body: send(gint(1), vec![gint(2)]),
+        },
+    ))
 }
 
 fn sample_new_space() -> Par {
-    process(
-        match encode_new_space(&NewSpace {
-            annotations: vec![Some(private_name(vec![4; 32]))],
-            new: new_term(1, Vec::new(), send(gint(1), vec![gint(2)])),
-        })
-        .expect("an annotated new encodes")
-        .expr_instance
-        {
-            Some(ExprInstance::ETupleBody(tuple)) => tuple,
-            other => panic!("encode_new_space returned {other:?}"),
-        },
-    )
+    position_par(&ReifiedConstruct::NewSpace(NewSpace {
+        annotations: vec![Some(private_name(vec![4; 32]))],
+        new: new_term(1, Vec::new(), send(gint(1), vec![gint(2)])),
+    }))
 }
 
-fn sample_params() -> Par {
+fn sample_params() -> SendParams {
     send_params(vec![
         SendParam::Positional(gint(3)),
         SendParam::Named("priority".to_owned(), gint(4)),
@@ -603,12 +703,51 @@ fn sample_params() -> Par {
     .expect("params are not empty")
 }
 
-fn sample_query() -> Par {
-    marker_tuple(Marker::Query, vec![
-        gstring("rrs-p2-query"),
-        list(vec![gint(5)]),
-        map(vec![("k".to_owned(), gint(1))]),
-    ])
+fn sample_query() -> QuerySpec {
+    query_spec(vec![gint(5)], vec![SendParam::Named(
+        "k".to_owned(),
+        gint(1),
+    )])
+    .expect("a query builds")
+}
+
+/// True when `par` is the name of a former marker.
+fn is_marker_name(par: &Par) -> bool { Marker::ALL.into_iter().any(|marker| marker.par() == *par) }
+
+/// The tuple that encoded `construct` before decision 112. Its head is the former marker id,
+/// which is an ordinary private name now.
+fn former_encoding(construct: &ReifiedConstruct) -> ETuple {
+    let entries = |named: &std::collections::BTreeMap<String, Par>| -> Vec<(String, Par)> {
+        named
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect()
+    };
+    let fields = match construct {
+        ReifiedConstruct::Use(block) => vec![block.space.clone(), block.body.clone()],
+        ReifiedConstruct::NewSpace(new_space) => vec![
+            list(
+                new_space
+                    .annotations
+                    .iter()
+                    .map(|annotation| list(annotation.iter().cloned().collect()))
+                    .collect(),
+            ),
+            prepend_new(Par::default(), new_space.new.clone()),
+        ],
+        ReifiedConstruct::Params(params) => {
+            vec![list(params.positional.clone()), map(entries(&params.named))]
+        }
+        ReifiedConstruct::Query(query) => vec![
+            gstring("rrs-p2-e8-query"),
+            list(query.payload.clone()),
+            map(entries(&query.named)),
+        ],
+        ReifiedConstruct::Free(theory) => {
+            vec![gstring(&theory.name), list(theory.args.clone())]
+        }
+    };
+    tuple_of(&marker_tuple(construct.marker(), fields))
 }
 
 // ── E7 ─────────────────────────────────────────────────────────────────────
@@ -632,10 +771,14 @@ async fn check_recognized_in_place(construct: &ReifiedConstruct) -> Result<(), T
     let channel = gstring("rrs-p2-e7");
     match construct {
         ReifiedConstruct::Use(_) | ReifiedConstruct::NewSpace(_) => {
-            prop_assert_eq!(
-                decode_process_tuple(&tuple_of(&par)).map(ReifiedConstruct::from),
-                Ok(construct.clone())
-            );
+            // Changed by decision 112: the field decoders read the construct. The text before:
+            // ```
+            // prop_assert_eq!(
+            //     decode_process_tuple(&tuple_of(&par)).map(ReifiedConstruct::from),
+            //     Ok(construct.clone())
+            // );
+            // ```
+            prop_assert_eq!(decode_in_position(&par, marker), Ok(construct.clone()));
             // Changed by P8 step 4 (design v2 AG-2, W4): the hook evaluates the reference fields
             // of this construct, and an empty reference fails closed while a user agent
             // translates (`hook_outcome`).
@@ -661,8 +804,13 @@ async fn check_recognized_in_place(construct: &ReifiedConstruct) -> Result<(), T
                 Ok(Some(params.clone()))
             );
             for program in [
-                send(channel.clone(), vec![gint(1), par.clone()]),
-                persistent_send(channel.clone(), vec![par.clone()]),
+                // Changed by decision 112: a send holds its params in the field. The text before:
+                // ```
+                // send(channel.clone(), vec![gint(1), par.clone()]),
+                // persistent_send(channel.clone(), vec![par.clone()]),
+                // ```
+                with_params(send(channel.clone(), vec![gint(1)]), params.clone()),
+                with_params(persistent_send(channel.clone(), Vec::new()), params.clone()),
             ] {
                 let outcome = evaluate(program).await;
                 prop_assert_eq!(outcome.code(), Some("ParamsUnsupported"));
@@ -670,13 +818,23 @@ async fn check_recognized_in_place(construct: &ReifiedConstruct) -> Result<(), T
             }
         }
         ReifiedConstruct::Query(query) => {
-            prop_assert_eq!(decode_query_source(&par), Ok(Some(query.clone())));
-            let outcome = evaluate(receive(
-                par.clone(),
-                vec![wildcard()],
+            // Changed by decision 112: a bind holds its query in the field. The text before:
+            // ```
+            // prop_assert_eq!(decode_query_source(&par), Ok(Some(query.clone())));
+            // let outcome = evaluate(receive(
+            //     par.clone(),
+            //     vec![wildcard()],
+            //     0,
+            //     Par::default(),
+            //     false,
+            // ))
+            // .await;
+            // ```
+            prop_assert_eq!(decode_in_position(&par, marker), Ok(construct.clone()));
+            let outcome = evaluate(with_query(
+                receive(channel.clone(), vec![wildcard()], 0, Par::default(), false),
                 0,
-                Par::default(),
-                false,
+                query.clone(),
             ))
             .await;
             prop_assert_eq!(outcome.code(), Some("QuerySpecUnsupported"));
@@ -687,7 +845,10 @@ async fn check_recognized_in_place(construct: &ReifiedConstruct) -> Result<(), T
         }
     }
     // The other positions are inert: HEAD behavior applies.
-    if !matches!(marker, Marker::Use | Marker::NewSpace) {
+    // Changed by decision 112: a receive with a query is a process that the reducer evaluates, so
+    // the inert values are the two value forms. The text before:
+    // if !matches!(marker, Marker::Use | Marker::NewSpace) {
+    if matches!(marker, Marker::Params | Marker::Free) {
         let outcome = evaluate(par.clone()).await;
         prop_assert_eq!(&outcome.error, &None);
         prop_assert!(outcome.is_quiet());
@@ -731,11 +892,21 @@ fn arb_forged_field() -> BoxedStrategy<Par> {
     .boxed()
 }
 
-/// A tuple with a marker head: the canonical encoding of a construct, random fields of any
-/// arity, or a canonical encoding with a flipped flag.
+// Changed by decision 112: the tuples of this test are former encodings. The text before:
+// ```
+// /// A tuple with a marker head: the canonical encoding of a construct, random fields of any
+// /// arity, or a canonical encoding with a flipped flag.
+// ```
+/// A tuple with a former marker head: the former encoding of a construct, random fields of any
+/// arity, or a former encoding with a flipped flag.
 fn arb_forged() -> BoxedStrategy<ETuple> {
-    let canonical =
-        arb_ground_construct().prop_map(|construct| tuple_of(&position_par(&construct)));
+    // Changed by decision 112: `position_par` builds the field forms, so the former encoding has
+    // its own helper. The text before:
+    // ```
+    // let canonical =
+    //     arb_ground_construct().prop_map(|construct| tuple_of(&position_par(&construct)));
+    // ```
+    let canonical = arb_ground_construct().prop_map(|construct| former_encoding(&construct));
     let random = (
         select(Marker::ALL.to_vec()),
         proptest::collection::vec(arb_forged_field(), 1..5),
@@ -748,78 +919,144 @@ fn arb_forged() -> BoxedStrategy<ETuple> {
     prop_oneof![3 => canonical, 3 => random, 1 => flagged].boxed()
 }
 
-/// E8 (marker_forging_grants_no_capability): a term that a hook recognizes is the canonical
-/// encoding of a well-formed construct that the position allows. The hook refreshes the
-/// derived flags of the term first (I-20). So a forged term behaves as the syntax that it
-/// equals. A malformed marker term fails closed.
+// Changed by decision 112: no tuple is a Reified form, so a forged tuple grants nothing.
+// The text before:
+// ```
+// /// E8 (marker_forging_grants_no_capability): a term that a hook recognizes is the canonical
+// /// encoding of a well-formed construct that the position allows. The hook refreshes the
+// /// derived flags of the term first (I-20). So a forged term behaves as the syntax that it
+// /// equals. A malformed marker term fails closed.
+// ```
+/// E8, restated by decision 112: a tuple with a former marker head is an ordinary tuple. It is
+/// inert in process position, it is ordinary data in the last data position of a send, it is an
+/// ordinary channel as a bind source, and the value decoders read no construct from it. So a
+/// forged tuple grants no capability, whatever its flags are.
 #[test]
-fn marker_forging_grants_no_capability() {
+// Changed by decision 112: the test covers a former marker tuple. The text before:
+// fn marker_forging_grants_no_capability() {
+fn former_marker_tuple_is_ordinary() {
     let runtime = runtime();
     let mut runner = TestRunner::new(property_config());
     runner
         .run(&arb_forged(), |forged| {
             runtime.block_on(check_forged(forged))
         })
-        .expect("forged marker tuples grant no capability");
+        // Changed by decision 112: a former marker tuple is ordinary. The text before:
+        // .expect("forged marker tuples grant no capability");
+        .expect("a tuple with a former marker head is an ordinary tuple");
 }
 
+// Changed by decision 112: no hook recognizes a tuple, so every position treats a forged tuple as
+// an ordinary tuple. The text before:
+// ```
+// async fn check_forged(forged: ETuple) -> Result<(), TestCaseError> {
+//     let marker = marker_of(&forged.ps[0]).expect("a forged tuple has a marker head");
+//     let forged_par = process(forged.clone());
+//     // I-20: before the strict decode, a hook recomputes the flags that the encoder derives.
+//     // The fields of a forged tuple carry their derived flags, so only the flag of the tuple
+//     // can be stale. `tuple` recomputes that flag from the fields. The decoders read a tuple of
+//     // another marker as no construct, whatever its flags are.
+//     let refreshed = tuple_of(&tuple(forged.ps.clone()));
+//     prop_assert_eq!(&refreshed.ps, &forged.ps);
+//     let refreshed_par = process(refreshed.clone());
+//     let channel = gstring("rrs-p2-e8");
+//
+//     // Process position (H1 and H2).
+//     let outcome = evaluate(forged_par.clone()).await;
+//     match (marker, decode_process_tuple(&refreshed)) {
+//         (Marker::Use | Marker::NewSpace, Ok(construct)) => {
+//             let construct = ReifiedConstruct::from(construct);
+//             prop_assert_eq!(construct.marker(), marker);
+//             let canonical =
+//                 encode(&construct).map_err(|error| TestCaseError::fail(error.to_string()))?;
+//             prop_assert_eq!(&canonical, &tuple_expr(refreshed.clone()));
+//             // Changed by P8 step 4 (design v2 AG-2, W4): see `hook_outcome`.
+//             // prop_assert_eq!(outcome.error.as_deref(), space_ref_error(&construct));
+//             match hook_outcome(&construct) {
+//                 Some(expected) => check_hook_outcome(&outcome, &expected)?,
+//                 None => prop_assert_eq!(&outcome.error, &None),
+//             }
+//             prop_assert_eq!(&outcome, &evaluate(position_par(&construct)).await);
+//         }
+//         (Marker::Use | Marker::NewSpace, Err(_)) => {
+//             prop_assert_eq!(outcome.code(), Some("Malformed"));
+//             prop_assert!(outcome.is_quiet());
+//         }
+//         (Marker::Params | Marker::Query | Marker::Free, _) => {
+//             prop_assert_eq!(&outcome.error, &None);
+//             prop_assert!(outcome.is_quiet());
+//         }
+//     }
+//
+//     // The last data element of a send (H3).
+//     let outcome = evaluate(send(channel.clone(), vec![forged_par.clone()])).await;
+//     match split_trailing_params(std::slice::from_ref(&refreshed_par)) {
+//         Ok(Some(params)) => {
+//             let construct = ReifiedConstruct::Params(params);
+//             prop_assert_eq!(&position_par(&construct), &refreshed_par);
+//             prop_assert_eq!(outcome.code(), Some("ParamsUnsupported"));
+//             let replayed = evaluate(send(channel.clone(), vec![position_par(&construct)])).await;
+//             prop_assert_eq!(&outcome, &replayed);
+//         }
+//         Err(_) => prop_assert_eq!(outcome.code(), Some("Malformed")),
+//         Ok(None) => {
+//             prop_assert_eq!(&outcome.error, &None);
+//             prop_assert_eq!(outcome.produces, 1);
+//         }
+//     }
+//
+//     // The source of a receive bind (H4).
+//     let outcome = evaluate(receive(
+//         forged_par.clone(),
+//         vec![wildcard()],
+//         0,
+//         Par::default(),
+//         false,
+//     ))
+//     .await;
+//     match decode_query_source(&refreshed_par) {
+//         Ok(Some(query)) => {
+//             let construct = ReifiedConstruct::Query(query);
+//             prop_assert_eq!(&position_par(&construct), &refreshed_par);
+//             prop_assert_eq!(outcome.code(), Some("QuerySpecUnsupported"));
+//             let replayed = evaluate(receive(
+//                 position_par(&construct),
+//                 vec![wildcard()],
+//                 0,
+//                 Par::default(),
+//                 false,
+//             ))
+//             .await;
+//             prop_assert_eq!(&outcome, &replayed);
+//         }
+//         Err(_) => prop_assert_eq!(outcome.code(), Some("Malformed")),
+//         Ok(None) => {
+//             prop_assert_eq!(&outcome.error, &None);
+//             prop_assert_eq!(outcome.consumes, 1);
+//         }
+//     }
+//     Ok(())
+// }
+// ```
 async fn check_forged(forged: ETuple) -> Result<(), TestCaseError> {
-    let marker = marker_of(&forged.ps[0]).expect("a forged tuple has a marker head");
-    let forged_par = process(forged.clone());
-    // I-20: before the strict decode, a hook recomputes the flags that the encoder derives.
-    // The fields of a forged tuple carry their derived flags, so only the flag of the tuple
-    // can be stale. `tuple` recomputes that flag from the fields. The decoders read a tuple of
-    // another marker as no construct, whatever its flags are.
-    let refreshed = tuple_of(&tuple(forged.ps.clone()));
-    prop_assert_eq!(&refreshed.ps, &forged.ps);
-    let refreshed_par = process(refreshed.clone());
+    prop_assert!(
+        is_marker_name(&forged.ps[0]),
+        "a forged tuple has a former marker head"
+    );
+    let forged_par = process(forged);
     let channel = gstring("rrs-p2-e8");
 
-    // Process position (H1 and H2).
+    // Process position: a tuple is no term of the schedule, so nothing runs.
     let outcome = evaluate(forged_par.clone()).await;
-    match (marker, decode_process_tuple(&refreshed)) {
-        (Marker::Use | Marker::NewSpace, Ok(construct)) => {
-            let construct = ReifiedConstruct::from(construct);
-            prop_assert_eq!(construct.marker(), marker);
-            let canonical =
-                encode(&construct).map_err(|error| TestCaseError::fail(error.to_string()))?;
-            prop_assert_eq!(&canonical, &tuple_expr(refreshed.clone()));
-            // Changed by P8 step 4 (design v2 AG-2, W4): see `hook_outcome`.
-            // prop_assert_eq!(outcome.error.as_deref(), space_ref_error(&construct));
-            match hook_outcome(&construct) {
-                Some(expected) => check_hook_outcome(&outcome, &expected)?,
-                None => prop_assert_eq!(&outcome.error, &None),
-            }
-            prop_assert_eq!(&outcome, &evaluate(position_par(&construct)).await);
-        }
-        (Marker::Use | Marker::NewSpace, Err(_)) => {
-            prop_assert_eq!(outcome.code(), Some("Malformed"));
-            prop_assert!(outcome.is_quiet());
-        }
-        (Marker::Params | Marker::Query | Marker::Free, _) => {
-            prop_assert_eq!(&outcome.error, &None);
-            prop_assert!(outcome.is_quiet());
-        }
-    }
+    prop_assert_eq!(&outcome.error, &None);
+    prop_assert!(outcome.is_quiet());
 
-    // The last data element of a send (H3).
+    // The last data element of a send is ordinary data.
     let outcome = evaluate(send(channel.clone(), vec![forged_par.clone()])).await;
-    match split_trailing_params(std::slice::from_ref(&refreshed_par)) {
-        Ok(Some(params)) => {
-            let construct = ReifiedConstruct::Params(params);
-            prop_assert_eq!(&position_par(&construct), &refreshed_par);
-            prop_assert_eq!(outcome.code(), Some("ParamsUnsupported"));
-            let replayed = evaluate(send(channel.clone(), vec![position_par(&construct)])).await;
-            prop_assert_eq!(&outcome, &replayed);
-        }
-        Err(_) => prop_assert_eq!(outcome.code(), Some("Malformed")),
-        Ok(None) => {
-            prop_assert_eq!(&outcome.error, &None);
-            prop_assert_eq!(outcome.produces, 1);
-        }
-    }
+    prop_assert_eq!(&outcome.error, &None);
+    prop_assert_eq!(outcome.produces, 1);
 
-    // The source of a receive bind (H4).
+    // The source of a receive bind is an ordinary channel.
     let outcome = evaluate(receive(
         forged_par.clone(),
         vec![wildcard()],
@@ -828,54 +1065,48 @@ async fn check_forged(forged: ETuple) -> Result<(), TestCaseError> {
         false,
     ))
     .await;
-    match decode_query_source(&refreshed_par) {
-        Ok(Some(query)) => {
-            let construct = ReifiedConstruct::Query(query);
-            prop_assert_eq!(&position_par(&construct), &refreshed_par);
-            prop_assert_eq!(outcome.code(), Some("QuerySpecUnsupported"));
-            let replayed = evaluate(receive(
-                position_par(&construct),
-                vec![wildcard()],
-                0,
-                Par::default(),
-                false,
-            ))
-            .await;
-            prop_assert_eq!(&outcome, &replayed);
-        }
-        Err(_) => prop_assert_eq!(outcome.code(), Some("Malformed")),
-        Ok(None) => {
-            prop_assert_eq!(&outcome.error, &None);
-            prop_assert_eq!(outcome.consumes, 1);
-        }
-    }
+    prop_assert_eq!(&outcome.error, &None);
+    prop_assert_eq!(outcome.consumes, 1);
+
+    // The value decoders read no construct from a tuple.
+    prop_assert_eq!(decode_free_value(&forged_par), Ok(None));
+    prop_assert_eq!(
+        split_trailing_params(std::slice::from_ref(&forged_par)),
+        Ok(None)
+    );
     Ok(())
 }
 
 // ── E9 ─────────────────────────────────────────────────────────────────────
 
-/// The unused id `[0xE0, m + 5]` that stands in for the marker `m`.
-fn decoy_index(marker: Marker) -> u8 { marker as u8 + 5 }
+// Retired by decision 112: a field holds no marker id, so the decoy comparison has no subject.
+// The text before:
+// ```
+// /// The unused id `[0xE0, m + 5]` that stands in for the marker `m`.
+// fn decoy_index(marker: Marker) -> u8 { marker as u8 + 5 }
+//
+// /// Replaces every `GPrivate` id `[0xE0, m + 5]` by `[0xE0, m]` in prost bytes.
+// fn rename_decoys(bytes: &[u8]) -> Vec<u8> {
+//     let mut renamed = bytes.to_vec();
+//     for marker in Marker::ALL {
+//         let decoy = [0x0a, 0x02, 0xE0, decoy_index(marker)];
+//         let mut index = 0;
+//         while index + decoy.len() <= renamed.len() {
+//             if renamed[index..index + decoy.len()] == decoy {
+//                 renamed[index + 3] = marker as u8;
+//                 index += decoy.len();
+//             } else {
+//                 index += 1;
+//             }
+//         }
+//     }
+//     renamed
+// }
+// ```
 
-/// Replaces every `GPrivate` id `[0xE0, m + 5]` by `[0xE0, m]` in prost bytes.
-fn rename_decoys(bytes: &[u8]) -> Vec<u8> {
-    let mut renamed = bytes.to_vec();
-    for marker in Marker::ALL {
-        let decoy = [0x0a, 0x02, 0xE0, decoy_index(marker)];
-        let mut index = 0;
-        while index + decoy.len() <= renamed.len() {
-            if renamed[index..index + decoy.len()] == decoy {
-                renamed[index + 3] = marker as u8;
-                index += decoy.len();
-            } else {
-                index += 1;
-            }
-        }
-    }
-    renamed
-}
-
-/// A program with the tuple `marked` in the inert positions that `mask` selects.
+// Changed by decision 112: `marked` is the field form of a construct. The text before:
+// /// A program with the tuple `marked` in the inert positions that `mask` selects.
+/// A program with the field form `marked` in the inert positions that `mask` selects.
 fn inert_program(marked: &Par, marker: Marker, mask: u16) -> Par {
     let chosen = |bit: u16| mask & (1 << bit) != 0;
     let out = |label: &str| gstring(&format!("rrs-p2-e9-out-{label}"));
@@ -943,8 +1174,14 @@ fn inert_program(marked: &Par, marker: Marker, mask: u16) -> Par {
             gint(7),
         ]));
     }
-    if chosen(8) && !matches!(marker, Marker::Use | Marker::NewSpace) {
-        // Process position, for a marker that the reducer does not evaluate there.
+    // Changed by decision 112: a use block, an annotated `new` and a receive with a query are
+    // processes, so the inert values are the two value forms. The text before:
+    // ```
+    // if chosen(8) && !matches!(marker, Marker::Use | Marker::NewSpace) {
+    //     // Process position, for a marker that the reducer does not evaluate there.
+    // ```
+    if chosen(8) && matches!(marker, Marker::Params | Marker::Free) {
+        // Process position, for a value form that is no term of the schedule.
         pieces.push(marked.clone());
     }
     if chosen(9) && marker != Marker::Query {
@@ -973,11 +1210,19 @@ fn inert_program(marked: &Par, marker: Marker, mask: u16) -> Par {
     })
 }
 
-/// E9 (marker_inert_elsewhere): a marker tuple outside its recognized position is ordinary
-/// data. A program behaves the same, up to renaming, when an unused 2-byte decoy id replaces
-/// the marker id.
+// Changed by decision 112: the fields replace the tuples and no decoy id exists. The text before:
+// ```
+// /// E9 (marker_inert_elsewhere): a marker tuple outside its recognized position is ordinary
+// /// data. A program behaves the same, up to renaming, when an unused 2-byte decoy id replaces
+// /// the marker id.
+// ```
+/// E9, restated by decision 112: a field outside its process position is ordinary data. A
+/// program behaves the same when a string literal replaces the field: no error, and the same
+/// numbers of produces, consumes, comms and store entries.
 #[test]
-fn marker_inert_elsewhere() {
+// Changed by decision 112: the test covers the fields. The text before:
+// fn marker_inert_elsewhere() {
+fn fields_inert_outside_process_position() {
     let runtime = runtime();
     let mut runner = TestRunner::new(property_config());
     runner
@@ -985,31 +1230,50 @@ fn marker_inert_elsewhere() {
             &(arb_ground_construct(), 1u16..(1 << 11)),
             |(construct, mask)| runtime.block_on(check_inert(&construct, mask)),
         )
-        .expect("marker tuples are inert outside their positions");
+        // Changed by decision 112: the test covers the fields. The text before:
+        // .expect("marker tuples are inert outside their positions");
+        .expect("the fields are inert outside their process positions");
 }
 
 async fn check_inert(construct: &ReifiedConstruct, mask: u16) -> Result<(), TestCaseError> {
     let marker = construct.marker();
     let marked = position_par(construct);
-    let mut decoy_tuple = tuple_of(&marked);
-    decoy_tuple.ps[0] = private_name(vec![0xE0, decoy_index(marker)]);
-    prop_assert_eq!(marker_of(&decoy_tuple.ps[0]), None);
-    let decoy = process(decoy_tuple);
+    // Changed by decision 112: a string literal stands in for the field form. The text before:
+    // ```
+    // let mut decoy_tuple = tuple_of(&marked);
+    // decoy_tuple.ps[0] = private_name(vec![0xE0, decoy_index(marker)]);
+    // prop_assert_eq!(marker_of(&decoy_tuple.ps[0]), None);
+    // let decoy = process(decoy_tuple);
+    // ```
+    let decoy = gstring("rrs-p2-e9-stand-in");
 
     let real = evaluate(inert_program(&marked, marker, mask)).await;
     let stand_in = evaluate(inert_program(&decoy, marker, mask)).await;
     prop_assert_eq!(&real.error, &None);
     prop_assert_eq!(&stand_in.error, &None);
-    let mut renamed: Vec<Vec<u8>> = stand_in
-        .store
-        .iter()
-        .map(|entry| rename_decoys(entry))
-        .collect();
-    renamed.sort();
-    prop_assert_eq!(&real.store, &renamed);
+    // Changed by decision 112: the stand-in differs from the field in its bytes, so the test
+    // compares the counts of the two runs. The text before:
+    // ```
+    // let mut renamed: Vec<Vec<u8>> = stand_in
+    //     .store
+    //     .iter()
+    //     .map(|entry| rename_decoys(entry))
+    //     .collect();
+    // renamed.sort();
+    // prop_assert_eq!(&real.store, &renamed);
+    // prop_assert_eq!(
+    //     (real.produces, real.consumes, real.comms),
+    //     (stand_in.produces, stand_in.consumes, stand_in.comms)
+    // );
+    // ```
     prop_assert_eq!(
-        (real.produces, real.consumes, real.comms),
-        (stand_in.produces, stand_in.consumes, stand_in.comms)
+        (real.produces, real.consumes, real.comms, real.store.len()),
+        (
+            stand_in.produces,
+            stand_in.consumes,
+            stand_in.comms,
+            stand_in.store.len()
+        )
     );
     Ok(())
 }
@@ -1070,6 +1334,7 @@ fn term_keys(terms: &[GeneratedMessage]) -> Vec<(u8, Vec<u8>)> {
             GeneratedMessage::If(message) => (6, message.encode_to_vec()),
             GeneratedMessage::CostSignedTerm(message) => (7, message.encode_to_vec()),
             GeneratedMessage::CostStack(message) => (8, message.encode_to_vec()),
+            GeneratedMessage::UseBlock(message) => (9, message.encode_to_vec()),
         })
         .collect()
 }
@@ -1123,12 +1388,22 @@ fn arb_process_par() -> BoxedStrategy<Par> {
         .boxed()
 }
 
-/// E10 (schedule_unchanged_marker_free): for a Par without a marker, both filter twins keep
-/// the terms of HEAD, so the term list, the term count and the random splits stay as at
-/// HEAD. A Par with k USE or NEWSPACE tuples gets exactly k more terms, and the funding
-/// resolver, which keeps the HEAD filter, then fails closed.
+// Changed by decision 112: the schedule counts use blocks, and an annotated `new` is an ordinary
+// term of `news`. The text before:
+// ```
+// /// E10 (schedule_unchanged_marker_free): for a Par without a marker, both filter twins keep
+// /// the terms of HEAD, so the term list, the term count and the random splits stay as at
+// /// HEAD. A Par with k USE or NEWSPACE tuples gets exactly k more terms, and the funding
+// /// resolver, which keeps the HEAD filter, then fails closed.
+// ```
+/// E10, restated by decision 112: for a Par without a Reified field, both filter twins keep the
+/// terms of HEAD, so the term list, the term count and the random splits stay as at HEAD. Each
+/// use block adds one term, and an annotated `new` takes its place among the `new` terms. The
+/// funding resolver follows the schedule of the reducer and keeps each field as it was.
 #[test]
-fn term_schedule_unchanged_for_marker_free_pars() {
+// Changed by decision 112: the test covers the fields. The text before:
+// fn term_schedule_unchanged_for_marker_free_pars() {
+fn term_schedule_unchanged_for_field_free_pars() {
     let markers = proptest::collection::vec(
         prop_oneof![
             reified_strategies::arb_use_block(arb_ground_par()).prop_map(ReifiedConstruct::Use),
@@ -1153,30 +1428,53 @@ fn term_schedule_unchanged_for_marker_free_pars() {
             prop_assert!(resolve_lexical_names_for_funding(&par, rand(), &HashMap::new()).is_ok());
 
             let marked = markers.iter().fold(par.clone(), |marked, construct| {
-                push_process_expr(marked, tuple_of(&position_par(construct)))
+                // Changed by decision 112: a field joins the Par as its own process.
+                // The text before:
+                // push_process_expr(marked, tuple_of(&position_par(construct)))
+                concatenate_pars(position_par(construct), marked)
             });
             let marked_terms = evaluation_terms(&marked).len();
             prop_assert_eq!(
                 marked_terms,
-                head_evaluation_terms(&marked).len() + markers.len()
+                // Changed by decision 112: only a use block is a new term of the schedule.
+                // The text before:
+                // head_evaluation_terms(&marked).len() + markers.len()
+                head_evaluation_terms(&marked).len() + marked.use_blocks.len()
             );
             prop_assert_eq!(
                 term_keys(&owned_evaluation_terms(marked.clone())).len(),
                 marked_terms
             );
             let resolved = resolve_lexical_names_for_funding(&marked, rand(), &HashMap::new());
-            match markers.is_empty() {
-                true => prop_assert!(resolved.is_ok()),
-                false => prop_assert_eq!(
-                    resolved,
-                    Err(InterpreterError::BugFoundError(
-                        LEXICAL_DISAGREEMENT.to_owned()
-                    ))
-                ),
+            // Changed by decision 90 (R-1): the resolver counts a marker tuple with the
+            // predicate of the reducer, so a marked Par resolves, and the resolver never walks a
+            // marker (R-2), so each marker tuple stays as it was.
+            // match markers.is_empty() {
+            //     true => prop_assert!(resolved.is_ok()),
+            //     false => prop_assert_eq!(
+            //         resolved,
+            //         Err(InterpreterError::BugFoundError(
+            //             LEXICAL_DISAGREEMENT.to_owned()
+            //         ))
+            //     ),
+            // }
+            let resolved = resolved.expect("a marked Par resolves (R-1)");
+            for construct in &markers {
+                let field = position_par(construct);
+                prop_assert!(
+                    field
+                        .use_blocks
+                        .iter()
+                        .all(|block| resolved.use_blocks.contains(block))
+                        && field.news.iter().all(|new| resolved.news.contains(new)),
+                    "a field changed"
+                );
             }
             Ok(())
         })
-        .expect("marker-free Pars keep the HEAD term schedule");
+        // Changed by decision 112: the test covers the fields. The text before:
+        // .expect("marker-free Pars keep the HEAD term schedule");
+        .expect("field-free Pars keep the HEAD term schedule");
 }
 
 // ── E11 ────────────────────────────────────────────────────────────────────
@@ -1247,7 +1545,9 @@ fn substitute_construct(
         }
         ReifiedConstruct::Query(query) => {
             ReifiedConstruct::Query(models::rust::reified::encoding::QuerySpec {
-                channel: substitute(&query.channel, env, variant),
+                // Changed by decision 112: a query travels on its bind, so it holds no channel.
+                // The text before:
+                // channel: substitute(&query.channel, env, variant),
                 payload: each(&query.payload),
                 named: query
                     .named
@@ -1267,11 +1567,31 @@ fn substitute_construct(
 
 fn decode_in_position(par: &Par, marker: Marker) -> Result<ReifiedConstruct, String> {
     let decoded = match marker {
-        Marker::Use | Marker::NewSpace => decode_process_tuple(&tuple_of(par))
-            .map(|construct| Some(ReifiedConstruct::from(construct))),
+        // Changed by decision 112: the decoders read the use block and the annotated `new`.
+        // The text before:
+        // ```
+        // Marker::Use | Marker::NewSpace => decode_process_tuple(&tuple_of(par))
+        //     .map(|construct| Some(ReifiedConstruct::from(construct))),
+        // ```
+        Marker::Use => {
+            decode_use_block(&par.use_blocks[0]).map(|block| Some(ReifiedConstruct::Use(block)))
+        }
+        Marker::NewSpace => decode_new_space(&par.news[0])
+            .map(|new_space| Some(ReifiedConstruct::NewSpace(new_space))),
         Marker::Params => split_trailing_params(std::slice::from_ref(par))
             .map(|params| params.map(ReifiedConstruct::Params)),
-        Marker::Query => decode_query_source(par).map(|query| query.map(ReifiedConstruct::Query)),
+        // Changed by decision 112: the query is the field of the one bind of the receive.
+        // The text before:
+        // ```
+        // Marker::Query => decode_query_source(par).map(|query| query.map(ReifiedConstruct::Query)),
+        // ```
+        Marker::Query => {
+            let query = par.receives[0].binds[0]
+                .query_spec
+                .clone()
+                .expect("the bind holds a query");
+            check_query_spec(&query).map(|()| Some(ReifiedConstruct::Query(query)))
+        }
         Marker::Free => decode_free_value(par).map(|theory| theory.map(ReifiedConstruct::Free)),
     };
     match decoded {
@@ -1280,11 +1600,18 @@ fn decode_in_position(par: &Par, marker: Marker) -> Result<ReifiedConstruct, Str
     }
 }
 
-/// E11 (decode_commutes_with_subst): substitution maps the encoding of a construct to the
-/// encoding of the substituted construct. Substitution keeps the `connective_used` flag of a
-/// tuple, so the property holds for values without connectives. A connective value leaves the
-/// flag stale, and the decoder then fails closed. Recognition in process position depends on
-/// the substitution time (finding H-3).
+// Changed by decision 112: the fields hold no tuple flag, and no tuple is recognized.
+// The text before:
+// ```
+// /// E11 (decode_commutes_with_subst): substitution maps the encoding of a construct to the
+// /// encoding of the substituted construct. Substitution keeps the `connective_used` flag of a
+// /// tuple, so the property holds for values without connectives. A connective value leaves the
+// /// flag stale, and the decoder then fails closed. Recognition in process position depends on
+// /// the substitution time (finding H-3).
+// ```
+/// E11, restated by decision 112: substitution maps each field of a construct to the field of
+/// the substituted construct. A field has no flag that a substitution can leave stale, and no
+/// substitution of a tuple changes what the reducer recognizes.
 #[test]
 fn reified_decode_commutes_with_substitution() {
     let mut runner = TestRunner::new(property_config());
@@ -1319,21 +1646,30 @@ fn reified_decode_commutes_with_substitution() {
         )
         .expect("decoding commutes with substitution");
 
-    // A connective value leaves the tuple flag stale: the decoder fails closed.
-    let with_variable = marker_tuple(Marker::Use, vec![gint(1), bound_var(0)]);
-    let env = Env::new().put(int_connective());
-    let stale = substitute(&with_variable, &env, Substitution::Sorted);
-    assert!(!tuple_of(&stale).connective_used);
-    assert!(tuple_of(&stale).ps[2].connective_used);
-    assert_eq!(
-        decode_process_tuple(&tuple_of(&stale)),
-        Err(ReifiedDecodeError::NonCanonical {
-            marker: Marker::Use
-        })
-    );
+    // Retired by decision 112: the fields hold no tuple flag, so substitution leaves nothing stale.
+    // The text before:
+    // ```
+    // // A connective value leaves the tuple flag stale: the decoder fails closed.
+    // let with_variable = marker_tuple(Marker::Use, vec![gint(1), bound_var(0)]);
+    // let env = Env::new().put(int_connective());
+    // let stale = substitute(&with_variable, &env, Substitution::Sorted);
+    // assert!(!tuple_of(&stale).connective_used);
+    // assert!(tuple_of(&stale).ps[2].connective_used);
+    // assert_eq!(
+    //     decode_process_tuple(&tuple_of(&stale)),
+    //     Err(ReifiedDecodeError::NonCanonical {
+    //         marker: Marker::Use
+    //     })
+    // );
+    // ```
 
-    // H-3: a tuple with a variable head is inert when the reducer evaluates it directly, and
-    // recognized once the storage substitution of a receive body makes the head literal.
+    // Changed by decision 112: the reducer recognizes no tuple. The text before:
+    // ```
+    // // H-3: a tuple with a variable head is inert when the reducer evaluates it directly, and
+    // // recognized once the storage substitution of a receive body makes the head literal.
+    // ```
+    // A tuple with a variable head is inert when the reducer evaluates it directly, and it stays
+    // inert after the storage substitution of a receive body makes the head a former marker.
     let runtime = runtime();
     let variable_head = tuple(vec![
         bound_var(0),
@@ -1380,11 +1716,20 @@ fn reified_decode_commutes_with_substitution() {
     // agent gate (P8).
     // assert_eq!(outcome.code(), Some("AgentSpacesUnavailable"));
     assert_eq!(outcome.error, None);
+    // Changed by decision 112: the tuple with the former USE marker head is ordinary, so only the
+    // two receives run and the name of the space stays empty. The text before:
+    // ```
+    // assert_eq!(
+    //     (outcome.produces, outcome.consumes, outcome.comms),
+    //     (3, 2, 2)
+    // );
+    // assert!(data_channels(&outcome).contains(&private_name(vec![6; 32]).encode_to_vec()));
+    // ```
     assert_eq!(
         (outcome.produces, outcome.consumes, outcome.comms),
-        (3, 2, 2)
+        (2, 2, 2)
     );
-    assert!(data_channels(&outcome).contains(&private_name(vec![6; 32]).encode_to_vec()));
+    assert!(!data_channels(&outcome).contains(&private_name(vec![6; 32]).encode_to_vec()));
 }
 
 /// The channels of the data entries of the store of `outcome`, in their prost bytes.
@@ -1404,22 +1749,26 @@ fn data_channels(outcome: &Outcome) -> Vec<Vec<u8>> {
 
 // ── E12 ────────────────────────────────────────────────────────────────────
 
-/// The superseded "s_i or Nil" NEWSPACE form of the plan.
-fn plan_new_space(annotations: &[Option<Par>], new: &New) -> Par {
-    marker_tuple(Marker::NewSpace, vec![
-        list(
-            annotations
-                .iter()
-                .map(|annotation| annotation.clone().unwrap_or_default())
-                .collect(),
-        ),
-        Par {
-            news: vec![new.clone()],
-            connective_used: new.p.as_ref().is_some_and(|body| body.connective_used),
-            ..Par::default()
-        },
-    ])
-}
+// Retired by decision 112: no NEWSPACE tuple form exists, so the superseded form of the plan has no
+// term. The text before:
+// ```
+// /// The superseded "s_i or Nil" NEWSPACE form of the plan.
+// fn plan_new_space(annotations: &[Option<Par>], new: &New) -> Par {
+//     marker_tuple(Marker::NewSpace, vec![
+//         list(
+//             annotations
+//                 .iter()
+//                 .map(|annotation| annotation.clone().unwrap_or_default())
+//                 .collect(),
+//         ),
+//         Par {
+//             news: vec![new.clone()],
+//             connective_used: new.p.as_ref().is_some_and(|body| body.connective_used),
+//             ..Par::default()
+//         },
+//     ])
+// }
+// ```
 
 fn corrected_new_space(annotations: Vec<Option<Par>>, new: &New) -> Par {
     position_par(&ReifiedConstruct::NewSpace(NewSpace {
@@ -1428,21 +1777,33 @@ fn corrected_new_space(annotations: Vec<Option<Par>>, new: &New) -> Par {
     }))
 }
 
-/// E12 (plan_nil_annotation_not_injective): the superseded "s_i or Nil" encoding maps the
-/// annotation Nil and the absence of an annotation to one term, and the substitution of Nil
-/// for an annotation variable erases the annotation. The `[]` or `[s]` encoding keeps both
-/// distinctions.
+// Changed by decision 112: the annotations are the `space_types` of the `new`, one `Option` per
+// plain binder. The text before:
+// ```
+// /// E12 (plan_nil_annotation_not_injective): the superseded "s_i or Nil" encoding maps the
+// /// annotation Nil and the absence of an annotation to one term, and the substitution of Nil
+// /// for an annotation variable erases the annotation. The `[]` or `[s]` encoding keeps both
+// /// distinctions.
+// ```
+/// E12, restated by decision 112: an annotated `new` records one optional annotation per plain
+/// binder, so the annotation Nil and the absence of an annotation are different terms, and the
+/// substitution of Nil for an annotation variable keeps the annotation.
 #[test]
-fn reified_plan_nil_encoding_counterexample() {
+// Changed by decision 112: the field form has no plan encoding to refute. The text before:
+// fn reified_plan_nil_encoding_counterexample() {
+fn absent_annotation_is_not_nil() {
     let space = private_name(vec![8; 32]);
     let new = new_term(2, Vec::new(), Par::default());
     let nil_annotated = [Some(Par::default()), Some(space.clone())];
     let unannotated = [None, Some(space.clone())];
 
-    assert_eq!(
-        plan_new_space(&nil_annotated, &new),
-        plan_new_space(&unannotated, &new)
-    );
+    // Retired by decision 112: the plan form of the annotations has no term. The text before:
+    // ```
+    // assert_eq!(
+    //     plan_new_space(&nil_annotated, &new),
+    //     plan_new_space(&unannotated, &new)
+    // );
+    // ```
     assert_ne!(nil_annotated, unannotated);
     assert_ne!(
         corrected_new_space(nil_annotated.to_vec(), &new),
@@ -1452,35 +1813,50 @@ fn reified_plan_nil_encoding_counterexample() {
     let env = Env::new().put(Par::default());
     let variable = [Some(bound_var(0)), Some(space.clone())];
     for variant in [Substitution::Sorted, Substitution::Unsorted] {
-        // The plan: a receive that gets Nil for s erases the annotation of `x : s`.
-        assert_eq!(
-            substitute(&plan_new_space(&variable, &new), &env, variant),
-            plan_new_space(&unannotated, &new)
-        );
-        // The correction: the annotation becomes [Nil], which the decoder reads as Nil.
+        // Retired by decision 112: the plan form of the annotations has no term. The text before:
+        // ```
+        // // The plan: a receive that gets Nil for s erases the annotation of `x : s`.
+        // assert_eq!(
+        //     substitute(&plan_new_space(&variable, &new), &env, variant),
+        //     plan_new_space(&unannotated, &new)
+        // );
+        // ```
+        // Changed by decision 112: the annotation is a field. The text before:
+        // // The correction: the annotation becomes [Nil], which the decoder reads as Nil.
+        // A receive that gets Nil for s keeps the annotation of `x : s` as `Some(Nil)`.
         let substituted = substitute(&corrected_new_space(variable.to_vec(), &new), &env, variant);
         assert_eq!(
             substituted,
             corrected_new_space(nil_annotated.to_vec(), &new)
         );
-        match decode_process_tuple(&tuple_of(&substituted)) {
-            Ok(models::rust::reified::encoding::ProcessConstruct::NewSpace(decoded)) => {
-                assert_eq!(decoded.annotations, nil_annotated.to_vec());
-            }
-            other => panic!("the substituted NEWSPACE tuple decodes, got {other:?}"),
-        }
+        // Changed by decision 112: the decoder reads the annotated `new`. The text before:
+        // ```
+        // match decode_process_tuple(&tuple_of(&substituted)) {
+        //     Ok(models::rust::reified::encoding::ProcessConstruct::NewSpace(decoded)) => {
+        //         assert_eq!(decoded.annotations, nil_annotated.to_vec());
+        //     }
+        //     other => panic!("the substituted NEWSPACE tuple decodes, got {other:?}"),
+        // }
+        // ```
+        let decoded =
+            decode_new_space(&substituted.news[0]).expect("the substituted annotated new decodes");
+        assert_eq!(decoded.annotations, nil_annotated.to_vec());
     }
-    // The decoder rejects the plan form outright.
-    assert_eq!(
-        decode_process_tuple(&tuple_of(&plan_new_space(&nil_annotated, &new))),
-        Err(ReifiedDecodeError::AnnotationShape { binder: 0 })
-    );
+    // Retired by decision 112: no decoder reads a NEWSPACE tuple. The text before:
+    // ```
+    // // The decoder rejects the plan form outright.
+    // assert_eq!(
+    //     decode_process_tuple(&tuple_of(&plan_new_space(&nil_annotated, &new))),
+    //     Err(ReifiedDecodeError::AnnotationShape { binder: 0 })
+    // );
+    // ```
 }
 
 // ── Hook errors ────────────────────────────────────────────────────────────
 
-/// Each hook fails closed with `InterpreterError::ReduceError("reified:<Code>: …")` and
-/// changes no state.
+/// Each hook fails closed with `InterpreterError::SpaceUserError("reified:<Code>: …")` and
+/// changes no state. Every code of a hook is a user failure (the user decision of 2026-10-25,
+/// as DR-128), so the hooks no longer fail with `InterpreterError::ReduceError`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_hook_errors_are_typed() {
     let channel = gstring("rrs-p2-hooks");
@@ -1491,44 +1867,84 @@ async fn reified_hook_errors_are_typed() {
     let cases = [
         // (sample_use(), AGENT_SPACES_UNAVAILABLE),
         // (sample_new_space(), AGENT_SPACES_UNAVAILABLE),
+        // Changed by decision 112: each case holds the field that its hook reads. The text before:
+        // ```
+        // (
+        //     marker_tuple(Marker::Use, vec![gint(1)]),
+        //     "reified:Malformed: the USE tuple has 2 elements instead of 3",
+        // ),
+        // (
+        //     send(channel.clone(), vec![gint(1), sample_params()]),
+        //     "reified:ParamsUnsupported: a send to this channel takes no params",
+        // ),
+        // (
+        //     persistent_send(channel.clone(), vec![sample_params()]),
+        //     "reified:ParamsUnsupported: a send to this channel takes no params",
+        // ),
+        // (
+        //     send(channel.clone(), vec![marker_tuple(Marker::Params, vec![
+        //         list(vec![]),
+        //         map(vec![]),
+        //     ])]),
+        //     "reified:Malformed: the PARAMS tuple holds an erased empty form",
+        // ),
+        // (
+        //     receive(sample_query(), vec![wildcard()], 0, Par::default(), false),
+        //     "reified:QuerySpecUnsupported: a receive from this channel takes no query",
+        // ),
+        // (
+        //     receive(
+        //         marker_tuple(Marker::Query, vec![gint(1), list(vec![gint(2)])]),
+        //         vec![wildcard()],
+        //         0,
+        //         Par::default(),
+        //         false,
+        //     ),
+        //     "reified:Malformed: the QUERY tuple has 3 elements instead of 4",
+        // ),
+        // ```
         (
-            marker_tuple(Marker::Use, vec![gint(1)]),
-            "reified:Malformed: the USE tuple has 2 elements instead of 3",
+            malformed_use_block(),
+            "reified:Malformed: the USE tuple is not the canonical encoding of its construct",
         ),
         (
-            send(channel.clone(), vec![gint(1), sample_params()]),
+            with_params(send(channel.clone(), vec![gint(1)]), sample_params()),
             "reified:ParamsUnsupported: a send to this channel takes no params",
         ),
         (
-            persistent_send(channel.clone(), vec![sample_params()]),
+            with_params(
+                persistent_send(channel.clone(), Vec::new()),
+                sample_params(),
+            ),
             "reified:ParamsUnsupported: a send to this channel takes no params",
         ),
         (
-            send(channel.clone(), vec![marker_tuple(Marker::Params, vec![
-                list(vec![]),
-                map(vec![]),
-            ])]),
+            with_params(send(channel.clone(), Vec::new()), SendParams::default()),
             "reified:Malformed: the PARAMS tuple holds an erased empty form",
         ),
         (
-            receive(sample_query(), vec![wildcard()], 0, Par::default(), false),
+            with_query(
+                receive(channel.clone(), vec![wildcard()], 0, Par::default(), false),
+                0,
+                sample_query(),
+            ),
             "reified:QuerySpecUnsupported: a receive from this channel takes no query",
         ),
         (
-            receive(
-                marker_tuple(Marker::Query, vec![gint(1), list(vec![gint(2)])]),
-                vec![wildcard()],
+            with_query(
+                receive(channel.clone(), vec![wildcard()], 0, Par::default(), false),
                 0,
-                Par::default(),
-                false,
+                QuerySpec::default(),
             ),
-            "reified:Malformed: the QUERY tuple has 3 elements instead of 4",
+            "reified:Malformed: the QUERY tuple holds an erased empty form",
         ),
     ];
     for (program, expected) in cases {
         let harness = harness(HashMap::new()).await;
         match harness.reducer.inj(program, rand()).await {
-            Err(InterpreterError::ReduceError(message)) => assert_eq!(message, expected),
+            // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128).
+            // Err(InterpreterError::ReduceError(message)) => assert_eq!(message, expected),
+            Err(InterpreterError::SpaceUserError(message)) => assert_eq!(message, expected),
             other => panic!("expected {expected:?}, got {other:?}"),
         }
         let checkpoint = harness.space.create_soft_checkpoint().await;
@@ -1550,20 +1966,68 @@ fn reified_builders_match_rholang_prepend_helpers() {
     let mut runner = TestRunner::new(property_config());
     runner
         .run(
-            &(process_constructs, arb_par(), 0i32..3),
-            |(construct, par, depth)| {
-                let tuple = tuple_of(&position_par(&construct));
-                let pushed = push_process_expr(par.clone(), tuple.clone());
-                let prepended = prepend_expr(par, tuple_expr(tuple.clone()), depth);
-                prop_assert_eq!(pushed.encode_to_vec(), prepended.encode_to_vec());
-                if let ReifiedConstruct::NewSpace(new_space) = &construct {
-                    let expected = prepend_new(Par::default(), new_space.new.clone());
-                    prop_assert_eq!(tuple.ps[2].encode_to_vec(), expected.encode_to_vec());
+            // Changed by decision 112: the builders return the field forms. The text before:
+            // ```
+            // &(process_constructs, arb_par(), 0i32..3),
+            // |(construct, par, depth)| {
+            //     let tuple = tuple_of(&position_par(&construct));
+            //     let pushed = push_process_expr(par.clone(), tuple.clone());
+            //     let prepended = prepend_expr(par, tuple_expr(tuple.clone()), depth);
+            //     prop_assert_eq!(pushed.encode_to_vec(), prepended.encode_to_vec());
+            //     if let ReifiedConstruct::NewSpace(new_space) = &construct {
+            //         let expected = prepend_new(Par::default(), new_space.new.clone());
+            //         prop_assert_eq!(tuple.ps[2].encode_to_vec(), expected.encode_to_vec());
+            //     }
+            // ```
+            &(process_constructs, arb_par()),
+            |(construct, par)| {
+                match &construct {
+                    ReifiedConstruct::Use(block) => {
+                        let pushed = push_use_block(
+                            par.clone(),
+                            use_block(block.space.clone(), block.body.clone()),
+                        );
+                        let expected_free = union(
+                            union(par.locally_free.clone(), block.space.locally_free.clone()),
+                            block.body.locally_free.clone(),
+                        );
+                        prop_assert_eq!(&pushed.locally_free, &expected_free);
+                        prop_assert_eq!(
+                            pushed.connective_used,
+                            par.connective_used
+                                || block.space.connective_used
+                                || block.body.connective_used
+                        );
+                        prop_assert_eq!(pushed.use_blocks.len(), par.use_blocks.len() + 1);
+                    }
+                    ReifiedConstruct::NewSpace(annotated) => {
+                        let position = position_par(&construct);
+                        let built = position.news[0].clone();
+                        let expected_free = annotated.annotations.iter().flatten().fold(
+                            annotated.new.locally_free.clone(),
+                            |free, space| union(free, space.locally_free.clone()),
+                        );
+                        prop_assert_eq!(&built.locally_free, &expected_free);
+                        let prepended = prepend_new(Par::default(), built);
+                        prop_assert_eq!(&position.locally_free, &prepended.locally_free);
+                        let annotation_connective = annotated
+                            .annotations
+                            .iter()
+                            .flatten()
+                            .any(|space| space.connective_used);
+                        prop_assert_eq!(
+                            position.connective_used,
+                            prepended.connective_used || annotation_connective
+                        );
+                    }
+                    other => prop_assert!(false, "{:?} is no process construct", other),
                 }
                 Ok(())
             },
         )
-        .expect("push_process_expr and the New element follow the rholang helpers");
+        // Changed by decision 112: the builders return the field forms. The text before:
+        // .expect("push_process_expr and the New element follow the rholang helpers");
+        .expect("the use block and the annotated new follow the rholang helpers");
 
     // The collection normalizer: a tuple, a list and a map over a bound variable and a
     // connective. The builders give the same fields over the same elements.
@@ -1578,9 +2042,20 @@ fn reified_builders_match_rholang_prepend_helpers() {
         .sends[0]
         .data;
     let normalized_tuple = tuple_of(&data[0]);
-    let built = use_block(
-        normalized_tuple.ps[0].clone(),
-        normalized_tuple.ps[1].clone(),
+    // Changed by decision 112: the builder returns the block, and `push_use_block` adds the flags.
+    // The text before:
+    // ```
+    // let built = use_block(
+    //     normalized_tuple.ps[0].clone(),
+    //     normalized_tuple.ps[1].clone(),
+    // );
+    // ```
+    let built = push_use_block(
+        Par::default(),
+        use_block(
+            normalized_tuple.ps[0].clone(),
+            normalized_tuple.ps[1].clone(),
+        ),
     );
     assert_eq!(built.locally_free, normalized_tuple.locally_free);
     assert_eq!(built.connective_used, normalized_tuple.connective_used);
@@ -1591,11 +2066,25 @@ fn reified_builders_match_rholang_prepend_helpers() {
         Some(ExprInstance::EListBody(elist)) => elist.ps.clone(),
         other => panic!("the second argument is a list, found {other:?}"),
     };
-    let params = send_params(elements.into_iter().map(SendParam::Positional).collect())
-        .expect("positional params build")
-        .expect("params are not empty");
-    let built_list = &tuple_of(&params).ps[1];
-    assert_eq!(built_list.encode_to_vec(), data[1].encode_to_vec());
+    // Changed by decision 112: the params keep the normalized elements in their field.
+    // The text before:
+    // ```
+    // let params = send_params(elements.into_iter().map(SendParam::Positional).collect())
+    //     .expect("positional params build")
+    //     .expect("params are not empty");
+    // let built_list = &tuple_of(&params).ps[1];
+    // assert_eq!(built_list.encode_to_vec(), data[1].encode_to_vec());
+    // ```
+    let params = send_params(
+        elements
+            .iter()
+            .cloned()
+            .map(SendParam::Positional)
+            .collect(),
+    )
+    .expect("positional params build")
+    .expect("params are not empty");
+    assert_eq!(params.positional, elements);
 
     let value = match &data[2].exprs[0].expr_instance {
         Some(ExprInstance::EMapBody(emap)) => emap.kvs[0]
@@ -1604,11 +2093,19 @@ fn reified_builders_match_rholang_prepend_helpers() {
             .expect("the map entry has a value"),
         other => panic!("the third argument is a map, found {other:?}"),
     };
-    let params = send_params(vec![SendParam::Named("k".to_owned(), value)])
+    // Changed by decision 112: the params keep the normalized value in their field.
+    // The text before:
+    // ```
+    // let params = send_params(vec![SendParam::Named("k".to_owned(), value)])
+    //     .expect("named params build")
+    //     .expect("params are not empty");
+    // let built_map = &tuple_of(&params).ps[2];
+    // assert_eq!(built_map.encode_to_vec(), data[2].encode_to_vec());
+    // ```
+    let params = send_params(vec![SendParam::Named("k".to_owned(), value.clone())])
         .expect("named params build")
         .expect("params are not empty");
-    let built_map = &tuple_of(&params).ps[2];
-    assert_eq!(built_map.encode_to_vec(), data[2].encode_to_vec());
+    assert_eq!(params.named.get("k"), Some(&value));
 }
 
 // ── Runtime ids ────────────────────────────────────────────────────────────
@@ -1629,16 +2126,25 @@ async fn marker_ids_disjoint_from_runtime_ids() {
         "the runtime binds its system processes"
     );
     for (urn, name) in urn_map.iter() {
-        assert_eq!(marker_of(name), None, "{urn}");
+        // Changed by decision 112: the retired `marker_of` gives way to a comparison with each
+        // marker name. The text before:
+        // assert_eq!(marker_of(name), None, "{urn}");
+        assert!(!is_marker_name(name), "{urn}");
         assert!(!contains_marker(name), "{urn}");
     }
     for byte in 0..=u8::MAX {
-        assert_eq!(marker_of(&byte_name(byte)), None);
+        // Changed by decision 112: the retired `marker_of` gives way to a comparison with each
+        // marker name. The text before:
+        // assert_eq!(marker_of(&byte_name(byte)), None);
+        assert!(!is_marker_name(&byte_name(byte)));
     }
     let tags = default_mergeable_tags();
     assert_eq!(tags.len(), 2);
     for tag in tags.keys().chain(play.reducer.mergeable_tags.keys()) {
-        assert_eq!(marker_of(tag), None);
+        // Changed by decision 112: the retired `marker_of` gives way to a comparison with each
+        // marker name. The text before:
+        // assert_eq!(marker_of(tag), None);
+        assert!(!is_marker_name(tag));
         assert!(!contains_marker(tag));
     }
     let mut random = rand();
@@ -1651,62 +2157,390 @@ async fn marker_ids_disjoint_from_runtime_ids() {
 
 // ── Accounting twin ────────────────────────────────────────────────────────
 
-/// The funding resolver keeps the HEAD filter, so it fails closed on a Par with a USE or
-/// NEWSPACE tuple in a resolving position (finding H-1): at the top and in the body of a `new`.
-/// A marker-free Par and an inert marker tuple resolve. The resolver does not resolve a receive
-/// body (DR-121 of `feature/cost-accounted-rho`), so a construct in a receive body resolves.
+/// Added by decision 90 (R-1, R-2), restated by decision 112: the funding resolver counts a use
+/// block with the schedule of the reducer, so it resolves a Par that holds a use block or an
+/// annotated `new` at the top, in the body of a `new` and in a receive body. The resolver leaves
+/// these fields unresolved, so the resolved Par keeps them as they were (R-2). A use block takes
+/// one split index, as an evaluated expression does, and an annotated `new` takes the index of
+/// a plain `new`, so the `new` of such a Par resolves to the names of the same Par with a
+/// stand-in in place of the field.
 #[test]
-fn lexical_resolver_fails_closed_on_reified_pars() {
+fn lexical_resolver_resolves_reified_pars() {
     let urn_map = HashMap::new();
     let ordinary = concatenate_pars(
         send(gstring("rrs-p2-lexical"), vec![gint(1)]),
         concatenate_pars(bound_var(0), tuple(vec![gint(1), gint(2)])),
     );
-    assert!(resolve_lexical_names_for_funding(&ordinary, rand(), &urn_map).is_ok());
-    let inert = concatenate_pars(ordinary.clone(), sample_params());
-    assert!(resolve_lexical_names_for_funding(&inert, rand(), &urn_map).is_ok());
-    let disagreement = Err(InterpreterError::BugFoundError(
-        LEXICAL_DISAGREEMENT.to_owned(),
-    ));
+    // True when `par` holds the field of `marked`, unchanged.
+    let holds_field = |par: &Par, marked: &Par| {
+        marked
+            .use_blocks
+            .iter()
+            .all(|block| par.use_blocks.contains(block))
+            && marked.news.iter().all(|new| par.news.contains(new))
+    };
     for marked in [sample_use(), sample_new_space()] {
         let top = concatenate_pars(ordinary.clone(), marked.clone());
-        assert_eq!(
-            resolve_lexical_names_for_funding(&top, rand(), &urn_map),
-            disagreement
+        let resolved = resolve_lexical_names_for_funding(&top, rand(), &urn_map)
+            .expect("a Par with a field at the top resolves");
+        assert!(
+            holds_field(&resolved, &marked),
+            "the top field is unchanged"
         );
-        // Changed by decision 89 (DR-121): the resolver leaves a receive body unresolved, so
-        // the nested case that fails closed is the body of a `new`, a resolving position.
-        // let nested = receive(
-        //     gstring("rrs-p2-lexical"),
-        //     vec![wildcard()],
-        //     0,
-        //     marked,
-        //     false,
-        // );
-        // assert_eq!(
-        //     resolve_lexical_names_for_funding(&nested, rand(), &urn_map),
-        //     disagreement
-        // );
         let nested = new_par(1, marked.clone());
-        assert_eq!(
-            resolve_lexical_names_for_funding(&nested, rand(), &urn_map),
-            disagreement
+        let resolved = resolve_lexical_names_for_funding(&nested, rand(), &urn_map)
+            .expect("a field in the body of a new resolves");
+        assert!(
+            std::iter::once(&resolved)
+                .chain(resolved.news.iter().flat_map(|new| new.p.iter()))
+                .any(|body| holds_field(body, &marked)),
+            "the nested field is unchanged"
         );
         let received = receive(
             gstring("rrs-p2-lexical"),
             vec![wildcard()],
             0,
-            marked,
+            marked.clone(),
             false,
         );
         assert!(resolve_lexical_names_for_funding(&received, rand(), &urn_map).is_ok());
+        // A use block takes the split index of an evaluated expression, and an annotated `new`
+        // takes the index of a plain `new`. The stand-in of each field takes the same index.
+        let stand_in = match marked.use_blocks.as_slice() {
+            [] => Par {
+                news: vec![new_term(1, Vec::new(), Par::default())],
+                ..Par::default()
+            },
+            [..] => bound_var(0),
+        };
+        let with_field = concatenate_pars(new_par(1, ordinary.clone()), marked);
+        let with_stand_in = concatenate_pars(new_par(1, ordinary.clone()), stand_in);
+        // The `new` of the ordinary term: it has no annotation, and its body holds the send.
+        let names = |par: &Par| -> Vec<New> {
+            resolve_lexical_names_for_funding(par, rand(), &urn_map)
+                .expect("the Par resolves")
+                .news
+                .into_iter()
+                .filter(|new| {
+                    new.space_types.is_empty()
+                        && new.p.as_ref().is_some_and(|body| !body.sends.is_empty())
+                })
+                .collect()
+        };
+        assert_eq!(
+            names(&with_field),
+            names(&with_stand_in),
+            "a field takes the split index of its stand-in"
+        );
+    }
+}
+
+// Disabled by decision 90 (R-1): the schedule of `visit` and the test oracle count a marker tuple
+// with the predicate of the reducer now, so the resolver resolves the Pars below instead of
+// failing closed (`lexical_resolver_resolves_reified_pars`).
+// /// The funding resolver keeps the HEAD filter, so it fails closed on a Par with a USE or
+// /// NEWSPACE tuple in a resolving position (finding H-1): at the top and in the body of a `new`.
+// /// A marker-free Par and an inert marker tuple resolve. The resolver does not resolve a receive
+// /// body (DR-121 of `feature/cost-accounted-rho`), so a construct in a receive body resolves.
+// #[test]
+// fn lexical_resolver_fails_closed_on_reified_pars() {
+//     let urn_map = HashMap::new();
+//     let ordinary = concatenate_pars(
+//         send(gstring("rrs-p2-lexical"), vec![gint(1)]),
+//         concatenate_pars(bound_var(0), tuple(vec![gint(1), gint(2)])),
+//     );
+//     assert!(resolve_lexical_names_for_funding(&ordinary, rand(), &urn_map).is_ok());
+//     let inert = concatenate_pars(ordinary.clone(), sample_params());
+//     assert!(resolve_lexical_names_for_funding(&inert, rand(), &urn_map).is_ok());
+//     let disagreement = Err(InterpreterError::BugFoundError(
+//         LEXICAL_DISAGREEMENT.to_owned(),
+//     ));
+//     for marked in [sample_use(), sample_new_space()] {
+//         let top = concatenate_pars(ordinary.clone(), marked.clone());
+//         assert_eq!(
+//             resolve_lexical_names_for_funding(&top, rand(), &urn_map),
+//             disagreement
+//         );
+//         // Changed by decision 89 (DR-121): the resolver leaves a receive body unresolved, so
+//         // the nested case that fails closed is the body of a `new`, a resolving position.
+//         // let nested = receive(
+//         //     gstring("rrs-p2-lexical"),
+//         //     vec![wildcard()],
+//         //     0,
+//         //     marked,
+//         //     false,
+//         // );
+//         // assert_eq!(
+//         //     resolve_lexical_names_for_funding(&nested, rand(), &urn_map),
+//         //     disagreement
+//         // );
+//         let nested = new_par(1, marked.clone());
+//         assert_eq!(
+//             resolve_lexical_names_for_funding(&nested, rand(), &urn_map),
+//             disagreement
+//         );
+//         let received = receive(
+//             gstring("rrs-p2-lexical"),
+//             vec![wildcard()],
+//             0,
+//             marked,
+//             false,
+//         );
+//         assert!(resolve_lexical_names_for_funding(&received, rand(), &urn_map).is_ok());
+//     }
+// }
+
+/// Added by decision 90 (E-1), restated by decision 112: the cost estimate does not model the
+/// demand of a use block or an annotated `new`, which the reducer runs through a space agent. So
+/// a term with such a field in an execution position, at the top or in the body of a `new`, is
+/// incomplete with `SpaceConstruct`, and the gate holds the signed limit. The same term without
+/// the field is complete (the negative control), so the reason comes from the field alone.
+#[test]
+fn estimate_treats_reified_constructs_as_unmodeled_demand() {
+    use models::rust::phlo_schedule::PhloScheduleV1;
+    use rholang::rust::interpreter::accounting::delta_sigma::estimate::{
+        linear_cost_estimate, Completeness, IncompleteReason,
+    };
+    use rholang::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativePhloDimension,
+    };
+    use rholang::rust::interpreter::accounting::Sig;
+
+    let schedule = PhloScheduleV1 {
+        protocol_version: 6,
+        network: b"test",
+        shard: b"root",
+        settlement_asset: b"REV",
+        settlement_unit: b"atomic-REV",
+        decimal_scale: 8,
+        classes: NativePhloDimension::ALL
+            .into_iter()
+            .zip([
+                b"compute".as_slice(),
+                b"introduction",
+                b"transfer",
+                b"trace",
+            ])
+            .map(|(dimension, identity)| dimension.resource_class(identity, 1))
+            .collect(),
+        actual_price: 2,
+        compatibility_rule: native_resource_compatibility_rule(),
+    };
+    let funding = Sig::Ground(vec![9, 9, 9, 9]);
+    let urn_map = HashMap::new();
+    let program = Compiler::source_to_adt("new x in { x!(0) | for (@n <- x) { Nil } }")
+        .expect("the program compiles");
+    let base = resolve_lexical_names_for_funding(&program, rand(), &urn_map)
+        .expect("the program resolves");
+    let reducer = runtime().block_on(harness(HashMap::new())).reducer;
+    let completeness = |par: &Par| {
+        linear_cost_estimate(par, &funding, &schedule, &reducer)
+            .expect("the estimate runs")
+            .completeness
+    };
+    assert_eq!(completeness(&base), Completeness::Complete);
+    for marked in [sample_use(), sample_new_space()] {
+        let top = concatenate_pars(base.clone(), marked.clone());
+        assert_eq!(
+            completeness(&top),
+            Completeness::Incomplete(IncompleteReason::SpaceConstruct)
+        );
+        let nested = resolve_lexical_names_for_funding(&new_par(1, marked), rand(), &urn_map)
+            .expect("a field in the body of a new resolves");
+        assert_eq!(
+            completeness(&nested),
+            Completeness::Incomplete(IncompleteReason::SpaceConstruct)
+        );
+    }
+}
+
+/// Added by decision 92: every route of a deploy to a space operation makes the cost estimate
+/// incomplete. So the gate holds the signed limit for each space transaction and its anchor.
+///
+/// A factory call sends on a URN name. A handle call and an operation on a space name use a
+/// received name, and a stored handle arrives on a public channel. Rule X2 marks each of these
+/// channels as not fresh. The USE and NEWSPACE routes give `SpaceConstruct`
+/// (`estimate_treats_reified_constructs_as_unmodeled_demand`). Each control binds the same
+/// channel with a plain `new`, and its estimate is complete, so the reason comes from the route.
+#[test]
+fn estimate_treats_space_routes_as_non_fresh_channels() {
+    use models::rust::phlo_schedule::PhloScheduleV1;
+    use rholang::rust::interpreter::accounting::delta_sigma::estimate::{
+        linear_cost_estimate, Completeness, IncompleteReason,
+    };
+    use rholang::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativePhloDimension,
+    };
+    use rholang::rust::interpreter::accounting::Sig;
+
+    let schedule = PhloScheduleV1 {
+        protocol_version: 6,
+        network: b"test",
+        shard: b"root",
+        settlement_asset: b"REV",
+        settlement_unit: b"atomic-REV",
+        decimal_scale: 8,
+        classes: NativePhloDimension::ALL
+            .into_iter()
+            .zip([
+                b"compute".as_slice(),
+                b"introduction",
+                b"transfer",
+                b"trace",
+            ])
+            .map(|(dimension, identity)| dimension.resource_class(identity, 1))
+            .collect(),
+        actual_price: 2,
+        compatibility_rule: native_resource_compatibility_rule(),
+    };
+    let funding = Sig::Ground(vec![9, 9, 9, 9]);
+    let reducer = runtime().block_on(async {
+        let mut stores = InMemoryStoreManager::new();
+        let store = stores
+            .r_space_stores()
+            .await
+            .expect("create the in-memory RSpace stores");
+        let (play, _replay, _history) = create_runtimes(store, false, &mut Vec::new()).await;
+        play.reducer.clone()
+    });
+    assert!(
+        reducer.urn_map.contains_key("rho:space:hashmap:queue"),
+        "the runtime binds the space factories"
+    );
+    let completeness = |source: &str| {
+        let program = Compiler::source_to_adt(source).expect("the program compiles");
+        let resolved = resolve_lexical_names_for_funding(&program, rand(), &reducer.urn_map)
+            .expect("the program resolves");
+        linear_cost_estimate(&resolved, &funding, &schedule, &reducer)
+            .expect("the estimate runs")
+            .completeness
+    };
+    for (route, source, control) in [
+        (
+            "a factory call",
+            r#"new factory(`rho:space:hashmap:queue`) in { factory!("default") }"#,
+            r#"new factory in { factory!("default") }"#,
+        ),
+        (
+            "a handle call on a received handle",
+            r#"new reply in { for (space <- reply) { space!("gensym") } }"#,
+            r#"new reply, space in { for (handle <- reply) { space!("gensym") } }"#,
+        ),
+        (
+            "a send on a space name",
+            r#"new reply in { for (a <- reply) { a!(1) } }"#,
+            r#"new reply, a in { for (name <- reply) { a!(1) } }"#,
+        ),
+        (
+            "a receive on a space name",
+            r#"new reply in { for (a <- reply) { for (@x <- a) { Nil } } }"#,
+            r#"new reply, a in { for (name <- reply) { for (@x <- a) { Nil } } }"#,
+        ),
+        (
+            "a stored handle on a public channel",
+            r#"for (space <- @"rrs-stored-handle") { Nil }"#,
+            r#"new stash in { for (space <- stash) { Nil } }"#,
+        ),
+    ] {
+        assert_eq!(
+            completeness(control),
+            Completeness::Complete,
+            "{route}: the control"
+        );
+        assert_eq!(
+            completeness(source),
+            Completeness::Incomplete(IncompleteReason::NonFreshChannel),
+            "{route}"
+        );
+    }
+}
+
+/// Added by decision 112 (decision 120 O-3, ruling 13): the classes of the estimate stay. A send
+/// param takes the rule of a datum, so a param that holds a variable is `OpenData`, as a datum
+/// that holds a variable is. A bind with a query keeps the class of a non-fresh channel, also
+/// on a fresh channel. Each control shows that the reason comes from the param or the query.
+#[test]
+fn estimate_keeps_the_classes_of_params_and_queries() {
+    use models::rust::phlo_schedule::PhloScheduleV1;
+    use rholang::rust::interpreter::accounting::delta_sigma::estimate::{
+        linear_cost_estimate, Completeness, IncompleteReason,
+    };
+    use rholang::rust::interpreter::accounting::native_phlo_rules::{
+        native_resource_compatibility_rule, NativePhloDimension,
+    };
+    use rholang::rust::interpreter::accounting::Sig;
+
+    let schedule = PhloScheduleV1 {
+        protocol_version: 6,
+        network: b"test",
+        shard: b"root",
+        settlement_asset: b"REV",
+        settlement_unit: b"atomic-REV",
+        decimal_scale: 8,
+        classes: NativePhloDimension::ALL
+            .into_iter()
+            .zip([
+                b"compute".as_slice(),
+                b"introduction",
+                b"transfer",
+                b"trace",
+            ])
+            .map(|(dimension, identity)| dimension.resource_class(identity, 1))
+            .collect(),
+        actual_price: 2,
+        compatibility_rule: native_resource_compatibility_rule(),
+    };
+    let funding = Sig::Ground(vec![9, 9, 9, 9]);
+    let urn_map = HashMap::new();
+    let reducer = runtime().block_on(harness(HashMap::new())).reducer;
+    let completeness = |source: &str| {
+        let program = Compiler::source_to_adt(source).expect("the program compiles");
+        let resolved = resolve_lexical_names_for_funding(&program, rand(), &urn_map)
+            .expect("the program resolves");
+        linear_cost_estimate(&resolved, &funding, &schedule, &reducer)
+            .expect("the estimate runs")
+            .completeness
+    };
+    for (case, source, expected) in [
+        (
+            "a closed send param, the control of the data rule",
+            r#"new x in { x!(0; priority=1) }"#,
+            Completeness::Complete,
+        ),
+        (
+            "a send param that holds a variable",
+            r#"new x, y in { for (@n <- y) { x!(0; priority=n) } }"#,
+            Completeness::Incomplete(IncompleteReason::OpenData),
+        ),
+        (
+            "a datum that holds a variable, the same class",
+            r#"new x, y in { for (@n <- y) { x!(0, n) } }"#,
+            Completeness::Incomplete(IncompleteReason::OpenData),
+        ),
+        (
+            "a bind with a query on a fresh channel",
+            r#"new x in { for (@n <- x ~ 5) { Nil } }"#,
+            Completeness::Incomplete(IncompleteReason::NonFreshChannel),
+        ),
+        (
+            "a bind without a query on a fresh channel, the control",
+            r#"new x in { for (@n <- x) { Nil } }"#,
+            Completeness::Complete,
+        ),
+    ] {
+        assert_eq!(completeness(source), expected, "{case}");
     }
 }
 
 /// P8 step 4 (design v2 AG-2, TS-1, W4): the space of `sample_use` and the annotation of
 /// `sample_new_space` are ordinary names, so both constructs translate without an error. The
-/// USE body sends on the forged channel `1`, which becomes one call on the agent. The NEWSPACE
-/// tuple makes one gensym call and parks its resume term.
+// Changed by decision 112: an annotated `new` replaces the NEWSPACE tuple. The text before:
+// ```
+// /// USE body sends on the forged channel `1`, which becomes one call on the agent. The NEWSPACE
+// /// tuple makes one gensym call and parks its resume term.
+// ```
+/// USE body sends on the forged channel `1`, which becomes one call on the agent. The annotated
+/// `new` makes one gensym call and parks its resume term.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_hook_agent_constructs_translate() {
     let outcome = evaluate(sample_use()).await;
@@ -1727,6 +2561,74 @@ async fn reified_hook_agent_constructs_translate() {
     assert_eq!(data_channels(&outcome), vec![
         private_name(vec![4; 32]).encode_to_vec()
     ]);
+}
+
+/// Added by decision 112: a free variable of a pattern binds a whole quoted process. A process
+/// with a use block is such a value, so the bound term keeps its use block.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn free_variable_binds_a_quoted_process_with_a_use_block() {
+    let channel = gstring("rrs-p2-bind-use");
+    let bound = gstring("rrs-p2-bind-use-out");
+    let program = concatenate_pars(
+        receive(
+            channel.clone(),
+            vec![free_var(0)],
+            1,
+            send(bound.clone(), vec![bound_var(0)]),
+            false,
+        ),
+        send(channel, vec![sample_use()]),
+    );
+    let outcome = evaluate(program).await;
+    assert_eq!(outcome.error, None, "{outcome:?}");
+    assert_eq!(outcome.comms, 1, "{outcome:?}");
+    assert_eq!(data_channels(&outcome), vec![bound.encode_to_vec()]);
+    let datum = sample_use().encode_to_vec();
+    assert!(
+        outcome.store.iter().any(|entry| entry
+            .windows(datum.len())
+            .any(|window| window == datum.as_slice())),
+        "the stored datum holds the use block: {outcome:?}"
+    );
+}
+
+/// Added by decision 112: two equal `free` values are equal, they hash equally, and each matches
+/// the other as a pattern.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn efree_matches_itself() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let theory = || {
+        position_par(&ReifiedConstruct::Free(
+            models::rust::reified::encoding::FreeTheory {
+                name: "Nat".to_owned(),
+                args: vec![gint(1)],
+            },
+        ))
+    };
+    let (left, right) = (theory(), theory());
+    assert_eq!(left, right);
+    let digest = |par: &Par| {
+        let mut hasher = DefaultHasher::new();
+        par.hash(&mut hasher);
+        hasher.finish()
+    };
+    assert_eq!(digest(&left), digest(&right));
+    let channel = gstring("rrs-p2-efree");
+    let program = concatenate_pars(
+        receive(
+            channel.clone(),
+            vec![left],
+            0,
+            send(gstring("rrs-p2-efree-out"), vec![gint(1)]),
+            false,
+        ),
+        send(channel, vec![right]),
+    );
+    let outcome = evaluate(program).await;
+    assert_eq!(outcome.error, None, "{outcome:?}");
+    assert_eq!(outcome.comms, 1, "{outcome:?}");
 }
 
 // ── HEAD empty-state inputs ────────────────────────────────────────────────
@@ -1757,43 +2659,114 @@ fn head_empty_state_inputs_marker_free() {
 
 // ── Consensus checklist items 18 and 19 ────────────────────────────────────
 
-/// Item 18 at P2: every marker form fails closed before it creates a consume, so the hooks
-/// add no join. An ordinary join is the control: it parks one consume.
+// Changed by decision 112: the programs hold the fields. The text before:
+// ```
+// /// Item 18 at P2: every marker form fails closed before it creates a consume, so the hooks
+// /// add no join. An ordinary join is the control: it parks one consume.
+// ```
+/// Item 18 at P2: a malformed field and a field on the default space fail closed before they
+/// create a consume, so the hooks add no join. An ordinary join is the control: it parks one
+/// consume.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_p2_synthesizes_no_join() {
     let left = gstring("rrs-p2-join-left");
     let query = sample_query();
-    let malformed_query = marker_tuple(Marker::Query, vec![gint(1), list(vec![gint(2)])]);
+    // Changed by decision 112: a query without a payload is malformed, and the query names no
+    // channel. The text before:
+    // let malformed_query = marker_tuple(Marker::Query, vec![gint(1), list(vec![gint(2)])]);
+    let malformed_query = QuerySpec::default();
+    let source = gstring("rrs-p2-query");
     let programs = [
         // Changed by P8 step 4 (design v2 AG-2, W4): these constructs name user agents, so they
         // translate instead of failing closed (checked below).
         // sample_use(),
         // sample_new_space(),
-        marker_tuple(Marker::Use, vec![gint(1)]),
+        // Changed by decision 112: a malformed use block is a field without a body.
+        // The text before:
+        // marker_tuple(Marker::Use, vec![gint(1)]),
+        malformed_use_block(),
         // new_par(1, sample_use()),
-        send(left.clone(), vec![gint(1), sample_params()]),
-        persistent_send(left.clone(), vec![sample_params()]),
-        receive(query.clone(), vec![wildcard()], 0, Par::default(), false),
-        receive(query.clone(), vec![wildcard()], 0, Par::default(), true),
-        join(
-            vec![
-                (left.clone(), vec![wildcard()], 0),
-                (query.clone(), vec![wildcard()], 0),
-            ],
-            Par::default(),
-            false,
-            false,
+        // Changed by decision 112: a send holds its params in the field. The text before:
+        // ```
+        // send(left.clone(), vec![gint(1), sample_params()]),
+        // persistent_send(left.clone(), vec![sample_params()]),
+        // ```
+        with_params(send(left.clone(), vec![gint(1)]), sample_params()),
+        with_params(persistent_send(left.clone(), Vec::new()), sample_params()),
+        // Changed by decision 112: a bind holds its query in the field. The text before:
+        // ```
+        // receive(query.clone(), vec![wildcard()], 0, Par::default(), false),
+        // receive(query.clone(), vec![wildcard()], 0, Par::default(), true),
+        // ```
+        with_query(
+            receive(source.clone(), vec![wildcard()], 0, Par::default(), false),
+            0,
+            query.clone(),
         ),
-        join(
-            vec![
-                (query.clone(), vec![wildcard()], 0),
-                (left.clone(), vec![wildcard()], 0),
-            ],
-            Par::default(),
-            false,
-            true,
+        with_query(
+            receive(source.clone(), vec![wildcard()], 0, Par::default(), true),
+            0,
+            query.clone(),
         ),
-        receive(malformed_query, vec![wildcard()], 0, Par::default(), false),
+        // Changed by decision 112: the query is the field of the bind of its channel.
+        // The text before:
+        // ```
+        // join(
+        //     vec![
+        //         (left.clone(), vec![wildcard()], 0),
+        //         (query.clone(), vec![wildcard()], 0),
+        //     ],
+        //     Par::default(),
+        //     false,
+        //     false,
+        // ),
+        // ```
+        with_query(
+            join(
+                vec![
+                    (left.clone(), vec![wildcard()], 0),
+                    (source.clone(), vec![wildcard()], 0),
+                ],
+                Par::default(),
+                false,
+                false,
+            ),
+            1,
+            query.clone(),
+        ),
+        // Changed by decision 112: the query is the field of the bind of its channel.
+        // The text before:
+        // ```
+        // join(
+        //     vec![
+        //         (query.clone(), vec![wildcard()], 0),
+        //         (left.clone(), vec![wildcard()], 0),
+        //     ],
+        //     Par::default(),
+        //     false,
+        //     true,
+        // ),
+        // ```
+        with_query(
+            join(
+                vec![
+                    (source.clone(), vec![wildcard()], 0),
+                    (left.clone(), vec![wildcard()], 0),
+                ],
+                Par::default(),
+                false,
+                true,
+            ),
+            0,
+            query.clone(),
+        ),
+        // Changed by decision 112: a bind holds its query in the field. The text before:
+        // receive(malformed_query, vec![wildcard()], 0, Par::default(), false),
+        with_query(
+            receive(source.clone(), vec![wildcard()], 0, Par::default(), false),
+            0,
+            malformed_query,
+        ),
     ];
     for program in programs {
         let outcome = evaluate(program.clone()).await;
@@ -1832,8 +2805,14 @@ async fn reified_p2_marker_channels_never_mergeable() {
     let mut channels: Vec<Par> = vec![
         sample_use(),
         sample_new_space(),
-        sample_params(),
-        sample_query(),
+        // Changed by decision 112: a field form is a process, and the tuples stay as ordinary
+        // channels below. The text before:
+        // ```
+        // sample_params(),
+        // sample_query(),
+        // ```
+        position_par(&ReifiedConstruct::Params(sample_params())),
+        position_par(&ReifiedConstruct::Query(sample_query())),
         marker_tuple(Marker::Free, vec![gstring("Nat"), list(vec![])]),
         tuple(vec![Marker::Params.par(), gint(1)]),
         private_name(vec![0xE0, 0x21]),
@@ -1848,7 +2827,10 @@ async fn reified_p2_marker_channels_never_mergeable() {
     let mut program = send(control.clone(), vec![gint(5)]);
     for (index, channel) in channels.iter().enumerate() {
         program = concatenate_pars(send(channel.clone(), vec![gint(5)]), program);
-        if index % 2 == 0 && channel != &sample_query() {
+        // Changed by decision 112: a field form is an ordinary channel, so no channel needs a
+        // guard. The text before:
+        // if index % 2 == 0 && channel != &sample_query() {
+        if index % 2 == 0 {
             program = concatenate_pars(
                 receive(
                     channel.clone(),

@@ -16,10 +16,21 @@
 //! Each `ReifiedRuntime` method runs one `Intent::Space` job, and the job calls the agent.
 //!
 //! Every agent method follows the substrate rules (readiness review S2, S3, S5 and S10):
-//!
-//! * A method opens at most one transaction, with [`SpaceEnv::begin`]. It locks every channel
-//!   that it touches: a collection operation `[C(sid), S(sid), S(sid,k), D(sid,k)]`, a creation
-//!   `[C(sid), S(sid), H(sid)]`, and a read-only access `[C(sid)]`.
+// Changed by decisions 92 and 94: a collection operation takes its locks in two phases, and
+// every transaction of a space locks `S(sid)`.
+// //! * A method opens at most one transaction, with [`SpaceEnv::begin`]. It locks every channel
+// //!   that it touches: a collection operation `[C(sid), S(sid), S(sid,k), D(sid,k)]`, a creation
+// //!   `[C(sid), S(sid), H(sid)]`, and a read-only access `[C(sid)]`.
+//! * A method opens at most one transaction, with [`SpaceEnv::begin`] or with
+//!   [`SpaceEnv::begin_phase_a`]. It locks every channel that it touches: a collection operation
+//!   `[C(sid), S(sid), S(sid,k), D(sid,k)]` and the keys of its join scope, a creation
+//!   `[C(sid), S(sid), H(sid)]`, an allocation `[C(sid), S(sid), A(sid)]`, and a read-only
+//!   access `[C(sid), S(sid)]`.
+//! * A collection operation takes phase A over its own keys, classifies its route under phase A,
+//!   and then takes phase B over its own keys and the keys of its scope
+//!   ([`SpaceEnv::lock_phase_b`], decision 94). It stages nothing before phase B.
+//! * Every row of a space names `S(sid)` in its footprint, and the first row of each committed
+//!   transaction is unique to its job (decision 92, `spaces::anchor`).
 //! * A read-only access stages nothing and drops its transaction. It never commits an empty
 //!   transaction.
 //! * A method that stages work returns a [`Prepared`]. The job commits it exactly once with
@@ -48,14 +59,20 @@ use models::rhoapi::{
 };
 use models::rust::space_factory_urn::SpaceFactoryUrn;
 use rspace_plus_plus::rspace::rspace_interface::RSpaceResult;
+// Changed by decision 90 (item 3.10): the hold of a commit.
+// use rspace_plus_plus::rspace::space_store_handle::{
+//     BoxedSpaceTxn, SpaceStoreHandle, SpaceTxnError, SpaceTxnReceipt,
+// };
 use rspace_plus_plus::rspace::space_store_handle::{
-    BoxedSpaceTxn, SpaceStoreHandle, SpaceTxnError, SpaceTxnReceipt,
+    BoxedSpaceTxn, SpaceStoreHandle, SpaceTxnError, SpaceTxnReceipt, TxnHold,
 };
 
 use super::ephemeral::VolatileRegistry;
 use super::errors::SpaceError;
 use super::mirror::MirrorWrites;
-use super::namespace::{CollectionKey, NativeSpace};
+// Changed by decision 92: the footprint key of a space transaction.
+// use super::namespace::{CollectionKey, NativeSpace};
+use super::namespace::{self, CollectionKey, NativeSpace, ReifiedId};
 use crate::rust::interpreter::accounting::RuntimeBudget;
 use crate::rust::interpreter::reified::costs::ReissueCause;
 
@@ -93,8 +110,17 @@ pub enum OpOrigin {
     /// An operation that the program started.
     #[default]
     Program,
-    /// An operation that the runtime re-issues.
-    Internal,
+    // Changed by decision 124 (plan v4 C7.14, ruling OP2-25 option B): a re-issue says whether
+    // it stages its anchor first. The text before:
+    // ```
+    // /// An operation that the runtime re-issues.
+    // Internal,
+    // ```
+    /// An operation that the runtime re-issues. `anchor_first` holds when the finish built the
+    /// re-issue from a Stop for an owner refusal (CR-19 case 2). Only the Stop branch of CR-31
+    /// and a Skipped row d build the cause `OwnerRefusal` (ruling D-4), so the cause marks that
+    /// case. `anchor_first` never depends on the cause alone (CR-19, ruling D-6).
+    Internal { anchor_first: bool },
 }
 
 impl SpaceEnv {
@@ -104,10 +130,68 @@ impl SpaceEnv {
     /// The lock keys with an ephemeral KIND go into the book of the evaluation first, so the
     /// sweep at the end of the evaluation removes every volatile channel that the transaction
     /// can write (VR-2).
+    ///
+    /// Changed by decision 94: the transaction takes phase A ([`SpaceEnv::begin_phase_a`]) and
+    /// then phase B over the same keys ([`SpaceEnv::lock_phase_b`]).
+    // pub async fn begin(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {
+    //     self.volatile.record_locked(lock_keys);
+    //     self.store.begin(lock_keys).await
+    // }
     pub async fn begin(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {
-        self.volatile.record_locked(lock_keys);
-        self.store.begin(lock_keys).await
+        let mut txn = self.begin_phase_a(lock_keys).await?;
+        self.lock_phase_b(&mut txn, &[]).await?;
+        Ok(txn)
     }
+
+    /// Added by decision 94: opens the transaction of a method over `lock_keys` with phase A
+    /// only. The transaction can read the store, and it stages nothing before
+    /// [`SpaceEnv::lock_phase_b`]. A collection operation classifies its route under phase A.
+    ///
+    /// The lock keys with an ephemeral KIND go into the book of the evaluation first (VR-2).
+    /// Decision 92: when the lock keys hold the config channel `C(sid)` of a space, the
+    /// transaction names the space counter `S(sid)` in the footprint of each row, so every row
+    /// of the space is in one chain (`SpaceReplayOrder.tla`). The lock keys of such a
+    /// transaction must hold `S(sid)`.
+    pub async fn begin_phase_a(&self, lock_keys: &[Par]) -> Result<ParSpaceTxn, SpaceTxnError> {
+        self.volatile.record_locked(lock_keys);
+        let footprint_key = footprint_key(lock_keys)?;
+        let mut txn = self.store.begin_phase_a(lock_keys).await?;
+        if let Some(key) = footprint_key {
+            txn.set_footprint_key(key)?;
+        }
+        Ok(txn)
+    }
+
+    /// Added by decision 94: takes phase B of `txn` over its own lock keys and the keys
+    /// `scope_keys` of a join scope, in one sorted call (`JoinScopeLock.tla`). The keys with an
+    /// ephemeral KIND go into the book of the evaluation first (VR-2).
+    pub async fn lock_phase_b(
+        &self,
+        txn: &mut ParSpaceTxn,
+        scope_keys: &[Par],
+    ) -> Result<(), SpaceTxnError> {
+        self.volatile.record_locked(scope_keys);
+        txn.lock_phase_b(scope_keys).await
+    }
+}
+
+/// Added by decision 92: the footprint key of a transaction over `lock_keys`. It is the space
+/// counter `S(sid)` when the lock keys hold the config channel `C(sid)` of the space, and
+/// otherwise `None`. Lock keys with two config channels are `Inconsistent`.
+fn footprint_key(lock_keys: &[Par]) -> Result<Option<Par>, SpaceTxnError> {
+    let mut space = None;
+    for key in lock_keys {
+        match (namespace::reified_id_of(key), space) {
+            (Some(ReifiedId::Config(found)), None) => space = Some(found),
+            (Some(ReifiedId::Config(_)), Some(_)) => {
+                return Err(SpaceTxnError::Inconsistent(
+                    "the lock keys of a space transaction hold two config channels",
+                ))
+            }
+            _ => {}
+        }
+    }
+    Ok(space.map(|space| namespace::gprivate(namespace::space_counter(space))))
 }
 
 /// A produce on a collection of a native space: a routed send (P4 design C.3), an R7 reply
@@ -373,7 +457,7 @@ pub struct SpaceOutcome {
     pub fires: Vec<SpaceFire>,
     pub reissue: Option<SpaceReissue>,
     /// The net writes of the transaction to the mirror of a VectorDB space with a mirror (P6
-    /// step 7b). The runtime appends them to the mirror journal of the evaluation.
+    /// step 7b). Changed by decision 98: the runtime publishes them in play before the hold drops.
     pub mirror: Option<MirrorWrites>,
 }
 
@@ -430,10 +514,31 @@ impl<T> Prepared<T> {
 
     /// Commits the transaction once and returns the result. A failure of operation `i` keeps
     /// operations `0..i` (prefix atomicity, decision 19 D6).
+    ///
+    /// Changed by decision 90 (decision 91 SQ-4): the finish runs under the stripes of the
+    /// commit (`commit_holding`), so the store of the seq claims is atomic with their check
+    /// (`SeqGuardToctouUnsafe` of `SpaceCoordination.tla`). Racing evaluation runs other jobs
+    /// of the space between a commit and its finish, which the scheduler did not.
+    // pub async fn commit(self) -> Result<T, SpaceError> {
+    //     let Prepared { mut txn, finish } = self;
+    //     let receipt = txn.commit().await?;
+    //     finish(receipt)
+    // }
     pub async fn commit(self) -> Result<T, SpaceError> {
+        let (result, hold) = self.commit_holding().await?;
+        drop(hold);
+        Ok(result)
+    }
+
+    /// Added by decision 90 (item 3.10, and decision 91 SQ-4): commits the transaction once,
+    /// runs the finish under its stripes, and returns the result with the hold of the stripes.
+    /// The caller does what must follow the commit in commit order, such as the publication of
+    /// the mirror writes of play (decision 98), before it drops the hold. A failed commit or
+    /// finish releases the stripes at once.
+    pub async fn commit_holding(self) -> Result<(T, TxnHold), SpaceError> {
         let Prepared { mut txn, finish } = self;
-        let receipt = txn.commit().await?;
-        finish(receipt)
+        let (receipt, hold) = txn.commit_holding().await?;
+        Ok((finish(receipt)?, hold))
     }
 }
 
@@ -495,18 +600,46 @@ pub trait SpaceAgent: Send + Sync {
 }
 
 /// Runs a collection operation with `agent`: one transaction and exactly one commit.
+///
+/// Changed by decision 90 (item 3.10): `run_op_holding` without the hold.
+// pub async fn run_op(
+//     agent: &dyn SpaceAgent,
+//     env: &SpaceEnv,
+//     op: SpaceOp,
+// ) -> Result<SpaceOutcome, SpaceError> {
+//     let prepared = match op {
+//         SpaceOp::Produce(op) => agent.prepare_produce(env, op).await?,
+//         SpaceOp::Consume(op) => agent.prepare_consume(env, op).await?,
+//         SpaceOp::Settle(op) => agent.prepare_settle(env, op).await?,
+//         SpaceOp::Join(op) => agent.prepare_join(env, op).await?,
+//     };
+//     prepared.commit().await
+// }
 pub async fn run_op(
     agent: &dyn SpaceAgent,
     env: &SpaceEnv,
     op: SpaceOp,
 ) -> Result<SpaceOutcome, SpaceError> {
+    let (outcome, hold) = run_op_holding(agent, env, op).await?;
+    drop(hold);
+    Ok(outcome)
+}
+
+/// Added by decision 90 (item 3.10): runs a collection operation with `agent`, one transaction
+/// and exactly one commit, and returns the outcome with the hold of the stripes of the commit
+/// ([`Prepared::commit_holding`]).
+pub async fn run_op_holding(
+    agent: &dyn SpaceAgent,
+    env: &SpaceEnv,
+    op: SpaceOp,
+) -> Result<(SpaceOutcome, TxnHold), SpaceError> {
     let prepared = match op {
         SpaceOp::Produce(op) => agent.prepare_produce(env, op).await?,
         SpaceOp::Consume(op) => agent.prepare_consume(env, op).await?,
         SpaceOp::Settle(op) => agent.prepare_settle(env, op).await?,
         SpaceOp::Join(op) => agent.prepare_join(env, op).await?,
     };
-    prepared.commit().await
+    prepared.commit_holding().await
 }
 
 #[cfg(test)]
@@ -573,6 +706,10 @@ mod tests {
             regions: vec![CostRegion {
                 instance_id: vec![byte; 32],
                 signature: None,
+                // Added by decision 90 (DR-135): an unpriced region, as outside native
+                // execution.
+                price: 0,
+                caller: None,
             }],
         }
     }
@@ -599,6 +736,9 @@ mod tests {
                 persist: op.persistent,
                 outcome: ProduceOutcome::Store,
                 before_observe: None,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             })?;
             let receipts = Arc::clone(&self.receipts);
             Ok(Prepared::new(txn, move |receipt| {
@@ -775,5 +915,72 @@ mod tests {
             SpaceOp::Consume(signed).footprint_authority(),
             Some(region(6))
         );
+    }
+
+    /// Added by decision 92: the footprint key of a transaction is the space counter `S(sid)`
+    /// of the one space whose config channel `C(sid)` is a lock key. Lock keys without a config
+    /// channel give no key. Lock keys with the config channels of two spaces are `Inconsistent`.
+    #[test]
+    fn footprint_key_is_the_space_counter_of_the_one_config_channel() {
+        let other = NativeSpace {
+            sid: [7; namespace::SID_LEN],
+            ..space()
+        };
+        let config = |space| namespace::gprivate(namespace::config_channel(space));
+        let counter = |space| namespace::gprivate(namespace::space_counter(space));
+        assert_eq!(footprint_key(&[]), Ok(None));
+        assert_eq!(
+            footprint_key(&[counter(space()), new_gint_par(1, Vec::new(), false)]),
+            Ok(None)
+        );
+        assert_eq!(
+            footprint_key(&[counter(space()), config(space())]),
+            Ok(Some(counter(space())))
+        );
+        assert_eq!(
+            footprint_key(&[config(space()), config(other)]),
+            Err(SpaceTxnError::Inconsistent(
+                "the lock keys of a space transaction hold two config channels"
+            ))
+        );
+    }
+
+    /// Added by decision 92: `SpaceEnv::begin` sets the footprint key of a transaction whose
+    /// lock keys hold `C(sid)`, so its commit requires that the first staged operation is the
+    /// job's own. A transaction that opens on the store directly has no key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn begin_sets_the_footprint_key_of_a_space_transaction() {
+        let env = env().await;
+        let config = namespace::gprivate(namespace::config_channel(space()));
+        let keys = [
+            config.clone(),
+            namespace::gprivate(namespace::space_counter(space())),
+        ];
+        let store = |own| SpaceProduce {
+            channel: config.clone(),
+            data: produce_op().data,
+            persist: true,
+            outcome: ProduceOutcome::Store,
+            before_observe: None,
+            own,
+            // Added by decision 123 (plan v4, V3-9): no row search.
+            search: None,
+        };
+        let mut txn = env.begin(&keys).await.expect("begin");
+        txn.produce(store(false)).expect("stage a shared store");
+        assert_eq!(
+            txn.commit().await.err(),
+            Some(SpaceTxnError::InvalidOperation(
+                "the first operation of a space transaction is not its job's own"
+            ))
+        );
+        let mut txn = env.begin(&keys).await.expect("begin");
+        txn.produce(store(true)).expect("stage an own store");
+        txn.commit().await.expect("an own first operation commits");
+        let mut txn = env.store.begin(&keys).await.expect("begin on the store");
+        txn.produce(store(false)).expect("stage a shared store");
+        txn.commit()
+            .await
+            .expect("a transaction without a footprint key commits");
     }
 }

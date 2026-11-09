@@ -19,19 +19,22 @@ and event log. Every validator must replay that deploy and produce the EXACT
 same result. The non-determinism is resolved at the implementation level:
 
 1. **Evaluation order**: The `eval(Par)` term vector ordering (sends first,
-   receives second) determines stable branch source paths and task registration
+   receives second) determines which `tokio::spawn` tasks are created first
 2. **Candidate matching**: `Random.shuffle` with a deploy-derived seed selects
    the same candidate deterministically
 3. **Replay oracle**: `ReplayRSpace` uses the play event log to force the
    exact same COMMs during replay, regardless of evaluation order
 
-## Implementation: FuturesUnordered Branch Draining
+## Implementation: tokio::spawn with FIFO Per-Channel Locks
 
 The Rust node uses `tokio::spawn` for parallel Par branch evaluation, matching
-Scala's `parTraverse`, and drains the branch tasks with `FuturesUnordered` so
-completion order does not impose a sequential join barrier. Per-channel locks
-use `tokio::sync::Mutex` which guarantees FIFO ordering for waiters, matching
-Scala's cats-effect `Semaphore`.
+Scala's `parTraverse`. Per-channel locks use `tokio::sync::Mutex` which
+guarantees FIFO ordering for waiters, matching Scala's cats-effect `Semaphore`.
+
+On the cost-accounting branch (DR-132), inside the per-call scope of `inj`,
+each continuation body, persistent re-issue and parallel child runs as a task
+of the scope, and the parent does not await it. `inj` drains the scope
+before it returns.
 
 Both `RSpace` and `ReplayRSpace` have per-channel two-phase locks, matching
 Scala's `RSpaceOps` which provides locks to both via inheritance.

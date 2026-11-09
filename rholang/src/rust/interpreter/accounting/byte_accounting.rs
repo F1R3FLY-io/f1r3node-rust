@@ -103,6 +103,14 @@ pub fn produce_introduction_identity(source: &Produce) -> [u8; 32] {
     domain_identity(PRODUCE_INTRODUCTION_DOMAIN, &source.hash.0)
 }
 
+/// Added by G3 (DR-135, S4): the introduction identity of a produce with the
+/// RSpace hash `hash`. The journal check finds the restoration of a peeked
+/// datum by it, because a COMM source keeps only the produce hash (R9). It
+/// equals `produce_introduction_identity` of every produce with that hash.
+pub fn produce_introduction_identity_of_hash(hash: &[u8; 32]) -> [u8; 32] {
+    domain_identity(PRODUCE_INTRODUCTION_DOMAIN, hash)
+}
+
 pub fn consume_introduction_identity(source: &Consume) -> [u8; 32] {
     domain_identity(CONSUME_INTRODUCTION_DOMAIN, &source.hash.0)
 }
@@ -451,6 +459,27 @@ mod tests {
         );
     }
 
+    /// Added by G3 (DR-135, S4): the identity of a produce hash is the
+    /// identity of the produce (R9).
+    #[test]
+    fn the_identity_of_a_produce_hash_is_the_identity_of_the_produce() {
+        let produce = produce();
+        let hash: [u8; 32] = produce
+            .hash
+            .0
+            .as_slice()
+            .try_into()
+            .expect("an RSpace produce hash has 32 bytes");
+        assert_eq!(
+            produce_introduction_identity_of_hash(&hash),
+            produce_introduction_identity(&produce)
+        );
+        assert_ne!(
+            produce_introduction_identity_of_hash(&[0; 32]),
+            produce_introduction_identity(&produce)
+        );
+    }
+
     #[test]
     fn checked_cost_rejects_every_overflow_position() {
         for charge in [
@@ -604,6 +633,8 @@ mod tests {
                     .map(|(signature, instance_id)| models::rhoapi::CostRegion {
                         instance_id,
                         signature: Some(ground(signature)),
+                        // Added by G3 (DR-135): no price and no caller.
+                        ..Default::default()
                     })
                     .collect(),
             })),

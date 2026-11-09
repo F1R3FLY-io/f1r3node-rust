@@ -46,6 +46,7 @@ UNRELATED_ID="$(/usr/bin/docker run -d --name "rnode.b38-unrelated.$$" --label f
 [[ "$UNRELATED_ID" =~ ^[a-f0-9]{64}$ ]]
 printf '%s\n' "$UNRELATED_ID" >"$EVIDENCE/unrelated-id.txt"
 jq -n --arg image "$IMAGE" '{services:{writer:{image:$image,labels:{"fixture.owner":"crash-stop-owned"},network_mode:"none",mem_limit:33554432,cpus:0.5,pids_limit:32,cap_drop:["ALL"],security_opt:["no-new-privileges"],user:"65534:65534",command:["/bin/sh","-c","i=0; while [ \"$$i\" -lt 1200 ]; do printf \"%s\\n\" \"$$i\" >>/tmp/writes; i=$$((i+1)); sleep 0.1; done"]}}}' >"$EVIDENCE/node/docker/shard.yml"
+printf 'services: {}\n' >"$EVIDENCE/node/docker/ci-ports.shard.yml"
 cat >"$EVIDENCE/bin/docker" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

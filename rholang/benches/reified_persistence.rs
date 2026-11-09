@@ -10,10 +10,18 @@
 //! | `merge` | The merge of two branches that both write one bag over a common base on an LMDB store |
 //! | `replay` | The native replay of a chain of two blocks played on an LMDB store |
 //! | `lmdb_commit` | One deploy of 10 sends with its checkpoint on an LMDB store, and the bytes that each block adds to the store |
+// Changed by decision 89: no host-work limit bounds a deploy, so no collection has a size where
+// one send no longer fits. The text before:
+// ```
+// //! `checkpoint_size` spreads the S records over channels of [`RECORDS_PER_CHANNEL`] records, so
+// //! no collection reaches the size where one send no longer fits the v6 limits. Each channel has
+// //! its own fill step, so the fill of each channel starts with deploys of
+// //! [`common::CHUNK`] sends.
+// ```
 //!
-//! `checkpoint_size` spreads the S records over channels of [`RECORDS_PER_CHANNEL`] records, so
-//! no collection reaches the size where one send no longer fits the v6 limits. Each channel has
-//! its own fill step, so the fill of each channel starts with deploys of [`common::CHUNK`] sends.
+//! `checkpoint_size` spreads the S records over channels of [`RECORDS_PER_CHANNEL`] records. Each
+//! channel has its own fill step, so the fill of each channel starts with deploys of
+//! [`common::CHUNK`] sends.
 //! The legacy group `checkpoint_operations` (soft checkpoints of the legacy in-memory store) has
 //! this counterpart. The bytes that a block adds to the history are recorded with
 //! `RRS_BENCH_RECORD`. The LMDB stores of the cases live in directories under the scratch root,
@@ -141,7 +149,12 @@ fn bench_restart_attach(c: &mut Criterion) {
         id: format!("bag/{records}"),
         setup: vec![
             Step::Deploy(create("hashmap:bag", "\"default\"")),
-            fill(records, |i| format!("@\"c\"!({i})")),
+            // Changed by decision 102 (T-BENCH): every record has one encoded size, so a random
+            // pick does not change the phlo. The text before:
+            // fill(records, |i| format!("@\"c\"!({i})")),
+            fill(records, |i| {
+                format!("@\"c\"!({})", common::PAYLOAD_BASE + i)
+            }),
         ],
         term: with_space("for (@x <- @\"c\") { out!(x) }"),
         with_checkpoint: false,

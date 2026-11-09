@@ -69,10 +69,20 @@ use rspace_plus_plus::rspace::space_store_handle::BeforeObserve;
 
 use super::agent::{ConsumeOp, ProduceOp};
 use super::errors::SpaceError;
+// Added by decision 128 (kind routing): the registry gives the query keys of a waiter policy.
+use super::families;
 use super::namespace::REIFIED_TAG;
 use super::types::config::{map_entries, map_par, string_par};
+// Changed by decision 124 (plan v2 C7.1, decision 99): the machinery seal is the system residue
+// of the payer. The text before:
+// ```
+// use crate::rust::interpreter::accounting::authority::{
+//     resolve_system_residue, AuthorityByteEventKind, ResidueContext,
+// };
+// ```
 use crate::rust::interpreter::accounting::authority::{
-    resolve_system_residue, AuthorityByteEventKind, ResidueContext,
+    resolve_system_residue, system_residue_authority_with_caller, AuthorityByteEventKind,
+    ResidueContext,
 };
 use crate::rust::interpreter::accounting::byte_accounting::{
     consume_introduction_identity, produce_introduction_identity,
@@ -161,6 +171,7 @@ pub(crate) fn sole_expr(par: &Par) -> Option<&ExprInstance> {
         connective_used: _,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     let structural = sends.is_empty()
         && receives.is_empty()
@@ -171,6 +182,7 @@ pub(crate) fn sole_expr(par: &Par) -> Option<&ExprInstance> {
         && connectives.is_empty()
         && conditionals.is_empty()
         && cost_signed_terms.is_empty()
+        && use_blocks.is_empty()
         && cost_stacks.is_empty();
     match (structural, exprs.as_slice()) {
         (
@@ -385,6 +397,16 @@ fn continuation_parts(
 /// The order of a parked continuation. Only the envelope is decoded.
 pub fn continuation_ord(continuation: &TaggedContinuation) -> Result<i64, MalformedRecord> {
     continuation_parts(continuation).map(|(ord, _, _)| ord)
+}
+
+/// Added by decision 92: the random state of the `ParBody` of `continuation`, or `None` for a
+/// continuation without a `ParBody`. A wrapper of a continuation keeps the random state, so a
+/// record and its original continuation give the same bytes (`spaces::anchor::SpaceJob`).
+pub fn continuation_random_state(continuation: &TaggedContinuation) -> Option<&[u8]> {
+    match &continuation.tagged_cont {
+        Some(TaggedCont::ParBody(ParWithRandom { random_state, .. })) => Some(random_state),
+        Some(TaggedCont::ScalaBodyRef(_)) | None => None,
+    }
 }
 
 /// A decoded continuation record.
@@ -945,25 +967,35 @@ pub fn wrap_pq_continuation_from_parts(
 // waiter writes `Nil` for a receive without a query, or the canonical map of its query: the
 // query vector under `q` and the named params of the receive, one entry for each present key.
 // The decoder of the policy is strict: it accepts `Nil`, the exact image of `pq_policy`, and a
-// non-empty map whose keys are in `VDB_QUERY_KEYS` and that equals its own re-encoding. The two
-// maps cannot be confused, because `"priority"` is not a query key.
+// Changed by decision 128 (kind routing): the registry gives the policy keys. The text before:
+// ```
+// // non-empty map whose keys are in `VDB_QUERY_KEYS` and that equals its own re-encoding. The two
+// // maps cannot be confused, because `"priority"` is not a query key.
+// ```
+// non-empty map whose keys are policy keys (`families::is_policy_key`) and that equals its own
+// re-encoding. The two maps cannot be confused, because `"priority"` is not a query key.
 //
 // A datum of a VectorDB space keeps envelope version 1 and fills the embedding slot: the vector
 // of the record, a ground list, or `Nil` for a record without one. The agent checks the
 // elements of the vector before it stores the record, so the codec checks only the shape.
 
-/// The keys that the query map of a VectorDB waiter may hold (P6): the query vector `q` and the
-/// named params of the receive, in bytewise order.
-pub const VDB_QUERY_KEYS: [&str; 8] = [
-    "ids",
-    "k",
-    "metric",
-    "q",
-    "radius",
-    "results",
-    "scores",
-    "threshold",
-];
+// Changed by decision 128 (kind routing): the registry gives the keys (`families::is_policy_key`):
+// the query vector `q` and the query params of the families with the similarity window. Without a
+// plug-in they are the 8 keys below. The text before:
+// ```
+// /// The keys that the query map of a VectorDB waiter may hold (P6): the query vector `q` and the
+// /// named params of the receive, in bytewise order.
+// pub const VDB_QUERY_KEYS: [&str; 8] = [
+//     "ids",
+//     "k",
+//     "metric",
+//     "q",
+//     "radius",
+//     "results",
+//     "scores",
+//     "threshold",
+// ];
+// ```
 
 /// The policy slot of a parked waiter (version 1) and of a join slot (version 2).
 ///
@@ -977,8 +1009,10 @@ pub enum WaiterPolicy {
     /// The waiter queue of the level `p` of a priority queue (P5b, decision 38): the exact image
     /// of [`pq_policy`] with `p ≥ 0`.
     Level(i64),
-    /// The query of a VectorDB waiter (P6): one value for each present key of
-    /// [`VDB_QUERY_KEYS`], as the agent checked it.
+    /// The query of a waiter of the similarity window (P6): one value for each present policy key
+    /// (`families::is_policy_key`), as the agent checked it. Changed by decision 128 (kind
+    /// routing): the registry gives the keys. The text before: "The query of a VectorDB waiter
+    /// (P6): one value for each present key of `VDB_QUERY_KEYS`".
     Query(Box<BTreeMap<String, Par>>),
 }
 
@@ -1024,8 +1058,9 @@ pub fn policy_par(policy: &WaiterPolicy) -> Par {
 }
 
 /// The policy of a policy slot: `Nil`, the exact image of [`pq_policy`] with a natural level,
-/// or a non-empty map whose keys are in [`VDB_QUERY_KEYS`] and that equals its re-encoding.
-/// Every other value is `None`.
+/// or a non-empty map whose keys are policy keys (`families::is_policy_key`) and that equals
+/// its re-encoding. Every other value is `None`. Changed by decision 128 (kind routing): the
+/// registry gives the keys. The text before: "whose keys are in `VDB_QUERY_KEYS`".
 pub fn policy_of(par: &Par) -> Option<WaiterPolicy> {
     match level_of_policy(par) {
         Some(Some(level)) => return Some(WaiterPolicy::Level(level)),
@@ -1033,7 +1068,9 @@ pub fn policy_of(par: &Par) -> Option<WaiterPolicy> {
         None => {}
     }
     let entries = map_entries(par)?;
-    if entries.is_empty() || !entries.keys().all(|key| VDB_QUERY_KEYS.contains(key)) {
+    // Changed by decision 128 (kind routing): the registry gives the policy keys. The text before:
+    // if entries.is_empty() || !entries.keys().all(|key| VDB_QUERY_KEYS.contains(key)) {
+    if entries.is_empty() || !entries.keys().all(|key| families::is_policy_key(key)) {
         return None;
     }
     let policy = WaiterPolicy::Query(Box::new(
@@ -1572,11 +1609,17 @@ impl Introduction {
     /// The introduction authority.
     pub fn authority(&self) -> &CostAuthority { &self.authority }
 
+    /// Added by decision 124 (plan v4 C7.9 and F11, ruling D-10): true when the deployment runs
+    /// with owner funding (R11). Only then does a staged row carry a row search (section 2.4).
+    pub fn owner_funded(&self) -> bool { self.budget.owner_binding().is_some() }
+
     /// The introduction of a re-stored record (decision 45, Rule E): the budget of this
     /// introduction and the record's own cost authority as the deployment of the budget resolves
     /// it, or the empty authority when the record has none. A Unit region of system residue that
     /// this deployment derived from the random state of the record resolves to the region of
     /// the payer, and every other region stays as stored (DR-101 of `feature/cost-accounted-rho`).
+    /// The resolved region of the payer carries the region price of the running native
+    /// execution (DR-135 R4), so it equals the region that the deployment opened.
     /// The host reducer's `produce_peeks` registers the same authority when it sends a peeked
     /// datum again. A seal that does not resolve is `Inconsistent`.
     pub fn for_record(&self, record: &ListParWithRandom) -> Result<Arc<Introduction>, SpaceError> {
@@ -1589,15 +1632,44 @@ impl Introduction {
         const UNRESOLVED: &str = "the seal of a re-stored record does not resolve";
         match &record.cost_authority {
             Some(seal) => {
+                // Changed by decision 107 (DR-135 R4): the resolved payer region carries the
+                // region price of this deployment, as in `produce_peeks`.
+                // let context =
+                //     ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
+                //         .map_err(|_| SpaceError::Inconsistent(UNRESOLVED))?;
                 let context =
                     ResidueContext::new(&self.budget.signature(), self.budget.deploy_id())
-                        .map_err(|_| SpaceError::Inconsistent(UNRESOLVED))?;
+                        .map_err(|_| SpaceError::Inconsistent(UNRESOLVED))?
+                        .with_price(self.budget.region_price());
                 let authority = resolve_system_residue(seal, &record.random_state, &context)
                     .map_err(|_| SpaceError::Inconsistent(UNRESOLVED))?;
                 Ok(Introduction::new(&self.budget, &authority))
             }
             None => Ok(Introduction::new(&self.budget, &CostAuthority::default())),
         }
+    }
+
+    /// Added by decision 124 (plan v2 C7.1, decision 99, rule CR-15): the seal of a machinery
+    /// continuation or record of this deployment: the system residue R(d, P) of the authority
+    /// `authority` of its payer P, as `residue_seal_of` builds it for a system body. A
+    /// continuation without an authority stays without a seal.
+    pub fn seal_of(
+        &self,
+        authority: Option<&CostAuthority>,
+    ) -> Result<Option<CostAuthority>, SpaceError> {
+        let Some(authority) = authority else {
+            return Ok(None);
+        };
+        system_residue_authority_with_caller(authority, &self.budget.deploy_id(), None)
+            .map(Some)
+            .map_err(|_| SpaceError::Inconsistent("the seal of a machinery row does not build"))
+    }
+
+    /// Added by decision 124 (plan v2 C7.1, decision 99, rule CR-15): the introduction of a
+    /// machinery row. It carries no authority, so the payer pays, as `for_record` registers a
+    /// record without a seal, and the row has no owner part.
+    pub fn payer(&self) -> Arc<Introduction> {
+        Introduction::new(&self.budget, &CostAuthority::default())
     }
 }
 
@@ -1653,6 +1725,10 @@ mod tests {
                 signature: Some(CostSignature {
                     value: Some(CostSignatureValue::Ground(vec![byte])),
                 }),
+                // Added by decision 90 (DR-135): an unpriced region, as outside native
+                // execution.
+                price: 0,
+                caller: None,
             }],
         }
     }
@@ -2225,6 +2301,85 @@ mod tests {
         );
     }
 
+    /// Added by decision 107 (DR-135 R4): a re-stored record resolves its residue seal to the
+    /// region of the payer at the region price of the running native execution, as the host
+    /// reducer's `produce_peeks` does. A system body of the deployment registered the produce
+    /// with that priced region, so the re-store registers the same authority. The unpriced
+    /// region of the earlier resolution conflicts with the first registration.
+    #[test]
+    fn space_record_restore_resolves_residue_at_the_region_price() {
+        use crate::rust::interpreter::accounting::authority::{
+            canonical_authority, priced_cost_region, sig_to_cost_signature, system_residue_region,
+        };
+        use crate::rust::interpreter::accounting::Sig;
+        use crate::rust::interpreter::reified::system_processes::harness::priced_native_config;
+
+        const PRICE: u64 = 7;
+        let payer = Sig::Ground(vec![1; 33]);
+        let entropy = b"rrs-residue-entropy".to_vec();
+        let signature = sig_to_cost_signature(&payer).expect("a ground payer converts");
+        let priced_region =
+            priced_cost_region(&signature, &entropy, 0, PRICE).expect("the priced payer region");
+        let unpriced_region =
+            priced_cost_region(&signature, &entropy, 0, 0).expect("the unpriced payer region");
+        let stored = canonical_authority(&CostAuthority {
+            regions: vec![
+                system_residue_region(&priced_region, &[7; 32]).expect("a residue region")
+            ],
+        })
+        .expect("a canonical residue seal");
+        let priced = canonical_authority(&CostAuthority {
+            regions: vec![priced_region],
+        })
+        .expect("a canonical priced payer seal");
+        let unpriced = canonical_authority(&CostAuthority {
+            regions: vec![unpriced_region],
+        })
+        .expect("a canonical unpriced payer seal");
+        let record = ListParWithRandom {
+            pars: vec![int(1)],
+            random_state: entropy,
+            cost_authority: Some(stored),
+            cost_stack: None,
+        };
+        let budget = RuntimeBudget::new(Cost::create(1_000, "record residue price"));
+        budget
+            .set_deploy_id_funded([7; 32], payer)
+            .expect("a funded deployment");
+        budget
+            .reset_for_native_execution(priced_native_config(1_000_000, PRICE))
+            .expect("the budget enters a priced native execution");
+        assert_eq!(budget.region_price(), PRICE);
+        let restored = Introduction::new(&budget, &region(9))
+            .for_record(&record)
+            .expect("the seal resolves");
+        assert_eq!(restored.authority(), &priced);
+
+        let _scope = budget.enter_comm_accounting_scope();
+        let produce = Produce::create(&int(2), &record, false);
+        let produced = callback(&budget, &priced);
+        assert_eq!(produced(RSpaceOperationSource::Produce(&produce)), Ok(()));
+        let restore = register_introduction(&restored);
+        assert_eq!(restore(RSpaceOperationSource::Produce(&produce)), Ok(()));
+        let unpriced_restore = callback(&budget, &unpriced);
+        assert!(unpriced_restore(RSpaceOperationSource::Produce(&produce)).is_err());
+    }
+
+    /// Added by decision 124 (plan v2 C7.1, decision 99, rule CR-15): the seal of a machinery
+    /// row is the system residue of the authority of its payer, with the deploy id of the
+    /// budget. No authority gives no seal, and the payer introduction carries the empty
+    /// authority.
+    #[test]
+    fn machinery_seal_is_the_residue_of_the_payer_authority() {
+        let budget = RuntimeBudget::new(Cost::create(1_000, "record machinery seal"));
+        let introduction = Introduction::new(&budget, &region(9));
+        let residue = system_residue_authority_with_caller(&region(4), &budget.deploy_id(), None)
+            .expect("the residue of a signed region");
+        assert_eq!(introduction.seal_of(Some(&region(4))), Ok(Some(residue)));
+        assert_eq!(introduction.seal_of(None), Ok(None));
+        assert_eq!(introduction.payer().authority(), &CostAuthority::default());
+    }
+
     // ── The slots of a priority queue (P5b, decision 38) ──────────────────────────────────
 
     /// The levels of the slot tests: the unprioritized level and some priority levels.
@@ -2778,7 +2933,9 @@ mod tests {
         ))
     }
 
-    /// Query policies with every key of `VDB_QUERY_KEYS` and with one key alone.
+    // Changed by decision 128 (kind routing): the registry gives the policy keys. The text before:
+    // /// Query policies with every key of `VDB_QUERY_KEYS` and with one key alone.
+    /// Query policies with every policy key and with one key alone.
     fn query_policies() -> Vec<WaiterPolicy> {
         let id = expr_par(ExprInstance::GByteArray(vec![7; 32]));
         vec![

@@ -256,7 +256,12 @@ impl RSpaceAccountingObserver<String, Pat, String, String> for Recorder {
         source: RSpaceOperationSource<'_>,
         channels: &[String],
         joins: &[Vec<String>],
-    ) -> Result<(), RSpaceError> {
+        // Changed by decision 90 (DR-132): the start hook returns the name of a recorded row,
+        // as the observer of `comm_observer_tests.rs` does. This observer records no row, so
+        // it returns `None`.
+        // ) -> Result<(), RSpaceError> {
+    ) -> Result<Option<rspace_plus_plus::rspace::operation_context::OperationOrder>, RSpaceError>
+    {
         self.push(Call::Start {
             source: source_bytes(source),
             channels: channels.to_vec(),
@@ -266,7 +271,8 @@ impl RSpaceAccountingObserver<String, Pat, String, String> for Recorder {
             .lock()
             .expect("orders lock")
             .push(rspace_plus_plus::rspace::operation_context::current());
-        self.charge()
+        // self.charge()
+        self.charge().map(|()| None)
     }
 
     fn observe_operation_finish(
@@ -567,6 +573,9 @@ impl Planned {
                 persist,
                 outcome,
                 before_observe,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             }),
             Planned::Consume {
                 channels,
@@ -583,6 +592,9 @@ impl Planned {
                 peeks,
                 outcome,
                 before_observe,
+                own: false,
+                // Added by decision 123 (plan v4, V3-9): no row search.
+                search: None,
             }),
             Planned::Rejected { plan, .. } => plan.stage(txn, before_observe),
         }

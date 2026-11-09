@@ -132,6 +132,7 @@ mod tests {
                 persistent: false,
                 locally_free: Vec::new(),
                 connective_used: false,
+                params: None,
             }])),
             if_false: Some(Par::default()),
             locally_free: Vec::new(),

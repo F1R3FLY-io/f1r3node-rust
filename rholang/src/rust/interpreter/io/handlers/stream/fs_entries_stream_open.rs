@@ -69,7 +69,7 @@ use crate::rust::interpreter::io::handler_trait::{
     dispatch_via_trait_owned, FsHandler, FsHandlerEntry, HandlerFamily, HandlerReply, SyscallCtx,
     FS_HANDLERS,
 };
-use crate::rust::interpreter::io::path::descend::safe_descend_verified;
+use crate::rust::interpreter::io::path::descend::safe_descend_or_root_self;
 use crate::rust::interpreter::io::path::{
     canonicalize_lexical, io_msg_scrub, quarantine_err_reply,
 };
@@ -147,28 +147,44 @@ impl FsHandler for FsEntriesStreamOpenHandler {
         args: FsEntriesStreamOpenArgs,
     ) -> Pin<Box<dyn Future<Output = HandlerReply> + Send + 'a>> {
         Box::pin(async move {
-            // BACKLOG: migrate to resolve_or_identity_gated_for_consensus
-            // when the gated API lands.  Note: entries_stream_open
-            // Consensus is already banned at parse_content, so the
-            // gated-vs-ungated choice is moot here; kept for
-            // structural parity with path-mutation handlers.
+            // Shape-A gating: structural parity with the other
+            // observation + path-mutation handlers.
+            // parse_content already bans Consensus for
+            // entries_stream_open, so the gated resolver's
+            // Consensus arm is unreachable here in practice; the
+            // Oracular arm returns identity.  Routed through the
+            // gated API for consistency and so a future lift of
+            // the Consensus ban automatically picks up gating.
+            // See fs_chown dispatch for the parallel debug_assert
+            // pattern.
+            debug_assert!(
+                matches!(args.cmode, ConsensusMode::Oracular),
+                "fs_entries_stream_open dispatch reached with Consensus cmode; \
+                 parse_content should have rejected"
+            );
             let root_pb = PathBuf::from(&args.root);
-            let (root_pb, expected_root_id) =
-                ctx.handles.root_registry.resolve_or_identity(&root_pb);
+            let (root_pb, expected_root_id) = match ctx
+                .handles
+                .root_registry
+                .resolve_or_identity_gated_for_consensus(&root_pb, args.cmode)
+            {
+                Ok(v) => v,
+                Err((c, m)) => return HandlerReply::ok(err(c, m)),
+            };
             let rel_for_open = args.rel.clone();
             // safe_descend + openat + fdopendir in a blocking task.
             // Err returns a Box<Par> so the Result stays pointer-
             // sized (sidesteps the clippy::result_large_err issue
             // that fs_chmod handled via #[allow]).
             let opened = spawn_blocking(move || -> Result<DirIter, Box<Par>> {
-                let parent = match safe_descend_verified(&root_pb, &rel_for_open, expected_root_id)
-                {
-                    Ok(p) => p,
-                    Err(qe) => {
-                        let (code, msg) = quarantine_err_reply(&qe);
-                        return Err(Box::new(err(code, msg)));
-                    }
-                };
+                let parent =
+                    match safe_descend_or_root_self(&root_pb, &rel_for_open, expected_root_id) {
+                        Ok(p) => p,
+                        Err(qe) => {
+                            let (code, msg) = quarantine_err_reply(&qe);
+                            return Err(Box::new(err(code, msg)));
+                        }
+                    };
                 // SAFETY: `parent` is a `SafeParent` from
                 // `safe_descend_verified`; the dirfd is open for
                 // `parent`'s lifetime and `parent.leaf_ptr()`

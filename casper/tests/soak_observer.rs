@@ -2462,8 +2462,8 @@ async fn display_typed_missing_history_uses_minimum_without_a_fabricated_origina
     let base = Fixture::new().await;
     let fixture = Fixture::from_chain(vec![
         graph_block(&base.chain[0], 1, 0, 7, &[], &[]),
-        graph_block(&base.chain[0], 2, 1, 7, &[9], &[(7, 1)]),
-        graph_block(&base.chain[0], 3, 1, 8, &[1], &[(8, 1)]),
+        graph_block(&base.chain[0], 2, 1, 7, &[1], &[(7, 1), (8, 9)]),
+        graph_block(&base.chain[0], 3, 2, 8, &[2], &[(8, 9), (7, 2)]),
     ])
     .await;
     let before = fixture.stored();

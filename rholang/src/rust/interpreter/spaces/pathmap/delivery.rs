@@ -72,6 +72,8 @@ use super::path_codec::{compare_keys, path_key, EncodedPath};
 use super::reroot::reroot_payload;
 use crate::rust::interpreter::spaces::errors::SpaceError;
 use crate::rust::interpreter::spaces::generic::{Discipline, Ordered, ParDatum, ParWaiter, Side};
+// Added by decision 124 (plan v2 C7.10): the reader skips inert machinery waiters.
+use crate::rust::interpreter::spaces::settle::machinery_shape;
 
 /// The staged view of a PathMap space, as the planner reads it. The engine implements it over
 /// the staged view of its transaction, and a key names its channel in the space of the
@@ -366,7 +368,16 @@ pub fn produce_waiters<V: PrefixView>(
         if waiters.is_empty() {
             continue;
         }
-        let order = waiter_order(waiters)?;
+        // Changed by decision 124 (plan v2 C7.10, decision 100): the discipline orders the
+        // waiters of the prefix without its inert machinery waiters. The text before:
+        // let order = waiter_order(waiters)?;
+        let order = match waiters.iter().any(machinery_shape) {
+            false => waiter_order(waiters)?,
+            true => match live_order(waiters, waiter_order)? {
+                Some(order) => order,
+                None => continue,
+            },
+        };
         if order.iter().any(|index| *index >= waiters.len()) {
             return Err(SpaceError::Inconsistent(
                 "a discipline order names a waiter outside its prefix",
@@ -383,6 +394,39 @@ pub fn produce_waiters<V: PrefixView>(
         });
     }
     Ok(prefixes)
+}
+
+/// Added by decision 124 (plan v2 C7.10, decision 100): the order that `waiter_order` gives over
+/// the waiters of `waiters` that are not inert machinery waiters, as indices of `waiters`, or
+/// `None` when every waiter is one. Only a prefix with a machinery waiter copies its waiters.
+fn live_order(
+    waiters: &[ParWaiter],
+    waiter_order: &mut EntryOrder<'_, ParWaiter>,
+) -> Result<Option<Vec<usize>>, SpaceError> {
+    let mut positions = Vec::<usize>::with_capacity(waiters.len());
+    let mut live = Vec::<ParWaiter>::with_capacity(waiters.len());
+    for (position, waiter) in waiters.iter().enumerate() {
+        match machinery_shape(waiter) {
+            true => {}
+            false => {
+                positions.push(position);
+                live.push(waiter.clone());
+            }
+        }
+    }
+    match live.is_empty() {
+        false => {}
+        true => return Ok(None),
+    }
+    let order = waiter_order(live.as_slice())?;
+    let mut mapped = Vec::<usize>::with_capacity(order.len());
+    for index in order {
+        let position = positions.get(index).ok_or(SpaceError::Inconsistent(
+            "a discipline order names a waiter outside its prefix",
+        ))?;
+        mapped.push(*position);
+    }
+    Ok(Some(mapped))
 }
 
 /// The datum `datum` as a receive on a prefix sees it (REROOT): `R(suffix, v)` for each argument
@@ -539,10 +583,14 @@ pub fn head_order<D: Discipline, T: Serialize>(
 
 /// The order of the records of one path for a bag or a set: every record in the canonical order
 /// of DR-75 (decision 41).
+/// Added by decision 102 (plan v4 C5.7): kept DR-75, because only the tests of this module call
+/// it, as the reference order of one path. No pick reads it.
 pub fn scan_data_order(records: &[ParDatum]) -> Vec<usize> { canonical_data_order(records) }
 
 /// The order of the waiters of one prefix for a bag or a set: every waiter in the canonical order
 /// of DR-75 (decision 41).
+/// Added by decision 102 (plan v4 C5.7): kept DR-75, because only the tests of this module call
+/// it, as the reference order of one prefix. No pick reads it.
 pub fn scan_waiter_order(waiters: &[ParWaiter]) -> Vec<usize> {
     canonical_continuation_order(waiters)
 }
@@ -1225,5 +1273,66 @@ mod tests {
                 )))
             );
         }
+    }
+
+    // Added by decision 124 (plan v2 C7.10): the reader test parks an inert `K_retire` and an
+    // inert `K_lift`.
+    use crate::rust::interpreter::spaces::disciplines::scan::{
+        retire_continuation, retire_pattern,
+    };
+    use crate::rust::interpreter::spaces::settle::{lift_continuation, lift_pattern};
+
+    /// Added by decision 124 (plan v2 C7.10, decision 100, C2v3 3.2): the PMD case of the reader
+    /// test of C2v3 3.2 to 3.4. A `K_retire` and a `K_lift` wait on each of the prefixes `[0]`
+    /// and `[0, 1]` of the path of a send, as a refused machinery row parks them (CR-16), and
+    /// the waiter 1 waits on `[0]`. `produce_waiters` skips the inert waiters, so the send meets
+    /// the waiter 1 alone, and the prefix `[0, 1]` gives no waiter.
+    #[test]
+    fn readers_skip_an_inert_machinery_waiter() {
+        let mut view = MemoryView::default();
+        let path = ints(&[0, 1]);
+        view.park(&ints(&[0]), 1);
+        let random = Blake2b512Random::create_from_bytes(b"inert machinery");
+        for depth in [1, 2] {
+            let key = prefix_of(&path, depth);
+            let channel = PathMapOuter::index(SPACE, &key);
+            let inert = [
+                (
+                    retire_pattern(),
+                    retire_continuation(&Blake2b256Hash::new(b"retired"), &random, None),
+                ),
+                (lift_pattern(), lift_continuation(0, 1, &random, None)),
+            ];
+            for (pattern, continuation) in inert {
+                let source = Consume::create(
+                    &vec![channel.clone()],
+                    &vec![pattern.clone()],
+                    &continuation,
+                    false,
+                );
+                view.waiters
+                    .entry(key.clone())
+                    .or_default()
+                    .push(WaitingContinuation {
+                        patterns: vec![pattern],
+                        continuation,
+                        persist: false,
+                        peeks: Default::default(),
+                        source,
+                    });
+            }
+        }
+        let encoded = encode_path(&path).expect("the path encodes");
+        let prefixes = produce_waiters(&mut view, &path, &encoded, &mut all_waiters)
+            .expect("the waiters of the send");
+        let waiters: Vec<(usize, Vec<usize>)> = prefixes
+            .into_iter()
+            .map(|prefix| (prefix.depth, prefix.waiters))
+            .collect();
+        assert_eq!(
+            waiters,
+            vec![(1, vec![0])],
+            "the send meets the waiter 1 alone"
+        );
     }
 }

@@ -20,11 +20,24 @@
 //! 2. The same entries, stored again by raw host operations in the reverse order.
 //! 3. The order of the history, after a checkpoint.
 //!
-//! The three runs must give the same results, the same events, the same legacy charges and the
-//! same root. A cell holds at most one entry in each list (F15), so the three stores list a cell
-//! in one order. Each test then runs one Rholang program twice, in two fresh runtimes, and
-//! compares the canonical state (the root), the event log and the cost (N9,
-//! `run_twice_assert_canonical_equal`).
+//! The three runs must give the same results, the same events, the same observer calls and the
+//! same root. The runs compared the legacy charges of Option P until DR-134 deleted the legacy
+//! meter, and they compare the calls of the accounting observer since decision 90 (decision 69). A cell holds at most one entry in each list (F15), so the three stores list a cell
+//! in one order. Each test then runs one Rholang program in fresh runtimes, three runs on each
+//! racing runtime. Each run certifies its deploys, pays phlo and reaches an outcome that the
+//! program allows (N9, decisions 93 and 111).
+// Changed by decision 93 (decision 111): each run certifies itself and reaches an allowed outcome.
+// The old text follows.
+// //! in one order. Each test then runs one Rholang program twice, in two fresh runtimes, and
+// //! compares the canonical state (the root), the event log and the cost (N9,
+// //! `run_twice_assert_canonical_equal`).
+//!
+//! Changed by decision 102 (plan v2 pins): play picks a record and a waiter of a bag or a set at
+//! random (rule CR-1). The bag and set tests checked the claim on replay, over the rigged replay
+//! modes. Changed by decision 90 (C6, step D): those modes retire, so the bag and set rows keep
+//! their racing runs, and native replay is certified by `space_native_replay_equal_hashmap` and
+//! `space_pick_helpers_put_the_named_candidates_first_in_replay`. The ordered disciplines pick
+//! their heads, so their tests keep the comparison of three plays.
 //!
 //! **Tie-break.** An agent compares the bytes of two candidates only to order a tie. A bag orders
 //! records with equal source hashes by their digests (DR-75, decision 41), and an ordered
@@ -89,7 +102,10 @@ use support::agent::{
     any, budget, config_of, counter_channel, create, creation, data_channel, env_over, exactly,
     int, play, receive_on, run, send_on, space_counter_channel, string, ParRSpace,
 };
-use support::props::{check, pure_config, tokio_runtime};
+use support::observed::{canonical_join_order, observed, unobserve, Call};
+use support::props::{
+    check, pure_config, racing_runtime, tokio_runtime, RACING_RUNS, RACING_WORKERS,
+};
 use support::session::{native, setup_source, with_space, Session, Space};
 
 // ─── The disciplines and the space ───────────────────────────────────────────────────────────
@@ -142,8 +158,9 @@ const SPACE: NativeSpace = NativeSpace {
     durability: Durability::Durable,
 };
 
-/// The phlo of a legacy scope: far above every script of the suite.
-const LEGACY_PHLO: i64 = 1_000_000_000_000;
+/// The phlo of the budget of a probe: far above every script of the suite. It was the phlo of a
+/// legacy scope until DR-134 deleted the legacy meter (decision 90, decision 69).
+const PROBE_PHLO: i64 = 1_000_000_000_000;
 
 /// The inner channel of the first collection of a canonical-iteration rig.
 fn left() -> Par { string("rrs-det-left") }
@@ -500,8 +517,16 @@ fn entry_set(rows: &[Rows]) -> Vec<[Vec<Vec<u8>>; 3]> {
 /// of a space takes a raw record, because a record holds its envelope before its payload and a
 /// waiter of a collection binds one value. So each raw produce stores its record, and each raw
 /// consume parks its waiter. The hot store puts each entry at the front of its list.
+///
+/// Changed by decision 102 (plan v2 pins): `target` can be a replay space with no rigged log. A
+/// raw operation on such a space stores its entry too, so a replay space can hold a list order.
+// Changed by decision 102 (plan v2 pins): the target is any space, so that a replay space holds
+// a list order. The old lines follow.
+// async fn store_raw(
+//     target: &ParRSpace,
+//     channels: &[Par],
 async fn store_raw(
-    target: &ParRSpace,
+    target: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     channels: &[Par],
     rows: &[Rows],
     order: &dyn Fn(usize) -> Vec<usize>,
@@ -538,15 +563,22 @@ fn reverse_order(length: usize) -> Vec<usize> { (0..length).collect() }
 
 // ─── Canonical iteration ─────────────────────────────────────────────────────────────────────
 
-/// What one operation of a probe script shows: its result, its events and its legacy charges.
+/// What one operation of a probe script shows: its result, its events and its observer calls.
 #[derive(Clone, Debug, PartialEq)]
 struct Observed {
     /// The outcome of the operation, or its error.
     result: Result<SpaceOutcome, SpaceError>,
     /// The events of the operation, in log order.
     events: Vec<Event>,
-    /// The legacy charges of the operation (decision 45, Option P).
-    charges: Vec<Cost>,
+    // Changed by decision 90 (decision 69): a step shows its observer calls, because DR-134
+    // deleted the legacy meter.
+    // /// The legacy charges of the operation (decision 45, Option P).
+    // charges: Vec<Cost>,
+    /// The calls of the accounting observer of the host in the operation, in call order, with
+    /// the join groups of each start in canonical order (`canonical_join_order`). The list order of
+    /// the join groups is the list order of the store, which the runs change on purpose, and the
+    /// accounting observer reads the join groups as a set.
+    calls: Vec<Call>,
 }
 
 /// One run of a probe script: each step, and the root after the last step.
@@ -558,23 +590,43 @@ struct Run {
     root: Blake2b256Hash,
 }
 
-/// Runs `script` over `host` inside a legacy scope (decision 45, Option P), and checkpoints at the
-/// end.
+/// Runs `script` over `host` with a recorder as the accounting observer of `host`, and
+/// checkpoints at the end. Each step shows the observer calls of its operation (decision 90,
+/// decision 69). The run removes the observer before the checkpoint.
+// Changed by decision 90 (decision 69): a step records the observer calls of the host instead of
+// the legacy charges of a legacy scope (decision 45, Option P), because DR-134 deleted the legacy
+// meter.
+// async fn observe(host: &ParRSpace, script: &[SpaceOp]) -> Run {
+//     let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs determinism probe"));
+//     let _scope = budget.enter_legacy_scope();
+//     host.take_event_log().await;
+//     let mut steps = Vec::with_capacity(script.len());
+//     for op in script {
+//         let env = env_over(host.clone(), &budget);
+//         let before = budget.get_log().len();
+//         let result = run(&FamilyAgent, &env, op.clone()).await;
+//         steps.push(Observed {
+//             result,
+//             events: host.take_event_log().await,
+//             charges: budget.get_log()[before..].to_vec(),
+//         });
+//     }
 async fn observe(host: &ParRSpace, script: &[SpaceOp]) -> Run {
-    let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs determinism probe"));
-    let _scope = budget.enter_legacy_scope();
+    let budget = RuntimeBudget::new(Cost::create(PROBE_PHLO, "rrs determinism probe"));
+    let recorder = observed(host);
     host.take_event_log().await;
     let mut steps = Vec::with_capacity(script.len());
     for op in script {
         let env = env_over(host.clone(), &budget);
-        let before = budget.get_log().len();
+        let before = recorder.count();
         let result = run(&FamilyAgent, &env, op.clone()).await;
         steps.push(Observed {
             result,
             events: host.take_event_log().await,
-            charges: budget.get_log()[before..].to_vec(),
+            calls: canonical_join_order(&recorder.since(before)),
         });
     }
+    unobserve(host);
     let root = host
         .create_checkpoint()
         .await
@@ -677,7 +729,7 @@ async fn list_orders_in(
     }
 }
 
-/// Asserts that the three runs of `orders` give the same results, events, legacy charges and
+/// Asserts that the three runs of `orders` give the same results, events, observer calls and
 /// roots.
 fn assert_same_runs(kind: Kind, orders: &ListOrders) {
     let agent = &orders.agent.steps;
@@ -841,6 +893,10 @@ async fn check_ordered_list_orders(kind: Kind) {
     assert_same_runs(kind, &orders);
 }
 
+// Retired by decision 90 (C6, step D): the replay-order checks of the bag and set rows ran through
+// the rigged replay modes, which retire (decision 125). `space_native_replay_equal_hashmap`, the
+// pick helpers tests of `spaces/generic.rs`, the racing runs of this file.
+
 // ─── One program twice, in fresh runtimes ────────────────────────────────────────────────────
 
 /// What one fresh runtime shows for the setup deploy and the program deploy of a family: the
@@ -856,6 +912,8 @@ struct RuntimeRun {
     events: Vec<Event>,
     /// The cost of the program deploy.
     cost: Cost,
+    /// Added by decision 93 (decision 111): the native phlo usage of the program deploy.
+    phlo: Option<u64>,
     /// The data on the output channel.
     outputs: Vec<Vec<Par>>,
     /// The records of the names `a` and `b`: `(ord, payload, persistent)`.
@@ -943,6 +1001,7 @@ async fn fresh_run_in(store: Store, kind: Kind, program: &str) -> RuntimeRun {
         setup_cost: setup.result.cost,
         events: deploy.log,
         cost: deploy.result.cost,
+        phlo: deploy.result.native_phlo_usage,
         outputs,
         records,
         parked,
@@ -988,122 +1047,497 @@ for (@2 <- b ~ (; priority=0)) { @"rrs-det-out"!(["two", 2]) } | b!(1) | b!(2; p
     }
 }
 
-/// Runs the program of `kind` twice, in two fresh runtimes, and compares the root, the event
-/// logs and the costs (N9, `run_twice_assert_canonical_equal`).
-async fn check_runs_twice(kind: Kind) { check_runs_twice_in(Store::HashMap, kind).await }
+// Changed by decision 93 (decision 111): two fresh runtimes give other runs under racing
+// evaluation, and native execution has no legacy cost. `check_racing_runs` replaces them. The old
+// helpers follow.
+//
+// /// Runs the program of `kind` twice, in two fresh runtimes, and compares the root, the event
+// /// logs and the costs (N9, `run_twice_assert_canonical_equal`).
+// async fn check_runs_twice(kind: Kind) { check_runs_twice_in(Store::HashMap, kind).await }
+//
+// /// [`check_runs_twice`] on the space of `store` and `kind`.
+// async fn check_runs_twice_in(store: Store, kind: Kind) {
+//     let program = program_of(kind);
+//     let first = fresh_run_in(store, kind, program).await;
+//     let second = fresh_run_in(store, kind, program).await;
+//     assert!(!first.events.is_empty(), "{kind:?}: the program has events");
+//     assert!(!first.outputs.is_empty(), "{kind:?}: the program fires");
+//     assert!(first.cost.value > 0, "{kind:?}: the program costs phlo");
+//     assert_eq!(
+//         second, first,
+//         "{kind:?}: two fresh runtimes give the same run"
+//     );
+// }
 
-/// [`check_runs_twice`] on the space of `store` and `kind`.
-async fn check_runs_twice_in(store: Store, kind: Kind) {
+// ─── One program on each racing runtime (decisions 93 and 111) ──────────────────────────────
+
+/// Added by decision 93 (decision 111): what one run of the program of a kind delivers and
+/// leaves, without the orders of racing evaluation. The deliveries are the pairs `(label,
+/// value)` in bytewise order. The records are the pairs `(value, persistent)` of the names `a`
+/// and `b`, in `ord` order. The parked continuations are the pairs `(persistent, peek)`.
+#[derive(Debug, PartialEq, Eq)]
+struct RunOutcome {
+    deliveries: Vec<(String, i64)>,
+    records: [Vec<(i64, bool)>; 2],
+    parked: [Vec<(bool, bool)>; 2],
+}
+
+/// Added by decision 93 (decision 111): the integer of `par`.
+fn int_of(par: &Par) -> i64 {
+    match par.exprs.as_slice() {
+        [Expr {
+            expr_instance: Some(ExprInstance::GInt(value)),
+        }] => *value,
+        other => panic!("an integer: {other:?}"),
+    }
+}
+
+/// Added by decision 93 (decision 111): the delivery `[label, value]` of the output `datum`.
+fn delivery(datum: &[Par]) -> (String, i64) {
+    let [pair] = datum else {
+        panic!("an output of one value: {datum:?}")
+    };
+    match pair.exprs.as_slice() {
+        [Expr {
+            expr_instance: Some(ExprInstance::EListBody(list)),
+        }] => match list.ps.as_slice() {
+            [label, value] => match label.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::GString(text)),
+                }] => (text.clone(), int_of(value)),
+                other => panic!("a label: {other:?}"),
+            },
+            other => panic!("a delivery [label, value]: {other:?}"),
+        },
+        other => panic!("a delivery list: {other:?}"),
+    }
+}
+
+/// Added by decision 93 (decision 111): the [`RunOutcome`] of `ran`.
+fn outcome_of(ran: &RuntimeRun) -> RunOutcome {
+    let mut deliveries: Vec<(String, i64)> = ran
+        .outputs
+        .iter()
+        .map(|datum| delivery(datum.as_slice()))
+        .collect();
+    deliveries.sort();
+    let records = |side: &[(i64, Vec<Par>, bool)]| -> Vec<(i64, bool)> {
+        side.iter()
+            .map(|(_, payload, persistent)| match payload.as_slice() {
+                [value] => (int_of(value), *persistent),
+                other => panic!("a record of one value: {other:?}"),
+            })
+            .collect()
+    };
+    let parked = |side: &[(i64, bool, bool)]| -> Vec<(bool, bool)> {
+        side.iter()
+            .map(|(_, persistent, peek)| (*persistent, *peek))
+            .collect()
+    };
+    RunOutcome {
+        deliveries,
+        records: [records(&ran.records[0]), records(&ran.records[1])],
+        parked: [parked(&ran.parked[0]), parked(&ran.parked[1])],
+    }
+}
+
+/// Added by decision 93 (decision 111): the non-persistent records of `values`, in order.
+fn linear(values: &[i64]) -> Vec<(i64, bool)> {
+    values.iter().map(|value| (*value, false)).collect()
+}
+
+/// Added by decision 93 (decision 111): every order of `values`. Racing sends take their orders
+/// in arrival order, so a store can list the records in any of these orders.
+fn arrival_orders(values: &[i64]) -> Vec<Vec<i64>> {
+    match values {
+        [] => vec![Vec::new()],
+        _ => {
+            let mut orders = Vec::new();
+            for index in 0..values.len() {
+                let mut rest = values.to_vec();
+                let first = rest.remove(index);
+                for mut order in arrival_orders(&rest) {
+                    order.insert(0, first);
+                    orders.push(order);
+                }
+            }
+            orders
+        }
+    }
+}
+
+/// Added by decision 93 (decision 111): the values 1 to 3 without `taken`.
+fn others(taken: i64) -> Vec<i64> { (1..=3).filter(|value| *value != taken).collect() }
+
+/// Added by decision 93 (decision 111): the [`RunOutcome`] of `deliveries`, `records` and
+/// `parked`.
+fn run_outcome(
+    deliveries: &[(&str, i64)],
+    records: [Vec<(i64, bool)>; 2],
+    parked: [Vec<(bool, bool)>; 2],
+) -> RunOutcome {
+    let mut deliveries: Vec<(String, i64)> = deliveries
+        .iter()
+        .map(|(label, value)| ((*label).to_string(), *value))
+        .collect();
+    deliveries.sort();
+    RunOutcome {
+        deliveries,
+        records,
+        parked,
+    }
+}
+
+/// Added by decision 93 (decision 111): every outcome that the program of `kind` allows. A take
+/// and a peek see any record that has arrived. A queue head is the record that arrived first,
+/// a stack head the last one. A pattern of a head-only collection matches only its head.
+fn allowed_outcomes(kind: Kind) -> Vec<RunOutcome> {
+    let none = || [Vec::new(), Vec::new()];
+    let waits_on_a = || [vec![(false, false)], Vec::new()];
+    let mut allowed = Vec::new();
+    match kind {
+        Kind::Bag => {
+            for take in 1..=3 {
+                for rest in arrival_orders(&others(take)) {
+                    for peek in 1..=3 {
+                        allowed.push(run_outcome(
+                            &[
+                                ("one", 1),
+                                ("peek", peek),
+                                ("peek persistent", 7),
+                                ("persistent", 7),
+                                ("take", take),
+                            ],
+                            [linear(&rest), vec![(7, true)]],
+                            none(),
+                        ));
+                    }
+                }
+            }
+        }
+        Kind::Set => {
+            for peek in 1..=3 {
+                // The take retires every 1 that has arrived, so the class waits.
+                for rest in arrival_orders(&[2, 3]) {
+                    allowed.push(run_outcome(
+                        &[("peek", peek), ("persistent", 7), ("take", 1)],
+                        [linear(&rest), vec![(7, true)]],
+                        waits_on_a(),
+                    ));
+                }
+                // The class takes a 1. A 1 that arrives after a retirement is a new class.
+                for (take, sets) in [
+                    (1, vec![vec![2, 3]]),
+                    (2, vec![vec![3], vec![1, 3]]),
+                    (3, vec![vec![2], vec![1, 2]]),
+                ] {
+                    for set in sets {
+                        for rest in arrival_orders(&set) {
+                            allowed.push(run_outcome(
+                                &[
+                                    ("class", 1),
+                                    ("peek", peek),
+                                    ("persistent", 7),
+                                    ("take", take),
+                                ],
+                                [linear(&rest), vec![(7, true)]],
+                                none(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        Kind::Queue | Kind::Stack => {
+            let waiting = match kind {
+                Kind::Queue => [1, 2],
+                _ => [2, 1],
+            };
+            for take in 1..=3 {
+                for rest in arrival_orders(&others(take)) {
+                    let peeks = match (kind, rest.as_slice()) {
+                        (Kind::Queue, [head, _]) => vec![take, *head],
+                        _ => vec![1, 2, 3],
+                    };
+                    for peek in peeks {
+                        // `two` fires when the 2 is the head of `b`.
+                        allowed.push(run_outcome(
+                            &[("peek", peek), ("take", take), ("two", 2)],
+                            [linear(&rest), linear(&[1])],
+                            none(),
+                        ));
+                        // Else the 1 is the head of `b`, and `two` waits.
+                        allowed.push(run_outcome(
+                            &[("peek", peek), ("take", take)],
+                            [linear(&rest), linear(&waiting)],
+                            [Vec::new(), vec![(false, false)]],
+                        ));
+                    }
+                }
+            }
+        }
+        Kind::Cell => allowed.push(run_outcome(
+            &[("peek", 5), ("take", 1)],
+            [vec![(2, false)], vec![(5, false)]],
+            none(),
+        )),
+        Kind::Pq => {
+            for peek in 1..=3 {
+                // The lane takes the 1, so the take takes the 2 or the 3.
+                for take in [2, 3] {
+                    allowed.push(run_outcome(
+                        &[("lane", 1), ("peek", peek), ("take", take), ("two", 2)],
+                        [linear(&[5 - take]), vec![(1, false)]],
+                        none(),
+                    ));
+                }
+                // The take takes the 1, so the lane waits.
+                for rest in arrival_orders(&[2, 3]) {
+                    allowed.push(run_outcome(
+                        &[("peek", peek), ("take", 1), ("two", 2)],
+                        [linear(&rest), vec![(1, false)]],
+                        waits_on_a(),
+                    ));
+                }
+            }
+        }
+    }
+    allowed
+}
+
+/// Added by decision 93 (decision 111): [`check_racing_runs_in`] on the HashMap store.
+fn check_racing_runs(kind: Kind) { check_racing_runs_in(Store::HashMap, kind) }
+
+/// Added by decision 93 (decision 111): runs the program of `kind` on the store `store` in fresh
+/// runtimes, [`RACING_RUNS`] runs on each runtime of [`RACING_WORKERS`]. `Session::run`
+/// certifies each deploy. Each run must log events, fire, pay phlo and reach an outcome that
+/// [`allowed_outcomes`] holds.
+fn check_racing_runs_in(store: Store, kind: Kind) {
     let program = program_of(kind);
-    let first = fresh_run_in(store, kind, program).await;
-    let second = fresh_run_in(store, kind, program).await;
-    assert!(!first.events.is_empty(), "{kind:?}: the program has events");
-    assert!(!first.outputs.is_empty(), "{kind:?}: the program fires");
-    assert!(first.cost.value > 0, "{kind:?}: the program costs phlo");
-    assert_eq!(
-        second, first,
-        "{kind:?}: two fresh runtimes give the same run"
-    );
+    let allowed = allowed_outcomes(kind);
+    for workers in RACING_WORKERS {
+        let runtime = racing_runtime(workers);
+        for run in 0..RACING_RUNS {
+            let label = format!("{store:?} {kind:?} on {workers} workers, run {run}");
+            let ran = runtime.block_on(fresh_run_in(store, kind, program));
+            assert!(!ran.events.is_empty(), "{label}: the program has events");
+            assert!(!ran.outputs.is_empty(), "{label}: the program fires");
+            assert!(
+                ran.phlo.is_some_and(|phlo| phlo > 0),
+                "{label}: the program pays phlo"
+            );
+            let outcome = outcome_of(&ran);
+            assert!(
+                allowed.contains(&outcome),
+                "{label}: {outcome:?} is not an allowed outcome"
+            );
+        }
+    }
 }
 
-/// Bag views are a function of the entry set (`rrs-spaces-determinism-canonical-iteration`). The
-/// agent visits the records and the waiters of a bag in the canonical order of DR-75. So the list
-/// order of the store changes no choice, no event, no legacy charge and no root. The test uses
-/// the order of the agent, the reverse order, the order of the history, and a permuted order of
-/// the build operations.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_bag_views() {
-    let (build, probe) = script_of(Kind::Bag);
-    let orders = list_orders(Kind::Bag, &build, &probe).await;
-    assert_same_runs(Kind::Bag, &orders);
-
-    // A bag record has the `ord` 0 and no counter, so the build operations commute: the agent
-    // builds the same entry set in any order.
-    let channels = space_channels(&[left(), right()]);
-    let mut permuted = build.clone();
-    permuted.reverse();
-    permuted.rotate_left(3);
-    let permuted_host = built(Kind::Bag, &permuted).await;
-    let agent_host = built(Kind::Bag, &build).await;
-    let permuted_rows = rows_of(&permuted_host, &channels).await;
-    let agent_rows = rows_of(&agent_host, &channels).await;
-    assert_eq!(entry_set(&permuted_rows), entry_set(&agent_rows));
-    assert_ne!(list_order(&permuted_rows), list_order(&agent_rows));
-    let permuted_run = observe(&permuted_host, &probe).await;
-    assert_eq!(permuted_run.steps, orders.agent.steps);
-    assert_eq!(permuted_run.root, orders.agent.root);
-
-    check_runs_twice(Kind::Bag).await;
+/// Added by decision 93 (decision 111): [`check_racing_runs_in`] for the bag, the stack and the
+/// cell on the store `store`.
+fn check_store_runs(store: Store) {
+    for kind in [Kind::Bag, Kind::Stack, Kind::Cell] {
+        check_racing_runs_in(store, kind);
+    }
 }
+
+// Changed by decision 102 (plan v2 pins): play picks a record and a waiter of a bag at random
+// (rule CR-1), so the list-order checks of play compare two random plays. The test now replays
+// the log of each play over each list order. The old doc and test follow.
+// /// Bag views are a function of the entry set (`rrs-spaces-determinism-canonical-iteration`). The
+// /// agent visits the records and the waiters of a bag in the canonical order of DR-75. So the list
+// /// order of the store changes no choice, no event, no legacy charge and no root. The test uses
+// /// the order of the agent, the reverse order, the order of the history, and a permuted order of
+// /// the build operations.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_bag_views() {
+//     let (build, probe) = script_of(Kind::Bag);
+//     let orders = list_orders(Kind::Bag, &build, &probe).await;
+//     assert_same_runs(Kind::Bag, &orders);
+//
+//     // A bag record has the `ord` 0 and no counter, so the build operations commute: the agent
+//     // builds the same entry set in any order.
+//     let channels = space_channels(&[left(), right()]);
+//     let mut permuted = build.clone();
+//     permuted.reverse();
+//     permuted.rotate_left(3);
+//     let permuted_host = built(Kind::Bag, &permuted).await;
+//     let agent_host = built(Kind::Bag, &build).await;
+//     let permuted_rows = rows_of(&permuted_host, &channels).await;
+//     let agent_rows = rows_of(&agent_host, &channels).await;
+//     assert_eq!(entry_set(&permuted_rows), entry_set(&agent_rows));
+//     assert_ne!(list_order(&permuted_rows), list_order(&agent_rows));
+//     let permuted_run = observe(&permuted_host, &probe).await;
+//     assert_eq!(permuted_run.steps, orders.agent.steps);
+//     assert_eq!(permuted_run.root, orders.agent.root);
+//
+//     check_runs_twice(Kind::Bag).await;
+// }
+/// Bag views are a function of the entry set (`rrs-spaces-determinism-canonical-iteration`).
+///
+/// Changed by decision 102 (plan v2 pins): play picks a record and a waiter of a bag at random
+/// (rule CR-1). So this test checked the claim on replay. Changed by decision 90 (C6, step D): the
+/// replay ran over the rigged replay modes, which retire, so the test keeps the racing runs.
+/// Native replay of a bag is certified by `space_native_replay_equal_hashmap`, and replay takes
+/// the recorded candidates first
+/// (`space_pick_helpers_put_the_named_candidates_first_in_replay` in `spaces/generic.rs`).
+///
+/// The text before: "The agent visits the records and the waiters of a bag in the canonical order
+/// of DR-75. So the list order of the store changes no choice, no event, no legacy charge and no
+/// root."
+#[test]
+fn space_canonical_iteration_bag_views() {
+    // Retired by decision 90 (C6, step D): the replay-order check ran through the rigged replay
+    // modes, which retire (decision 125).
+    check_racing_runs(Kind::Bag);
+}
+
+// Retired by decision 90 (C6, step D): the replay-order checks of
+// `space_canonical_iteration_bag_views` ran through the rigged replay modes, which retire (decision
+// 125). `space_native_replay_equal_hashmap`, the pick helpers tests of `spaces/generic.rs`, the
+// racing runs of this file.
 
 /// The queue keeps its event order whatever the list order of the store: the head on each side is
 /// the entry with the least `ord`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_queue_order() {
-    check_ordered_list_orders(Kind::Queue).await;
-    check_runs_twice(Kind::Queue).await;
+// Changed by decision 93 (decision 111): the test runs the list orders on one runtime and the
+// program on each racing runtime. The old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_queue_order() {
+//     check_ordered_list_orders(Kind::Queue).await;
+//     check_runs_twice(Kind::Queue).await;
+// }
+#[test]
+fn space_canonical_iteration_queue_order() {
+    tokio_runtime().block_on(check_ordered_list_orders(Kind::Queue));
+    check_racing_runs(Kind::Queue);
 }
 
 /// The stack keeps its LIFO order whatever the list order of the store: the head on each side is
 /// the entry with the greatest `ord`, and the settle fires the same pairs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_stack_order() {
-    check_ordered_list_orders(Kind::Stack).await;
-    check_runs_twice(Kind::Stack).await;
+// Changed by decision 93 (decision 111): the test runs the list orders on one runtime and the
+// program on each racing runtime. The old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_stack_order() {
+//     check_ordered_list_orders(Kind::Stack).await;
+//     check_runs_twice(Kind::Stack).await;
+// }
+#[test]
+fn space_canonical_iteration_stack_order() {
+    tokio_runtime().block_on(check_ordered_list_orders(Kind::Stack));
+    check_racing_runs(Kind::Stack);
 }
 
 /// A cell holds at most one record and one waiter (F15), so each of its lists has one order only.
 /// The agent build, the raw store and the history give the same steps, the same `CellOccupied`
 /// and the same root.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_cell_views() {
-    check_ordered_list_orders(Kind::Cell).await;
-    check_runs_twice(Kind::Cell).await;
+// Changed by decision 93 (decision 111): the test runs the list orders on one runtime and the
+// program on each racing runtime. The old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_cell_views() {
+//     check_ordered_list_orders(Kind::Cell).await;
+//     check_runs_twice(Kind::Cell).await;
+// }
+#[test]
+fn space_canonical_iteration_cell_views() {
+    tokio_runtime().block_on(check_ordered_list_orders(Kind::Cell));
+    check_racing_runs(Kind::Cell);
 }
 
-/// Set views are a function of the entry set (wave W3). The agent visits the records and the
-/// waiters of a set in the canonical order of DR-75. A class sits at the place of its first
-/// member. So the list order of the store changes no choice, no event, no legacy charge and no
-/// root.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_set_views() {
-    let (build, probe) = script_of(Kind::Set);
-    let orders = list_orders(Kind::Set, &build, &probe).await;
-    assert_same_runs(Kind::Set, &orders);
-    check_runs_twice(Kind::Set).await;
+/// Set views are a function of the entry set (wave W3).
+///
+/// Changed by decision 102 (plan v2 pins): play picks a record and a waiter of a set at random
+/// (rule CR-1), and a class fire binds the first member of the class of its pick in DR-75 order
+/// (decision 101, rule CR-13). So this test checked the claim on replay. Changed by decision 90
+/// (C6, step D): the replay ran over the rigged replay modes, which retire, so the test keeps
+/// the racing runs. Native replay of a set is certified by `space_native_replay_equal_hashmap`.
+///
+/// The text before: "The agent visits the records and the waiters of a set in the canonical order
+/// of DR-75. A class sits at the place of its first member. So the list order of the store
+/// changes no choice, no event, no legacy charge and no root."
+// Changed by decision 93 (decision 111): the test runs the list orders on one runtime and the
+// program on each racing runtime. The old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_set_views() {
+//     let (build, probe) = script_of(Kind::Set);
+//     let orders = list_orders(Kind::Set, &build, &probe).await;
+//     assert_same_runs(Kind::Set, &orders);
+//     check_runs_twice(Kind::Set).await;
+// }
+#[test]
+fn space_canonical_iteration_set_views() {
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). `space_native_replay_equal_hashmap`, the pick helpers tests of
+    // `spaces/generic.rs`, the racing runs of this file.
+    check_racing_runs(Kind::Set);
 }
 
 /// The priority queue keeps its order whatever the list order of the store (wave W3). In each
 /// level, the record with the least `ord` is the head. In each lane, the waiter with the least
 /// `ord` is the head. The oldest lane head meets a send first.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_pq_order() {
-    check_ordered_list_orders(Kind::Pq).await;
-    check_runs_twice(Kind::Pq).await;
+// Changed by decision 93 (decision 111): the test runs the list orders on one runtime and the
+// program on each racing runtime. The old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_pq_order() {
+//     check_ordered_list_orders(Kind::Pq).await;
+//     check_runs_twice(Kind::Pq).await;
+// }
+#[test]
+fn space_canonical_iteration_pq_order() {
+    tokio_runtime().block_on(check_ordered_list_orders(Kind::Pq));
+    check_racing_runs(Kind::Pq);
 }
 
 /// The canonical-iteration rows of the bag, the stack and the cell on the store `store` (wave W3).
-/// Three list orders give the same steps and roots. One program gives the same run in two fresh
-/// runtimes.
+/// Three list orders give the same steps and roots. [`check_store_runs`] runs the program of each
+/// row on each racing runtime (decisions 93 and 111).
+// Changed by decision 93 (decision 111): the racing runs of the rows are `check_store_runs`. The
+// old text follows.
+// /// Three list orders give the same steps and roots. One program gives the same run in two fresh
+// /// runtimes.
+///
+/// Changed by decision 90 (C6, step D): the bag row replayed the log of each play over each list
+/// order through the rigged replay modes, which retire. The stack and the cell pick their heads,
+/// so their rows keep the checks of play.
 async fn check_store_rows(store: Store) {
     let [a, b] = store.collections();
-    for kind in [Kind::Bag, Kind::Stack, Kind::Cell] {
+    // Changed by decision 90 (C6, step D): the bag row retires with the rigged replay modes. The
+    // text before:
+    // for kind in [Kind::Bag, Kind::Stack, Kind::Cell] {
+    for kind in [Kind::Stack, Kind::Cell] {
         let (build, probe) = script_on(kind, &a, &b);
         let orders = list_orders_in(store, kind, &build, &probe).await;
         assert_same_runs(kind, &orders);
-        check_runs_twice_in(store, kind).await;
+        // Changed by decision 93 (decision 111): `check_store_runs` runs the program of each
+        // row on each racing runtime. The old call follows.
+        // check_runs_twice_in(store, kind).await;
     }
 }
 
 /// `array:bag`, `array:stack` and `array:cell`: the collections are the index names 0 and 1 of a
 /// fixed Array space. The list order of the store changes no step and no root.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_array_rows() { check_store_rows(Store::Array).await; }
+// Changed by decision 93 (decision 111): the program of each row runs on each racing runtime. The
+// old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_array_rows() { check_store_rows(Store::Array).await; }
+#[test]
+fn space_canonical_iteration_array_rows() {
+    tokio_runtime().block_on(check_store_rows(Store::Array));
+    check_store_runs(Store::Array);
+}
 
 /// `vector:bag`, `vector:stack` and `vector:cell`: the collections are the index names 0 and 1
 /// of a Vector space. The list order of the store changes no step and no root.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_canonical_iteration_vector_rows() { check_store_rows(Store::Vector).await; }
+// Changed by decision 93 (decision 111): the program of each row runs on each racing runtime. The
+// old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_canonical_iteration_vector_rows() { check_store_rows(Store::Vector).await; }
+#[test]
+fn space_canonical_iteration_vector_rows() {
+    tokio_runtime().block_on(check_store_rows(Store::Vector));
+    check_store_runs(Store::Vector);
+}
 
 /// The join waiters of the groups `groups` in `space`, each group in the list order of the store.
 async fn group_rows(
@@ -1120,8 +1554,15 @@ async fn group_rows(
 /// Parks the join waiters `rows` of the groups `groups` in `target` with raw host consumes, in the
 /// order `order(n)` of each list. No raw join waiter takes a raw record, because a record holds
 /// its envelope before its payload.
+///
+/// Changed by decision 102 (plan v4 C5.3, rule CR-1): `target` can be a replay space with no
+/// rigged log, as for [`store_raw`]. So a replay space can hold the list order of a join group.
+// Changed by decision 102 (plan v4 C5.3, rule CR-1): the target is any space, so that a replay
+// space holds the list order of a join group. The old lines follow.
+// async fn store_raw_groups(
+//     target: &ParRSpace,
 async fn store_raw_groups(
-    target: &ParRSpace,
+    target: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
     groups: &[Vec<Par>],
     rows: &[Vec<ParWaiter>],
     order: &dyn Fn(usize) -> Vec<usize>,
@@ -1145,17 +1586,37 @@ async fn store_raw_groups(
     target.take_event_log().await;
 }
 
+// Changed by decision 102 (plan v4 C5.3, rule CR-1) and decision 124 (LP-1, L5): on the bag,
+// play picks the record of a collection that a group names once and the order of the waiters of
+// a group at random, so the doc below replaces this one.
+// /// The join groups of P5c and the list order of the store (wave W3). The choices of the join
+// /// engine are a function of the entry set. They never depend on the order in which the store
+// /// lists the join groups of a channel or the waiters of a group. The test uses a bag and a queue.
+// ///
+// /// * Three join waiters wait on the group of the left and the right collection.
+// /// * One join waiter waits on the group of the left and the context collection.
+// /// * One waiter waits on the right collection.
+// ///
+// /// They wait in the order of the agent, in the reverse order of raw host consumes, and in the
+// /// order of the history. A probe of sends fires joins. The three runs give the same steps and
+// /// roots.
 /// The join groups of P5c and the list order of the store (wave W3). The choices of the join
 /// engine are a function of the entry set. They never depend on the order in which the store
-/// lists the join groups of a channel or the waiters of a group. The test uses a bag and a queue.
+// Changed by decision 90 (C6, step D): the bag part retires. The text before:
+// ```
+// /// lists the join groups of a channel or the waiters of a group. The test uses a bag and a queue.
+// ```
+/// lists the join groups of a channel or the waiters of a group. The test uses a queue.
 ///
 /// * Three join waiters wait on the group of the left and the right collection.
 /// * One join waiter waits on the group of the left and the context collection.
 /// * One waiter waits on the right collection.
 ///
 /// They wait in the order of the agent, in the reverse order of raw host consumes, and in the
-/// order of the history. A probe of sends fires joins. The three runs give the same steps and
-/// roots.
+/// order of the history. A probe of sends fires joins. On the queue, the three runs give the same
+/// steps and roots. Changed by decision 90 (C6, step D): the bag part replayed the log of each
+/// play over each list order through the rigged replay modes, which retire. Native replay of a
+/// bag join program is certified by `space_joins_replay_equal`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_canonical_iteration_join_groups() {
     let (a, b, c) = (left(), right(), context());
@@ -1184,7 +1645,10 @@ async fn space_canonical_iteration_join_groups() {
         support::agent::join_group(SPACE, &[&a, &b]),
         support::agent::join_group(SPACE, &[&a, &c]),
     ];
-    for kind in [Kind::Bag, Kind::Queue] {
+    // Changed by decision 90 (C6, step D): the bag part retires with the rigged replay modes. The
+    // text before:
+    // for kind in [Kind::Bag, Kind::Queue] {
+    for kind in [Kind::Queue] {
         let agent_host = built(kind, &build).await;
         let agent_rows = rows_of(&agent_host, &channels).await;
         let agent_groups = group_rows(&agent_host, &groups).await;
@@ -1231,6 +1695,10 @@ async fn space_canonical_iteration_join_groups() {
         assert_same_runs(kind, &orders);
     }
 }
+
+// Retired by decision 90 (C6, step D): the replay-order check of the join groups ran through the
+// rigged replay modes, which retire (decision 125). `space_native_replay_equal_hashmap`, the pick
+// helpers tests of `spaces/generic.rs`, the racing runs of this file.
 
 /// The join waiters of `groups` as sorted bytes: the entry set of the groups.
 fn sorted_groups(groups: &[Vec<ParWaiter>]) -> Vec<Vec<Vec<u8>>> {
@@ -1610,32 +2078,38 @@ fn arb_generated() -> BoxedStrategy<Generated> {
     .boxed()
 }
 
-/// A build of a bag whose operations commute: sends of values in `0..6`, and receives that no
-/// stored value fires, with literal patterns for values in `10..13`.
-fn arb_commuting_bag_build() -> BoxedStrategy<Vec<Generated>> {
-    let store = (arbitrary::<bool>(), 0i64..6, 0u64..3).prop_map(|(on_left, value, salt)| {
-        Generated::Send {
-            on_left,
-            value,
-            salt,
-            persistent: false,
-        }
-    });
-    let park = (
-        arbitrary::<bool>(),
-        0u64..1_000,
-        10i64..13,
-        arbitrary::<bool>(),
-    )
-        .prop_map(|(on_left, name, value, peek)| Generated::Receive {
-            on_left,
-            name,
-            pattern: Some(value),
-            peek,
-            persistent: false,
-        });
-    vec(prop_oneof![3 => store, 2 => park], 2..10).boxed()
-}
+// Retired by decision 90 (C6, step D): the replay-order property that this strategy feeds ran
+// through the rigged replay modes, which retire (decision 125).
+// `space_native_replay_equal_hashmap`, the pick helpers tests of `spaces/generic.rs`, the racing
+// runs of this file. The text before:
+// ```
+// /// A build of a bag whose operations commute: sends of values in `0..6`, and receives that no
+// /// stored value fires, with literal patterns for values in `10..13`.
+// fn arb_commuting_bag_build() -> BoxedStrategy<Vec<Generated>> {
+//     let store = (arbitrary::<bool>(), 0i64..6, 0u64..3).prop_map(|(on_left, value, salt)| {
+//         Generated::Send {
+//             on_left,
+//             value,
+//             salt,
+//             persistent: false,
+//         }
+//     });
+//     let park = (
+//         arbitrary::<bool>(),
+//         0u64..1_000,
+//         10i64..13,
+//         arbitrary::<bool>(),
+//     )
+//         .prop_map(|(on_left, name, value, peek)| Generated::Receive {
+//             on_left,
+//             name,
+//             pattern: Some(value),
+//             peek,
+//             persistent: false,
+//         });
+//     vec(prop_oneof![3 => store, 2 => park], 2..10).boxed()
+// }
+// ```
 
 /// The insertion order of a list of `length` entries for the shuffle `seed`: the indices sorted by
 /// a hash of the seed and the index.
@@ -1705,6 +2179,10 @@ async fn generated_list_orders(
     Ok(())
 }
 
+// Retired by decision 90 (C6, step D): the replay-order check of one generated bag case ran through
+// the rigged replay modes, which retire (decision 125). `space_native_replay_equal_hashmap`, the
+// pick helpers tests of `spaces/generic.rs`, the racing runs of this file.
+
 /// The coverage of one canonical-iteration property: the generated cases whose raw store and
 /// history both list some entries in another order than the agent, and the cases whose probe
 /// fired at least once.
@@ -1737,56 +2215,65 @@ impl Coverage {
     }
 }
 
-/// The coverage of `prop_canonical_iteration_bag_any_insertion_order`.
-static BAG_COVERAGE: Coverage = Coverage::new();
+// Retired by decision 90 (C6, step D): the property that read this coverage retires (decision
+// 125). The text before:
+// ```
+// /// The coverage of `prop_canonical_iteration_bag_any_insertion_order`.
+// static BAG_COVERAGE: Coverage = Coverage::new();
+// ```
 
 /// The coverage of `prop_canonical_iteration_ordered_any_list_order`.
 static ORDERED_COVERAGE: Coverage = Coverage::new();
 
-/// `bag_visit_order_canonical`, `waiter_visit_order_canonical` and
-/// `hashmap_iteration_permutation_invariant`, over generated bags: a build whose operations
-/// commute gives one entry set in every order of its operations, and a generated probe gives the
-/// same results, events, legacy charges and root for the order of the agent, for a permuted order
-/// of the build, for a shuffled raw store and for the order of the history.
-#[test]
-fn prop_canonical_iteration_bag_any_insertion_order() {
-    let strategy = (
-        arb_commuting_bag_build().prop_flat_map(|build| {
-            let shuffled = Just(build.clone()).prop_shuffle();
-            (Just(build), shuffled)
-        }),
-        arbitrary::<u64>(),
-        vec(arb_generated(), 1..8),
-    );
-    check(
-        pure_config(),
-        strategy,
-        |((build, permuted), seed, probe)| {
-            let build: Vec<SpaceOp> = build.into_iter().map(Generated::op).collect();
-            let permuted: Vec<SpaceOp> = permuted.into_iter().map(Generated::op).collect();
-            let probe: Vec<SpaceOp> = probe.into_iter().map(Generated::op).collect();
-            tokio_runtime().block_on(async {
-                let channels = space_channels(&[left(), right()]);
-                let ordered = built(Kind::Bag, &build).await;
-                let reordered = built(Kind::Bag, &permuted).await;
-                prop_assert_eq!(
-                    entry_set(&rows_of(&reordered, &channels).await),
-                    entry_set(&rows_of(&ordered, &channels).await)
-                );
-                let first = observe(&ordered, &probe).await;
-                let second = observe(&reordered, &probe).await;
-                prop_assert_eq!(&second.steps, &first.steps);
-                prop_assert_eq!(&second.root, &first.root);
-                generated_list_orders(Kind::Bag, &build, seed, &probe, &BAG_COVERAGE).await
-            })
-        },
-    );
-    BAG_COVERAGE.assert_not_vacuous();
-}
+// Retired by decision 90 (C6, step D): this property ran through the rigged replay modes, which
+// retire (decision 125). `space_native_replay_equal_hashmap`, the pick helpers tests of
+// `spaces/generic.rs`, the racing runs of this file. The text before:
+// ```
+// /// `bag_visit_order_canonical`, `waiter_visit_order_canonical` and
+// /// `hashmap_iteration_permutation_invariant`, over generated bags: a build whose operations
+// /// commute gives one entry set in every order of its operations, and a generated probe gives the
+// /// same results, events, legacy charges and root for the order of the agent, for a permuted order
+// /// of the build, for a shuffled raw store and for the order of the history.
+// #[test]
+// fn prop_canonical_iteration_bag_any_insertion_order() {
+//     let strategy = (
+//         arb_commuting_bag_build().prop_flat_map(|build| {
+//             let shuffled = Just(build.clone()).prop_shuffle();
+//             (Just(build), shuffled)
+//         }),
+//         arbitrary::<u64>(),
+//         vec(arb_generated(), 1..8),
+//     );
+//     check(
+//         pure_config(),
+//         strategy,
+//         |((build, permuted), seed, probe)| {
+//             let build: Vec<SpaceOp> = build.into_iter().map(Generated::op).collect();
+//             let permuted: Vec<SpaceOp> = permuted.into_iter().map(Generated::op).collect();
+//             let probe: Vec<SpaceOp> = probe.into_iter().map(Generated::op).collect();
+//             tokio_runtime().block_on(async {
+//                 let channels = space_channels(&[left(), right()]);
+//                 let ordered = built(Kind::Bag, &build).await;
+//                 let reordered = built(Kind::Bag, &permuted).await;
+//                 prop_assert_eq!(
+//                     entry_set(&rows_of(&reordered, &channels).await),
+//                     entry_set(&rows_of(&ordered, &channels).await)
+//                 );
+//                 let first = observe(&ordered, &probe).await;
+//                 let second = observe(&reordered, &probe).await;
+//                 prop_assert_eq!(&second.steps, &first.steps);
+//                 prop_assert_eq!(&second.root, &first.root);
+//                 generated_list_orders(Kind::Bag, &build, seed, &probe, &BAG_COVERAGE).await
+//             })
+//         },
+//     );
+//     BAG_COVERAGE.assert_not_vacuous();
+// }
+// ```
 
 /// `stack_head_is_max_ord`, `stack_plan_permutation_invariant`, the head rules of the queue and
 /// of the cell, and `hashmap_iteration_permutation_invariant`, over generated queues, stacks and
-/// cells: the entry set of a generated build gives the same results, events, legacy charges and
+/// cells: the entry set of a generated build gives the same results, events, observer calls and
 /// root for a generated probe in the order of the agent, in a shuffled raw store
 /// and in the order of the history.
 #[test]

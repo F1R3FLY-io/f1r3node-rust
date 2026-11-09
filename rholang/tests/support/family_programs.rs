@@ -61,6 +61,16 @@ for (@v <= e) { out!(["each", v]) } | e!(7)"#
             Outer::PathMap => "prefix",
         }
     }
+
+    /// Added by decision 93 (decision 111): the labels that [`Outer::part`] delivers in every
+    /// interleaving.
+    pub fn certain_labels(self) -> &'static [&'static str] {
+        match self {
+            Outer::HashMap => &["each"],
+            Outer::PathMap => &["prefix"],
+            Outer::Array | Outer::Vector => &["alloc", "each"],
+        }
+    }
 }
 
 /// The inner collections of the families.
@@ -133,10 +143,52 @@ for (@2 <- b ~ (; priority=0)) { out!(["two", 2]) } | b!(1) | b!(2; priority=0)"
             }
         }
     }
+
+    /// Added by decision 93 (decision 111): the labels that [`Inner::part`] delivers in every
+    /// interleaving.
+    pub fn certain_labels(self) -> &'static [&'static str] {
+        match self {
+            Inner::Bag => &["one", "peek", "peek persistent", "persistent", "take"],
+            Inner::Queue | Inner::Stack | Inner::Cell => &["peek", "take"],
+            Inner::Set => &["peek", "persistent", "take"],
+            Inner::PriorityQueue => &["peek", "take", "two"],
+        }
+    }
+
+    /// Added by decision 93 (decision 111): the label that [`Inner::part`] delivers in some
+    /// interleavings only. `two` fires only when the 2 reaches the head of `b`. `class` fires
+    /// only when a 1 is left for it. `lane` fires only when the take leaves the record of
+    /// priority 1.
+    pub fn optional_label(self) -> Option<&'static str> {
+        match self {
+            Inner::Queue | Inner::Stack => Some("two"),
+            Inner::Set => Some("class"),
+            Inner::PriorityQueue => Some("lane"),
+            Inner::Bag | Inner::Cell => None,
+        }
+    }
 }
 
 /// The join of `c` and `d` that every family program runs.
 pub const JOIN: &str = r#"for (@p <- c & @q <- d) { out!(["join", p, q]) } | c!(5) | d!(6)"#;
+
+/// Added by decision 93 (decision 111): true when `labels`, in bytewise order, are the labels
+/// that the program of `outer:inner` delivers in some interleaving: the certain labels of both
+/// parts and of [`JOIN`], with or without the optional label of the inner part.
+pub fn allowed_labels(outer: Outer, inner: Inner, labels: &[String]) -> bool {
+    let mut certain: Vec<String> = inner
+        .certain_labels()
+        .iter()
+        .chain(&["join"])
+        .chain(outer.certain_labels())
+        .map(|label| (*label).to_string())
+        .collect();
+    certain.sort();
+    let mut with_optional = certain.clone();
+    with_optional.extend(inner.optional_label().map(str::to_string));
+    with_optional.sort();
+    labels == certain.as_slice() || labels == with_optional.as_slice()
+}
 
 /// A deploy that creates a space of the family `urn` with the constructor `ctor`, draws the
 /// names `a` to `e` from it, and runs `body`. The values on `out` go to the public channel

@@ -75,9 +75,39 @@ impl RholangAndScalaDispatcher {
                         })?;
                     let body = unwrap_option_safe(par_with_rand.body)?;
                     let merged_rand = Blake2b512Random::merge(randoms);
-                    reducer
-                        .eval_continuation(body, env, merged_rand, system_body)
-                        .await?;
+                    // Added by G3 (DR-135): the body runs for the owner of its
+                    // seal, and a system body for its caller (R1, A1). Without an
+                    // owner binding the context is the DR-101 flag alone.
+                    let context =
+                        crate::rust::interpreter::accounting::owner_funding::fired_body_context(
+                            &reducer.metering.budget(),
+                            continuation.cost_authority.as_ref(),
+                            &data_list,
+                            system_body,
+                        )?;
+                    // Changed by G3 (DR-135): the body takes its context.
+                    // reducer
+                    //     .eval_continuation(body, env, merged_rand, system_body)
+                    //     .await?;
+                    // Changed by Reified RSpaces (decision 91): the body runs under the
+                    // union of the causal histories of its participants, for the claims
+                    // of seq spaces. A book without a seq use gives no history.
+                    // reducer
+                    //     .eval_continuation(body, env, merged_rand, context)
+                    //     .await?;
+                    let history = reducer
+                        .reified
+                        .fired_body_history(&par_with_rand.random_state, &data_list);
+                    let evaluation = reducer.eval_continuation(body, env, merged_rand, context);
+                    match history {
+                        Some(history) => {
+                            crate::rust::interpreter::reified::seq::with_history(
+                                history, evaluation,
+                            )
+                            .await?
+                        }
+                        None => evaluation.await?,
+                    }
 
                     Ok(DispatchType::DeterministicCall)
                 }

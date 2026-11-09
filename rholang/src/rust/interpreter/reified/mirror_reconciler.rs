@@ -1,3 +1,5 @@
+//! Retired by decision 114. `reified/mod.rs` does not compile this file.
+//!
 //! The reconciler of the ChromaDB mirror of the VectorDB spaces (P6 step 7c, design v3 4.9;
 //! register decisions 58 and 61, plan decisions 66 and 70).
 //!

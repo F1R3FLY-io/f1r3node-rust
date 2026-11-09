@@ -12,7 +12,7 @@
     - [compute_merged_state] folds the combined parts of every kept chain
       (conflict_set_merger.rs:547-579).
     The apply step then writes base + total and requires the result to lie
-    in [0, i64::MAX] (rholang_merging_logic.rs:116-136).
+    in [0, 2^256 - 1] (rholang_merging_logic.rs:116-136).
 
     The ledger bounds the sum of the positive diffs and the sum of the
     negative diffs of each list. Every partial sum of a list lies between
@@ -27,9 +27,9 @@ From Stdlib Require Import Sorting.Permutation.
 Import ListNotations.
 Open Scope Z_scope.
 
-(** The range of an i64. *)
-Definition MAX : Z := 9223372036854775807.
-Definition MIN : Z := -9223372036854775808.
+(** The IntegerAdd magnitude range. *)
+Definition MAX : Z := 2 ^ 256 - 1.
+Definition MIN : Z := -MAX.
 
 Definition pos_part (x : Z) : Z := Z.max x 0.
 Definition neg_part (x : Z) : Z := Z.min x 0.
@@ -41,11 +41,11 @@ Fixpoint neg (l : list Z) : Z :=
 Fixpoint total (l : list Z) : Z :=
   match l with [] => 0 | x :: rest => x + total rest end.
 
-(** The sign split of a list fits an i64. *)
+(** The sign split of a list fits the IntegerAdd magnitude range. *)
 Definition fits (l : list Z) : Prop := pos l <= MAX /\ MIN <= neg l.
 
 (** A fold with checked addition: it fails when a partial sum leaves the
-    i64 range ([combine_mergeable_value], merging_logic.rs:48-62). *)
+    IntegerAdd range ([combine_mergeable_value], merging_logic.rs:48-62). *)
 Fixpoint checked_fold (acc : Z) (l : list Z) : option Z :=
   match l with
   | [] => Some acc
@@ -243,7 +243,7 @@ Proof. vm_compute. split; [split; discriminate | reflexivity]. Qed.
 
 (** Dev's prefix fold (conflict_set_merger.rs:1180-1223): branches are taken
     in order, and a branch is rejected when the running balance plus its
-    diff leaves [0, i64::MAX]. *)
+    diff leaves [0, 2^256 - 1]. *)
 Fixpoint prefix_accept (balance : Z) (l : list Z) : list Z :=
   match l with
   | [] => []

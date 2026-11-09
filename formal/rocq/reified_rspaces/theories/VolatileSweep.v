@@ -32,7 +32,7 @@
    (rspace++/src/rspace/ is abbreviated as rs/, and
    rs/space_store_handle.rs as ssh)
    ─────────────────────────────────────────────────────────────────────────
-   HKey, key_data, key_cont,  rs/history/history_repository_impl.rs:306-348
+   HKey, key_data, key_cont,  rs/history/history_repository_impl.rs:307-349
      key_joins                (transform: hash(channel), hash_from_vec),
                               184-300 (prepend PREFIX_DATUM, PREFIX_KONT,
                               PREFIX_JOINS), rs/history/
@@ -56,12 +56,12 @@
                               key."), rs/history/history_repository_impl.rs:
                               467-490 (checkpoint), rs/rspace/ispace_impl.rs:
                               60-95
-   HotStore, touch            rs/hot_store.rs:661-718, 865-877, 987-1015
+   HotStore, touch            rs/hot_store.rs:661-718, 865-877, 999-1027
                               (a first read caches the key)
    remove_datum_at            rs/hot_store.rs:912-945
    remove_cont_at             rs/hot_store.rs:818-861
    remove_join                rs/hot_store.rs:1069-1113
-   changes, action_of         rs/hot_store.rs:1115-1170
+   changes, action_of         rs/hot_store.rs:1127-1182
    chan_leb, nondecreasing,   ssh require_canonical, group_identity (FR-1':
      canonical, ck_canonical  the keys of a group must be non-decreasing,
                               else SpaceTxnError::NonCanonicalChannelOrder)
@@ -80,7 +80,7 @@
      SweepErr                 TxnContext (FR-9': SpaceTxnError::
                               NestedTransaction)
    root_leaf_record_count     design §0.5 and D5: rs/history/
-                              history_reader.rs:22, rs/history/instances/
+                              history_reader.rs:21, rs/history/instances/
                               rspace_history_reader_impl.rs:127-139, ssh
                               root_leaf_records
    lockstep                   the joins invariant of the hot store (H7 of
@@ -483,7 +483,7 @@ Definition data_leaf (l : list Datum) : Leaf := (isort bytes_leb (map ser_datum 
 Definition cont_leaf (l : list WK) : Leaf := (isort bytes_leb (map ser_wk l), 1).
 Definition joins_leaf (l : list (list Chan)) : Leaf := (isort bytes_leb (map ser_join l), 2).
 
-(* hot_store.rs:1115-1170: an empty cached list becomes a Delete, a
+(* hot_store.rs:1127-1182: an empty cached list becomes a Delete, a
    non-empty one an Insert of the sorted leaf (serializers.rs). *)
 Definition action_of (S : HotStore) (k : CKey) : Action :=
   match k with

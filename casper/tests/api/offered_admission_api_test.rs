@@ -153,6 +153,7 @@ fn permissioned_offer(
     })
     .expect("the funding intent encodes");
     let body = DeployData {
+        parameters: Vec::new(),
         term: term.to_string(),
         language: "rholang".to_string(),
         time_stamp,
@@ -355,7 +356,7 @@ async fn estimated_counts(
         .expect("an offered runtime spawns");
     let estimate = estimate_offered_term(
         &envelope.body().term,
-        models::rust::normalizer_env::normalizer_env_from_envelope(&envelope),
+        models::rust::normalizer_env::normalizer_env_from_envelope(&envelope).unwrap(),
         casper::rust::util::rholang::tools::Tools::user_envelope_rng(&envelope),
         &funding,
         &selected_schedule(),
@@ -793,10 +794,17 @@ async fn the_play_replay_and_native_replay_environments_share_one_urn_map() {
     assert_eq!(play.reducer.urn_map, replay.reducer.urn_map);
 }
 
-/// Existing outcomes stay under the live check. Consuming a user-signed
-/// datum still needs the writer's token, and an endless loop still exhausts
-/// its signed limit as a charged user failure (DR-113). Both estimates are
-/// incomplete, so both offers hold their whole limit under `SignedLimit`.
+// Changed by G3 (DR-135, S7): a reader now consumes a user-signed datum, and
+// the writer pays its share.
+// /// Existing outcomes stay under the live check. Consuming a user-signed
+// /// datum still needs the writer's token, and an endless loop still exhausts
+// /// its signed limit as a charged user failure (DR-113). Both estimates are
+// /// incomplete, so both offers hold their whole limit under `SignedLimit`.
+/// Existing outcomes stay under the live check. A reader consumes a
+/// user-signed datum, and the writer pays its share (DR-135). An endless loop
+/// still exhausts its signed limit as a charged user failure (DR-113). Both
+/// estimates are incomplete, so both offers hold their whole limit under
+/// `SignedLimit`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn existing_outcomes_keep_their_class_with_incomplete_estimates() {
     const ENDLESS_LOOP: &str = "new loop in { contract loop(@n) = { loop!(n + 1) } | loop!(0) }";
@@ -848,13 +856,18 @@ async fn existing_outcomes_keep_their_class_with_incomplete_estimates() {
         2,
         "for(_ <- @\"admission-user-channel\") { Nil }".to_string(),
     );
-    let rejection = super::propose_offer(&mut nodes, read.clone())
+    // Changed by G3 (DR-135, S7): the read settles with the reader's row and
+    // the writer's row.
+    // let rejection = super::propose_offer(&mut nodes, read.clone())
+    //     .await
+    //     .expect_err("consuming a user-signed datum needs the writer's token");
+    // assert!(
+    //     rejection.contains("no feasible signed assignment"),
+    //     "{rejection}"
+    // );
+    super::propose_offer_rows(&mut nodes, read.clone(), 2)
         .await
-        .expect_err("consuming a user-signed datum needs the writer's token");
-    assert!(
-        rejection.contains("no feasible signed assignment"),
-        "{rejection}"
-    );
+        .expect("the reader consumes the writer's datum, and the writer pays its share");
     for offer in [&write, &read] {
         let play = checks(&nodes[0], offer, OfferedCheckRole::Play);
         assert_eq!(play.len(), 1);
@@ -1312,6 +1325,7 @@ fn sponsored_offer(
     })
     .expect("the funding intent encodes");
     let body = DeployData {
+        parameters: Vec::new(),
         term: term.to_string(),
         language: "rholang".to_string(),
         time_stamp,

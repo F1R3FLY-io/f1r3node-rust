@@ -87,7 +87,7 @@ They remain outside this contract. Their presence cannot substitute for missing 
 
 Writer source references:
 
-- [Deploy store](../../block-storage/src/rust/deploy/key_value_deploy_storage.rs) and [rejected buffer](../../block-storage/src/rust/deploy/key_value_rejected_deploy_buffer.rs).
+- [Deploy store and rejected buffer](../../block-storage/src/rust/deploy/key_value_deploy_storage.rs).
 - [Admission](../../casper/src/rust/engine/multi_parent_casper/block_admission.rs) and [block creation](../../casper/src/rust/blocks/proposer/block_creator.rs).
 - [Parent-state computation](../../casper/src/rust/util/rholang/interpreter_util.rs), especially `compute_parents_post_state` and its guarded `add` call.
 - [Dependency buffer](../../block-storage/src/rust/casperbuffer/casper_buffer_key_value_storage.rs), [combined admission](../../block-storage/src/rust/dag/buffer_dag_transition.rs), and [startup reconciliation](../../casper/src/rust/engine/casper_launch.rs).

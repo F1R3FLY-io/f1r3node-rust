@@ -64,6 +64,7 @@ pub fn source_deploy(
         valid_after_block_number,
         shard_id,
         expiration_timestamp: None,
+        parameters: Vec::new(),
     };
 
     Signed::create(data, Box::new(Secp256k1), sec).map_err(|e| CasperError::SigningError(e))

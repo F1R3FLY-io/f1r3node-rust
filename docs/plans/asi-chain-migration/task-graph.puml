@@ -1,0 +1,254 @@
+@startuml
+title ASI:Chain migration to the cost-accounted F1r3node: task dependencies and gates
+skinparam shadowing false
+skinparam defaultFontSize 11
+skinparam packageStyle rectangle
+skinparam ArrowColor #555555
+left to right direction
+
+legend top left
+|= Color |= Kind |
+|<#LightSkyBlue>      | Rust project: rust-client, asi-chain-client, faucet server, wallet-cli |
+|<#Khaki>      | TypeScript project: wallet-sdk, wallet, explorer |
+|<#PaleGreen>      | Python project: indexer |
+|<#Plum>      | Infrastructure: asi-chain, asi-chain-node |
+|<#Gainsboro>      | Schedule step or phase step, not a change ID |
+|<#Salmon>      | External milestone, no fixed date |
+|<#Orange>      | Open user question U1 to U8 |
+|<#Wheat>      | Casper team or node question |
+Solid arrow: must finish first. Dotted arrow: a question or a condition gates the item.
+endlegend
+
+package "Open user questions" {
+  card "U1 migrate asi-main-scala,\nretire asi-main" as U1 #Orange
+  card "U2 shipped default policy\nor an ASI policy" as U2 #Orange
+  card "U3 wallet imports the SDK\nencoder or keeps a copy" as U3 #Orange
+  card "U4 skip or migrate stored\nscala SDK networks" as U4 #Orange
+  card "U5 keep legacy history\nread-only" as U5 #Orange
+  card "U6 token name and symbol" as U6 #Orange
+  card "U7 keep WC-2" as U7 #Orange
+  card "U8 canonical client\nrepository" as U8 #Orange
+}
+
+package "Block 0: can start now, against the current branch" {
+  package "Schedule steps" {
+    rectangle "X-1 node snapshot\nfor client builds" as X1 #Gainsboro
+    rectangle "X-2 node image\nfrom the snapshot" as X2 #Gainsboro
+    rectangle "X-3 test network" as X3 #Gainsboro
+    rectangle "X-4 rust-client test\ntopology policy (G3)" as X4 #Gainsboro
+  }
+  package "rust-client (reference)" {
+    rectangle "R-1 crate bump\n+ casper" as R1 #LightSkyBlue
+    rectangle "R-2 owner_direct_offer\nin build_deploy_msg" as R2 #LightSkyBlue
+    rectangle "R-3 delete legacy\nsigning helper" as R3 #LightSkyBlue
+    rectangle "R-4 resource_policy\nsetting (conditional)" as R4 #LightSkyBlue
+    rectangle "R-5 golden vectors" as R5 #LightSkyBlue
+  }
+  package "asi-chain-client (asi-main-scala)" {
+    rectangle "C-1 crate bump + casper\n+ build flags (G1)" as C1 #LightSkyBlue
+    rectangle "C-2 VaultAddress" as C2 #LightSkyBlue
+    rectangle "C-3 owner_direct_offer" as C3 #LightSkyBlue
+    rectangle "C-4 system URIs\nin rho_examples" as C4 #LightSkyBlue
+    rectangle "client line ready\n(C-1 to C-4 accepted)" as CR #Gainsboro
+  }
+  package "asi-chain-wallet-sdk" {
+    rectangle "S-1 TS offer encoder" as S1 #Khaki
+    rectangle "S-2 signDeploy\nbuilds the offer" as S2 #Khaki
+    rectangle "S-3 submit to\n/api/deploy/offered" as S3 #Khaki
+    rectangle "S-4 remove the\nSCALA profile" as S4 #Khaki
+    rectangle "S-5 isFinalized" as S5 #Khaki
+  }
+  package "asi-chain-wallet" {
+    rectangle "W-1 offer through\nthe S-1 encoder" as W1 #Khaki
+    rectangle "W-2 rho:vault:system" as W2 #Khaki
+    rectangle "W-3 JSON explore body" as W3 #Khaki
+  }
+  package "asi-chain-faucet" {
+    rectangle "FA-1 submodule bump\n+ build flags, cmake (G1)" as FA1 #LightSkyBlue
+  }
+  package "asi-chain-wallet-cli" {
+    rectangle "WC-1 submodule bump\n+ build flags, cmake (G1)" as WC1 #LightSkyBlue
+    rectangle "WC-2 balance check\nincludes the hold" as WC2 #LightSkyBlue
+  }
+  package "asi-chain-indexer (independent)" {
+    rectangle "I-1 target protos" as I1 #PaleGreen
+    rectangle "I-2 offered pending\ndeploys" as I2 #PaleGreen
+  }
+  package "asi-chain-explorer (independent)" {
+    rectangle "E-1 rho:vault:system" as E1 #Khaki
+    rectangle "E-2 JSON explore body" as E2 #Khaki
+  }
+  package "asi-chain (infrastructure, lands last)" {
+    rectangle "A-1 node image" as AS1 #Plum
+    rectangle "A-2 submodule + docs" as AS2 #Plum
+    rectangle "A-3 node configs" as AS3 #Plum
+    rectangle "A-4 genesis files" as AS4 #Plum
+    rectangle "bot + connector images\n(rebuild; bot Dockerfiles\nneed cmake, G1)" as BOT #Plum
+  }
+  package "asi-chain-node" {
+    rectangle "P0 export dry run\n(needs legacy data)" as EXP #Plum
+  }
+  rectangle "X-6 end-to-end flows 1-9\n+ negative tests" as X6 #Gainsboro
+  rectangle "X-5 legacy-path scan" as X5 #Gainsboro
+  rectangle "P1 exit" as P1X #Gainsboro
+}
+
+rectangle "M-RC rest of campaign done\n(S9-S11, formal, docs, final gates)\nno fixed date" as MRC #Salmon
+rectangle "P2 repin, vectors unchanged,\nphlo re-measure, owner funding" as P2 #Gainsboro
+rectangle "M-TB Track B B4-B6 settled,\nN1-N3 exist; no fixed date" as MTB #Salmon
+rectangle "P3 start: M-TB reached,\nP1 and P2 done" as P3S #Gainsboro
+
+package "Block 3: after Track B, measured from M-TB" {
+  rectangle "R-T1 to R-T6\n(rust-client)" as RTS #LightSkyBlue
+  rectangle "C-T1 to C-T4\n(asi-chain-client)" as CTS #LightSkyBlue
+  rectangle "faucet and wallet-cli\nTB config, pin bump" as FWT #LightSkyBlue
+  rectangle "S-T1 to S-T4\n(wallet-sdk)" as STS #Khaki
+  rectangle "I-T1 outcome states\n(indexer)" as IT1 #PaleGreen
+  rectangle "I-T2 to I-T4\n(indexer)" as ITS #PaleGreen
+  rectangle "W-T1 executed outcome\n(wallet)" as WT1 #Khaki
+  rectangle "W-T2 to W-T4\n(wallet)" as WTS #Khaki
+  rectangle "E-T1 outcome state\n(explorer)" as ET1 #Khaki
+  rectangle "E-T2 relabel fields\n(explorer)" as ET2 #Khaki
+  rectangle "A-T1 to A-T3\n(asi-chain)" as ATS #Plum
+  rectangle "X-T v6 network\nand P3 exit tests" as XT #Gainsboro
+}
+
+package "Casper team and node questions" {
+  card "N1 outcome API" as N1 #Wheat
+  card "N2 reads at the\nexecuted root" as N2 #Wheat
+  card "N3 meaning of\nfinalization status" as N3 #Wheat
+  card "Q-8 thresholds,\ndemand cap" as Q8 #Wheat
+  card "Q-3 epoch lag" as Q3 #Wheat
+  card "Q-7 record retention" as Q7 #Wheat
+  card "Q-11, N7 commit_epoch,\nexecuted event" as Q11 #Wheat
+  card "v6 activation:\npolicy, flag or both" as QV6 #Wheat
+  card "records: BodyProto\nfield or extra_bytes" as QREC #Wheat
+}
+
+rectangle "M-B7 v6 activated\n(no fixed date)" as MB7 #Salmon
+rectangle "P4 testnet rehearsal\nfrom a legacy snapshot" as P4 #Plum
+rectangle "M-B8 refinements R1, R2\n(no fixed date)" as MB8 #Salmon
+rectangle "P5 canonical-only check,\nproduction cut-over" as P5 #Plum
+
+X1 --> R1
+X1 --> C1
+X1 --> X2
+X2 --> X3
+X2 --> X4
+X4 --> R2 : integration suite
+R1 --> R2
+R2 --> R5
+R2 --> R3
+R1 ..> R4
+R4 ..> R5 : only if U2 picks\nan ASI policy
+R2 --> S1 : builder reference
+R5 --> S1 : vectors gate S-1
+S1 --> S2
+S2 --> S3
+S1 --> W1 : encoder
+C1 --> C2
+C1 --> C3
+C1 --> C4
+C2 --> CR
+C3 --> CR
+C4 --> CR
+CR --> FA1
+CR --> WC1
+CR --> BOT
+X3 ..> C3 : CLI checks
+X3 ..> I2 : pending-deploy check
+X3 ..> S3 : submit check
+I1 --> I2
+R3 --> X6
+S3 --> X6
+S4 --> X6
+S5 --> X6
+W1 --> X6
+W2 --> X6
+W3 --> X6
+FA1 --> X6
+WC1 --> X6
+WC2 --> X6
+I2 --> X6
+E1 --> X6
+E2 --> X6
+AS1 --> X6
+AS2 --> X6
+AS3 --> X6
+AS4 --> X6
+BOT --> X6
+X6 --> X5
+X5 --> P1X
+P1X --> P2
+MRC --> P2
+
+U1 ..> C1
+U1 ..> CR
+U2 ..> R4
+U2 ..> R5
+U2 ..> S1
+U2 ..> AS3
+U3 ..> W1
+U3 ..> S1 : packaging
+U4 ..> S4
+U5 ..> P5
+U6 ..> AS3
+U6 ..> AS4
+U7 ..> WC2
+U8 ..> FA1
+U8 ..> WC1
+U8 ..> BOT
+
+P2 --> P3S
+MTB --> P3S
+P3S --> RTS
+P3S --> CTS
+P3S --> STS
+P3S --> IT1
+P3S --> WTS
+P3S --> ATS
+CTS --> FWT
+IT1 --> WT1
+IT1 --> ET1
+IT1 --> ITS
+ITS --> ET2
+RTS --> XT
+CTS --> XT
+FWT --> XT
+STS --> XT
+WT1 --> XT
+WTS --> XT
+ET1 --> XT
+ET2 --> XT
+ATS --> XT
+ITS --> XT
+N1 ..> RTS
+N1 ..> CTS
+N1 ..> STS
+N1 ..> IT1
+N2 ..> RTS
+N3 ..> RTS
+N3 ..> CTS
+N3 ..> STS
+Q8 ..> RTS
+Q8 ..> CTS
+Q8 ..> STS
+Q8 ..> WTS
+Q8 ..> ATS
+Q3 ..> ATS
+Q7 ..> ITS
+Q11 ..> RTS
+QV6 ..> ATS
+QREC ..> ITS
+XT --> P4
+MB7 --> P4
+EXP ..> P4 : export procedure
+P4 --> P5
+MB8 --> P5
+
+note bottom of AS3
+  A-1 to A-4 are drafted early on lane 4,
+  but land (validated and accepted) with X-6,
+  after all client items.
+end note
+@enduml

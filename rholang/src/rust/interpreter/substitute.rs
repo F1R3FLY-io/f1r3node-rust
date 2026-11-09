@@ -1,12 +1,24 @@
+use std::collections::BTreeMap;
+
 use models::rhoapi::connective::ConnectiveInstance;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::var::VarInstance;
+// Changed by decision 112: the new fields need their message types. The text before:
+// ```
+// use models::rhoapi::{
+//     Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
+//     CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
+//     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
+//     EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+// };
+// ```
 use models::rhoapi::{
     Bundle, Connective, ConnectiveBody, CostSignature, CostSignatureCompound, CostSignedTerm,
-    CostStack, EAnd, EDiv, EEq, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
+    CostStack, EAnd, EDiv, EEq, EFree, EGt, EGte, EList, ELt, ELte, EMatches, EMethod, EMinus,
     EMinusMinus, EMod, EMult, ENeg, ENeq, ENot, EOr, EPercentPercent, EPlus, EPlusPlus, ETuple,
-    EVar, Expr, If, Match, MatchCase, New, Par, Receive, ReceiveBind, Send, Var, VarRef,
+    EVar, Expr, If, Match, MatchCase, New, Par, QuerySpec, Receive, ReceiveBind, Send, SendParams,
+    SpaceAnnotation, UseBlock, Var, VarRef,
 };
 use models::rust::bundle_ops::BundleOps;
 use models::rust::par_map::ParMap;
@@ -70,10 +82,12 @@ impl Substitute {
         match substitute(term.clone()) {
             Ok(subst_term) => {
                 let measured = subst_term.encoded_len();
-                self.metering.reserve_substitution(Cost::create(
-                    (measured as i64).max(i64::from(!self.metering.budget().is_legacy())),
-                    "substitution",
-                ))?;
+                // Changed by DR-134 (DR-66 item 3): the legacy meter is deleted, so
+                // every substitution charges at least one unit.
+                // self.metering.reserve_substitution(Cost::create(
+                //     (measured as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                self.metering
+                    .reserve_substitution(Cost::create((measured as i64).max(1), "substitution"))?;
                 let measured = u64::try_from(measured).map_err(|_| {
                     InterpreterError::BugFoundError(
                         "substitution byte count does not fit in u64".to_string(),
@@ -82,8 +96,12 @@ impl Substitute {
                 Ok((subst_term, measured))
             }
             Err(th) => {
+                // Changed by DR-134 (DR-66 item 3): the legacy meter is deleted, so
+                // every substitution charges at least one unit.
+                // self.metering.reserve_substitution(Cost::create(
+                //     (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
                 self.metering.reserve_substitution(Cost::create(
-                    (term.encoded_len() as i64).max(i64::from(!self.metering.budget().is_legacy())),
+                    (term.encoded_len() as i64).max(1),
                     "substitution",
                 ))?;
                 Err(th)
@@ -364,6 +382,8 @@ impl Substitute {
                 depth,
                 env,
             )?),
+            // Added by G3 (DR-135, S3b): a held term keeps its held price.
+            held_price: term.held_price,
         })
     }
 
@@ -380,6 +400,59 @@ impl Substitute {
                 .map(|cell| self.substitute_cost_signature(cell, depth, env))
                 .collect::<Result<Vec<_>, _>>()?,
         })
+    }
+
+    fn substitute_use_block(
+        &self,
+        block: UseBlock,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<UseBlock, InterpreterError> {
+        let UseBlock { space, body } = block;
+        Ok(UseBlock {
+            space: space
+                .map(|par| self.substitute_no_sort(par, depth, env))
+                .transpose()?,
+            body: body
+                .map(|par| self.substitute_no_sort(par, depth, env))
+                .transpose()?,
+        })
+    }
+
+    fn substitute_send_params(
+        &self,
+        params: SendParams,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<SendParams, InterpreterError> {
+        let SendParams { positional, named } = params;
+        let positional = positional
+            .into_iter()
+            .map(|value| self.substitute_no_sort(value, depth, env))
+            .collect::<Result<Vec<_>, _>>()?;
+        let named = named
+            .into_iter()
+            .map(|(key, value)| Ok((key, self.substitute_no_sort(value, depth, env)?)))
+            .collect::<Result<BTreeMap<_, _>, InterpreterError>>()?;
+        Ok(SendParams { positional, named })
+    }
+
+    fn substitute_query_spec(
+        &self,
+        query: QuerySpec,
+        depth: i32,
+        env: &Env<Par>,
+    ) -> Result<QuerySpec, InterpreterError> {
+        let QuerySpec { payload, named } = query;
+        let payload = payload
+            .into_iter()
+            .map(|value| self.substitute_no_sort(value, depth, env))
+            .collect::<Result<Vec<_>, _>>()?;
+        let named = named
+            .into_iter()
+            .map(|(key, value)| Ok((key, self.substitute_no_sort(value, depth, env)?)))
+            .collect::<Result<BTreeMap<_, _>, InterpreterError>>()?;
+        Ok(QuerySpec { payload, named })
     }
 }
 
@@ -611,6 +684,12 @@ impl SubstituteTrait<Par> for Substitute {
             .map(|stack| self.substitute_cost_stack(stack, depth, env))
             .collect::<Result<Vec<_>, _>>()?;
 
+        let use_blocks = term
+            .use_blocks
+            .into_iter()
+            .map(|block| self.substitute_use_block(block, depth, env))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(concatenate_pars(
             exprs,
             concatenate_pars(connectives, Par {
@@ -627,6 +706,7 @@ impl SubstituteTrait<Par> for Substitute {
                 connective_used: term.connective_used,
                 cost_signed_terms,
                 cost_stacks,
+                use_blocks,
             }),
         ))
     }
@@ -660,6 +740,10 @@ impl SubstituteTrait<Send> for Substitute {
             persistent: term.persistent,
             locally_free: set_bits_until(term.locally_free, env.shift),
             connective_used: term.connective_used,
+            params: term
+                .params
+                .map(|params| self.substitute_send_params(params, depth, env))
+                .transpose()?,
         })
     }
 
@@ -687,6 +771,7 @@ impl SubstituteTrait<Receive> for Substitute {
                      remainder,
                      free_count,
                      cost_signature,
+                     query_spec,
                  }| {
                     let sub_channel =
                         self.substitute_no_sort(unwrap_option_safe(source)?, depth, env)?;
@@ -702,6 +787,9 @@ impl SubstituteTrait<Receive> for Substitute {
                         free_count,
                         cost_signature: cost_signature
                             .map(|signature| self.substitute_cost_signature(signature, depth, env))
+                            .transpose()?,
+                        query_spec: query_spec
+                            .map(|query| self.substitute_query_spec(query, depth, env))
                             .transpose()?,
                     })
                 },
@@ -750,6 +838,19 @@ impl SubstituteTrait<New> for Substitute {
         depth: i32,
         env: &Env<Par>,
     ) -> Result<New, InterpreterError> {
+        let space_types = term
+            .space_types
+            .into_iter()
+            .map(|annotation| {
+                Ok(SpaceAnnotation {
+                    space: annotation
+                        .space
+                        .map(|par| self.substitute_no_sort(par, depth, env))
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>, InterpreterError>>()?;
+
         self.substitute_no_sort(
             unwrap_option_safe(term.p)?,
             depth,
@@ -761,6 +862,7 @@ impl SubstituteTrait<New> for Substitute {
             uri: term.uri,
             injections: term.injections,
             locally_free: set_bits_until(term.locally_free, env.shift),
+            space_types,
         })
     }
 
@@ -1208,6 +1310,35 @@ impl SubstituteTrait<Expr> for Substitute {
                 })
             }
 
+            ExprInstance::EFreeBody(EFree { theory, args }) => {
+                let args = args
+                    .into_iter()
+                    .map(|p| self.substitute(p, depth, env))
+                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EFreeBody(EFree { theory, args })),
+                })
+            }
+
+            ExprInstance::EParamsBody(SendParams { positional, named }) => {
+                let positional = positional
+                    .into_iter()
+                    .map(|p| self.substitute(p, depth, env))
+                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let named = named
+                    .into_iter()
+                    .map(|(k, v)| Ok((k, self.substitute(v, depth, env)?)))
+                    .collect::<Result<BTreeMap<_, _>, InterpreterError>>()?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EParamsBody(SendParams {
+                        positional,
+                        named,
+                    })),
+                })
+            }
+
             _ => Ok(term),
         }
     }
@@ -1550,6 +1681,35 @@ impl SubstituteTrait<Expr> for Substitute {
                         arguments: sub_arguments,
                         locally_free: set_bits_until(locally_free, env.shift),
                         connective_used,
+                    })),
+                })
+            }
+
+            ExprInstance::EFreeBody(EFree { theory, args }) => {
+                let args = args
+                    .into_iter()
+                    .map(|p| self.substitute_no_sort(p, depth, env))
+                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EFreeBody(EFree { theory, args })),
+                })
+            }
+
+            ExprInstance::EParamsBody(SendParams { positional, named }) => {
+                let positional = positional
+                    .into_iter()
+                    .map(|p| self.substitute_no_sort(p, depth, env))
+                    .collect::<Result<Vec<Par>, InterpreterError>>()?;
+                let named = named
+                    .into_iter()
+                    .map(|(k, v)| Ok((k, self.substitute_no_sort(v, depth, env)?)))
+                    .collect::<Result<BTreeMap<_, _>, InterpreterError>>()?;
+
+                Ok(Expr {
+                    expr_instance: Some(ExprInstance::EParamsBody(SendParams {
+                        positional,
+                        named,
                     })),
                 })
             }
@@ -1940,6 +2100,7 @@ mod tests {
             persistent: true,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         };
 
         let result: Send = substitute
@@ -1964,6 +2125,7 @@ mod tests {
                 remainder: None,
                 free_count: 0,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(Par::default()),
             persistent: false,
@@ -2253,5 +2415,32 @@ mod tests {
         let env = env_with(gint(42));
         let deep: Par = substitute.substitute_no_sort(bound(0), 1, &env).unwrap();
         assert_eq!(deep.exprs, bound(0).exprs);
+    }
+
+    /// Added by G3 (DR-135, S3b): substitution keeps the held price of a held
+    /// term, in the sorting and in the non-sorting form.
+    #[test]
+    fn substitution_keeps_the_held_price() {
+        let substitute = substitute_instance();
+        let env = env_with(gint(42));
+        let held = Par {
+            cost_signed_terms: vec![CostSignedTerm {
+                body: Some(bound(0)),
+                signature: Some(CostSignature {
+                    value: Some(CostSignatureValue::Ground(vec![7])),
+                }),
+                held_price: Some(11),
+            }],
+            ..Default::default()
+        };
+        let unsorted: Par = substitute
+            .substitute_no_sort(held.clone(), 0, &env)
+            .expect("the held term substitutes");
+        assert_eq!(unsorted.cost_signed_terms[0].held_price, Some(11));
+        assert_eq!(unsorted.cost_signed_terms[0].body, Some(gint(42)));
+        let sorted: Par = substitute
+            .substitute_and_charge(&held, 0, &env)
+            .expect("the held term substitutes");
+        assert_eq!(sorted.cost_signed_terms[0].held_price, Some(11));
     }
 }

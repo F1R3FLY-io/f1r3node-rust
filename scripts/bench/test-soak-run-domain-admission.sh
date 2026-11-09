@@ -28,6 +28,7 @@ if [[ "${1:-}" == --inside-worker ]]; then
     stat -c '%u %a %n' /run/soak-run-domain /run/soak-run-domain/* >evidence/records.txt
     cp /run/soak-run-domain/fixture-cgroup.txt evidence/fixture-cgroup.txt
     printf '{"services":{"writer":{"image":"fixture-unused"}}}\n' >node/docker/shard.yml
+    printf 'services: {}\n' >node/docker/ci-ports.shard.yml
     cat >bin/df <<'SH'
 #!/usr/bin/env bash
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'

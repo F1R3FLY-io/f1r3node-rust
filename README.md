@@ -317,6 +317,7 @@ To build a local image:
 | --- | --- |
 | [DEVELOPER.md](DEVELOPER.md) | Native toolchain setup, build, test, and troubleshooting |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow and review expectations |
+| [docs/task-tracking.md](docs/task-tracking.md) | Value streams, user stories, epics, tasks, task claims, and AI-assisted workflows |
 | [docs/Glossary.md](docs/Glossary.md) | Canonical project and protocol terminology |
 | [docs/formal-verification.md](docs/formal-verification.md) | Verification method, verified areas, and implementation obligations |
 | [docs/soak-benchmarks.md](docs/soak-benchmarks.md) | Soak lifecycle, metrics, dashboard, and release gate |

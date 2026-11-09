@@ -3,8 +3,14 @@
 //!
 //! The family agent dispatches each operation of a `pathmap:<inner>` space to the agent
 //! `GenericSpace<PathMapOuter, D>`, which runs it on the join engine through the prefix source
-//! (`spaces::pathmap::join`). The tests drive the family agent over an in-memory play space and
-//! its replay space. A path `p` is a list of elements. A send on `p` stores its record on
+// Changed by decision 90 (C6, step D): no test of this file takes a replay space. The text
+// before:
+// ```
+// //! (`spaces::pathmap::join`). The tests drive the family agent over an in-memory play space and
+// //! its replay space. A path `p` is a list of elements. A send on `p` stores its record on
+// ```
+//! (`spaces::pathmap::join`). The tests drive the family agent over an in-memory play space. A
+//! path `p` is a list of elements. A send on `p` stores its record on
 //! `D(p)` and one marker on the index channel `I(q)` of each prefix `q ⪯ p`. A receive on `q`
 //! parks on `I(q)`.
 //!
@@ -33,12 +39,21 @@
 //! | `pathmap_cell_occupied` | a cell space holds one record on each path and one waiter on each prefix |
 //! | `pathmap_joins_over_prefixes` | a join over prefixes of one space, on both sides, with the window of each path |
 //! | `pathmap_join_window_takes_need_entries_of_each_path` | the window of `need` binds on nested prefixes (open point 4) |
+//! | `pathmap_persistent_incoming_binds_only_its_fired_collection` | added by decision 103 (decision 118, rules CR-9 and CR-11, T-J-7): on a bag, a persistent send in flight binds the later positions of the prefix of its fixed position only (U3 (i)), and a join on nested prefixes never binds it twice |
+//! | `pathmap_persistent_incoming_set_cascade_binds_stored_markers` | added by decision 103 (decision 118, rule CR-9, T-J-7) and decision 124 (J2 review Q1): on a set, the cascade binds the stored markers of a persistent send that U3 (i) refused in flight, in the transaction that stores the send, and the join COMM lists its stored marker on `[0,5]` at both positions of `[0,5]` and the vehicle of the send on `[0]` at the position of `[0]` |
+//! | `pathmap_free_class_member_binds_once_across_nested_prefixes` | added by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 11): the markers of one datum on nested prefixes claim one record, so a set join binds a1 and the persistent a2, never a1 twice |
+//! | `pathmap_nested_prefix_windows_keep_dr75` | added by decision 102 (plan v4 C5.5) and decision 124 (L4): a join on nested prefixes binds the DR-75 tuple in every play run |
+//! | `pathmap_offer_meets_the_named_prefix_first_in_replay` | added by decision 102 (plan v4 C5.5) and decision 124 (L4): a fallback to a less specific prefix binds one of its waiters in each play run |
+//! | `pathmap_offer_order_picks_within_a_prefix_in_play` | added by decision 102 (plan v4 C5.5) and decision 124 (L5): the most specific prefix comes first, and each waiter of that prefix fires first in some play run |
 //! | `pathmap_cap_restores_owed_markers` | a transaction at the round cap restores each owed marker with its bytes, and the settle job carries the offer (O-2) |
 //! | `pathmap_cap_drops_a_stale_carried_offer` | a carried offer whose datum another job spent stores nothing (O-2) |
 //! | `pathmap_cap_reissues_a_persistent_send_at_its_place` | decision 43 at the cap on a queue and a stack: the resumed send keeps its first order |
-//! | `pathmap_replay_equal` | replay reproduces play: the results, the legacy logs, the costs and the root |
+// Changed by decision 90 (decision 69) and decision 125 (the step D restatement at the failing
+// step): native replay certifies the play. The row before:
+// //! | `pathmap_replay_equal` | replay reproduces play: the results, the legacy logs, the costs and the root |
+//! | `pathmap_replay_equal` | native replay certifies the play of the script on each discipline and of the capped chain of two deploys |
 //! | `pathmap_restart` | the records, the markers and the waiters survive a checkpoint and a reset |
-//! | `pathmap_legacy_charges_equal_host` | Option P: each staged operation charges what `ChargingRSpace` charges for its host call |
+//! | `pathmap_legacy_charges_equal_host` | retired by decision 90 (decision 69) with Option P: each staged operation charged what `ChargingRSpace` charged for its host call |
 //! | `pathmap_staging_stays_in_the_lock_keys` | one escalation, and every staged channel lies in the lock keys of the prefix scope |
 //!
 //! | `reified_pathmapspace_alias_equal` | the FIPS alias `PathMapSpace` names `pathmap:bag`, and a program in `use space` runs the FIPS example through the reducer |
@@ -50,28 +65,41 @@
 mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex};
 
+// Changed by decision 90 (decision 69): only the retired lone host differential used these
+// imports (see the note of `lone_calls_scenario`).
+// use std::sync::{Arc, Mutex};
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::cost_signature::Value as CostSignatureValue;
 use models::rhoapi::expr::ExprInstance;
+// Changed by decision 90 (decision 69): only the retired lone host differential used these
+// imports (see the note of `lone_calls_scenario`).
+// use models::rhoapi::{
+//     BindPattern, CostAuthority, CostRegion, CostSignature, EPathMap, EZipper, Expr,
+//     ListParWithRandom, Par, TaggedContinuation,
+// };
 use models::rhoapi::{
     BindPattern, CostAuthority, CostRegion, CostSignature, EPathMap, EZipper, Expr,
-    ListParWithRandom, Par, TaggedContinuation,
+    ListParWithRandom, Par,
 };
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter};
 use models::rust::utils::{new_elist_par, new_freevar_par, new_gbool_par};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::RuntimeBudget;
+// Retired by decision 125 (the step D restatement at the failing step): only the retired legacy
+// jobs of `pathmap_replay_equal` built a budget.
+// use rholang::rust::interpreter::accounting::costs::Cost;
+// use rholang::rust::interpreter::accounting::RuntimeBudget;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::reified::costs::{ReissueCause, FIRE_ROUND_CAP};
-use rholang::rust::interpreter::reified::legacy_charges::{
-    consume_charges, produce_charges, ParSpaceConsume, ParSpaceProduce,
-};
-use rholang::rust::interpreter::rho_runtime::RhoISpace;
+// Changed by decision 90 (decision 69): the module `reified::legacy_charges` of Option P and
+// `ChargingRSpace` are deleted with the legacy meter (DR-134). The harness names the staged
+// operations over `Par` (`support::agent`), and a lone host is a plain RSpace.
+// use rholang::rust::interpreter::reified::legacy_charges::{
+//     consume_charges, produce_charges, ParSpaceConsume, ParSpaceProduce,
+// };
+// use rholang::rust::interpreter::rho_runtime::RhoISpace;
 use rholang::rust::interpreter::spaces::agent::{
     ConsumeOp, JoinOp, ProduceOp, QueryParams, SpaceEnv, SpaceOp, SpaceOutcome,
 };
@@ -82,6 +110,8 @@ use rholang::rust::interpreter::spaces::namespace::{
     self, Durability, NameTail, NativeSpace, SID_LEN,
 };
 use rholang::rust::interpreter::spaces::outer::pathmap::PathMapOuter;
+// Added by decision 124 (J2 review Q1): the set cascade test builds the vehicles of the send.
+use rholang::rust::interpreter::spaces::pathmap::markers::vehicle;
 use rholang::rust::interpreter::spaces::pathmap::markers::{
     decode_marker, decode_vehicle, marker_random, marker_record,
 };
@@ -89,7 +119,9 @@ use rholang::rust::interpreter::spaces::pathmap::{encode_path, path_key, PATH_DE
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
+// Changed by decision 90 (decision 69): `ChargingRSpace` is deleted with the legacy meter
+// (DR-134).
+// use rholang::rust::interpreter::storage::charging_rspace::ChargingRSpace;
 use rspace_plus_plus::rspace::checkpoint::Checkpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
@@ -100,16 +132,37 @@ use rspace_plus_plus::rspace::merger::merging_logic::{
 };
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::rspace_interface::ISpace;
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-use rspace_plus_plus::rspace::space_store_handle::{ConsumeOutcome, ProduceOutcome};
+// Changed by decision 90 (decision 69): only the retired lone host differential used these
+// imports (see the note of `lone_calls_scenario`).
+// use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+// use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// use rspace_plus_plus::rspace::space_store_handle::{ConsumeOutcome, ProduceOutcome};
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
+// Changed by decision 90 (decision 69): only the retired lone host differential used these
+// imports (see the note of `lone_calls_scenario`).
+// use support::agent::{
+//     any, budget, config_of, create, creation, env_over, exactly, fired, int, join_on, play,
+//     play_and_replay, receive_on, run, send_on, string, HostRecord, ParRSpace, RecordingHost,
+//     StagedCopy,
+// };
+// Changed by decision 90 (C6, step D): the rigged replay modes retire, so no test of this file
+// takes a play and replay pair.
 use support::agent::{
     any, budget, config_of, create, creation, env_over, exactly, fired, int, join_on, play,
-    play_and_replay, receive_on, run, send_on, string, HostRecord, ParRSpace, RecordingHost,
-    StagedCopy,
+    receive_on, run, send_on, string, HostRecord, ParRSpace, RecordingHost,
 };
-use support::legacy::{host_consume, host_produce, split};
+// Changed by decision 90 (decision 69): the host calls return their observer calls.
+// use support::legacy::{host_consume, host_produce, split};
+// Retired by decision 125 (the step D restatement at the failing step): only the retired legacy
+// jobs of `pathmap_replay_equal` recorded the observer calls.
+// Added by decision 125 (the step D restatement at the failing step): `pathmap_replay_equal`
+// plays Rholang terms natively and certifies them.
+use support::coverage::assert_merge_reproduces;
+use support::family_programs::space_program;
+use support::native::{
+    assert_reproduces, certify, committed_evidence, is_space_row, native_play, replay_environment,
+    NativeChain, Played, AMPLE_LIMIT, OUT,
+};
 use support::props::{check, pure_config, tokio_runtime};
 use support::session::{native, with_space, Session};
 
@@ -312,6 +365,10 @@ fn region(byte: u8) -> CostAuthority {
             signature: Some(CostSignature {
                 value: Some(CostSignatureValue::Ground(vec![byte])),
             }),
+            // Added by decision 90 (DR-135): an unpriced region, as outside native
+            // execution.
+            price: 0,
+            caller: None,
         }],
     }
 }
@@ -1344,8 +1401,13 @@ async fn pathmap_set_class_retired() {
         .await;
 }
 
+// Changed by decision 92: a failed job commits its anchor only, so the doc below replaces this
+// one.
+// /// A cell space over prefixes (F15): one record on each path and one waiter on each prefix. A
+// /// second store fails with `CellOccupied`, and the job stages nothing.
 /// A cell space over prefixes (F15): one record on each path and one waiter on each prefix. A
-/// second store fails with `CellOccupied`, and the job stages nothing.
+/// second store fails with `CellOccupied`, and the job commits its anchor only (decision 92). The
+/// anchor leaves the config record in place, so the root does not change.
 #[tokio::test]
 async fn pathmap_cell_occupied() {
     let rig = Rig::new(SpaceInner::Cell).await;
@@ -1356,7 +1418,12 @@ async fn pathmap_cell_occupied() {
         rig.run(put(&[0, 1], 3)).await,
         Err(SpaceError::CellOccupied)
     );
-    assert!(rig.log().await.is_empty());
+    // Changed by decision 92: the failed job commits its anchor only.
+    // assert!(rig.log().await.is_empty());
+    assert!(
+        support::agent::logs_anchors_only(&rig.log().await, SPACE, 1),
+        "the failed job logs its anchor only"
+    );
     assert_eq!(rig.root().await, root);
     rig.ok(take(&[9], "w", any())).await;
     assert_eq!(
@@ -1542,6 +1609,516 @@ async fn pathmap_join_window_takes_need_entries_of_each_path() {
     assert_eq!(rig.records(&[0, 1]).await, vec![vec![int(1)], vec![int(2)]]);
     rig.assert_marker_invariant(&[elements(&[0, 1]), elements(&[0, 2])], "the window")
         .await;
+}
+
+/// Added by decision 103 (decision 118, rules CR-9 and CR-11, decision-c6 §6 item 10, T-J-7): a
+/// persistent element in flight binds the later positions of the prefix of its fixed position
+/// only (U3 (i)). On a bag, the join `[I([0,5]), I([0,5]), I([0])]` meets the persistent send of
+/// 9 on `[0,5]`, which also lies under `[0]`:
+/// - With the datum of 3 on `[0,7]`, the send binds both positions of `[0,5]`, and the position
+///   of `[0]` binds the datum on `[0,7]`, never the send. The send stays stored.
+/// - With no datum under `[0]` but the send, the join parks, and the send is stored.
+///
+/// The join `[I([0]), I([0,5])]` never binds the send twice. With the datum of 3 on `[0,5]`, it
+/// binds the send at `[0]`, the first position that the send enters, and that datum at `[0,5]`.
+/// With no other datum, it parks.
+#[tokio::test]
+async fn pathmap_persistent_incoming_binds_only_its_fired_collection() {
+    let binds: [(&[i64], BindPattern); 3] = [(&[0, 5], any()), (&[0, 5], any()), (&[0], any())];
+    let group: [&[i64]; 3] = [&[0, 5], &[0, 5], &[0]];
+
+    let rig = Rig::new(SpaceInner::Bag).await;
+    rig.ok(put(&[0, 7], 3)).await;
+    let outcome = rig.ok(joined(join(&binds, "t"))).await;
+    assert!(
+        outcome.fires.is_empty(),
+        "[0,5] holds no datum, so the join parks"
+    );
+    let outcome = rig.ok(put_forever(&[0, 5], 9)).await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("t", vec![int(9), int(9), ints(&[7, 3])])],
+        "the send binds both positions of [0,5], and [0] binds the datum on [0,7]"
+    );
+    assert_eq!(
+        rig.records(&[0, 5]).await,
+        vec![vec![int(9)]],
+        "the persistent send stays"
+    );
+    assert!(
+        rig.records(&[0, 7]).await.is_empty(),
+        "the fire spends the datum on [0,7]"
+    );
+    assert!(rig.join_waiters(&group).await.is_empty(), "the join fired");
+    rig.assert_marker_invariant(
+        &[elements(&[0, 5]), elements(&[0, 7])],
+        "the send at two positions",
+    )
+    .await;
+
+    let rig = Rig::new(SpaceInner::Bag).await;
+    let outcome = rig.ok(joined(join(&binds, "t"))).await;
+    assert!(outcome.fires.is_empty());
+    let outcome = rig.ok(put_forever(&[0, 5], 9)).await;
+    assert!(
+        outcome.fires.is_empty(),
+        "the send is the only entry under [0], and it binds no position of [0] when it binds [0,5]"
+    );
+    assert_eq!(
+        rig.records(&[0, 5]).await,
+        vec![vec![int(9)]],
+        "the send is stored"
+    );
+    assert_eq!(rig.join_waiters(&group).await.len(), 1, "the join stays");
+
+    let nested: [(&[i64], BindPattern); 2] = [(&[0], any()), (&[0, 5], any())];
+    let rig = Rig::new(SpaceInner::Bag).await;
+    rig.ok(put(&[0, 5], 3)).await;
+    let outcome = rig.ok(joined(join(&nested, "n"))).await;
+    assert!(
+        outcome.fires.is_empty(),
+        "one datum binds one position of the nested prefixes"
+    );
+    let outcome = rig.ok(put_forever(&[0, 5], 9)).await;
+    let fires = fired(&outcome);
+    let send_at_zero = vec![delivery("n", vec![ints(&[5, 9]), int(3)])];
+    assert_eq!(
+        fires, send_at_zero,
+        "x binds [0], the first position that it enters, and [0,5] binds the datum of 3"
+    );
+    assert_eq!(
+        rig.records(&[0, 5]).await,
+        vec![vec![int(9)]],
+        "the send stays, and the fire spends the datum of 3"
+    );
+
+    let rig = Rig::new(SpaceInner::Bag).await;
+    let outcome = rig.ok(joined(join(&nested, "n"))).await;
+    assert!(outcome.fires.is_empty());
+    let outcome = rig.ok(put_forever(&[0, 5], 9)).await;
+    assert!(
+        outcome.fires.is_empty(),
+        "the send never binds both nested prefixes"
+    );
+    assert_eq!(
+        rig.records(&[0, 5]).await,
+        vec![vec![int(9)]],
+        "the send is stored"
+    );
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, T-J-7) and decision 124 (J2 review Q1): on a
+/// set, the cascade binds the stored persistent markers of an element at nested prefixes, in the
+/// transaction that stores the element. The join `[I([0,5]), I([0,5]), I([0])]` of T-J-7 parks
+/// on the empty set. The persistent send of 9 on `[0,5]` is then the only entry under `[0]`. In
+/// flight it binds no position of `[0]` (U3 (i)), so the offer refuses it, and the send is stored
+/// with a marker on each prefix of its path. The set cascades, so the same transaction searches
+/// the parked join again. The stored marker on `[0,5]` binds both positions of `[0,5]`, and the
+/// stored marker on `[0]` binds the position of `[0]`. A persistent entry claims nothing (rule (a)
+/// of decision 118), so the three positions bind the one record of the send, as the base lets a
+/// stored persistent datum bind later positions. The send stays.
+///
+/// The join parks on its group in canonical order (FR-1'), ascending by the stable hash of the
+/// index channel of each bind, so the bind on `[0]` comes first. The cascade fires with
+/// LIFT-AND-REOFFER. No bound entry is spent, so nothing is lifted, and the send is offered again
+/// at the first group position. So the one join COMM lists the stored marker on `[0,5]` at both
+/// positions of `[0,5]`, and the vehicle of the send on `[0]` at the position of `[0]`. A fire in
+/// flight lists the vehicle of the send at the positions of `[0,5]` and no stored marker, so the
+/// COMM tells the cascade from a fire in flight.
+#[tokio::test]
+async fn pathmap_persistent_incoming_set_cascade_binds_stored_markers() {
+    let binds: [(&[i64], BindPattern); 3] = [(&[0, 5], any()), (&[0, 5], any()), (&[0], any())];
+    let group: [&[i64]; 3] = [&[0, 5], &[0, 5], &[0]];
+    let mut pair = PairRig::new(SpaceInner::Set).await;
+    let parked = pair.ok(joined(join(&binds, "t"))).await;
+    assert!(
+        parked.fires.is_empty(),
+        "the set is empty, so the join parks"
+    );
+    let outcome = pair.ok(put_forever(&[0, 5], 9)).await;
+    assert_eq!(
+        fired(&outcome),
+        vec![delivery("t", vec![int(9), int(9), ints(&[5, 9])])],
+        "the cascade binds the stored send at both positions of [0,5] and at [0]"
+    );
+    let [fire] = outcome.fires.as_slice() else {
+        panic!("one fire");
+    };
+    // Each result holds the vehicle of the marker that its position binds: the source of the
+    // datum and the suffix of its path under the prefix of the position.
+    let bound: Vec<(Vec<u8>, Vec<Par>)> = fire
+        .results
+        .iter()
+        .map(|result| {
+            let vehicle = decode_vehicle(&result.removed_datum)
+                .expect("a cascade fire delivers the vehicle of a stored marker");
+            (
+                vehicle.marker.source.to_vec(),
+                vehicle.marker.suffix.to_vec(),
+            )
+        })
+        .collect();
+    let [stored] =
+        <[Datum<ListParWithRandom>; 1]>::try_from(pair.rig.datums(&elements(&[0, 5])).await)
+            .expect("[0,5] holds the send once");
+    assert!(stored.persist, "the stored send is persistent");
+    let send = stored.source.hash.0.clone();
+    assert_eq!(
+        bound,
+        vec![
+            (send.clone(), Vec::new()),
+            (send.clone(), Vec::new()),
+            (send, elements(&[5]))
+        ],
+        "the marker of the send on [0,5] binds both positions of [0,5], and its marker on [0] \
+         binds the position of [0]"
+    );
+    assert_eq!(
+        pair.rig.records(&[0, 5]).await,
+        vec![vec![int(9)]],
+        "the persistent send stays"
+    );
+    assert!(
+        pair.rig.join_waiters(&group).await.is_empty(),
+        "the join fired"
+    );
+    pair.rig
+        .assert_marker_invariant(&[elements(&[0, 5])], "the stored send")
+        .await;
+    // The markers of the send on I([0,5]) and on I([0]), read from the play host as `entry_set`
+    // reads its rows.
+    let at_send = index_at(&elements(&[0, 5]));
+    let at_zero = index_at(&elements(&[0]));
+    let [marker_send] =
+        <[Datum<ListParWithRandom>; 1]>::try_from(pair.rig.host.get_data(&at_send).await)
+            .expect("I([0,5]) holds the marker of the send once");
+    let [marker_zero] =
+        <[Datum<ListParWithRandom>; 1]>::try_from(pair.rig.host.get_data(&at_zero).await)
+            .expect("I([0]) holds the marker of the send once");
+    for marker in [&marker_send, &marker_zero] {
+        assert!(
+            decode_marker(&marker.a)
+                .expect("a stored marker")
+                .is_of(&stored.source.hash),
+            "the stored marker belongs to the send"
+        );
+    }
+    // The produces of the vehicles of the send on I([0,5]) and on I([0]): its marker parts, then
+    // its payload, as the prefix source builds them for an element in flight or offered again.
+    let payload = record::unwrap_datum(&stored.a).expect("a set record").datum;
+    let vehicle_send = Produce::create(
+        &at_send,
+        &vehicle(&stored.source.hash, Vec::new(), &payload),
+        true,
+    );
+    let vehicle_zero = Produce::create(
+        &at_zero,
+        &vehicle(&stored.source.hash, elements(&[5]), &payload),
+        true,
+    );
+    let named = |produce: &Produce| match produce {
+        listed if *listed == marker_send.source => "the stored marker on [0,5]",
+        listed if *listed == marker_zero.source => "the stored marker on [0]",
+        listed if *listed == vehicle_send => "the vehicle of the send on [0,5]",
+        listed if *listed == vehicle_zero => "the vehicle of the send on [0]",
+        _ => "another produce",
+    };
+    let log = pair.play_log().await;
+    // The one join COMM consumes on the group of T-J-7 part 1: two positions on [0,5] and one on
+    // [0]. The cascade offers the stored send again at the first position of the group, the bind
+    // on [0], so that position lists the vehicle of the send on [0]. The two positions of [0,5]
+    // list the stored marker on [0,5].
+    assert!(
+        hash(&at_zero) < hash(&at_send),
+        "the bind on [0] comes first in the canonical group order (FR-1')"
+    );
+    let mut group_hashes = vec![hash(&at_send), hash(&at_send), hash(&at_zero)];
+    group_hashes.sort();
+    let joins: Vec<_> = log
+        .iter()
+        .filter_map(|event| match event {
+            Event::Comm(comm) => {
+                let mut channels = comm.consume.channel_hashes.clone();
+                channels.sort();
+                (channels == group_hashes).then_some(comm)
+            }
+            Event::IoEvent(_) => None,
+        })
+        .collect();
+    let [comm] = joins.as_slice() else {
+        panic!("one join COMM, not {}", joins.len());
+    };
+    let mut listed: Vec<&str> = comm.produces.iter().map(named).collect();
+    listed.sort_unstable();
+    let mut expected = vec![
+        "the stored marker on [0,5]",
+        "the stored marker on [0,5]",
+        "the vehicle of the send on [0]",
+    ];
+    expected.sort_unstable();
+    assert_eq!(
+        listed, expected,
+        "the stored marker on [0,5] binds both positions of [0,5], and the cascade offers the \
+         stored send again at the position of [0]"
+    );
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 11): a rig of
+/// `pathmap:set` whose path `[0,5]` holds a1, a send of 1, and a2, a persistent send of 1, with a1
+/// first in the canonical order of DR-75. It returns the rig and the source hashes of a1 and a2.
+/// The salt of a1 is searched in a fixed order, so the rig is the same in every run.
+async fn free_class_rig() -> (Rig, Vec<u8>, Vec<u8>) {
+    for salt in 1..=64 {
+        let rig = Rig::new(SpaceInner::Set).await;
+        rig.ok(put_salted(&[0, 5], 1, salt)).await;
+        rig.ok(put_forever(&[0, 5], 1)).await;
+        let datums = rig.datums(&elements(&[0, 5])).await;
+        let source_of = |persist: bool| {
+            datums
+                .iter()
+                .find(|datum| datum.persist == persist)
+                .map(|datum| datum.source.hash.0.clone())
+                .expect("[0,5] holds a1 and a2")
+        };
+        let (a1, a2) = (source_of(false), source_of(true));
+        if a1 < a2 {
+            return (rig, a1, a2);
+        }
+    }
+    panic!("no salt in 1..=64 puts a1 first in the canonical order of DR-75");
+}
+
+/// Added by decision 103 (decision 118, rule CR-9, decision-c6 §6 item 11): two markers of one
+/// datum on nested prefixes claim one record (`StoredEntry::record`, the datum on its path). On a
+/// set, a1 and the persistent a2 hold the value 1 on `[0,5]`, so they form one class, and a1
+/// comes first in the canonical order of DR-75. The join `[I([0]), I([0,5])]` binds a1 and a2,
+/// never a1 twice: a1 claims its record, so its marker on the other prefix is claimed too, and the
+/// class is free because a2 is persistent. The fire spends a1, and a2 stays.
+#[tokio::test]
+async fn pathmap_free_class_member_binds_once_across_nested_prefixes() {
+    let (rig, a1, a2) = free_class_rig().await;
+    let outcome = rig
+        .ok(joined(join(&[(&[0], any()), (&[0, 5], any())], "f")))
+        .await;
+    assert_eq!(fired(&outcome), vec![delivery("f", vec![
+        ints(&[5, 1]),
+        int(1)
+    ])]);
+    let [fire] = outcome.fires.as_slice() else {
+        panic!("one fire");
+    };
+    let mut bound: Vec<Vec<u8>> = fire
+        .results
+        .iter()
+        .map(|result| {
+            decode_marker(&result.removed_datum)
+                .expect("a consume-side fire binds a marker")
+                .source
+                .to_vec()
+        })
+        .collect();
+    bound.sort();
+    let mut expected = vec![a1, a2];
+    expected.sort();
+    assert_eq!(bound, expected, "the join binds a1 and a2, never a1 twice");
+    assert_eq!(rig.records(&[0, 5]).await, vec![vec![int(1)]], "a2 stays");
+    rig.assert_marker_invariant(&[elements(&[0, 5])], "the free class")
+        .await;
+}
+
+// ─── Random picks inside a prefix (decision 102, plan v4 C5.5; decision 124, L4) ─────────────
+
+/// Added by decision 102 (plan v4 C5.5): the runs of a play test of a random pick, each on a
+/// fresh rig. An outcome with a chance of `p` or more is missing from all runs with a chance of
+/// `(1 - p)^64` or less. So one of two outcomes with a chance of 1/2 each is missing with a chance
+/// of `2·2^-64 = 2^-63`. One of three outcomes with a chance of 1/3 each is missing with a chance
+/// of `3·(2/3)^64`, which is less than `2·10^-11`.
+const PICK_RUNS: usize = 64;
+
+/// Added by decision 102 (plan v4 C5.5): the disciplines that pick at random in play.
+const PICK_INNERS: [SpaceInner; 2] = [SpaceInner::Bag, SpaceInner::Set];
+
+/// Added by decision 102 (plan v4 C5.5, rule CR-4): a rig over a fresh play space, as `PairRig` of
+/// `reified_joins.rs`. Its first checkpoint empties the event log of the creation, so the log of
+/// a test holds every event of the test.
+struct PairRig {
+    /// The rig over the play space.
+    rig: Rig,
+}
+
+impl PairRig {
+    /// A rig of `pathmap:<inner>` over a fresh play space.
+    async fn new(inner: SpaceInner) -> PairRig {
+        let play_space = play().await;
+        let rig = Rig::over(play_space, inner).await;
+        // The checkpoint empties the event log of the creation.
+        rig.root().await;
+        PairRig { rig }
+    }
+
+    /// Runs `op`, which must commit in one job.
+    async fn ok(&mut self, op: SpaceOp) -> SpaceOutcome {
+        let outcome = self.rig.ok(op).await;
+        assert!(outcome.reissue.is_none(), "the operation runs in one job");
+        outcome
+    }
+
+    /// The log of play of the operations so far.
+    async fn play_log(&self) -> Vec<Event> {
+        let Checkpoint { log, .. } = self
+            .rig
+            .host
+            .create_checkpoint()
+            .await
+            .expect("a checkpoint of play");
+        log
+    }
+
+    // Retired by decision 90 (C6, step D): the replay half ran through the rigged replay modes,
+    // which retire (decision 125). `pathmap_replay_equal`,
+    // `space_pick_helpers_put_the_named_candidates_first_in_replay`.
+}
+
+/// Added by decision 102 (plan v4 C5.5): the value of the record of the path of the numbers `at`
+/// that comes first in the canonical order of DR-75, the record of the least source hash.
+async fn dr75_first_value(rig: &Rig, at: &[i64]) -> Par {
+    let datums = rig.datums(&elements(at)).await;
+    let first = datums
+        .iter()
+        .min_by(|left, right| left.source.hash.cmp(&right.source.hash))
+        .expect("the path holds a record");
+    let record = record::unwrap_pq_datum(&first.a).expect("a datum record");
+    match record.datum.pars.as_slice() {
+        [value] => value.clone(),
+        other => panic!("a record of the test holds one value, not {}", other.len()),
+    }
+}
+
+/// Added by decision 102 (plan v4 C5.5) and decision 124 (L4): every PathMap join window keeps
+/// DR-75 in both roles, so a join on nested prefixes binds the same tuple in every play run. On a
+/// bag and on a set, the join `[I([0]), I([0,1])]` meets the records 1 and 2 on `[0,1]` and the
+/// records 3 and 4 on `[0,2]`. Its bind on `[0]` binds only a record of `[0,2]` (`under(&[2])`),
+/// so the two binds never compete for a record. Each bind takes the first record of its window in
+/// the canonical order of DR-75, the record of the least source hash on its path.
+///
+/// The test runs [`PICK_RUNS`] times on each discipline, each run on a fresh rig. Each run binds
+/// that tuple. A random pick of a window would give that tuple with a
+/// chance of 1/4 in a run, so it would pass every run with a chance of `(1/4)^64 = 2^-128`.
+#[tokio::test]
+async fn pathmap_nested_prefix_windows_keep_dr75() {
+    for inner in PICK_INNERS {
+        for run_index in 0..PICK_RUNS {
+            let mut pair = PairRig::new(inner).await;
+            for (at, value) in [(&[0, 1][..], 1), (&[0, 1], 2), (&[0, 2], 3), (&[0, 2], 4)] {
+                pair.ok(put(at, value)).await;
+            }
+            let expected = vec![
+                dr75_first_value(&pair.rig, &[0, 2]).await,
+                dr75_first_value(&pair.rig, &[0, 1]).await,
+            ];
+            let outcome = pair
+                .ok(joined(join(
+                    &[(&[0], under(&[2])), (&[0, 1], any())],
+                    "nested",
+                )))
+                .await;
+            assert_eq!(
+                fired(&outcome),
+                vec![delivery("nested", expected)],
+                "{inner:?}, run {run_index}: the join binds the DR-75 tuple"
+            );
+            // Retired by decision 90 (C6, step D): the replay over the rigged replay modes, which
+            // retire.
+        }
+    }
+}
+
+/// Added by decision 102 (plan v4 C5.5) and decision 124 (L4): an offer meets the prefixes of the
+/// path of its element in the same order in both roles, the most specific prefix first. On a bag
+/// and on a set, the waiter `picky` on `[0,1]` refuses the send of 5 on `[0,1]`, so the offer
+/// falls back to the less specific prefix `[0]`, whose waiters `open1` and `open2` both bind it.
+/// Play meets them in a random order, with the source of the vehicle of the element on `[0]`.
+///
+/// The test runs [`PICK_RUNS`] times on each discipline, each run on a fresh rig. In each run one
+/// of `open1` and `open2` fires with `[1, 5]`, and `picky` stays.
+/// Over the runs, each of `open1` and `open2` fires. One of them is missing with a chance of
+/// `2·2^-64 = 2^-63`. Over both disciplines the test misses with a chance of at most `2^-62`.
+#[tokio::test]
+async fn pathmap_offer_meets_the_named_prefix_first_in_replay() {
+    for inner in PICK_INNERS {
+        let mut fired_names: BTreeSet<String> = BTreeSet::new();
+        for run_index in 0..PICK_RUNS {
+            let mut pair = PairRig::new(inner).await;
+            pair.ok(take(&[0, 1], "picky", exactly(9))).await;
+            pair.ok(take(&[0], "open1", any())).await;
+            pair.ok(take(&[0], "open2", any())).await;
+            let outcome = pair.ok(put(&[0, 1], 5)).await;
+            let [(name, values)] = fired(&outcome).try_into().expect("one fire");
+            assert!(
+                name == "open1" || name == "open2",
+                "{inner:?}, run {run_index}: a waiter of [0] fires, not {name}"
+            );
+            assert_eq!(values, vec![ints(&[1, 5])], "{inner:?}, run {run_index}");
+            assert_eq!(
+                pair.rig.waiters(&[0, 1]).await,
+                1,
+                "{inner:?}, run {run_index}: the refusing waiter stays"
+            );
+            // Retired by decision 90 (C6, step D): the replay over the rigged replay modes, which
+            // retire.
+            fired_names.insert(name);
+        }
+        let expected: BTreeSet<String> = ["open1", "open2"].map(String::from).into();
+        assert_eq!(
+            fired_names, expected,
+            "{inner:?}: over {PICK_RUNS} runs each waiter of [0] fires"
+        );
+    }
+}
+
+/// Added by decision 102 (plan v4 C5.5) and decision 124 (LP-1, L5, L4): on a bag and on a set,
+/// play meets the waiters of one prefix in a random order (`join::pick_waiters`), and the prefixes
+/// keep the most specific prefix first. The waiters `w1` and `w2` on `[0,1]` and `outer` on `[0]`
+/// all bind the send of 5 on `[0,1]`. So `w1` or `w2` fires, and `outer` never fires.
+///
+/// The test runs [`PICK_RUNS`] times on each discipline, each run on a fresh rig. Over the
+/// runs, each of `w1` and `w2` fires first. One of them is missing
+/// with a chance of `2·2^-64 = 2^-63`. Over both disciplines the test misses with a chance of at
+/// most `2^-62`.
+#[tokio::test]
+async fn pathmap_offer_order_picks_within_a_prefix_in_play() {
+    for inner in PICK_INNERS {
+        let mut fired_names: BTreeSet<String> = BTreeSet::new();
+        for run_index in 0..PICK_RUNS {
+            let mut pair = PairRig::new(inner).await;
+            pair.ok(take(&[0], "outer", any())).await;
+            pair.ok(take(&[0, 1], "w1", any())).await;
+            pair.ok(take(&[0, 1], "w2", any())).await;
+            let outcome = pair.ok(put(&[0, 1], 5)).await;
+            let [(name, values)] = fired(&outcome).try_into().expect("one fire");
+            assert!(
+                name == "w1" || name == "w2",
+                "{inner:?}, run {run_index}: a waiter of the most specific prefix fires, not {name}"
+            );
+            assert_eq!(values, vec![int(5)], "{inner:?}, run {run_index}");
+            assert_eq!(
+                (
+                    pair.rig.waiters(&[0]).await,
+                    pair.rig.waiters(&[0, 1]).await
+                ),
+                (1, 1),
+                "{inner:?}, run {run_index}: `outer` and the other waiter of [0,1] stay"
+            );
+            // Retired by decision 90 (C6, step D): the replay over the rigged replay modes, which
+            // retire.
+            fired_names.insert(name);
+        }
+        let expected: BTreeSet<String> = ["w1", "w2"].map(String::from).into();
+        assert_eq!(
+            fired_names, expected,
+            "{inner:?}: over {PICK_RUNS} runs each waiter of [0,1] fires first"
+        );
+    }
 }
 
 // ─── Examples: the cap (O-2) ─────────────────────────────────────────────────────────────────
@@ -1923,125 +2500,349 @@ fn script_paths(script: &[SpaceOp]) -> Vec<Vec<Par>> {
     paths
 }
 
-/// What one job of a replay script shows: its result, its legacy log and its phlo.
-type Metered = (Result<SpaceOutcome, SpaceError>, Vec<Cost>, i64);
+// Retired by decision 125 (the step D restatement at the failing step): only the legacy body of
+// `pathmap_replay_equal` ran the items below, and native replay certifies the play now. The
+// legacy replay mode retires at step D.
+// /// What one job of a replay script shows: its result, its legacy log and its phlo.
+// type Metered = (Result<SpaceOutcome, SpaceError>, Vec<Cost>, i64);
+//
+// /// The phlo of a legacy budget: far above every script of the suite.
+// const LEGACY_PHLO: i64 = 1_000_000_000_000;
+//
+// /// Runs one job of `op` over the host of `env` with a legacy budget of its own (decision 45,
+// /// Option P).
+// async fn run_job(env: &SpaceEnv, op: SpaceOp) -> Metered {
+//     let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs pathmap replay step"));
+//     let _scope = budget.enter_legacy_scope();
+//     let env = SpaceEnv {
+//         budget: budget.clone(),
+//         ..env.clone()
+//     };
+//     let before = budget.get().value;
+//     let result = run(&FamilyAgent, &env, op).await;
+//     (result, budget.get_log(), before - budget.get().value)
+// }
+//
+// /// Runs each operation of `script` and every re-issue that follows it, as the jobs of a deploy,
+// /// and returns what each job shows and the operation of each job.
+// async fn run_jobs(env: &SpaceEnv, script: &[SpaceOp]) -> (Vec<Metered>, Vec<SpaceOp>) {
+//     let mut steps = Vec::with_capacity(script.len());
+//     let mut jobs = Vec::with_capacity(script.len());
+//     for op in script {
+//         let mut next = Some(op.clone());
+//         while let Some(op) = next.take() {
+//             jobs.push(op.clone());
+//             let step = run_job(env, op).await;
+//             next = match &step.0 {
+//                 Ok(outcome) => outcome.reissue.as_ref().map(|reissue| reissue.op.clone()),
+//                 Err(_) => None,
+//             };
+//             steps.push(step);
+//         }
+//     }
+//     (steps, jobs)
+// }
+//
+// /// One case of `pathmap_replay_equal`: play runs `script` with its re-issues, and replay runs
+// /// the same jobs with the checkpoint log of the undrained play run.
+// async fn replay_case(inner: SpaceInner, script: Vec<SpaceOp>, label: &str) {
+//     let (play_space, replay_space) = play_and_replay().await;
+//     let play_rig = Rig::over(play_space.clone(), inner).await;
+//     let start = play_space
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint after the creation")
+//         .root;
+//     let (played, jobs) = run_jobs(&play_rig.env, &script).await;
+//     assert!(
+//         played.iter().any(|(result, _, _)| result
+//             .as_ref()
+//             .is_ok_and(|outcome| !outcome.fires.is_empty())),
+//         "{label}: the script fires"
+//     );
+//     let Checkpoint { root, log } = play_space.create_checkpoint().await.expect("a checkpoint");
+//     replay_space
+//         .rig_and_reset(start.clone(), log)
+//         .await
+//         .expect("the replay rigs the play log");
+//     let replay_env = env_over(replay_space.clone(), &budget());
+//     let mut replayed = Vec::with_capacity(jobs.len());
+//     for op in &jobs {
+//         replayed.push(run_job(&replay_env, op.clone()).await);
+//     }
+//     assert_eq!(
+//         replayed, played,
+//         "{label}: the results, the legacy logs and the costs"
+//     );
+//     replay_space.take_event_log().await;
+//     replay_space
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired");
+//     let replay_root = replay_space
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint")
+//         .root;
+//     assert_eq!(replay_root, root, "{label}: the root");
+//
+//     replay_space
+//         .rig_and_reset(start, Vec::new())
+//         .await
+//         .expect("the replay rigs an empty log");
+//     let mut diverged = false;
+//     for op in &jobs {
+//         if let Err(SpaceError::ReplayDivergence(_)) =
+//             run(&FamilyAgent, &replay_env, op.clone()).await
+//         {
+//             diverged = true;
+//             break;
+//         }
+//     }
+//     assert!(diverged, "{label}: a replay without the log diverges");
+// }
 
-/// The phlo of a legacy budget: far above every script of the suite.
-const LEGACY_PHLO: i64 = 1_000_000_000_000;
+/// Added by decision 125 (the step D restatement at the failing step): the operations of
+/// [`pathmap_script`] as the parts of one Rholang term in `use space`, one part for each operation
+/// and in the order of the script. A literal list in `use space` is a path of the space (rule
+/// PP-1), and `@[]` is the root prefix. Each fire sends its label and its bound values to `out`.
+/// A par gives its parts no order (`eval_inner` spawns each term), so a play takes one
+/// interleaving of the script, and native replay reproduces that interleaving. The script fires
+/// in every interleaving: the persistent receive on `[7]` is the only waiter of its prefix, and the
+/// sends on `[7,1]` and `[7,2]` are the only sends of their paths, so it fires on one of them in
+/// every order and on every discipline.
+const PATHMAP_SCRIPT_TERM: &str = r#"use space {
+  for (@v <- @[0]) { out!(["w0", v]) } |
+  @[0, 1]!(1) |
+  @[0, 1]!(2) |
+  @[0, 2]!(3) |
+  for (@v <<- @[0]) { out!(["p", v]) } |
+  for (@x <- @[0] & @y <- @[5]) { out!(["j1", x, y]) } |
+  @[5, 1]!(4) |
+  for (@v <- @[0, 2]) { out!(["t", v]) } |
+  @[6]!!(7) |
+  for (@v <- @[6]) { out!(["f", v]) } |
+  for (@x <- @[0] & @y <- @[6] where false) { out!(["g", x, y]) } |
+  @[0, 3]!(8) |
+  for (@x <- @[0, 1] & @y <- @[0]) { out!(["nested", x, y]) } |
+  @[]!(9) |
+  for (@v <- @[]) { out!(["r", v]) } |
+  for (@v <= @[7]) { out!(["forever", v]) } |
+  @[7, 1]!(10) |
+  @[7, 2]!(11)
+}"#;
 
-/// Runs one job of `op` over the host of `env` with a legacy budget of its own (decision 45,
-/// Option P).
-async fn run_job(env: &SpaceEnv, op: SpaceOp) -> Metered {
-    let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs pathmap replay step"));
-    let _scope = budget.enter_legacy_scope();
-    let env = SpaceEnv {
-        budget: budget.clone(),
-        ..env.clone()
-    };
-    let before = budget.get().value;
-    let result = run(&FamilyAgent, &env, op).await;
-    (result, budget.get_log(), before - budget.get().value)
+/// Added by decision 125 (the step D restatement at the failing step): the public channel that
+/// carries the handle of the space of the capped chain from its first deploy to its second.
+const CAPPED_HANDLE: &str = "rrs-pathmap-capped-handle";
+
+/// Added by decision 125 (the step D restatement at the failing step): the first deploy of the
+/// capped chain, in the form of `setup_program` of `reified_cross_block_merge.rs`. It creates a
+/// `pathmap:bag` space, sends its handle to [`CAPPED_HANDLE`], and parks `waiters` peek joins on
+/// `[0]` and `[5]`. The join `w{i}` sends `["w{i}", x, y]` to `out`, which forwards each value to
+/// [`OUT`].
+fn capped_setup_program(waiters: usize) -> String {
+    let joins: Vec<String> = (0..waiters)
+        .map(|index| format!(r#"for (@x <<- @[0] & @y <<- @[5]) {{ out!(["w{index}", x, y]) }}"#))
+        .collect();
+    format!(
+        r#"new factory(`{urn}`), out in {{
+  for (space <- factory!?("default")) {{
+    @"{CAPPED_HANDLE}"!(*space) |
+    use space {{
+      {joins}
+    }}
+  }} |
+  for (@value <= out) {{ @"{OUT}"!(value) }}
+}}"#,
+        urn = family(SpaceInner::Bag),
+        joins = joins.join(" |\n      "),
+    )
 }
 
-/// Runs each operation of `script` and every re-issue that follows it, as the jobs of a deploy,
-/// and returns what each job shows and the operation of each job.
-async fn run_jobs(env: &SpaceEnv, script: &[SpaceOp]) -> (Vec<Metered>, Vec<SpaceOp>) {
-    let mut steps = Vec::with_capacity(script.len());
-    let mut jobs = Vec::with_capacity(script.len());
-    for op in script {
-        let mut next = Some(op.clone());
-        while let Some(op) = next.take() {
-            jobs.push(op.clone());
-            let step = run_job(env, op).await;
-            next = match &step.0 {
-                Ok(outcome) => outcome.reissue.as_ref().map(|reissue| reissue.op.clone()),
-                Err(_) => None,
-            };
-            steps.push(step);
-        }
-    }
-    (steps, jobs)
+/// Added by decision 125 (the step D restatement at the failing step): the second deploy of the
+/// capped chain, in the form of `with_names` of `reified_cross_block_merge.rs`. It peeks the
+/// handle on [`CAPPED_HANDLE`], and it sends 1 on `[0,1]` and 2 on `[5]`.
+fn capped_sends_program() -> String {
+    format!(r#"for (space <<- @"{CAPPED_HANDLE}") {{ use space {{ @[0, 1]!(1) | @[5]!(2) }} }}"#)
 }
 
-/// One case of `pathmap_replay_equal`: play runs `script` with its re-issues, and replay runs
-/// the same jobs with the checkpoint log of the undrained play run.
-async fn replay_case(inner: SpaceInner, script: Vec<SpaceOp>, label: &str) {
-    let (play_space, replay_space) = play_and_replay().await;
-    let play_rig = Rig::over(play_space.clone(), inner).await;
-    let start = play_space
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let (played, jobs) = run_jobs(&play_rig.env, &script).await;
+/// Added by decision 125 (the step D restatement at the failing step): plays `term` on `chain`
+/// with the label `label` and checks it as `play_checked` of `reified_cross_block_merge.rs` checks
+/// a deploy: the deploy succeeds, the sweep leaves no volatile channel, no mergeable channel is a
+/// Reified channel (item 19), and the merge of its log over its pre-state gives its post-state
+/// (A4). Then native replay certifies the play from the root of the deploy before it.
+async fn play_certified(chain: &mut NativeChain, term: &str, label: &str) -> Played {
+    let played = chain.play(term, label, AMPLE_LIMIT).await;
     assert!(
-        played.iter().any(|(result, _, _)| result
-            .as_ref()
-            .is_ok_and(|outcome| !outcome.fires.is_empty())),
-        "{label}: the script fires"
+        played.result.errors.is_empty(),
+        "{label}: the deploy fails: {:?}",
+        played.result.errors
     );
-    let Checkpoint { root, log } = play_space.create_checkpoint().await.expect("a checkpoint");
-    replay_space
-        .rig_and_reset(start.clone(), log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_env = env_over(replay_space.clone(), &budget());
-    let mut replayed = Vec::with_capacity(jobs.len());
-    for op in &jobs {
-        replayed.push(run_job(&replay_env, op.clone()).await);
-    }
-    assert_eq!(
-        replayed, played,
-        "{label}: the results, the legacy logs and the costs"
+    assert!(
+        played.residue.is_empty(),
+        "{label}: the sweep leaves no volatile channel: {:?}",
+        played.residue
     );
-    replay_space.take_event_log().await;
-    replay_space
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    let replay_root = replay_space
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint")
-        .root;
-    assert_eq!(replay_root, root, "{label}: the root");
-
-    replay_space
-        .rig_and_reset(start, Vec::new())
-        .await
-        .expect("the replay rigs an empty log");
-    let mut diverged = false;
-    for op in &jobs {
-        if let Err(SpaceError::ReplayDivergence(_)) =
-            run(&FamilyAgent, &replay_env, op.clone()).await
-        {
-            diverged = true;
-            break;
-        }
+    for channel in played.result.mergeable.keys() {
+        assert!(
+            namespace::reified_id_of(channel).is_none(),
+            "{label}: a Reified channel is mergeable: {channel:?}"
+        );
     }
-    assert!(diverged, "{label}: a replay without the log diverges");
+    assert_merge_reproduces(label, &played);
+    let certification = certify(&played, term, AMPLE_LIMIT).await;
+    assert_reproduces(label, &played, &certification);
+    played
 }
 
-/// Replay stages the transactions of play (decision 36). For each discipline the PathMap script
-/// replays with the checkpoint log of an undrained play run: the results, the legacy logs, the
-/// phlo and the root are equal, and every recorded COMM is paired. The capped chain of
-/// `pathmap_cap_restores_owed_markers` replays too, with its settle job and the restore of its
-/// offer. A replay without the log diverges at the first COMM.
-#[tokio::test]
+/// Added by decision 125 (the step D restatement at the failing step): the labels of the values
+/// on [`OUT`] after `played`, sorted. Each value of the tests is a list `[label, …]`.
+fn out_labels(played: &Played) -> Vec<String> {
+    let mut labels: Vec<String> = played
+        .out
+        .iter()
+        .filter_map(|pars| {
+            let [value] = pars.as_slice() else {
+                return None;
+            };
+            let [Expr {
+                expr_instance: Some(ExprInstance::EListBody(list)),
+            }] = value.exprs.as_slice()
+            else {
+                return None;
+            };
+            match list.ps.first()?.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::GString(label)),
+                }] => Some(label.clone()),
+                _ => None,
+            }
+        })
+        .collect();
+    labels.sort();
+    labels
+}
+
+// Changed by decision 90 (decision 69), decision 92 and decision 125 (the step D restatement at
+// the failing step): native replay certifies the play, and the legacy replay mode retires at
+// step D. The text before:
+// /// Replay stages the transactions of play (decision 36). For each discipline the PathMap script
+// /// replays with the checkpoint log of an undrained play run: the results, the legacy logs, the
+// /// phlo and the root are equal, and every recorded COMM is paired. The capped chain of
+// /// `pathmap_cap_restores_owed_markers` replays too, with its settle job and the restore of its
+// /// offer. A replay without the log diverges at the first COMM.
+// #[tokio::test]
+// async fn pathmap_replay_equal() {
+//     for inner in INNERS {
+//         replay_case(inner, pathmap_script(), &format!("{inner:?}")).await;
+//     }
+//     let mut capped = Vec::new();
+//     for index in 0..FIRE_ROUND_CAP + 3 {
+//         capped.push(joined(JoinOp {
+//             peek: true,
+//             ..join(&[(&[0], any()), (&[5], any())], &format!("w{index}"))
+//         }));
+//     }
+//     capped.push(put(&[0, 1], 1));
+//     capped.push(put(&[5], 2));
+//     replay_case(SpaceInner::Bag, capped, "the capped chain").await;
+// }
+/// Native replay certifies the play of the PathMap script on each discipline and the play of the
+/// capped chain (decision 125, the step D restatement at the failing step).
+///
+/// - For each inner of [`INNERS`], [`PATHMAP_SCRIPT_TERM`] plays as one native deploy over a fresh
+///   `pathmap:<inner>` space (`native_play`). The script fires: some fire delivers its label on
+///   [`OUT`]. The certification of the play (`certify`) reproduces its errors, a complete journal,
+///   its phlo, its authority events, its byte observations and its root (`assert_reproduces`). A
+///   cell fails some operations with `CellOccupied` in some interleavings, and the certification
+///   reproduces the failure.
+/// - The capped chain of `pathmap_cap_restores_owed_markers` takes two deploys on one
+///   [`NativeChain`], because a par gives no order and the joins must park before the sends. The
+///   first deploy parks `FIRE_ROUND_CAP + 3` peek joins on `[0]` and `[5]`, and nothing fires. The
+///   second deploy sends on `[0,1]` and `[5]`, and every join fires once, past the round cap, with
+///   the settle job and the restore of the offer. Each deploy passes the checks of `play_checked`
+///   (`play_certified`) and certifies.
+/// - The legacy test also replayed without the log and saw the divergence at the first COMM. The
+///   native form of that check certifies the bag case of the script against its journal with the
+///   space rows cut (`is_space_row`). The certification fails closed and ends: the journal check
+///   rejects the cut journal, so native replay never starts. No row owns the attempts of the cut
+///   rows, and a later row can name predecessors that the cut journal does not derive
+///   (`check_operation_journal`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pathmap_replay_equal() {
     for inner in INNERS {
-        replay_case(inner, pathmap_script(), &format!("{inner:?}")).await;
+        let label = format!("pathmap:{}", inner.as_str());
+        let term = space_program(
+            &family(inner).to_string(),
+            r#""default""#,
+            PATHMAP_SCRIPT_TERM,
+        );
+        let played = native_play(&term, AMPLE_LIMIT).await;
+        assert!(
+            !out_labels(&played).is_empty(),
+            "{label}: the script fires: {:?}",
+            played.result.errors
+        );
+        let certification = certify(&played, &term, AMPLE_LIMIT).await;
+        assert_reproduces(&label, &played, &certification);
     }
-    let mut capped = Vec::new();
-    for index in 0..FIRE_ROUND_CAP + 3 {
-        capped.push(joined(JoinOp {
-            peek: true,
-            ..join(&[(&[0], any()), (&[5], any())], &format!("w{index}"))
-        }));
-    }
-    capped.push(put(&[0, 1], 1));
-    capped.push(put(&[5], 2));
-    replay_case(SpaceInner::Bag, capped, "the capped chain").await;
+    // The native form of the divergence check of the legacy test: the bag case of the script,
+    // certified against its journal with the space rows cut.
+    let term = space_program(
+        &family(SpaceInner::Bag).to_string(),
+        r#""default""#,
+        PATHMAP_SCRIPT_TERM,
+    );
+    let played = native_play(&term, AMPLE_LIMIT).await;
+    let (recording, journal) = committed_evidence(&played);
+    let cut: Vec<_> = journal
+        .iter()
+        .filter(|row| !is_space_row(row))
+        .cloned()
+        .collect();
+    assert!(
+        cut.len() < journal.len(),
+        "the bag case stages space operations"
+    );
+    let checked = tokio::time::timeout(
+        std::time::Duration::from_secs(600),
+        replay_environment(&played, AMPLE_LIMIT, &recording, cut.into()),
+    )
+    .await
+    .expect("the certification of the cut journal ends without a hang");
+    let error = checked
+        .err()
+        .expect("the certification rejects the journal without its space rows");
+    assert!(
+        error.starts_with("the journal check rejects the journal"),
+        "{error}"
+    );
+    let waiters = FIRE_ROUND_CAP + 3;
+    let mut chain = NativeChain::new().await;
+    let setup = play_certified(
+        &mut chain,
+        &capped_setup_program(waiters),
+        "rrs-pathmap-capped-setup",
+    )
+    .await;
+    assert!(
+        out_labels(&setup).is_empty(),
+        "the capped chain: the joins park, so nothing fires"
+    );
+    let sends = play_certified(
+        &mut chain,
+        &capped_sends_program(),
+        "rrs-pathmap-capped-sends",
+    )
+    .await;
+    let mut expected: Vec<String> = (0..waiters).map(|index| format!("w{index}")).collect();
+    expected.sort();
+    assert_eq!(
+        out_labels(&sends),
+        expected,
+        "the capped chain: every join fires once, past the round cap"
+    );
 }
 
 /// The rows of `host` on the channels of the paths `paths`: for each prefix its markers, its
@@ -2145,10 +2946,18 @@ async fn pathmap_restart() {
     }
 }
 
-/// The escalation of a PathMap operation (joins plan section 9): the first transaction reads the
-/// config and stages nothing, and the second transaction locks the keys of the prefix scope.
-/// Every channel that a job stages lies in the lock keys of its transaction, for every
-/// discipline and every operation of the script. One transaction commits for each job.
+// Changed by decision 94 and decision 92: phase B replaced the escalation, and a positional
+// failure commits its anchor, so the doc below replaces this one.
+// /// The escalation of a PathMap operation (joins plan section 9): the first transaction reads the
+// /// config and stages nothing, and the second transaction locks the keys of the prefix scope.
+// /// Every channel that a job stages lies in the lock keys of its transaction, for every
+// /// discipline and every operation of the script. One transaction commits for each job.
+/// The lock keys of a PathMap operation (joins plan section 9, decision 94). The operation takes
+/// phase A over its own keys, reads the config and classifies its route under phase A. Then it
+/// takes phase B over the keys of the prefix scope in the same transaction. Every channel that a
+/// job stages lies in the lock keys of its transaction, for every discipline and every operation
+/// of the script. One transaction commits for each job that succeeds. A job that fails at a
+/// position of the state commits its anchor only (decision 92). Another failure commits nothing.
 #[tokio::test]
 async fn pathmap_staging_stays_in_the_lock_keys() {
     for inner in INNERS {
@@ -2167,10 +2976,16 @@ async fn pathmap_staging_stays_in_the_lock_keys() {
             let label = format!("{inner:?} {op:?}");
             let result = run(&FamilyAgent, &env, op).await;
             let seen = std::mem::take(&mut *record.lock().expect("the record lock"));
-            assert_eq!(seen.begins.len(), 2, "{label}: one escalation");
+            // Changed by decision 94: phase B takes the scope keys in the one transaction.
+            // assert_eq!(seen.begins.len(), 2, "{label}: one escalation");
+            // assert!(
+            //     seen.staged.iter().all(|(txn, _)| *txn == 1),
+            //     "{label}: the first transaction stages nothing"
+            // );
+            assert_eq!(seen.begins.len(), 1, "{label}: one begin");
             assert!(
-                seen.staged.iter().all(|(txn, _)| *txn == 1),
-                "{label}: the first transaction stages nothing"
+                seen.staged.iter().all(|(txn, _)| *txn == 0),
+                "{label}: the one transaction stages every operation"
             );
             for (txn, staged) in &seen.staged {
                 for channel in staged.channels() {
@@ -2180,8 +2995,21 @@ async fn pathmap_staging_stays_in_the_lock_keys() {
                     );
                 }
             }
+            // Changed by decision 94 and decision 92: the one transaction has the index 0, and a
+            // positional failure commits its anchor only.
+            // match result {
+            //     Ok(_) => assert_eq!(seen.commits, vec![1], "{label}: one commit"),
+            //     Err(_) => assert!(
+            //         seen.commits.is_empty(),
+            //         "{label}: a failure commits nothing"
+            //     ),
+            // }
             match result {
-                Ok(_) => assert_eq!(seen.commits, vec![1], "{label}: one commit"),
+                Ok(_) => assert_eq!(seen.commits, vec![0], "{label}: one commit"),
+                Err(error) if error.is_positional() => assert!(
+                    support::agent::commits_anchor_only(&seen, SPACE),
+                    "{label}: a positional failure commits its anchor only"
+                ),
                 Err(_) => assert!(
                     seen.commits.is_empty(),
                     "{label}: a failure commits nothing"
@@ -2192,344 +3020,400 @@ async fn pathmap_staging_stays_in_the_lock_keys() {
 }
 
 // ─── Option P ────────────────────────────────────────────────────────────────────────────────
+//
+// Changed by decision 90 (decision 69): Option P (decision 45) is removed with the legacy meter
+// (DR-134). Its lone host calls cannot compare observer calls (see the note of
+// `lone_calls_scenario`).
 
-/// The legacy log entries of the charges of the staged operation `staged` (decision 45, Option
-/// P): the pre-charge, then the post-charges.
-fn charges_of(staged: &StagedCopy) -> Vec<Cost> {
-    split(match staged {
-        StagedCopy::Produce(op) => produce_charges(op).expect("the charges of a staged produce"),
-        StagedCopy::Consume(op) => consume_charges(op).expect("the charges of a staged consume"),
-    })
-}
+// Changed by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+//
+// /// The legacy log entries of the charges of the staged operation `staged` (decision 45, Option
+// /// P): the pre-charge, then the post-charges.
+// fn charges_of(staged: &StagedCopy) -> Vec<Cost> {
+//     split(match staged {
+//         StagedCopy::Produce(op) => produce_charges(op).expect("the charges of a staged produce"),
+//         StagedCopy::Consume(op) => consume_charges(op).expect("the charges of a staged consume"),
+//     })
+// }
 
-/// The records that a [`StagedBindingMatcher`] binds, each with the values that the staged
-/// operation bound from it, or `None` before the pin opens.
-type Bindings = Arc<Mutex<Vec<(ListParWithRandom, ListParWithRandom)>>>;
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// /// The records that a [`StagedBindingMatcher`] binds, each with the values that the staged
+// /// operation bound from it, or `None` before the pin opens.
+// type Bindings = Arc<Mutex<Vec<(ListParWithRandom, ListParWithRandom)>>>;
 
-/// The matcher of a lone host call of a PathMap space. A PathMap waiter binds the re-rooted
-/// payload of the datum of a marker, and a vehicle carries the marker before the payload, so a
-/// matcher of the record alone cannot bind them (`support::legacy::PinnedPayloadMatcher` matches
-/// the payload of a datum envelope). This matcher binds exactly the records of the staged
-/// operation, each with the values that the agent bound from it. The guard check is the check of
-/// the Rholang matcher.
-#[derive(Clone)]
-struct StagedBindingMatcher {
-    bindings: Bindings,
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// /// The matcher of a lone host call of a PathMap space. A PathMap waiter binds the re-rooted
+// /// payload of the datum of a marker, and a vehicle carries the marker before the payload, so a
+// /// matcher of the record alone cannot bind them (`support::legacy::PinnedPayloadMatcher` matches
+// /// the payload of a datum envelope). This matcher binds exactly the records of the staged
+// /// operation, each with the values that the agent bound from it. The guard check is the check of
+// /// the Rholang matcher.
+// #[derive(Clone)]
+// struct StagedBindingMatcher {
+//     bindings: Bindings,
+// }
 
-impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for StagedBindingMatcher {
-    fn get(&self, _pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
-        self.bindings
-            .lock()
-            .expect("the bindings lock")
-            .iter()
-            .find(|(record, _)| record == data)
-            .map(|(_, matched)| matched.clone())
-    }
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// impl Match<BindPattern, ListParWithRandom, TaggedContinuation> for StagedBindingMatcher {
+//     fn get(&self, _pattern: &BindPattern, data: &ListParWithRandom) -> Option<ListParWithRandom> {
+//         self.bindings
+//             .lock()
+//             .expect("the bindings lock")
+//             .iter()
+//             .find(|(record, _)| record == data)
+//             .map(|(_, matched)| matched.clone())
+//     }
+//
+//     fn check_commit(
+//         &self,
+//         continuation: &TaggedContinuation,
+//         matched: &[ListParWithRandom],
+//     ) -> bool {
+//         Matcher.check_commit(continuation, matched)
+//     }
+// }
 
-    fn check_commit(
-        &self,
-        continuation: &TaggedContinuation,
-        matched: &[ListParWithRandom],
-    ) -> bool {
-        Matcher.check_commit(continuation, matched)
-    }
-}
+// Changed by decision 90 (decision 69): the host records its observer calls, because
+// `ChargingRSpace` is deleted with the legacy meter (DR-134).
+//
+// /// A `ChargingRSpace` over a fresh in-memory space with the matcher of `bindings`, which charges
+// /// `budget`.
+// async fn binding_host(
+//     budget: &RuntimeBudget,
+//     bindings: &Bindings,
+// ) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
+//     let mut stores = InMemoryStoreManager::new();
+//     let space = ParRSpace::create(
+//         stores.r_space_stores().await.expect("in-memory stores"),
+//         Arc::new(Box::new(StagedBindingMatcher {
+//             bindings: Arc::clone(bindings),
+//         })),
+//     )
+//     .expect("an in-memory space");
+//     let host: RhoISpace = Arc::new(Box::new(space));
+//     ChargingRSpace::charging_rspace(host, budget.clone())
+// }
 
-/// A `ChargingRSpace` over a fresh in-memory space with the matcher of `bindings`, which charges
-/// `budget`.
-async fn binding_host(
-    budget: &RuntimeBudget,
-    bindings: &Bindings,
-) -> impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation> {
-    let mut stores = InMemoryStoreManager::new();
-    let space = ParRSpace::create(
-        stores.r_space_stores().await.expect("in-memory stores"),
-        Arc::new(Box::new(StagedBindingMatcher {
-            bindings: Arc::clone(bindings),
-        })),
-    )
-    .expect("an in-memory space");
-    let host: RhoISpace = Arc::new(Box::new(space));
-    ChargingRSpace::charging_rspace(host, budget.clone())
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
 
-/// The phlo of the budget of a lone host call: far above the charges of one operation.
-const LONE_PHLO: i64 = 1_000_000_000_000;
+// Changed by decision 90 (decision 69): a lone host call has no legacy budget, because DR-134
+// deleted the legacy meter.
+//
+// /// The phlo of the budget of a lone host call: far above the charges of one operation.
+// const LONE_PHLO: i64 = 1_000_000_000_000;
 
-/// Stores the record `candidate` of a fire on its channel of a lone host. The bindings are
-/// empty, so the store fires nothing.
-async fn store_candidate(
-    host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
-    channel: &Par,
-    record: &ListParWithRandom,
-    persist: bool,
-) {
-    let fired = host
-        .produce(channel.clone(), record.clone(), persist)
-        .await
-        .expect("a lone host stores a candidate record");
-    assert!(fired.is_none(), "empty bindings fire nothing");
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// /// Stores the record `candidate` of a fire on its channel of a lone host. The bindings are
+// /// empty, so the store fires nothing.
+// async fn store_candidate(
+//     host: &impl ISpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>,
+//     channel: &Par,
+//     record: &ListParWithRandom,
+//     persist: bool,
+// ) {
+//     let fired = host
+//         .produce(channel.clone(), record.clone(), persist)
+//         .await
+//         .expect("a lone host stores a candidate record");
+//     assert!(fired.is_none(), "empty bindings fire nothing");
+// }
 
-/// The legacy log entries of the staged produce `op` when a fresh host runs it alone, as
-/// `support::legacy::lone_host_produce` runs it, with the bindings of the staged fire.
-async fn lone_pathmap_produce(op: &ParSpaceProduce) -> Vec<Cost> {
-    let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone pathmap produce"));
-    let _scope = budget.enter_legacy_scope();
-    let bindings: Bindings = Arc::new(Mutex::new(Vec::new()));
-    let host = binding_host(&budget, &bindings).await;
-    let mut bound = Vec::new();
-    let fires = match &op.outcome {
-        ProduceOutcome::Store => false,
-        ProduceOutcome::Fire {
-            channels,
-            continuation,
-            data,
-        } => {
-            for candidate in data {
-                match candidate.datum_index >= 0 {
-                    true => {
-                        store_candidate(
-                            &host,
-                            &candidate.channel,
-                            &candidate.removed_datum,
-                            candidate.datum.persist,
-                        )
-                        .await
-                    }
-                    false => assert_eq!(candidate.removed_datum, op.data, "the incoming record"),
-                }
-                bound.push((candidate.removed_datum.clone(), candidate.datum.a.clone()));
-            }
-            let parked = host
-                .consume(
-                    channels.clone(),
-                    continuation.patterns.clone(),
-                    continuation.continuation.clone(),
-                    continuation.persist,
-                    continuation.peeks.clone(),
-                )
-                .await
-                .expect("a lone host parks the waiter of a fire");
-            assert!(parked.is_none(), "empty bindings park the waiter");
-            true
-        }
-    };
-    *bindings.lock().expect("the bindings lock") = bound;
-    let run = host_produce(
-        &host,
-        &budget,
-        op.channel.clone(),
-        op.data.clone(),
-        op.persist,
-    )
-    .await;
-    assert_eq!(
-        run.fired.is_some(),
-        fires,
-        "the lone produce fires as the staged one"
-    );
-    run.entries
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// /// The legacy log entries of the staged produce `op` when a fresh host runs it alone, as
+// /// `support::legacy::lone_host_produce` runs it, with the bindings of the staged fire.
+// async fn lone_pathmap_produce(op: &ParSpaceProduce) -> Vec<Cost> {
+//     let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone pathmap produce"));
+//     let _scope = budget.enter_legacy_scope();
+//     let bindings: Bindings = Arc::new(Mutex::new(Vec::new()));
+//     let host = binding_host(&budget, &bindings).await;
+//     let mut bound = Vec::new();
+//     let fires = match &op.outcome {
+//         ProduceOutcome::Store => false,
+//         ProduceOutcome::Fire {
+//             channels,
+//             continuation,
+//             data,
+//         } => {
+//             for candidate in data {
+//                 match candidate.datum_index >= 0 {
+//                     true => {
+//                         store_candidate(
+//                             &host,
+//                             &candidate.channel,
+//                             &candidate.removed_datum,
+//                             candidate.datum.persist,
+//                         )
+//                         .await
+//                     }
+//                     false => assert_eq!(candidate.removed_datum, op.data, "the incoming record"),
+//                 }
+//                 bound.push((candidate.removed_datum.clone(), candidate.datum.a.clone()));
+//             }
+//             let parked = host
+//                 .consume(
+//                     channels.clone(),
+//                     continuation.patterns.clone(),
+//                     continuation.continuation.clone(),
+//                     continuation.persist,
+//                     continuation.peeks.clone(),
+//                 )
+//                 .await
+//                 .expect("a lone host parks the waiter of a fire");
+//             assert!(parked.is_none(), "empty bindings park the waiter");
+//             true
+//         }
+//     };
+//     *bindings.lock().expect("the bindings lock") = bound;
+//     let run = host_produce(
+//         &host,
+//         &budget,
+//         op.channel.clone(),
+//         op.data.clone(),
+//         op.persist,
+//     )
+//     .await;
+//     assert_eq!(
+//         run.fired.is_some(),
+//         fires,
+//         "the lone produce fires as the staged one"
+//     );
+//     run.entries
+// }
 
-/// The legacy log entries of the staged consume `op` when a fresh host runs it alone, as
-/// `support::legacy::lone_host_consume` runs it, with the bindings of the staged fire.
-async fn lone_pathmap_consume(op: &ParSpaceConsume) -> Vec<Cost> {
-    let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone pathmap consume"));
-    let _scope = budget.enter_legacy_scope();
-    let bindings: Bindings = Arc::new(Mutex::new(Vec::new()));
-    let host = binding_host(&budget, &bindings).await;
-    let mut bound = Vec::new();
-    let fires = match &op.outcome {
-        ConsumeOutcome::Park => false,
-        ConsumeOutcome::Fire { data } => {
-            for candidate in data {
-                store_candidate(
-                    &host,
-                    &candidate.channel,
-                    &candidate.removed_datum,
-                    candidate.datum.persist,
-                )
-                .await;
-                bound.push((candidate.removed_datum.clone(), candidate.datum.a.clone()));
-            }
-            true
-        }
-    };
-    *bindings.lock().expect("the bindings lock") = bound;
-    let run = host_consume(
-        &host,
-        &budget,
-        op.channels.clone(),
-        op.patterns.clone(),
-        op.continuation.clone(),
-        op.persist,
-        !op.peeks.is_empty(),
-    )
-    .await;
-    assert_eq!(
-        run.fired.is_some(),
-        fires,
-        "the lone consume fires as the staged one"
-    );
-    run.entries
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// /// The legacy log entries of the staged consume `op` when a fresh host runs it alone, as
+// /// `support::legacy::lone_host_consume` runs it, with the bindings of the staged fire.
+// async fn lone_pathmap_consume(op: &ParSpaceConsume) -> Vec<Cost> {
+//     let budget = RuntimeBudget::new(Cost::create(LONE_PHLO, "rrs lone pathmap consume"));
+//     let _scope = budget.enter_legacy_scope();
+//     let bindings: Bindings = Arc::new(Mutex::new(Vec::new()));
+//     let host = binding_host(&budget, &bindings).await;
+//     let mut bound = Vec::new();
+//     let fires = match &op.outcome {
+//         ConsumeOutcome::Park => false,
+//         ConsumeOutcome::Fire { data } => {
+//             for candidate in data {
+//                 store_candidate(
+//                     &host,
+//                     &candidate.channel,
+//                     &candidate.removed_datum,
+//                     candidate.datum.persist,
+//                 )
+//                 .await;
+//                 bound.push((candidate.removed_datum.clone(), candidate.datum.a.clone()));
+//             }
+//             true
+//         }
+//     };
+//     *bindings.lock().expect("the bindings lock") = bound;
+//     let run = host_consume(
+//         &host,
+//         &budget,
+//         op.channels.clone(),
+//         op.patterns.clone(),
+//         op.continuation.clone(),
+//         op.persist,
+//         !op.peeks.is_empty(),
+//     )
+//     .await;
+//     assert_eq!(
+//         run.fired.is_some(),
+//         fires,
+//         "the lone consume fires as the staged one"
+//     );
+//     run.entries
+// }
 
-/// The shape of a staged operation of the Option P differential.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Shape {
-    /// A take or a put of the token.
-    Token,
-    /// A store of a record or of a marker, or the restore of a marker.
-    Store,
-    /// A single-bind waiter that parks on a prefix.
-    Park,
-    /// A join waiter that parks on the index channels of its prefixes.
-    JoinPark,
-    /// A consume over two or more index channels: a join fire or a class fire `[I(q); n]`.
-    GroupConsume,
-    /// A produce-side fire of a join waiter with the vehicle.
-    GroupFire,
-    /// A produce-side fire of a single-bind waiter with the vehicle.
-    SingleFire,
-    /// A single-bind consume fire: a receive, a `K_retire` or a `K_lift`.
-    Removal,
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// /// The shape of a staged operation of the Option P differential.
+// #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+// enum Shape {
+//     /// A take or a put of the token.
+//     Token,
+//     /// A store of a record or of a marker, or the restore of a marker.
+//     Store,
+//     /// A single-bind waiter that parks on a prefix.
+//     Park,
+//     /// A join waiter that parks on the index channels of its prefixes.
+//     JoinPark,
+//     /// A consume over two or more index channels: a join fire or a class fire `[I(q); n]`.
+//     GroupConsume,
+//     /// A produce-side fire of a join waiter with the vehicle.
+//     GroupFire,
+//     /// A produce-side fire of a single-bind waiter with the vehicle.
+//     SingleFire,
+//     /// A single-bind consume fire: a receive, a `K_retire` or a `K_lift`.
+//     Removal,
+// }
 
-/// The shape of the staged operation `staged`.
-fn shape_of(staged: &StagedCopy) -> Shape {
-    let token = token();
-    match staged {
-        StagedCopy::Produce(op) if op.channel == token => Shape::Token,
-        StagedCopy::Consume(op) if op.channels.contains(&token) => Shape::Token,
-        StagedCopy::Produce(op) => match &op.outcome {
-            ProduceOutcome::Store => Shape::Store,
-            ProduceOutcome::Fire { channels, .. } if channels.len() >= 2 => Shape::GroupFire,
-            ProduceOutcome::Fire { .. } => Shape::SingleFire,
-        },
-        StagedCopy::Consume(op) => match (&op.outcome, op.channels.len() >= 2) {
-            (ConsumeOutcome::Park, true) => Shape::JoinPark,
-            (ConsumeOutcome::Park, false) => Shape::Park,
-            (ConsumeOutcome::Fire { .. }, true) => Shape::GroupConsume,
-            (ConsumeOutcome::Fire { .. }, false) => Shape::Removal,
-        },
-    }
-}
+// Changed by decision 90 (decision 69): only the retired lone host differential ran these helpers
+// (see the note of `lone_calls_scenario`).
+//
+// /// The shape of the staged operation `staged`.
+// fn shape_of(staged: &StagedCopy) -> Shape {
+//     let token = token();
+//     match staged {
+//         StagedCopy::Produce(op) if op.channel == token => Shape::Token,
+//         StagedCopy::Consume(op) if op.channels.contains(&token) => Shape::Token,
+//         StagedCopy::Produce(op) => match &op.outcome {
+//             ProduceOutcome::Store => Shape::Store,
+//             ProduceOutcome::Fire { channels, .. } if channels.len() >= 2 => Shape::GroupFire,
+//             ProduceOutcome::Fire { .. } => Shape::SingleFire,
+//         },
+//         StagedCopy::Consume(op) => match (&op.outcome, op.channels.len() >= 2) {
+//             (ConsumeOutcome::Park, true) => Shape::JoinPark,
+//             (ConsumeOutcome::Park, false) => Shape::Park,
+//             (ConsumeOutcome::Fire { .. }, true) => Shape::GroupConsume,
+//             (ConsumeOutcome::Fire { .. }, false) => Shape::Removal,
+//         },
+//     }
+// }
 
-/// Runs the operations `ops` on a fresh recording rig of `inner` and checks Option P (decision
-/// 45) for each job: its legacy log is the concatenation of the charges of its committed staged
-/// operations, in staging order, and a fresh host that runs one staged operation alone logs
-/// exactly its charges. It returns the shapes of all staged operations.
-async fn option_p_scenario(inner: SpaceInner, ops: Vec<SpaceOp>) -> BTreeSet<Shape> {
-    let host = play().await;
-    let (recording, record) = RecordingHost::new(host.clone());
-    let env = env_over(recording, &budget());
-    let config = config_of(
-        SPACE,
-        SpaceOuter::PathMap.as_str(),
-        inner.as_str(),
-        SpaceQualifier::Default,
-    );
-    create(&FamilyAgent, &env, creation(SPACE, config, family(inner))).await;
-    *record.lock().expect("the record lock") = HostRecord::default();
-    let mut shapes = BTreeSet::new();
-    for op in ops {
-        let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs pathmap option p"));
-        let _scope = budget.enter_legacy_scope();
-        let env = SpaceEnv {
-            budget: budget.clone(),
-            ..env.clone()
-        };
-        let label = format!("{op:?}");
-        run(&FamilyAgent, &env, op)
-            .await
-            .unwrap_or_else(|error| panic!("the operation commits: {error:?}: {label}"));
-        let seen = std::mem::take(&mut *record.lock().expect("the record lock"));
-        let staged: Vec<&StagedCopy> = seen
-            .staged
-            .iter()
-            .filter(|(txn, _)| seen.commits.contains(txn))
-            .map(|(_, staged)| staged)
-            .collect();
-        let expected: Vec<Cost> = staged
-            .iter()
-            .flat_map(|staged| charges_of(staged))
-            .collect();
-        assert_eq!(budget.get_log(), expected, "the legacy log of {label}");
-        for staged in staged {
-            let lone = match staged {
-                StagedCopy::Produce(op) => lone_pathmap_produce(op).await,
-                StagedCopy::Consume(op) => lone_pathmap_consume(op).await,
-            };
-            assert_eq!(lone, charges_of(staged), "a lone host call of {label}");
-            shapes.insert(shape_of(staged));
-        }
-    }
-    shapes
-}
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+//
+// /// Runs the operations `ops` on a fresh recording rig of `inner` and checks Option P (decision
+// /// 45) for each job: its legacy log is the concatenation of the charges of its committed staged
+// /// operations, in staging order, and a fresh host that runs one staged operation alone logs
+// /// exactly its charges. It returns the shapes of all staged operations.
+// async fn option_p_scenario(inner: SpaceInner, ops: Vec<SpaceOp>) -> BTreeSet<Shape> {
+//     let host = play().await;
+//     let (recording, record) = RecordingHost::new(host.clone());
+//     let env = env_over(recording, &budget());
+//     let config = config_of(
+//         SPACE,
+//         SpaceOuter::PathMap.as_str(),
+//         inner.as_str(),
+//         SpaceQualifier::Default,
+//     );
+//     create(&FamilyAgent, &env, creation(SPACE, config, family(inner))).await;
+//     *record.lock().expect("the record lock") = HostRecord::default();
+//     let mut shapes = BTreeSet::new();
+//     for op in ops {
+//         let budget = RuntimeBudget::new(Cost::create(LEGACY_PHLO, "rrs pathmap option p"));
+//         let _scope = budget.enter_legacy_scope();
+//         let env = SpaceEnv {
+//             budget: budget.clone(),
+//             ..env.clone()
+//         };
+//         let label = format!("{op:?}");
+//         run(&FamilyAgent, &env, op)
+//             .await
+//             .unwrap_or_else(|error| panic!("the operation commits: {error:?}: {label}"));
+//         let seen = std::mem::take(&mut *record.lock().expect("the record lock"));
+//         let staged: Vec<&StagedCopy> = seen
+//             .staged
+//             .iter()
+//             .filter(|(txn, _)| seen.commits.contains(txn))
+//             .map(|(_, staged)| staged)
+//             .collect();
+//         let expected: Vec<Cost> = staged
+//             .iter()
+//             .flat_map(|staged| charges_of(staged))
+//             .collect();
+//         assert_eq!(budget.get_log(), expected, "the legacy log of {label}");
+//         for staged in staged {
+//             let lone = match staged {
+//                 StagedCopy::Produce(op) => lone_pathmap_produce(op).await,
+//                 StagedCopy::Consume(op) => lone_pathmap_consume(op).await,
+//             };
+//             assert_eq!(lone, charges_of(staged), "a lone host call of {label}");
+//             shapes.insert(shape_of(staged));
+//         }
+//     }
+//     shapes
+// }
 
-/// Option P for PathMap spaces (decision 45). Every operation that the prefix source stages
-/// charges what `ChargingRSpace` charges for the equal host call: the stores of records and
-/// markers, the restore of a peeked marker, the parks on prefixes, the deliveries with the
-/// vehicle, the `K_retire` of a spent datum, the class fire of a set, a join over prefixes, a
-/// cascade with its `K_lift`, and the token.
-#[tokio::test]
-async fn pathmap_legacy_charges_equal_host() {
-    let bag = option_p_scenario(SpaceInner::Bag, vec![
-        put(&[0, 1], 1),
-        peek(&[0], "p", any()),
-        take(&[0], "k", any()),
-        take(&[3], "w", any()),
-        put(&[3, 1], 2),
-        joined(join(&[(&[4], any()), (&[5], any())], "j")),
-        put(&[4], 3),
-        put(&[5, 2], 4),
-    ])
-    .await;
-    for shape in [
-        Shape::Token,
-        Shape::Store,
-        Shape::Park,
-        Shape::JoinPark,
-        Shape::GroupFire,
-        Shape::SingleFire,
-        Shape::Removal,
-    ] {
-        assert!(bag.contains(&shape), "the bag stages {shape:?}: {bag:?}");
-    }
-    let set = option_p_scenario(SpaceInner::Set, vec![
-        put_salted(&[0, 1], 1, 1),
-        put_salted(&[0, 1], 1, 2),
-        take(&[0], "k", any()),
-    ])
-    .await;
-    assert!(
-        set.contains(&Shape::GroupConsume),
-        "the set stages a class fire: {set:?}"
-    );
-    let queue = option_p_scenario(SpaceInner::Queue, vec![
-        put(&[0, 1], 1),
-        put(&[0, 1], 2),
-        take(&[0], "second", exactly_list(&[1, 2])),
-        take(&[0, 1], "first", any()),
-        joined(join(&[(&[7], any()), (&[8], any())], "j")),
-        put(&[7], 5),
-        put(&[8], 6),
-    ])
-    .await;
-    for shape in [
-        Shape::Token,
-        Shape::Removal,
-        Shape::SingleFire,
-        Shape::GroupFire,
-    ] {
-        assert!(
-            queue.contains(&shape),
-            "the queue stages {shape:?}: {queue:?}"
-        );
-    }
-}
+// Disabled by decision 90 (decision 69): Option P (the legacy charges of decision 45) is removed with the legacy meter (DR-134).
+// Its lone host calls cannot move to the observer calls (see the note of `lone_calls_scenario`).
+//
+// /// Option P for PathMap spaces (decision 45). Every operation that the prefix source stages
+// /// charges what `ChargingRSpace` charges for the equal host call: the stores of records and
+// /// markers, the restore of a peeked marker, the parks on prefixes, the deliveries with the
+// /// vehicle, the `K_retire` of a spent datum, the class fire of a set, a join over prefixes, a
+// /// cascade with its `K_lift`, and the token.
+// #[tokio::test]
+// async fn pathmap_legacy_charges_equal_host() {
+//     let bag = option_p_scenario(SpaceInner::Bag, vec![
+//         put(&[0, 1], 1),
+//         peek(&[0], "p", any()),
+//         take(&[0], "k", any()),
+//         take(&[3], "w", any()),
+//         put(&[3, 1], 2),
+//         joined(join(&[(&[4], any()), (&[5], any())], "j")),
+//         put(&[4], 3),
+//         put(&[5, 2], 4),
+//     ])
+//     .await;
+//     for shape in [
+//         Shape::Token,
+//         Shape::Store,
+//         Shape::Park,
+//         Shape::JoinPark,
+//         Shape::GroupFire,
+//         Shape::SingleFire,
+//         Shape::Removal,
+//     ] {
+//         assert!(bag.contains(&shape), "the bag stages {shape:?}: {bag:?}");
+//     }
+//     let set = option_p_scenario(SpaceInner::Set, vec![
+//         put_salted(&[0, 1], 1, 1),
+//         put_salted(&[0, 1], 1, 2),
+//         take(&[0], "k", any()),
+//     ])
+//     .await;
+//     assert!(
+//         set.contains(&Shape::GroupConsume),
+//         "the set stages a class fire: {set:?}"
+//     );
+//     let queue = option_p_scenario(SpaceInner::Queue, vec![
+//         put(&[0, 1], 1),
+//         put(&[0, 1], 2),
+//         take(&[0], "second", exactly_list(&[1, 2])),
+//         take(&[0, 1], "first", any()),
+//         joined(join(&[(&[7], any()), (&[8], any())], "j")),
+//         put(&[7], 5),
+//         put(&[8], 6),
+//     ])
+//     .await;
+//     for shape in [
+//         Shape::Token,
+//         Shape::Removal,
+//         Shape::SingleFire,
+//         Shape::GroupFire,
+//     ] {
+//         assert!(
+//             queue.contains(&shape),
+//             "the queue stages {shape:?}: {queue:?}"
+//         );
+//     }
+// }
+
+// Disabled by decision 90 (decision 69): a lone host cannot make the observer calls of the agent,
+// because the calls name the history of the store of the agent. A run on 2026-10-26 found 3 staged
+// operations whose calls differ, all in history arguments:
+// * 1 differs in the `times_repeated` of a COMM (lone 1, agent 2): the agent produced the record
+//   twice (a peek restores a marker with its identity), and a lone host stores it once.
+// * 2 differ in the join groups of a start (lone none, agent 1): a lone host holds only the waiter
+//   of the operation.
+// The bound values agree, because `StagedBindingMatcher` binds the values of the agent. The legacy
+// charges of Option P did not depend on these arguments.
+
+// Disabled by decision 90 (decision 69): see the note of `lone_calls_scenario`.
 
 // ─── Properties (invariant map, P5 rows 114 to 119) ──────────────────────────────────────────
 

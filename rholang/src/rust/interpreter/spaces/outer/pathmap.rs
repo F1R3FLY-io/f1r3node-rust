@@ -109,10 +109,12 @@ impl PathMapOuter {
 impl OuterStore for PathMapOuter {
     const NAME: &'static str = "pathmap";
 
-    /// Every PathMap operation runs in a new transaction over the lock keys of its prefix scope.
-    /// The first transaction locks the channels of the routed key, which no PathMap scope holds
-    /// (joins plan section 9).
-    const ALWAYS_ESCALATES: bool = true;
+    // Disabled by decision 94: phase B of every PathMap operation covers its own lock keys and the
+    // lock keys of its prefix scope, so no operation runs in a new transaction.
+    // /// Every PathMap operation runs in a new transaction over the lock keys of its prefix scope.
+    // /// The first transaction locks the channels of the routed key, which no PathMap scope holds
+    // /// (joins plan section 9).
+    // const ALWAYS_ESCALATES: bool = true;
 
     /// Every PathMap operation runs on the join engine over its prefix scope, also a single-bind
     /// one (`pathmap::join::classify`).
@@ -416,6 +418,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         });
         assert_eq!(
             checked(&glist(vec![sent])),

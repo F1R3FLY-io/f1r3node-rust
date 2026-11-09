@@ -10,6 +10,7 @@
 /.github/workflows/  @F1R3FLY-io/ci-maintainers
 /.github/scripts/    @F1R3FLY-io/ci-maintainers
 /.github/CODEOWNERS  @F1R3FLY-io/ci-maintainers
+/.mergify.yml       @F1R3FLY-io/ci-maintainers
 /deny.toml          @F1R3FLY-io/ci-maintainers
 /supply-chain/      @F1R3FLY-io/ci-maintainers
 /.cargo/            @F1R3FLY-io/ci-maintainers

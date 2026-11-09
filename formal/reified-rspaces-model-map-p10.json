@@ -314,10 +314,10 @@
     {
       "item": "store_data",
       "required": true,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "file": "rspace++/src/rspace/rspace/ops_produce.rs",
       "kind": "fn",
       "name": "store_data",
-      "line": 3248,
+      "line": 712,
       "role": "The store step of a produce that stores its datum.",
       "rocq": [
         "set_data",
@@ -331,10 +331,10 @@
     {
       "item": "remove_matched_datum_and_join",
       "required": true,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "file": "rspace++/src/rspace/rspace/ops_produce.rs",
       "kind": "fn",
       "name": "remove_matched_datum_and_join",
-      "line": 3268,
+      "line": 736,
       "role": "The store step of a COMM: removes each matched record unless it is persistent, and the join entries of a group whose last waiter leaves.",
       "rocq": [
         "take_datum",
@@ -351,10 +351,10 @@
     {
       "item": "store_waiting_continuation",
       "required": true,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
+      "file": "rspace++/src/rspace/rspace/ops_consume.rs",
       "kind": "fn",
       "name": "store_waiting_continuation",
-      "line": 3320,
+      "line": 430,
       "role": "The store step of a consume that parks: appends the waiter and adds its group to the joins of each channel.",
       "rocq": [
         "set_conts",

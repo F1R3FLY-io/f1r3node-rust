@@ -4,7 +4,9 @@
 // The factory takes capacity=4, dimensions=2 and metric="euclidean". The
 // deploy stores the vector [1, 0] twice and the persistent record [0, 1].
 // A peek takes no query, because only a linear bind takes a query. So the
-// peek reads the records in their canonical order, and its pattern [1, 0]
+// Changed by decision 102: a read without a query takes the pick order. The text before:
+// // peek reads the records in their canonical order, and its pattern [1, 0]
+// peek reads the records in its pick order, and its pattern [1, 0]
 // binds a record [1, 0], which stays. Two receives with the query [1, 0]
 // take the two equal records. Two receives with the query [0, 1] both take
 // the persistent record.

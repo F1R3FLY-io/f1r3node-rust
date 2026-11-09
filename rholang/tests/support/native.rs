@@ -12,11 +12,15 @@
 //! `casper/src/rust/util/rholang/costacc/production_limits.rs`, because a rholang test cannot
 //! depend on casper.
 
-use std::collections::{BTreeMap, HashMap};
+// Changed by decision 114: only the finalized state of a chain read `BTreeMap` and `Mutex`.
+// use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+// use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
+// Retired by decision 114: only the finalized state of a chain implemented an async trait.
+// use async_trait::async_trait;
 use crypto::rust::hash::blake2b512_random::Blake2b512Random;
 use models::rhoapi::{BindPattern, ListParWithRandom, Par, TaggedContinuation};
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
@@ -39,18 +43,29 @@ use rholang::rust::interpreter::accounting::{
     NativeRuntimeConfig, RuntimeBudget, Sig,
 };
 use rholang::rust::interpreter::compiler::compiler::Compiler;
-use rholang::rust::interpreter::env::Env;
+// Disabled by decision 90 (C6): the exploratory deploy is a native dry run, not `RhoRuntime::inj`.
+// use rholang::rust::interpreter::env::Env;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::external_services::ExternalServices;
 use rholang::rust::interpreter::interpreter::EvaluateResult;
+// Added by decision 90 (C6): the file handles of a native replay environment.
+use rholang::rust::interpreter::io::handle_table::FileHandleTable;
 use rholang::rust::interpreter::matcher::r#match::Matcher;
 use rholang::rust::interpreter::merging::mergeable_tags::default_mergeable_tags;
-use rholang::rust::interpreter::reified::mirror_reconciler::FinalizedState;
+// Retired by decision 114: no reconciler reads the finalized state of a chain.
+// use rholang::rust::interpreter::reified::mirror_reconciler::FinalizedState;
+// Changed by decision 90 (C6): a native replay environment takes an optional reporting logger, as
+// the base builds it for a block report (DR-134).
+// use rholang::rust::interpreter::rho_runtime::{
+//     create_native_replay_env, create_rho_runtime, NativeReplayEnvironment, RhoHistoryRepository,
+//     RhoRuntime, RhoRuntimeImpl,
+// };
 use rholang::rust::interpreter::rho_runtime::{
-    create_native_replay_env, create_rho_runtime, NativeReplayEnvironment, RhoHistoryRepository,
-    RhoRuntime, RhoRuntimeImpl,
+    create_native_replay_env_with_logger, create_rho_runtime, NativeReplayEnvironment,
+    RhoHistoryRepository, RhoRuntime, RhoRuntimeImpl, RhoSpaceLogger,
 };
 use rholang::rust::interpreter::spaces::namespace::{self, Durability, ReifiedId};
+use rholang::rust::interpreter::system_processes::Definition;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
 use rspace_plus_plus::rspace::hot_store::HotStoreState;
@@ -60,7 +75,8 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::MB;
 use rspace_plus_plus::rspace::shared::rspace_store_manager::mk_rspace_store_manager;
-use rspace_plus_plus::rspace::space_store_handle::SUB_OPERATION_TAG;
+// Disabled by decision 92: `is_space_row` reads the footprint key, not the sub-order tag.
+// use rspace_plus_plus::rspace::space_store_handle::SUB_OPERATION_TAG;
 use rspace_plus_plus::rspace::trace::event::Event;
 use tokio::sync::RwLock;
 
@@ -240,10 +256,34 @@ async fn fresh_runtime() -> (RhoRuntimeImpl, RhoHistoryRepository) {
 
 /// The play space of a native runtime. A clone shares the history handle of the space, so it
 /// gives the repository of the latest checkpoint.
-type PlaySpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+// Changed by decision 90 (C6): the native session of `session.rs` keeps the play space.
+// type PlaySpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
+pub type PlaySpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
 
 /// A fresh runtime over the empty state, and a clone of its play space.
+// Changed by decision 90 (C6): the body moved to `fresh_space_runtime_with`.
+// async fn fresh_space_runtime() -> (RhoRuntimeImpl, PlaySpace) {
+//     let mut stores = InMemoryStoreManager::new();
+//     let (space, _) =
+//         RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
+//             stores.r_space_stores().await.expect("in-memory stores"),
+//             Arc::new(Box::new(Matcher)),
+//         )
+//         .expect("an in-memory play and replay space");
+//     space.create_checkpoint().await.expect("the empty root");
+//     let runtime = space_runtime(space.clone()).await;
+//     (runtime, space)
+// }
 async fn fresh_space_runtime() -> (RhoRuntimeImpl, PlaySpace) {
+    fresh_space_runtime_with(&mut Vec::new()).await
+}
+
+/// Added by decision 90 (C6): [`fresh_space_runtime`] with the extra system processes
+/// `processes` installed in the hot store, as the session of a factory test installs the test
+/// framework contracts (`reified_factory.rs`).
+pub async fn fresh_space_runtime_with(
+    processes: &mut Vec<Definition>,
+) -> (RhoRuntimeImpl, PlaySpace) {
     let mut stores = InMemoryStoreManager::new();
     let (space, _) =
         RSpace::<Par, BindPattern, ListParWithRandom, TaggedContinuation>::create_with_replay(
@@ -252,17 +292,37 @@ async fn fresh_space_runtime() -> (RhoRuntimeImpl, PlaySpace) {
         )
         .expect("an in-memory play and replay space");
     space.create_checkpoint().await.expect("the empty root");
-    let runtime = space_runtime(space.clone()).await;
+    let runtime = space_runtime_with(space.clone(), processes).await;
     (runtime, space)
 }
 
 /// A play runtime over `space`, with the system processes installed in its hot store.
+// Changed by decision 90 (C6): the body moved to `space_runtime_with`.
+// async fn space_runtime(space: PlaySpace) -> RhoRuntimeImpl {
+//     create_rho_runtime(
+//         space,
+//         Arc::new(default_mergeable_tags()),
+//         false,
+//         &mut Vec::new(),
+//         ExternalServices::noop(),
+//     )
+//     .await
+//     .expect("a play runtime")
+// }
 async fn space_runtime(space: PlaySpace) -> RhoRuntimeImpl {
+    space_runtime_with(space, &mut Vec::new()).await
+}
+
+/// Added by decision 90 (C6): [`space_runtime`] with the extra system processes `processes`.
+pub async fn space_runtime_with(
+    space: PlaySpace,
+    processes: &mut Vec<Definition>,
+) -> RhoRuntimeImpl {
     create_rho_runtime(
         space,
         Arc::new(default_mergeable_tags()),
         false,
-        &mut Vec::new(),
+        processes,
         ExternalServices::noop(),
     )
     .await
@@ -674,14 +734,15 @@ impl NativeChain {
         self.runtime.get_continuations(vec![channel.clone()]).await
     }
 
-    /// The finalized state of the chain, as the mirror reconciler reads it (P6 step 7c). It
-    /// shares the history of the chain, so it reads every root that the chain checkpointed.
-    pub fn finalized_state(&self) -> Arc<ChainState> {
-        Arc::new(ChainState {
-            space: self.space.clone(),
-            roots: Mutex::new(BTreeMap::new()),
-        })
-    }
+    // Retired by decision 114: no reconciler reads the finalized state of a chain.
+    // /// The finalized state of the chain, as the mirror reconciler reads it (P6 step 7c). It
+    // /// shares the history of the chain, so it reads every root that the chain checkpointed.
+    // pub fn finalized_state(&self) -> Arc<ChainState> {
+    //     Arc::new(ChainState {
+    //         space: self.space.clone(),
+    //         roots: Mutex::new(BTreeMap::new()),
+    //     })
+    // }
 
     /// The volatile channels in the hot store of the chain's runtime (P7, design v3 VR-2). The
     /// space of the chain shares the hot store of its runtime.
@@ -689,80 +750,145 @@ impl NativeChain {
         hot_store_residue(&self.space.get_store().snapshot(), Durability::Ephemeral)
     }
 
-    /// Injects `term` into the runtime of the chain through `RhoRuntime::inj`, as the
-    /// exploratory deploys of Casper do: an evaluation without a deploy result.
-    pub async fn explore(&self, term: &str) -> Result<(), InterpreterError> {
-        let parsed = Compiler::source_to_adt(term).expect("the program parses");
-        self.runtime.inj(parsed, Env::new(), random()).await
+    // Changed by decision 90 (C6): the base runs an exploratory deploy as a native dry run
+    // (DR-134 of the base), so `RhoRuntime::inj` is no exploratory path of Casper now.
+    // /// Injects `term` into the runtime of the chain through `RhoRuntime::inj`, as the
+    // /// exploratory deploys of Casper do: an evaluation without a deploy result.
+    // pub async fn explore(&self, term: &str) -> Result<(), InterpreterError> {
+    //     let parsed = Compiler::source_to_adt(term).expect("the program parses");
+    //     self.runtime.inj(parsed, Env::new(), random()).await
+    // }
+
+    /// Runs `term` as an exploratory deploy of Casper: a native dry run at the current state of
+    /// the chain, as `play_exploratory_dry_run` runs it
+    /// (`casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/dry_run.rs`). A
+    /// soft checkpoint comes first, then the native evaluation, and then the revert of the soft
+    /// checkpoint. A deploy error is the error of the dry run, as Casper reports it (decision 90,
+    /// C6).
+    pub async fn explore(&mut self, term: &str) -> Result<Explored, InterpreterError> {
+        let checkpoint = self.runtime.create_soft_checkpoint().await;
+        let evaluation = self
+            .runtime
+            .evaluate_with_native_phlo(term, Injections::new(), random(), None, config(AMPLE_LIMIT))
+            .await;
+        let residue = self.residue().await;
+        self.runtime.revert_to_soft_checkpoint(checkpoint).await;
+        let result = evaluation?;
+        match result.errors.first() {
+            Some(error) => Err(error.clone()),
+            None => Ok(Explored { result, residue }),
+        }
     }
 }
 
-/// The finalized state of a [`NativeChain`]: a runtime at any root of the chain, as the runtime
-/// manager of a node spawns it, and the post-state root of each block that a test finalizes.
-pub struct ChainState {
-    space: PlaySpace,
-    roots: Mutex<BTreeMap<Vec<u8>, Blake2b256Hash>>,
+/// Added by decision 90 (C6): an exploratory deploy of a [`NativeChain`]: its result, and the
+/// volatile channels in the hot store after its evaluation and before the revert.
+pub struct Explored {
+    pub result: EvaluateResult,
+    pub residue: Vec<Par>,
 }
 
-impl ChainState {
-    /// Records the block `block_hash` with the post-state root `root`.
-    pub fn finalize(&self, block_hash: &[u8], root: &Blake2b256Hash) {
-        self.roots
-            .lock()
-            .expect("the roots of the chain state")
-            .insert(block_hash.to_vec(), root.clone());
-    }
-}
-
-#[async_trait]
-impl FinalizedState for ChainState {
-    async fn post_state(&self, block_hash: &[u8]) -> Result<Option<Blake2b256Hash>, String> {
-        Ok(self
-            .roots
-            .lock()
-            .expect("the roots of the chain state")
-            .get(block_hash)
-            .cloned())
-    }
-
-    async fn runtime_at(&self, root: &Blake2b256Hash) -> Result<RhoRuntimeImpl, String> {
-        let space = self.space.spawn().map_err(|error| error.to_string())?;
-        let mut runtime = create_rho_runtime(
-            space,
-            Arc::new(default_mergeable_tags()),
-            false,
-            &mut Vec::new(),
-            ExternalServices::noop(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        runtime
-            .reset(root)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(runtime)
-    }
-}
+// Retired by decision 114: no reconciler reads the finalized state of a chain.
+// /// The finalized state of a [`NativeChain`]: a runtime at any root of the chain, as the runtime
+// /// manager of a node spawns it, and the post-state root of each block that a test finalizes.
+// pub struct ChainState {
+//     space: PlaySpace,
+//     roots: Mutex<BTreeMap<Vec<u8>, Blake2b256Hash>>,
+// }
+//
+// impl ChainState {
+//     /// Records the block `block_hash` with the post-state root `root`.
+//     pub fn finalize(&self, block_hash: &[u8], root: &Blake2b256Hash) {
+//         self.roots
+//             .lock()
+//             .expect("the roots of the chain state")
+//             .insert(block_hash.to_vec(), root.clone());
+//     }
+// }
+//
+// #[async_trait]
+// impl FinalizedState for ChainState {
+//     async fn post_state(&self, block_hash: &[u8]) -> Result<Option<Blake2b256Hash>, String> {
+//         Ok(self
+//             .roots
+//             .lock()
+//             .expect("the roots of the chain state")
+//             .get(block_hash)
+//             .cloned())
+//     }
+//
+//     async fn runtime_at(&self, root: &Blake2b256Hash) -> Result<RhoRuntimeImpl, String> {
+//         let space = self.space.spawn().map_err(|error| error.to_string())?;
+//         let mut runtime = create_rho_runtime(
+//             space,
+//             Arc::new(default_mergeable_tags()),
+//             false,
+//             &mut Vec::new(),
+//             ExternalServices::noop(),
+//         )
+//         .await
+//         .map_err(|error| error.to_string())?;
+//         runtime
+//             .reset(root)
+//             .await
+//             .map_err(|error| error.to_string())?;
+//         Ok(runtime)
+//     }
+// }
 
 // ─── Certification ─────────────────────────────────────────────────────────────────────────────
 
 /// The budget recording and the operation journal of `played`, encoded into the evidence wire
 /// at the v6 recording limits and decoded from it, as the proposer commits them and the
 /// validator reads them.
+// Changed by decision 90 (C6): the body moved to `committed_evidence_of`, which reads the result
+// of a play alone.
+// pub fn committed_evidence(
+//     played: &Played,
+// ) -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
+//     let recording = played
+//         .result
+//         .native_budget_recording
+//         .clone()
+//         .expect("native play records its budget");
+//     let journal = played
+//         .result
+//         .native_operation_recording
+//         .clone()
+//         .expect("native play records its operations");
+//     let (budget_bytes, journal_bytes) = evidence_bytes(played);
+//     let (decoded, decoded_journal) = decode_evidence(&budget_bytes, &journal_bytes);
+//     assert_eq!(decoded.used, recording.used, "the evidence keeps the usage");
+//     assert_eq!(
+//         decoded.session, recording.session,
+//         "the evidence keeps the session"
+//     );
+//     assert_eq!(
+//         decoded_journal.as_ref(),
+//         journal.as_ref(),
+//         "the evidence keeps the journal rows"
+//     );
+//     (decoded, decoded_journal)
+// }
 pub fn committed_evidence(
     played: &Played,
 ) -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
-    let recording = played
-        .result
+    committed_evidence_of(&played.result)
+}
+
+/// Added by decision 90 (C6): [`committed_evidence`] of the result `result` of a native play.
+pub fn committed_evidence_of(
+    result: &EvaluateResult,
+) -> (NativeBudgetRecording, Arc<[NativeOperationRecord]>) {
+    let recording = result
         .native_budget_recording
         .clone()
         .expect("native play records its budget");
-    let journal = played
-        .result
+    let journal = result
         .native_operation_recording
         .clone()
         .expect("native play records its operations");
-    let (budget_bytes, journal_bytes) = evidence_bytes(played);
+    let (budget_bytes, journal_bytes) = evidence_bytes_of(result);
     let (decoded, decoded_journal) = decode_evidence(&budget_bytes, &journal_bytes);
     assert_eq!(decoded.used, recording.used, "the evidence keeps the usage");
     assert_eq!(
@@ -780,14 +906,35 @@ pub fn committed_evidence(
 /// The budget recording and the operation journal of `played`, encoded into the evidence wire
 /// at the v6 recording limits, as the proposer commits them: the bytes of the budget recording
 /// and the bytes of the journal.
-pub fn evidence_bytes(played: &Played) -> (Vec<u8>, Vec<u8>) {
-    let recording = played
-        .result
+// Changed by decision 90 (C6): the body moved to `evidence_bytes_of`, which reads the result of a
+// play alone.
+// pub fn evidence_bytes(played: &Played) -> (Vec<u8>, Vec<u8>) {
+//     let recording = played
+//         .result
+//         .native_budget_recording
+//         .as_ref()
+//         .expect("native play records its budget");
+//     let journal = played
+//         .result
+//         .native_operation_recording
+//         .as_ref()
+//         .expect("native play records its operations");
+//     let wire = recording_limits();
+//     let budget_bytes = encode_native_budget_recording(recording, wire)
+//         .expect("the budget recording fits the v6 evidence wire");
+//     let journal_bytes = encode_native_operation_journal(journal, &recording.paths, wire)
+//         .expect("the operation journal fits the v6 evidence wire");
+//     (budget_bytes, journal_bytes)
+// }
+pub fn evidence_bytes(played: &Played) -> (Vec<u8>, Vec<u8>) { evidence_bytes_of(&played.result) }
+
+/// Added by decision 90 (C6): [`evidence_bytes`] of the result `result` of a native play.
+pub fn evidence_bytes_of(result: &EvaluateResult) -> (Vec<u8>, Vec<u8>) {
+    let recording = result
         .native_budget_recording
         .as_ref()
         .expect("native play records its budget");
-    let journal = played
-        .result
+    let journal = result
         .native_operation_recording
         .as_ref()
         .expect("native play records its operations");
@@ -799,63 +946,84 @@ pub fn evidence_bytes(played: &Played) -> (Vec<u8>, Vec<u8>) {
     (budget_bytes, journal_bytes)
 }
 
-/// What two runs of one operation set must share, for each deploy (N9).
-#[derive(Debug, PartialEq, Eq)]
-pub struct CanonicalDeploy {
-    /// The post-state root of the deploy.
-    pub root: Blake2b256Hash,
-    /// The values on the public channel [`OUT`] after the deploy.
-    pub outputs: Vec<String>,
-    /// The event log of the deploy.
-    pub log: Vec<Event>,
-    /// The bytes of the budget recording and of the operation journal in the evidence.
-    pub evidence: (Vec<u8>, Vec<u8>),
-    /// The phlo usage of native play.
-    pub phlo: Option<u64>,
-}
+// Retired by decision 93 (decision 111): racing evaluation gives two runs of one deploy set other
+// logs, roots and costs, so no test compares two runs. N9 certifies each run
+// (`reified_n1_replay.rs`). The old helpers follow.
+//
+// /// What two runs of one operation set must share, for each deploy (N9).
+// #[derive(Debug, PartialEq, Eq)]
+// pub struct CanonicalDeploy {
+//     /// The post-state root of the deploy.
+//     pub root: Blake2b256Hash,
+//     /// The values on the public channel [`OUT`] after the deploy.
+//     pub outputs: Vec<String>,
+//     /// The event log of the deploy.
+//     pub log: Vec<Event>,
+//     /// The bytes of the budget recording and of the operation journal in the evidence.
+//     pub evidence: (Vec<u8>, Vec<u8>),
+//     /// The phlo usage of native play.
+//     pub phlo: Option<u64>,
+// }
+//
+// /// Plays the deploys `terms` one after another on a fresh native chain, the deploy `i` with the
+// /// random state of the label `{label}-{i}` and the phlo limit `limit`, and returns the
+// /// [`CanonicalDeploy`] of each deploy.
+// pub async fn canonical_run(label: &str, terms: &[&str], limit: u64) -> Vec<CanonicalDeploy> {
+//     let mut chain = NativeChain::new().await;
+//     let mut run = Vec::with_capacity(terms.len());
+//     for (index, term) in terms.iter().enumerate() {
+//         let played = chain
+//             .play_with(term, &format!("{label}-{index}"), limit, Injections::new())
+//             .await;
+//         assert!(
+//             played.result.errors.is_empty(),
+//             "{label}-{index}: native play fails: {:?}",
+//             played.result.errors
+//         );
+//         run.push(CanonicalDeploy {
+//             root: played.root.clone(),
+//             outputs: played.outputs.clone(),
+//             log: played.log.clone(),
+//             evidence: evidence_bytes(&played),
+//             phlo: played.result.native_phlo_usage,
+//         });
+//     }
+//     run
+// }
+//
+// /// N9 (`run_twice_assert_canonical_equal`): plays the deploys `terms` in two fresh native
+// /// runtimes and asserts that both runs give the same roots, outputs, event logs, evidence bytes
+// /// and phlo usage for each deploy. Every deploy must log events.
+// pub async fn run_twice_assert_canonical_equal(label: &str, terms: &[&str], limit: u64) {
+//     let first = canonical_run(label, terms, limit).await;
+//     let second = canonical_run(label, terms, limit).await;
+//     for (index, deploy) in first.iter().enumerate() {
+//         assert!(
+//             !deploy.log.is_empty(),
+//             "{label}-{index}: the deploy logs events"
+//         );
+//     }
+//     assert_eq!(
+//         first, second,
+//         "{label}: two fresh native runtimes give the same canonical run"
+//     );
+// }
 
-/// Plays the deploys `terms` one after another on a fresh native chain, the deploy `i` with the
-/// random state of the label `{label}-{i}` and the phlo limit `limit`, and returns the
-/// [`CanonicalDeploy`] of each deploy.
-pub async fn canonical_run(label: &str, terms: &[&str], limit: u64) -> Vec<CanonicalDeploy> {
-    let mut chain = NativeChain::new().await;
-    let mut run = Vec::with_capacity(terms.len());
-    for (index, term) in terms.iter().enumerate() {
-        let played = chain
-            .play_with(term, &format!("{label}-{index}"), limit, Injections::new())
-            .await;
-        assert!(
-            played.result.errors.is_empty(),
-            "{label}-{index}: native play fails: {:?}",
-            played.result.errors
-        );
-        run.push(CanonicalDeploy {
-            root: played.root.clone(),
-            outputs: played.outputs.clone(),
-            log: played.log.clone(),
-            evidence: evidence_bytes(&played),
-            phlo: played.result.native_phlo_usage,
-        });
-    }
-    run
-}
-
-/// N9 (`run_twice_assert_canonical_equal`): plays the deploys `terms` in two fresh native
-/// runtimes and asserts that both runs give the same roots, outputs, event logs, evidence bytes
-/// and phlo usage for each deploy. Every deploy must log events.
-pub async fn run_twice_assert_canonical_equal(label: &str, terms: &[&str], limit: u64) {
-    let first = canonical_run(label, terms, limit).await;
-    let second = canonical_run(label, terms, limit).await;
-    for (index, deploy) in first.iter().enumerate() {
-        assert!(
-            !deploy.log.is_empty(),
-            "{label}-{index}: the deploy logs events"
-        );
-    }
-    assert_eq!(
-        first, second,
-        "{label}: two fresh native runtimes give the same canonical run"
-    );
+/// Added by decision 93 (decision 111): the events of `log` without their arrival order. The
+/// first part holds the Debug forms of the COMMs, sorted. The second part holds the Debug forms
+/// of the distinct events, sorted. A re-issued operation logs its produce and its consume again
+/// (R6), so the second part keeps one copy of each event.
+pub fn unordered_log(log: &[Event]) -> (Vec<String>, Vec<String>) {
+    let mut comms: Vec<String> = log
+        .iter()
+        .filter(|event| matches!(event, Event::Comm(_)))
+        .map(|event| format!("{event:?}"))
+        .collect();
+    comms.sort_unstable();
+    let mut events: Vec<String> = log.iter().map(|event| format!("{event:?}")).collect();
+    events.sort_unstable();
+    events.dedup();
+    (comms, events)
 }
 
 /// The budget recording and the operation journal that a validator decodes from the evidence
@@ -892,12 +1060,74 @@ pub async fn replay_environment(
 
 /// [`replay_environment`] from the parts of a play that a validator holds: the history of
 /// the pre-state and the event log of the block (P7: a process that did not play).
+// Changed by decision 90 (C6): the body moved to `replay_environment_with`, which also installs
+// extra system processes.
+// pub async fn replay_environment_from(
+//     history: RhoHistoryRepository,
+//     log: Vec<Event>,
+//     limit: u64,
+//     recording: &NativeBudgetRecording,
+//     journal: Arc<[NativeOperationRecord]>,
+// ) -> Result<NativeReplayEnvironment, String> {
+//     let trace = with_contract(limit, |contract| {
+//         contract.check_operation_journal(recording.session, recording, journal, journal_limits())
+//     })
+//     .map_err(|error| format!("the journal check rejects the journal: {error}"))?
+//     .bind_trace(log.into(), trace_bind_limits())
+//     .map_err(|error| format!("the trace binding rejects the log: {error}"))?;
+//     let budget = RuntimeBudget::new(Cost::unsafe_max());
+//     budget.set_deploy_signature_funded(DEPLOY, funding());
+//     budget
+//         .reset_for_native_execution(config(limit))
+//         .expect("the replay budget enters native execution");
+//     Ok(create_native_replay_env(
+//         trace,
+//         history,
+//         Arc::new(Box::new(Matcher)),
+//         Arc::new(RwLock::new(HashMap::new())),
+//         Arc::new(default_mergeable_tags()),
+//         &mut Vec::new(),
+//         budget,
+//         ExternalServices::noop(),
+//     )
+//     .await
+//     .expect("the native replay environment builds"))
+// }
 pub async fn replay_environment_from(
     history: RhoHistoryRepository,
     log: Vec<Event>,
     limit: u64,
     recording: &NativeBudgetRecording,
     journal: Arc<[NativeOperationRecord]>,
+) -> Result<NativeReplayEnvironment, String> {
+    replay_environment_with(history, log, limit, recording, journal, &mut Vec::new()).await
+}
+
+/// Added by decision 90 (C6): [`replay_environment_from`] with the extra system processes
+/// `processes` of the play runtime, which native replay installs again.
+pub async fn replay_environment_with(
+    history: RhoHistoryRepository,
+    log: Vec<Event>,
+    limit: u64,
+    recording: &NativeBudgetRecording,
+    journal: Arc<[NativeOperationRecord]>,
+    processes: &mut Vec<Definition>,
+) -> Result<NativeReplayEnvironment, String> {
+    replay_environment_with_logger(history, log, limit, recording, journal, processes, None).await
+}
+
+/// Added by decision 90 (C6): [`replay_environment_with`] whose session logs its stored and
+/// matched operations to `logger`, as Casper reports an offered block
+/// (`casper/src/rust/reporting_casper.rs`, `trace_offered`). Without a logger the environment is
+/// the environment of [`replay_environment_with`].
+pub async fn replay_environment_with_logger(
+    history: RhoHistoryRepository,
+    log: Vec<Event>,
+    limit: u64,
+    recording: &NativeBudgetRecording,
+    journal: Arc<[NativeOperationRecord]>,
+    processes: &mut Vec<Definition>,
+    logger: Option<RhoSpaceLogger>,
 ) -> Result<NativeReplayEnvironment, String> {
     let trace = with_contract(limit, |contract| {
         contract.check_operation_journal(recording.session, recording, journal, journal_limits())
@@ -910,15 +1140,17 @@ pub async fn replay_environment_from(
     budget
         .reset_for_native_execution(config(limit))
         .expect("the replay budget enters native execution");
-    Ok(create_native_replay_env(
+    Ok(create_native_replay_env_with_logger(
         trace,
         history,
         Arc::new(Box::new(Matcher)),
         Arc::new(RwLock::new(HashMap::new())),
         Arc::new(default_mergeable_tags()),
-        &mut Vec::new(),
+        processes,
         budget,
         ExternalServices::noop(),
+        logger,
+        FileHandleTable::new(),
     )
     .await
     .expect("the native replay environment builds"))
@@ -997,19 +1229,73 @@ pub async fn certify(played: &Played, term: &str, limit: u64) -> Certification {
 /// Checks that `certification` reproduces `played`: the errors of play, a complete journal, the
 /// phlo usage of play, the same authority events and byte observations, and the post-state root
 /// of play.
+// Changed by decision 90 (C6): the body moved to `assert_certified`, which also certifies a
+// failed deploy that the native session reverts.
+// pub fn assert_reproduces(label: &str, played: &Played, certification: &Certification) {
+//     let evaluation = certification
+//         .evaluation
+//         .as_ref()
+//         .unwrap_or_else(|error| panic!("{label}: native replay evaluates: {error:?}"));
+//     assert_eq!(evaluation.errors, played.result.errors, "{label}: errors");
+//     assert_eq!(
+//         certification.complete,
+//         Ok(()),
+//         "{label}: replay consumes every journal row of play"
+//     );
+//     let recording = played
+//         .result
+//         .native_budget_recording
+//         .as_ref()
+//         .expect("native play records its budget");
+//     assert_eq!(
+//         certification.usage,
+//         Ok(recording.used),
+//         "{label}: replay uses the phlo of play"
+//     );
+//     assert_eq!(
+//         evaluation.native_phlo_usage, played.result.native_phlo_usage,
+//         "{label}: native phlo usage"
+//     );
+//     assert_eq!(
+//         evaluation.authority_events, played.result.authority_events,
+//         "{label}: authority events"
+//     );
+//     assert_eq!(
+//         evaluation.byte_observations.rows, played.result.byte_observations.rows,
+//         "{label}: byte observations"
+//     );
+//     assert_eq!(
+//         certification.root.as_ref(),
+//         Ok(&played.root),
+//         "{label}: replay reaches the post-state root of play"
+//     );
+// }
 pub fn assert_reproduces(label: &str, played: &Played, certification: &Certification) {
+    assert_certified(label, &played.result, Some(&played.root), certification);
+}
+
+/// Added by decision 90 (C6): checks that `certification` reproduces the native play with the
+/// result `result`, as [`assert_reproduces`] does. The post-state root `root` of play is `None`
+/// for a failed deploy. Casper settles a failed deploy at its pre-state root
+/// (`casper/src/rust/util/rholang/costacc/direct_wallet_funding/execution/replay.rs`,
+/// `settlement_root`), so replay has no post-state root to reach.
+pub fn assert_certified(
+    label: &str,
+    result: &EvaluateResult,
+    root: Option<&Blake2b256Hash>,
+    certification: &Certification,
+) {
     let evaluation = certification
         .evaluation
         .as_ref()
         .unwrap_or_else(|error| panic!("{label}: native replay evaluates: {error:?}"));
-    assert_eq!(evaluation.errors, played.result.errors, "{label}: errors");
+    assert_eq!(evaluation.errors, result.errors, "{label}: errors");
     assert_eq!(
         certification.complete,
         Ok(()),
         "{label}: replay consumes every journal row of play"
     );
-    let recording = played
-        .result
+    let recording = result
         .native_budget_recording
         .as_ref()
         .expect("native play records its budget");
@@ -1019,22 +1305,24 @@ pub fn assert_reproduces(label: &str, played: &Played, certification: &Certifica
         "{label}: replay uses the phlo of play"
     );
     assert_eq!(
-        evaluation.native_phlo_usage, played.result.native_phlo_usage,
+        evaluation.native_phlo_usage, result.native_phlo_usage,
         "{label}: native phlo usage"
     );
     assert_eq!(
-        evaluation.authority_events, played.result.authority_events,
+        evaluation.authority_events, result.authority_events,
         "{label}: authority events"
     );
     assert_eq!(
-        evaluation.byte_observations.rows, played.result.byte_observations.rows,
+        evaluation.byte_observations.rows, result.byte_observations.rows,
         "{label}: byte observations"
     );
-    assert_eq!(
-        certification.root.as_ref(),
-        Ok(&played.root),
-        "{label}: replay reaches the post-state root of play"
-    );
+    if let Some(root) = root {
+        assert_eq!(
+            certification.root.as_ref(),
+            Ok(root),
+            "{label}: replay reaches the post-state root of play"
+        );
+    }
 }
 
 /// True when the certification rejects the play: native replay fails, its deploy fails, the
@@ -1096,13 +1384,26 @@ pub fn is_space_channel(channel: &Par) -> bool {
     )
 }
 
-/// True when `row` is a staged space operation: its path ends with a sub-order segment
-/// `(i, SUB_OPERATION_TAG)` (decision 19, D3).
-pub fn is_space_row(recording: &NativeBudgetRecording, row: &NativeOperationRecord) -> bool {
-    recording
-        .paths
-        .last_segment(row.occurrence.path)
-        .is_some_and(|(_, tag)| tag == SUB_OPERATION_TAG)
+// Changed by decision 92: since DR-132 a journal row is named `[(index, 0)]`, so no row has a
+// sub-order segment. Every row of a space transaction names the space counter `S(sid)` in its
+// footprint instead.
+// /// True when `row` is a staged space operation: its path ends with a sub-order segment
+// /// `(i, SUB_OPERATION_TAG)` (decision 19, D3).
+// pub fn is_space_row(recording: &NativeBudgetRecording, row: &NativeOperationRecord) -> bool {
+//     recording
+//         .paths
+//         .last_segment(row.occurrence.path)
+//         .is_some_and(|(_, tag)| tag == SUB_OPERATION_TAG)
+// }
+/// True when `row` is a staged space operation: its footprint names the space counter `S(sid)`
+/// of a space, as every row of a space transaction does (decision 92).
+pub fn is_space_row(row: &NativeOperationRecord) -> bool {
+    footprint_channels(row).iter().any(|channel| {
+        matches!(
+            namespace::reified_id_of(channel),
+            Some(ReifiedId::SpaceCounter(_))
+        )
+    })
 }
 
 /// The budget attempts that `row` links to: its introduction and the observation of its COMM.

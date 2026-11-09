@@ -62,17 +62,17 @@ A join over two spaces, or over a space and the default space, aborts with `Cros
 
 Figure 1 shows the creation of a space and one handle call, from the send of the program to the reply.
 
-![Lifecycle of a native handle as a sequence. A deploy sends the factory call hmq!(*ret) with its constructor. The reducer routes the op channel [0xE0, 0x01] to the default space, checks the persistent flag, packs the constructor and produces on the op channel. The COMM with the installed factory runs FactoryProcess::call: it validates the constructor and derives sid from the random state of the call. A space intent with the footprint [2] ‖ sid and H(sid) runs one creation transaction: begin on C(sid), S(sid) and H(sid), a check for SpaceAlreadyExists, the config record stored persistently on C(sid), the space counter S(sid) = 0, and the handle continuation parked persistently on H(sid); the commit logs the events. The factory replies bundle+{H(sid)} on ret. Later the deploy calls h!(*ack, "produce", "jobs", [1]): the reducer removes the write bundle, routes H(sid) to the default space and produces on it; the COMM with the persistent handle continuation runs its body, which produces (this, args) on HANDLE_OP. HANDLE_OP checks the bare handle id, reads C(sid) in a read-only space intent that commits nothing, parses the message, and runs the method produce as a collection operation in its own space intent: the counter bump and the head-only offer. It dispatches the fires and replies Nil on ack. A protocol error replies a typed error ("rho:space:error", code, detail) instead, and a missing config record aborts with DanglingHandle.](diagrams/03-native-handle-lifecycle.svg)
+![Lifecycle of a native handle as a sequence. A deploy sends the factory call hmq!(*ret) with its constructor. The reducer routes the op channel [0xE0, 0x01] to the default space, checks the persistent flag, packs the constructor and produces on the op channel. The COMM with the installed factory runs FactoryProcess::call: it validates the constructor and derives sid from the random state of the call. One space job runs one creation transaction: begin on C(sid), S(sid) and H(sid), a check for SpaceAlreadyExists, the config record stored persistently on C(sid), the space counter S(sid) = 0, and the handle continuation parked persistently on H(sid); the commit logs the events. The factory replies bundle+{H(sid)} on ret. Later the deploy calls h!(*ack, "produce", "jobs", [1]): the reducer removes the write bundle, routes H(sid) to the default space and produces on it; the COMM with the persistent handle continuation runs its body, which produces (this, args) on HANDLE_OP. HANDLE_OP checks the bare handle id, reads C(sid) in a read-only space job that commits nothing, parses the message, and runs the method produce as a collection operation in its own space job: the counter bump and the head-only offer. It dispatches the fires and replies Nil on ack. A protocol error replies a typed error ("rho:space:error", code, detail) instead, and a missing config record aborts with DanglingHandle.](diagrams/03-native-handle-lifecycle.svg)
 
 *Figure 1. Source: [diagrams/03-native-handle-lifecycle.puml](diagrams/03-native-handle-lifecycle.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 ## 2. System processes
 
-The node installs the system processes of Tables 2, 2a, 2b and 2c (`reified/system_processes.rs:101-172`).
+The node installs the system processes of Tables 2, 2a, 2b and 2c (`reified/system_processes.rs:129-220`).
 Each one listens on an [op channel](glossary.md#op-channel) $`[\mathtt{0xE0}, \mathit{op}]`$ and has the body reference $`200 + \mathit{op}`$.
 The URN map binds each URN to the write bundle of its op channel. So a program can call each process, but it cannot receive on its channel.
 
-*Table 2. The first factory and the processes of every space (`reified/system_channels.rs:52-85`).*
+*Table 2. The first factory and the processes of every space (`reified/system_channels.rs:62-95`).*
 
 | URN | Op channel | Arity | Body reference | Call | Reply |
 |---|---|---|---|---|---|
@@ -81,7 +81,7 @@ The URN map binds each URN to the write bundle of its op channel. So a program c
 | `rho:assert:assertEqual` | `[0xE0, 0x22]` | 3 | 234 | `assertEqual!(ret, a, b)` | A Boolean |
 | `rho:reified:internal:handleOp` | `[0xE0, 0x30]` | 2 | 248 | `(this, message)`, from the handle continuation of a space | The reply of the method, or a typed reply |
 
-*Table 2a. The other factories (`reified/system_channels.rs:345-371`).*
+*Table 2a. The other factories (`reified/system_channels.rs:386-412`).*
 
 | URN | Op channel | Arity | Body reference | Constructor params |
 |---|---|---|---|---|
@@ -111,17 +111,22 @@ Three rules hold for every process of Table 2 and Table 2a:
 A URN that names no family has no binding.
 A program that names such a URN fails with the baseline error `No value set for <urn>`, before any space operation.
 
-*Table 2c. The processes of the VectorDB family (`reified/system_channels.rs:390-416`).*
+*Table 2c. The processes of the VectorDB family (`reified/system_channels.rs:430-493`).*
 
 | URN | Op channel | Arity | Body reference | Call | Reply |
 |---|---|---|---|---|---|
 | `rho:lang:vector` | `[0xE0, 0x23]` | 2 | 235 | `vec!(ret, op, x…)` | `[true, value]` or `[false, code, detail]` |
-| `rho:vectordb:embed` | `[0xE0, 0x24]` | 2 | 236 | `embed!(ret, text)` | `[true, vector, model]` or `[false, code, detail]` |
-| `rho:vectordb:ann` | `[0xE0, 0x25]` | 5 | 237 | `ann!(ret, space, channel, query, options)` | `[true, ids, distances, watermark]` or `[false, code, detail]` |
+| `rho:vectordb:embed` | `[0xE0, 0x24]` | 2 | 236 | `embed!(ret, text)` | `[true, vector, model]` or `[false, code, message]` |
+| `rho:vectordb:ann` | `[0xE0, 0x25]` | 5 | 237 | `ann!(ret, space, channel, query, options)` | `[true, ids, distances]` or `[false, code, message]` |
 
 [Chapter 10](../../rholang/10-system-channels.md#reified-vectors-and-vectordb-services) gives an example of each process, and the [specification](specification.md#9-system-processes-of-the-vectordb-family) states their rules.
+Only a build with the feature `chromadb` registers `embed` and `ann` ([decision 113](decision-register.md#decision-113)).
+The three rules of Table 2 hold for `rho:lang:vector`, and the rules of fixed arity and no params hold for `embed` and `ann`.
+A persistent send to `embed` or `ann` passes A21.
+Base rule P2 of the recorded external services fails it at its fire with `SystemProcessShapeError` ([decision 106](decision-register.md#decision-106)).
+A failure reply of `embed` or `ann` is the base reply `[false, code, message]`, with the code `EXT_BAD_ARG`, `EXT_FAILED` or `EXT_OUTPUT_TOO_LARGE` ([decision 105](decision-register.md#decision-105)).
 
-*Table 2b. The internal processes of P8 (`reified/system_channels.rs:493-517`).*
+*Table 2b. The internal processes of P8 (`reified/system_channels.rs:560-584`).*
 
 | URN | Op channel | Arity | Body reference | Call | Reply |
 |---|---|---|---|---|---|
@@ -149,11 +154,11 @@ The sends and the receives on an agent-minted name then become the calls `produc
 ### 3.1 The call
 
 A factory call is a send on the factory capability: `hmq!(ret, a1, …, an)`.
-The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1640-1680`).
+The send hook packs the arguments after `ret` into one list, so the factory receives `[ret, [a1, …, an]]` (`reified/reducer_hooks.rs:1998-2038`).
 So every factory has the fixed arity 2, and a constructor can have any number of elements.
 The params section of the call stays in the list as its last element.
 
-The constructor must be the canonical sequence $`[q?]\,[\mathrm{FREE}?]\,[\mathrm{PARAMS}?]`$ (`models/src/rust/space_factory_urn.rs:366-398`):
+The constructor must be the canonical sequence $`[q?]\,[\mathrm{FREE}?]\,[\mathrm{PARAMS}?]`$ (`models/src/rust/space_factory_urn.rs:485-522`):
 
 - $`q`$ is a string that names a qualifier: `"default"`, `"temp"`, or `"seq"`.
 - $`\mathrm{FREE}`$ is a theory reference `free Th(args)`.
@@ -161,7 +166,7 @@ The constructor must be the canonical sequence $`[q?]\,[\mathrm{FREE}?]\,[\mathr
 
 ### 3.2 The gates
 
-The factory checks the constructor with nine gates, in the order of Table 3 (`spaces/factory/constructor.rs:87-178`).
+The factory checks the constructor with nine gates, in the order of Table 3 (`spaces/factory/constructor.rs:115-213`).
 The gates have the numbers of rule FA-6 of the [specification](specification.md#15-families).
 The first gate that fails aborts the deploy with its code, and the later gates do not run.
 
@@ -170,8 +175,8 @@ The first gate that fails aborts the deploy with its code, and the later gates d
 | # | Check | Code of the abort |
 |---|---|---|
 | 1 | The family has a constructor schema. | `FamilyUnavailable` |
-| 2 | The constructor is the canonical sequence. An unknown qualifier string, a malformed theory or params tuple, and any other element fail here. | `BadConstructorArgument` |
-| 3 | The outer store takes the qualifier: the HashSet store takes only `"seq"`. Legacy execution also refuses `"seq"`, because its rules need the job order of native execution. | `BadConstructorArgument`, `QualifierUnavailable` |
+| 2 | The constructor is the canonical sequence. An unknown qualifier string, a malformed theory or params value, and any other element fail here. | `BadConstructorArgument` |
+| 3 | The outer store takes the qualifier: the HashSet store takes only `"seq"`, and every other store takes every qualifier. | `BadConstructorArgument` |
 | 4 | A theory names a builtin, `Nat`, `Int`, `String`, `Bool`, or `Any`, without arguments ([specification 5](specification.md#5-theories), rule TH-4). A builtin with arguments fails with `BadConstructorArgument`. | `UnknownTheory`, `BadConstructorArgument` |
 | 5 | The params are named only. The send hook already checks this rule. | `PositionalParamsUnsupported` |
 | 6 | Each named param is in the schema of the family, in the bytewise order of the keys. | `UnknownParam` |
@@ -202,7 +207,7 @@ After the gates, the factory derives the space id from the random state $`r`$ of
 \mathit{sid} = \mathrm{next}\bigl(\mathrm{split}_{\mathtt{0x01}}(\mathrm{split}_{\mathtt{0xE0}}(r))\bigr)
 ```
 
-One [space intent](glossary.md#space-intent) then creates the space in one transaction.
+One space job then creates the space in one transaction.
 It stores the config record on $`C(\mathit{sid})`$, the space counter $`S(\mathit{sid}) = 0`$, and the handle continuation on $`H(\mathit{sid})`$.
 When $`C(\mathit{sid})`$ already holds a config record, the creation aborts the deploy with `SpaceAlreadyExists` and changes nothing.
 
@@ -221,7 +226,7 @@ A program that holds the capability can call the space, and it can give the capa
 A call on a handle has the form `h!(ret, method, a…; k=v…)`.
 The reducer removes the write bundle, and the channel $`H(\mathit{sid})`$ routes to the default space (rule R1).
 The handle continuation of the space is a persistent receive on $`H(\mathit{sid})`$ with the pattern `[...@args]`, so it binds the whole call as one list.
-Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:140-164`).
+Its body `[0xE0, 0x30]!(this, args)` forwards the call to `HANDLE_OP` (`reified/factory.rs:144-169`).
 The forwarder has no guard and no cost authority, so the caller pays for each call.
 
 The send hook applies two rules to a handle call before the forward:
@@ -239,12 +244,12 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 
 ### 4.3 The steps of a call
 
-`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:233-385`):
+`HANDLE_OP` processes a call `(this, message)` in this order (`reified/handle.rs:240-410`):
 
 1. When `this` is not a bare handle id, the process drops the call.
-2. The process reads the config record in a read-only space intent, which commits nothing. A missing record aborts with `DanglingHandle`, also when the message is malformed.
+2. The process reads the config record in a read-only space job, which commits nothing. A missing record aborts with `DanglingHandle`, also when the message is malformed.
 3. The process applies the [drop rule](#44-the-drop-rule-and-the-name-rule) to the message. A dropped message gets no reply.
-4. A trailing params tuple that is not canonical gives the typed reply `MalformedMessage`. The send hook decodes the params of a program call first, and it aborts with `Malformed` on such a tuple.
+4. A params value that is not canonical gives the typed reply `MalformedMessage`. The send hook checks the params of a program call first (`check_send_params`), and it aborts with `Malformed` on such a value.
 5. A positional param aborts with `PositionalParamsUnsupported`.
 6. A method name that is not one of the five methods gives the typed reply `UnknownMethod`.
 7. An argument count that is not the arity of the method gives the typed reply `BadArgument` with the argument `"arguments"`.
@@ -260,7 +265,7 @@ So a program that binds the URN `rho:reified:internal:handleOp` gains no capabil
 - The second element is not exactly one string.
 - The first element is not a reply name, by the name rule below.
 
-**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:194-203`).
+**The name rule.** A value is a reply name when it is exactly one unforgeable name, or exactly one bundle with the write flag (`reified/handle.rs:201-210`).
 A typed reply goes only to a reply name, so the process never sends a reply on a forged channel.
 A dropped message changes no space, but the COMMs of the forwarder and of `HANDLE_OP` stay in the log with their charges.
 
@@ -277,7 +282,7 @@ A dropped message changes no space, but the COMMs of the forwarder and of `HANDL
 
 ## 5. Handle methods
 
-Table 5 lists the five methods of a handle (`reified/handle.rs:16-22`).
+Table 5 lists the five methods of a handle (`reified/handle.rs:18-24`).
 The arity counts the arguments after `ret` and the method name.
 
 The example `handle-methods` calls `gensym`, `produce`, `qualifier` and `config` with the method-call sugar of the Agents FIPS.
@@ -321,7 +326,7 @@ new factory(`rho:space:hashmap:bag`), out in {
 | `produce` | `h!(ret, "produce", ch, msg)` | 2 | `persistent`: a Boolean, `false` when absent, and the send params of the discipline | `Nil`, after the operation | One produce on the collection of `ch` |
 | `consume` | `h!(ret, "consume", pairs, arrow, body)` | 3 | None | `Nil`, after the operation | One consume on the collection of the channel of one pair, or one join over the collections of two or more pairs |
 
-**`gensym`.** The method runs one allocation job with the random state and the cost authority of the call (`reified/handle.rs:358-385`).
+**`gensym`.** The method runs one allocation job with the random state and the cost authority of the call (`reified/handle.rs:383-410`).
 An Array or a Vector space gives its next index name $`N(\mathit{sid} \Vert \mathrm{u64\_be}(i))`$ ([specification AL-2](specification.md#24-the-allocator-of-array-and-vector-spaces)).
 Every other store answers `Baseline`, and the method gives the random-tail name of the store.
 
@@ -334,22 +339,21 @@ The record holds the identity of a theory as bytes, and the reply shows it as th
 For example, `config.get("outer")` gives `"hashmap"`, and `config.get("theory")` gives `Nil` for a space without a theory.
 
 **`produce`.** The method removes `persistent` and passes the other named params to the agent of the space, which checks their values before the bump.
-The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:416-458`).
+The method runs one collection operation on the space of the handle, as a send does (`reified/handle.rs:441-483`).
 The key of `ch` names the collection by rule HM-1 of the specification, also when `ch` is a name of another space.
 The record gets the elements of the list `msg` as its payload, and the random state and the cost authority of the call.
 
 The method dispatches the fires of the operation, and it replies `Nil`.
 The example `vectordb-queries` stores persistent records with `persistent=true`, so each of its queries sees every record.
 
-The reply runs as the last branch of the operation, in a reduction participant of its own.
-A dispatch ends the participant that makes it, so the reply cannot follow the fires in that participant ([design N6](design.md#n6-scheduling)).
+The reply runs as the last branch of the operation, as a task of the dispatch scope ([design N6](design.md#n6-scheduling)).
 So the reply and the fired bodies are parallel processes, as in the equivalent Rholang program.
 
 **`consume`.** The method runs a receive that the translation of a receive on a user agent describes ([decision 77](decision-register.md#decision-77), items HC-1 to HC-3).
 So a wrapper agent can forward the calls of its translations to a native space.
 The call is `h!(ret, "consume", pairs, arrow, body)`, where `body` is the body capability.
 `pairs` is the list $`[(m_0, c_0), \ldots, (m_{n-1}, c_{n-1})]`$ of the matcher capability and the channel of each bind.
-The method makes these checks in this order (`reified/handle.rs:504-641`):
+The method makes these checks in this order (`reified/handle.rs:529-662`):
 
 1. The arrow is `"<-"`, `"<="`, or `"<<-"` (`InvalidArrow`).
 2. `pairs` is a non-empty list of tuples with two elements, and `body` is a body id of KIND B, bare or under one bundle (`BadArgument`).
@@ -414,7 +418,7 @@ For this reason, the code builds each reply value in canonical form, with the bi
 
 A typed reply is the reply of a call with a protocol error ([decision 34](decision-register.md#decision-34), item A23).
 The call does not abort, and the deploy continues.
-The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:206-216`):
+The reply is one datum, the tuple of three elements that `typed_error` builds (`reified/handle.rs:213-223`):
 
 ```text
 ("rho:space:error", code, detail)
@@ -427,11 +431,11 @@ The reply is one datum, the tuple of three elements that `typed_error` builds (`
 A typed reply of `HANDLE_OP` holds the key `"method"`, with the method name of the call as a string.
 A typed reply of `getSpaceAgent` has the empty detail map `{}`.
 
-*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:309-324`).*
+*Table 6. The codes of typed replies and their detail maps (`spaces/errors.rs:312-327`).*
 
 | Code | Process | Trigger | Detail map |
 |---|---|---|---|
-| `MalformedMessage` | `HANDLE_OP` | The message has a reply name and a method name, but its trailing params tuple is not canonical. | `{"method": String}` |
+| `MalformedMessage` | `HANDLE_OP` | The message has a reply name and a method name, but its params value is not canonical. | `{"method": String}` |
 | `UnknownMethod` | `HANDLE_OP` | The method name is not `"config"`, `"consume"`, `"gensym"`, `"produce"`, or `"qualifier"`. | `{"method": String, "suggestion": String or Nil}` |
 | `BadArgument` | `HANDLE_OP` | An argument has a wrong form. Table 7 gives each value of `"argument"`. | `{"argument": String, "method": String}` |
 | `UnknownParam` | `HANDLE_OP` | A named param is outside the schema of the method. The first unknown key in bytewise order counts. | `{"method": String, "param": String, "suggestion": String or Nil}` |
@@ -451,7 +455,7 @@ The values of the detail keys have these meanings:
 - `"param"` is the unknown key exactly as the call gave it.
 - `"index"` is the position of the first foreign matcher in `pairs`, from 0.
 
-*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:416-694`).*
+*Table 7. The values of `"argument"` in a `BadArgument` reply (`reified/handle.rs:441-714`).*
 
 | `"argument"` | Method | Trigger |
 |---|---|---|
@@ -478,8 +482,8 @@ A typed reply never changes a space: a `produce` call with a typed reply stores 
 
 ## 8. getSpaceAgent
 
-The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:259-297`).
-The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:141-180`):
+The call `getSpaceAgent!(ret, s)` gives the factory capability of the family of the space `s` (`reified/system_processes.rs:329-372`).
+The process classifies `s` with the five rules of `classify_space_ref` (`reified/scope.rs:148-187`):
 
 1. The empty `Par` gives the typed reply `EmptySpaceRef`.
 2. The process removes at most one bundle, as a send does.
@@ -487,7 +491,7 @@ The process classifies `s` with the five rules of `classify_space_ref` (`reified
 4. Any other Reified id gives `NotASpaceRef`.
 5. Every other value names a user agent and gives `NotANativeSpace`, because the node does not know the constructor of an agent.
 
-For a native space, the process reads the config record in a read-only space intent, which writes nothing.
+For a native space, the process reads the config record in a read-only space job, which writes nothing.
 It replies the factory capability of the family that the record names, which is the value that the URN of the family binds ([decision 9.4](decision-register.md#decision-9-4)).
 So `getSpaceAgent!(ret, h)` gives a capability that creates new spaces of the family of `h`.
 A missing config record gives the typed reply `DanglingHandle`, with the space id in its detail map.
@@ -516,7 +520,7 @@ new HMB(`rho:space:HashMapBagSpace`), bag(`rho:space:hashmap:bag`),
 ## 9. assertEqual
 
 The call `assertEqual!(ret, a, b)` has the arity 3 ([decision 33](decision-register.md#decision-33)).
-It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:345-359`).
+It replies `true` when the sorted forms of `a` and `b` are equal, and `false` in every other case (`reified/system_processes.rs:430-444`).
 The sort is the one of `ParSortMatcher`, so the order of parallel processes, of map entries, and of set elements does not count.
 The order of list elements and of tuple elements counts.
 
@@ -542,17 +546,18 @@ For a code that no program on a native chain can reach, the column names the tes
 | Code | Call | Trigger | Example or test |
 |---|---|---|---|
 | `PersistentFactoryCall` | A factory | A persistent send `!!` | `factory-rejects-a-persistent-call` |
-| `PersistentOpCall` | Every other process of Tables 2, 2b and 2c | A persistent send `!!` | `system-op-rejects-a-persistent-call` |
+| `PersistentOpCall` | Every other process of Tables 2, 2b and 2c, except `embed` and `ann` | A persistent send `!!` | `system-op-rejects-a-persistent-call` |
+| `SystemProcessShapeError` | `embed` and `ann` of Table 2c | A persistent send `!!`, at its fire (base rule P2, [decision 106](decision-register.md#decision-106)) | test `vectordb_embed_and_ann_reject_params_and_persistent_sends` of `rholang/tests/reified_vectordb_chroma.rs`, in a build with the feature `chromadb`: the code is the base error of rule P2 of DR-114, not an abort code of Reified RSpaces |
 | `PersistentHandleCall` | A handle | A persistent send `!!` | `handle-rejects-a-persistent-call` |
 | `PersistentCapabilityCall` | A matcher or a body capability of a user agent | A persistent send `!!` | `agent-capability-rejects-a-persistent-call` |
 | `PersistentSendOnAgentSpace` | Every send on a space that a user agent implements | A persistent send `!!`, or the persistent reply of a system process to an agent-minted name | `agent-space-rejects-a-persistent-send` |
 | `ParamsUnsupportedOnAgentSpace` | Every send on a space that a user agent implements | A params section | `agent-space-rejects-params` |
 | `ParamsUnsupported` | `getSpaceAgent`, `assertEqual` and the processes of Table 2c | A params section | `system-op-rejects-params` |
-| `Malformed` | Every call with params | A params section that is not canonical after the refresh of [I-20](decision-register.md#i-20) | `factory-rejects-a-forged-params-tuple` |
+| `Malformed` | Every call with params | A params section that is not canonical | The test `reified_hook_errors_are_typed`. The normalizer writes only canonical params, and a program cannot write the field, so only a hand-built term reaches the code. |
 | `PositionalParamsUnsupported` | A factory, a handle | A positional param | `factory-rejects-a-positional-param` |
 | `FamilyUnavailable` | A factory | Gate 1 of Table 3 | The test `pattern_enforcement_unsupported_pairs_reject`. Every URN with a binding names a family with a schema, so only a hand-built call reaches the code. |
 | `BadConstructorArgument` | A factory | Gates 2 to 4 of Table 3 | `factory-rejects-a-bad-argument` |
-| `QualifierUnavailable` | A factory | Gate 3 of Table 3, in legacy execution | The test `reified_factory_p4_gates_fail_closed`. Only legacy execution reaches the code, and the examples run natively. |
+| `QualifierUnavailable` | A factory, until decision 90 | Retired by [decision 90](decision-register.md#decision-90) (C6, step D) with gate 3 in legacy execution. A factory call outside native execution fails with `RuntimeUnavailable` before every gate. | None. Every deploy runs in native execution. |
 | `UnknownTheory` | A factory | Gate 4 of Table 3 | `factory-rejects-an-unknown-theory` |
 | `UnknownParam` | A factory, and a send with a param that its collection does not take | Gate 6 of Table 3 | `factory-rejects-an-unknown-param`, `queue-rejects-a-send-param` |
 | `MissingParam` | A factory | Gate 7 of Table 3 | `factory-rejects-a-missing-param` |
@@ -574,14 +579,15 @@ For a code that no program on a native chain can reach, the column names the tes
 | `Inconsistent` | Every call that reads a space | A record that is not well formed | The test `space_counter_rejects_corrupt_counters`. A program cannot write a record of a space. |
 | `CounterOverflow` | `produce`, and every operation on an ordered collection | A counter at its greatest value | The test `space_counter_rejects_corrupt_counters`. A counter reaches its greatest value only after about $`2^{63}`$ operations on one collection. |
 
-The tests of `FamilyUnavailable` and `QualifierUnavailable` are in `rholang/tests/reified_pattern_enforcement.rs` and `rholang/tests/reified_factory.rs`.
+The tests of `FamilyUnavailable` are in `rholang/tests/reified_pattern_enforcement.rs` and `rholang/tests/reified_factory.rs`.
 The tests of the theory codes are in `rholang/src/rust/interpreter/spaces/theory/tests.rs`, and the counter test is in `rholang/src/rust/interpreter/spaces/counter.rs`.
 The test of `SpaceAlreadyExists` is in `rholang/tests/reified_p4_props.rs`.
 
 ### 10.1 The examples of the aborts
 
 Each example ends with the abort of its code, and the harness checks only that code.
-The comments of each example explain its abort.
+The one exception is `factory-rejects-a-forged-params-tuple`, which ends normally and shows that a former marker tuple grants nothing.
+The comments of each example explain how it ends.
 
 **Persistent calls.**
 
@@ -653,20 +659,43 @@ new assertEqual(`rho:assert:assertEqual`), ret in {
 ```
 
 ```rholang
-// A program can take a marker of the Reified syntax out of its own quoted
-// code, because a marker is an ordinary name in a term. The marker gives no
-// capability beyond the syntax itself: the node accepts a marker tuple only in
-// the exact form that the normalizer writes. The deploy sends a quoted send
-// with a params section as data, takes the marker of the params section out of
-// it, and builds a params tuple with empty sections, which the normalizer
-// never writes. The factory call with that tuple aborts the deploy with
-// Malformed.
+// Changed by decision 112 (ruling 9): the params of a send are a field of the send, so a program
+// cannot take a params tuple out of its quoted code. The text before:
+// ```
+// // A program can take a marker of the Reified syntax out of its own quoted
+// // code, because a marker is an ordinary name in a term. The marker gives no
+// // capability beyond the syntax itself: the node accepts a marker tuple only in
+// // the exact form that the normalizer writes. The deploy sends a quoted send
+// // with a params section as data, takes the marker of the params section out of
+// // it, and builds a params tuple with empty sections, which the normalizer
+// // never writes. The factory call with that tuple aborts the deploy with
+// // Malformed.
+// new factory(`rho:space:hashmap:queue`), ret, code in {
+//   code!(@"x"!(1; k=1)) |
+//   for (@sent <- code) {
+//     match sent {
+//       @"x"!(1, (marker, positional, named)) => {
+//         factory!(*ret, "default", (marker, [], {}))
+//       }
+//     }
+//   }
+// }
+// ```
+// The params of a send are a field of the send, so a program cannot take a
+// params tuple out of its own quoted code. A former marker of the Reified
+// syntax is an ordinary name and gives no capability. The deploy sends a quoted
+// send with a params section as data and tries to take a params tuple out of
+// it. The pattern does not match, because the quoted send holds no params in
+// its data, and the wildcard case reports on a result channel.
 new factory(`rho:space:hashmap:queue`), ret, code in {
   code!(@"x"!(1; k=1)) |
   for (@sent <- code) {
     match sent {
       @"x"!(1, (marker, positional, named)) => {
         factory!(*ret, "default", (marker, [], {}))
+      }
+      _ => {
+        @"rrs.example.forged-params"!("no marker tuple")
       }
     }
   }
@@ -860,7 +889,7 @@ new factory(`rho:space:hashmap:bag`) in {
 - `getSpaceAgent` on a user agent replies `NotANativeSpace`, because the node does not know the constructor of an agent.
 - A factory takes only the builtin theories. The installed theories of F1r3lang come with phase P12, after the F1r3lang merge ([F1r3lang integration](f1r3lang-integration.md)).
 - `rho:lang:vector` has five operations. The other operations of the legacy branch come with TensorLogic in phase P12 ([decision 88](decision-register.md#decision-88)).
-- The qualifier `"seq"` needs native execution, and legacy execution refuses it with `QualifierUnavailable` ([decision 73](decision-register.md#decision-73)).
+- Spaces run only in native execution, as every deploy does. Outside it, every factory call fails with `RuntimeUnavailable` before every gate ([decision 90](decision-register.md#decision-90)).
 - The factory op `0x20` is reserved for native engines such as MeTTaTron, and it has no URN ([decision 2](decision-register.md#decision-2)).
 
 ## 12. User agent-backed spaces

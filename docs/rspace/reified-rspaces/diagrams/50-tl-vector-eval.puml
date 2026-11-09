@@ -8,8 +8,8 @@
 ' Reading order:
 '   1. The deploy sends the method name, a tl:Program term, the map of
 '      tensors and the options to the capability.
-'   2. The TL engine decodes, normalizes, checks and evaluates, and it
-'      reserves host work before each phase.
+'   2. The TL engine decodes, normalizes, checks and evaluates. Decision 89
+'      removed the reservation before each phase.
 '   3. A failure at any phase gives the reply [false, code, detail]. A
 '      success gives [true, outputs].
 '
@@ -38,19 +38,22 @@ autonumber
 participant "Deploy" as DEPLOY $rrs_host
 participant "rho:lang:vector\n[0xE0, 0x23]" as VEC $rrs_system
 participant "TL engine" as ENGINE $rrs_tl_engine
-participant "Host-work meter\nof the deploy" as METER $rrs_meter
+' Changed by decision 89: the node has no host-work budget, so the engine has no meter. The text before:
+' participant "Host-work meter\nof the deploy" as METER $rrs_meter
 
 DEPLOY -> VEC : vec!?("eval", tl:Program{ Y[i] = relu(W[i, j] X[j]) | Y? },\n  {"W": [[1, -1], [2, 0]], "X": [3, 4]}, {"precision": 64})
 VEC -> VEC : unpack [ret, ["eval", program, tensors, options]]
 VEC -> ENGINE : the reflected program and the tensors
-group each phase reserves before it runs
-  ENGINE -> METER : reserve
+' Changed by decision 89: no phase reserves, because the node has no host-work budget. The text before:
+' group each phase reserves before it runs
+group the phases of the engine
+  ' ENGINE -> METER : reserve
   ENGINE -> ENGINE : DECODE: the tags and the allowed fingerprint
-  ENGINE -> METER : reserve
+  ' ENGINE -> METER : reserve
   ENGINE -> ENGINE : NORMALIZE: RESOLVE, INLINE, ELABORATE, SCOPE, CANON
-  ENGINE -> METER : reserve
+  ' ENGINE -> METER : reserve
   ENGINE -> ENGINE : CHECK: shapes, safety, recursion, the demand bound B
-  ENGINE -> METER : reserve each step
+  ' ENGINE -> METER : reserve each step
   ENGINE -> ENGINE : EVALUATE the query slice: Y = [relu(3 - 4), relu(6)]
 end
 alt every phase succeeds
@@ -68,7 +71,7 @@ end note
 
 legend bottom
 **Concept colors**
-|<$rrs_host>      | the deploy and the meter |
+|<$rrs_host>      | the deploy |
 |<$rrs_system>    | the capability |
 |<$rrs_tl_engine> | the TL engine |
 endlegend

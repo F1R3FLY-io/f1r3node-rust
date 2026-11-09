@@ -57,7 +57,7 @@ The others are `q[d]` (the payload of the query) and `D` (the dimensions of the 
 
 The agent handles a score query in five steps.
 
-1. `parse_query` (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:404-511`) reads the keys. Its list `QUERY_PARAMS` (lines 160 to 168 of that file) gains `score`, `tensors` and `precision`.
+1. `parse_query` (`rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:590-690`) reads the keys. Its list `QUERY_PARAMS` (lines 160 to 168 of that file) gains `score`, `tensors` and `precision`.
 2. The engine decodes the term and normalizes it under the signature `Emb : [Sym, D]`, `q : [D]` and the shapes of `tensors`.
 3. The checker requires a record-local score with no recursion ([static semantics 9](static-semantics.md#9-record-locality-of-scores)).
 4. `eligible` (line 881 of `vectordb.rs`) evaluates the score of each record $`r`$. A record with $`s(r) = \bot`$ is not eligible. The other records with $`s(r) \ge \tau`$ form the eligible set $`E`$.
@@ -71,7 +71,7 @@ So the size of the term counts toward the introduction bytes of the waiter.
 
 Figure TL15 shows the query in native play and in native replay.
 
-![Sequence diagram of a TL-0 score query. The deploy sends a receive with a query group that holds a tl:Score term to the VectorDB agent. The agent parses the query, and the TL engine decodes, normalizes and checks the term, reserving host work on the meter before each step. For each record of the collection, the engine evaluates the score with the exact core and the correctly rounded functions, and a record with an undefined score is skipped. The agent orders the eligible records by score and by the tie key, selects one record or a list, and commits the COMM to RSpace. In a parallel lane, native replay performs the same steps with the same reservations and reaches the same COMM, so the two meters agree.](../diagrams/49-tl-score-query.svg)
+![Sequence diagram of a TL-0 score query. The deploy sends a receive with a query group that holds a tl:Score term to the VectorDB agent. The agent parses the query, and the TL engine decodes, normalizes and checks the term. For each record of the collection, the engine evaluates the score with the exact core and the correctly rounded functions, and a record with an undefined score is skipped. The agent orders the eligible records by score and by the tie key, selects one record or a list, and commits the COMM to RSpace. In a parallel lane, native replay performs the same steps and reaches the same COMM.](../diagrams/49-tl-score-query.svg)
 
 *Figure TL15. Source: [diagrams/49-tl-score-query.puml](../diagrams/49-tl-score-query.puml), rendered by [diagrams/render.sh](../diagrams/render.sh).*
 
@@ -89,11 +89,11 @@ The outputs map each query of the program to its value, in the value ABI.
 [Syntax 4.16](syntax.md#416-a-tl-1-call) gives a complete call, and [GSLT 9](gslt.md#9-the-capability-rholangvector) gives every method.
 
 The call is deterministic and is not recorded, as every operation of the capability.
-Each phase of the engine reserves its work on the budget of the deploy before it runs (`rholang/src/rust/interpreter/reified/system_processes.rs:365-389`).
+Each phase of the engine reserves its work on the budget of the deploy before it runs (`rholang/src/rust/interpreter/reified/system_processes.rs:448-468`).
 
 Figure TL16 shows an `eval` call.
 
-![Sequence diagram of an eval call of rho:lang:vector. The deploy sends the method name, a tl:Program term, the map of tensors and the options to the capability on channel E0 23. The capability unpacks the arguments, and the TL engine decodes the term, checks its fingerprint, normalizes and checks it, and evaluates the queries, reserving host work on the meter before each phase. A failure at any phase gives the reply false with a code and a detail. On success the capability encodes each query value in the value ABI and sends the reply true with the map of outputs to the return channel.](../diagrams/50-tl-vector-eval.svg)
+![Sequence diagram of an eval call of rho:lang:vector. The deploy sends the method name, a tl:Program term, the map of tensors and the options to the capability on channel E0 23. The capability unpacks the arguments, and the TL engine decodes the term, checks its fingerprint, normalizes and checks it, and evaluates the queries. A failure at any phase gives the reply false with a code and a detail. On success the capability encodes each query value in the value ABI and sends the reply true with the map of outputs to the return channel.](../diagrams/50-tl-vector-eval.svg)
 
 *Figure TL16. Source: [diagrams/50-tl-vector-eval.puml](../diagrams/50-tl-vector-eval.puml), rendered by [diagrams/render.sh](../diagrams/render.sh).*
 
@@ -146,7 +146,7 @@ So play, replay and a later attach give the same verdicts in the same order.
 
 Figure TL18 shows the three points.
 
-![Sequence diagram of TL admission. At creation, the deploy calls a factory with free TensorCheck and a tl:Check term, the factory asks the theory seam to resolve the identity, the TL engine normalizes the check term and computes the hash of its normal form, and the factory stores the compact identity bytes in the config of the space and the normal form under KIND T. At a send, the space agent reads the identity from the config, the TL engine evaluates the check on each value after reserving its work, and a refuted or undetermined verdict aborts the deploy before staging. At a match, the agent checks each stored datum again, and a verdict other than proven makes the datum ineligible.](../diagrams/52-tl-admission.svg)
+![Sequence diagram of TL admission. At creation, the deploy calls a factory with free TensorCheck and a tl:Check term, the factory asks the theory seam to resolve the identity, the TL engine normalizes the check term and computes the hash of its normal form, and the factory stores the compact identity bytes in the config of the space and the normal form under KIND T. At a send, the space agent reads the identity from the config, the TL engine evaluates the check on each value, and a refuted or undetermined verdict aborts the deploy before staging. At a match, the agent checks each stored datum again, and a verdict other than proven makes the datum ineligible.](../diagrams/52-tl-admission.svg)
 
 *Figure TL18. Source: [diagrams/52-tl-admission.puml](../diagrams/52-tl-admission.puml), rendered by [diagrams/render.sh](../diagrams/render.sh).*
 

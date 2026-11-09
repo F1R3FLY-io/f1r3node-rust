@@ -14,7 +14,7 @@ This version holds the surface syntax of every Reified construct and its meaning
 
 - the [terms](#terms) of the syntax
 - the [grammar forms](#grammar-forms), with examples
-- the [normalization mapping](#normalization-mapping) from each AST part to its builder and its [marker tuple](glossary.md#marker-tuple)
+- the [normalization mapping](#normalization-mapping) from each AST part to its builder and its protobuf field
 - the [errors](#errors) of the parser and of the normalizer
 - the [keyword rule](#keyword-rule) of [decision 24](decision-register.md#decision-24) and the identifier rule of [decision 27](decision-register.md#decision-27)
 - the [dual-frontend corpus](#dual-frontend-corpus) and [how the contract is checked](#how-the-contract-is-checked)
@@ -47,28 +47,31 @@ The [glossary](glossary.md) defines the terms that the table links.
 | Query | The part `~ q` after the source of a linear receive bind: `for (y <- ch ~ q) { P }`. |
 | Payload | The processes of a query before its params, such as the vector of a similarity query. |
 | Normalizer arm | The function of the node normalizer that turns one Reified AST part into Par. |
-| Builder | A function of `models/src/rust/reified/builders.rs` that builds one marker tuple. It is the only code that builds marker tuples. |
+| Builder | A function of `models/src/rust/reified/builders.rs` that builds one field or one message of a construct. It is the only code that builds them. |
 | Validator | A check of `models/src/rust/reified/validation.rs`, such as the range of a param value. |
 | Contextual keyword | A word that is a keyword only in some contexts. `use` and `free` are contextual keywords. In other contexts they stay ordinary identifiers. |
-| Dual-frontend corpus | The file `test-vectors/reified-syntax-corpus-v1.json`. Each row pairs a source text with the bytes of its normalized Par. |
+| Dual-frontend corpus | The file `test-vectors/reified-syntax-corpus-v2.json`. Each row pairs a source text with the bytes of its normalized Par. |
 
 ## Overview
 
 Figure 1 shows how the node turns source text with Reified syntax into the bytes of a Par.
-The [marker](glossary.md#marker) tuples carry each construct inside the existing fields of a Par ([decision 18](decision-register.md#decision-18)).
-So the Protocol Buffers schema [[PB](#ref-pb)] does not change, and ordinary terms keep their bytes and hashes.
+Protocol Buffers fields carry each construct ([decision 112](decision-register.md#decision-112)).
+The schema [[PB](#ref-pb)] changes once, and ordinary terms keep their prost bytes.
+The bincode of an ordinary term grows by 8 bytes for each `Par` and each `New`.
+It grows by one byte for each `Send` and each `ReceiveBind`.
+So every state root changes once.
 
-![Normalization of the Reified syntax as an activity. The source text first passes through preprocess_floats, the baseline rewrite of unsuffixed floats. The v3 parser follows: the external scanner reads use and free as keywords only when the next text can never continue a baseline program, and the AST builder walks each params section and each query once. A repeated key, a positional param after a named one, a key that is not an identifier, or a malformed query stops with a ParserError and no Par. The AST then holds UseBlock, NameDecl.space, FreeTheory, Hyperparam lists and QuerySpec. Five normalizer arms run in parallel branches: UseBlock with normalize_p_use_block and the builder use_block, New with annotations with normalize_p_new and new_space, FreeTheory with normalize_p_free_theory and efree, send params with normalize_p_send and send_params, and the receive query with normalize_p_input and query_spec. A rejection by a builder or a validator stops with a NormalizerError and no Par. Otherwise the marker tuples sit in their recognized positions, ParSortMatcher sorts the Par with no new sort score, and prost gives the bytes that the dual-frontend corpus pins. A legend gives the colors: Reified syntax, baseline code, and rejection.](diagrams/15-syntax-normalization.svg)
+![Normalization of the Reified syntax as an activity. The source text first passes through preprocess_floats, the baseline rewrite of unsuffixed floats. The v3 parser follows: the external scanner reads use and free as keywords only when the next text can never continue a baseline program, and the AST builder walks each params section and each query once. A repeated key, a positional param after a named one, a key that is not an identifier, or a malformed query stops with a ParserError and no Par. The AST then holds UseBlock, NameDecl.space, FreeTheory, Hyperparam lists and QuerySpec. Five normalizer arms run in parallel branches: UseBlock with normalize_p_use_block and the builder use_block, New with annotations with normalize_p_new and new_space, FreeTheory with normalize_p_free_theory and efree, send params with normalize_p_send and send_params, and the receive query with normalize_p_input and query_spec. A rejection by a builder or a validator stops with a NormalizerError and no Par. Otherwise the fields of each construct hold the Reified parts in the Par: Par.use_blocks, New.space_types, Send.params, ReceiveBind.query_spec, and EFreeBody in Par.exprs. ParSortMatcher sorts the Par and its fields, and prost gives the bytes that the dual-frontend corpus pins. A legend gives the colors: Reified syntax, baseline code, and rejection.](diagrams/15-syntax-normalization.svg)
 
 *Figure 1. Source: [diagrams/15-syntax-normalization.puml](diagrams/15-syntax-normalization.puml), rendered by [diagrams/render.sh](diagrams/render.sh).*
 
 The figure has five steps:
 
-1. The node first applies `preprocess_floats`, which is baseline code. Phase P11 retires it at the final parser pin.
+1. The node first applies `preprocess_floats`, which is baseline code. The node keeps it, so every float form of the base stays valid ([decision 110](decision-register.md#decision-110)).
 2. The v3 parser reads the text. Its scanner decides whether `use` and `free` are keywords, by the [keyword rule](#keyword-rule).
 3. The parser rejects a malformed params section or query by variant and span.
 4. The normalizer sends each Reified AST part to its arm. Each arm normalizes the parts and calls one builder.
-5. The builders and the validators check again each guarantee of the parser. The existing sorter then puts the tuples in [canonical form](glossary.md#canonical-form).
+5. The builders and the validators check again each guarantee of the parser. The existing sorter then puts the fields of each `Par` in [canonical form](glossary.md#canonical-form).
 
 ## Grammar forms
 
@@ -229,9 +232,13 @@ for (@y <- @"x" ~ ([1]; 2)) { Nil }
 ### Bare floats
 
 The v3 grammar reads a float without a suffix, such as `0.85` or `1e3`, as a 64-bit float ([I-7](decision-register.md#i-7)).
-A bare float needs a digit after its dot, so `5.toByteArray()` stays a method call on an integer.
-Until the final parser pin, the node still applies `preprocess_floats` before it parses.
+The node applies `preprocess_floats` before it parses, and it keeps that rewrite ([decision 110](decision-register.md#decision-110)).
+The rewrite gives a float without a suffix the suffix `f64`, so `5.`, `5.e3` and `.5` stay valid floats, as on the base.
+It leaves a number that an identifier follows as it is, so `5.toByteArray()` stays a method call on an integer.
 So the node normalizes every float form that the baseline accepts to its baseline bytes.
+
+Changed by [decision 110](decision-register.md#decision-110): before, the contract said that a bare float needs a digit after its dot.
+It also said that the node applies `preprocess_floats` only until the final parser pin.
 
 A number with two dots fails to parse with `ParserError`:
 
@@ -241,33 +248,33 @@ A number with two dots fails to parse with `ParserError`:
 
 ## Normalization mapping
 
-The table maps each Reified AST part to its normalizer arm, the scope of its parts, its builder, and its marker tuple.
+The table maps each Reified AST part to its normalizer arm, the scope of its parts, its builder, and its field.
 The arms are in `rholang/src/rust/interpreter/compiler/normalizer/processes/`.
 The builders are in `models/src/rust/reified/builders.rs`.
 
-| AST part | Normalizer arm | Scope of the parts | Builder | Marker tuple and its position |
+| AST part | Normalizer arm | Scope of the parts | Builder | Field and its position |
 |---|---|---|---|---|
-| `Proc::UseBlock` | `normalize_p_use_block` in `p_use_block_normalizer.rs` | The space is a name and the body is a process, both in the current scope, the space first. | `use_block`, then `push_process_expr` | `(USE, s, P)` in `Par.exprs` |
-| `NameDecl.space` on `Proc::New` | `normalize_p_new`, with `normalize_space_annotations` and `push_space_annotated_new` in `reified_syntax.rs` | Each annotation is a name in the scope outside the `new`, in binding order, before the body. | `new_space`, then `push_process_expr` | `(NEWSPACE, [a_1…a_k], Par{news: [New]})` in `Par.exprs` |
-| `Proc::FreeTheory` | `normalize_p_free_theory` in `p_free_theory_normalizer.rs` | The arguments are processes in the current scope, in source order. | `efree`, then `push_process_expr` | the value `(FREE, "Th", [args…])` |
-| `Proc::Send.params` | `normalize_p_send`, with `normalize_send_params` in `reified_syntax.rs` | The values follow the data in the current scope, in source order. | `send_params` | the last data element `(PARAMS, [p…], {k: v…})` |
-| `Proc::SendSync.params` | `normalize_p_send_sync`, with `alloc_desugared_send` | The desugaring gives `new r in { x!(*r, d…; params) \| for (_ <- r) { cont } }`. | through the send arm | the last data element, after the reply name `*r` |
-| `Source::SendReceive.params` | `normalize_p_input`, with `alloc_desugared_send` | The desugaring gives `new r in { x!(*r, d…; params) \| for (y <- r) { P } }`. | through the send arm | the last data element, after the reply name `*r` |
-| `Bind::Linear.query_spec` | `normalize_p_input`, with `normalize_bind_source` in `reified_syntax.rs` | The channel, then the payload, then the params, in the scope outside the receive. | `query_spec` | the bind source `(QUERY, ch, [q…], {k: v…})` |
+| `Proc::UseBlock` | `normalize_p_use_block` in `p_use_block_normalizer.rs` | The space is a name and the body is a process, both in the current scope, the space first. | `use_block`, then `push_use_block` | `UseBlock { space, body }` in `Par.use_blocks` |
+| `NameDecl.space` on `Proc::New` | `normalize_p_new`, with `normalize_space_annotations` and `push_space_annotated_new` in `reified_syntax.rs` | Each annotation is a name in the scope outside the `new`, in binding order, before the body. | `new_space`, then `prepend_new` | `New.space_types`, one `SpaceAnnotation` for each plain binder |
+| `Proc::FreeTheory` | `normalize_p_free_theory` in `p_free_theory_normalizer.rs` | The arguments are processes in the current scope, in source order. | `efree`, then `push_free` | `EFree { theory, args }`, the arm `EFreeBody` of `Par.exprs` |
+| `Proc::Send.params` | `normalize_p_send`, with `normalize_send_params` in `reified_syntax.rs` | The values follow the data in the current scope, in source order. | `send_params` | `Send.params` (`SendParams`) |
+| `Proc::SendSync.params` | `normalize_p_send_sync`, with `alloc_desugared_send` | The desugaring gives `new r in { x!(*r, d…; params) \| for (_ <- r) { cont } }`. | through the send arm | `Send.params` of the desugared send |
+| `Source::SendReceive.params` | `normalize_p_input`, with `alloc_desugared_send` | The desugaring gives `new r in { x!(*r, d…; params) \| for (y <- r) { P } }`. | through the send arm | `Send.params` of the desugared send |
+| `Bind::Linear.query_spec` | `normalize_p_input`, with `normalize_bind_query` in `reified_syntax.rs` | The channel, then the payload, then the params, in the scope outside the receive. | `query_spec` | `ReceiveBind.query_spec` (`QuerySpec { payload, named }`) |
 
-The marker of each tuple is the [unforgeable name](glossary.md#unforgeable-name) `GPrivate([0xE0, m])`, with `m` from `0xD0` (USE) to `0xD4` (FREE).
-Each tuple has its [recognized position](glossary.md#recognized-position), and it is [inert](glossary.md#inert) data in every other position.
+Each field has one position in the `Par`, the one where the reducer reads it.
+A tuple with a former marker head is an ordinary tuple ([decision 112](decision-register.md#decision-112)).
 
 ### Worked examples
 
-| Source | Normalized Par, in tuple notation |
+| Source | Normalized Par |
 |---|---|
-| `use @"space" { @"x"!(1) }` | `Par{exprs: [(USE, "space", @"x"!(1))]}` |
-| `@"x"!(1; 2, k=3)` | `@"x"!(1, (PARAMS, [2], {"k": 3}))` |
-| `@"x"!(1; b=2, a=1)` | `@"x"!(1, (PARAMS, [], {"a": 1, "b": 2}))` |
-| `@"factory"!(free Th(1, "two"))` | `@"factory"!((FREE, "Th", [1, "two"]))` |
-| `for (y <- @"x" ~ 5) { Nil }` | `for (y <- (QUERY, "x", [5], {})) { Nil }` |
-| `new s in { new x : s in { x!(1) } }` | `new s in { (NEWSPACE, [[s]], new x in { x!(1) }) }` |
+| `use @"space" { @"x"!(1) }` | `Par{use_blocks: [UseBlock{space: "space", body: @"x"!(1)}]}` |
+| `@"x"!(1; 2, k=3)` | `Send{chan: "x", data: [1], params: SendParams{positional: [2], named: {"k": 3}}}` |
+| `@"x"!(1; b=2, a=1)` | `Send{chan: "x", data: [1], params: SendParams{positional: [], named: {"a": 1, "b": 2}}}` |
+| `@"factory"!(free Th(1, "two"))` | `@"factory"!(EFree{theory: "Th", args: [1, "two"]})` |
+| `for (y <- @"x" ~ 5) { Nil }` | `ReceiveBind{source: "x", query_spec: QuerySpec{payload: [5], named: {}}}` in `for (y <- …) { Nil }` |
+| `new s in { new x : s in { x!(1) } }` | `new s in { New{space_types: [SpaceAnnotation{space: s}], p: x!(1)} }` |
 
 ### Scopes and binding order
 
@@ -279,8 +286,8 @@ The annotations normalize outside the `new`, so an annotation that names an oute
 For example, in `new s in { new a, b : s, out(...) in { … } }` the binding order is `a`, `b`, `out`.
 In the body, `out` has the index 0, `b` has 1, `a` has 2, and `s` has 3.
 The annotation of `b` normalizes outside the inner `new`, where `s` has the index 0.
-The NEWSPACE tuple holds one annotation entry for each plain binder, so the entry count is $`k = \mathit{bind\_count} - \lvert \mathit{uri} \rvert`$.
-Each entry is `[]` for a binder without an annotation or `[s]` for a binder with one.
+`New.space_types` holds one `SpaceAnnotation` for each plain binder, so its length is $`k = \mathit{bind\_count} - \lvert \mathit{uri} \rvert`$.
+An annotation without a `space` field is a binder without an annotation.
 
 A query normalizes in the scope outside its receive.
 So a query does not see the binders of its own receipt, but it sees the binders of earlier `;`-separated receipts.
@@ -302,7 +309,7 @@ The builders erase empty sections ([decision 21](decision-register.md#decision-2
 
 - `x!(a;)` has the same bytes as `x!(a)`, because `send_params` returns no element for an empty list.
 - `ch ~ (e;)` has the same bytes as `ch ~ e`.
-- A `new` without an annotation has its baseline bytes, because the arm builds NEWSPACE only when some binder has an annotation.
+- A `new` without an annotation has its baseline prost bytes, because the arm fills `New.space_types` only when some binder has an annotation.
 
 Positional params keep their source order.
 The builder sorts the named keys bytewise, so `@"x"!(1; b=2, a=1)` and `@"x"!(1; a=1, b=2)` have the same bytes.
@@ -311,7 +318,7 @@ The builder sorts the named keys bytewise, so `@"x"!(1; b=2, a=1)` and `@"x"!(1;
 
 Each arm reads a Reified AST part only when the source has the construct.
 Without the construct, each existing normalizer runs its baseline code path.
-So every program that normalizes at the baseline normalizes to identical bytes with the v3 parser ([conservative extension](glossary.md#conservative-extension), consensus checklist item 22).
+So every program that normalizes at the baseline normalizes to identical prost bytes with the v3 parser ([conservative extension](glossary.md#conservative-extension), consensus checklist item 22).
 
 ## Errors
 
@@ -351,7 +358,7 @@ Such a query would apply to the fresh reply channel of the desugaring.
 From source text, only `KAndResults` and `OutOfRange` can occur, because the parser rejects every other case first.
 The other variants occur for an AST that a program builds by hand, and the tests build such an AST for each variant.
 The arms never cause the variants `EmptyParams`, `NoAnnotation`, and `AnnotationCount`.
-`send_params` erases an empty section instead of building an empty PARAMS tuple.
+`send_params` returns `None` for an empty section instead of building an empty `SendParams`.
 The `new` arm calls `new_space` only with one entry for each binder and with at least one annotation.
 
 ### Ranges of literal values
@@ -371,14 +378,14 @@ Every other key has no range in the syntax layer.
 
 ### Errors at run time
 
-The reducer recognizes each marker tuple only in its recognized position ([decision 22](decision-register.md#decision-22)).
-For example, a send whose last data element is a PARAMS tuple fails with `ParamsUnsupported` when its channel takes no params.
+The reducer reads each field only at its position in the `Par` ([decision 112](decision-register.md#decision-112)).
+For example, a send with the field `Send.params` fails with `ParamsUnsupported` when its channel takes no params.
 The section [Meaning at run time](#meaning-at-run-time) lists the errors of phase P4.
 The [agent API](agent-api.md#10-aborts) gives the errors of each call, and the [design](design.md#n8-errors) lists every code.
 
 ## Meaning at run time
 
-The reducer gives a meaning to a marker tuple only in its recognized position ([decision 22](decision-register.md#decision-22)).
+The reducer reads each field only at its position in the `Par` ([decision 112](decision-register.md#decision-112)).
 Every construct of this contract has a meaning at run time: `use` blocks, space annotations, params, queries and theory references.
 A construct in a position or on a target that does not take it fails closed with a deterministic code ([decision 34](decision-register.md#decision-34), item A9).
 A failure at run time aborts the deploy with `InterpreterError::ReduceError` and the text `reified:<Code>: <message>`.
@@ -395,7 +402,7 @@ The use context changes the routes in `P` in three ways:
 - A body that the reducer stores for later evaluation, such as the body of a receive, keeps the use context, as a lexical closure does.
 
 A space name and an ordinary unforgeable name keep their own routes in every use context.
-The USE tuple takes the random state of the block, so it changes no random state of `P`.
+The body of a use block takes the random state of the block, so the block changes no random state of `P`.
 A `use` block checks only the reference, so an operation in `P` on a space without a config record aborts with `DanglingHandle`.
 
 A `new` with plain binders in `P` runs one allocation job for the space of `s`.
@@ -432,8 +439,8 @@ So the send and the receive on `box` meet in the new space in every context (rul
 
 ### Params at run time
 
-The send hook refreshes the derived flags of a trailing PARAMS tuple and decodes it strictly ([decision I-20](decision-register.md#i-20)).
-A tuple that is not canonical aborts with `Malformed`.
+The send hook checks the field `Send.params` (`check_send_params`).
+A params message that is not canonical aborts with `Malformed`.
 The table gives the meaning of the params on each kind of channel.
 
 | Channel of the send | Named params | Positional params |
@@ -481,14 +488,14 @@ Phase P7 gives `"temp"` and `"seq"` their meaning in native execution, and the t
 |---|---|---|
 | `F!?("default", …)`, `F!?()` | A durable space: its ids use the uppercase KINDs, and every checkpoint keeps it (QF-1, QF-2). | None |
 | `F!?("temp", …)` | A space for one deploy: its ids use the lowercase KINDs, and the sweep removes it at the end of the deploy (QF-5 to QF-8). | `InvalidParam` on `mirror` (QF-10) |
-| `F!?("seq", …)` | A temp space whose channels are linear (QF-11 to QF-18). | `QualifierUnavailable` in legacy execution, `InvalidParam` on `mirror` |
+| `F!?("seq", …)` | A temp space whose channels are linear (QF-11 to QF-18). | `InvalidParam` on `mirror`. Before [decision 90](decision-register.md#decision-90) (C6), also `QualifierUnavailable` in legacy execution |
 | A send whose data holds a name of a live seq space | None: a seq name is never sent. The handle and the channel argument of a handle `produce` are exempt (QF-14). | `SeqSent`, which names the space id |
-| A use of a seq channel that does not descend from its last use | None: each channel of a seq space is used by one sequential process (QF-15). | `SeqConcurrent`, which names the space id |
+| A use of a seq channel whose causal history does not hold its last use | None: each channel of a seq space is used by one sequential process (QF-15). | `SeqConcurrent`, which names the space id |
 | A send or a receive on a name of a temp space after its deploy | None: the space is gone (QF-9). | `DanglingName`, which names the space id |
 | A handle call, `use h`, or `new x : h` on a temp space after its deploy | None: the space is gone (QF-9). | `DanglingHandle`, which names the space id |
 
 The suites `rholang/tests/reified_temp_seq.rs`, `reified_seq.rs`, `reified_rehydrate.rs` and `reified_pattern_enforcement.rs` run the rows.
-They run in native execution and certify each deploy by native replay, except the row of legacy execution.
+They run in native execution and certify each deploy by native replay.
 
 ### HashSet collections at run time
 
@@ -511,7 +518,8 @@ The suite `rholang/tests/reified_hashset.rs` runs each row of the table on the s
 
 A query on a VectorDB collection holds at most one payload element, the query vector, and the named params of the table below.
 The agent checks them before any staging, in the order of the table, so a query with several faults reports one code ([specification VD-3](specification.md#39-vectordb)).
-A query without a vector reads the records in the canonical order. It takes only `k` and `results`.
+Without a query vector, a single read takes the pick order of the operation, and a list read keeps the canonical order ([decision 102](decision-register.md#decision-102)).
+A query without a vector takes only `k` and `results`.
 
 | Key | Rule | Failure |
 |---|---|---|
@@ -539,7 +547,7 @@ A row with the phase "None" still fails closed.
 |---|---|---|---|
 | A query `~` on the default space, or on a discipline without query params | `for (y <- @"x" ~ 5) { Nil }` | `QuerySpecUnsupported` | P5 for the priority queue, P6 for VectorDB |
 | A theory reference in a factory constructor | `hmq!?(free Nat())` | `TheoryUnavailable` in P4 to P6 | P7 step 4: a builtin name without arguments gives the space its theory ([specification 5](specification.md#5-theories)). A builtin with arguments fails with `BadConstructorArgument`, and another name fails with `UnknownTheory` |
-| The qualifier `"seq"` in legacy execution | `hmq!?("seq")` in a legacy deploy | `QualifierUnavailable` | None: legacy execution keeps this abort. P7 steps 1 and 2 give `"temp"` and `"seq"` their meaning in native execution ([specification 4.2](specification.md#42-temp) and [4.3](specification.md#43-seq)) |
+| The qualifier `"seq"` in legacy execution | `hmq!?("seq")` in a legacy deploy | `QualifierUnavailable` until decision 90 (C6) | [Decision 90](decision-register.md#decision-90) (C6, step D): every deploy runs in native execution, where `"seq"` creates a seq space. Outside native execution, a factory call fails with `RuntimeUnavailable` before every gate. P7 steps 1 and 2 give `"temp"` and `"seq"` their meaning in native execution ([specification 4.2](specification.md#42-temp) and [4.3](specification.md#43-seq)) |
 | A space reference that names a user agent | `use @"space" { @"x"!(1) }` | `AgentSpacesUnavailable` in P4 to P8 step 3 | P8 step 4: the block enters the context of the agent, and the binders of a `new` in it, or with an annotation of the agent, become agent-minted names ([decision 77](decision-register.md#decision-77), items TN-1 to TN-5) |
 | A receive on a name of a user agent | None in P4, because only a user agent makes such a name | `AgentSpacesUnavailable` in P4 to P8 step 2 | P8 step 3: the receive becomes its matcher receives, its body receive, and the method call `A!(sink, "consume", pairs, arrow, b)` on its agent ([decision 77](decision-register.md#decision-77), items TR-1 to TR-8). Since P8 step 2, a send on such a name becomes the method call `A!(sink, "produce", raw, [d…])` on its agent (item TS-1) |
 | The handle method `consume` | `h!(ret, "consume", pairs, "<-", body)` | `AgentSpacesUnavailable` in P4 to P8 step 2, or a typed reply | P8 step 3: the handle runs the receive that the matchers of one translation describe (items HC-1 to HC-3) |
@@ -547,10 +555,10 @@ A row with the phase "None" still fails closed.
 | A join over two spaces, over a space and the default space, or over a user agent and another target | `for (@a <- x & @b <- @"y") { Nil }`, with `x` in a space | `CrossSpaceJoin` | None: the plan keeps this abort |
 | A factory of a family that is not registered yet, or its FIPS alias | ``new f(`rho:space:pathmap:bag`) in { Nil }`` | The baseline error `No value set for <urn>` | P5 wave W3 for PathMap, P6 for VectorDB, P7 for HashSet |
 
-A query routes the inner channel of its QUERY tuple (`reified/reducer_hooks.rs:1358-1372`).
-The inner channel takes the read rule of a receive source, with the same error text.
-A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:1390-1435`).
-On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed QUERY tuple (`reified/reducer_hooks.rs:1318-1329`).
+A query routes the channel of its bind (`route_receive` in `reified/reducer_hooks.rs`).
+The channel takes the read rule of a receive source, with the same error text.
+A query on the default space fails with `QuerySpecUnsupported` (`reified/reducer_hooks.rs:1721-1766`).
+On a native space, the agent checks the query against the query params of the discipline. Hook H4 fails only on a malformed query field (`reject_query_source`, `check_query_spec`).
 A reference that names no space aborts with `EmptySpaceRef`, `HandleNotWritable`, or `NotASpaceRef` in every phase.
 
 Since P8, the reference of a user agent under a bundle without the write flag also aborts with `HandleNotWritable`, because a call cannot reach it.
@@ -617,7 +625,7 @@ A word is a valid theory name when it has the shape of the token `var` and is no
 
 ## Dual-frontend corpus
 
-The file `test-vectors/reified-syntax-corpus-v1.json` holds 40 rows.
+The file `test-vectors/reified-syntax-corpus-v2.json` holds 44 rows.
 Each row has two fields: `source`, the source text, and `expected_prost_hex`, the hexadecimal prost bytes of its normalized Par.
 The file also records its name, the capture revisions of the node and of the parser, the capture command, and its rule.
 
@@ -641,7 +649,7 @@ To capture the corpus again after an approved change of the contract, do these s
 2. Set `RRS_CAPTURE_REVISION`, `RRS_CAPTURE_PARSER_REVISION`, and `RRS_CAPTURE_COMMAND` to the provenance values.
 3. Run `cargo test -p rholang --test reified_syntax_corpus reified_syntax_corpus_bytes_match`.
 4. Review the difference between the captured file and the committed file.
-5. Copy the captured file to `test-vectors/reified-syntax-corpus-v1.json`.
+5. Copy the captured file to `test-vectors/reified-syntax-corpus-v2.json`.
 
 ## How the contract is checked
 
@@ -649,8 +657,8 @@ These tests and gates check the contract:
 
 | Check | What it shows |
 |---|---|
-| `rholang/tests/reified_syntax_normalize.rs` (27 tests) | Each arm builds the tuple of the builders, in the scope of the contract. The builders and the validators reject what the parser rejects. The property test `normalize_send_params_key_permutation_invariant` shows that the order of named params does not change the bytes. |
-| `rholang/tests/reified_syntax_corpus.rs` (4 tests) | The normalizer gives the corpus bytes. The P2 decoders turn the corpus bytes into the constructs of a model that the test writes by hand. The corpus covers every construct. The property test `reified_syntax_corpus_ordinary_programs_have_no_markers` shows that ordinary programs give no marker. |
+| `rholang/tests/reified_syntax_normalize.rs` (31 tests) | Each arm builds the field of the builders, in the scope of the contract. The builders and the validators reject what the parser rejects. The property test `normalize_send_params_key_permutation_invariant` shows that the order of named params does not change the bytes. |
+| `rholang/tests/reified_syntax_corpus.rs` (5 tests) | The normalizer gives the corpus bytes. The P2 decoders turn the corpus bytes into the constructs of a model that the test writes by hand. The corpus covers every construct. The property test `reified_syntax_corpus_ordinary_programs_have_no_markers` shows that ordinary programs give no marker. |
 | `rholang/tests/reified_syntax_identifiers.rs` (1 test) | For every word-shaped string token of the parser grammar, the parser and the validators agree on param keys and on theory names ([decision 27](decision-register.md#decision-27)). |
 | `rholang/tests/reified_source_normalization.rs` (2 tests) | Every repository source and every float form that the baseline accepts keep their bytes with the v3 parser. |
 | `scripts/check-reified-rspaces-patch-gate.sh` | No staged or committed `Cargo.toml` holds the local parser `[patch]`. The option `--control` runs the same check on a negative-control fixture, which must fail. |

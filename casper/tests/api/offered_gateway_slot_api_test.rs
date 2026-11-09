@@ -24,7 +24,7 @@ use rholang::rust::interpreter::accounting::native_phlo_rules::{
 };
 use rholang::rust::interpreter::accounting::phlo_execution::{PhloExecutionLimits, PhloResource};
 use rholang::rust::interpreter::accounting::{principal_ground_v61, SignatureChannel};
-use rholang::rust::interpreter::rho_type::{RhoBoolean, RhoNumber, RhoString};
+use rholang::rust::interpreter::rho_type::{RhoBigInt, RhoBoolean, RhoNumber, RhoString};
 use rholang::rust::interpreter::util::vault_address::VaultAddress;
 use rspace_plus_plus::rspace::history::Either;
 
@@ -119,6 +119,7 @@ fn signed_direct_offer(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term,
         language: "rholang".to_owned(),
         time_stamp: timestamp,
@@ -243,11 +244,21 @@ async fn balance(
 ) -> u64 {
     let (values, _) = nodes[0]
         .runtime_manager
-        .play_exploratory_deploy(balance_query_source(address), root, None)
+        .play_exploratory_deploy(
+            balance_query_source(address),
+            root,
+            None,
+            nodes[0].adopted_policy(),
+        )
         .await
         .unwrap();
     assert_eq!(values.len(), 1);
-    u64::try_from(RhoNumber::unapply(&values[0]).unwrap()).unwrap()
+    u64::try_from(
+        RhoBigInt::unapply(&values[0])
+            .or_else(|| RhoNumber::unapply(&values[0]).map(num_bigint::BigInt::from))
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 fn offered_gateway_call(
@@ -295,10 +306,17 @@ fn offered_gateway_call(
                     .unwrap()
                 })
                 .collect();
+            // Changed by G3 (DR-135): an on-chain purse funds nothing before
+            // execution (rule G-5), so the gateway's own purse holds the whole
+            // estimate of the call.
+            // PhloSourcePolicyV1::new(
+            //     &payer.custody_key,
+            //     if index == 0 { 300_000 } else { 100_000 },
+            //     if index == 0 { 300_000 } else { 100_000 },
             PhloSourcePolicyV1::new(
                 &payer.custody_key,
-                if index == 0 { 300_000 } else { 100_000 },
-                if index == 0 { 300_000 } else { 100_000 },
+                if index == 0 { 600_000 } else { 100_000 },
+                if index == 0 { 600_000 } else { 100_000 },
                 index == 0,
                 permissions,
                 PhloSourceLimits {
@@ -334,6 +352,7 @@ fn offered_gateway_call(
     })
     .unwrap();
     let body = DeployData {
+        parameters: Vec::new(),
         term: "new deployerId(`rho:system:deployerId`) in { @\"agent-trigger\"!(0, *deployerId) }"
             .to_owned(),
         language: "rholang".to_owned(),
@@ -375,8 +394,17 @@ async fn gateway_network() -> (crate::util::genesis_builder::GenesisContext, Vec
     (genesis, nodes)
 }
 
-/// The installer's offer: an unsigned trigger that runs the gateway's signed
-/// `entry -o slot` body and publishes the entry and slot vault addresses.
+/// The installer's offer: a trigger whose body the slot owns, and that runs
+/// the gateway's signed `entry -o slot` body. It publishes the entry and slot
+/// vault addresses.
+///
+/// Changed by G3 (DR-135): the trigger transfers ownership of its body to the
+/// slot, `for (...) { {% body %}[slot] }`, which is
+/// `{for(...) body}[installer -o slot]` (P1:1274-1283, :1557-1567). The
+/// installer pays its side of the trigger COMM as the owner of the stored
+/// trigger, the slot pays the body, and entry and slot pay the inner
+/// `[entry -o slot]`. Before G3 the trigger body was unsigned:
+/// `for (@request, deployerId <= @"agent-trigger") { new publicKeyCh in { .. } }`.
 fn installer_offer(
     genesis: &crate::util::genesis_builder::GenesisContext,
 ) -> models::casper::DeployDataProto {
@@ -385,7 +413,7 @@ fn installer_offer(
     let installer_source = r#"new entry, slot, entryAddressCh, slotAddressCh,
       VaultAddress(`rho:vault:address`), DeployerIdOps(`rho:system:deployerId:ops`) in {
       for (@request, deployerId <= @"agent-trigger") {
-        new publicKeyCh in {
+        {% new publicKeyCh in {
           DeployerIdOps!("pubKeyBytes", *deployerId, *publicKeyCh) |
           for (@publicKey <- publicKeyCh) {
             if (publicKey == "GATEWAY_PUBLIC_KEY".hexToBytes()) {
@@ -395,7 +423,7 @@ fn installer_offer(
               entry!(request)
             }
           }
-        }
+        } %}[slot]
       } |
       VaultAddress!("fromUnforgeable", *entry, *entryAddressCh) |
       for (@entryAddress <- entryAddressCh) { @"agent-entry-address"!!(entryAddress) } |
@@ -539,7 +567,11 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
         balance(&nodes, rejected_root, &entry_address).await,
         100_000
     );
-    assert_eq!(balance(&nodes, rejected_root, &slot_address).await, 100_000);
+    // Changed by G3 (DR-135): the slot owns the trigger body, so it pays the
+    // key check of the unauthorized call, and only that. The entry pays
+    // nothing, because the check fails before the inner body.
+    // assert_eq!(balance(&nodes, rejected_root, &slot_address).await, 100_000);
+    assert!(balance(&nodes, rejected_root, &slot_address).await < 100_000);
 
     let offer = offered_gateway_call(
         gateway_secret,
@@ -575,7 +607,19 @@ async fn offered_gateway_call_draws_funded_private_purses_across_validators() {
         .unwrap()
         .unwrap();
     assert_eq!(producer, validator);
-    assert_eq!(producer.purses.len(), 3);
+    // Changed by G3 (DR-135): the installer pays its side of the trigger COMM
+    // as the owner of the stored trigger, so the receipt has an owner row
+    // beside the gateway, entry and slot rows.
+    // assert_eq!(producer.purses.len(), 3);
+    assert_eq!(producer.purses.len(), 4);
+    let installer_address = VaultAddress::from_public_key(&genesis.genesis_vaults[0].1).unwrap();
+    let installer_row = producer
+        .purses
+        .iter()
+        .find(|purse| purse.address == installer_address.to_base58().as_bytes())
+        .expect("the installer pays as the owner of the stored trigger");
+    assert!(installer_row.resource_rev > 0);
+    assert_eq!(installer_row.fee_rev, 0);
     assert_eq!(
         producer
             .purses

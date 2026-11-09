@@ -13,9 +13,14 @@
 //! | `space_temp_many_volatile_keys_export` | A deploy with forty volatile collections certifies: the swept keys are root-neutral deletes of the native export (VR-10). |
 //! | `reified_ephemeral_dangling_next_deploy` | A handle and a name of a `temp` space that an earlier deploy stored fail in a later deploy at every entry point of DG-1: a send and a receive on the name (`DanglingName`), a handle call, `use` and `new x : h` (`DanglingHandle`), `getSpaceAgent` (typed reply with the space id), and a parked continuation that fires into the dead space. Each error names the space id, and native replay reproduces each deploy. |
 //! | `reified_ephemeral_dangling_charge_is_fixed` | The failing deploy costs the same phlo whatever the dead space held (DG-4). |
-//! | `reified_ephemeral_cost_charged` | A `temp` program pays phlo, and it emits as many produce, consume and COMM events as the same program with `default` (QT-3). |
+//! | `reified_ephemeral_cost_charged` | On each racing runtime, a `temp` program and the same program with `default` each certify, pay phlo and deliver an allowed label set. In each play, each COMM of the log has a COMM record in the journal. So `temp` operations emit and pay as durable operations do (QT-3, decisions 93 and 111). |
+// Changed by decision 93 (decision 111): racing evaluation varies the event counts of two plays,
+// so each play certifies on its own. The old row follows.
+// //! | `reified_ephemeral_cost_charged` | A `temp` program pays phlo, and it emits as many produce, consume and COMM events as the same program with `default` (QT-3). |
 //! | `reified_sweep_runs_at_each_entry_point_native` | Native play, native replay and the exploratory entry `RhoRuntime::inj` sweep. The unit tests `reified_sweep_runs_at_each_entry_point_*` of the reducer hooks cover `inj` and `inj_with_observation` directly. |
-//! | `reducer_qualifier_matrix` | In native execution the factories accept `default`, `temp` and `seq` on every family with a schema but HashSet. A HashSet factory takes only `seq` and refuses `default` and `temp` with `BadConstructorArgument` (HS-6). Legacy execution refuses `seq` with `QualifierUnavailable` (QT-5). A `temp` or `seq` space takes no `mirror` (`InvalidParam`). |
+//! | `reducer_qualifier_matrix` | The factories accept `default`, `temp` and `seq` on every family with a schema but HashSet. A HashSet factory takes only `seq` and refuses `default` and `temp` with `BadConstructorArgument` (HS-6). Spaces run only in native execution, so no factory refuses `seq` (decision 90, C6). A `temp` or `seq` space takes no `mirror` (`InvalidParam`). |
+// Changed by decision 90 (C6, step D): gate 3 reads no execution model. The legacy row follows.
+// //! | `reducer_qualifier_matrix` | In native execution the factories accept `default`, `temp` and `seq` on every family with a schema but HashSet. A HashSet factory takes only `seq` and refuses `default` and `temp` with `BadConstructorArgument` (HS-6). Legacy execution refuses `seq` with `QualifierUnavailable` (QT-5). A `temp` or `seq` space takes no `mirror` (`InvalidParam`). |
 //! | `reified_handle_qualifier_method_temp_seq` | The handle method `qualifier` of a `temp` space replies `"temp"`, and of a `seq` space `"seq"`. |
 //! | `reified_fips_example_temp_pathmap` | The example code of the FIPS with a `temp` PathMap space: names of both spaces in one `new`, a forged name in `use`, a same-space join and a sequential receive, `getSpaceAgent` and `assertEqual`. The handles name the same spaces inside and outside the `new` block, the deploy certifies, and the sweep removes the `temp` space. |
 //! | `prop_sweep_complete` | For generated `temp` programs of every family with extra stores and waiters, the hot store holds no volatile channel after the deploy, on the `Ok` and the `Err` path, and native replay reproduces the play. |
@@ -26,6 +31,7 @@ mod support;
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{Expr, Par};
 use models::rust::reified::builders;
+use models::rust::reified::encoding::encode_params;
 use models::rust::reified::params::SendParam;
 use models::rust::space_factory_urn::{SpaceFactoryUrn, SpaceInner, SpaceOuter, SpaceQualifier};
 use models::rust::utils::{new_elist_par, new_gbool_par, new_gint_par, new_gstring_par};
@@ -33,15 +39,21 @@ use proptest::prelude::{prop_oneof, Just, Strategy};
 use proptest::test_runner::TestCaseError;
 use rholang::rust::interpreter::errors::InterpreterError;
 use rholang::rust::interpreter::spaces::errors::SpaceError;
-use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+// Changed by decision 90 (C6, step D): the factory reads no execution model.
+// use rholang::rust::interpreter::spaces::factory::constructor::{Execution, FactoryConstructor};
+use rholang::rust::interpreter::spaces::factory::constructor::FactoryConstructor;
 use rholang::rust::interpreter::spaces::factory::defaults::constructor_schema;
 use rholang::rust::interpreter::spaces::namespace::{self, Durability, ReifiedId, SpaceId};
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
-use support::family_programs::{program_with, space_program, Inner, Outer, JOIN};
+// Changed by decision 93 (decision 111): the ephemeral cost test checks the allowed label sets
+// and runs on the racing runtimes. The old imports follow.
+// use support::family_programs::{program_with, space_program, Inner, Outer, JOIN};
+use support::family_programs::{allowed_labels, program_with, space_program, Inner, Outer, JOIN};
 use support::native::{
     assert_reproduces, certify, native_play, NativeChain, Played, AMPLE_LIMIT, OUT,
 };
-use support::props::{check, runtime_config, tokio_runtime};
+// use support::props::{check, runtime_config, tokio_runtime};
+use support::props::{check, racing_runtime, runtime_config, tokio_runtime, RACING_WORKERS};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────────────────────
 
@@ -62,18 +74,22 @@ fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
                 push_codes(inner, codes);
             }
         }
-        InterpreterError::ReduceError(message) => codes.push(
-            message
-                .strip_prefix("reified:")
-                .and_then(|rest| rest.split(':').next())
-                .map(str::to_owned)
-                .unwrap_or_else(|| message.clone()),
-        ),
+        // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): a user failure of
+        // a space is a `SpaceUserError` with the text of its reduce error.
+        // InterpreterError::ReduceError(message) => codes.push(
+        InterpreterError::ReduceError(message) | InterpreterError::SpaceUserError(message) => codes
+            .push(
+                message
+                    .strip_prefix("reified:")
+                    .and_then(|rest| rest.split(':').next())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| message.clone()),
+            ),
         other => codes.push(format!("{other:?}")),
     }
 }
 
-/// The messages of the `ReduceError`s of `errors`.
+/// The messages of the `ReduceError`s and the `SpaceUserError`s of `errors`.
 fn messages(errors: &[InterpreterError]) -> Vec<String> {
     let mut messages = Vec::new();
     for error in errors {
@@ -81,7 +97,12 @@ fn messages(errors: &[InterpreterError]) -> Vec<String> {
             InterpreterError::AggregateError { interpreter_errors } => {
                 messages.extend(self::messages(interpreter_errors));
             }
-            InterpreterError::ReduceError(message) => messages.push(message.clone()),
+            // Changed by Reified RSpaces (user decision of 2026-10-25, as DR-128): a user
+            // failure of a space is a `SpaceUserError` with the text of its reduce error.
+            // InterpreterError::ReduceError(message) => messages.push(message.clone()),
+            InterpreterError::ReduceError(message) | InterpreterError::SpaceUserError(message) => {
+                messages.push(message.clone())
+            }
             _ => {}
         }
     }
@@ -410,39 +431,124 @@ fn event_counts(log: &[Event]) -> (usize, usize, usize) {
     )
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reified_ephemeral_cost_charged() {
+// Changed by decision 93 (decision 111): racing evaluation varies the event counts of two plays
+// (R6 and the counter bumps), so each play certifies on its own. The old test follows.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn reified_ephemeral_cost_charged() {
+//     for (outer, inner) in [(Outer::HashMap, Inner::Bag), (Outer::PathMap, Inner::Queue)] {
+//         let label = format!("{}:{}", outer.name(), inner.name());
+//         let durable = native_play(&program_with(outer, inner, "default"), AMPLE_LIMIT).await;
+//         let ephemeral = play_and_certify(&label, &program_with(outer, inner, "temp")).await;
+//         let usage = ephemeral
+//             .result
+//             .native_phlo_usage
+//             .expect("native play reports its usage");
+//         assert!(usage > 0, "{label}: a temp program pays phlo");
+//         assert_eq!(
+//             event_counts(&ephemeral.log),
+//             event_counts(&durable.log),
+//             "{label}: temp operations emit the events of durable operations"
+//         );
+//     }
+// }
+
+/// Added by decision 93 (decision 111): the labels of the deliveries `[label, …]` on [`OUT`]
+/// after `played`, in bytewise order.
+fn labels(played: &Played) -> Vec<String> {
+    let mut labels: Vec<String> = played
+        .out
+        .iter()
+        .flatten()
+        .filter_map(|value| match value.exprs.as_slice() {
+            [Expr {
+                expr_instance: Some(ExprInstance::EListBody(list)),
+            }] => match list.ps.first()?.exprs.as_slice() {
+                [Expr {
+                    expr_instance: Some(ExprInstance::GString(label)),
+                }] => Some(label.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    labels.sort();
+    labels
+}
+
+#[test]
+fn reified_ephemeral_cost_charged() {
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(ephemeral_cost_run(workers));
+    }
+}
+
+/// Added by decision 93 (decision 111): one run of [`reified_ephemeral_cost_charged`]. The
+/// `temp` program and its `default` twin each certify, pay phlo and deliver an allowed label
+/// set. In each play, each COMM of the log is a journal row with a COMM record, which links to
+/// its charge (QF-7).
+async fn ephemeral_cost_run(workers: usize) {
     for (outer, inner) in [(Outer::HashMap, Inner::Bag), (Outer::PathMap, Inner::Queue)] {
-        let label = format!("{}:{}", outer.name(), inner.name());
-        let durable = native_play(&program_with(outer, inner, "default"), AMPLE_LIMIT).await;
+        let label = format!("{}:{} on {workers} workers", outer.name(), inner.name());
+        let durable = play_and_certify(
+            &format!("{label} default"),
+            &program_with(outer, inner, "default"),
+        )
+        .await;
         let ephemeral = play_and_certify(&label, &program_with(outer, inner, "temp")).await;
-        let usage = ephemeral
-            .result
-            .native_phlo_usage
-            .expect("native play reports its usage");
-        assert!(usage > 0, "{label}: a temp program pays phlo");
-        assert_eq!(
-            event_counts(&ephemeral.log),
-            event_counts(&durable.log),
-            "{label}: temp operations emit the events of durable operations"
-        );
+        for (played, qualifier) in [(&durable, "default"), (&ephemeral, "temp")] {
+            let usage = played
+                .result
+                .native_phlo_usage
+                .expect("native play reports its usage");
+            assert!(usage > 0, "{label}: a {qualifier} program pays phlo");
+            assert!(
+                allowed_labels(outer, inner, &labels(played)),
+                "{label}: the {qualifier} program delivers {:?}",
+                labels(played)
+            );
+            let rows = played
+                .result
+                .native_operation_recording
+                .as_deref()
+                .expect("native play records its operations");
+            let (_, _, comms) = event_counts(&played.log);
+            assert_eq!(
+                comms,
+                rows.iter().filter(|row| row.comm.is_some()).count(),
+                "{label}: each COMM of the {qualifier} log has a COMM record in its journal"
+            );
+        }
     }
 }
 
 // ─── Entry points ──────────────────────────────────────────────────────────────────────────────
 
 /// Native play and native replay sweep (`play_and_certify` checks the residue of play and the
-/// post-state root of replay), and the exploratory entry `RhoRuntime::inj` sweeps too.
+/// post-state root of replay), and the exploratory entry sweeps too.
+///
+/// Changed by decision 90 (C6): the exploratory entry of Casper is a native dry run (DR-134 of
+/// the base), so the test checks the residue of the dry run before its revert. Before, it
+/// checked the residue of `RhoRuntime::inj`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reified_sweep_runs_at_each_entry_point_native() {
     let term = program_with(Outer::HashMap, Inner::Queue, "temp");
     play_and_certify("native play and replay", &term).await;
-    let chain = NativeChain::new().await;
-    chain
+    // let chain = NativeChain::new().await;
+    // chain
+    //     .explore(&term)
+    //     .await
+    //     .expect("the exploratory evaluation succeeds");
+    // assert!(chain.residue().await.is_empty(), "RhoRuntime::inj sweeps");
+    let mut chain = NativeChain::new().await;
+    let explored = chain
         .explore(&term)
         .await
-        .expect("the exploratory evaluation succeeds");
-    assert!(chain.residue().await.is_empty(), "RhoRuntime::inj sweeps");
+        .expect("the exploratory dry run succeeds");
+    assert!(
+        explored.residue.is_empty(),
+        "the exploratory dry run sweeps: {:?}",
+        explored.residue
+    );
 }
 
 // ─── Qualifiers ────────────────────────────────────────────────────────────────────────────────
@@ -468,8 +574,16 @@ fn constructor(family: SpaceFactoryUrn, qualifier: &str, extra: Vec<SendParam>) 
         _ => {}
     }
     let mut ctor = vec![new_gstring_par(qualifier.to_string(), Vec::new(), false)];
-    if let Some(tuple) = builders::send_params(params).expect("valid params") {
-        ctor.push(tuple);
+    // Changed by decision 112: the builder now gives the params message. The text before:
+    // ```
+    // if let Some(tuple) = builders::send_params(params).expect("valid params") {
+    //     ctor.push(tuple);
+    // }
+    // ```
+    if let Some(params) = builders::send_params(params).expect("valid params") {
+        if let Some(tuple) = encode_params(&params).expect("valid params") {
+            ctor.push(tuple);
+        }
     }
     new_elist_par(ctor, Vec::new(), false, None, Vec::new(), false)
 }
@@ -495,30 +609,44 @@ fn reducer_qualifier_matrix() {
                 FactoryConstructor::validate(family, &constructor(family, "seq", Vec::new()))
                     .unwrap_or_else(|error| panic!("{family} seq: {error:?}"));
             assert_eq!(validated.qualifier, SpaceQualifier::Seq, "{family}");
-            for execution in [Execution::Native, Execution::Legacy] {
-                for qualifier in ["default", "temp"] {
-                    assert_eq!(
-                        FactoryConstructor::validate_in(
-                            family,
-                            &constructor(family, qualifier, Vec::new()),
-                            execution
-                        ),
-                        Err(SpaceError::BadConstructorArgument(format!(
-                            "the hashset outer store does not take the {qualifier} qualifier"
-                        ))),
-                        "{family} {qualifier} {execution:?}"
-                    );
-                }
+            // Changed by decision 90 (C6, step D): gate 3 reads no execution model. The store rule
+            // alone refuses `default` and `temp`.
+            // for execution in [Execution::Native, Execution::Legacy] {
+            //     for qualifier in ["default", "temp"] {
+            //         assert_eq!(
+            //             FactoryConstructor::validate_in(
+            //                 family,
+            //                 &constructor(family, qualifier, Vec::new()),
+            //                 execution
+            //             ),
+            //             Err(SpaceError::BadConstructorArgument(format!(
+            //                 "the hashset outer store does not take the {qualifier} qualifier"
+            //             ))),
+            //             "{family} {qualifier} {execution:?}"
+            //         );
+            //     }
+            // }
+            // assert_eq!(
+            //     FactoryConstructor::validate_in(
+            //         family,
+            //         &constructor(family, "seq", Vec::new()),
+            //         Execution::Legacy
+            //     ),
+            //     Err(SpaceError::QualifierUnavailable("seq".to_string())),
+            //     "{family}"
+            // );
+            for qualifier in ["default", "temp"] {
+                assert_eq!(
+                    FactoryConstructor::validate(
+                        family,
+                        &constructor(family, qualifier, Vec::new())
+                    ),
+                    Err(SpaceError::BadConstructorArgument(format!(
+                        "the hashset outer store does not take the {qualifier} qualifier"
+                    ))),
+                    "{family} {qualifier}"
+                );
             }
-            assert_eq!(
-                FactoryConstructor::validate_in(
-                    family,
-                    &constructor(family, "seq", Vec::new()),
-                    Execution::Legacy
-                ),
-                Err(SpaceError::QualifierUnavailable("seq".to_string())),
-                "{family}"
-            );
             continue;
         }
         // Changed by P7 step 2 (design v3 QT-5): native execution accepts `seq`.
@@ -536,32 +664,34 @@ fn reducer_qualifier_matrix() {
                     .unwrap_or_else(|error| panic!("{family} {qualifier}: {error:?}"));
             assert_eq!(validated.qualifier, expected, "{family}");
         }
-        // QT-5: legacy execution refuses `seq` before the params, and accepts the others.
+        // Retired by decision 90 (C6, step D): spaces run only in native execution, so the loop
+        // above checks the one execution model. The legacy checks follow.
+        // // QT-5: legacy execution refuses `seq` before the params, and accepts the others.
+        // // assert_eq!(
+        // //     FactoryConstructor::validate(family, &constructor(family, "seq", Vec::new())),
+        // //     Err(SpaceError::QualifierUnavailable("seq".to_string())),
+        // //     "{family}"
+        // // );
         // assert_eq!(
-        //     FactoryConstructor::validate(family, &constructor(family, "seq", Vec::new())),
+        //     FactoryConstructor::validate_in(
+        //         family,
+        //         &constructor(family, "seq", Vec::new()),
+        //         Execution::Legacy
+        //     ),
         //     Err(SpaceError::QualifierUnavailable("seq".to_string())),
         //     "{family}"
         // );
-        assert_eq!(
-            FactoryConstructor::validate_in(
-                family,
-                &constructor(family, "seq", Vec::new()),
-                Execution::Legacy
-            ),
-            Err(SpaceError::QualifierUnavailable("seq".to_string())),
-            "{family}"
-        );
-        for qualifier in ["default", "temp"] {
-            assert!(
-                FactoryConstructor::validate_in(
-                    family,
-                    &constructor(family, qualifier, Vec::new()),
-                    Execution::Legacy
-                )
-                .is_ok(),
-                "{family} {qualifier} in legacy execution"
-            );
-        }
+        // for qualifier in ["default", "temp"] {
+        //     assert!(
+        //         FactoryConstructor::validate_in(
+        //             family,
+        //             &constructor(family, qualifier, Vec::new()),
+        //             Execution::Legacy
+        //         )
+        //         .is_ok(),
+        //         "{family} {qualifier} in legacy execution"
+        //     );
+        // }
         if matches!(family.inner, SpaceInner::VectorDb) {
             let mirror = || {
                 vec![SendParam::Named(

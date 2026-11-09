@@ -41,7 +41,16 @@
 #                     the Reified RSpaces syntax (p2-design-report §5), and
 #                     3 headlines of plan revision I-20: the hooks recompute
 #                     the derived connective_used flags before the strict
-#                     decode.
+#                     decode. Retired from the gate by decision 112, and the
+#                     file stays on disk as the frozen evidence of the marker
+#                     encoding.
+#   SyntaxFields      Decision 112 (15 headlines): the Reified syntax as
+#                     protobuf fields. The field numbers, the decoders against
+#                     the encoders, the canonical named params, one carrier
+#                     per construct, the former marker tuples as ordinary
+#                     tuples, the term schedule, substitution, the proto3 and
+#                     bincode forms of a term without the new fields, and the
+#                     derived flags that no decoder reads.
 #   Namespace         P4 (11 headlines): the 0xE0 ids of the native spaces,
 #                     their decoder, and the canonical key of a channel.
 #   RecordEnvelope    P4 (8 headlines): the record envelopes D, K, S and C
@@ -63,14 +72,24 @@
 #                     registered families follow the dispatch arms, the
 #                     FIPS alias, and the constructor params (F7, F26-F28,
 #                     I-10).
-#   AgentReadCoverage Decision 42 (8 headlines): a space agent reserves each
-#                     read and copy before it makes it (DR-88 of
-#                     feature/cost-accounted-rho), its reservations precede
-#                     the commit, and its charges do not depend on the list
-#                     order of the staged view or on unread payloads. P5
-#                     (1 headline): the staging primitives of the S1
-#                     engine reserve before they read or grow.
-#   LegacyCharges     Decision 45, Option P (2 headlines): the legacy
+#   AgentReadCoverage Removed by decision 96 (decision 89): DR-131 of
+#                     feature/cost-accounted-rho removes the host-work
+#                     metering and its theories, so this module goes with
+#                     the metering of decision 42. Restore it with git show
+#                     6bf10a721:formal/rocq/reified_rspaces/theories/AgentReadCoverage.v.
+#                     It was: Decision 42 (8 headlines): a space agent
+#                     reserves each read and copy before it makes it (DR-88
+#                     of feature/cost-accounted-rho), its reservations
+#                     precede the commit, and its charges do not depend on
+#                     the list order of the staged view or on unread
+#                     payloads. P5 (1 headline): the staging primitives of
+#                     the S1 engine reserve before they read or grow.
+#   LegacyCharges     Removed by decision 90 (decision 69): DR-134 of
+#                     feature/cost-accounted-rho deletes the legacy meter,
+#                     so the merge of 702496775 removes Option P and this
+#                     module. Restore it with git show
+#                     6bf10a721:formal/rocq/reified_rspaces/theories/LegacyCharges.v.
+#                     It was: Decision 45, Option P (2 headlines): the legacy
 #                     storage charges of a space transaction. The callbacks
 #                     with the carried post-charges, and then the tail, make
 #                     the charges of the host program, with the same
@@ -198,15 +217,20 @@
 
 theories/EventCorrelation.v
 theories/VolatileSweep.v
-theories/Encoding.v
+# Removed from the gate by decision 112: SyntaxFields.v models the fields, and
+# Encoding.v stays on disk as the frozen evidence of the marker encoding.
+# theories/Encoding.v
+theories/SyntaxFields.v
 theories/Namespace.v
 theories/RecordEnvelope.v
 theories/CounterConflict.v
 theories/HeadOnlyDisciplines.v
 theories/SpaceRefs.v
 theories/SpaceFactory.v
-theories/AgentReadCoverage.v
-theories/LegacyCharges.v
+# Removed by decision 96 (decision 89): the host-work metering is gone (DR-131).
+# theories/AgentReadCoverage.v
+# Removed by decision 90 (decision 69): Option P is gone with the legacy meter (DR-134).
+# theories/LegacyCharges.v
 theories/CellDiscipline.v
 theories/DataCollection.v
 theories/ContinuationCollection.v

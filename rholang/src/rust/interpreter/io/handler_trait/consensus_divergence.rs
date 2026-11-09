@@ -20,9 +20,9 @@
 //
 // # Wire-shape pin (consensus-observable)
 //
-// The yet-to-land dispatcher (slice 4.8 / 4.9) will call this
-// helper at the `JournalPath::VerifyDivergence` branch and produce
-// the returned `Par` to the ack channel.  Under Wave 6 this is the
+// The dispatcher (slices 4.8 / 4.9) calls this helper at the
+// `JournalPath::VerifyDivergence` branch and produces the returned
+// `Par` to the ack channel.  Under Wave 6 this is the
 // consensus-observable reply bytes a verifying follower sends when
 // its re-execute diverges.  A regression that reshaped the reply
 // would split peering and silently break the leader / follower
@@ -122,8 +122,7 @@ mod tests {
     /// `format_args!`-style call via a wrapper type.  Catches a
     /// regression that tightened the bound to `impl AsRef<str>`
     /// (would reject non-string Display impls like integers or
-    /// custom error types that the yet-to-land verify.rs helper
-    /// may return).
+    /// custom error types that the verify.rs helper may return).
     #[test]
     fn consensus_divergence_reply_accepts_display_impl() {
         struct DisplayReason(u32);

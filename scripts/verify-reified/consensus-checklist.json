@@ -515,7 +515,7 @@
           "file": "rholang/tests/reified_ordinary_regression.rs",
           "test": "deterministic_candidates_hash_unchanged",
           "step": "regression-ordinary",
-          "proves": "Consumes and produces take candidates in ascending bincode-hash order, and the hashes equal the corpus."
+          "proves": "Each consume takes each datum once and each produce fires each continuation once, and the candidate hashes equal the corpus. Play picks at random among candidates since DR-129, so the corpus records the taken candidates sorted (decision 89)."
         },
         {
           "kind": "footprint",
@@ -954,7 +954,7 @@
             "rholang/src/rust/interpreter/system_processes.rs"
           ],
           "step": "footprint",
-          "proves": "byte_name, FixedChannels and BodyRefs match HEAD. From P6, the file may hold the approved lines of design v3 4.9: the body refs 236 and 237 of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops().",
+          "proves": "byte_name, FixedChannels and BodyRefs match HEAD. From P6, the file may hold the approved lines of design v3 4.9: the body refs 236 and 237 of rho:vectordb:embed and rho:vectordb:ann join non_deterministic_ops(). From decision 89 (decision 68), is_native_external_process leaves the two processes to their own handlers. From decision 90, is_native_recorded_op adds the two processes by name with is_recorded_process, because DR-114 names the native set explicitly. From decision 116, the file also holds native_replayed_reply, which the driver and the handlers of embed and ann share, and decision 105 makes EXT_BAD_ARG, EXT_FAILED and native_failure_reply visible to the crate.",
           "from": "p6"
         }
       ]
@@ -1035,11 +1035,11 @@
         {
           "kind": "rust_test",
           "file": "models/tests/reified_encoding.rs",
-          "test": "ordinary_bincode_unchanged",
+          "test": "ordinary_bincode_grows_by_the_formula",
           "step": "encoding",
           "from": "p2",
           "owner": "P2",
-          "proves": "The twenty ordinary terms keep their bincode bytes and their store hashes."
+          "proves": "Each ordinary term of the HEAD corpus grows by 8 bytes for each `Par` and each `New` and by one byte for each `Send` and each `ReceiveBind`."
         }
       ]
     },
@@ -1319,7 +1319,7 @@
     {
       "number": 22,
       "id": "parser-conservative-extension",
-      "text": "The parser is a conservative extension of HEAD parsing (decisions 23 and 24). Validators re-parse every deploy's source text during replay (`CasperMessage.proto:197`, `interpreter.rs:189`), so every program that parses at HEAD must parse and normalize to identical bytes. Gate: `ordinary_source_normalization_unchanged` over every repository `.rho`/`.rhox` file. The P11 retirement of `preprocess_floats` must keep the acceptance and meaning of every float form that HEAD accepts through it (`5.`, `5.e3`, `.5`, `1.`, `3.e-1`). HEAD rejects `x!?(a).5`, because the rewrite turns its `.5` into a float, so that form may become accepted later.",
+      "text": "The parser is a conservative extension of HEAD parsing (decisions 23 and 24). Validators re-parse every deploy's source text during replay (`CasperMessage.proto:197`, `interpreter.rs:189`), so every program that parses at HEAD must parse and normalize to identical bytes. Gate: `ordinary_source_normalization_unchanged` over every repository `.rho`/`.rhox` file. The P11 retirement of `preprocess_floats` must keep the acceptance and meaning of every float form that HEAD accepts through it (`5.`, `5.e3`, `.5`, `1.`, `3.e-1`). HEAD rejects `x!?(a).5`, because the rewrite turns its `.5` into a float, so that form may become accepted later. Changed by decision 110: the node keeps `preprocess_floats`, so P11 retires nothing, every float form of the base keeps its acceptance and its bytes, and `x!?(a).5` stays rejected, as on the base.",
       "checks": [
         {
           "kind": "rust_test",

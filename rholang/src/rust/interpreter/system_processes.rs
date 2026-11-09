@@ -29,6 +29,8 @@ use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+// Added by G3 (DR-135, S3b H8): a native recorded reply must be plain data.
+use super::accounting::owner_funding::plain_data;
 use super::accounting::RuntimeBudget;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
@@ -439,6 +441,26 @@ impl FixedChannels {
     /// H-6 reserve-then-finalize with partial-write patch).  Added
     /// by slice 4.38.
     pub fn fs_write() -> Par { byte_name(44) }
+
+    /// `rho:io:fs:native:1.0.0/writeAt` — fd + offset + ByteArray;
+    /// libc::pwrite under spawn_blocking.  Same shape as fs_write
+    /// but with positional semantics: no shadow position advance
+    /// (POSIX pwrite doesn't move the OS-fd position).  Added by
+    /// slice 4.39.  Mutation family 8/8 complete.
+    pub fn fs_write_at() -> Par { byte_name(45) }
+
+    /// `rho:io:fs:native:1.0.0/removeDir` — trait-exempt handler
+    /// (see `handler_trait::fs_handler` module docstring, "trait-
+    /// exempt handler (fs_remove_dir)").  Four divergence reply
+    /// shapes that don't fit the `FsHandler` trait; the handler
+    /// is `FsProcesses::fs_remove_dir` (ported in slices 5.136-5.141)
+    /// with a dedicated dispatcher registration (slice 5.142).
+    /// The URN + fixed channel were registered at slice 5.43 so
+    /// FsGenesis composition (slice 5.36) could
+    /// `new fsRemoveDir(`rho:io:fs:native:1.0.0/removeDir`)`
+    /// without tripping `eval_new`'s "No value set for URN" check,
+    /// even before the real handler landed.
+    pub fn fs_remove_dir() -> Par { byte_name(58) }
 }
 
 pub struct BodyRefs;
@@ -566,6 +588,16 @@ impl BodyRefs {
 
     /// `rho:io:fs:native:1.0.0/write` body-ref (slice 4.38).
     pub const FS_WRITE: i64 = 44;
+
+    /// `rho:io:fs:native:1.0.0/writeAt` body-ref (slice 4.39).
+    pub const FS_WRITE_AT: i64 = 45;
+
+    /// `rho:io:fs:native:1.0.0/removeDir` body-ref — trait-exempt
+    /// handler.  Registered for URN resolution at genesis composition
+    /// time (slice 5.43); real dispatcher wiring landed in slice
+    /// 5.142 (URN swap from stub to `FsProcesses::fs_remove_dir`).
+    /// See `FixedChannels::fs_remove_dir` above.
+    pub const FS_REMOVE_DIR: i64 = 58;
 }
 
 pub fn non_deterministic_ops() -> HashSet<i64> {
@@ -606,7 +638,11 @@ pub fn is_native_recorded_op(body_ref: BodyRef) -> bool {
         // Added by Reified RSpaces decision 89 (decision 68): `embed` and `ann`,
         // the recorded processes of Reified RSpaces in `non_deterministic_ops`,
         // are recorded and replayed by native funded execution too.
-        || non_deterministic_ops().contains(&body_ref)
+        // Changed by Reified RSpaces decision 90: DR-114 names the native set
+        // explicitly, and dev adds processes to `non_deterministic_ops` (the fs
+        // calls of 11fffe0ad). So the native set adds `embed` and `ann` by name.
+        // || non_deterministic_ops().contains(&body_ref)
+        || crate::rust::interpreter::reified::system_channels::is_recorded_process(body_ref)
 }
 
 /// Added by DR-114: the processes that take the native path: the recorded
@@ -616,6 +652,11 @@ fn is_native_external_process(body_ref: BodyRef) -> bool {
     // keep their own handlers, which record and replay their replies, because
     // `ann` checks consensus state in replay too.
     // is_native_recorded_op(body_ref)
+    // Changed by Reified RSpaces decision 116: replay of `ann` makes no check now (decision
+    // 104), but the exclusion stays. This driver takes the ack last, and `embed` and `ann` take
+    // `ret` first. `ann` reads the Reified runtime in play, which `SystemProcesses` does not
+    // hold. Both handlers call `native_replayed_reply`, so their replay makes the checks of this
+    // driver.
     (is_native_recorded_op(body_ref)
         && !crate::rust::interpreter::reified::system_channels::is_recorded_process(body_ref))
         || matches!(
@@ -627,8 +668,14 @@ fn is_native_external_process(body_ref: BodyRef) -> bool {
 // Added by DR-114: the codes of a native external-service failure reply. The
 // message is fixed text that names the process. It never carries the
 // provider's text, because provider errors can echo masked keys.
-const EXT_BAD_ARG: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_BAD_ARG");
-const EXT_FAILED: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_FAILED");
+// Changed by Reified RSpaces decision 105: the handlers of `embed` and `ann` reply these codes
+// too, so the crate sees them.
+// const EXT_BAD_ARG: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_BAD_ARG");
+// const EXT_FAILED: super::io::errors::FserrCode = super::io::errors::FserrCode("EXT_FAILED");
+pub(crate) const EXT_BAD_ARG: super::io::errors::FserrCode =
+    super::io::errors::FserrCode("EXT_BAD_ARG");
+pub(crate) const EXT_FAILED: super::io::errors::FserrCode =
+    super::io::errors::FserrCode("EXT_FAILED");
 const EXT_OUTPUT_TOO_LARGE: super::io::errors::FserrCode =
     super::io::errors::FserrCode("EXT_OUTPUT_TOO_LARGE");
 
@@ -669,8 +716,68 @@ fn native_recorded_signature(
 }
 
 /// Added by DR-114: a `[false, code, message]` failure reply.
-fn native_failure_reply(name: &str, code: super::io::errors::FserrCode, text: &str) -> Par {
+// Changed by Reified RSpaces decision 105: the handlers of `embed` and `ann` build their
+// failure replies with it.
+// fn native_failure_reply(name: &str, code: super::io::errors::FserrCode, text: &str) -> Par {
+pub(crate) fn native_failure_reply(
+    name: &str,
+    code: super::io::errors::FserrCode,
+    text: &str,
+) -> Par {
     super::io::response::err(code, format!("{name}: {text}"))
+}
+
+/// Added by G3 (DR-135, S3b H8): the reply that native play records for the
+/// service reply `reply` of process `name`. A reply that is not plain data
+/// becomes the paid `EXT_FAILED` failure reply before the size fold and the
+/// record-room take, so it takes no room. No code names a bad output, so the
+/// failure code is the general one. A plain reply takes its bytes of the
+/// record room, as in DR-114.
+pub(crate) fn native_played_reply(name: &str, reply: Vec<Par>, cost: &RuntimeBudget) -> Vec<Par> {
+    if !reply.iter().all(plain_data) {
+        return vec![native_failure_reply(
+            name,
+            EXT_FAILED,
+            "external output is not plain data",
+        )];
+    }
+    let bytes = reply.iter().try_fold(0_u64, |total, par| {
+        u64::try_from(par.encoded_len())
+            .ok()
+            .and_then(|bytes| bytes.checked_add(64))
+            .and_then(|bytes| total.checked_add(bytes))
+    });
+    match bytes {
+        Some(bytes) if cost.take_native_record_room(bytes) => reply,
+        _ => vec![native_failure_reply(
+            name,
+            EXT_OUTPUT_TOO_LARGE,
+            "external output exceeds the record room",
+        )],
+    }
+}
+
+/// Added by Reified RSpaces decision 116: the reply that native replay delivers for the
+/// recorded output `previous_output` of process `name`. The driver of `native_recorded_call`
+/// and the handlers of `embed` and `ann` share these checks.
+pub(crate) fn native_replayed_reply(
+    name: &str,
+    previous_output: Vec<Par>,
+) -> Result<Vec<Par>, InterpreterError> {
+    if previous_output.is_empty() {
+        return Err(InterpreterError::BugFoundError(format!(
+            "native replay of {name} has no recorded output"
+        )));
+    }
+    // Added by G3 (DR-135, S3b H8): play records only plain data, so
+    // a recorded output of another shape is an invalid recording. The
+    // check runs before the produce, and the block is rejected.
+    if !previous_output.iter().all(plain_data) {
+        return Err(InterpreterError::BugFoundError(format!(
+            "native replay of {name} has a recorded output that is not plain data"
+        )));
+    }
+    Ok(previous_output)
 }
 
 #[derive(Clone)]
@@ -1267,30 +1374,45 @@ impl SystemProcesses {
             (&args[..], None)
         };
         let reply = if is_replay {
-            if previous_output.is_empty() {
-                return Err(InterpreterError::BugFoundError(format!(
-                    "native replay of {name} has no recorded output"
-                )));
-            }
-            previous_output
+            // if previous_output.is_empty() {
+            //     return Err(InterpreterError::BugFoundError(format!(
+            //         "native replay of {name} has no recorded output"
+            //     )));
+            // }
+            // // Added by G3 (DR-135, S3b H8): play records only plain data, so
+            // // a recorded output of another shape is an invalid recording. The
+            // // check runs before the produce, and the block is rejected.
+            // if !previous_output.iter().all(plain_data) {
+            //     return Err(InterpreterError::BugFoundError(format!(
+            //         "native replay of {name} has a recorded output that is not plain data"
+            //     )));
+            // }
+            // previous_output
+            // Changed by Reified RSpaces decision 116: the replay checks move into
+            // `native_replayed_reply`, which the handlers of `embed` and `ann` call too.
+            native_replayed_reply(name, previous_output)?
         } else {
             match self.native_service_call(body_ref, request).await {
-                NativeCallOutcome::Reply(reply) => {
-                    let bytes = reply.iter().try_fold(0_u64, |total, par| {
-                        u64::try_from(par.encoded_len())
-                            .ok()
-                            .and_then(|bytes| bytes.checked_add(64))
-                            .and_then(|bytes| total.checked_add(bytes))
-                    });
-                    match bytes {
-                        Some(bytes) if cost.take_native_record_room(bytes) => reply,
-                        _ => vec![native_failure_reply(
-                            name,
-                            EXT_OUTPUT_TOO_LARGE,
-                            "external output exceeds the record room",
-                        )],
-                    }
-                }
+                // Changed by G3 (DR-135, S3b H8): the reply passes the
+                // plain-data check before the size fold and the record-room
+                // take, in `native_played_reply`.
+                // NativeCallOutcome::Reply(reply) => {
+                //     let bytes = reply.iter().try_fold(0_u64, |total, par| {
+                //         u64::try_from(par.encoded_len())
+                //             .ok()
+                //             .and_then(|bytes| bytes.checked_add(64))
+                //             .and_then(|bytes| total.checked_add(bytes))
+                //     });
+                //     match bytes {
+                //         Some(bytes) if cost.take_native_record_room(bytes) => reply,
+                //         _ => vec![native_failure_reply(
+                //             name,
+                //             EXT_OUTPUT_TOO_LARGE,
+                //             "external output exceeds the record room",
+                //         )],
+                //     }
+                // }
+                NativeCallOutcome::Reply(reply) => native_played_reply(name, reply, cost),
                 NativeCallOutcome::BadArgument => {
                     vec![native_failure_reply(name, EXT_BAD_ARG, "invalid argument")]
                 }
@@ -2723,7 +2845,7 @@ impl SystemProcesses {
         };
 
         let output = vec![result_par];
-        produce(&output, ack).await?;
+        produce(&output, &ack).await?;
         Ok(output)
     }
 
@@ -2795,7 +2917,7 @@ impl SystemProcesses {
         let result_par = RhoList::create_par(result_par_vec);
 
         let output = vec![result_par];
-        produce(&output, ack).await?;
+        produce(&output, &ack).await?;
         Ok(output)
     }
 
@@ -3051,6 +3173,93 @@ impl RhoTestAssertion {
             RhoTestAssertion::RhoAssertNotEquals {
                 unexpected, actual, ..
             } => actual != unexpected,
+        }
+    }
+}
+
+#[cfg(test)]
+mod body_refs_fs_tests {
+    use super::*;
+
+    /// Every `BodyRefs::FS_*` constant catalogued here must have a
+    /// unique i64 value.  Keyed to the dispatcher's
+    /// `HashMap<body_ref, handler>` keyspace: two constants with
+    /// the same value would silently resolve to whichever handler
+    /// was registered later.  Slice 5.48's
+    /// `fs_handlers_body_refs_are_unique` catches collisions WITHIN
+    /// FS_HANDLERS; this pin catches collisions ACROSS the full
+    /// FS_* constant set (including the trait-exempt
+    /// `FS_REMOVE_DIR = 58`).
+    ///
+    /// The hardcoded (name, const) list below is the authoritative
+    /// enumeration — a new `BodyRefs::FS_*` constant must be
+    /// appended here when it lands, otherwise it's invisible to
+    /// this cross-constant pin.  Slice 5.48 catches the subset of
+    /// hazards that reach `FS_HANDLERS`; this one catches hazards
+    /// in the constant namespace alone (e.g., someone declares
+    /// `pub const FS_FOO: i64 = 42;` where 42 is already
+    /// `FS_READ` — the body_ref keyspace collides).
+    #[test]
+    fn body_refs_fs_constants_are_unique() {
+        const ENUMERATED_FS_BODY_REFS: &[(&str, i64)] = &[
+            ("FS_QUARANTINE", BodyRefs::FS_QUARANTINE),
+            ("FS_CLOSE", BodyRefs::FS_CLOSE),
+            ("FS_FLUSH", BodyRefs::FS_FLUSH),
+            ("FS_TELL", BodyRefs::FS_TELL),
+            ("FS_SEEK", BodyRefs::FS_SEEK),
+            ("FS_SIZE", BodyRefs::FS_SIZE),
+            ("FS_EXISTS", BodyRefs::FS_EXISTS),
+            ("FS_STAT", BodyRefs::FS_STAT),
+            ("FS_READ", BodyRefs::FS_READ),
+            ("FS_READ_AT", BodyRefs::FS_READ_AT),
+            ("FS_ENTRIES_STREAM_CLOSE", BodyRefs::FS_ENTRIES_STREAM_CLOSE),
+            ("FS_TRUNCATE", BodyRefs::FS_TRUNCATE),
+            ("FS_CHMOD", BodyRefs::FS_CHMOD),
+            ("FS_RENAME", BodyRefs::FS_RENAME),
+            ("FS_CHOWN", BodyRefs::FS_CHOWN),
+            ("FS_REMOVE_FILE", BodyRefs::FS_REMOVE_FILE),
+            ("FS_ENTRIES_STREAM_OPEN", BodyRefs::FS_ENTRIES_STREAM_OPEN),
+            ("FS_ENTRIES_STREAM_NEXT", BodyRefs::FS_ENTRIES_STREAM_NEXT),
+            ("FS_ENTRIES", BodyRefs::FS_ENTRIES),
+            ("FS_OPEN", BodyRefs::FS_OPEN),
+            ("FS_COPY_FILE", BodyRefs::FS_COPY_FILE),
+            ("FS_LOCK_RANGE", BodyRefs::FS_LOCK_RANGE),
+            ("FS_LOCK_SEQUENTIAL", BodyRefs::FS_LOCK_SEQUENTIAL),
+            ("FS_RELEASE_LOCK", BodyRefs::FS_RELEASE_LOCK),
+            (
+                "FS_RELEASE_ALL_FOR_HOLDER",
+                BodyRefs::FS_RELEASE_ALL_FOR_HOLDER,
+            ),
+            ("FS_WRITE", BodyRefs::FS_WRITE),
+            ("FS_WRITE_AT", BodyRefs::FS_WRITE_AT),
+            ("FS_REMOVE_DIR", BodyRefs::FS_REMOVE_DIR),
+        ];
+        const EXPECTED_FS_BODY_REF_COUNT: usize = 28;
+        assert_eq!(
+            ENUMERATED_FS_BODY_REFS.len(),
+            EXPECTED_FS_BODY_REF_COUNT,
+            "ENUMERATED_FS_BODY_REFS has {} entries but expected \
+             {}.  A new BodyRefs::FS_* constant was added without \
+             appending to this test's list (or an existing entry \
+             was removed).  Append the new (name, const) pair and \
+             bump EXPECTED_FS_BODY_REF_COUNT.",
+            ENUMERATED_FS_BODY_REFS.len(),
+            EXPECTED_FS_BODY_REF_COUNT,
+        );
+
+        let mut by_value = std::collections::HashMap::new();
+        for (name, value) in ENUMERATED_FS_BODY_REFS {
+            if let Some(prior) = by_value.insert(*value, *name) {
+                panic!(
+                    "BodyRefs::FS_* body_ref collision: `{name}` \
+                     and `{prior}` both = {value}.  The \
+                     dispatcher's HashMap<body_ref, handler> would \
+                     silently clobber one with the other at \
+                     registration (depending on insertion order).  \
+                     Pick an unused slot from the gaps in the FS_* \
+                     range (currently 39-68 with gaps at 41, 54).",
+                );
+            }
         }
     }
 }

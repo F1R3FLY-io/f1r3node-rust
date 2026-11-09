@@ -386,6 +386,7 @@ pub fn sole_unforgeable(par: &Par) -> Option<&GUnforgeable> {
         connective_used: _,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     let structural = sends.is_empty()
         && receives.is_empty()
@@ -396,6 +397,7 @@ pub fn sole_unforgeable(par: &Par) -> Option<&GUnforgeable> {
         && connectives.is_empty()
         && conditionals.is_empty()
         && cost_signed_terms.is_empty()
+        && use_blocks.is_empty()
         && cost_stacks.is_empty();
     match (structural, unforgeables.as_slice()) {
         (true, [unforgeable]) => Some(unforgeable),
@@ -447,6 +449,9 @@ pub enum RandomPurpose {
     /// The allocator of an Array or Vector space: `.split_byte(0)` for its continuation,
     /// `.split_byte(1)` for its datum (P5d).
     Allocator = 0x0B,
+    /// Added by decision 92: the anchor of a space transaction, `.split_byte(0)` for its
+    /// continuation (`spaces::anchor`).
+    Anchor = 0x0C,
 }
 
 impl RandomPurpose {
@@ -721,6 +726,7 @@ mod tests {
             RandomPurpose::Retire,
             RandomPurpose::Lift,
             RandomPurpose::Allocator,
+            RandomPurpose::Anchor,
         ];
         let mut outputs = std::collections::BTreeSet::new();
         for (index, purpose) in purposes.into_iter().enumerate() {

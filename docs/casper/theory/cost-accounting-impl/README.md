@@ -1,5 +1,7 @@
 # Cost-accounting implementation guide
 
+**Note (DR-132).** The deterministic scheduler is removed (`97d020154`), and evaluation races as on `dev`. The scheduler content of this document is historical. Restore: `git revert 97d020154`.
+
 This directory records the production refinement of the cost-accounted rho
 calculus onto F1R3node's Rholang, RSpace, SystemVault, and Casper subsystems.
 On `feature/cost-accounted-rho`, the Rholang, model, and native RSpace work is

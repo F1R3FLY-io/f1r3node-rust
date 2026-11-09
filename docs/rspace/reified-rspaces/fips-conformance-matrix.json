@@ -48,13 +48,13 @@
           257
         ]
       ],
-      "resolution": "The syntax contract gives send params and receive queries, encoded as marker tuples. The VectorDB family takes the query keys of rule VD-3.",
+      "resolution": "The syntax contract gives send params and receive queries as the protobuf fields `Send.params` and `ReceiveBind.query_spec`. The VectorDB family takes the query keys of rule VD-3.",
       "rows": [
         "RR-26",
         "RR-28"
       ],
       "decision": [
-        "decision-18",
+        "decision-112",
         "decision-21",
         "decision-56"
       ]
@@ -182,8 +182,8 @@
       "clause": "An RSpace is a key-value store: a channel or a group of channels is a key, a data bag and a continuation bag are the value, and a channel exists on its first use.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/generic.rs:139-250",
-        "rholang/src/rust/interpreter/spaces/generic.rs:325-491"
+        "rholang/src/rust/interpreter/spaces/generic.rs:721-864",
+        "rholang/src/rust/interpreter/spaces/generic.rs:965-1286"
       ],
       "formal": [
         {
@@ -233,33 +233,33 @@
       "clause": "The invariant: after each produce or consume, no data and no continuation match, and every generalization keeps the invariant.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:319-345",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:1010-1105",
-        "rholang/src/rust/interpreter/spaces/settle.rs:425-430",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1878-1978",
-        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:794-879",
-        "rholang/src/rust/interpreter/spaces/settle.rs:404-498"
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:335-361",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:1169-1280",
+        "rholang/src/rust/interpreter/spaces/settle.rs:473-478",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3753-3930",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:1411-1507",
+        "rholang/src/rust/interpreter/spaces/settle.rs:453-577"
       ],
       "formal": [
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_produce_preserves_inv",
-          "line": 928
+          "line": 932
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_consume_preserves_inv",
-          "line": 948
+          "line": 952
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_reentry_preserves_shadow_inv",
-          "line": 2712
+          "line": 2716
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_quiescent_inv",
-          "line": 2781
+          "line": 2785
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
@@ -268,7 +268,7 @@
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_lifo",
-          "line": 1255
+          "line": 1263
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
@@ -277,7 +277,7 @@
         {
           "rocq": "JoinCascade.v",
           "name": "cascade_restores_inv",
-          "line": 7230
+          "line": 7424
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
@@ -286,22 +286,22 @@
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_settle_oldest_first",
-          "line": 1899
+          "line": 1904
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_settle_order_matters",
-          "line": 4081
+          "line": 4086
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_produce_preserves_inv",
-          "line": 1390
+          "line": 1395
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_without_settle_breaks_inv",
-          "line": 4002
+          "line": 4007
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
@@ -320,7 +320,7 @@
         {
           "rocq": "SetDiscipline.v",
           "name": "set_produce_fire_retires_stored_class",
-          "line": 1151
+          "line": 1157
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
@@ -404,14 +404,14 @@
       "clause": "Every agent with the behavioral type of a space can be an RSpace, and every RSpace can be reified into an agent.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/handle.rs:225-386",
-        "rholang/src/rust/interpreter/reified/user_agent.rs:531-557"
+        "rholang/src/rust/interpreter/reified/handle.rs:232-411",
+        "rholang/src/rust/interpreter/reified/user_agent.rs:498-521"
       ],
       "formal": [
         {
           "rocq": "SpaceRefs.v",
           "name": "agent_ref_requires_write_flag",
-          "line": 1146
+          "line": 1286
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/AgentSpaces.tla",
@@ -420,7 +420,7 @@
         {
           "rocq": "SpaceRefs.v",
           "name": "r7_agent_reply_bundle_exact",
-          "line": 898
+          "line": 999
         },
         {
           "rocq": "AgentTranslation.v",
@@ -459,7 +459,7 @@
         {
           "rocq": "SpaceRefs.v",
           "name": "tag_untag_id",
-          "line": 947
+          "line": 1055
         },
         {
           "rocq": "AgentTranslation.v",
@@ -525,59 +525,58 @@
       "clause": "The constructor takes a qualifier (default, temp or seq), a theory and more arguments, and it may abort when it does not support the qualifier.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/factory/urn.rs:203",
-        "rholang/src/rust/interpreter/spaces/factory/urn.rs:231-237",
-        "rholang/src/rust/interpreter/spaces/families.rs:540-549",
-        "rholang/src/rust/interpreter/spaces/families.rs:258-291",
-        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:107-156",
-        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:173-188",
-        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:87-178",
-        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:265-279",
-        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:87-89",
-        "rholang/src/rust/interpreter/reified/factory.rs:58-126"
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:207",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:246-253",
+        "rholang/src/rust/interpreter/spaces/families.rs:998-1007",
+        "rholang/src/rust/interpreter/spaces/families.rs:486-519",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:133-189",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:206-221",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:115-213",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:305-335",
+        "rholang/src/rust/interpreter/reified/factory.rs:58-130"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "registered_families_complete",
-          "line": 1444
+          "line": 1571
         },
         {
           "rocq": "Match.v",
           "name": "space_match_is_injected_match",
-          "line": 642
+          "line": 644
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "constructor_params_validated",
-          "line": 1938
+          "line": 2065
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "priorities_validated",
-          "line": 2075
+          "line": 2202
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "array_size_validated",
-          "line": 2188
+          "line": 2315
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "qualifier_matrix",
-          "line": 383
+          "line": 438
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "theory_gate_validated",
-          "line": 2525
+          "line": 2727
         }
       ],
       "no_model": null,
       "tests": [
         "rholang/tests/reified_families.rs::prop_registered_families_complete",
         "rholang/tests/reified_families.rs::space_factory_families_registered",
-        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config_reserves_one_comparison_per_arm",
+        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config",
         "rholang/tests/reified_families.rs::space_family_dispatch_by_config",
         "rholang/tests/reified_families.rs::prop_constructor_params_validated",
         "rholang/tests/reified_families.rs::space_factory_kwargs_unknown_param_with_suggestion",
@@ -648,9 +647,9 @@
       "clause": "The method gensym returns a name, and it may abort, for example when it runs out of names.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/allocator.rs:283-296",
-        "rholang/src/rust/interpreter/spaces/allocator.rs:109-162",
-        "rholang/src/rust/interpreter/reified/handle.rs:358-385"
+        "rholang/src/rust/interpreter/spaces/allocator.rs:240-253",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:87-131",
+        "rholang/src/rust/interpreter/reified/handle.rs:383-410"
       ],
       "formal": [
         {
@@ -661,7 +660,7 @@
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_allocates_at_most_size",
-          "line": 313
+          "line": 318
         },
         {
           "rocq": "VectorStore.v",
@@ -671,12 +670,12 @@
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_indices_sequential",
-          "line": 345
+          "line": 350
         },
         {
           "rocq": "OuterStorage.v",
           "name": "cyclic_array_index_mod_size",
-          "line": 376
+          "line": 381
         },
         {
           "rocq": "VectorStore.v",
@@ -686,12 +685,12 @@
         {
           "rocq": "OuterStorage.v",
           "name": "allocation_batch_atomic",
-          "line": 402
+          "line": 407
         },
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_out_of_names_exact",
-          "line": 330
+          "line": 335
         }
       ],
       "no_model": null,
@@ -729,8 +728,8 @@
       "clause": "The method produce sends a process on a channel, and it may abort, for example when the process holds a Seq name.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/handle.rs:416-458",
-        "rholang/src/rust/interpreter/reified/seq.rs:77-101"
+        "rholang/src/rust/interpreter/reified/handle.rs:441-483",
+        "rholang/src/rust/interpreter/reified/seq.rs:107-126"
       ],
       "formal": [
         {
@@ -786,8 +785,8 @@
       "clause": "The method consume receives on a join: pairs of a matcher and a channel, the arrow <-, <= or <<-, and a body that takes a map of the bindings.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/handle.rs:522-641",
-        "rholang/src/rust/interpreter/reified/user_agent.rs:343-421"
+        "rholang/src/rust/interpreter/reified/handle.rs:547-662",
+        "rholang/src/rust/interpreter/reified/user_agent.rs:329-399"
       ],
       "formal": [
         {
@@ -887,22 +886,22 @@
       "clause": "The namespace rho:space holds combinations of stores and collections, and developers can write their own spaces.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/factory/urn.rs:203",
-        "rholang/src/rust/interpreter/spaces/factory/urn.rs:231-237",
-        "rholang/src/rust/interpreter/reified/system_channels.rs:310-314",
-        "rholang/src/rust/interpreter/reified/system_channels.rs:318-322",
-        "models/src/rust/space_factory_urn.rs:217-314"
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:207",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:246-253",
+        "rholang/src/rust/interpreter/reified/system_channels.rs:351-355",
+        "rholang/src/rust/interpreter/reified/system_channels.rs:359-363",
+        "models/src/rust/space_factory_urn.rs:311-433"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "registered_families_complete",
-          "line": 1444
+          "line": 1571
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "aliases_bind_family_capability",
-          "line": 1533
+          "line": 1660
         }
       ],
       "no_model": null,
@@ -937,7 +936,7 @@
       "clause": "The outer store HashMap, the store of the current implementation.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs:26-56"
+        "rholang/src/rust/interpreter/spaces/outer/hashmap.rs:32-67"
       ],
       "formal": [
         {
@@ -980,70 +979,70 @@
       "clause": "The outer store PathMap: channels are paths, a send also sends on every prefix, and a receive on a prefix binds the re-rooted data and leaves the rest.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:281-286",
-        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:343-347",
-        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:369-371",
-        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs:51-75",
-        "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs:293-337",
-        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs:85-96",
-        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs:201-210",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:283-288",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:345-349",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:371-373",
+        "rholang/src/rust/interpreter/spaces/pathmap/reroot.rs:48-71",
+        "rholang/src/rust/interpreter/spaces/pathmap/adapter.rs:257-301",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs:80-91",
+        "rholang/src/rust/interpreter/spaces/outer/pathmap.rs:153-161",
         "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:137-165",
-        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:130-132",
-        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:197-213",
-        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:175-249",
-        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:389-431",
-        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:542-551"
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:116-118",
+        "rholang/src/rust/interpreter/spaces/pathmap/markers.rs:152-170",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:169-240",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:350-397",
+        "rholang/src/rust/interpreter/spaces/pathmap/delivery.rs:521-530"
       ],
       "formal": [
         {
           "rocq": "PathMapPrefix.v",
           "name": "prefix_key_iff_prefix",
-          "line": 584
+          "line": 586
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "candidate_order_total",
-          "line": 1014
+          "line": 1016
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "reroot_ident",
-          "line": 843
+          "line": 845
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "reroot_compose",
-          "line": 850
+          "line": 852
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "fips_example",
-          "line": 959
+          "line": 961
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "reroot_injective",
-          "line": 922
+          "line": 924
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "prefix_contact_anchored",
-          "line": 1948
+          "line": 1954
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "path_element_rules",
-          "line": 1455
+          "line": 1461
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "marker_record_roundtrip",
-          "line": 1350
+          "line": 1356
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "marker_invariant_preserved",
-          "line": 2560
+          "line": 2566
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
@@ -1052,17 +1051,17 @@
         {
           "rocq": "PathMapPrefix.v",
           "name": "vehicle_carries_payload",
-          "line": 1382
+          "line": 1388
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "delivery_vehicle_single_channel",
-          "line": 1911
+          "line": 1917
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "no_match_remains",
-          "line": 2380
+          "line": 2386
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
@@ -1071,12 +1070,12 @@
         {
           "rocq": "PathMapPrefix.v",
           "name": "peek_restores_delivered_marker",
-          "line": 2010
+          "line": 2016
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "token_ord_reentry",
-          "line": 3126
+          "line": 3132
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PathMapPrefix.tla",
@@ -1160,18 +1159,18 @@
       "clause": "The outer store Array of fixed length: new gives the next index up to the maximum, then aborts with an out-of-names error, and indices can be unforgeable.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/outer/array.rs:130-197",
-        "rholang/src/rust/interpreter/spaces/outer/array.rs:142-152",
-        "rholang/src/rust/interpreter/spaces/allocator.rs:259-277",
-        "rholang/src/rust/interpreter/spaces/allocator.rs:283-296",
-        "rholang/src/rust/interpreter/spaces/allocator.rs:109-162",
-        "rholang/tests/reified_merge_p5.rs:822-883"
+        "rholang/src/rust/interpreter/spaces/outer/array.rs:116-180",
+        "rholang/src/rust/interpreter/spaces/outer/array.rs:127-136",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:220-234",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:240-253",
+        "rholang/src/rust/interpreter/spaces/allocator.rs:87-131",
+        "rholang/tests/reified_merge_p5.rs:916-977"
       ],
       "formal": [
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_allocates_at_most_size",
-          "line": 313
+          "line": 318
         },
         {
           "rocq": "VectorStore.v",
@@ -1191,12 +1190,12 @@
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_indices_sequential",
-          "line": 345
+          "line": 350
         },
         {
           "rocq": "OuterStorage.v",
           "name": "cyclic_array_index_mod_size",
-          "line": 376
+          "line": 381
         },
         {
           "rocq": "VectorStore.v",
@@ -1206,17 +1205,17 @@
         {
           "rocq": "OuterStorage.v",
           "name": "allocation_batch_atomic",
-          "line": 402
+          "line": 407
         },
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_out_of_names_exact",
-          "line": 330
+          "line": 335
         },
         {
           "rocq": "OuterStorage.v",
           "name": "allocator_identities_unique",
-          "line": 555
+          "line": 560
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/CounterConflict.tla",
@@ -1264,18 +1263,18 @@
       "clause": "The outer store Array with reuse: new gives the next index modulo the size.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/outer/array.rs:64-93"
+        "rholang/src/rust/interpreter/spaces/outer/array.rs:63-91"
       ],
       "formal": [
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_indices_sequential",
-          "line": 345
+          "line": 350
         },
         {
           "rocq": "OuterStorage.v",
           "name": "cyclic_array_index_mod_size",
-          "line": 376
+          "line": 381
         },
         {
           "rocq": "VectorStore.v",
@@ -1315,15 +1314,15 @@
       "clause": "The outer store Vector of unbounded length: new grows the vector and gives the index of its last element, and indices can be unforgeable.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/outer/vector.rs:34-98",
-        "rholang/src/rust/interpreter/spaces/outer/vector.rs:46-54",
-        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1147-1194"
+        "rholang/src/rust/interpreter/spaces/outer/vector.rs:33-94",
+        "rholang/src/rust/interpreter/spaces/outer/vector.rs:44-51",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1417-1464"
       ],
       "formal": [
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_allocates_at_most_size",
-          "line": 313
+          "line": 318
         },
         {
           "rocq": "VectorStore.v",
@@ -1343,22 +1342,17 @@
         {
           "rocq": "OuterStorage.v",
           "name": "fixed_array_indices_sequential",
-          "line": 345
+          "line": 350
         },
         {
           "rocq": "OuterStorage.v",
           "name": "cyclic_array_index_mod_size",
-          "line": 376
+          "line": 381
         },
         {
           "rocq": "VectorStore.v",
           "name": "vector_gensym_monotonic",
           "line": 219
-        },
-        {
-          "rocq": "OuterStorage.v",
-          "name": "alloc_trace_covered",
-          "line": 695
         }
       ],
       "no_model": null,
@@ -1371,8 +1365,6 @@
         "rholang/tests/reified_array_vector.rs::prop_cyclic_array_index_mod_size",
         "rholang/tests/reified_array_vector.rs::prop_vector_gensym_monotonic",
         "rholang/src/rust/interpreter/reified/reducer_hooks.rs::reducer_space_routing_allocation_jobs_give_index_names",
-        "rholang/src/rust/interpreter/reified/reducer_hooks.rs::reducer_space_routing_baseline_job_reserves_its_reads",
-        "rholang/tests/reified_array_vector.rs::prop_alloc_trace_covered",
         "rholang/tests/reified_examples_execute.rs::example_vector_indexed_space"
       ],
       "docs": [
@@ -1417,8 +1409,8 @@
       "clause": "The outer store HashSet of channels: a send adds the channel to the set, a receive uses only the empty pattern, and joins are allowed.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/generic.rs:2586-2591",
-        "rholang/src/rust/interpreter/spaces/join.rs:412-471"
+        "rholang/src/rust/interpreter/spaces/generic.rs:5519-5524",
+        "rholang/src/rust/interpreter/spaces/join.rs:401-454"
       ],
       "formal": [
         {
@@ -1434,7 +1426,7 @@
         {
           "rocq": "SpaceFactory.v",
           "name": "qualifier_matrix",
-          "line": 383
+          "line": 438
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
@@ -1443,7 +1435,7 @@
         {
           "rocq": "SpaceFactory.v",
           "name": "registered_families_complete",
-          "line": 1444
+          "line": 1571
         }
       ],
       "no_model": null,
@@ -1495,15 +1487,15 @@
       "clause": "Inner collections: a pair of collection types replaces the two bags, the collections are unindexed, patterns depend on the collection type, and produces need not commute.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1358-1372",
-        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1390-1435",
-        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1345-1347"
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:599-615",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:1721-1766",
+        "rholang/src/rust/interpreter/reified/reducer_hooks.rs:960-965"
       ],
       "formal": [
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_ord_fresh",
-          "line": 1046
+          "line": 1050
         },
         {
           "rocq": "CounterConflict.v",
@@ -1541,8 +1533,8 @@
         },
         {
           "rocq": "SpaceRefs.v",
-          "name": "query_source_routes_inner_channel",
-          "line": 1665
+          "name": "query_bind_routes_its_channel",
+          "line": 1946
         }
       ],
       "no_model": null,
@@ -1585,54 +1577,54 @@
       "clause": "Bags: the multiset semantics of the default space.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:730-762",
-        "rholang/tests/reified_merge_p5.rs:592-647"
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:1340-1381",
+        "rholang/tests/reified_merge_p5.rs:686-741"
       ],
       "formal": [
         {
           "rocq": "DataCollection.v",
           "name": "bag_visit_order_canonical",
-          "line": 243
+          "line": 251
         },
         {
           "rocq": "ContinuationCollection.v",
           "name": "waiter_visit_order_canonical",
-          "line": 337
+          "line": 338
         },
         {
           "rocq": "DataCollection.v",
           "name": "bag_consume_first_spatial_match",
-          "line": 445
+          "line": 453
         },
         {
           "rocq": "Match.v",
           "name": "guard_once_greedy_like_head",
-          "line": 685
+          "line": 687
         },
         {
           "rocq": "DataCollection.v",
           "name": "bag_multiplicity_preserved",
-          "line": 559
+          "line": 567
         },
         {
           "rocq": "DataCollection.v",
           "name": "bag_removal_keeps_equal_duplicate",
-          "line": 578
+          "line": 586
         },
         {
           "rocq": "DataCollection.v",
           "name": "bag_persistent_match_not_removed",
-          "line": 536
+          "line": 544
         },
         {
           "rocq": "DataCollection.v",
           "name": "bag_peek_restore_is_host_second_send",
-          "line": 725
+          "line": 733
         },
         {
           "rocq": "GenericRSpace.v",
           "name": "peek_restore_equals_host_reproduce",
-          "line": 1156
+          "line": 1167
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
@@ -1641,12 +1633,7 @@
         {
           "rocq": "GenericRSpace.v",
           "name": "scan_reissue_identity_stable",
-          "line": 1300
-        },
-        {
-          "rocq": "DataCollection.v",
-          "name": "scan_trace_covered",
-          "line": 856
+          "line": 1311
         }
       ],
       "no_model": null,
@@ -1657,10 +1644,9 @@
         "rholang/tests/reified_engine_props.rs::prop_engine_guard_checked_once_as_the_host_checks_it",
         "rholang/tests/reified_bag.rs::prop_bag_multiplicity_preserved",
         "rholang/tests/reified_bag.rs::prop_bag_removal_keeps_equal_duplicate",
-        "rholang/tests/reified_bag.rs::prop_bag_legacy_charges_equal_host",
+        "rholang/tests/reified_bag.rs::prop_bag_observer_calls_equal_host",
         "rholang/tests/reified_bag.rs::prop_bag_restore_registers_the_record_authority",
         "rholang/tests/reified_engine_props.rs::prop_engine_scan_reissue_keeps_identity",
-        "rholang/tests/reified_bag.rs::prop_bag_reservation_cut_rejects_without_effect",
         "rholang/tests/reified_examples_execute.rs::example_bag_basics",
         "rholang/tests/reified_examples_execute.rs::example_bag_peeks_and_persistence",
         "rholang/tests/reified_examples_execute.rs::example_bag_rejects_a_query"
@@ -1688,38 +1674,38 @@
       "clause": "Sets: each datum or continuation appears at most once, and a second equal send is idempotent.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/disciplines/set.rs:176-227",
-        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:597-685",
-        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:794-879",
-        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:709-789",
-        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:884-899",
-        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:419-429"
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs:204-257",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:947-1265",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:1411-1507",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:648-715",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:1511-1521",
+        "rholang/src/rust/interpreter/spaces/disciplines/scan.rs:633-637"
       ],
       "formal": [
         {
           "rocq": "SetDiscipline.v",
           "name": "set_key_injective",
-          "line": 297
+          "line": 303
         },
         {
           "rocq": "SetDiscipline.v",
           "name": "set_view_dedups_equal_pars",
-          "line": 704
+          "line": 710
         },
         {
           "rocq": "SetDiscipline.v",
           "name": "set_consume_retires_class",
-          "line": 792
+          "line": 798
         },
         {
           "rocq": "SetDiscipline.v",
           "name": "set_retire_comm_lines_up",
-          "line": 872
+          "line": 878
         },
         {
           "rocq": "SetDiscipline.v",
           "name": "set_produce_fire_retires_stored_class",
-          "line": 1151
+          "line": 1157
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/GenericRSpace.tla",
@@ -1728,17 +1714,17 @@
         {
           "rocq": "SetDiscipline.v",
           "name": "set_peek_restores_representative_only",
-          "line": 1205
+          "line": 1211
         },
         {
           "rocq": "SetDiscipline.v",
           "name": "set_membership_full_compare_on_equal_hash",
-          "line": 1274
+          "line": 1280
         },
         {
           "rocq": "GenericRSpace.v",
           "name": "scan_reissue_identity_stable",
-          "line": 1300
+          "line": 1311
         },
         {
           "rocq": "CounterConflict.v",
@@ -1749,11 +1735,6 @@
           "rocq": "CounterConflict.v",
           "name": "unordered_set_writes_commute",
           "line": 2024
-        },
-        {
-          "rocq": "SetDiscipline.v",
-          "name": "set_key_trace_covered",
-          "line": 1389
         }
       ],
       "no_model": null,
@@ -1776,8 +1757,6 @@
         "rholang/tests/reified_merge_p5.rs::prop_unordered_set_writes_commute",
         "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_set_retirements_race",
         "rholang/tests/reified_merge_p5.rs::space_collection_conflicts_set_writes_merge",
-        "rholang/tests/reified_set.rs::prop_set_key_trace_covered",
-        "rholang/tests/reified_set.rs::space_set_discipline_failed_canonicalization_rejects_before_staging",
         "rholang/tests/reified_examples_execute.rs::example_set_idempotent",
         "rholang/tests/reified_examples_execute.rs::example_set_peeks_and_persistence",
         "rholang/tests/reified_examples_execute.rs::example_set_rejects_a_send_param"
@@ -1805,8 +1784,8 @@
       "clause": "Cells: at most one datum or continuation on a channel, and a second send is an error.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/generic.rs:1118-1135",
-        "rholang/tests/reified_merge_p5.rs:651-699"
+        "rholang/src/rust/interpreter/spaces/generic.rs:2424-2439",
+        "rholang/tests/reified_merge_p5.rs:745-793"
       ],
       "formal": [
         {
@@ -1863,7 +1842,7 @@
       "clause": "Queues: FIFO semantics, only the heads interact, one queue is empty or the heads do not match, and nodes agree on the arrival order.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs:32-75"
+        "rholang/src/rust/interpreter/spaces/disciplines/queue.rs:28-63"
       ],
       "formal": [
         {
@@ -1874,7 +1853,7 @@
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_head_blocks",
-          "line": 1218
+          "line": 1222
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
@@ -1883,17 +1862,17 @@
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_loop_bounded_or_reissues",
-          "line": 1380
+          "line": 1384
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_fifo",
-          "line": 1135
+          "line": 1139
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_fifo_with_reentries",
-          "line": 2946
+          "line": 2950
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
@@ -1902,17 +1881,17 @@
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_reissue_keeps_ord",
-          "line": 2373
+          "line": 2377
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_head_blocks_reentry",
-          "line": 3021
+          "line": 3025
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "persistent_reentry_never_spent",
-          "line": 2342
+          "line": 2346
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/HeadOnlyDiscipline.tla",
@@ -1921,7 +1900,7 @@
         {
           "rocq": "HeadOnlyDisciplines.v",
           "name": "queue_ord_fresh",
-          "line": 1046
+          "line": 1050
         },
         {
           "rocq": "CounterConflict.v",
@@ -1979,27 +1958,27 @@
       "clause": "Priority queues: a queue for each priority, and patterns can name a priority.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:119-155",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:157-193",
-        "rholang/src/rust/interpreter/spaces/record.rs:867-1233",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:355-397",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:186-192",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:513-539",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:545-597",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:860-965",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:970-979",
-        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:750-762"
+        "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs:7-44",
+        "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs:46-82",
+        "rholang/src/rust/interpreter/spaces/record.rs:879-1260",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:393-431",
+        "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs:75-81",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:584-612",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:620-683",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:981-1118",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:1123-1132",
+        "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs:830-837"
       ],
       "formal": [
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_level_order",
-          "line": 863
+          "line": 868
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_unprioritized_lowest",
-          "line": 887
+          "line": 892
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
@@ -2008,27 +1987,27 @@
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_restricted_waiter_in_level_queue",
-          "line": 1921
+          "line": 1926
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_unrestricted_first_matching_level",
-          "line": 1943
+          "line": 1948
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_fifo_within_level",
-          "line": 2151
+          "line": 2156
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_head_blocks_within_level",
-          "line": 2324
+          "line": 2329
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_no_level_storage",
-          "line": 3903
+          "line": 3908
         },
         {
           "rocq": "RecordEnvelope.v",
@@ -2043,22 +2022,22 @@
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_settle_oldest_first",
-          "line": 1899
+          "line": 1904
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_settle_order_matters",
-          "line": 4081
+          "line": 4086
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_produce_preserves_inv",
-          "line": 1390
+          "line": 1395
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_without_settle_breaks_inv",
-          "line": 4002
+          "line": 4007
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
@@ -2067,17 +2046,17 @@
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_consume_preserves_inv",
-          "line": 1404
+          "line": 1409
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_peek_restores_head",
-          "line": 2486
+          "line": 2491
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_settle_keeps_unspent_records",
-          "line": 2864
+          "line": 2869
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
@@ -2086,22 +2065,22 @@
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_priority_domain",
-          "line": 3730
+          "line": 3735
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_settle_terminates",
-          "line": 3181
+          "line": 3186
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_reissue_takes_level_fifo_place",
-          "line": 2673
+          "line": 2678
         },
         {
           "rocq": "PriorityQueue.v",
           "name": "pq_reentered_waiter_keeps_seniority",
-          "line": 2716
+          "line": 2721
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/PriorityQueue.tla",
@@ -2156,29 +2135,29 @@
       "clause": "Stacks: FILO semantics, and only the tops interact.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/settle.rs:404-498",
-        "rholang/src/rust/interpreter/spaces/generic.rs:1702-1715"
+        "rholang/src/rust/interpreter/spaces/settle.rs:453-577",
+        "rholang/src/rust/interpreter/spaces/generic.rs:3791-3804"
       ],
       "formal": [
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_head_is_max_ord",
-          "line": 556
+          "line": 564
         },
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_head_blocks",
-          "line": 1348
+          "line": 1356
         },
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_reentry_at_lifo_place",
-          "line": 1444
+          "line": 1452
         },
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_reissue_keeps_ord",
-          "line": 1576
+          "line": 1584
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
@@ -2187,17 +2166,17 @@
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_produce_preserves_inv",
-          "line": 1043
+          "line": 1051
         },
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_settle_keeps_unspent_records",
-          "line": 2151
+          "line": 2159
         },
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_peek_restore_needs_no_settle",
-          "line": 1405
+          "line": 1413
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
@@ -2206,7 +2185,7 @@
         {
           "rocq": "StackDiscipline.v",
           "name": "stack_settle_terminates",
-          "line": 1959
+          "line": 1967
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/StackDiscipline.tla",
@@ -2248,27 +2227,27 @@
       "clause": "A bag and a vector DB: receives wait in a bag, data goes into a vector DB, a pattern gives a vector and a similarity bound, and a receive takes one vector within the bound.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:63-102",
-        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:229-260",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:635-657",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:404-511",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:881-952",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:68-122",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:264-295",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:796-817",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:590-690",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1028-1129",
         "rholang/src/rust/interpreter/tensor/exact.rs:478-521",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1655-1707",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1068-1117",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:810-850",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1422-1471",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1151-1194",
-        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1791-1826",
-        "rholang/src/rust/interpreter/spaces/join.rs:412-471",
-        "rholang/src/rust/interpreter/spaces/generic.rs:1118-1135",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:2235-2326",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1369-1429",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:949-984",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1817-1905",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:1477-1525",
+        "rholang/src/rust/interpreter/spaces/disciplines/vectordb.rs:3478-3526",
+        "rholang/src/rust/interpreter/spaces/join.rs:401-454",
+        "rholang/src/rust/interpreter/spaces/generic.rs:2424-2439",
         "rholang/src/rust/interpreter/tensor/exact.rs:578-599"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "vectordb_params_validated",
-          "line": 2387
+          "line": 2514
         },
         {
           "rocq": "Similarity.v",
@@ -2362,7 +2341,7 @@
         "rholang/tests/reified_vectordb.rs::space_vectordb_bounds_select_the_eligible_records",
         "rholang/tests/reified_vectordb.rs::space_vectordb_ids_keep_only_the_listed_records",
         "rholang/tests/reified_vectordb.rs::space_vectordb_binary_metrics_read_binary_vectors_only",
-        "rholang/tests/reified_vectordb.rs::space_vectordb_reads_without_a_vector_follow_the_canonical_order",
+        "rholang/tests/reified_vectordb.rs::space_vectordb_lists_without_a_vector_keep_the_canonical_order",
         "rholang/tests/reified_vectordb.rs::space_similarity_topk_reference_cases_through_the_space",
         "rholang/tests/reified_vectordb.rs::space_hash_collision_tie_duplicates_are_interchangeable",
         "rholang/tests/reified_vectordb.rs::space_hash_collision_tie_forced_equal_source_hashes_select_one_value",
@@ -2373,14 +2352,12 @@
         "rholang/tests/reified_vectordb.rs::prop_vectordb_list_is_ordered_and_complete",
         "rholang/tests/reified_vectordb.rs::space_vectordb_list_mode_delivers_one_list_in_selection_order",
         "rholang/tests/reified_vectordb.rs::rspace_list_random_state_zero_one_and_two_members",
-        "rholang/tests/reified_vectordb.rs::rspace_list_random_state_replay_reproduces_the_merged_states",
         "rholang/tests/reified_vectordb.rs::prop_vectordb_list_fires_are_atomic",
         "rholang/tests/reified_vectordb.rs::space_vectordb_ce1_list_waiter_fires_with_the_incoming_datum",
         "rholang/tests/reified_vectordb.rs::prop_vectordb_transactions_are_bounded",
         "rholang/tests/reified_vectordb.rs::space_vectordb_list_cascade_carries_at_the_cap",
         "rholang/tests/reified_vectordb.rs::prop_vectordb_records_are_conserved",
         "rholang/tests/reified_vectordb.rs::space_vectordb_cascade_peek_restores_the_lifted_member",
-        "rholang/tests/reified_vectordb.rs::prop_vectordb_driver_and_engine_agree",
         "rholang/tests/reified_vectordb.rs::space_vectordb_join_binds_each_position_by_its_query",
         "rholang/tests/reified_vectordb.rs::space_vectordb_list_mode_in_a_join_fails",
         "rholang/tests/reified_vectordb.rs::space_vectordb_join_waiter_fires_on_an_eligible_send",
@@ -2394,9 +2371,6 @@
         "rholang/tests/reified_native_spaces.rs::space_native_vectordb_errors_reproduce",
         "rholang/tests/reified_native_spaces.rs::space_native_vectordb_cascade_carries_at_the_cap",
         "rholang/tests/reified_native_spaces.rs::space_native_vectordb_denial_replay",
-        "rholang/tests/reified_vectordb.rs::space_vectordb_reservation_cut_rejects_without_effect",
-        "rholang/tests/reified_vectordb.rs::reducer_query_costs_of_a_query_follow_its_records_and_dimensions",
-        "rholang/src/rust/interpreter/tensor/costs.rs::reducer_query_costs_follow_the_table_of_the_module",
         "rholang/tests/reified_examples_execute.rs::example_vectordb_queries",
         "rholang/tests/reified_examples_execute.rs::example_vectordb_list_scores",
         "rholang/tests/reified_examples_execute.rs::example_vectordb_multi_topic",
@@ -2504,7 +2478,7 @@
         {
           "rocq": "SpaceFactory.v",
           "name": "qualifier_matrix",
-          "line": 383
+          "line": 438
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
@@ -2572,12 +2546,7 @@
         {
           "rocq": "SpaceFactory.v",
           "name": "qualifier_matrix",
-          "line": 383
-        },
-        {
-          "rocq": "EventCorrelation.v",
-          "name": "view_charge_cache_independent",
-          "line": 9195
+          "line": 438
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/NativeHandles.tla",
@@ -2599,7 +2568,6 @@
         "rholang/tests/reified_rehydrate.rs::space_checkpoint_reset",
         "rholang/tests/reified_rehydrate.rs::space_attach_warm_cold_cost_equal",
         "rholang/tests/reified_restart_rehydrate.rs::space_restart_rehydrate_three_processes",
-        "rholang/src/rust/interpreter/reified/schedule.rs::space_intents_for_two_sids_in_one_frontier_run_in_separate_tasks",
         "rholang/tests/reified_merge.rs::reified_handle_cross_block_merge_no_conflict",
         "rholang/tests/reified_examples_execute.rs::example_space_qualifier_default"
       ],
@@ -2623,13 +2591,13 @@
       "clause": "The temp qualifier: concurrent access, and the data and continuations of the channel are never written to disk.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/ephemeral.rs:92-187"
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs:121-291"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "qualifier_matrix",
-          "line": 383
+          "line": 438
         },
         {
           "rocq": "Namespace.v",
@@ -2683,7 +2651,6 @@
         "rholang/tests/reified_vectordb_chroma.rs::mirror_temp_never_mirrored",
         "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_native_unsupported_pairs_reject",
         "rholang/tests/reified_seq.rs::prop_seq_qualifier_support",
-        "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_qualifiers_fail_closed",
         "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_seq_rows",
         "rholang/tests/reified_examples_execute.rs::example_space_qualifier_temp",
         "rholang/tests/reified_examples_execute.rs::example_temp_space_ends_with_its_deploy"
@@ -2711,8 +2678,8 @@
       "clause": "The seq qualifier: temp, and a seq channel is never sent, is not used in a concurrent process, and is used in at most one sequential process.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/seq.rs:77-101",
-        "rholang/src/rust/interpreter/spaces/ephemeral.rs:216-290"
+        "rholang/src/rust/interpreter/reified/seq.rs:107-126",
+        "rholang/src/rust/interpreter/spaces/ephemeral.rs:392-566"
       ],
       "formal": [
         {
@@ -2726,14 +2693,14 @@
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/SpaceCoordination.tla",
-          "invariant": "SeqExclusive"
+          "invariant": "SeqCausalChain"
         }
       ],
       "no_model": null,
       "tests": [
         "rholang/tests/reified_seq.rs::prop_seq_scan_finds_every_seq_name",
         "rholang/tests/reified_seq.rs::reducer_seq_payload",
-        "rholang/tests/reified_seq.rs::prop_seq_claim_chain",
+        "rholang/tests/reified_seq.rs::prop_seq_claim_causal_chain",
         "rholang/tests/reified_seq.rs::reducer_seq_atomic_guard",
         "rholang/tests/reified_pattern_enforcement.rs::pattern_enforcement_seq_rows",
         "rholang/tests/reified_examples_execute.rs::example_space_qualifier_seq",
@@ -2763,24 +2730,24 @@
       "clause": "The use block sets the default space of untagged channels in new blocks and of forged names.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/route.rs:173-225",
-        "rholang/src/rust/interpreter/reified/scope.rs:185-193"
+        "rholang/src/rust/interpreter/reified/route.rs:175-227",
+        "rholang/src/rust/interpreter/reified/scope.rs:198-214"
       ],
       "formal": [
         {
           "rocq": "SpaceRefs.v",
           "name": "route_rules",
-          "line": 763
+          "line": 864
         },
         {
           "rocq": "SpaceRefs.v",
           "name": "space_name_route_ignores_ctx",
-          "line": 791
+          "line": 892
         },
         {
           "rocq": "SpaceRefs.v",
           "name": "ordinary_channels_route_default",
-          "line": 977
+          "line": 1085
         }
       ],
       "no_model": null,
@@ -2796,7 +2763,8 @@
         "docs/rspace/reified-rspaces/syntax-contract.md#use-blocks"
       ],
       "decision": [
-        "decision-18"
+        "decision-18",
+        "decision-112"
       ],
       "reason": null,
       "note": null
@@ -2833,15 +2801,15 @@
       "clause": "The factories by URN, the FIPS names rho:space:HashMapBagSpace and rho:space:PathMapSpace included, and their calls with a qualifier and a theory.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/system_channels.rs:310-314",
-        "rholang/src/rust/interpreter/reified/system_channels.rs:318-322",
-        "models/src/rust/space_factory_urn.rs:217-314"
+        "rholang/src/rust/interpreter/reified/system_channels.rs:351-355",
+        "rholang/src/rust/interpreter/reified/system_channels.rs:359-363",
+        "models/src/rust/space_factory_urn.rs:311-433"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "aliases_bind_family_capability",
-          "line": 1533
+          "line": 1660
         },
         {
           "rocq": "TheoryAdmission.v",
@@ -2861,7 +2829,7 @@
         {
           "rocq": "SpaceFactory.v",
           "name": "theory_gate_validated",
-          "line": 2525
+          "line": 2727
         }
       ],
       "no_model": null,
@@ -2903,7 +2871,7 @@
       "clause": "Inside a use block, new x : s creates a name in the space s, and a forged name is created in the space of the use block.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/route.rs:173-225"
+        "rholang/src/rust/interpreter/reified/route.rs:175-227"
       ],
       "formal": [
         {
@@ -2914,7 +2882,7 @@
         {
           "rocq": "SpaceRefs.v",
           "name": "route_rules",
-          "line": 763
+          "line": 864
         }
       ],
       "no_model": null,
@@ -2933,7 +2901,8 @@
       ],
       "decision": [
         "decision-18",
-        "decision-21"
+        "decision-21",
+        "decision-112"
       ],
       "reason": null,
       "note": null
@@ -2950,24 +2919,24 @@
       "clause": "Joins are permitted in one space and prohibited across spaces.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/join.rs:371-404",
-        "rholang/src/rust/interpreter/spaces/join.rs:669-681"
+        "rholang/src/rust/interpreter/spaces/join.rs:371-393",
+        "rholang/src/rust/interpreter/spaces/join.rs:597-609"
       ],
       "formal": [
         {
           "rocq": "JoinCascade.v",
           "name": "plan_then_lock_stable",
-          "line": 5723
+          "line": 5917
         },
         {
           "rocq": "JoinCascade.v",
           "name": "join_repeated_channel_distinct_records",
-          "line": 1244
+          "line": 1438
         },
         {
           "rocq": "JoinCascade.v",
           "name": "bind_permutation_restores_order",
-          "line": 2148
+          "line": 2342
         },
         {
           "rocq": "RecordEnvelope.v",
@@ -2976,17 +2945,17 @@
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
-          "invariant": "DistinctRecordsPerBind"
+          "invariant": "NonPersistentBoundOnce"
         },
         {
           "rocq": "JoinCascade.v",
           "name": "cascade_bumps_touched_counters",
-          "line": 4056
+          "line": 4250
         },
         {
           "rocq": "JoinCascade.v",
           "name": "join_reissue_keeps_bind_ords",
-          "line": 4130
+          "line": 4324
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
@@ -2995,7 +2964,7 @@
         {
           "rocq": "JoinCascade.v",
           "name": "join_fires_heads_only",
-          "line": 3210
+          "line": 3404
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
@@ -3004,41 +2973,41 @@
         {
           "rocq": "JoinCascade.v",
           "name": "join_search_is_head_greedy",
-          "line": 1468
+          "line": 1662
         },
         {
           "rocq": "JoinCascade.v",
           "name": "greedy_join_can_miss_assignment",
-          "line": 1345
+          "line": 1539
         },
         {
           "rocq": "JoinCascade.v",
           "name": "join_produce_search_agrees_with_head",
-          "line": 1871
+          "line": 2065
         },
         {
           "rocq": "JoinCascade.v",
           "name": "join_incoming_binds_once",
-          "line": 1146
+          "line": 1340
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
-          "invariant": "IncomingBoundOnce"
+          "invariant": "IncomingHeld"
         },
         {
           "rocq": "JoinCascade.v",
           "name": "cascade_terminates",
-          "line": 4497
+          "line": 4691
         },
         {
           "rocq": "JoinCascade.v",
           "name": "cascade_order_independent",
-          "line": 3144
+          "line": 3338
         },
         {
           "rocq": "JoinCascade.v",
           "name": "lift_reoffer_equals_direct_comm",
-          "line": 3576
+          "line": 3770
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
@@ -3047,12 +3016,12 @@
         {
           "rocq": "JoinCascade.v",
           "name": "join_set_bind_retires_class",
-          "line": 2973
+          "line": 3167
         },
         {
           "rocq": "JoinCascade.v",
           "name": "peek_join_restores_stored_candidates",
-          "line": 5156
+          "line": 5350
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
@@ -3061,7 +3030,7 @@
         {
           "rocq": "JoinCascade.v",
           "name": "join_txn_fires_bounded",
-          "line": 4642
+          "line": 4836
         },
         {
           "tla": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
@@ -3079,12 +3048,12 @@
         "rholang/tests/reified_joins.rs::space_joins_default_and_space_join_aborts",
         "rholang/tests/reified_routing.rs::reducer_space_routing_agent_gate",
         "rholang/tests/reified_join_props.rs::prop_plan_then_lock_covers_every_staged_channel",
-        "rholang/tests/reified_joins.rs::space_joins_escalation_relocks_once",
-        "rholang/tests/reified_joins.rs::space_joins_classification_reserves_check_joins",
-        "rholang/tests/reified_join_props.rs::prop_join_repeated_channel_distinct_records",
+        "rholang/tests/reified_joins.rs::space_joins_phase_b_locks_the_closure_once",
+        "rholang/tests/reified_joins.rs::space_joins_classification_fires_as_check_joins",
+        "rholang/tests/reified_join_props.rs::prop_join_nonpersistent_record_binds_once",
         "rholang/tests/reified_join_props.rs::prop_bind_permutation_restores_order",
         "rholang/tests/reified_join_props.rs::prop_continuation_v2_roundtrip",
-        "rholang/tests/reified_joins.rs::space_joins_repeated_channel_distinct_records",
+        "rholang/tests/reified_joins.rs::space_joins_persistent_record_binds_two_positions",
         "rholang/tests/reified_joins.rs::space_joins_bind_order_restored_for_body",
         "rholang/tests/reified_joins.rs::space_joins_multi_ord_envelope_roundtrip",
         "rholang/tests/reified_joins.rs::space_joins_peek_join_restores_stored_candidates",
@@ -3102,7 +3071,7 @@
         "rholang/tests/reified_joins.rs::space_joins_set_classes",
         "rholang/tests/reified_joins.rs::space_joins_guard_checked_once_after_all_binds",
         "rholang/tests/reified_join_props.rs::prop_join_produce_search_agrees_with_head",
-        "rholang/tests/reified_join_props.rs::prop_join_incoming_binds_once",
+        "rholang/tests/reified_join_props.rs::prop_join_incoming_held",
         "rholang/tests/reified_joins.rs::space_joins_incoming_binds_once",
         "rholang/tests/reified_join_props.rs::prop_cascade_terminates_any_schedule",
         "rholang/tests/reified_join_props.rs::prop_cascade_order_independent",
@@ -3140,7 +3109,7 @@
         "decision-50"
       ],
       "reason": null,
-      "note": null
+      "note": "`join_produce_search_agrees_with_head` is a theorem of the search before decision 118. The GREEDY part of `prop_join_produce_search_agrees_with_head` runs for a non-persistent x only, and the allowed set checks a persistent x."
     },
     {
       "id": "RR-42",
@@ -3158,8 +3127,8 @@
       "clause": "Inside a new block that creates names in the spaces, the names of the spaces refer to the modified spaces, and outside it they refer to the unmodified spaces.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/scope.rs:185-193",
-        "rholang/src/rust/interpreter/reified/scope.rs:141-164"
+        "rholang/src/rust/interpreter/reified/scope.rs:198-214",
+        "rholang/src/rust/interpreter/reified/scope.rs:148-171"
       ],
       "formal": [],
       "no_model": {
@@ -3193,14 +3162,14 @@
       "clause": "getSpaceAgent returns the agent of a space, and assertEqual compares it with the factory.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/system_processes.rs:260-298",
-        "rholang/src/rust/interpreter/reified/system_processes.rs:346-360"
+        "rholang/src/rust/interpreter/reified/system_processes.rs:330-373",
+        "rholang/src/rust/interpreter/reified/system_processes.rs:431-445"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "aliases_map_to_family",
-          "line": 338
+          "line": 347
         }
       ],
       "no_model": null,
@@ -3254,8 +3223,8 @@
       "clause": "Layers 1 and 2 of the proposal: the traits DataCollection, ContinuationCollection and ChannelStore.",
       "status": "deviation",
       "code": [
-        "rholang/src/rust/interpreter/spaces/generic.rs:139-250",
-        "rholang/src/rust/interpreter/spaces/generic.rs:325-491"
+        "rholang/src/rust/interpreter/spaces/generic.rs:721-864",
+        "rholang/src/rust/interpreter/spaces/generic.rs:965-1286"
       ],
       "formal": [],
       "no_model": null,
@@ -3283,7 +3252,7 @@
       "clause": "Layers 3 and 4 of the proposal: the qualifier enum, the trait SpaceAgent, and the extension traits for checkpoints and replay.",
       "status": "deviation",
       "code": [
-        "rholang/src/rust/interpreter/spaces/agent.rs:453-506",
+        "rholang/src/rust/interpreter/spaces/agent.rs:547-600",
         "rholang/src/rust/interpreter/spaces/types/qualifier.rs:23-31"
       ],
       "formal": [],
@@ -3312,21 +3281,21 @@
       "clause": "Layer 5 of the proposal: the bag, queue, set and cell collections, the HashMap and PathMap stores, and a generic RSpace over a store and a matcher.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/disciplines/set.rs:176-227",
-        "rholang/src/rust/interpreter/spaces/generic.rs:1118-1135",
-        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:281-286",
-        "rholang/src/rust/interpreter/spaces/generic.rs:507-553"
+        "rholang/src/rust/interpreter/spaces/disciplines/set.rs:204-257",
+        "rholang/src/rust/interpreter/spaces/generic.rs:2424-2439",
+        "rholang/src/rust/interpreter/spaces/pathmap/path_codec.rs:283-288",
+        "rholang/src/rust/interpreter/spaces/generic.rs:1301-1342"
       ],
       "formal": [
         {
           "rocq": "DataCollection.v",
           "name": "bag_visit_order_canonical",
-          "line": 243
+          "line": 251
         },
         {
           "rocq": "ContinuationCollection.v",
           "name": "waiter_visit_order_canonical",
-          "line": 337
+          "line": 338
         },
         {
           "rocq": "HeadOnlyDisciplines.v",
@@ -3336,7 +3305,7 @@
         {
           "rocq": "SetDiscipline.v",
           "name": "set_key_injective",
-          "line": 297
+          "line": 303
         },
         {
           "rocq": "CellDiscipline.v",
@@ -3355,12 +3324,12 @@
         {
           "rocq": "PathMapPrefix.v",
           "name": "prefix_key_iff_prefix",
-          "line": 584
+          "line": 586
         },
         {
           "rocq": "PathMapPrefix.v",
           "name": "candidate_order_total",
-          "line": 1014
+          "line": 1016
         }
       ],
       "no_model": null,
@@ -3404,42 +3373,42 @@
       "clause": "Layer 6 of the proposal: a factory for each kind of space that creates a space from a qualifier, a theory and more arguments.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/factory/urn.rs:203",
-        "rholang/src/rust/interpreter/spaces/factory/urn.rs:231-237",
-        "rholang/src/rust/interpreter/spaces/families.rs:540-549",
-        "rholang/src/rust/interpreter/spaces/families.rs:258-291",
-        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:107-156",
-        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:87-178",
-        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:265-279",
-        "rholang/src/rust/interpreter/reified/factory.rs:58-126"
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:207",
+        "rholang/src/rust/interpreter/spaces/factory/urn.rs:246-253",
+        "rholang/src/rust/interpreter/spaces/families.rs:998-1007",
+        "rholang/src/rust/interpreter/spaces/families.rs:486-519",
+        "rholang/src/rust/interpreter/spaces/factory/defaults.rs:133-189",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:115-213",
+        "rholang/src/rust/interpreter/spaces/factory/constructor.rs:305-335",
+        "rholang/src/rust/interpreter/reified/factory.rs:58-130"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "registered_families_complete",
-          "line": 1444
+          "line": 1571
         },
         {
           "rocq": "Match.v",
           "name": "space_match_is_injected_match",
-          "line": 642
+          "line": 644
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "constructor_params_validated",
-          "line": 1938
+          "line": 2065
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "array_size_validated",
-          "line": 2188
+          "line": 2315
         }
       ],
       "no_model": null,
       "tests": [
         "rholang/tests/reified_families.rs::prop_registered_families_complete",
         "rholang/tests/reified_families.rs::space_factory_families_registered",
-        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config_reserves_one_comparison_per_arm",
+        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config",
         "rholang/tests/reified_families.rs::space_family_dispatch_by_config",
         "rholang/tests/reified_families.rs::prop_constructor_params_validated",
         "rholang/tests/reified_families.rs::space_factory_kwargs_unknown_param_with_suggestion",
@@ -3514,20 +3483,20 @@
       "clause": "Agents emulate objects: a constructor sets up the state of a new instance and returns a reference to it.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/spaces/families.rs:540-549",
-        "rholang/src/rust/interpreter/spaces/families.rs:258-291",
-        "rholang/src/rust/interpreter/reified/factory.rs:167-173"
+        "rholang/src/rust/interpreter/spaces/families.rs:998-1007",
+        "rholang/src/rust/interpreter/spaces/families.rs:486-519",
+        "rholang/src/rust/interpreter/reified/factory.rs:172-178"
       ],
       "formal": [
         {
           "rocq": "SpaceFactory.v",
           "name": "sid_derivation_deterministic",
-          "line": 669
+          "line": 716
         },
         {
           "rocq": "SpaceFactory.v",
           "name": "space_already_exists_is_deterministic_abort",
-          "line": 816
+          "line": 938
         },
         {
           "rocq": "RecordEnvelope.v",
@@ -3545,7 +3514,7 @@
         {
           "rocq": "Match.v",
           "name": "space_match_is_injected_match",
-          "line": 642
+          "line": 644
         }
       ],
       "no_model": null,
@@ -3558,7 +3527,7 @@
         "rholang/tests/reified_queue.rs::space_queue_dangling_name_aborts",
         "rholang/tests/reified_rehydrate.rs::reducer_dangling_handle",
         "rholang/tests/reified_rehydrate.rs::reducer_attach_costs",
-        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config_reserves_one_comparison_per_arm",
+        "rholang/src/rust/interpreter/spaces/families.rs::space_families_dispatch_by_config",
         "rholang/tests/reified_families.rs::space_family_dispatch_by_config",
         "rholang/tests/reified_examples_execute.rs::example_handle_methods",
         "rholang/tests/reified_examples_execute.rs::example_get_space_agent"
@@ -3585,9 +3554,9 @@
       "clause": "The agent block: a replicated receive on the constructor creates this and private, dispatches each message [return, method, args] to its method or to default, and replies bundle+{*this}.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/handle.rs:225-386",
-        "rholang/src/rust/interpreter/reified/handle.rs:149-181",
-        "rholang/src/rust/interpreter/reified/factory.rs:140-164"
+        "rholang/src/rust/interpreter/reified/handle.rs:232-411",
+        "rholang/src/rust/interpreter/reified/handle.rs:156-188",
+        "rholang/src/rust/interpreter/reified/factory.rs:144-169"
       ],
       "formal": [
         {
@@ -3629,7 +3598,7 @@
       "clause": "The method-call sugar: x!y(args) means x!?(\"y\", args) as a receive source, before a continuation and as a final send.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/handle.rs:102-123"
+        "rholang/src/rust/interpreter/reified/handle.rs:103-124"
       ],
       "formal": [],
       "no_model": {
@@ -3663,7 +3632,7 @@
       "clause": "The constructor channel r is fresh, this and return are bound in the method bodies, default sees only this, and a return channel is the first element of args.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/handle.rs:194-203"
+        "rholang/src/rust/interpreter/reified/handle.rs:201-210"
       ],
       "formal": [],
       "no_model": {
@@ -3696,8 +3665,8 @@
       "clause": "Every agent has a default clause, because messages of an unexpected shape can arrive on this.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/handle.rs:206-216",
-        "rholang/src/rust/interpreter/reified/handle.rs:787-792"
+        "rholang/src/rust/interpreter/reified/handle.rs:213-223",
+        "rholang/src/rust/interpreter/reified/handle.rs:804-809"
       ],
       "formal": [],
       "no_model": {
@@ -3753,7 +3722,7 @@
       "clause": "The constructor composes with the send-return syntax: for (b <- ctor!?(args)) calls methods of b.",
       "status": "implemented",
       "code": [
-        "rholang/src/rust/interpreter/reified/factory.rs:58-126"
+        "rholang/src/rust/interpreter/reified/factory.rs:58-130"
       ],
       "formal": [
         {

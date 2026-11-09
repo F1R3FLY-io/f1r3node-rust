@@ -1,0 +1,21 @@
+[package]
+name = "file-read-service"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+axum = { workspace = true }
+clap = { workspace = true }
+eyre = { workspace = true }
+hocon = { version = "0.9", default-features = false, features = ["serde-support"] }
+libc = "0.2"
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+reqwest = { workspace = true }
+tempfile = { workspace = true }

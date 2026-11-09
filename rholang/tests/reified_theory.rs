@@ -12,8 +12,16 @@
 //!
 //! | Test | Property |
 //! |---|---|
-//! | `space_theory_admission` | TH-4 to TH-6 on every family program: `free Nat()` admits every value of the program and delivers what the space without a theory delivers. `free String()` refuses the first send with `TheoryRefuted`. |
-//! | `space_theory_admission_vectordb` | TH-5 and TH-6 on the two VectorDB families: `free Any()` admits vectors and delivers the lists of the space without a theory, and `free Nat()` refuses a vector. |
+//! | `space_theory_admission` | TH-4 to TH-6 on every family program, on each racing runtime: with `free Nat()` and with no theory, every play certifies and delivers an allowed label set. `free String()` refuses the first send with `TheoryRefuted`. |
+// Changed by decision 93 (decision 111): the deliveries race, so each play certifies and delivers
+// an allowed label set. The old row follows.
+// //! | `space_theory_admission` | TH-4 to TH-6 on every family program: `free Nat()` admits every value of the program and delivers what the space without a theory delivers. `free String()` refuses the first send with `TheoryRefuted`. |
+// Added by decision 124 (F2): the PathMap peek row.
+//! | `space_theory_pathmap_peek_then_send_certifies` | F2, on each racing runtime: a PathMap bag with `free Nat()` parks a peek waiter on `a` in one deploy. In the next deploy a send on `[*a, 1]` fires it under the vehicle of the prefix and then stores the element. Play records the fire row before the Stored row, and both deploys certify. The family without a theory is the control. |
+//! | `space_theory_admission_vectordb` | TH-5 and TH-6 on the two VectorDB families, on each racing runtime: with `free Any()` and with no theory, every play certifies and delivers one list and one near vector. `free Nat()` refuses a vector. |
+// Changed by decision 93 (decision 111): the deliveries race, so each play certifies and delivers
+// one list and one near vector. The old row follows.
+// //! | `space_theory_admission_vectordb` | TH-5 and TH-6 on the two VectorDB families: `free Any()` admits vectors and delivers the lists of the space without a theory, and `free Nat()` refuses a vector. |
 //! | `theory_nat_accepts_bigint_nonneg` | TH-1: `Nat` admits `GInt` values of at least 0 and non-negative `GBigInt` values, and a receive takes them. `Int` admits negative big integers. |
 //! | `theory_nat_rejects_minus1_string_par` | TH-1 and TH-5: `Nat` refuses a negative number, the string `"Nat(42)"`, a par of two values and every other shape, through a routed send, a persistent send and the handle `produce`. The error names the index of the first refused value. |
 //! | `theory_identity_persisted_no_handle` | TH-2: the config of the space holds the canonical identity map of the theory, which holds content only: two spaces with one theory have equal theory slots, and the slot holds no name. |
@@ -39,6 +47,8 @@ use models::rhoapi::{Expr, ListParWithRandom, Par};
 use proptest::prelude::{any, prop_oneof, Just, Strategy};
 use proptest::sample::select;
 use proptest::test_runner::TestCaseError;
+// Added by decision 124 (F2): the rows of the journal of a PathMap offer.
+use rholang::rust::interpreter::accounting::{NativeOperationRecord, NativeOperationSource};
 use rholang::rust::interpreter::spaces::errors::SpaceError;
 use rholang::rust::interpreter::spaces::theory::builtin::BUILTIN_NAMES;
 use rholang::rust::interpreter::spaces::theory::identity::{TheoryIdentity, STRUCTURAL_LIMITS};
@@ -46,9 +56,21 @@ use rholang::rust::interpreter::spaces::theory::{
     self, admit_values, SpaceTheory, TheoryUsage, TheoryVerdict,
 };
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
-use support::family_programs::{space_program, Inner, Outer, JOIN};
+// Added by decision 124 (F2): the completion of a row of a PathMap offer.
+use rspace_plus_plus::rspace::rspace_interface::RSpaceOperationCompletion;
+// Added by decision 124 (F2): the families of the PathMap peek test.
+use support::family_programs::StoredFamily;
+// Changed by decision 93 (decision 111): the admission tests check the allowed label sets and
+// run on the racing runtimes. The old imports follow.
+// use support::family_programs::{space_program, Inner, Outer, JOIN};
+use support::family_programs::{allowed_labels, space_program, Inner, Outer, JOIN};
 use support::native::{assert_reproduces, certify, native_play, Played, AMPLE_LIMIT, OUT};
-use support::props::{check, pure_config, runtime_config, tokio_runtime};
+// Added by decision 124 (F2): the rows of a committed journal and the deploys of a chain.
+use support::native::{committed_evidence, is_space_row, NativeChain};
+// use support::props::{check, pure_config, runtime_config, tokio_runtime};
+use support::props::{
+    check, pure_config, racing_runtime, runtime_config, tokio_runtime, RACING_WORKERS,
+};
 use support::session::error_codes;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────────────────────
@@ -219,19 +241,42 @@ fn holds_name(par: &Par) -> bool {
 // ─── TH-4 to TH-6 on the family programs ──────────────────────────────────────────────────────
 
 /// TH-4 to TH-6: every family program sends only natural numbers, so `free Nat()` admits each
-/// send and checks each stored datum that a receive, a join or a prefix receive matches. The
-/// space then delivers exactly what the space without a theory delivers. With `free String()`,
-/// the first send of the program aborts the deploy with `TheoryRefuted`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_theory_admission() {
+/// send and checks each stored datum that a receive, a join or a prefix receive matches. On each
+/// racing runtime, the plays with `free Nat()` and with no theory certify and deliver an allowed
+/// label set (decision 93). With `free String()`, the first send of the program aborts the deploy
+/// with `TheoryRefuted`.
+// Changed by decision 93 (decision 111): the deliveries race, so each play certifies and delivers
+// an allowed label set, and the body moved to `theory_admission_run`. The old lines follow.
+// /// space then delivers exactly what the space without a theory delivers. With `free String()`,
+// /// the first send of the program aborts the deploy with `TheoryRefuted`.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_theory_admission() {
+#[test]
+fn space_theory_admission() {
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(theory_admission_run());
+    }
+}
+
+/// Added by decision 93 (decision 111): the body of [`space_theory_admission`] on one racing
+/// runtime.
+async fn theory_admission_run() {
     for outer in Outer::ALL {
         for inner in Inner::ALL {
             let family = format!("{}:{}", outer.name(), inner.name());
-            let baseline = native_play(&family_program(outer, inner, None), THEORY_LIMIT).await;
+            // Changed by decision 93 (decision 111): the baseline certifies too. The old line
+            // follows.
+            // let baseline = native_play(&family_program(outer, inner, None), THEORY_LIMIT).await;
+            let baseline = play_and_certify(&family, &family_program(outer, inner, None)).await;
             assert!(
                 baseline.result.errors.is_empty(),
                 "{family}: {:?}",
                 baseline.result.errors
+            );
+            assert!(
+                allowed_labels(outer, inner, &labels(&baseline)),
+                "{family}: the deliveries without a theory: {:?}",
+                labels(&baseline)
             );
             let admitted = play_and_certify(
                 &format!("{family} Nat"),
@@ -243,9 +288,16 @@ async fn space_theory_admission() {
                 "{family} Nat: {:?}",
                 admitted.result.errors
             );
-            assert_eq!(
-                admitted.out, baseline.out,
-                "{family}: the theory changes no delivery"
+            // Changed by decision 93 (decision 111): the deliveries race, so each play delivers
+            // an allowed label set. The old check follows.
+            // assert_eq!(
+            //     admitted.out, baseline.out,
+            //     "{family}: the theory changes no delivery"
+            // );
+            assert!(
+                allowed_labels(outer, inner, &labels(&admitted)),
+                "{family} Nat: the deliveries: {:?}",
+                labels(&admitted)
             );
             assert!(
                 !labels(&admitted).is_empty(),
@@ -266,11 +318,159 @@ async fn space_theory_admission() {
     }
 }
 
-/// TH-5 and TH-6 on the VectorDB families: `free Any()` admits the vectors, checks every stored
-/// member of a list and the stored record of a single-mode receive, and delivers what the space
-/// without a theory delivers. `free Nat()` refuses a vector with `TheoryRefuted`.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_theory_admission_vectordb() {
+/// Added by decision 124 (F2, base one row source for each produce, replay_rspace.rs:1058-1082):
+/// the families of [`space_theory_pathmap_peek_then_send_certifies`]. Block 1 parks a peek
+/// waiter on `a`. Block 2 sends 5 on the path `[*a, 1]`, whose prefix `[*a]` is the path of `a`.
+/// The first family has the theory of [`space_theory_admission`], so the commit of the waiter
+/// may veto. The second family has no theory. It is the control.
+const PEEK_FAMILIES: [StoredFamily; 2] = [
+    StoredFamily {
+        label: "pathmap-peek-nat",
+        urn: "rho:space:pathmap:bag",
+        ctor: r#""default", free Nat()"#,
+        state: r#"for (@y <<- a) { out!(["peek", y]) }"#,
+        touch: r#"use space { @[*a, 1]!(5) }"#,
+    },
+    StoredFamily {
+        label: "pathmap-peek",
+        urn: "rho:space:pathmap:bag",
+        ctor: r#""default""#,
+        state: r#"for (@y <<- a) { out!(["peek", y]) }"#,
+        touch: r#"use space { @[*a, 1]!(5) }"#,
+    },
+];
+
+/// Added by decision 124 (F2, base one row source for each produce, replay_rspace.rs:1058-1082):
+/// a PathMap offer records its fire under the vehicle of the element on the fired prefix and its
+/// store under the element. On each racing runtime and for each family of [`PEEK_FAMILIES`],
+/// the waiter parks in one deploy and the send fires it in the next, so the order is fixed.
+/// Play records the peek fire row before the Stored row, and replay certifies both deploys.
+#[test]
+fn space_theory_pathmap_peek_then_send_certifies() {
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(pathmap_peek_run());
+    }
+}
+
+/// Added by decision 124 (F2): the body of [`space_theory_pathmap_peek_then_send_certifies`] on
+/// one racing runtime.
+async fn pathmap_peek_run() {
+    for family in &PEEK_FAMILIES {
+        let label = family.label;
+        let mut chain = NativeChain::new().await;
+        let creation = family.creation();
+        let created = chain
+            .play(&creation, &format!("{label} creation"), THEORY_LIMIT)
+            .await;
+        assert!(
+            created.result.errors.is_empty(),
+            "{label} creation: {:?}",
+            created.result.errors
+        );
+        assert!(
+            outputs(&created, label).is_empty(),
+            "{label}: the waiter parks"
+        );
+        let certification = certify(&created, &creation, THEORY_LIMIT).await;
+        assert_reproduces(&format!("{label} creation"), &created, &certification);
+        let send = family.with_stash(family.touch);
+        let sent = chain
+            .play(&send, &format!("{label} send"), THEORY_LIMIT)
+            .await;
+        assert!(
+            sent.result.errors.is_empty(),
+            "{label} send: {:?}",
+            sent.result.errors
+        );
+        assert_offer_rows(label, &sent);
+        let delivered = outputs(&sent, label);
+        let peeks: Vec<Option<&str>> = delivered
+            .iter()
+            .map(|rest| match rest.as_slice() {
+                [pair] => elements(pair)
+                    .and_then(|pair| pair.first())
+                    .and_then(string_of),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            peeks,
+            vec![Some("peek")],
+            "{label}: the waiter peeks the element once"
+        );
+        let certification = certify(&sent, &send, THEORY_LIMIT).await;
+        assert_reproduces(&format!("{label} send"), &sent, &certification);
+    }
+}
+
+/// Added by decision 124 (F2): checks the rows of the offer of `played` before its replay: a
+/// peek fire row of a produce, then a later Stored row of a produce on another channel, which
+/// waits on the fire row or a later row. So a replay that stages the store first waits forever.
+fn assert_offer_rows(label: &str, played: &Played) {
+    let (_, journal) = committed_evidence(played);
+    let space_rows: Vec<(usize, &NativeOperationRecord)> = journal
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| is_space_row(row))
+        .collect();
+    let Some((fire_at, fire)) = space_rows
+        .iter()
+        .find(|(_, row)| matches!(&row.comm, Some(comm) if !comm.source.peeks.is_empty()))
+    else {
+        panic!("{label}: the offer has a peek fire row: {space_rows:?}");
+    };
+    let Some((store_at, store)) = space_rows.iter().find(|(at, row)| {
+        at > fire_at && matches!(row.completion, RSpaceOperationCompletion::Stored)
+    }) else {
+        panic!("{label}: a Stored row follows the fire row: {space_rows:?}");
+    };
+    assert!(
+        matches!(fire.completion, RSpaceOperationCompletion::Matched),
+        "{label}: the fire row is Matched: {:?}",
+        fire.completion
+    );
+    match (&fire.source, &store.source) {
+        (NativeOperationSource::Produce(vehicle), NativeOperationSource::Produce(element)) => {
+            assert_ne!(
+                vehicle.channel, element.channel,
+                "{label}: the fire and the store are on two channels"
+            );
+        }
+        (fire_source, store_source) => {
+            panic!(
+                "{label}: the fire and the store are produces: {fire_source:?}, {store_source:?}"
+            )
+        }
+    }
+    assert!(
+        store.predecessors.iter().any(|at| at >= fire_at),
+        "{label}: the Stored row {store_at} waits on the fire row {fire_at} or a later row: {:?}",
+        store.predecessors
+    );
+}
+
+/// TH-5 and TH-6 on the VectorDB families: `free Any()` admits the vectors. It checks every
+/// stored member of a list and the stored record of a single-mode receive. On each racing
+/// runtime, the plays with `free Any()` and with no theory certify and deliver one list and one
+/// near vector (decision 93). `free Nat()` refuses a vector with `TheoryRefuted`.
+// Changed by decision 93 (decision 111): the deliveries race, so each play certifies and delivers
+// one list and one near vector, and the body moved to `theory_admission_vectordb_run`. The old
+// lines follow.
+// /// TH-5 and TH-6 on the VectorDB families: `free Any()` admits the vectors, checks every stored
+// /// member of a list and the stored record of a single-mode receive, and delivers what the space
+// /// without a theory delivers. `free Nat()` refuses a vector with `TheoryRefuted`.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_theory_admission_vectordb() {
+#[test]
+fn space_theory_admission_vectordb() {
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(theory_admission_vectordb_run());
+    }
+}
+
+/// Added by decision 93 (decision 111): the body of [`space_theory_admission_vectordb`] on one
+/// racing runtime.
+async fn theory_admission_vectordb_run() {
     let body = r#"a!([1.0, 0.0]) | a!([0.0, 1.0]) | a!([2.0, 0.1]) |
 for (@list <- a ~ ([1.0, 0.0]; k=2)) { out!(["list", list]) } |
 for (@x <- b ~ ([1.0, 0.0]; threshold=0.9)) { out!(["near", x]) } | b!([0.0, 1.0]) | b!([3.0, 0.2])"#;
@@ -283,7 +483,10 @@ for (@x <- b ~ ([1.0, 0.0]; threshold=0.9)) { out!(["near", x]) } | b!([0.0, 1.0
                 body,
             )
         };
-        let baseline = native_play(&program(""), THEORY_LIMIT).await;
+        // Changed by decision 93 (decision 111): the baseline certifies too. The old line
+        // follows.
+        // let baseline = native_play(&program(""), THEORY_LIMIT).await;
+        let baseline = play_and_certify(&format!("{outer} no theory"), &program("")).await;
         assert!(
             baseline.result.errors.is_empty(),
             "{outer}: {:?}",
@@ -295,10 +498,13 @@ for (@x <- b ~ ([1.0, 0.0]; threshold=0.9)) { out!(["near", x]) } | b!([0.0, 1.0
             "{outer} Any: {:?}",
             admitted.result.errors
         );
-        assert_eq!(
-            admitted.out, baseline.out,
-            "{outer}: the theory changes no delivery"
-        );
+        // Changed by decision 93 (decision 111): the deliveries race, so each play delivers one
+        // list and one near vector. The old check follows.
+        // assert_eq!(
+        //     admitted.out, baseline.out,
+        //     "{outer}: the theory changes no delivery"
+        // );
+        assert_eq!(labels(&baseline), vec!["list", "near"], "{outer} no theory");
         assert_eq!(labels(&admitted), vec!["list", "near"], "{outer}");
         let refused = play_and_certify(&format!("{outer} Nat"), &program(", free Nat()")).await;
         assert_eq!(codes(&refused), only("TheoryRefuted"), "{outer} Nat");

@@ -49,7 +49,9 @@ use rholang::rust::interpreter::spaces::generic::{
 use rholang::rust::interpreter::spaces::namespace::{self, Durability, NativeSpace, SID_LEN};
 use rholang::rust::interpreter::spaces::outer::hashmap::HashMapOuter;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rspace_plus_plus::rspace::checkpoint::Checkpoint;
+// Retired by decision 90 (C6, step D): the retired replay test was the last user of `Checkpoint`.
+// The text before:
+// use rspace_plus_plus::rspace::checkpoint::Checkpoint;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
@@ -64,11 +66,18 @@ use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent, Produce};
 use serde::Serialize;
+// Changed by decision 92: the checks of the anchor of a failed operation.
+// use support::agent::{
+//     any, budget, config_of, counter, counter_channel, create, creation, data_channel, env_over,
+//     exactly, fired, int, play, play_and_replay, receive_on, records_on, run, send_on,
+//     space_counter_channel, string, waiters_on, ParRSpace,
+// };
 use support::agent::{
     any, budget, config_of, counter, counter_channel, create, creation, data_channel, env_over,
-    exactly, fired, int, play, play_and_replay, receive_on, records_on, run, send_on,
+    exactly, fired, int, logs_anchors_only, play, receive_on, records_on, run, send_on,
     space_counter_channel, string, waiters_on, ParRSpace,
 };
+use support::observed::{anchor_calls_only, observed};
 use support::props::{check, pure_config, tokio_runtime};
 use support::session::{config_channel, data_produces};
 
@@ -411,33 +420,61 @@ async fn space_disciplines_cell_empty_read_parks() {
     assert_eq!(counter(&host, &space_counter_channel(SPACE)).await, vec![1]);
 }
 
-/// A second send to a full cell fails with `CellOccupied`. The failed operation logs no event,
-/// leaves the record and the counter unchanged, and makes no legacy charge (decision 45).
+// Changed by decision 92: a failed job commits its anchor only, so the doc below replaces this
+// one.
+// /// A second send to a full cell fails with `CellOccupied`. The failed operation logs no event,
+// /// leaves the record and the counter unchanged, and makes no legacy charge (decision 45).
+/// A second send to a full cell fails with `CellOccupied`. The failed operation commits its anchor
+/// only and then fails (decision 92). So it logs only the events of its anchor, leaves the record
+/// and the counter unchanged, and makes only the observer calls of its anchor (decision 90,
+/// decision 69). It made no legacy charge (decision 45) until DR-134 deleted the legacy meter.
 #[tokio::test]
 async fn space_disciplines_cell_second_produce_occupied() {
     let host = play().await;
     let budget = budget();
-    let _legacy = budget.enter_legacy_scope();
+    // Changed by decision 90 (decision 69): the host records its observer calls, because DR-134
+    // deleted the legacy meter and its scopes.
+    // let _legacy = budget.enter_legacy_scope();
+    let recorder = observed(&host);
     let env = env_over(host.clone(), &budget);
     create(&cell(), &env, cell_creation()).await;
     assert_eq!(commit(&env, send(1)).await, SpaceOutcome::default());
     host.take_event_log().await;
-    let charges = budget.get_log();
-    assert!(!charges.is_empty(), "the store makes its legacy charges");
+    // let charges = budget.get_log();
+    // assert!(!charges.is_empty(), "the store makes its legacy charges");
+    let calls = recorder.calls();
+    assert!(!calls.is_empty(), "the store makes its observer calls");
     for op in [send(2), send_forever(3)] {
         assert_eq!(run(&cell(), &env, op).await, Err(SpaceError::CellOccupied));
     }
-    assert!(host.take_event_log().await.is_empty());
+    // Changed by decision 92: each failed operation commits its anchor only.
+    // assert!(host.take_event_log().await.is_empty());
+    assert!(
+        logs_anchors_only(&host.take_event_log().await, SPACE, 2),
+        "each failed operation logs its anchor only"
+    );
     assert_eq!(records(&host).await, vec![(0, vec![int(1)], false)]);
     assert_eq!(
         cell_counter(&host).await,
         vec![1],
         "the failed bumps never commit"
     );
-    assert_eq!(
-        budget.get_log(),
-        charges,
-        "a failed operation makes no legacy charge"
+    // assert_eq!(
+    //     budget.get_log(),
+    //     charges,
+    //     "a failed operation makes no legacy charge"
+    // );
+    // Changed by decision 92: each failed operation makes the observer calls of its anchor.
+    let after = recorder.calls();
+    assert_eq!(&after[..calls.len()], calls.as_slice());
+    assert!(
+        anchor_calls_only(
+            &after[calls.len()..],
+            &config_channel(SPACE),
+            &space_counter_channel(SPACE),
+            2
+        ),
+        "a failed operation makes the observer calls of its anchor only"
     );
 }
 
@@ -455,7 +492,12 @@ async fn space_disciplines_cell_second_park_occupied() {
     ] {
         assert_eq!(run(&cell(), &env, op).await, Err(SpaceError::CellOccupied));
     }
-    assert!(host.take_event_log().await.is_empty());
+    // Changed by decision 92: each failed operation commits its anchor only.
+    // assert!(host.take_event_log().await.is_empty());
+    assert!(
+        logs_anchors_only(&host.take_event_log().await, SPACE, 3),
+        "each failed operation logs its anchor only"
+    );
     assert_eq!(waiters(&host).await, vec![(0, false, false)]);
     assert_eq!(cell_counter(&host).await, vec![1]);
     assert_eq!(fired(&commit(&env, send(9)).await), vec![delivery(
@@ -524,7 +566,12 @@ async fn space_disciplines_cell_peek_restores_record_not_occupied() {
         run(&cell(), &env, send(6)).await,
         Err(SpaceError::CellOccupied)
     );
-    assert!(host.take_event_log().await.is_empty());
+    // Changed by decision 92: the failed operation commits its anchor only.
+    // assert!(host.take_event_log().await.is_empty());
+    assert!(
+        logs_anchors_only(&host.take_event_log().await, SPACE, 1),
+        "the failed operation logs its anchor only"
+    );
     assert_eq!(fired(&commit(&env, receive("t", any())).await), vec![
         delivery("t", &[5])
     ]);
@@ -556,7 +603,12 @@ async fn space_disciplines_cell_restore_meets_an_empty_slot() {
         Err(SpaceError::CellOccupied),
         "negative control: a re-store that counts the removed record fails"
     );
-    assert!(host.take_event_log().await.is_empty());
+    // Changed by decision 92: the failed peek commits its anchor only.
+    // assert!(host.take_event_log().await.is_empty());
+    assert!(
+        logs_anchors_only(&host.take_event_log().await, SPACE, 1),
+        "the failed peek logs its anchor only"
+    );
     assert_eq!(records(&host).await, vec![(0, vec![int(5)], false)]);
     assert_eq!(cell_counter(&host).await, vec![2]);
 }
@@ -696,7 +748,13 @@ async fn space_disciplines_cell_produce_side_peek_waiter_reoffers_then_stores_or
         Err(SpaceError::CellOccupied),
         "the peek waiter fires, and then the record slot is full"
     );
-    assert!(host.take_event_log().await.is_empty());
+    // Changed by decision 92: the failed operation commits its anchor only, and the discard
+    // removes the staged fire of the peek waiter.
+    // assert!(host.take_event_log().await.is_empty());
+    assert!(
+        logs_anchors_only(&host.take_event_log().await, SPACE, 1),
+        "the failed operation logs its anchor only"
+    );
     assert_eq!(waiters(&host).await, vec![(1, false, true)]);
     assert_eq!(records(&host).await, vec![(0, vec![int(7)], false)]);
 }
@@ -727,7 +785,13 @@ async fn space_disciplines_cell_every_operation_bumps_counter() {
         run(&cell(), &env, send(3)).await,
         Err(SpaceError::CellOccupied)
     );
-    assert!(host.take_event_log().await.is_empty());
+    // Changed by decision 92: the failed operation commits its anchor only, which bumps no
+    // counter.
+    // assert!(host.take_event_log().await.is_empty());
+    assert!(
+        logs_anchors_only(&host.take_event_log().await, SPACE, 1),
+        "the failed operation logs its anchor only"
+    );
     assert_eq!(cell_counter(&host).await, vec![6]);
     assert_eq!(counter(&host, &space_counter_channel(SPACE)).await, vec![1]);
 }
@@ -810,104 +874,112 @@ async fn space_disciplines_cell_checkpoint_restart() {
     assert!(waiters(&restarted).await.is_empty());
 }
 
-/// The script of the replay test: every kind of cell operation, two failures, and a divergent
-/// pair.
-fn replay_script() -> Vec<SpaceOp> {
-    vec![
-        send(1),
-        send(2),
-        peek("p", any()),
-        receive("a", any()),
-        peek("q", any()),
-        send(3),
-        receive("b", exactly(9)),
-        receive("c", any()),
-        receive("d", exactly(5)),
-        send(9),
-        send_forever(4),
-        receive_forever("r", any()),
-    ]
-}
-
-/// Runs the replay script. An operation that re-issues runs one more round.
-async fn run_replay_script(env: &SpaceEnv) -> Vec<Result<SpaceOutcome, SpaceError>> {
-    let mut results = Vec::new();
-    for op in replay_script() {
-        let result = run(&cell(), env, op).await;
-        let reissue = match &result {
-            Ok(SpaceOutcome {
-                reissue: Some(reissue),
-                ..
-            }) => Some(reissue.op.clone()),
-            Ok(_) | Err(_) => None,
-        };
-        results.push(result);
-        if let Some(op) = reissue {
-            results.push(run(&cell(), env, op).await);
-        }
-    }
-    results
-}
-
-/// Replay stages the transactions of play: equal outcomes and failures, every COMM paired, and
-/// the root of play. A replay without the log diverges.
-#[tokio::test]
-async fn space_disciplines_cell_replay_equal() {
-    let (play, replay) = play_and_replay().await;
-    let play_env = env_over(play.clone(), &budget());
-    create(&cell(), &play_env, cell_creation()).await;
-    let start = play
-        .create_checkpoint()
-        .await
-        .expect("a checkpoint after the creation")
-        .root;
-    let played = run_replay_script(&play_env).await;
-    assert_eq!(
-        played
-            .iter()
-            .filter(|result| **result == Err(SpaceError::CellOccupied))
-            .count(),
-        2,
-        "the script fails twice"
-    );
-    assert_eq!(
-        played
-            .iter()
-            .filter_map(|result| result.as_ref().ok())
-            .map(|outcome| outcome.fires.len())
-            .sum::<usize>(),
-        7
-    );
-    assert!(played.last().is_some_and(|result| result
-        .as_ref()
-        .is_ok_and(|outcome| outcome.reissue.is_some())));
-    let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
-    replay
-        .rig_and_reset(start.clone(), log)
-        .await
-        .expect("the replay rigs the play log");
-    let replay_env = env_over(replay.clone(), &budget());
-    let replayed = run_replay_script(&replay_env).await;
-    assert_eq!(replayed, played);
-    replay
-        .check_replay_data()
-        .await
-        .expect("every recorded COMM is paired");
-    assert_eq!(
-        replay.create_checkpoint().await.expect("a checkpoint").root,
-        root
-    );
-    replay
-        .rig_and_reset(start, Vec::new())
-        .await
-        .expect("the replay rigs an empty log");
-    match run(&cell(), &replay_env, send(1)).await {
-        Err(error @ SpaceError::ReplayDivergence(_)) => {
-            assert_eq!(error.code(), "ReplayDivergence")
-        }
-        other => panic!("negative control: a log without the COMMs diverges: {other:?}"),
-    }
-}
+// Retired by decision 90 (C6, step D): `space_disciplines_cell_replay_equal` and its replay script
+// ran through the rigged replay modes, which retire (decision 125). Native replay: the family
+// matrix `space_native_replay_equal_{hashmap,pathmap,array,vector}`. Its negative controls:
+// `space_native_forged_predecessor_fails_closed`,
+// `native_space_replay_rejects_a_tampered_candidate`,
+// `native_space_replay_rejects_an_outcome_that_does_not_fit`. The text before:
+// ```
+// /// The script of the replay test: every kind of cell operation, two failures, and a divergent
+// /// pair.
+// fn replay_script() -> Vec<SpaceOp> {
+//     vec![
+//         send(1),
+//         send(2),
+//         peek("p", any()),
+//         receive("a", any()),
+//         peek("q", any()),
+//         send(3),
+//         receive("b", exactly(9)),
+//         receive("c", any()),
+//         receive("d", exactly(5)),
+//         send(9),
+//         send_forever(4),
+//         receive_forever("r", any()),
+//     ]
+// }
+//
+// /// Runs the replay script. An operation that re-issues runs one more round.
+// async fn run_replay_script(env: &SpaceEnv) -> Vec<Result<SpaceOutcome, SpaceError>> {
+//     let mut results = Vec::new();
+//     for op in replay_script() {
+//         let result = run(&cell(), env, op).await;
+//         let reissue = match &result {
+//             Ok(SpaceOutcome {
+//                 reissue: Some(reissue),
+//                 ..
+//             }) => Some(reissue.op.clone()),
+//             Ok(_) | Err(_) => None,
+//         };
+//         results.push(result);
+//         if let Some(op) = reissue {
+//             results.push(run(&cell(), env, op).await);
+//         }
+//     }
+//     results
+// }
+//
+// /// Replay stages the transactions of play: equal outcomes and failures, every COMM paired, and
+// /// the root of play. A replay without the log diverges.
+// #[tokio::test]
+// async fn space_disciplines_cell_replay_equal() {
+//     let (play, replay) = play_and_replay().await;
+//     let play_env = env_over(play.clone(), &budget());
+//     create(&cell(), &play_env, cell_creation()).await;
+//     let start = play
+//         .create_checkpoint()
+//         .await
+//         .expect("a checkpoint after the creation")
+//         .root;
+//     let played = run_replay_script(&play_env).await;
+//     assert_eq!(
+//         played
+//             .iter()
+//             .filter(|result| **result == Err(SpaceError::CellOccupied))
+//             .count(),
+//         2,
+//         "the script fails twice"
+//     );
+//     assert_eq!(
+//         played
+//             .iter()
+//             .filter_map(|result| result.as_ref().ok())
+//             .map(|outcome| outcome.fires.len())
+//             .sum::<usize>(),
+//         7
+//     );
+//     assert!(played.last().is_some_and(|result| result
+//         .as_ref()
+//         .is_ok_and(|outcome| outcome.reissue.is_some())));
+//     let Checkpoint { root, log } = play.create_checkpoint().await.expect("a checkpoint");
+//     replay
+//         .rig_and_reset(start.clone(), log)
+//         .await
+//         .expect("the replay rigs the play log");
+//     let replay_env = env_over(replay.clone(), &budget());
+//     let replayed = run_replay_script(&replay_env).await;
+//     assert_eq!(replayed, played);
+//     replay
+//         .check_replay_data()
+//         .await
+//         .expect("every recorded COMM is paired");
+//     assert_eq!(
+//         replay.create_checkpoint().await.expect("a checkpoint").root,
+//         root
+//     );
+//     replay
+//         .rig_and_reset(start, Vec::new())
+//         .await
+//         .expect("the replay rigs an empty log");
+//     match run(&cell(), &replay_env, send(1)).await {
+//         Err(error @ SpaceError::ReplayDivergence(_)) => {
+//             assert_eq!(error.code(), "ReplayDivergence")
+//         }
+//         other => panic!("negative control: a log without the COMMs diverges: {other:?}"),
+//     }
+// }
+// ```
 
 /// A re-issued persistent send keeps its first-round order and identity, and it re-enters as a
 /// fresh element (decision 43, section 43.8). It fires the persistent waiter again, although an
@@ -960,7 +1032,12 @@ async fn space_disciplines_cell_reissue_reenters_as_fresh() {
         Err(SpaceError::CellOccupied),
         "negative control: under the rule of the queue the re-entry waits behind the record"
     );
-    assert!(host.take_event_log().await.is_empty());
+    // Changed by decision 92: the failed operation commits its anchor only.
+    // assert!(host.take_event_log().await.is_empty());
+    assert!(
+        logs_anchors_only(&host.take_event_log().await, SPACE, 1),
+        "the failed operation logs its anchor only"
+    );
 }
 
 // ─── Merges over the agent environment ───────────────────────────────────────────────────────

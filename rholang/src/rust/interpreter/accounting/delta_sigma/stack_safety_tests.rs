@@ -141,6 +141,7 @@ fn leaf(sends: Vec<(i64, bool)>, exprs: Vec<Expr>, stacks: Vec<CostStack>) -> Pa
             persistent,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         });
     }
     par.exprs = exprs;
@@ -176,7 +177,14 @@ fn node(
     Par {
         cost_signed_terms: signed
             .into_iter()
-            .map(|(signature, body)| CostSignedTerm { body, signature })
+            // Changed by G3 (DR-135, S3b): surface signed terms have no held
+            // price.
+            // .map(|(signature, body)| CostSignedTerm { body, signature })
+            .map(|(signature, body)| CostSignedTerm {
+                body,
+                signature,
+                held_price: None,
+            })
             .collect(),
         cost_stacks: stacks,
         sends: node_sends(sends),
@@ -199,6 +207,7 @@ fn node_sends(sends: Vec<ArbSend>) -> Vec<Send> {
             persistent,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         })
         .collect()
 }
@@ -217,6 +226,7 @@ fn node_receives(receives: Vec<ArbReceive>) -> Vec<Receive> {
                         remainder: None,
                         free_count: 0,
                         cost_signature,
+                        query_spec: None,
                     })
                     .collect(),
                 body,
@@ -239,6 +249,7 @@ fn node_news(news: Vec<Option<Par>>) -> Vec<New> {
             uri: Vec::new(),
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         })
         .collect()
 }
@@ -432,6 +443,7 @@ fn first_rejection_reason_follows_the_recursive_visit_order() {
         uri: Vec::new(),
         injections: BTreeMap::new(),
         locally_free: Vec::new(),
+        space_types: Vec::new(),
     });
 
     for (par, expected) in [
@@ -572,6 +584,8 @@ fn deep_term(depth: usize) -> Par {
         );
         match level % 6 {
             0 => outer.cost_signed_terms.push(CostSignedTerm {
+                // Added by G3 (DR-135, S3b): a surface signed term.
+                held_price: None,
                 body: Some(par),
                 signature: Some(ground(u8::try_from(level / 6 % 4).expect("small tag"))),
             }),
@@ -581,6 +595,7 @@ fn deep_term(depth: usize) -> Par {
                 uri: Vec::new(),
                 injections: BTreeMap::new(),
                 locally_free: Vec::new(),
+                space_types: Vec::new(),
             }),
             2 => outer.bundles.push(Bundle {
                 body: Some(par),
@@ -612,6 +627,7 @@ fn deep_term(depth: usize) -> Par {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 }],
                 body: Some(par),
                 persistent: false,

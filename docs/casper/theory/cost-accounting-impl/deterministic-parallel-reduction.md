@@ -1,5 +1,21 @@
 # Deterministic Parallel Reduction and Checkpoint Ownership
 
+**Superseded by DR-132.** The deterministic scheduler is removed (`97d020154`), and evaluation races as on `dev`. This document describes the removed design. The table maps each row of the verification matrix below to what replaces it. Restore: `git revert 97d020154`.
+
+| Matrix row | After DR-132 |
+| --- | --- |
+| A complete frontier has one terminal state under every submit order | Removed. Racing evaluation has no frontier. Play and replay agree through the record (P-1 `racing_native_play_agrees_with_native_replay`, P-5 `racing_offered_deploys_agree_on_every_validator`). |
+| Transitive channel and authority conflicts form one component | Removed with the components. `intents_conflict_symmetric` and `disjoint_intents_commute` of `DeterministicParallelReduction.v` stay. |
+| Truly disjoint components retain parallel eligibility | Racing evaluation runs disjoint work in parallel (FF-1 `native_parallel_branches_run_concurrently`). |
+| Shared purse regions never execute as disjoint work | Removed. The recorder keeps each row's authority attempt, and replay follows the record. |
+| Driver ownership ends before result delivery starts the next frontier | Removed with the driver. |
+| Direct execution requires exactly one live participant | Removed with the driver. |
+| Checkpoints never observe partial frontiers or cancelled child tasks | `inj` drains its per-call scope before it returns, and a dropped evaluation aborts its tasks. Native replay refuses a boundary while a slot is reserved. Tests: `cancelled_native_evaluation_cannot_export_or_restore_partial_state`, `dropped_evaluation_aborts_deferred_dispatches`, `native_dropped_play_aborts_its_deferred_tasks`. |
+| Event logs use causal rather than arrival order | The ordered log drains in journal-row order, because each row is named by its journal index (FF-4 `native_play_names_each_operation_by_its_journal_row`). |
+| Immutable causal-tree storage preserves exact sequence semantics | Kept, and every path has one segment (DR-74, DR-85, DR-86). |
+| Existing RSpace constructs refine the same scheduler contract | P-1 covers joins, persistence, peeks and guards under racing evaluation. |
+| Play and replay agree exactly | Native replay finds each row by its recorded source and keeps play's order on each shared channel (P-2 `replay_binds_each_source_occurrence_to_the_first_open_row`). Every native replay ends in a verdict (the stall rule of DR-132). |
+
 ## Scope
 
 This document specifies the consensus-critical boundary between parallel
@@ -226,13 +242,13 @@ deterministic state transition rather than over scheduler-dependent roots.
 
 | Obligation | Formal evidence | Executable evidence |
 | --- | --- | --- |
-| A complete frontier has one terminal state under every submit order | [`DeterministicParallelReduction.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/DeterministicParallelReduction.tla), with arrival and non-canonical-order controls | competing-producer and competing-consumer exact-root/log tests |
+| A complete frontier has one terminal state under every submit order | `DeterministicParallelReduction.tla` (retired by DR-132), with arrival and non-canonical-order controls | competing-producer and competing-consumer exact-root/log tests |
 | Transitive channel and authority conflicts form one component | [`DeterministicParallelReduction.v`](../../../../formal/rocq/cost_accounted_rho/theories/DeterministicParallelReduction.v), axiom-free compound-overlap and commutation theorems | component property test and shared-region unit regression |
 | Truly disjoint components retain parallel eligibility | safe TLA+ `Inv_DisjointWorkRemainsParallel`; global-serialization control | Loom authority-component interleavings |
 | Shared purse regions never execute as disjoint work | safe TLA+ `Inv_SharedAuthorityNeverRunsAsDisjoint`; authority-omission control | compound `{A,B}` / `{B,C}` regression |
-| Driver ownership ends before result delivery starts the next frontier | [`ReductionDriverLifecycle.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/ReductionDriverLifecycle.tla), operation-conservation and ownership invariants | driver release property and recursion regressions |
-| Direct execution requires exactly one live participant | [`SingleParticipantFastPath.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/SingleParticipantFastPath.tla), safe and unsafe controls; Rocq singleton refinement | singleton-claim property and release-mode recursion regressions |
-| Checkpoints never observe partial frontiers or cancelled child tasks | [`EvaluationBoundary.tla`](../../../../formal/tlaplus/deterministic_parallel_reduction/EvaluationBoundary.tla), checkpoint and structured-cancellation controls; Rocq epoch theorems | Loom checkpoint/cancellation schedules and cancelled-root production test |
+| Driver ownership ends before result delivery starts the next frontier | `ReductionDriverLifecycle.tla` (retired by DR-132), operation-conservation and ownership invariants | driver release property and recursion regressions |
+| Direct execution requires exactly one live participant | `SingleParticipantFastPath.tla` (retired by DR-132), safe and unsafe controls; Rocq singleton refinement | singleton-claim property and release-mode recursion regressions |
+| Checkpoints never observe partial frontiers or cancelled child tasks | `EvaluationBoundary.tla` (retired by DR-132), checkpoint and structured-cancellation controls; Rocq epoch theorems | Loom checkpoint/cancellation schedules and cancelled-root production test |
 | Event logs use causal rather than arrival order | canonical terminal/log TLA+ state | reversed-arrival log, soft-checkpoint/revert, and external metadata-update tests |
 | Immutable causal-tree storage preserves exact sequence semantics | Rocq persistent-path projection, node-growth, and order-refinement theorems | `Vec` equality/sort/shared-prefix/append property tests and the 32,768-step recursion regression |
 | Existing RSpace constructs refine the same scheduler contract | disjoint-commutation theorem plus legacy operation semantics | joins, persistence, peek, guards, and textual ACI permutation tests |

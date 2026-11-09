@@ -44,7 +44,10 @@ The examples come from the native suite `rholang/tests/reified_theory.rs`.
 | `space!?("produce", *a, [-1])` | The handle call aborts the deploy with `TheoryRefuted`, as a routed send does. |
 
 A theory changes nothing for the data that it admits.
-The family programs of the native suites deliver the same values with `free Nat()` as without a theory (test `space_theory_admission`).
+On each racing runtime, the family programs of the native suites run with `free Nat()` and without a theory (test `space_theory_admission`).
+Each play delivers an allowed label set ([decision 93](decision-register.md#decision-93)).
+
+*Changed by [decision 93](decision-register.md#decision-93): before, the family programs delivered the same values with `free Nat()` as without a theory. Racing play varies the deliveries of one program.*
 
 ## 2. The parts of the seam
 
@@ -56,10 +59,10 @@ Each part has one job, and the next sections explain them.
 | Part | Job | Code |
 |---|---|---|
 | [Theory identity](glossary.md#theory-identity) | The content that names a checker: no handle, token, or epoch | `spaces/theory/identity.rs:59-76` |
-| Checker | The code of this build that decides the values of a theory: the trait `SpaceTheory` | `spaces/theory/mod.rs:104-122` |
-| [Admission verdict](glossary.md#admission-verdict) | The result of one check: `Proven`, `Refuted`, or `Undetermined`, with its usage | `spaces/theory/mod.rs:66-79` |
-| Admission | The check of each value of a send, before any staging | `spaces/theory/mod.rs:144-168` |
-| Check at a match | The check of each stored datum of a match, after the `where` guard | `spaces/generic.rs:982-997` |
+| Checker | The code of this build that decides the values of a theory: the trait `SpaceTheory` | `spaces/theory/mod.rs:101-118` |
+| [Admission verdict](glossary.md#admission-verdict) | The result of one check: `Proven`, `Refuted`, or `Undetermined`, with its usage | `spaces/theory/mod.rs:64-77` |
+| Admission | The check of each value of a send, before any staging | `spaces/theory/mod.rs:140-163` |
+| Check at a match | The check of each stored datum of a match, after the `where` guard | `spaces/generic.rs:2274-2293` |
 
 The shapes follow the neutral theorem channel of F1r3lang, so the merge of phase P12 maps an installed theory onto the same trait [[F1R3LANG-THEOREM](#ref-f1r3lang-theorem)].
 F1r3lang calls the verdict `AdmissionDecision`, the usage `AdmissionUsage`, and the limit profile `AdmissionBudget`.
@@ -77,7 +80,7 @@ A failure on any path aborts the deploy before its commit, except a refusal at a
 ## 4. The builtin theories
 
 A builtin decides a value by its shape alone (rule TH-1).
-The test $`\mathrm{sole}(v)`$ holds when the value $`v`$ has exactly one expression, every other field of $`v`$ is empty, and $`v`$ uses no connective (`spaces/theory/builtin.rs:86-118`).
+The test $`\mathrm{sole}(v)`$ holds when the value $`v`$ has exactly one expression, every other field of $`v`$ is empty, and $`v`$ uses no connective (`spaces/theory/builtin.rs:84-118`).
 Then the kind of the one expression decides:
 
 ```math
@@ -144,16 +147,18 @@ FROM_BYTES(b):                                     ▷ identity.rs, TheoryIdenti
 ```
 
 **Why bytes, and not the map of design v3.** Design v3 put the identity in the config as a map with eight string keys and a nested limits map.
-Every space operation reads the config through the strict metered decoder, and the cost model of the native runtime charges each byte of that read.
+At that time, the strict metered decoder read the config of every space operation, and the native cost model charged each byte of that read.
 The map made each read of a space with a theory 169 % more expensive, so many family programs exceeded the replay limit of $`2^{28}`$ `VerificationBytes`.
-One `GByteArray` costs about 5 % more, and the user chose it on 2026-10-09.
+One `GByteArray` cost about 5 % more, and the user chose it on 2026-10-09.
+[Decision 89](decision-register.md#decision-89) retired that charge, so a config read now charges nothing (rule NE-2), and the bytes stay as a state format.
+
 The `config` reply of a handle still shows the identity as the map of Table 3, so a program sees the same value as before.
 
 ## 6. Resolution
 
 Each config read decodes the identity and resolves it to a checker of this build (rules TH-3 and TH-7).
 This build resolves only the structural builtins: the builtin values of Table 3 for every field except `limitProfile`, which may have any value (`spaces/theory/builtin.rs:139-153`).
-Every other identity fails with `TheoryUnavailable`, which names its theorem id (`spaces/theory/mod.rs:127-136`).
+Every other identity fails with `TheoryUnavailable`, which names its theorem id (`spaces/theory/mod.rs:123-132`).
 
 The resolution is a function of the identity alone.
 It reads no registry, cache, or other state of the node.
@@ -164,13 +169,13 @@ A test build also resolves the test checkers of section [10](#10-leases-and-test
 
 On a space with a theory, the checker admits each value of a send in order (rule TH-5).
 The admission runs after the config read and the gates of the send: the key, the payload, and the params.
-It runs before any staging or counter bump, so a refused send changes no state and emits no event (`spaces/generic.rs:2183-2201`).
+It runs before any staging or counter bump, so a refused send changes no state and emits no event (`spaces/generic.rs:4972-5065`).
 
 ```text
 ADMIT(theory, values):                             ▷ theory/mod.rs, admit_values
   leases ← []
   for i, v in values, in order:
-    verdict ← theory.admit(v)                      ▷ the check reserves its unit before it reads v
+    verdict ← theory.admit(v)                      ▷ the check charges nothing (TH-8)
     if verdict = Proven:     leases ← leases ++ theory.commit_lease()
     if verdict = Refuted:    abort TheoryRefuted(theory, i)
     if verdict = Undetermined: abort TheoryUndetermined(theory, i)
@@ -181,8 +186,10 @@ The admission covers a routed send, the handle `produce`, and each round of a re
 A second send of Rule E, a re-store, and a re-offer carry data that a send admitted, so they are not admitted again.
 
 **The place of the admission is tested.** A test can observe a refused send only by its error, because an aborted transaction discards its staged work.
-So the test `theory_admission_precedes_any_staging` bounds the host work of a refused send by the work of a send that fails at the params gate.
-An admission after the counter bump would exceed that bound, and the dry run of that mutant failed this test (section [12](#12-evidence)).
+So the test `theory_admission_precedes_any_staging` checks the order of the gates.
+A send that fails at the params gate fails there, whatever its values, and a refuted send leaves no record and no event.
+Before [decision 89](decision-register.md#decision-89), the test also bounded the host work of a refused send.
+The dry run of an admission after the counter bump failed that bound (section [12](#12-evidence)).
 
 ## 8. The check at a match
 
@@ -193,14 +200,14 @@ A scan receive parks, the head of an ordered collection blocks, and a join keeps
 **Stored data and data in flight.** The checker checks only stored data.
 The datum of a send is in flight, and so is a record that a cascade, a lift, or a re-offer carries.
 Its send admitted it, so a check would add only work.
-The enum `Held` names the two cases at each site that matches one datum (`spaces/generic.rs:958-976`).
+The enum `Held` names the two cases at each site that matches one datum (`spaces/generic.rs:2246-2264`).
 
 *Table 4. The sites of the check at a match.*
 
 | Site | Stored data that the checker checks | Code |
 |---|---|---|
 | Head driver: queue, cell | The head record of a receive | `Cx::matches` with `Held::Stored` |
-| Scan: bag, set | The first record that binds the pattern. A set class is one value, so its first member decides the class. | `spaces/disciplines/scan.rs:267-271` |
+| Scan: bag, set | The first record that binds the pattern. A set class is one value, so its first member decides the class. | `spaces/disciplines/scan.rs:409-413` |
 | Stack settle | The top record, unless the settle carries it in flight | `Held` from `BoundRecord` |
 | Priority queue | The stored level head of a receive or of a settle | `stored_match` in `priority_queue.rs` |
 | VectorDB | Each stored member of a list, and the record of a single-mode receive | `Cx::admits_records` |
@@ -213,28 +220,34 @@ The test `space_guard_match` pins this case with a prefix receive on a space wit
 The internal COMMs of the plans, such as the counter bumps, the retires, and the lifts, use `Cx::bind` and never reach the checker.
 A dry run that moved the check into `bind` failed three tests, because the checker then refused the datum of a send in flight.
 
+**Leases.** A check takes no lease.
+The fire of a match takes one lease for each stored datum that the check proved (`SpaceTheory::commit_lease`, `Cx::lease_stored`).
+The commit must revalidate each lease under the authority of its language (rule TH-9).
+
 ## 9. Charges
 
 A theory check adds no [phlo](glossary.md#phlo) (rule TH-8).
 The introduction bytes of a send already pay for its values.
 
-Each check of a builtin reserves one `VerificationOperations` unit before it reads the value (`spaces/theory/builtin.rs:159-179`).
-A check at a match costs one unit for each stored datum, whatever the number of its values.
-The checks reserve no `VerificationBytes` and no `SearchStateBytes`.
-A limit profile of zero units gives `Undetermined` before any reservation, so a starved check costs nothing and fails closed.
+Each check of a builtin reports a usage of one work unit and no evidence bytes (`BuiltinTheory::check`, `spaces/theory/builtin.rs`).
+A check at a match reports one unit for each stored datum, whatever the number of its values.
+The usage is not metered ([decision 89](decision-register.md#decision-89)), so no check reserves or charges anything.
+A limit profile of zero units gives `Undetermined` before the read, so a starved check fails closed.
 
-The charges depend only on the identity and the value.
-So they are the same on a hit and a miss, and in play and replay.
+The usage depends only on the identity and the value.
+So it is the same on a hit and a miss, and in play and replay.
 The cache-free runtime holds no cache, and the headline `usage_cache_transparent` proves that a later cache must keep this property.
 
-**The cost of the identity.** The bytes of the identity make each config read less than a tenth more expensive (test `theory_config_slot_is_one_compact_par`).
-For the measurement, see [decision 74](decision-register.md#decision-74).
+**The cost of the identity.** The identity adds no read charge (rule NE-2), and the config slot holds one compact `GByteArray` (test `theory_config_slot_is_one_compact_par`).
+For the measurement before [decision 89](decision-register.md#decision-89), see [decision 74](decision-register.md#decision-74).
 
 ## 10. Leases and test checkers
 
-A checker may attach a lease to a `Proven` verdict, which the commit must revalidate under the authority of its language (rule TH-9).
+A theory may give a commit lease (`SpaceTheory::commit_lease`).
+The fire of a match takes one lease for each stored datum that the check proved.
+The commit must revalidate each lease under the authority of its language (rule TH-9).
 The acquire, the revalidation, and the release of a lease belong to the guard composition of phase P12 ([F1r3lang integration](f1r3lang-integration.md)).
-Until then, a transaction with two or more leases aborts with `NestedCommitGuard` before its commit (`spaces/generic.rs:2206-2211`).
+Until then, a transaction with two or more leases aborts with `NestedCommitGuard` before its commit (`spaces/generic.rs:4504-4509`).
 The builtins attach no lease, so no program of this build reaches that abort.
 
 The checkers that test the lease, the refusal at a match, and the starved limit profile exist only in test builds (rule TH-10).
@@ -253,8 +266,8 @@ A replayed block resolves the same checker from the same bytes.
 **No forged identity.** Only gate 4 of a factory writes an identity, and it writes only the builtin identities.
 The config record lives on an unforgeable channel of the space, so a program cannot write another identity there.
 
-**Bounded work.** Each check reserves its unit before it reads the value, on the host-work budget of the deploy ([decision 40](decision-register.md#decision-40)).
-A send with many values pays for each check, and a refused value stops the admission at once.
+**Bounded work.** The limit profile of an identity bounds the work units of each check, and a check adds no phlo (rule TH-8).
+A refused value stops the admission at once.
 
 ## 12. Evidence
 
@@ -269,7 +282,7 @@ A send with many values pays for each check, and a refused value stops the admis
 | TH-5, TH-9: fail closed | `fail_closed` (`TheoryAdmission.v`) | `prop_theory_fail_closed`, `theory_nested_commit_guard`, `theory_admission_precedes_any_staging` |
 | TH-6: a refusal at a match is a guard refusal | `theory_refusal_is_guard_refusal` (`Match.v`) | `prop_theory_refusal_is_guard_refusal`, `space_guard_match`, `space_guard_match_refusal_is_a_guard_refusal` |
 | TH-7: replay | `replay_preserves_theory_admission` (`TheoryAdmission.v`) | `prop_replay_preserves_theory_admission` |
-| TH-8: charges | `usage_cache_transparent` (`TheoryAdmission.v`) | `prop_theory_usage_cache_transparent`, `theory_admission_reserves_one_unit_per_checked_value`, `theory_match_reserves_one_unit_per_stored_datum` |
+| TH-8: charges | `usage_cache_transparent` (`TheoryAdmission.v`) | `prop_theory_usage_cache_transparent`, `theory_check_takes_no_lease_and_the_fire_takes_one_for_each_stored_datum` |
 
 The [verification dossier](verification.md) gives the commands, the results, and the fourteen negative controls of the Rocq models.
 

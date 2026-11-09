@@ -20,10 +20,13 @@
 // when the parents list is empty). Result: block_number passes,
 // justification_follows returns InvalidParents.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+// Changed by DR-134 (DR-66 item 1): the block carries no user deploy, so the
+// deploy timestamp and builders are unused.
+// use std::time::{SystemTime, UNIX_EPOCH};
 
 use casper::rust::block_status::{BlockError, InvalidBlock};
-use casper::rust::util::construct_deploy;
+// Changed by DR-134 (DR-66 item 1): offered deploys.
+// use casper::rust::util::construct_deploy;
 use rspace_plus_plus::rspace::history::Either;
 
 use super::integration_helpers::{
@@ -40,7 +43,8 @@ async fn integration_t_invalid_parents() {
         .build_genesis_with_parameters(None)
         .await
         .expect("Failed to build genesis");
-    let shard_id = genesis.genesis_block.shard_id.clone();
+    // Changed by DR-134 (DR-66 item 1): no user deploy needs the shard id.
+    // let shard_id = genesis.genesis_block.shard_id.clone();
 
     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
         .await
@@ -51,21 +55,27 @@ async fn integration_t_invalid_parents() {
     // Use a deploy with valid_after_block_number = -1 so the future_
     // transaction validator (line 497: `valid_after >= block_number`)
     // does NOT fire when we mutate body.state.block_number to 0 below.
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    let d1 = construct_deploy::source_deploy(
-        "@0!(0)".to_string(),
-        timestamp,
-        Some(90_000),
-        Some(1),
-        None,
-        Some(-1),
-        Some(shard_id.clone()),
-    )
-    .expect("d1");
-    let mutated = propose_with_block_mutation(&mut nodes[0], vec![d1], |b| {
+    // Changed by DR-134 (DR-66 item 1): no user deploy needs a timestamp.
+    // let timestamp = SystemTime::now()
+    //     .duration_since(UNIX_EPOCH)
+    //     .unwrap()
+    //     .as_millis() as i64;
+    // Changed by DR-134 (DR-66 item 1): a protocol-6 deploy has a nonnegative
+    // valid-after block, so any user deploy in the mutated block 0 trips the
+    // future-deploy check first (`validate.rs:1006-1012`). The block carries
+    // no user deploy; the empty parents are what the test checks.
+    // let d1 = construct_deploy::source_deploy(
+    //     "@0!(0)".to_string(),
+    //     timestamp,
+    //     Some(90_000),
+    //     Some(1),
+    //     None,
+    //     Some(-1),
+    //     Some(shard_id.clone()),
+    // )
+    // .expect("d1");
+    // let mutated = propose_with_block_mutation(&mut nodes[0], vec![d1], |b| {
+    let mutated = propose_with_block_mutation(&mut nodes[0], Vec::new(), |b| {
         // Empty parents list AND zero block_number: block_number
         // validator computes expected = -1 + 1 = 0 with empty
         // parents; setting body.state.block_number = 0 makes that

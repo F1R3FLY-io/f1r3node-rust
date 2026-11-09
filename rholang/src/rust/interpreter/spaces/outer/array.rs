@@ -190,7 +190,9 @@ mod tests {
     use rspace_plus_plus::rspace::rspace_interface::ISpace;
     use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
     use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
-    use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;
+    // Changed by plan v4 errata (V4-19): UT-7 expects the record end of a scripted replay.
+    // use rspace_plus_plus::rspace::space_store_handle::SpaceStoreHandle;
+    use rspace_plus_plus::rspace::space_store_handle::{SpaceStoreHandle, SpaceTxnError};
 
     use super::*;
     use crate::rust::interpreter::accounting::costs::Cost;
@@ -200,8 +202,15 @@ mod tests {
         Allocation, SpaceAgent, SpaceCreation, SpaceEnv,
     };
     use crate::rust::interpreter::spaces::disciplines::queue::QueueDiscipline;
-    use crate::rust::interpreter::spaces::generic::{Discipline, GenericSpace};
+    // Changed by plan v4 errata (V4-19): UT-7 opens the allocation and runs it in a scripted
+    // replay.
+    // use crate::rust::interpreter::spaces::generic::{Discipline, GenericSpace};
+    use crate::rust::interpreter::spaces::generic::{
+        begin_allocation, Discipline, FamilySpace, GenericSpace,
+    };
     use crate::rust::interpreter::spaces::namespace::{self, Durability, NameTail, SID_LEN};
+    // Added by plan v4 errata (V4-19): UT-7 ends the record inside an allocation.
+    use crate::rust::interpreter::spaces::test_support::ScriptedReplay;
     use crate::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
 
     type ParRSpace = RSpace<Par, BindPattern, ListParWithRandom, TaggedContinuation>;
@@ -472,5 +481,59 @@ mod tests {
         assert_eq!(allocate(&env, 2, 2).await, Ok(vec![2, 0]));
         assert_eq!(allocate(&env, 3, 4).await, Ok(vec![1, 2, 0, 1]));
         assert_eq!(allocator_value(&space).await, vec![2]);
+    }
+
+    /// Added by plan v4 errata (V4-19, rules CR-6 and CR-32): UT-7. A record end inside an
+    /// allocation, after the followed take of the allocator, ends the staging. The transaction
+    /// commits the take alone, and the allocation then fails with the staging error, so it
+    /// returns no index whose put did not commit.
+    #[tokio::test]
+    async fn space_array_allocation_record_end_commits_the_take() {
+        let (space, env) = space_env().await;
+        ArrayQueue::default()
+            .prepare_create(&env, creation(&array(3, false)))
+            .await
+            .expect("the creation stages")
+            .commit()
+            .await
+            .expect("the creation commits");
+        space.take_event_log().await;
+        let mut opened = begin_allocation(&env, SPACE)
+            .await
+            .expect("the allocation opens");
+        opened.txn = Box::new(ScriptedReplay {
+            inner: opened.txn,
+            comms: None,
+            stages: Some(1),
+            follows: false,
+            // Added by decision 102 (plan v4 C5.3): no per-source rows.
+            rows: Vec::new(),
+        });
+        let op = AllocOp {
+            space: SPACE,
+            count: 2,
+            random_state: Blake2b512Random::create_from_bytes(&[1]).to_bytes(),
+            authority: CostAuthority::default(),
+        };
+        let allocated = match ArrayQueue::default()
+            .run_allocate(&env, opened, &op)
+            .expect("the allocation stages its prefix")
+        {
+            Allocation::Indices(prepared) => prepared.commit().await,
+            Allocation::Baseline => panic!("an Array space has an allocator"),
+        };
+        assert_eq!(
+            allocated,
+            Err(SpaceError::Substrate(SpaceTxnError::RecordEnded))
+        );
+        assert_eq!(
+            space.take_event_log().await.len(),
+            2,
+            "the take of the allocator and its COMM"
+        );
+        assert!(
+            allocator_value(&space).await.is_empty(),
+            "the put of the next value did not stage"
+        );
     }
 }

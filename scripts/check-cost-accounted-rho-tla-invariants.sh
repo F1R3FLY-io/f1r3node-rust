@@ -69,6 +69,15 @@ WRAPPED_BY[JointFundingSettlementZeroResource]=JointFundingSettlement
 WRAPPED_BY[FamilyCursorSettlementUnrestricted]=FamilyCursorSettlement
 WRAPPED_BY[AtomicTrieUpsertNil]=AtomicTrieUpsert
 WRAPPED_BY[OfferedCandidateQuarantineLarge]=OfferedCandidateQuarantine
+# DR-65 (G2): the three-member configuration of the same-block funding groups.
+WRAPPED_BY[SameBlockFundingGroupsLarge]=SameBlockFundingGroups
+# G3 (DR-135): owner draws in a batch, the owner scenario of the located
+# authority settlement, and an installer share that the installer cannot pay.
+WRAPPED_BY[SameBlockFundingGroupsOwner]=SameBlockFundingGroups
+WRAPPED_BY[LocatedAuthoritySettlementOwner]=MCLocatedAuthoritySettlementOwner
+WRAPPED_BY[FundingSlotBootstrapInstallerRefusal]=MCFundingSlotBootstrap
+# G3 step S3b (DR-135), Rule H: six steps, the whole "map2 <-" chain.
+WRAPPED_BY[HeldProvenanceLarge]=HeldProvenance
 WRAPPED_BY[NativeCandidateOrderLarge]=NativeCandidateOrder
 WRAPPED_BY[CompoundProtocol]=MCCompound
 WRAPPED_BY[CompoundSettlement]=MCCompoundSettlement
@@ -110,6 +119,27 @@ WRAPPED_BY[ValidatorEconomicsLifecycle]=MC_ValidatorEconomicsLifecycle
 # it is deliberately NOT registered here — a counterexample is its intended result,
 # not a pass. Run it explicitly: tlc -config TokenGatedJoinM2Grief.cfg MCTokenGatedJoin.tla
 WRAPPED_BY[TokenGatedJoin]=MCTokenGatedJoin
+# DR-132 (decision D2-B): the scenarios of the stall rule of native replay.
+WRAPPED_BY[NativeReplayStallMissing]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallInverted]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallUncounted]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallSameSource]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallOversubscribed]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallPair]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallMissingPair]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallChain]=NativeReplayStall
+# Added by Reified RSpaces (decision 90): the scenarios of the space
+# transactions, whose readiness wait extends the stall rule.
+WRAPPED_BY[NativeReplayStallTxnRace]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallTxnStripes]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallTxnStale]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallTxnShared]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallTxnSwap]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallTxnRepeat]=NativeReplayStall
+WRAPPED_BY[NativeReplayStallTxnForged]=NativeReplayStall
+# Added by decision 124 (L10): a forged record whose commit fails at a later
+# row. The transaction leaves and fails with the epoch open (TxnCheck).
+WRAPPED_BY[NativeReplayStallTxnForgedCommit]=NativeReplayStall
 
 declare -A EXPECTED_REFUTATION_WRAPPER
 declare -A EXPECTED_REFUTATION_INVARIANT
@@ -167,6 +197,87 @@ EXPECTED_REFUTATION_WRAPPER[NativeReplayReadinessDirectUnsafe]=NativeReplayReadi
 EXPECTED_REFUTATION_INVARIANT[NativeReplayReadinessDirectUnsafe]=DependencySafety
 EXPECTED_REFUTATION_WRAPPER[NativeReplayReadinessRetryUnsafe]=NativeReplayReadiness
 EXPECTED_REFUTATION_INVARIANT[NativeReplayReadinessRetryUnsafe]=DependencySafety
+# DR-132 (decision D2-B): each control removes one safeguard of the stall rule.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallParkAfterUnlockUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallParkAfterUnlockUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallParkAfterUnlockLeaveUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallParkAfterUnlockLeaveUnsafe]=NoFreshLeave
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallSkipResetUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallSkipResetUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallResetAfterUnlockUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallResetAfterUnlockUnsafe]=NoHang
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallSkipVersionUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallSkipVersionUnsafe]=CountExact
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallCountInChildUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallCountInChildUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallNotifiedAfterCheckUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallNotifiedAfterCheckUnsafe]=NoLostWakeup
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallRootUncountedUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallRootUncountedUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallAdmitUncountedUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallAdmitUncountedUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallBoundaryWhileArmedUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallBoundaryWhileArmedUnsafe]=NoFalseStall
+# DR-132: the reachability witnesses keep Verdict from holding vacuously.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallHonestCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallHonestCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallSameSourceCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallSameSourceCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallPairCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallPairCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallMissingVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallMissingVerdictReachable]=NoStallVerdict
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallInvertedVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallInvertedVerdictReachable]=NoStallVerdict
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallUncountedVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallUncountedVerdictReachable]=NoStallVerdict
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallMissingPairVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallMissingPairVerdictReachable]=NoStallVerdict
+# Added by Reified RSpaces (decision 90): each control removes one part of the
+# readiness wait of space transactions, and each witness keeps Verdict from
+# holding vacuously.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnFailClosedUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnFailClosedUnsafe]=Verdict
+# Disabled by Reified RSpaces (decision 92): the readiness check of a space
+# transaction reads its first row only, so the controls of the check of every
+# row model code that is gone. SpaceReplayOrder.tla in the Reified RSpaces gate
+# has the controls of the first-row check.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnParkUnderStripesUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnParkUnderStripesUnsafe]=NoHang
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnRegisterLateUnsafe]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnRegisterLateUnsafe]=NoLostWakeup
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnRaceCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnRaceCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnStripesCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnStripesCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnStaleCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnStaleCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnSharedCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnSharedCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnSwapCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnSwapCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnRepeatCompletionReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnRepeatCompletionReachable]=NoHonestCompletion
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnForgedVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnForgedVerdictReachable]=NoStallVerdict
+# Added by decision 124 (L10): the commit of a ready transaction fails at a
+# later row, and replay ends in a stall verdict.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallTxnForgedCommitVerdictReachable]=NativeReplayStall
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallTxnForgedCommitVerdictReachable]=NoStallVerdict
+# DR-132: the lifecycle controls (panic, cancel, root token, begin) and the
+# rerun witness.
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleNoLeaveOnDropUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleNoLeaveOnDropUnsafe]=CountExact
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleFinishBeforeDropUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleFinishBeforeDropUnsafe]=NoFalseStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleBeginNonZeroUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleBeginNonZeroUnsafe]=LiveExact
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleAbortBeforeCloseUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleAbortBeforeCloseUnsafe]=NoLateStall
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleHoldRootThroughDrainUnsafe]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleHoldRootThroughDrainUnsafe]=NoHang
+EXPECTED_REFUTATION_WRAPPER[NativeReplayStallLifecycleRerunReachable]=NativeReplayStallLifecycle
+EXPECTED_REFUTATION_INVARIANT[NativeReplayStallLifecycleRerunReachable]=NoRerun
 EXPECTED_REFUTATION_WRAPPER[GenesisResourcePolicyLatestUnsafe]=GenesisResourcePolicy
 EXPECTED_REFUTATION_INVARIANT[GenesisResourcePolicyLatestUnsafe]=GenesisAuthority
 EXPECTED_REFUTATION_WRAPPER[GenesisResourcePolicyMixedMinimumUnsafe]=GenesisResourcePolicy
@@ -549,6 +660,8 @@ EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusUnsafe]=MCEndToEndCostConsensus
 EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusUnsafe]=LocalFaultNeverCreatesSlashEvidence
 EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusOriginBypassUnsafe]=MCEndToEndCostConsensus
 EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusOriginBypassUnsafe]=ValidationOriginParity
+EXPECTED_REFUTATION_WRAPPER[EndToEndCostConsensusLegacyGenesisUnsafe]=MCEndToEndCostConsensus
+EXPECTED_REFUTATION_INVARIANT[EndToEndCostConsensusLegacyGenesisUnsafe]=AdmissionRequiresTrustedInstallGenesis
 EXPECTED_REFUTATION_WRAPPER[DeployTraceSegmentationRetentionUnsafe]=MCDeployTraceSegmentation
 EXPECTED_REFUTATION_INVARIANT[DeployTraceSegmentationRetentionUnsafe]=CheckpointContainsOnlyItsDeploy
 EXPECTED_REFUTATION_WRAPPER[MergeAggregateAgreementPrefixUnsafe]=MCMergeAggregateAgreement
@@ -979,7 +1092,16 @@ EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineUnboundedUnsafe]=Attempt
 EXPECTED_REFUTATION_WRAPPER[OfferedCandidateQuarantineNoEvictUnsafe]=OfferedCandidateQuarantine
 EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineNoEvictUnsafe]=LogBounded
 EXPECTED_REFUTATION_WRAPPER[OfferedCandidateQuarantineSkipHeadUnsafe]=OfferedCandidateQuarantine
-EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineSkipHeadUnsafe]=FirstFundableIncluded
+EXPECTED_REFUTATION_INVARIANT[OfferedCandidateQuarantineSkipHeadUnsafe]=FundableWindowIncluded
+# DR-65 (G2): each control removes one rule of the same-block funding groups.
+EXPECTED_REFUTATION_WRAPPER[SameBlockFundingGroupsPrefixAdmissionUnsafe]=SameBlockFundingGroups
+EXPECTED_REFUTATION_INVARIANT[SameBlockFundingGroupsPrefixAdmissionUnsafe]=GroupAllOrNone
+EXPECTED_REFUTATION_WRAPPER[SameBlockFundingGroupsIndependentCapacityUnsafe]=SameBlockFundingGroups
+EXPECTED_REFUTATION_INVARIANT[SameBlockFundingGroupsIndependentCapacityUnsafe]=NoOverdraft
+EXPECTED_REFUTATION_WRAPPER[SameBlockFundingGroupsNoHeldGuardUnsafe]=SameBlockFundingGroups
+EXPECTED_REFUTATION_INVARIANT[SameBlockFundingGroupsNoHeldGuardUnsafe]=HeldCapacityGuard
+EXPECTED_REFUTATION_WRAPPER[SameBlockFundingGroupsKeepTruncatedResultsUnsafe]=SameBlockFundingGroups
+EXPECTED_REFUTATION_INVARIANT[SameBlockFundingGroupsKeepTruncatedResultsUnsafe]=TruncationConsistency
 EXPECTED_REFUTATION_WRAPPER[NativeCandidateOrderIndexOnlyUnsafe]=NativeCandidateOrder
 EXPECTED_REFUTATION_INVARIANT[NativeCandidateOrderIndexOnlyUnsafe]=InsertionIndependent
 EXPECTED_REFUTATION_WRAPPER[NativeCandidateOrderSourceOnlyUnsafe]=NativeCandidateOrder
@@ -991,6 +1113,35 @@ EXPECTED_REFUTATION_INVARIANT[NativeCandidateOrderSourceOnlyUnsafe]=InsertionInd
 # EXPECTED_REFUTATION_INVARIANT[NativeCandidateOrderReplayNoTieBreakUnsafe]=PlayReplayAgree
 EXPECTED_REFUTATION_WRAPPER[NativeCandidateOrderReplaySourceMatchUnsafe]=NativeCandidateOrder
 EXPECTED_REFUTATION_INVARIANT[NativeCandidateOrderReplaySourceMatchUnsafe]=PlayReplayAgree
+# G3 (DR-135): each control removes one rule of the owner refusals, the owner
+# budgets, the installer share or the truncation of an owner batch.
+EXPECTED_REFUTATION_WRAPPER[NativeOwnerRefusalUnrecordedRefusalUnsafe]=NativeOwnerRefusal
+EXPECTED_REFUTATION_INVARIANT[NativeOwnerRefusalUnrecordedRefusalUnsafe]=HonestStoredReplays
+EXPECTED_REFUTATION_WRAPPER[NativeOwnerRefusalLiveLedgerItemTestUnsafe]=NativeOwnerRefusal
+EXPECTED_REFUTATION_INVARIANT[NativeOwnerRefusalLiveLedgerItemTestUnsafe]=PlayReplayAgree
+EXPECTED_REFUTATION_WRAPPER[NativeOwnerRefusalUnverifiedRefusalUnsafe]=NativeOwnerRefusal
+EXPECTED_REFUTATION_INVARIANT[NativeOwnerRefusalUnverifiedRefusalUnsafe]=RefusalNeedsShortfall
+EXPECTED_REFUTATION_WRAPPER[NativeOwnerRefusalPessimisticUnlistedUnsafe]=NativeOwnerRefusal
+EXPECTED_REFUTATION_INVARIANT[NativeOwnerRefusalPessimisticUnlistedUnsafe]=StoredClaimIsHonest
+EXPECTED_REFUTATION_WRAPPER[NativeOwnerRefusalLateBudgetStartUnsafe]=NativeOwnerRefusal
+EXPECTED_REFUTATION_INVARIANT[NativeOwnerRefusalLateBudgetStartUnsafe]=StoredClaimIsHonest
+EXPECTED_REFUTATION_WRAPPER[NativeOwnerRefusalUnpickableRefusalUnsafe]=NativeOwnerRefusal
+EXPECTED_REFUTATION_INVARIANT[NativeOwnerRefusalUnpickableRefusalUnsafe]=StoredClaimIsHonest
+EXPECTED_REFUTATION_WRAPPER[SameBlockFundingGroupsOwnerStraddleIgnoredUnsafe]=SameBlockFundingGroups
+EXPECTED_REFUTATION_INVARIANT[SameBlockFundingGroupsOwnerStraddleIgnoredUnsafe]=TruncationConsistency
+EXPECTED_REFUTATION_WRAPPER[SameBlockFundingGroupsOwnerBlindSelectionUnsafe]=SameBlockFundingGroups
+EXPECTED_REFUTATION_INVARIANT[SameBlockFundingGroupsOwnerBlindSelectionUnsafe]=NoOverdraft
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementUngatedOwnerDrawUnsafe]=MCLocatedAuthoritySettlementOwner
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementUngatedOwnerDrawUnsafe]=OwnerRealizedWithinBudget
+EXPECTED_REFUTATION_WRAPPER[LocatedAuthoritySettlementOwnerDrawWithoutStoredSealUnsafe]=MCLocatedAuthoritySettlementOwner
+EXPECTED_REFUTATION_INVARIANT[LocatedAuthoritySettlementOwnerDrawWithoutStoredSealUnsafe]=NoAmbientAuthority
+EXPECTED_REFUTATION_WRAPPER[FundingSlotBootstrapIgnoreInstallerShareUnsafe]=MCFundingSlotBootstrap
+EXPECTED_REFUTATION_INVARIANT[FundingSlotBootstrapIgnoreInstallerShareUnsafe]=ActivationChargesTheInstallerShare
+# G3 step S11 (DR-135 item 13): the caller reserves only its own work.
+EXPECTED_REFUTATION_WRAPPER[FundingSlotBootstrapCallerLimitCoversWholeRunUnsafe]=MCFundingSlotBootstrap
+EXPECTED_REFUTATION_INVARIANT[FundingSlotBootstrapCallerLimitCoversWholeRunUnsafe]=SponsoredActivationNeedsOnlyCallerWork
+EXPECTED_REFUTATION_WRAPPER[FundingSlotBootstrapCallerPaysOwnerSharesUnsafe]=MCFundingSlotBootstrap
+EXPECTED_REFUTATION_INVARIANT[FundingSlotBootstrapCallerPaysOwnerSharesUnsafe]=CallerPaysOnlyItsOwnWork
 EXPECTED_REFUTATION_WRAPPER[NativeDirtyExportWriteWithoutDirtyUnsafe]=NativeDirtyExport
 EXPECTED_REFUTATION_INVARIANT[NativeDirtyExportWriteWithoutDirtyUnsafe]=DirtyExportEqualsFullExport
 EXPECTED_REFUTATION_WRAPPER[NativeDirtyExportRestoreDropsDirtyUnsafe]=NativeDirtyExport
@@ -1005,6 +1156,22 @@ EXPECTED_REFUTATION_WRAPPER[SystemResidueAuthorityResolveByStoredSignerUnsafe]=S
 EXPECTED_REFUTATION_INVARIANT[SystemResidueAuthorityResolveByStoredSignerUnsafe]=NoForeignSystemResidueDemand
 EXPECTED_REFUTATION_WRAPPER[SystemResidueAuthorityReplayWithoutContextUnsafe]=SystemResidueAuthority
 EXPECTED_REFUTATION_INVARIANT[SystemResidueAuthorityReplayWithoutContextUnsafe]=ReplayAgreement
+# G3 step S3b (DR-135), Rule H: each control removes one rule of held
+# provenance.
+EXPECTED_REFUTATION_WRAPPER[HeldProvenanceBodyOwnerPaysHeldUnsafe]=HeldProvenance
+EXPECTED_REFUTATION_INVARIANT[HeldProvenanceBodyOwnerPaysHeldUnsafe]=ChargedToHolder
+EXPECTED_REFUTATION_WRAPPER[HeldProvenanceUnwrappedStoreUnsafe]=HeldProvenance
+EXPECTED_REFUTATION_INVARIANT[HeldProvenanceUnwrappedStoreUnsafe]=ChargedToHolder
+EXPECTED_REFUTATION_WRAPPER[HeldProvenanceDropClientCallerUnsafe]=HeldProvenance
+EXPECTED_REFUTATION_INVARIANT[HeldProvenanceDropClientCallerUnsafe]=ChargedToHolder
+EXPECTED_REFUTATION_WRAPPER[HeldProvenanceBodyCallerOnMixedDatumUnsafe]=HeldProvenance
+EXPECTED_REFUTATION_INVARIANT[HeldProvenanceBodyCallerOnMixedDatumUnsafe]=ChargedToHolder
+EXPECTED_REFUTATION_WRAPPER[HeldProvenanceSignerOnMixedForwardUnsafe]=HeldProvenance
+EXPECTED_REFUTATION_INVARIANT[HeldProvenanceSignerOnMixedForwardUnsafe]=ChargedToHolder
+EXPECTED_REFUTATION_WRAPPER[HeldProvenanceLiteralHolderUnsafe]=HeldProvenance
+EXPECTED_REFUTATION_INVARIANT[HeldProvenanceLiteralHolderUnsafe]=NoLaundering
+EXPECTED_REFUTATION_WRAPPER[HeldProvenanceContextPriceUnsafe]=HeldProvenance
+EXPECTED_REFUTATION_INVARIANT[HeldProvenanceContextPriceUnsafe]=HolderPrice
 
 # DR-120 (gap G9), law L7: scope copies of a base-settled deploy never take
 # the fast path, and each control hides a copy.
@@ -1080,12 +1247,6 @@ for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
 done
 
 matching_external=0
-if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
-    matching_external=$((matching_external + 1))
-fi
-if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
-    matching_external=$((matching_external + 1))
-fi
 if [[ -z "$FILTER" || "Validator" == *"$FILTER"* ]]; then
     matching_external=$((matching_external + 1))
 fi
@@ -1162,196 +1323,6 @@ for base in "${!EXPECTED_REFUTATION_WRAPPER[@]}"; do
         echo "$output" | tail -10 | sed 's/^/    /'
     fi
 done
-
-# Deterministic parallel reduction lives beside the runtime-isolation models
-# because it covers the interpreter/RSpace boundary rather than only economic
-# state. It is still a mandatory part of this gate: cost and replay evidence
-# cannot be canonical if competing COMMs commit by Tokio arrival order.
-REDUCTION_TLA_DIR="$REPO_ROOT/formal/tlaplus/deterministic_parallel_reduction"
-if [[ -z "$FILTER" || "DeterministicParallelReduction" == *"$FILTER"* ]]; then
-    reduction_module="$REDUCTION_TLA_DIR/DeterministicParallelReduction.tla"
-    reduction_safe="$REDUCTION_TLA_DIR/MC_DeterministicParallelReduction.cfg"
-    printf "  %-40s " "DeterministicParallelReduction"
-    reduction_output=$(tlc_run "$METADIR_ROOT/DeterministicParallelReduction" \
-        "$reduction_safe" "$reduction_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$reduction_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("DeterministicParallelReduction")
-        echo "$reduction_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    declare -A REDUCTION_UNSAFE_INVARIANTS=(
-        [arrival]="Inv_CommitRequiresCompleteFrontier"
-        [order]="Inv_ConflictComponentCommitsInOrder"
-        [checkpoint]="Inv_CheckpointAtQuiescence"
-        [serial]="Inv_FirstCommitRetainsDisjointParallelism"
-        [authority]="Inv_SharedAuthorityNeverRunsAsDisjoint"
-    )
-    for control in arrival order checkpoint serial authority; do
-        invariant="${REDUCTION_UNSAFE_INVARIANTS[$control]}"
-        config="$REDUCTION_TLA_DIR/MC_DeterministicParallelReduction_${control}_unsafe.cfg"
-        printf "  %-40s " "DeterministicParallelReduction_${control} (expected refutation)"
-        reduction_output=$(tlc_run "$METADIR_ROOT/DeterministicParallelReduction_${control}" \
-            "$config" "$reduction_module" -deadlock 2>&1 || true)
-        if grep -Fq "Invariant ${invariant} is violated" <<<"$reduction_output"; then
-            echo "PASS (refuted ${invariant})"
-            passes=$((passes + 1))
-            expected_refutations=$((expected_refutations + 1))
-        else
-            echo "FAIL (expected ${invariant} counterexample)"
-            failures=$((failures + 1))
-            failed_specs+=("DeterministicParallelReduction_${control}(expected-refutation)")
-            echo "$reduction_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-
-    driver_module="$REDUCTION_TLA_DIR/ReductionDriverLifecycle.tla"
-    for driver_mode in async inline; do
-        if [[ "$driver_mode" == "async" ]]; then
-            driver_config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle.cfg"
-        else
-            driver_config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle_inline.cfg"
-        fi
-        printf "  %-40s " "ReductionDriverLifecycle_${driver_mode}"
-        driver_output=$(tlc_run "$METADIR_ROOT/ReductionDriverLifecycle_${driver_mode}" \
-            "$driver_config" "$driver_module" -deadlock 2>&1 || true)
-        if grep -q "Model checking completed. No error has been found" <<<"$driver_output"; then
-            echo "PASS"
-            passes=$((passes + 1))
-        else
-            echo "FAIL"
-            failures=$((failures + 1))
-            failed_specs+=("ReductionDriverLifecycle_${driver_mode}")
-            echo "$driver_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-
-    declare -A DRIVER_UNSAFE_INVARIANTS=(
-        [claim]="Inv_ReadyHasDriver"
-        [transfer]="Inv_PendingInlineIsTransferable"
-        [reentry]="Inv_InternalExecutionNeverResubmits"
-    )
-    for control in claim transfer reentry; do
-        invariant="${DRIVER_UNSAFE_INVARIANTS[$control]}"
-        config="$REDUCTION_TLA_DIR/MC_ReductionDriverLifecycle_${control}_unsafe.cfg"
-        printf "  %-40s " "ReductionDriverLifecycle_${control} (expected refutation)"
-        driver_output=$(tlc_run "$METADIR_ROOT/ReductionDriverLifecycle_${control}" \
-            "$config" "$driver_module" -deadlock 2>&1 || true)
-        if grep -Fq "Invariant ${invariant} is violated" <<<"$driver_output"; then
-            echo "PASS (refuted ${invariant})"
-            passes=$((passes + 1))
-            expected_refutations=$((expected_refutations + 1))
-        else
-            echo "FAIL (expected ${invariant} counterexample)"
-            failures=$((failures + 1))
-            failed_specs+=("ReductionDriverLifecycle_${control}(expected-refutation)")
-            echo "$driver_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-
-    singleton_module="$REDUCTION_TLA_DIR/SingleParticipantFastPath.tla"
-    singleton_safe="$REDUCTION_TLA_DIR/MC_SingleParticipantFastPath.cfg"
-    printf "  %-40s " "SingleParticipantFastPath"
-    singleton_output=$(tlc_run "$METADIR_ROOT/SingleParticipantFastPath" \
-        "$singleton_safe" "$singleton_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$singleton_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("SingleParticipantFastPath")
-        echo "$singleton_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    singleton_unsafe="$REDUCTION_TLA_DIR/MC_SingleParticipantFastPath_unsafe.cfg"
-    printf "  %-40s " "SingleParticipantFastPath_unsafe (expected refutation)"
-    singleton_output=$(tlc_run "$METADIR_ROOT/SingleParticipantFastPath_unsafe" \
-        "$singleton_unsafe" "$singleton_module" -deadlock 2>&1 || true)
-    if grep -Fq "Invariant Inv_DirectOwnerRequiresSingleton is violated" <<<"$singleton_output"; then
-        echo "PASS (refuted Inv_DirectOwnerRequiresSingleton)"
-        passes=$((passes + 1))
-        expected_refutations=$((expected_refutations + 1))
-    else
-        echo "FAIL (expected Inv_DirectOwnerRequiresSingleton counterexample)"
-        failures=$((failures + 1))
-        failed_specs+=("SingleParticipantFastPath_unsafe(expected-refutation)")
-        echo "$singleton_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    boundary_module="$REDUCTION_TLA_DIR/EvaluationBoundary.tla"
-    boundary_safe="$REDUCTION_TLA_DIR/MC_EvaluationBoundary.cfg"
-    printf "  %-40s " "EvaluationBoundary"
-    boundary_output=$(tlc_run "$METADIR_ROOT/EvaluationBoundary" \
-        "$boundary_safe" "$boundary_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$boundary_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("EvaluationBoundary")
-        echo "$boundary_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    boundary_unsafe="$REDUCTION_TLA_DIR/MC_EvaluationBoundary_cancel_unsafe.cfg"
-    printf "  %-40s " "EvaluationBoundary_cancel (expected refutation)"
-    boundary_output=$(tlc_run "$METADIR_ROOT/EvaluationBoundary_cancel" \
-        "$boundary_unsafe" "$boundary_module" -deadlock 2>&1 || true)
-    if grep -Fq "Invariant Inv_CheckpointAtEvaluationQuiescence is violated" <<<"$boundary_output"; then
-        echo "PASS (refuted Inv_CheckpointAtEvaluationQuiescence)"
-        passes=$((passes + 1))
-        expected_refutations=$((expected_refutations + 1))
-    else
-        echo "FAIL (expected Inv_CheckpointAtEvaluationQuiescence counterexample)"
-        failures=$((failures + 1))
-        failed_specs+=("EvaluationBoundary_cancel(expected-refutation)")
-        echo "$boundary_output" | tail -10 | sed 's/^/    /'
-    fi
-fi
-
-if [[ -z "$FILTER" || "CountedDetachedReduction" == *"$FILTER"* ]]; then
-    counted_module="$REDUCTION_TLA_DIR/CountedDetachedReduction.tla"
-    counted_safe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction.cfg"
-    printf "  %-40s " "CountedDetachedReduction"
-    counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction" \
-        "$counted_safe" "$counted_module" -deadlock 2>&1 || true)
-    if grep -q "Model checking completed. No error has been found" <<<"$counted_output"; then
-        echo "PASS"
-        passes=$((passes + 1))
-    else
-        echo "FAIL"
-        failures=$((failures + 1))
-        failed_specs+=("CountedDetachedReduction")
-        echo "$counted_output" | tail -10 | sed 's/^/    /'
-    fi
-
-    for control in count charge permit; do
-        counted_unsafe="$REDUCTION_TLA_DIR/MC_CountedDetachedReduction_${control}_unsafe.cfg"
-        case "$control" in
-            count) expected_invariant="CountExact" ;;
-            charge) expected_invariant="ChargeEqual" ;;
-            permit) expected_invariant="PermitUntilQuiescence" ;;
-        esac
-        printf "  %-40s " "CountedDetachedReduction_${control} (expected refutation)"
-        counted_output=$(tlc_run "$METADIR_ROOT/CountedDetachedReduction_${control}" \
-            "$counted_unsafe" "$counted_module" -deadlock 2>&1 || true)
-        if grep -Fq "Invariant $expected_invariant is violated" <<<"$counted_output"; then
-            echo "PASS (refuted $expected_invariant)"
-            passes=$((passes + 1))
-            expected_refutations=$((expected_refutations + 1))
-        else
-            echo "FAIL (expected $expected_invariant counterexample)"
-            failures=$((failures + 1))
-            failed_specs+=("CountedDetachedReduction_${control}(expected-refutation)")
-            echo "$counted_output" | tail -10 | sed 's/^/    /'
-        fi
-    done
-fi
 
 # ─────────────────────────────────────────────────────────────────────────
 # Validator behavioral contract (Workstream E, stage E5): the arithmetic

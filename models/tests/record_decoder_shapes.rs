@@ -18,13 +18,20 @@
 //!
 //! - Shape 3 is the plain `EPathMap` of this branch: four derived fields, the
 //!   first a sequence of `Par`. There is no trie snapshot.
-//! - `Par` has 13 fields here: the hand-built encodings end with
-//!   `cost_signed_terms` and `cost_stacks`.
+// Changed by decision 112: `use_blocks` is the fourteenth field. The text before:
+// ```
+// //! - `Par` has 13 fields here: the hand-built encodings end with
+// //!   `cost_signed_terms` and `cost_stacks`.
+// ```
+//! - `Par` has 14 fields here: the hand-built encodings end with
+//!   `cost_signed_terms`, `cost_stacks` and `use_blocks`.
 //! - The type partition is checked against the names in the generated schema
 //!   (`$OUT_DIR/rhoapi.rs`), so a new type fails the test until it is
 //!   classified.
 //! - New pins: the indices of `ConnectiveInstance`, `CostSignature.Value`,
-//!   `VarInstance` and `UnfInstance`, the 13 fields of `Par`, and the numeric
+// Changed by decision 112: `Par` has 14 fields. The text before:
+// //!   `VarInstance` and `UnfInstance`, the 13 fields of `Par`, and the numeric
+//!   `VarInstance` and `UnfInstance`, the 14 fields of `Par`, and the numeric
 //!   arms whose values the derived decoder does not range-check.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -80,8 +87,13 @@ fn hand_built_par(
     connective_used: bool,
 ) -> Vec<u8> {
     let empty = EMPTY_SEQUENCE;
+    // Changed by decision 112: `use_blocks` adds one empty sequence. The text before:
+    // ```
+    // let mut out =
+    //     Vec::with_capacity(10 * 8 + news.len() + exprs.len() + 8 + locally_free.len() + 1);
+    // ```
     let mut out =
-        Vec::with_capacity(10 * 8 + news.len() + exprs.len() + 8 + locally_free.len() + 1);
+        Vec::with_capacity(11 * 8 + news.len() + exprs.len() + 8 + locally_free.len() + 1);
     out.extend_from_slice(&empty); // sends
     out.extend_from_slice(&empty); // receives
     out.extend_from_slice(news); // news
@@ -96,14 +108,21 @@ fn hand_built_par(
     out.push(u8::from(connective_used)); // connective_used
     out.extend_from_slice(&empty); // cost_signed_terms
     out.extend_from_slice(&empty); // cost_stacks
+    out.extend_from_slice(&empty); // use_blocks
     out
 }
 
-/// `Par` has 13 serde fields, in the order of [`hand_built_par`].
+// Changed by decision 112: `use_blocks` is the fourteenth field. The text before:
+// /// `Par` has 13 serde fields, in the order of [`hand_built_par`].
+/// `Par` has 14 serde fields, in the order of [`hand_built_par`].
 #[test]
-fn par_is_thirteen_fields_in_declaration_order() {
+// Changed by decision 112: `use_blocks` is the fourteenth field. The text before:
+// fn par_is_thirteen_fields_in_declaration_order() {
+fn par_is_fourteen_fields_in_declaration_order() {
     let empty = bincode::serialize(&Par::default()).expect("serialize the empty Par");
-    assert_eq!(empty.len(), 12 * 8 + 1, "twelve sequences and one bool");
+    // Changed by decision 112: `use_blocks` adds one empty sequence. The text before:
+    // assert_eq!(empty.len(), 12 * 8 + 1, "twelve sequences and one bool");
+    assert_eq!(empty.len(), 13 * 8 + 1, "thirteen sequences and one bool");
     assert_eq!(
         empty,
         hand_built_par(&EMPTY_SEQUENCE, &EMPTY_SEQUENCE, &[], false)
@@ -123,7 +142,10 @@ fn par_is_thirteen_fields_in_declaration_order() {
 // SHAPE 1: `New.injections` is a `BTreeMap<String, Par>`
 // ===========================================================================
 
-/// The only map field of the schema. serde writes a map, not a sequence:
+// Changed by decision 112: `SendParams.named` and `QuerySpec.named` are map fields too.
+// The text before:
+// /// The only map field of the schema. serde writes a map, not a sequence:
+/// A map field of the schema. serde writes a map, not a sequence:
 /// bincode's `deserialize_map` reads a `u64` count and then that many key and
 /// value pairs. A decoder that read a sequence would try to read a `Par`
 /// where a `String` key sits. The keys are interleaved with values of any
@@ -141,6 +163,7 @@ fn shape_1_injections_are_a_map_of_key_value_pairs() {
             uri: vec![],
             injections: injections.clone(),
             locally_free: vec![],
+            space_types: vec![],
         }],
         ..Default::default()
     };
@@ -183,6 +206,7 @@ fn shape_1_duplicate_and_unsorted_map_keys_behave_like_btreemap_insert() {
         news.extend_from_slice(&bincode::serialize(&corpus::gint(value)).expect("gint"));
     }
     news.extend_from_slice(&0u64.to_le_bytes()); // New.locally_free = []
+    news.extend_from_slice(&0u64.to_le_bytes()); // New.space_types = []
     let par_bytes = hand_built_par(&news, &EMPTY_SEQUENCE, &[], false);
 
     let oracle: Par = bincode::deserialize(&par_bytes)
@@ -657,6 +681,12 @@ fn the_narrow_numeric_arms_are_not_range_checked() {
 /// that contain `Par` (directly or through other types) and go on the machine,
 /// and the 18 that do not and are read by the bounded leaf readers.
 ///
+/// Changed by G3 (DR-135): `CostCaller` makes 73 types and 55 machine types.
+/// Its signature can quote a `Par`, so it goes on the machine (SA3).
+///
+/// Changed by decision 112: `UseBlock`, `SendParams`, `QuerySpec`, `SpaceAnnotation` and
+/// `EFree` make 78 types and 60 machine types. Each holds a `Par`, so each goes on the machine.
+///
 /// Three guards keep the partition true:
 ///
 /// 1. A new FIELD on a machine type fails to compile: every `*Build` op of
@@ -669,8 +699,12 @@ fn the_narrow_numeric_arms_are_not_range_checked() {
 #[test]
 fn record_decoder_type_partition() {
     /// Contain `Par`; decoded by the machine.
-    const MACHINE_TYPES: [&str; 54] = [
-        // the cycle through `Par` (46), the cost family included
+    // Changed by G3 (DR-135): one more machine type, `CostCaller`.
+    // const MACHINE_TYPES: [&str; 54] = [
+    const MACHINE_TYPES: [&str; 60] = [
+        // Changed by decision 112: the five new messages are in the cycle. The text before:
+        // // the cycle through `Par` (46), the cost family included
+        // the cycle through `Par` (51), the cost family included
         "Par",
         "Send",
         "Receive",
@@ -717,6 +751,11 @@ fn record_decoder_type_partition() {
         "CostSignatureCompound",
         "CostSignedTerm",
         "CostStack",
+        "UseBlock",
+        "SendParams",
+        "QuerySpec",
+        "SpaceAnnotation",
+        "EFree",
         // contain `Par` but are not in the cycle (8)
         "TaggedContinuation",
         "TaggedCont",
@@ -726,6 +765,9 @@ fn record_decoder_type_partition() {
         "ListBindPatterns",
         "CostRegion",
         "CostAuthority",
+        // Added by G3 (DR-135): the caller of a region (9 types outside the
+        // cycle).
+        "CostCaller",
     ];
 
     /// Outside the cycle and without `Par`: a fixed maximum nesting, so a
@@ -782,7 +824,9 @@ fn record_decoder_type_partition() {
                 .expect("a type name")
         })
         .collect();
-    assert_eq!(generated.len(), 72, "the generated schema has 72 types");
+    // Changed by G3 (DR-135): `CostCaller` is the 73rd type.
+    // assert_eq!(generated.len(), 72, "the generated schema has 72 types");
+    assert_eq!(generated.len(), 78, "the generated schema has 78 types");
     let partition: BTreeSet<&str> = machine.union(&bounded).copied().collect();
     let unclassified: Vec<&&str> = generated.difference(&partition).collect();
     let stale: Vec<&&str> = partition.difference(&generated).collect();
@@ -871,7 +915,9 @@ fn machine_rejects_a_truncated_deep_term_without_overflowing() {
         .stack_size(256 * 1024)
         .spawn(move || {
             // Without the final byte, everything parses until the outer
-            // `cost_stacks` count. At that point about 4,096 levels are live on
+            // Changed by decision 112: `use_blocks` is the last field of `Par`. The text before:
+            // // `cost_stacks` count. At that point about 4,096 levels are live on
+            // `use_blocks` count. At that point about 4,096 levels are live on
             // the machine's value stacks and must be released without
             // recursion.
             let truncated = &bytes[..bytes.len() - 1];

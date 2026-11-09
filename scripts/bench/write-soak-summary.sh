@@ -48,7 +48,7 @@ jq -n \
       def provider_split(p):
         ($all | map(select(.provider? == p))) as $provider_iters
         | {iterations: ($provider_iters | length),
-           failures: ($provider_iters | map(select((.ok? // false) | not)) | length),
+           failures: ($provider_iters | map(select(((.ok? // false) or (.deadline_truncated? // false)) | not)) | length),
            avg_duration_s: (([$provider_iters[] | .duration_s? | select(type == "number")]) as $durations
              | if ($durations | length) > 0
                then (($durations | add) / ($durations | length) | floor)

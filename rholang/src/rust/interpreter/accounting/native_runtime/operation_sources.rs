@@ -8,21 +8,28 @@ use serde::Serialize;
 use super::recording::recording_error;
 use super::InterpreterError;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Changed by DR-132: the sources are ordered, so that native replay can index
+// its slots by recorded source.
+// #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NativeProduceSource {
     pub channel: [u8; 32],
     pub hash: [u8; 32],
     pub persistent: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Changed by DR-132: ordered, as `NativeProduceSource`.
+// #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NativeConsumeSource {
     pub channels: Arc<[[u8; 32]]>,
     pub hash: [u8; 32],
     pub persistent: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Changed by DR-132: ordered, as `NativeProduceSource`.
+// #[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NativeOperationSource {
     Produce(NativeProduceSource),
     Consume(NativeConsumeSource),

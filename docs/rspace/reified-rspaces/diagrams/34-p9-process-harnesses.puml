@@ -1,21 +1,30 @@
 ' 34 The process harnesses of P9: N2 and the replay of spaces across blocks.
-' Each child is a fresh process of the same test binary, so a result that
-' depends on the memory of one process differs between the runs.
+' Each child is a fresh process of the same test binary, and the parent
+' certifies its records in another process. So a result that depends on the
+' memory of one process fails its certification.
 '
 ' Source of the harness figure of ../verification.md (section 34.9). The
 ' figure restates the suite rholang/tests/reified_cross_process.rs, its
 ' process support rholang/tests/support/process.rs and the native
 ' certification of rholang/tests/support/native.rs (P9 design v2, section 6,
-' amendments A14 and A16). It adds no new fact.
+' amendments A14 and A16, decisions 93 and 111). It adds no new fact.
+'
+' Changed by decisions 93 and 111: on each racing runtime, a child plays, and
+' the parent certifies each record of the child from the empty root. Before,
+' the children n2-a and n2-b and two runs of the parent gave equal records,
+' and the parent played the three blocks again and compared the records.
+' Changed by decision 89: a record holds no host work, because DR-131 of the
+' base removed host work.
 '
 ' Reading order, from the top to the bottom:
-'   1. N2: the children n2-a and n2-b each play the deploy set of N2 over an
-'      in-memory store, and the parent plays it twice. The four runs give
-'      the same record for each deploy.
-'   2. The replay across blocks: the child propose plays three blocks over
-'      one LMDB store. The child validate opens the store in another process
-'      and certifies each deploy once from its pre-state, as a validator
-'      does. The parent plays the blocks again and compares the records.
+'   1. N2: on each racing runtime, the child n2-{workers} plays the deploy set
+'      of N2 over an in-memory store. The parent certifies each record of the
+'      child from the empty root, in its own process.
+'   2. The replay across blocks, on each racing runtime: the child propose
+'      plays three blocks over one LMDB store. The child validate opens the
+'      store in another process and certifies each deploy once from its
+'      pre-state, as a validator does. The parent certifies each record of
+'      propose from the empty root, in its own process.
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 34-p9-process-harnesses.puml   Check: ./render.sh --check
@@ -42,21 +51,21 @@ title The process harnesses of P9: N2 and the replay across blocks
 autonumber
 
 participant "Parent process\ntest function" as PARENT $rrs_host
-participant "Children\nn2-a and n2-b" as N2 $rrs_host
+participant "Children\nn2-0, n2-2 and n2-8" as N2 $rrs_host
 participant "Child propose" as PROPOSE $rrs_host
 database "LMDB store\nrun directory" as STORE $rrs_storage
 collections "Deploy records\nrun directory" as RECORDS $rrs_storage
 participant "Child validate" as VALIDATE $rrs_host
 
-== N2: one deploy set in four runs ==
-PARENT -[$rrs_flow]> N2 : start the test binary again (current_exe)\nwith a role variable, one child at a time
+== N2: one deploy set on each racing runtime ==
+PARENT -[$rrs_flow]> N2 : start the test binary again (current_exe)\nwith a role variable, one child for each racing runtime
 N2 -[$rrs_flow]> N2 : native play of the 62 deploys\nover an in-memory store, at the v6 limits
 N2 -[$rrs_effect]> RECORDS : one record for each deploy
-PARENT -[$rrs_flow]> PARENT : play the same 62 deploys twice\nin the parent process
-PARENT -[$rrs_relation]> RECORDS : read the records of n2-a and n2-b
-PARENT -[$rrs_relation]-> PARENT : the four runs give equal records
+PARENT -[$rrs_relation]> RECORDS : read the records of the child
+PARENT -[$rrs_flow]> PARENT : certify each record from the empty root\nin the parent process
+PARENT -[$rrs_relation]-> PARENT : the post-state root of play\nand the phlo of play
 
-== The replay across blocks ==
+== The replay across blocks, on each racing runtime ==
 PARENT -[$rrs_flow]> PROPOSE : start the child propose
 PROPOSE -[$rrs_flow]> STORE : open the store
 PROPOSE -[$rrs_flow]> PROPOSE : native play of blocks 1, 2 and 3:\n30, 28 and 28 deploys at the v6 limits
@@ -72,13 +81,13 @@ loop each of the 86 deploys, once
 end
 PARENT -[$rrs_relation]> RECORDS : read the records of propose
 PARENT -[$rrs_relation]-> PARENT : each deploy starts at the\npost-state root of the deploy before it
-PARENT -[$rrs_flow]> PARENT : play the three blocks again over\nan in-memory store, in the parent process
-PARENT -[$rrs_relation]-> PARENT : equal records, and the deliveries\nof each family and of the agent
+PARENT -[$rrs_flow]> PARENT : certify each record of propose\nfrom the empty root, in the parent process
+PARENT -[$rrs_relation]-> PARENT : the post-state roots of play, and the deliveries\nof each family and of the agent
 
 note over PARENT, VALIDATE
 A record holds the pre-state and post-state roots, the outputs, the event log,
-the evidence bytes, the phlo and the host work of play. A child prints no test
-output to the parent: the parent keeps the standard output of each child.
+the evidence bytes and the phlo of play. A child prints no test output to the
+parent: the parent keeps the standard output of each child.
 end note
 
 legend bottom

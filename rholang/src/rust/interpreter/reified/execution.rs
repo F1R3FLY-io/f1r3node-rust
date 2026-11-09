@@ -229,7 +229,8 @@ mod tests {
     use super::*;
     use crate::rust::interpreter::accounting::cost_accounting::CostAccounting;
     use crate::rust::interpreter::accounting::costs::Cost;
-    use crate::rust::interpreter::deterministic_reduction::root;
+    // Changed by decision 90 (DR-132): the scheduler is gone.
+    // use crate::rust::interpreter::deterministic_reduction::root;
     use crate::rust::interpreter::external_services::ExternalServices;
     use crate::rust::interpreter::matcher::r#match::Matcher;
     use crate::rust::interpreter::reduce::DebruijnInterpreter;
@@ -290,6 +291,11 @@ mod tests {
     }
 
     /// The reducer of a runtime with a `Host` runtime over the host.
+    ///
+    /// Changed by decision 90 (C6, decision 69): a host runtime runs space jobs only in native
+    /// execution, so the budget enters native execution, as `evaluate_with_native_phlo` enters it
+    /// for a deploy. The configuration is the native configuration of the fixtures
+    /// (`system_processes::harness::native_config`).
     async fn hosted() -> Fixture {
         let host = host().await;
         let runtime = create_rho_runtime(
@@ -304,6 +310,12 @@ mod tests {
         runtime
             .cost
             .set(Cost::create(i64::MAX, "routing execution test".to_string()));
+        runtime
+            .cost
+            .reset_for_native_execution(
+                crate::rust::interpreter::reified::system_processes::harness::native_config(),
+            )
+            .expect("the test budget enters native execution");
         Fixture::over(host, runtime.reducer)
     }
 
@@ -360,6 +372,7 @@ mod tests {
             persistent: false,
             locally_free: Vec::new(),
             connective_used: false,
+            params: None,
         }])
     }
 
@@ -488,36 +501,40 @@ mod tests {
         let space = native(3);
         let name = space_name(space, 2);
         let out = private(4);
-        root(
-            core.space.clone(),
-            core.metering.budget(),
-            core.reduction_coordinator.clone(),
-            async {
-                create(core, space).await?;
-                core.reified_consume(
-                    vec![(pattern(), name.clone())],
-                    ParWithRandom {
-                        body: Some(forward_to(&out)),
-                        random_state: Blake2b512Random::create_from_bytes(b"receive").to_bytes(),
-                    },
-                    false,
-                    false,
-                    None,
-                    CostAuthority::default(),
-                    CostAuthority::default(),
-                    None,
-                )
-                .await?;
-                let reply = fixture
-                    .backend
-                    .produce(name.clone(), datum(vec![int(7)]), false)
-                    .await
-                    .map_err(InterpreterError::from)?;
-                assert!(reply.is_none());
-                Ok::<_, InterpreterError>(())
-            },
-        )
+        // Changed by decision 90 (DR-132): the steps run in the per-call dispatch scope of
+        // the base, as a deploy runs. Before, they ran under the scheduler root.
+        // root(
+        //     core.space.clone(),
+        //     core.metering.budget(),
+        //     core.reduction_coordinator.clone(),
+        //     async {
+        crate::rust::interpreter::reduce::with_dispatch_scope(async {
+            create(core, space).await?;
+            core.reified_consume(
+                vec![(pattern(), name.clone())],
+                ParWithRandom {
+                    body: Some(forward_to(&out)),
+                    random_state: Blake2b512Random::create_from_bytes(b"receive").to_bytes(),
+                },
+                false,
+                false,
+                None,
+                CostAuthority::default(),
+                CostAuthority::default(),
+                None,
+                vec![None],
+            )
+            .await?;
+            let reply = fixture
+                .backend
+                .produce(name.clone(), datum(vec![int(7)]), false)
+                .await
+                .map_err(InterpreterError::from)?;
+            assert!(reply.is_none());
+            Ok::<_, InterpreterError>(())
+        })
         .await
+        .0
         .expect("the reply reaches the space");
         assert_eq!(stored(&fixture.host, &out).await, vec![vec![int(7)]]);
         assert!(fixture.host.get_data(&name).await.is_empty());

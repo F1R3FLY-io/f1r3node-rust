@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Status | Proposal for discussion with the Casper team. Not ratified. |
-| Date | 2026-10-09. Amended on 2026-10-12 after an audit of every claim against the code. Amended on 2026-10-13 for the reduction scheduler, the candidate pick, and record and replay (see the amendment note below). |
+| Date | 2026-10-09. Amended on 2026-10-12 after an audit of every claim against the code. Amended on 2026-10-13 for the reduction scheduler, the candidate pick, and record and replay. Amended on 2026-10-16 for the return to dev's racing evaluation (DR-132). See the amendment notes below. |
 | Audience | The Casper team of F1R3FLY, the user (the developer who directs this work), and Greg (L. G. Meredith), the author of the cost-accounting papers |
 | Code basis | Branch `feature/cost-accounted-rho` at `e38ff0de8`. It contains `dev`, the integration branch of the F1R3node repository, at `93e38575e`. Every `file:line` reference is at `e38ff0de8` unless the text names another commit. The first version of this document used the commit `17e07307f`, and the profiles of §9 come from that commit. |
 | Paper basis | The F1R3FLY publications repository at revision `0bf7817` |
@@ -20,12 +20,19 @@
 - **Basis.** New code citations use the code basis `e38ff0de8` unless they name another commit. The file `deterministic_reduction.rs` is the same at `e38ff0de8` and at `717a33b16`.
 - **Diagrams.** Two new diagrams show the scheduler against racing evaluation (§3.7.1) and order-then-execute with record and replay (§7.1). The diagrams of §8.2 and §10 predate this amendment. Their executor box covers both execution and replay.
 
+**Amendment (2026-10-16, the return to racing evaluation).** On 2026-10-14 the user decided: "the deterministic scheduler needs to be reverted to dev's version, I will coordinate the necessary fileio changes with Mike (the deterministic scheduler will have a catastrophic impact on parallelism)". This reverses the decision of 2026-10-13 that the amendment above records. DR-132 records the change, and the code is in commit `97d020154`. Replaced text stays in `<details>` blocks titled "Text before the amendment of 2026-10-16".
+
+- **The scheduler is removed.** `deterministic_reduction.rs` is deleted. Evaluation races as on dev, inside dev's per-call scope of `inj`. §3.7 keeps its analysis of the removed design. The new §3.7.6 describes the return.
+- **Operation names.** The recorder names each native operation by its journal row. Native replay finds each row by its recorded RSpace source and keeps play's order on each shared channel. The wire format does not change.
+- **Every replay ends in a verdict.** Native replay rejects a block when every live task of its evaluation waits on a recorded operation (the stall rule of DR-132). This closes the latent hang of §3.7.2.
+- **Changed sites.** The amendment changes the header, the contents, the glossary, the file tables, §1.4 conclusion 6, §3.6, §3.7, §4.3, §6.3, §7.1, §7.7, §7.10, §7.12, §8.2 and §12.
+
 ## Contents
 
 1. [Purpose and summary](#1-purpose-and-summary)
 2. [Background for Casper readers](#2-background-for-casper-readers)
 3. [Today's pipeline](#3-todays-pipeline)
-   - [3.7 The single-order reduction scheduler](#37-the-single-order-reduction-scheduler), added on 2026-10-13
+   - [3.7 The single-order reduction scheduler](#37-the-single-order-reduction-scheduler), added on 2026-10-13, removed by DR-132 on 2026-10-16 (§3.7.6)
    - [3.8 The candidate pick inside RSpace](#38-the-candidate-pick-inside-rspace), added on 2026-10-13
 4. [What is being implemented now](#4-what-is-being-implemented-now)
 5. [Prior implementation on feature/casper-cost-accounting-completion](#5-prior-implementation-on-featurecasper-cost-accounting-completion)
@@ -75,7 +82,7 @@
 | A-LIN | The assumption that each LFB lies on the main chain of every later LFB | §7.5 |
 | Q-1 to Q-6 | The technical questions for the Casper team | §7.13 |
 | Q-7 | The technical question on records. Added on 2026-10-13. | §7.13 |
-| The scheduler | The single-order reduction scheduler of `deterministic_reduction.rs`. It orders the RSpace operations inside one deploy evaluation. Added on 2026-10-13. | §3.7 |
+| The scheduler | The single-order reduction scheduler of `deterministic_reduction.rs`. It ordered the RSpace operations inside one deploy evaluation. Added on 2026-10-13. DR-132 removed it on 2026-10-16. | §3.7, §3.7.6 |
 | Record, canonical record, $`\mathrm{executed}(b)`$ | The record of one run of a finalized block $`b`$, the record that the canonical order fixes for $`b`$, and the root after that record. Added on 2026-10-13. | §7.7 |
 | T1 to T4, M1 to M5 | The profiled tests, and the measurements that are still needed | §9.1, §9.3 |
 | Phase 0, Phase 1, Phase 1b, Phase 2, Phase 3 | The phases of the plan. S, M, L and XL are their relative sizes. | §10 |
@@ -145,7 +152,7 @@ P3 and CS are not governing papers. §3.7 cites them on scheduling, and their li
 | `cost_protocol_limits.rs` | `models/src/rust/cost_protocol_limits.rs` |
 | `CasperMessage.proto` | `models/src/main/protobuf/CasperMessage.proto` |
 | `block_dag_key_value_storage.rs` | `block-storage/src/rust/dag/block_dag_key_value_storage.rs` |
-| `deterministic_reduction.rs` | `rholang/src/rust/interpreter/deterministic_reduction.rs` |
+| `deterministic_reduction.rs` | `rholang/src/rust/interpreter/deterministic_reduction.rs`. DR-132 deleted it. Its citations in this document refer to the code basis `e38ff0de8`. |
 | `reduce.rs` | `rholang/src/rust/interpreter/reduce.rs`. A citation of dev or of another commit names that commit. |
 | `trace/replay.rs` | `rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay.rs`. The short name `replay.rs` names the casper file above. |
 | `trace/replay/session/operations.rs` | `rholang/src/rust/interpreter/accounting/native_runtime/checked_operations/trace/replay/session/operations.rs` |
@@ -250,7 +257,14 @@ The conclusions, with their basis:
 3. **Order-then-execute remains Casper.** [I] It keeps the justifications of Casper CBC (correct by construction), the fork choice, the clique-oracle finality and the equivocation slashing. It changes when state is computed and where the validator weights come from (§7.8, §7.9).
 4. **E4 is not yet proven.** [M][I] The data of the August soak test (a long load test of a validator network) agree with E4. After dev's later fixes, no per-node stage separates failing soak sessions from passing ones. Dev's analysis points to the finality round length and to blocks that wait for missing parents (§9).
 5. **The earlier branch does not change this assessment.** [C][I] A review of the earlier branch `feature/casper-cost-accounting-completion` found that its tip met none of E1 to E4 (§5). It met E2 in part, but only inside one proposer's block and only under a narrow reading in which funding decides. No gap of §6 closes, and §7 to §11 do not change.
-6. **Record and replay does not depend on the reduction scheduler.** [C][I] This conclusion was added on 2026-10-13. The single-order scheduler stays, by the user's decision of that day. §3.7 analyzes it. RSpace returns to dev's random candidate pick, with two fixes at the replay boundary (§3.8). Execution is therefore not deterministic. Agreement comes from the record, as it does today between a producer and its validators.
+6. **Record and replay does not depend on the reduction scheduler.** [C][I] This conclusion was added on 2026-10-13. DR-132 removed the single-order scheduler on 2026-10-16, by the user's decision of 2026-10-14 (§3.7.6). RSpace returns to dev's random candidate pick, with two fixes at the replay boundary (§3.8). Execution is therefore not deterministic. Agreement comes from the record, as it does today between a producer and its validators.
+
+   <details>
+   <summary>Text before the amendment of 2026-10-16</summary>
+
+   The single-order scheduler stays, by the user's decision of that day. §3.7 analyzes it.
+
+   </details>
 
 Two further gaps affect every design (§6.10). The first is the committed host-work caps, which are limits on deterministic node work per deploy. Today they reject the testnet log initializer of Embers, the F1R3FLY blockchain application programming interface (API). The second is unmetered continuations on the settlement log channels.
 
@@ -445,7 +459,7 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 
 ### 3.1 Proposal
 
-1. The proposer selects at most one offered envelope. Up to `ordinary_cap − 1` further envelopes become alternates. The proposer tries them in canonical order when the selected one is rejected. The rest wait for later proposals (`block_creator.rs:1847-1916`, the rule at `:1910-1916`, the retry at `:4100-4113`). [C]
+1. The proposer selects at most one offered envelope. Up to `ordinary_cap − 1` further envelopes become alternates. The proposer tries them in canonical order when the selected one is rejected. The rest wait for later proposals (`block_creator.rs:1847-1916`, the rule at `:1910-1916`, the retry at `:4100-4113`). [C] DR-134 replaces this rule. The proposer now selects one canonical batch of offers within the block caps, with no alternates (§4.2).
 2. `compute_deploys_checkpoint_envelopes` logs "merge parents, then run deploys" (`interpreter_util.rs:914`). It merges first (`interpreter_util.rs:932-942`) and plays afterwards (`interpreter_util.rs:997-1007`). [C]
 
 ### 3.2 Merge
@@ -466,7 +480,7 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 
 1. `run_validation_steps` (`validation_dispatcher.rs:84-334`) checks the block summary (`:99-118`) and the offered-only rule (`:124-130`). It then runs the checkpoint step. [C]
 2. The checkpoint step recomputes the merge from the block's own justifications (`interpreter_util.rs:420-435`). It compares the pre-state (`:463-472`), the rejected records (`:473-520`) and the state facts (`:521-534`). Then it replays the block (`:540-547`). An offered replay first runs the same check before execution at $`R_0`$ (`offered_block.rs:585-606`, `replay.rs:1642`). [C]
-3. A node replays one legacy block at a time. The `ReplayLock` is a semaphore with one permit (`runtime_manager.rs:198-205`). Of the block replays, only the legacy replay takes it (`:1348`, acquired at `:1227`). The wait has its own metric (`:1226-1229`). The replay of a block with an offered deploy returns earlier and takes no permit (`:1317-1333`). [C]
+3. A node replays one legacy block at a time. The `ReplayLock` is a semaphore with one permit (`runtime_manager.rs:198-205`). Of the block replays, only the legacy replay takes it (`:1348`, acquired at `:1227`). The wait has its own metric (`:1226-1229`). The replay of a block with an offered deploy returns earlier and takes no permit (`:1317-1333`). [C] Since DR-134 (item 10), the offered replay takes the same permit, records the same timings and uses dev's replay cache.
 4. Offered replay requires "one isolated user candidate" (`offered_block.rs:784-788`). [C]
 5. After validation, every block gets a merge index when the shard allows more than one parent (`validation_dispatcher.rs:340-375`). The guard is at `:345`. [C]
 
@@ -483,14 +497,16 @@ This section describes the code at HEAD on a v6 shard. Legacy shards run the sam
 | Block play | Each deploy runs to termination before the next | `runtime.rs:455-476`, `:346` |
 | Proposal | Play waits for the merge of the parents | `interpreter_util.rs:932-942` |
 | Validation | Acceptance waits for the merge recomputation and the replay | `interpreter_util.rs:402-557` |
-| Replay | One legacy replay at a time on each node. An offered replay takes no permit. | `runtime_manager.rs:198-205, 1227, 1317-1333` |
+| Replay | One legacy replay at a time on each node. An offered replay takes no permit. Since DR-134 (item 10), it takes the same permit. | `runtime_manager.rs:198-205, 1227, 1317-1333` |
 | Producer | The producer replays its own candidate | `offered_block.rs:315-323` |
-| Native frontier | One conflict component for each native frontier inside one deploy. §3.7 analyzes this point (added on 2026-10-13). | `deterministic_reduction.rs:1068-1072, 1120-1122` |
+| Native frontier | None since DR-132. Native branches race as on dev. Native replay keeps play's order on each shared channel. Before DR-132, one conflict component formed for each native frontier inside one deploy (§3.7). | `reduce.rs` (`inj_with_observation`), `trace/replay.rs` (`select_slot`). Before: `deterministic_reduction.rs:1068-1072, 1120-1122` |
 | After validation | A merge index for every block | `validation_dispatcher.rs:340-375` |
 
 **Note on DR-15.** DR-15 item 1 states that run-to-completion "was never ported" and that the acceptance gate of DR-11 is live through `admit_by_funding`. DR-11 is the record of a static linear-proof gate at block assembly. At HEAD, the code above plays and replays each deploy to termination. No file under `casper/src` or `node/src` calls `admit_by_funding` or `static_authority_plan`, so the gate of DR-11 is not live. [C] Since the commits `02d01541b` and `e64261134`, a different check runs before execution in play and in every replay. It is the check of DR-123 and DR-124, and it calls `delta_sigma::estimate` (`gate.rs:26-28, 423-442`). It checks one envelope against $`R_0`$ and admits nothing concurrently. [C] The merge `1d325b996` restored dev's Casper code on 2026-10-01 (§5). DR-120 amended the outcome of DR-15 on 2026-10-10 (`b496df9d8`). An amendment of 2026-10-12 to DR-15 corrects item 1. [D]
 
 ### 3.7 The single-order reduction scheduler
+
+**Status on 2026-10-16.** DR-132 removed the scheduler, by the user's decision of 2026-10-14. §3.7.1 to §3.7.5 stay as the analysis of the removed design. §3.7.6 describes the return to dev's racing evaluation.
 
 **Status on 2026-10-13.** This section is new. It is analysis only. The user decided on 2026-10-13 to keep the scheduler.
 
@@ -578,6 +594,8 @@ Three properties of the code matter for cost accounting. [C]
 
 **A latent hang.** Native replay waits for the recorded predecessors of an operation without a bound (`trace/replay.rs:422-436`, `native_session/operations.rs:150-165`). A forged journal can place a row before its causal origin. That row can then wait forever, and the driver blocks inside the wait. The design study reasoned this from the code, and no test has run it. [C][I]
 
+*Closed by DR-132 (decision D2-B), 2026-10-16.* Two tests then ran the hang. FF-6 (`forged_journal_inversion_reaches_a_verdict`) and the recorded-call test (`native_replay_rejects_a_recorded_call_without_its_record`) waited until their 10-second deadlines. Native replay now counts the live tasks of each evaluation and the waiters among them. When every live task waits on a recorded operation, replay declares a stall and rejects the block (§3.7.6). [C][M]
+
 **The candidate pick.** The scheduler orders operations, not candidates (§3.8). After the restoration of the random pick, the scheduler no longer makes outcomes deterministic. In the counterexample above, the consumer then gets 1 or 2 at random. Play and replay still agree, because replay follows the record (§3.8). [C][I]
 
 #### 3.7.3 What the papers say
@@ -630,6 +648,30 @@ Four points follow. [I]
 3. This branch carries dev's file-lock handlers without `park_external_during` (`rholang/src/rust/interpreter/io/handlers/lock/fs_lock_range.rs:33`). If a native deploy can reach them, a parked waiter could stall a native frontier, as on fileio before `0f7bfb089`. This document did not check that reachability.
 4. Dev runs no scheduler, so the hang of the ignored dev test must have another cause on dev. This is an inference that no test has checked.
 
+**Coordination note (DR-132, 2026-10-16).** The stall rule of §3.7.6 sees only the waits on recorded operations. A file-lock wait is a wait on another task, as the wait of `park_external_during` was. When file I/O reaches native execution, a file-lock wait must register as a parked wait of the stall rule. Otherwise the rule cannot see that the task waits, and a file lock that a stalled task holds would hang replay. No dispatch table registers the file I/O handlers today (`io/handler_trait/fs_handlers.rs`), so the note applies to dev's port. [C][I]
+
+#### 3.7.6 The return to dev's racing evaluation (DR-132)
+
+The user decided on 2026-10-14 to remove the scheduler: "the deterministic scheduler needs to be reverted to dev's version, I will coordinate the necessary fileio changes with Mike (the deterministic scheduler will have a catastrophic impact on parallelism)". DR-132 records the change. Native evaluation races again, as on dev, inside dev's per-call scope. The table shows what replaces each guarantee of §3.7.2. [D]
+
+| Guarantee of §3.7.2 | Replacement in DR-132 | Evidence |
+|---|---|---|
+| Every validator's replay charges the same host work | Not needed. DR-131 removed host-work metering. | DR-131 |
+| Play and replay give each operation the same name | The recorder names each row by its journal index, and native replay finds the row of a live operation by its recorded source (decision D1-A). The wire format does not change. | `select_slot` in `trace/replay.rs`. Tests FF-3 and FF-4 |
+| Decisions that depend on order need no record | Racing evaluation decides their order, so the G3 design must record its skips, filters and denials (§4.3). | DR-132, decision 7 |
+| Checkpoints never see a partial evaluation | Dev's per-call scope: `inj` drains every task of the scope before it returns, and a cancel aborts them. A native replay evaluation begins only from an idle progress word, and no boundary opens while an evaluation runs. | `inj_with_observation` in `reduce.rs`. `begin_boundary` in `trace/replay.rs` |
+
+**The stall rule (decision D2-B).** The scheduler hid the latent hang of §3.7.2, because it ran each frontier in one causal order. Racing evaluation exposes it. The user chose to fix the wait in DR-132, so that every replay ends in a verdict, as on dev. The rule has four parts. [C][D]
+
+1. A progress word counts the live tasks of each native replay evaluation and the waiters among them (`trace/replay/progress.rs`).
+2. A waiter counts its park under the state lock, once for each state version. Each change that can make a waiter ready clears the count in its own critical section, and it wakes the waiters after the unlock.
+3. A park or a task end that leaves every live task parked declares the stall. Every waiter then fails with "native replay stalled", and the evaluation ends with a Platform failure.
+4. Validators record the block as `InvalidTransaction`, and a producer rejects the deploy, as dev rejects a log with `UnusedCommEvent`.
+
+DR-132 proves that the rule is exact: it never rejects a replay that can still progress, it never lets replay wait forever, and every validator reaches the same verdict. TLA+ checks the protocol (`NativeReplayStall.tla`, `NativeReplayStallLifecycle.tla`), Loom checks the production state code (`loom_native_replay_stall.rs`), and the Rust tests run the forged journals. [C][I]
+
+**Residual risks.** DR-132 lists them: file I/O waits (the coordination note of §3.7.5), the extra replays of a stalled block, the wakes of every waiter on each change, and the width of the counts. [D]
+
 ### 3.8 The candidate pick inside RSpace
 
 **Status on 2026-10-13.** This section is new. The user ordered on 2026-10-12 that play pick an RSpace candidate at random, as dev does. The implementation lane is restoring the pick now. At the code basis, the canonical order still runs: `ops_produce.rs:292-297` calls `canonical_candidates`. [C]
@@ -669,6 +711,10 @@ Two further cases need two candidates with identical random states, so they cann
 
 **Status on 2026-10-12.** The user approved the designs of all five items on 2026-10-10. G1 is committed through the live check (step G1-6) and the held-capacity guard for one offer per block (step G1-7). The check of G1 is live in play and in every replay (§4.1). The v6 merge rule and the cost-cursor lock fix are committed. Of G2, only the code motion G2-1 is committed. G3 is not started. The orchestrator updates this section.
 
+**Status on 2026-10-18.** DR-134 implements G2, the ordered batch of offers (§4.2). G3 follows G2.
+
+**Status on 2026-10-20.** DR-135 implements G3, installer funding (§4.3). The owner of a stored region pays for the work of that region. The funding-slot test passes (§6.2, §6.5).
+
 The user directed the lane to "Implement what you can, cleanly, without a lot of changes to casper". The five items below follow that rule. Each one changes Casper only at a v6 seam or in cost-accounting code.
 
 Two ownership boundaries apply to this work.
@@ -695,6 +741,7 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
 - **Effect on clients.** [I]
   - An offer with an incomplete estimate is accepted only if its sources can hold $`\mathrm{phloLimit} \cdot \mathrm{phloPrice} + 1`$ at $`R_0`$. Eligible sources hold the known demand and the fee. Signed sources that are not on-chain purses hold the remainder. Most real deploys call stored contracts, so most estimates are incomplete. Some offers that succeeded before step G1-6 are now rejected.
   - On-chain private-name purses hold nothing before execution. No run has shown their authority yet (`gate.rs:865-869`), and `authorize_wallets` already forbids them the fee (`direct_wallet_funding.rs:237-240`). This is rule G-5 of G1, a gap fill of its implementation map. So the gateway call now fails at the check (DR-124, §6.2). [C]
+  - *Amendment (DR-135, 2026-10-20).* Rule G-5 stays. Since G3, the slot and the entry of the gateway pay for their stored regions as owners during the run, so they need no hold. The gateway's own key purse holds the estimate of the call, and the gateway test passes (`offered_gateway_slot_api_test.rs:512`). [C]
   - The estimate counts each communication once for each participant. A communication of a receive with $`n`$ binds has $`n + 1`$ participants. When they share a region, the estimate reaches $`n + 1`$ times the realized use in compute, transfer and trace. That is twice the realized use for a binary communication. An offer whose estimate exceeds its signed limit is rejected.
   - Clients such as Embers must size the phlo limit to their balances and to the estimate. The estimate depends only on the envelope and on public consensus inputs, so a client can compute it before signing.
   - An offer with several sources needs one more rule, which [Section 14 of the design document](cost-accounting-impl/linear-cost-estimate.md#14-the-client-sizing-rule) states and proves.
@@ -703,21 +750,41 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
 
 ### 4.2 G2: several offered deploys per block as an ordered batch executor (DR-65)
 
-**Status: approved on 2026-10-10. Step G2-1 is committed (`72de6b52a`). Step G1-7 enforces item 5 of DR-65 for one offer per block (`88f4176db`). Step G2-2 and the later steps are not started.**
+**Status: approved on 2026-10-10. Step G2-1 is committed (`72de6b52a`). Step G1-7 enforces item 5 of DR-65 for one offer per block (`88f4176db`). DR-134 implements the ordered batch (2026-10-18), as implementation note 3 of DR-65 records.**
 
-- **Problem.** A block holds at most one offer (`block_creator.rs:1910-1916`). Replay requires one isolated candidate (`offered_block.rs:784-788`). [C]
+- **Problem.** Before DR-134, a block held at most one offer, and the other offers became alternates (`block_creator.rs:1910-1916` at the commit `909387544`). Replay required one isolated candidate (`offered_block.rs:523-527` at the same commit). [C]
 - **Change.** A block holds several offers in canonical order. Member $`i`$ funds from $`R_0`$ and executes from $`R_{i-1}`$, the root after member $`i - 1`$. Members that share a purse form one group. Let $`\mathrm{hold}_m(p)`$ be the hold of member $`m`$ on purse $`p`$, and let $`\mathrm{supply}_{R_0}(p)`$ be the balance of $`p`$ at $`R_0`$. If one purse $`p`$ of a group $`G`$ has $`\sum_{m \in G} \mathrm{hold}_m(p) > \mathrm{supply}_{R_0}(p)`$, every member of $`G`$ is rejected. This is P1's simultaneous-arrival rule (P1:2271-2287). A held-capacity guard keeps the holds of later members available.
 - **Design choice.** The member loop is built as an ordered batch-executor API. The parallel executor of §7.10 can then parallelize it, and the executor of §7.6 can feed it finalized blocks. [I]
-- **Casper footprint.** Step G2-1 moved the single-offer play and replay code into a cost-accounting module: `runtime.rs` +12/−289 and `runtime_manager.rs` +28/−554 (commit `72de6b52a`). The later steps still touch `replay_runtime.rs`, `block_creator.rs` and `errors.rs`. Their sizes need a new estimate. All changes sit behind the v6 seam.
+- **Casper footprint.** Step G2-1 moved the single-offer play and replay code into a cost-accounting module: `runtime.rs` +12/−289 and `runtime_manager.rs` +28/−554 (commit `72de6b52a`). DR-134 changes four shared files for G2. All changes sit behind the v6 seam. [C]
+  - `runtime.rs`: the play head dispatches every offered batch to `compute_offered_batch_state`, and the old head stays as a comment. A single rejection names no group.
+  - `errors.rs`: `OfferedCandidateRejection` gains the field `group` (+4 lines).
+  - `block_creator.rs`: the selection admits up to 32 recovered envelopes and the stored offers into one batch, with no alternates. The dummy-deploy condition and the rejection arm follow the batch.
+  - `reporting_casper.rs`: the block report replays the members of a batch in order.
+  - `replay_runtime.rs` needs no G2 change. Its preflight already checks every offered deploy of a block. The replay head in `runtime_manager.rs` passes all of them to the offered replay, which certifies each member.
 - **Decided points.** [I]
   - Member $`i`$ is accepted at $`R_0`$ but reads its settlement inputs at $`R_{i-1}`$. Two offers of one signer share a cursor scope, so a read at $`R_0`$ makes the second settlement fail. This amends DR-65, and the user approved it on 2026-10-10. An amendment of 2026-10-12 records it in DR-65.
   - The guard is item 5 of DR-65 as adopted. Here $`\mathrm{balance}_{\mathrm{after}}(p)`$ is the balance of purse $`p`$ after member $`i`$ executes, and $`\mathrm{debit}_i(p)`$ is the debit of member $`i`$ on $`p`$, fee included. The guard requires $`\mathrm{balance}_{\mathrm{after}}(p) - \mathrm{debit}_i(p) \geq \sum_{j>i} \mathrm{hold}_j(p)`$. Settlement charges the measured use directly, so this one condition is exact. An earlier draft added a second condition, which only a settlement floor needed.
   - The design also caps the funding capacity of each member on a purse at the purse balance minus the later holds. The cap applies on the success path and on the rollback path, so a member never draws on funds that a later member holds.
-- **Verification.** The planned model `SameBlockFundingGroups.tla` must check GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard and DecisionPermutationInvariant. Negative controls must cover prefix admission and a missing held guard. Rocq must prove the three group lemmas of DR-65. `HeldCapacityGuard.v` already proves `held_capacity_guard_preserves_later_holds` without a settlement floor (`HeldCapacityGuard.v:67`). The other two lemmas and the TLA+ model remain.
+  - DR-134 reads that balance at $`R_{i-1}`$ on both paths (option B, design §8.4). So a member that spends funds that its settlement needs is a charged user failure, as P1 requires (P1:1990-1992, P1:2301-2302).
+  - Dev's play budget applies between members. When it stops a batch, the shipped prefix plays again from $`R_0`$ in two cases: a funding group spans the cut, or a shipped member settled as a guard rollback. Validators then recompute the same results (DR-65 implementation note 3).
+  - *Amendment (DR-135).* G3 adds a third case. A dropped member has a positive hold on a purse that the owner table of a shipped member lists. The owner budget subtracts the later holds, so the shipped prefix plays again (DR-65 implementation note 3, condition (c)).
+  - A committed success with later holds gets its guard recomputed in replay (DR-65 implementation note 3).
+- **Verification.** The planned model `SameBlockFundingGroups.tla` must check GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard and DecisionPermutationInvariant. Negative controls must cover prefix admission and a missing held guard. Rocq must prove the three group lemmas of DR-65. `HeldCapacityGuard.v` already proves `held_capacity_guard_preserves_later_holds` without a settlement floor (`HeldCapacityGuard.v:67`).
+  - DR-134 adds both artifacts. `SameBlockFundingGroups.tla` also checks TruncationConsistency for dev's play budget. TLC and Apalache pass it, and four negative controls fail their named invariants (prefix admission, independent capacity, no held guard, kept truncated results).
+  - `SameBlockFundingGroups.v` proves the three group lemmas, the truncation facts and four negative controls, with no axiom. Implementation note 3 of DR-65 lists the results.
 
 ### 4.3 G3: installer funding (DR-68)
 
+**Status: approved on 2026-10-10. The user replaced the two changes to DR-68 that the decided points below describe on 2026-10-13 (decisions a to d). The user set the owner's price on 2026-10-19 and the caller's bound on 2026-10-20. DR-135 records the result and implements it (2026-10-20).**
+
+<details>
+<summary>Status before DR-135</summary>
+
 **Status: approved on 2026-10-10, including the two changes to DR-68 that the decided points below describe. Not started.**
+
+</details>
+
+**Note (DR-132).** Racing evaluation decides the order of operations inside a deploy. The G3 design therefore must record its skips, filters and denials, because replay cannot recompute them from its own order.
 
 - **Problem.** Funding eligibility admits only the signed sources of the triggering envelope (`family_selection.rs:163-186` at the commit `17e07307f`, now `source_permits` at `family_selection.rs:89-120`). [C] Another owner's purse can be a source only in two existing ways: through a grant to a named delegate key, or as an on-chain private-name purse whose authority the run observes (`direct_wallet_funding.rs:289-300`). [C] So a continuation that an installer stored cannot draw on the installer's key wallet for an arbitrary caller (DR-68 context). The gateway flow fails today. The check before execution rejects it first, because rule G-5 gives its on-chain slot purses no hold (§6.2). [C]
 - **Change.** The installer's located purse becomes an eligible source for obligations in the installer's stored signed region. A signed region is the part of a term under one signature $`s`$, as in $`\{P\}_s`$. Its seal is the stored record of that signature. When that budget is exhausted, the interaction does not fire and has no charge. This is the token gating of P1's rules.
@@ -727,6 +794,15 @@ R \;=\; \Bigl(\mathrm{phloLimit} - \sum_{s} \Delta^{\mathrm{known}}_s\Bigr) \cdo
   - User syntax cannot create a key signature. Key regions come only from the deploy's own funding signature (`accounting/mod.rs:1359-1399`). `vault_payer` maps every non-Unit signature to a purse (`vault_payer.rs:45-103`). A key ground maps to its key wallet. A private name maps to its on-chain purse. Any other signature, including a compound of joint owners, maps to a purse keyed by its lane hash.
   - User syntax can still create spelled, quoted and held-name signatures. So G3 funds only seals whose signature locates a key wallet, and only seals that existed at $`R_0`$. This narrows DR-68, and the user approved it on 2026-10-10.
 - **Casper footprint.** Cost-accounting code only. No dev Casper file changes.
+
+**Amendment (DR-135, 2026-10-19).** The decided points above changed. [C][D]
+
+- **The veto exists.** RSpace now tests the owner of each candidate datum after its pattern test, and each complete tuple at the commit veto of `check_commit`. A datum whose owner cannot pay is skipped like a pattern miss. A refused tuple keeps both items. So an interaction that an owner cannot pay does not fire, the run continues, and the run records a refusal that replay checks. This replaces the interim rule (DR-135 items 5 and 6).
+- **No narrowing.** Every unforgeable owner signature has a purse: a key wallet, the vault of one private name, or a compound of such atoms (P1 Rules 2 and 3). A signature that anyone can spell has budget 0. Owner bodies create owner seals during the run, so the condition that a seal existed at $`R_0`$ goes away (DR-135 items 1 and 2).
+- **The owner's price.** An owner pays at the price that its stored region recorded, which is the checked price of the deployment that created it (DR-135 item 4).
+- **Held processes and replies.** A process that a contract receives as data and then runs is paid by its sender (P1 `rem:signed-subst`). A recorded reply of an external service must be plain data (DR-135 items 9 and 10).
+- **The note of DR-132 is met.** The refusals, the "owner refused" decisions and the owner table are recorded (DR-135 item 6).
+- **The caller's bound (2026-10-20).** The caller's signed limit bounds only the work that the caller pays. Owner work at a price of 1 or more counts only against the budget of its owner. Owner work at a price of 0 still counts against the caller's limit (DR-135 item 13).
 
 ### 4.4 The interim v6 merge rule (DR-120)
 
@@ -852,8 +928,8 @@ The rule from the deploy formats removes three dev files from an earlier variant
 | Item | Record | Casper files touched | v6 only | Status |
 |---|---|---|---|---|
 | G1 | DR-64 | none after the code motion of G2, cost-accounting code only | yes | committed: the live check (G1-6) and the guard for one offer per block (G1-7) |
-| G2 | DR-65 | `runtime.rs` +12/−289 and `runtime_manager.rs` +28/−554 (G2-1). Later: `replay_runtime.rs`, `block_creator.rs`, `errors.rs`. | yes | G2-1 committed (`72de6b52a`). G2-2 onward not started. |
-| G3 | DR-68 | none, cost-accounting code only | yes | approved, not started |
+| G2 | DR-65 | `runtime.rs` +12/−289 and `runtime_manager.rs` +28/−554 (G2-1). DR-134: `runtime.rs` (play head), `errors.rs` (+4), `block_creator.rs` (selection and rejection arm), `reporting_casper.rs` (batch report). | yes | G2-1 committed (`72de6b52a`). DR-134 implements the ordered batch (2026-10-18). |
+| G3 | DR-68, DR-135 | none, cost-accounting code only (`costacc/`, `acceptance.rs`) | yes | DR-135 implements G3 (2026-10-20) |
 | v6 merge rule | DR-120 | 4 dev files, +104 / −13 lines, one new module | yes, by deploy format | committed (`b496df9d8`) |
 | Cost-cursor lock fix | DR-119 | `SystemVault.rho`, cost-cursor code only | called on v6 only | committed (`7ab849b56`) |
 
@@ -985,7 +1061,7 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 
 **Code at HEAD.** [C]
 - Since the commit `e64261134`, play and every replay run the linear cost estimate before execution (`execution.rs:503`, `replay.rs:1642`). It holds only the client's demand, for the one offer of a block.
-- The proposer selects at most one offer per block (`block_creator.rs:1910-1916`).
+- The proposer selects at most one offer per block (`block_creator.rs:1910-1916`). DR-134 replaces this rule with an ordered batch of offers (§4.2).
 - Since the commit `7ab849b56`, an existing cursor takes no lock, and a new cursor takes one of 256 bucket locks (`SystemVault.rho:63-72, 186-229`). Siblings of different payers compose. Same-signer siblings still conflict (D-7).
 - On v6 merges, one ordered pass picks the survivor after both deploys ran (`ordered.rs:242-270`). Legacy merges keep dev's option search (`conflict_set_merger.rs:870-980`).
 
@@ -1003,6 +1079,12 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 **Consent that the code already supports.** [C] The code already lets several owners consent to one deployment. A compound signature needs every owner (P1:380-397). Each required owner sets a price ceiling and can veto a draw (`phlo_bounds.rs:31-50`). A certified minimax allocation sets the shares (`funding_minimax.rs`). These mechanisms decide funding inside one envelope. They do not order envelopes across validators.
 
 **The funding-slot gap.** [C] At HEAD the slot mechanism above fails. Rule G-5 gives an on-chain slot purse no hold before execution (`gate.rs:865-869`, `direct_wallet_funding.rs:237-240`). The funding-slot test is a known failure. With the provisional caps, the check rejects the gateway call with "200001 atomic units of the remainder fit no source" (DR-124, §6.10). The resolution is pending (G3 and the G1 rule G-5).
+
+*Resolved (DR-135, 2026-10-20).* [C] The slot mechanism works. Rule G-5 stays, and G3 removes the need for a slot hold:
+
+- The slot owns the body of the trigger. The slot pays for that body as its owner during the run, so the slot needs no hold before execution.
+- The gateway's own key purse holds the estimate of the call. The funding-slot test passes (`offered_gateway_slot_api_test.rs:512`).
+- A caller whose signed limit covers only its own part triggers a slot that a sponsor funds (`offered_owner_api_test.rs:1940`, DR-135 item 13).
 
 **What remains unmet.** A user cannot rank the alternatives that the same user submits separately. The canonical order ranks them. Sub-question Q3 of decision D-0 (what Greg means, §11) asks who must pick the winner: the canonical order or the submitting user.
 
@@ -1024,8 +1106,8 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 - More than one envelope is an error (`runtime.rs:364-373`, `offered_block.rs:784-788`).
 - The legacy loop plays each deploy to termination (`runtime.rs:455-476`).
 - Validators merge and replay a block before they accept it (`interpreter_util.rs:402-557`).
-- A node replays one legacy block at a time (`runtime_manager.rs:198-205, 1226-1229`). An offered replay takes no permit (`runtime_manager.rs:1317-1333`).
-- Each native frontier forms one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`). §3.7.4 gives its effect on E3 (added on 2026-10-13).
+- A node replays one legacy block at a time (`runtime_manager.rs:198-205, 1226-1229`). An offered replay takes no permit (`runtime_manager.rs:1317-1333`). Since DR-134 (item 10), it takes the same permit.
+- Since DR-132, native branches race as on dev, and no frontier forms. Before DR-132, each native frontier formed one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`). §3.7.4 gives its effect on E3 (added on 2026-10-13).
 
 **Why the interim work does not close the gap.** [I]
 - In execute-then-merge, the block content includes its post-state root (`CasperMessage.proto:597-605`). A validator can only check that root by execution. Acceptance of a block therefore waits for execution.
@@ -1059,11 +1141,13 @@ Each gap has a name. GAP-E1 to GAP-E4 are the gaps against the expectations E1 t
 
 **Recommended resolution.** Pending (G3 and the G1 rule G-5). G1 itself is live. No architecture change is necessary, and every candidate design needs the resolution.
 
+*Resolved (DR-135, 2026-10-20).* [C] G3 closes this gap for every candidate design. Funding now admits the purse of the owner of each stored region. So a stored continuation draws on the purse of its installer, and the funding-slot test passes (§6.2).
+
 ### 6.6 GAP-ii: concurrent acceptance
 
 **Paper.** "RSpace can accept deployments *at any time* ... Multiple deployments can be active simultaneously" (P1:327-334). [P]
 
-**Code at HEAD.** [C] One offer per block (`block_creator.rs:1910-1916`). One legacy replay at a time, and an offered replay takes no permit (`runtime_manager.rs:198-205, 1317-1333`).
+**Code at HEAD.** [C] One offer per block (`block_creator.rs:1910-1916`). DR-134 replaces this rule with an ordered batch of offers (§4.2). One legacy replay at a time, and an offered replay takes no permit (`runtime_manager.rs:198-205, 1317-1333`). Since DR-134 (item 10), the offered replay takes the same permit.
 
 **Why the interim work does not close the gap.** [I] G2 accepts several offers in one block. Across blocks, acceptance still waits for the merge and the replay.
 
@@ -1102,12 +1186,14 @@ The matrix rates each candidate design against the expectations and against the 
 
 | Design | E1 merge logic | E2 user alternatives | E3 keep accepting blocks | E4 performance | (i) transaction boundaries | (ii) concurrent acceptance | (iii) throughput | (iv) merge via signatures |
 |---|---|---|---|---|---|---|---|---|
-| (a) v6 merge rule, G1, G2 | Partial | Partial | Unmet | Marginal | Pending (G3 and the G1 rule G-5) | Partial | Unmet | Partial |
-| (b) parallel batch executor, G1, G2, lock fix | Unmet | Partial | Partial | Partial | Pending (G3 and the G1 rule G-5) | In a block | In a block | In a block |
-| (c) order-then-execute, sequential executor | Met on v6 | Met if Q3 picks the canonical order | Met | Largest, not measured | Pending (G3 and the G1 rule G-5) | Partial | Unmet | Met |
-| (c)+(b) | Met on v6 | Met if Q3 picks the canonical order | Met | Largest, not measured | Pending (G3 and the G1 rule G-5) | Met | Met | Met |
-| (d1) purse lanes | Partial | Met for funding | Unmet | Small | Pending (G3 and the G1 rule G-5) | Partial | Unmet | Partial |
-| (d5) single-parent v6 | Mostly | Unmet | Unmet | Mixed | Pending (G3 and the G1 rule G-5) | Unmet | Unmet | Unmet |
+| (a) v6 merge rule, G1, G2 | Partial | Partial | Unmet | Marginal | Met (G3, DR-135) | Partial | Unmet | Partial |
+| (b) parallel batch executor, G1, G2, lock fix | Unmet | Partial | Partial | Partial | Met (G3, DR-135) | In a block | In a block | In a block |
+| (c) order-then-execute, sequential executor | Met on v6 | Met if Q3 picks the canonical order | Met | Largest, not measured | Met (G3, DR-135) | Partial | Unmet | Met |
+| (c)+(b) | Met on v6 | Met if Q3 picks the canonical order | Met | Largest, not measured | Met (G3, DR-135) | Met | Met | Met |
+| (d1) purse lanes | Partial | Met for funding | Unmet | Small | Met (G3, DR-135) | Partial | Unmet | Partial |
+| (d5) single-parent v6 | Mostly | Unmet | Unmet | Mixed | Met (G3, DR-135) | Unmet | Unmet | Unmet |
+
+*Amendment (2026-10-20).* Before DR-135, every cell of column (i) read "Pending (G3 and the G1 rule G-5)". G3 meets item (i) for every design (§6.5).
 
 ### 6.10 Related gaps outside the four expectations
 
@@ -1137,6 +1223,13 @@ Under the parallel executor, such a loop stalls a worker. Under order-then-execu
 - Under the provisional caps also: the 64-source test.
 
 The funding-slot failure is a gap for E2 and for (i) explicit transaction boundaries (§6.2, §6.5). With the provisional caps, the check before execution rejects the gateway call, because rule G-5 gives the on-chain slot purses no hold. With the committed caps, the test fails earlier, at its funding step. The resolution is pending (G3 and the G1 rule G-5).
+
+*Amendment (2026-10-20).* [M] The final gate of DR-135 ran with the provisional caps. The user stopped its Casper integration suite after 347 of 1,119 tests, with no failure (DR-135 results). Each test of the list above has a new status:
+
+- The funding-slot gateway test passes, and so does the 64-source test (`offered_source_cap_api_test.rs:212`).
+- Both Embers tests pass with the provisional caps.
+- DR-134 disabled the two legacy-charge tests, because legacy accounting no longer runs. Their offered forms pass. They are `a_user_error_in_one_branch_is_published_as_a_charged_user_failure`, `an_operator_error_after_a_join_is_published_as_a_charged_user_failure` and `a_term_that_does_not_parse_is_rejected_at_submission_without_charge`, all in `offered_funded_api_test.rs`.
+- The commit `75de2dc39` (DR-131) removed `offered_replay_usage_is_identical_across_roles`.
 
 ---
 
@@ -1170,7 +1263,16 @@ Order-then-execute separates two jobs that Casper does together today. [I]
 
 - *With the scheduler, nothing new.* Native replay already follows the recorded COMM (§3.8). Every replay of one record charges the same host work on one host and in one process (DR-79 item 4, DR-100, DR-102). Bugs 10814 and 10812 still separate hosts and processes, for today's replay too (§7.7). The restoration of the random pick adds RB-1 and RB-3a at the replay boundary (§3.8).
 
+- *Without the scheduler, since DR-132.* Native replay follows the recorded COMM, finds each recorded operation by its RSpace source, and keeps play's order on each shared channel. DR-131 removed host work, so the host-work equality above is moot. Native replay rejects a block when every live task waits on a recorded operation, so every replay ends in a verdict.
+
+The design therefore works without the scheduler, and with a fixed or a random candidate pick. Consensus still orders the envelopes, and P1's gate still runs before each envelope (§7.6). [I]
+
+<details>
+<summary>Text before the amendment of 2026-10-16</summary>
+
 The design therefore works with the scheduler, and with a fixed or a random candidate pick. Consensus still orders the envelopes, and P1's gate still runs before each envelope (§7.6). [I]
+
+</details>
 
 This is the classic order-execute split of state-machine replication [Schneider 1990]. Calvin uses a deterministic order before execution for the same reason [Thomson et al. 2012]. Execute-then-merge resembles the execute-order-validate pattern of Hyperledger Fabric [Androulaki et al. 2018]. [I]
 
@@ -1488,7 +1590,14 @@ The executor keeps the user's rule against escrow, in the reading of this docume
 
 1. Honest nodes agree on $`\mathrm{Ord}`$ over the finalized blocks, by property 4 of §7.5 and assumption A-LIN.
 2. A citing block carries its records. Every node that holds a finalized block therefore holds the same records. Record availability is block availability.
-3. The replay of a record from its pre-root is a function of that record. With the scheduler, native replay follows the recorded COMMs and charges the same host work in every replay (DR-79 item 4, DR-100, DR-102). One known gap remains. Bugs 10814 and 10812 let host work depend on the host and the process (amendment of 2026-10-12 to DR-100). Today's validator replay has the same gap. It must close before activation, because the verdict at a cap boundary decides consensus (DR-100).
+3. The replay of a record from its pre-root is a function of that record. Since DR-132, native replay follows the recorded COMMs, finds each recorded operation by its RSpace source, and keeps play's order on each shared channel. DR-131 removed host work, so bugs 10814 and 10812 no longer separate hosts and processes. A record that cannot be replayed ends in a rejection, because every native replay ends in a verdict (DR-132).
+
+   <details>
+   <summary>Text before the amendment of 2026-10-16</summary>
+
+   With the scheduler, native replay follows the recorded COMMs and charges the same host work in every replay (DR-79 item 4, DR-100, DR-102). One known gap remains. Bugs 10814 and 10812 let host work depend on the host and the process (amendment of 2026-10-12 to DR-100). Today's validator replay has the same gap. It must close before activation, because the verdict at a cap boundary decides consensus (DR-100).
+
+   </details>
 4. By induction along $`\mathrm{Ord}`$, honest nodes agree on $`\mathrm{executed}(\mathrm{prev}(b))`$. Steps 1 to 3 then give them the same first valid citation, so they agree on $`\mathrm{rec}^{*}(b)`$ and on $`\mathrm{executed}(b)`$.
 
 **Who executes first.** [I] The binding rule above needs no designated executor. A convention avoids duplicate work, and consensus does not check it. The sender of $`b`$ executes $`b`$ first, as today's producer plays its own block. Other nodes wait a bounded local time for a citation, and then execute $`b`$ themselves. Question Q-7 asks the Casper team to choose this convention, the record cap and the retention of records.
@@ -1649,7 +1758,7 @@ The result must equal the sequential canonical execution. [I]
   settle each member exactly as the sequential executor does
 ```
 
-**Basis.** Independent redexes commute (ST:367-383, ST:413-425). `DeterministicParallelReduction.v:115` proves that two non-conflicting intents commute in a two-channel model. Line 204 checks one fixed schedule by computation. Phase 2 must prove the batch theorem. Block-STM uses the same idea, with a preset order and a result that equals sequential execution [Gelashvili et al. 2023]. [P][C]
+**Basis.** Independent redexes commute (ST:367-383, ST:413-425). `DeterministicParallelReduction.v:131` proves that two non-conflicting intents commute in a two-channel model. Line 220 checks one fixed schedule by computation. Phase 2 must prove the batch theorem. Block-STM uses the same idea, with a preset order and a result that equals sequential execution [Gelashvili et al. 2023]. [P][C]
 
 **Amendment (2026-10-13).** `DeterministicParallelReduction.v` belongs to the scheduler (§3.7). Its commutation theorem stays a valid basis for the batch theorem. Under record and replay, the batch theorem no longer needs one deterministic result. It needs only that the record of a parallel batch replays as a sequential batch in canonical order. Block-STM assumes deterministic transactions, and here the record of each member supplies that property. [I]
 
@@ -1657,7 +1766,7 @@ The result must equal the sequential canonical execution. [I]
 - The cost-cursor lock fix (commit `7ab849b56`, done). Without it, every settlement writes one lock channel, and every pair of members conflicts.
 - The metering of settlement log-channel continuations (§6.10).
 
-Native scheduling inside one deploy is a separate source of parallelism. Today each native frontier forms one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`). [C] §3.7 analyzes that scheduler.
+Native scheduling inside one deploy is a separate source of parallelism. Since DR-132, native branches race as on dev. Before DR-132, each native frontier formed one conflict component (`deterministic_reduction.rs:1068-1072, 1120-1122`). [C] §3.7 analyzes that scheduler, and §3.7.6 describes the return.
 
 ### 7.11 Properties to verify
 
@@ -1697,7 +1806,7 @@ Failing TLA+ configurations must refute these properties when a guard is removed
 | Optimistic execution on the fork-choice chain | Lower latency than executing only the finalized prefix. It needs rollback. Deferred (decision D-3, the execution point and the order rule, §11). |
 | Holds bound at inclusion | A hold that survives across blocks needs a reservation table. The user prohibited "regression to the retired escrow-based model" (`funding-settlement-design-review.md:13`). Not recommended (decision D-4). |
 | Pure height-then-hash order of finality batches | Nodes with different finality steps diverge (§7.5). Rejected. |
-| A deterministic executor on every node, the premise of the first version of §7 | Every honest executor must then reach the same root. That needs a canonical candidate pick for executors, which would reverse the restoration of dev's random pick (§3.8). It also needs the single order of the scheduler (§3.7). Replaced by record and replay on 2026-10-13 (§7.1). |
+| A deterministic executor on every node, the premise of the first version of §7 | Every honest executor must then reach the same root. That needs a canonical candidate pick for executors, which would reverse the restoration of dev's random pick (§3.8). It also needs the single order of the scheduler (§3.7), which DR-132 removed. Replaced by record and replay on 2026-10-13 (§7.1). |
 
 ### 7.13 Technical questions for the Casper team
 
@@ -1724,12 +1833,12 @@ These questions arise from the design. Each answer can change §7. [I]
 | # | Area | Files | Change | Cost-accounting reason | Risk | Interaction with ongoing Casper work | Scope |
 |---|---|---|---|---|---|---|---|
 | 1 | G1 check before execution | Cost-accounting code only (`gate.rs`, `execution.rs:321-345`, `replay.rs:1642`). Committed and live. | Run the DR-64 check before `evaluate_native_offered`. Validators recompute it. | P1:2188-2213 | Low | The stack-safe analyzer walks come from the F1R3Lang branches. | v6 only |
-| 2 | G2 several offers per block | Code motion done in `72de6b52a` (`runtime.rs` +12/−289, `runtime_manager.rs` +28/−554). Remaining: `replay_runtime.rs`, `block_creator.rs`, `errors.rs`. | An ordered batch with DR-65 groups | P1:2271-2287, P1:327-334 | Low, a v6 seam | None known | v6 only |
-| 3 | G3 installer funding | `family_selection.rs:89-120, 242-248` | The installer's purse is eligible for its stored region | P1:1557-1587 | Low | None known | v6 only |
+| 2 | G2 several offers per block | Code motion done in `72de6b52a` (`runtime.rs` +12/−289, `runtime_manager.rs` +28/−554). DR-134 changes `runtime.rs` (play head), `errors.rs`, `block_creator.rs` and `reporting_casper.rs` (§4.2). | An ordered batch with DR-65 groups. Done (DR-134, 2026-10-18). | P1:2271-2287, P1:327-334 | Low, a v6 seam | None known | v6 only |
+| 3 | G3 installer funding | Planned in `family_selection.rs:89-120, 242-248`. DR-135 changes cost-accounting code, the RSpace matcher hooks and the interpreter (the implementation list of DR-135). | The owner's purse pays for its stored regions. Done (DR-135, 2026-10-20). | P1:1557-1587 | Low | None known | v6 only |
 | 4 | Cost-cursor lock fix | `SystemVault.rho:52-72, 186-229` | 256 bucket locks on cursor creation only. Done (commit `7ab849b56`). | P1:333-334 | Low. It needs a fresh v6 genesis. | The vault-creation race stays with the Casper team. | Genesis contract, called on v6 only |
 | 5 | Interim v6 merge rule | `interpreter_util.rs`, `dag_merger.rs`, `conflict_set_merger.rs`, new `costacc/v6_merge` | Fast-path composition and one ordered pass. Done (commit `b496df9d8`). | P1:344-366 | Medium | Dev reworked the merger in August and September, for example `cdb85d1e4`. | Shared files, v6 behavior |
 | 6 | Settlement log channels | `SystemVault.rho:571-580, 621-641`, `MakeMint.rho:55-174`, `runtime.rs:1447-1459` | Meter and bound continuations that fire at settlement | "every communicating process must engage the cost layer" (P1:2389-2391) | Medium | Dev's legacy precharge and refund likely share the hole. | Shared genesis contracts |
-| 7 | Parallel batch executor | `runtime.rs`, `runtime_manager.rs`, `deterministic_reduction.rs` | Independent members at once, with a record that replays as the sequential batch | P1:327-342 | Low, the batch record replays as the sequential canonical batch | EPIC-021 measures the replay lock. It is the task-board epic on the root cause of issue #24, the finalization failures of the soak tests. | v6 only |
+| 7 | Parallel batch executor | `runtime.rs`, `runtime_manager.rs`, `reduce.rs` (`deterministic_reduction.rs` before DR-132) | Independent members at once, with a record that replays as the sequential batch | P1:327-342 | Low, the batch record replays as the sequential canonical batch | EPIC-021 measures the replay lock. It is the task-board epic on the root cause of issue #24, the finalization failures of the soak tests. | v6 only |
 | 8 | Block body meaning | `CasperMessage.proto:554-575, 597-605` | Envelopes, the attestation, the epoch validator set and the cited records (§7.2) | P1:1708-1714 | High | Any work on the block format | Shared message, v6 meaning |
 | 9 | Proposal without execution | `block_creator.rs`, `interpreter_util.rs:895-1032` | Build blocks from the inclusion filter, with no merge and no play | P1:2303-2304 | High | None known | v6 only |
 | 10 | Validation without merge or replay | `validation_dispatcher.rs:84-334`, `interpreter_util.rs:402-557` | Structural validity and deferred attestation checks | E3, P1:1708-1714 | High | Overlaps EPIC-021, which measures replay and checkpoint waits | v6 only |
@@ -1880,7 +1989,7 @@ Under the strict readings of decision D-0 (§11), E1 and E3 require order-then-e
 
 The plan has five phases: Phase 0 (evidence), Phase 1 (acceptance core), Phase 1b (interim merge), Phase 2 (parallel executor) and Phase 3 (order-then-execute). In this document "P1" always names the paper, never a phase. Sizes are relative estimates: S (small), M (medium), L (large) and XL (extra large). Only Phase 0 and Phase 3 carry a duration estimate.
 
-![Activity diagram of the phased plan. Three branches start in parallel. Phase 0, evidence, size S, covers the measurements M1 to M5 and gives evidence for or against E4 performance. Phase 1, acceptance core, size L, covers G1, G2 and G3. G1 is committed and live. Of G2 only the code motion is committed, and G3 is not started. Inside one block it meets (i) transaction boundaries, the P1 gate, E2 user alternatives and (iv) merge via signatures. Phase 1b, interim merge, size M to L, is committed. It adds the v6 merge rule and then the cost-cursor lock fix, and it meets E1 merge logic in part. After the join, a prerequisite fix meters and bounds settlement log-channel continuations. A decision point follows, for the user, Greg and the Casper team. It asks if keep accepting blocks means acceptance before execution. The no branch is option B of decision D-1, the target for v6 shards. On it, Phase 2, parallel batch executor, size L, meets (ii), (iii) and (iv) inside one block, and E3 stays unmet. The recommended yes branch is option A of D-1. On it, Phase 2 builds the same executor, and Phase 3, order-then-execute, follows. Phase 3 is size XL, about four to nine engineer-months. It meets E1, E3 and E4 on v6 shards, and E2 if Q3 picks the canonical order. Each phase box names its verification artifacts. A legend explains the colours and defines every name that the boxes use.](diagrams/consensus-proposal-phase-plan.svg)
+![Activity diagram of the phased plan. Three branches start in parallel. Phase 0, evidence, size S, covers the measurements M1 to M5 and gives evidence for or against E4 performance. Phase 1, acceptance core, size L, covers G1, G2 and G3. G1 is committed and live. DR-134 implements G2, and DR-135 implements G3. Inside one block it meets (i) transaction boundaries, the P1 gate, E2 user alternatives and (iv) merge via signatures. Phase 1b, interim merge, size M to L, is committed. It adds the v6 merge rule and then the cost-cursor lock fix, and it meets E1 merge logic in part. After the join, a prerequisite fix meters and bounds settlement log-channel continuations. A decision point follows, for the user, Greg and the Casper team. It asks if keep accepting blocks means acceptance before execution. The no branch is option B of decision D-1, the target for v6 shards. On it, Phase 2, parallel batch executor, size L, meets (ii), (iii) and (iv) inside one block, and E3 stays unmet. The recommended yes branch is option A of D-1. On it, Phase 2 builds the same executor, and Phase 3, order-then-execute, follows. Phase 3 is size XL, about four to nine engineer-months. It meets E1, E3 and E4 on v6 shards, and E2 if Q3 picks the canonical order. Each phase box names its verification artifacts. A legend explains the colours and defines every name that the boxes use.](diagrams/consensus-proposal-phase-plan.svg)
 
 *Source: [`diagrams/consensus-proposal-phase-plan.puml`](diagrams/consensus-proposal-phase-plan.puml). Render it with `./render.sh consensus-proposal-phase-plan.puml` in `docs/casper/theory/diagrams/`.*
 
@@ -1889,7 +1998,7 @@ Every Rocq proof is axiom-free and has negative controls. Every TLA+ model has f
 | Phase | Content | Size | Prerequisites | Verification | Meets |
 |---|---|---|---|---|---|
 | Phase 0, evidence | M1 to M5 (§9.3) | S, 1 to 2 weeks | None | Preregistered experiments with A/A calibration | Evidence for or against E4 |
-| Phase 1, acceptance core | G1 with the DR-64 holds, G2 as a batch executor with DR-65 groups and the held-capacity guard, G3. Status: G1 committed and live. Of G2, only the code motion is committed. G3 is not started. | L | The G1 chain of epic 8946 | `SameBlockFundingGroups.tla`: GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard, DecisionPermutationInvariant. Controls: prefix admission, no held guard. Rocq group lemmas. `EndToEndAuthority.v` extensions. `HeldCapacityGuard.v` (committed). | (i) transaction boundaries, the gate of P1, E2 user alternatives and (iv) merge via signatures, inside one block |
+| Phase 1, acceptance core | G1 with the DR-64 holds, G2 as a batch executor with DR-65 groups and the held-capacity guard, G3. Status: G1 committed and live. DR-134 implements G2 (2026-10-18), and DR-135 implements G3 (2026-10-20). | L | The G1 chain of epic 8946 | `SameBlockFundingGroups.tla`: GroupAllOrNone, NoOverdraft, GateBeforeExecute, HeldCapacityGuard, DecisionPermutationInvariant. Controls: prefix admission, no held guard. Rocq group lemmas. `EndToEndAuthority.v` extensions. `HeldCapacityGuard.v` (committed). G3 (DR-135): `NativeOwnerRefusal.tla` with six negative controls, `HeldProvenance.tla`, and the owner extensions of `FundingSlotBootstrap`, `LocatedAuthoritySettlement` and `SameBlockFundingGroups` in TLA+ and Rocq. | (i) transaction boundaries, the gate of P1, E2 user alternatives and (iv) merge via signatures, inside one block |
 | Phase 1b, interim merge | The v6 merge rule with C1 to C10, then the cost-cursor lock fix. Status: committed, with its proofs and models (`b496df9d8`, `7ab849b56`). | M to L | None | `V6MergeOrderedPass.v`, `CursorLinearity.v`, `CostCursorBuckets.v`, `V6MergeSerialization.tla`, `FeeCursorBranchMerge.tla`, `FeeCursorCells.tla`, with the C1 and C2 controls | E1 in part, bounded merges on v6 |
 | Phase 2, parallel executor | The parallel batch executor | L | Phase 1, the log-channel fix, and Phase 1b or Phase 3 | Rocq: the record of a parallel batch replays as the sequential canonical batch. Controls: a shared-purse pair in parallel overdraws, an arrival-order commit is not canonical, a skipped re-run misses a COMM. TLA+ `ParallelBatchExecutor.tla` with SequentialEquivalence, NoOverdraft, HeldCapacityGuard, RecordReplayRoot, and failing NoRevalidation, AuthorityKeyIgnored, NoHeldGuard. 256-seed property tests against a sequential replay of the batch record. | (ii) concurrent acceptance, (iii) throughput and (iv) merge via signatures, inside one block |
 | Phase 3, order-then-execute | §7 | XL, 4 to 9 engineer-months | Phase 1, the log-channel fix, the decisions of §11, a new epic | TLA+ `OrderThenExecute.tla`: three validators, permuted arrival orders, finality as an oracle, the invariants of §7.11, liveness BoundedLag, failing ExecuteUnfinalizedOrder, LocalViewAuthoritative, NoDemandCap, IndependentExecution. Rocq `CanonicalLinearization.v` (order deterministic and stable under prefix extension) and `OrderedGateSoundness.v` (the sequential gate is sound per purse, P2:1520-1527). Controls: arrival-order blocks diverge, a gate after execution strands funds, independent execution under a random pick diverges. Three-node tests and a v6 soak. | E1, E3, E4 on v6 shards, and E2 if Q3 picks the canonical order |
@@ -2013,6 +2122,6 @@ The linear-logic reading of acceptance in P1:2318-2326 rests on [Girard 1987]. T
 - [Casper soak merge-accounting claim](../../claims/casper-soak-merge-accounting.md).
 - [Task board](../../ToDos.md): EPIC-021 and the October soak data.
 - [Casper theory index](README.md).
-- [Deterministic parallel reduction](cost-accounting-impl/deterministic-parallel-reduction.md): the scheduler document of §3.7. Added on 2026-10-13.
-- Dev's `docs/rholang-evaluation-order.md` at dev `a06e3e7b3`: the evaluation model of dev, which §3.7.1 cites. This branch carries its own edit of the same file. Added on 2026-10-13.
+- [Deterministic parallel reduction](cost-accounting-impl/deterministic-parallel-reduction.md): the scheduler document of §3.7. Added on 2026-10-13. Superseded by DR-132.
+- Dev's `docs/rholang-evaluation-order.md` at dev `a06e3e7b3`: the evaluation model of dev, which §3.7.1 cites. Since DR-132 this branch carries dev's text with one added sentence. Added on 2026-10-13.
 - Two local artifacts that are not in the repository: the design study `target/scratch/scheduler-removal-design-v1.md` (§3.7) and the restoration plan `target/scratch/m34-restoration-plan.md` (§3.8). Added on 2026-10-13.

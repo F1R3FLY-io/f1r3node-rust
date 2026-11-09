@@ -1,8 +1,8 @@
-' Evaluation scopes after the legacy phlo meter is retired (DR-66, decision D3).
+' Evaluation scopes after the legacy phlo meter is deleted (DR-66, DR-134).
 ' Each kind of evaluation maps to exactly one accounting scope. No scope uses the
 ' legacy meter; historical body-only execution returns a compatibility error.
 '
-' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-66, DR-71).
+' Source of truth: docs/casper/theory/cost-accounting-decision-records.md (DR-66, DR-71, DR-134).
 ' Palette:  requests = supply blue · native metered scopes = pool green
 '           unmetered trusted scopes = capability indigo · unchanged system scope = gate teal
 '           rejected scope = red · notes = grey
@@ -18,8 +18,8 @@ skinparam rectangle {
 }
 skinparam ArrowColor $ca_neutral
 left to right direction
-title Evaluation scopes without the legacy meter (DR-66)
-footer DR-131: host-work metering is removed (75de2dc39). The host-work parts of this diagram are historical.
+title Evaluation scopes without the legacy meter (DR-66, DR-134)
+footer DR-134: the legacy meter is deleted. DR-131: host-work metering is removed (75de2dc39).
 
 rectangle "**Historical body-only**\nlegacy deploy body" as LegacyReq $ca_supply
 rectangle "**Genesis replay**\nvalidator replay of genesis" as GenesisReplayReq $ca_supply
@@ -34,7 +34,7 @@ rectangle "compatibility error\nbefore any state reset" as Incompatible $ca_reje
 rectangle "trusted install replay\nsymmetric with genesis play" as TrustedReplay $ca_capability
 rectangle "inj path\nnamed RhoSpec scope" as InjPath $ca_capability
 rectangle "unmetered internal read\ndeterministic" as InternalRead $ca_capability
-rectangle "native dry run\nunfunded · host-work bounded\nreset to start root · returns measured phlo" as DryRun $ca_pool
+rectangle "native dry run\nunfunded · exploratory phlo limit\nreset to start root · returns measured phlo" as DryRun $ca_pool
 rectangle "system scope\nunchanged" as SystemScope $ca_gate
 rectangle "trusted install\nunmetered · Unit signature · cost 0" as TrustedInstall $ca_capability
 rectangle "native offered meter\nfunded · settled · receipts" as NativeFunded $ca_pool
@@ -49,9 +49,8 @@ GenesisReq --> TrustedInstall
 UserReq --> NativeFunded
 
 note right of Incompatible $ca_note_grey
-  The legacy meter adapter is commented
-  out with the reason "D3: legacy phlo
-  meter retired". A fresh protocol-6
+  The legacy meter is deleted
+  (DR-134). A fresh protocol-6
   genesis is required.
 end note
 

@@ -46,16 +46,16 @@
                       bytes and never starts a Rust segment.
    seg                segment, plan_segment, write_segment and SegmentPlan
                       (path_codec.rs:369-371, 390-408, 460-493). The escape
-                      payload is escape_payload (path_codec.rs:1114-1127).
+                      payload is escape_payload (path_codec.rs:1151-1164).
    prefix_key, path_key
                       prefix_key, path_key, entry_key, encode_elements
                       (path_codec.rs:350-366, 413-456)
    is_prefix          is_prefix_key (path_codec.rs:376-379)
    lex_cmp            compare_keys (path_codec.rs:384-387), the Ord of Vec<u8>
    elems              path_elements, into_path_elements, channel_path
-                      (path_codec.rs:200-226, 281-286)
-   canon              canonical_entry (adapter.rs:267-278) with plain_list
-                      (path_codec.rs:258-276)
+                      (path_codec.rs:200-226, 283-288)
+   canon              canonical_entry (adapter.rs:231-242) with plain_list
+                      (path_codec.rs:241-259)
    insert_path, sort_dedup
                       sorted_unique and LogicalPathMap::set (adapter.rs:138-149,
                       213-262)
@@ -63,7 +63,7 @@
                       HeadEPathMapAdapter::decode and ::encode
                       (adapter.rs:296-336)
    rl                 LogicalPathMap::prefixed, LogicalPath::prefixed and
-                      LogicalPathMap::singleton (adapter.rs:81-106, 166-206)
+                      LogicalPathMap::singleton (adapter.rs:77-93, 153-160, 181-193)
    pval, reroot       reroot, is_pathmap (reroot.rs:51-75, 93-95)
    cand_lt            compare_keys and the order of a discipline inside one
                       path (the consume scan of the engine, wave W3)
@@ -85,6 +85,8 @@
      the_depth_cap_bounds_channel_paths_and_prefixes cover them.
    - The metering of decision 42 is outside the model (AgentReadCoverage.v
      states the rule). The Rust cut tests cover each metered function.
+     Changed by decision 96 (decision 89, DR-131): AgentReadCoverage.v is
+     deleted with the host-work metering.
    - sort_dedup keeps the last entry of a key and the Rust code keeps the
      first. Equal keys hold equal paths (path_key_injective), so the two
      results are equal lists.
@@ -1077,15 +1079,15 @@ Qed.
                       decode_marker, marker_parts, strict_list
                       (markers.rs:278-284, 344-392)
    vehicle_pars, decode_vehicle
-                      vehicle and decode_vehicle (markers.rs:197-213,
-                      297-306)
+                      vehicle and decode_vehicle (markers.rs:155-170,
+                      210-219)
    size_pars          the introduction bytes of a record: the observer
                       charges the size of the record of each produce
    pelem, holds_map, check_path
                       check_key of PathMapOuter (pathmap.rs:201-210) with
-                      channel_path and encode_path (path_codec.rs:281-286,
-                      343-347)
-   prefixes           EncodedPath::prefix_keys (path_codec.rs:328-334) and
+                      channel_path and encode_path (path_codec.rs:283-288,
+                      345-349)
+   prefixes           EncodedPath::prefix_keys (path_codec.rs:330-336) and
                       PathMapOuter::path_channels (pathmap.rs:127-142)
    bprefix, prefixb   is_prefix_key (path_codec.rs:376-379)
    path_eqb           the byte equality of path keys
@@ -1104,7 +1106,7 @@ Qed.
                       ::index, ::token, pathmap.rs:85-96) and the events of
                       the substrate
    send_prefixes, offer_list
-                      produce_waiters (delivery.rs:389-431)
+                      produce_waiters (delivery.rs:433-475)
    candidates         consume_candidates (delivery.rs:175-182, 190-249)
    offer_loop, receive_loop
                       OFFER and RECEIVE of the scan shapes on prefixes
@@ -1143,7 +1145,9 @@ Qed.
      (marker_invariant_preserved). The addendum before section 18 adds O-2.
    - The metering of decision 42 is the trace model of section 17
      (AgentReadCoverage.v states the rule). The Rust cut tests cover each
-     metered function.
+     metered function. Changed by decision 96 (decision 89, DR-131):
+     AgentReadCoverage.v is deleted, and section 17 goes with the host-work
+     metering.
 
    Headline theorems of wave W3 (each one has a Print Assumptions line at
    the end, and headlines 1 to 6 are the headlines of wave W2 above)
@@ -1188,6 +1192,8 @@ Qed.
    17. prefix_scan_trace_covered
                                the prefix scan reserves before it reads
                                (decision 42)
+                               Decision 96 (decision 89, DR-131) disables
+                               this headline with the host-work metering.
 
    The section Engine has variables only, so each theorem of the engine
    holds for all of their values.
@@ -3157,6 +3163,8 @@ Proof.
     + left. reflexivity.
 Qed.
 
+(* Disabled by decision 96 (decision 89, DR-131): prefix_scan_trace_covered
+   goes with the host-work metering. The section stays below as a comment.
 (* ── 17. Metering of the prefix scan (decision 42) ────────────────────── *)
 
 (* The metering rule of DR-88, as AgentReadCoverage.v and DataCollection.v
@@ -3281,6 +3289,7 @@ Proof.
       repeat (apply balanced_flat_map; intros); repeat apply balanced_app; apply balanced_mstep. }
   exact (proj1 H).
 Qed.
+*)
 
 (* ═══════════════════════════════════════════════════════════════════════════
    Addendum of Phase 2 of wave W3: the prefix source of the join engine
@@ -3296,14 +3305,14 @@ Qed.
                       (delivery.rs:494-508)
    deliver_remove, take_marker
                       before_fire and retire_spent (pathmap/join.rs:
-                      2853-2910, 2915-2948) with retire_datum
-                      (RETIRE-PLAN, pathmap/join.rs:1934-1967)
+                      3287-3351, 3356-3394) with retire_datum
+                      (RETIRE-PLAN, pathmap/join.rs:2239-2264)
    put_marker         restore_marker (pathmap/join.rs:1843-1862) with
                       datum_marker (delivery.rs:515-534)
    spend_after_peek   spent_element (pathmap/join.rs:2043-2064)
    send_prefixes, offer_list
                       offer_order of the prefix source (pathmap/join.rs:
-                      2316-2346), the most specific prefix first
+                      3070-3107), the most specific prefix first
    window, fireable   window and path_window of the prefix source
                       (pathmap/join.rs:2240-2300, 1279-1399): for each path
                       p under q in path-key order, the window of the
@@ -3347,4 +3356,7 @@ Print Assumptions no_match_remains.
 Print Assumptions marker_invariant_preserved.
 Print Assumptions heads_no_match.
 Print Assumptions token_ord_reentry.
+(* Disabled by decision 96 (decision 89, DR-131): prefix_scan_trace_covered
+   goes with the host-work metering.
 Print Assumptions prefix_scan_trace_covered.
+*)

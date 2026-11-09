@@ -32,6 +32,9 @@ pub enum InterpreterError {
     UnrecognizedInterpreterError(String),
     SortMatchError(String),
     ReduceError(String),
+    BitmaskBitsCleared {
+        cleared: Vec<(String, u64)>,
+    },
     MethodNotDefined {
         method: String,
         other_type: String,
@@ -126,6 +129,12 @@ pub enum InterpreterError {
     /// evaluation: it has more than 32767 terms. It is a classified user
     /// failure.
     TermStructureError(String),
+    /// Added by Reified RSpaces (user decision of 2026-10-25, as DR-128): a
+    /// space operation or a Reified construct fails for a cause in the
+    /// user's term and its pre-state alone, such as `CellOccupied`. It holds
+    /// the old message `reified:<Code>: <text>`, and it is a classified user
+    /// failure.
+    SpaceUserError(String),
     IoError(String),
     /// Raised when a non-deterministic process (OpenAI, Ollama, gRPC) fails during execution.
     /// Contains the underlying cause and the empty output that would have been produced.
@@ -238,6 +247,18 @@ impl fmt::Display for InterpreterError {
             | InterpreterError::BundlePermissionError(msg)
             | InterpreterError::ValueTypeError(msg)
             | InterpreterError::TermStructureError(msg) => write!(f, "Reduce error: {}", msg),
+            // Added by Reified RSpaces (user decision of 2026-10-25): the
+            // user variant of space errors keeps the text of its reduce error.
+            InterpreterError::SpaceUserError(msg) => write!(f, "Reduce error: {}", msg),
+            InterpreterError::BitmaskBitsCleared { cleared } => write!(
+                f,
+                "BitmaskOr channel bits can only be set, not cleared: {}",
+                cleared
+                    .iter()
+                    .map(|(channel, bits)| format!("{} (bits {:#x} cleared)", channel, bits))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
 
             InterpreterError::MethodNotDefined { method, other_type } => write!(
                 f,
@@ -526,6 +547,12 @@ mod tests {
             (
                 InterpreterError::ReduceError("r".to_string()),
                 "Reduce error: r".to_string(),
+            ),
+            // Added by Reified RSpaces (user decision of 2026-10-25): the user
+            // variant of space errors shows as the reduce error it replaces.
+            (
+                InterpreterError::SpaceUserError("reified:CellOccupied: c".to_string()),
+                "Reduce error: reified:CellOccupied: c".to_string(),
             ),
             (
                 InterpreterError::MethodNotDefined {

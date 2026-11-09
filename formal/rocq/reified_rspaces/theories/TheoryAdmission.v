@@ -46,7 +46,7 @@
                             in order, the first verdict that is not Proven
                             aborts with its index, the leases of the Proven
                             verdicts in order)
-   commit_allowed           generic.rs:2206-2211 (check_leases: two or more
+   commit_allowed           generic.rs:2205-2210 (check_leases: two or more
                             leases abort with NestedCommitGuard)
    cached_check, consistent the cache-free runtime (design v3 RH-1, F18):
                             no cache exists, and a cache that a later build
@@ -54,7 +54,7 @@
    identity                 theory/identity.rs:59-76 (TheoryIdentity)
    builtin_identity         theory/identity.rs:80-91 (TheoryIdentity::builtin)
    structural, resolve      theory/builtin.rs:139-153 (of_identity) and
-                            theory/mod.rs:127-136 (resolve)
+                            theory/mod.rs:123-132 (resolve)
    to_bytes                 theory/identity.rs:128-163 (to_bytes) and
                             240-243 (push_length)
    take, read_len,          theory/identity.rs:252-260 (Reader::take),
@@ -65,7 +65,7 @@
                             bytes equal to the input)
    play_send, replay_send   types/config.rs:193-206 (from_par_metered: each
                             config read decodes the slot and resolves the
-                            identity) and generic.rs:2183-2201
+                            identity) and generic.rs:2182-2200
                             (Admission::of: the admission of the values of
                             a send)
 

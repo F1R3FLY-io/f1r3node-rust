@@ -12,8 +12,8 @@
 '      topological order, so every tensor that a component reads is final.
 '   3. Each component runs by its class: R0 once, R1 by its guard index in
 '      ascending order, R2 by semi-naive iteration, stratum by stratum.
-'   4. The outputs are encoded in the value ABI, and each element is
-'      reserved before it is written.
+'   4. The outputs are encoded in the value ABI (decision 89 removed the
+'      reservation of each element).
 '
 ' Colors come from concept-colors.iuml (aliases of the shared palette).
 ' Render: ./render.sh 43-tl-evaluation-order.puml   Check: ./render.sh --check
@@ -49,23 +49,22 @@ while (a component C is left?) is (yes)
     every read is at a value below g, so it is final; <<$rrs_tl_engine>>
     note right
       A virtual dimension keeps only the
-      slices g and g + 1, with the backing
-      reserved once.
+      slices g and g + 1, over one backing.
     end note
   case (R2: Boolean monotone)
     :SEMI-NAIVE(C), stratum by stratum
     (Figure TL11); <<$rrs_tl_engine>>
   endswitch
 endwhile (no)
-:encode the query outputs in the value ABI,
-and reserve each element before it is written; <<$rrs_meter>>
+:encode the query outputs in the value ABI; <<$rrs_tl_engine>>
 :the outputs; <<$rrs_tl_term>>
 stop
 
+' Changed by decision 89: the node has no host-work meter, so the legend has no meter row. The row before:
+' |<$rrs_meter>     | a reservation on the host-work meter |
 legend bottom
 **Concept colors**
 |<$rrs_tl_term>   | TL terms and values |
 |<$rrs_tl_engine> | a step of EVALUATE |
-|<$rrs_meter>     | a reservation on the host-work meter |
 endlegend
 @enduml

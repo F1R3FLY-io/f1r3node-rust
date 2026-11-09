@@ -17,6 +17,7 @@ use models::rust::block::state_hash::StateHash;
 use rholang::rust::interpreter::rho_type::{RhoNumber, RhoString};
 
 use crate::rust::errors::CasperError;
+use crate::rust::rholang::runtime::RuntimeOps;
 use crate::rust::util::rholang::runtime_manager::RuntimeManager;
 
 const TOKEN_METADATA_QUERY: &str = r#"
@@ -35,8 +36,19 @@ pub async fn read_on_chain_token_metadata(
     runtime_manager: &RuntimeManager,
     post_state_hash: &StateHash,
 ) -> Result<(String, String, u32), CasperError> {
-    let (result, _cost) = runtime_manager
-        .play_exploratory_deploy(TOKEN_METADATA_QUERY.to_string(), post_state_hash, None)
+    // Changed by DR-134 (DR-66 scope map, DR-71): an internal read of token
+    // metadata uses the unmetered internal read path, as the policy and
+    // consensus-parameter reads do.
+    // let (result, _cost) = runtime_manager
+    //     .play_exploratory_deploy(TOKEN_METADATA_QUERY.to_string(), post_state_hash, None)
+    //     .await?;
+    let query = rholang::rust::interpreter::compiler::compiler::Compiler::source_to_adt(
+        TOKEN_METADATA_QUERY,
+    )
+    .map_err(CasperError::InterpreterError)?;
+    let mut runtime = RuntimeOps::new(runtime_manager.spawn_runtime().await?);
+    let result = runtime
+        .play_exploratory_par_strict(query, post_state_hash)
         .await?;
 
     // The contract's "all" method returns a single tuple `(name, symbol, decimals)`

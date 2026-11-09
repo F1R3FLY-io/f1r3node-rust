@@ -150,6 +150,7 @@ impl Par {
             && self.matches.is_empty()
             && self.bundles.is_empty()
             && self.exprs.is_empty()
+            && self.use_blocks.is_empty()
     }
 
     pub fn is_nil(&self) -> bool {
@@ -161,6 +162,7 @@ impl Par {
             && self.unforgeables.is_empty()
             && self.connectives.is_empty()
             && self.exprs.is_empty()
+            && self.use_blocks.is_empty()
     }
 
     pub fn single_connective(&self) -> Option<Connective> {
@@ -171,6 +173,7 @@ impl Par {
             && self.matches.is_empty()
             && self.bundles.is_empty()
             && self.connectives.len() == 1
+            && self.use_blocks.is_empty()
         {
             Some(self.connectives[0].clone())
         } else {
@@ -186,6 +189,7 @@ impl Par {
             && self.matches.is_empty()
             && self.unforgeables.is_empty()
             && self.connectives.is_empty()
+            && self.use_blocks.is_empty()
         {
             match self.bundles.as_slice() {
                 [single] => Some(single.clone()),
@@ -209,6 +213,7 @@ impl Par {
             conditionals: [self.conditionals.clone(), other.conditionals].concat(),
             cost_signed_terms: [self.cost_signed_terms.clone(), other.cost_signed_terms].concat(),
             cost_stacks: [self.cost_stacks.clone(), other.cost_stacks].concat(),
+            use_blocks: [self.use_blocks.clone(), other.use_blocks].concat(),
             locally_free: union(self.locally_free.clone(), other.locally_free),
             connective_used: self.connective_used || other.connective_used,
         }
@@ -337,6 +342,7 @@ pub fn new_send(
         persistent: _persistent,
         locally_free: _locally_free,
         connective_used: _connective_used,
+        params: None,
     }
 }
 
@@ -355,6 +361,7 @@ pub fn new_send_par(
         persistent: _persistent,
         locally_free: _locally_free,
         connective_used: _connective_used,
+        params: None,
     }])
 }
 
@@ -412,6 +419,7 @@ pub fn new_new_par(
         uri: _uri,
         injections: _injections,
         locally_free: _locally_free,
+        space_types: Vec::new(),
     }])
 }
 

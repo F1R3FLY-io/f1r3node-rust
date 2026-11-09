@@ -96,6 +96,7 @@ pub fn normalize_p_new<'ast>(
         uri: uris,
         injections: btree_map,
         locally_free: filter_and_adjust_bitset(body_result.par.clone().locally_free, new_count),
+        space_types: Vec::new(),
     };
 
     let par = match space_annotations {
@@ -228,6 +229,7 @@ mod tests {
             uri: Vec::new(),
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);
@@ -387,6 +389,7 @@ mod tests {
             uri: vec!["rho:registry".to_string(), "rho:stdout".to_string()],
             injections: BTreeMap::new(),
             locally_free: Vec::new(),
+            space_types: Vec::new(),
         });
 
         assert_eq!(result.clone().unwrap().par, expected_result);

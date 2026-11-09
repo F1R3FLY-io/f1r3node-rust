@@ -213,8 +213,10 @@ pub fn allocator_channel(space: NativeSpace) -> Par {
 
 /// The records that the creation of an Array or a Vector space stages after the space counter: the
 /// allocator `A(sid) = 0`. `random` is the random state of the factory call, and the record takes
-/// `RandomPurpose::Allocator.derive(random).split_byte(1)`, as the put of an allocation does. The
-/// record carries the cost authority `authority` of the caller, as the space counter does.
+/// `RandomPurpose::Allocator.derive(random).split_byte(1)`, as the put of an allocation does.
+/// Changed by decision 124 (plan v2 C7.3): the record carries the machinery seal `authority`
+/// that the creation passes, as the space counter does. The text before: "The record carries
+/// the cost authority `authority` of the caller, as the space counter does."
 pub fn creation_records(
     space: NativeSpace,
     random: &Blake2b512Random,
@@ -285,6 +287,10 @@ mod tests {
                 signature: Some(CostSignature {
                     value: Some(CostSignatureValue::Ground(vec![byte])),
                 }),
+                // Added by decision 90 (DR-135): an unpriced region, as outside native
+                // execution.
+                price: 0,
+                caller: None,
             }],
         }
     }

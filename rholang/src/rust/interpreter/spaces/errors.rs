@@ -1,7 +1,11 @@
 //! The errors of the native spaces (P4 design C.10) and their mapping from the substrate
 //! (readiness review S8).
-//!
-//! A [`SpaceError`] aborts the deploy with `InterpreterError::ReduceError("reified:<Code>: …")`.
+// Changed by the user decision of 2026-10-25 (as DR-128): a user failure aborts with its own
+// interpreter error, which the failure classifier maps to a user failure.
+// //! A [`SpaceError`] aborts the deploy with `InterpreterError::ReduceError("reified:<Code>: …")`.
+//! A [`SpaceError`] aborts the deploy with the message `reified:<Code>: …`. A user failure
+//! ([`SpaceError::is_user_failure`]) carries it in `InterpreterError::SpaceUserError`, and every
+//! other code in `InterpreterError::ReduceError`.
 //! A host error passes through unchanged, so `OutOfPhlogistons` keeps its class. The
 //! reducer-level codes are in `reified::errors::ReifiedReduceError`. A protocol error of a handle
 //! call is a typed reply with a [`SpaceReplyCode`], not an abort. Message text is not consensus
@@ -38,10 +42,12 @@ pub enum SpaceError {
     // /// A qualifier that this phase does not support (`temp` and `seq` arrive in P7).
     // #[error("the {0} qualifier is not available")]
     // QualifierUnavailable(String),
-    /// A qualifier that the execution model of the deploy cannot run: legacy execution refuses
-    /// `seq`, because its rules need the deterministic job order of native execution (QT-5).
-    #[error("the {0} qualifier needs native execution")]
-    QualifierUnavailable(String),
+    // Retired by decision 90 (C6, step D): spaces run only in native execution, and the runtime
+    // check refuses every factory call outside it with `RuntimeUnavailable`.
+    // /// A qualifier that the execution model of the deploy cannot run: legacy execution refuses
+    // /// `seq`, because its rules need the deterministic job order of native execution (QT-5).
+    // #[error("the {0} qualifier needs native execution")]
+    // QualifierUnavailable(String),
     // Changed by P7 step 4 (design v3 TH-3, TH-7): a factory now resolves the builtin theories,
     // so the code means that a persisted identity names no checker of this build.
     // /// A theory that this phase does not support (P7).
@@ -230,7 +236,8 @@ impl SpaceError {
             SpaceError::BadConstructorArgument(_) => "BadConstructorArgument",
             SpaceError::UnknownParam { .. } => "UnknownParam",
             SpaceError::PositionalParamsUnsupported => "PositionalParamsUnsupported",
-            SpaceError::QualifierUnavailable(_) => "QualifierUnavailable",
+            // Retired by decision 90 (C6, step D) with its variant.
+            // SpaceError::QualifierUnavailable(_) => "QualifierUnavailable",
             SpaceError::TheoryUnavailable(_) => "TheoryUnavailable",
             SpaceError::UnknownTheory { .. } => "UnknownTheory",
             SpaceError::TheoryRefuted { .. } => "TheoryRefuted",
@@ -271,6 +278,121 @@ impl SpaceError {
             SpaceError::Host(_) => "Host",
         }
     }
+
+    /// True when a term can cause the error by itself, given its pre-state, so that every node
+    /// raises it at the same place (the user decision of 2026-10-25, as DR-128). The match names
+    /// every variant, because no variant defaults to a user failure (DR-128).
+    ///
+    /// The other variants have causes outside the term. `SpaceAlreadyExists` needs a repeated
+    /// random state, because the space id comes from the random state of the call (SM-1).
+    /// `TheoryUnavailable` names a build without a checker. `FamilyUnavailable` needs a pair
+    /// without a factory channel or a stored config of another family. `RuntimeUnavailable` is a
+    /// state of the runtime, for example a host runtime outside native execution (decision 90).
+    /// `Inconsistent`, `ReplayDivergence` and `Substrate` are platform failures, and `Host` keeps
+    /// the class of its host error.
+    pub fn is_user_failure(&self) -> bool {
+        match self {
+            SpaceError::BadConstructorArgument(_)
+            | SpaceError::UnknownParam { .. }
+            | SpaceError::PositionalParamsUnsupported
+            | SpaceError::UnknownTheory { .. }
+            | SpaceError::TheoryRefuted { .. }
+            | SpaceError::TheoryUndetermined { .. }
+            | SpaceError::NestedCommitGuard
+            | SpaceError::DanglingHandle { .. }
+            | SpaceError::DanglingName { .. }
+            | SpaceError::SeqSent { .. }
+            | SpaceError::SeqConcurrent { .. }
+            | SpaceError::PayloadNotEmpty
+            | SpaceError::PatternNotEmpty
+            | SpaceError::CounterOverflow
+            | SpaceError::CellOccupied
+            | SpaceError::CapacityExceeded
+            | SpaceError::InvalidParam { .. }
+            | SpaceError::MissingParam { .. }
+            | SpaceError::OutOfNames
+            | SpaceError::NotAnIndexName
+            | SpaceError::UnsupportedPathElement
+            | SpaceError::PathTooDeep
+            | SpaceError::QuerySpecUnsupported
+            | SpaceError::ZeroQueryVector
+            | SpaceError::DimensionMismatch { .. }
+            | SpaceError::NonFiniteValue
+            | SpaceError::ValueOutOfRange
+            | SpaceError::QueryNeedsVector { .. }
+            | SpaceError::RadiusNeedsDistance
+            | SpaceError::ThresholdNeedsSimilarity
+            | SpaceError::ConflictingParams
+            | SpaceError::ListModeInJoin => true,
+            SpaceError::SpaceAlreadyExists
+            // Retired by decision 90 (C6, step D) with its variant.
+            // | SpaceError::QualifierUnavailable(_)
+            | SpaceError::TheoryUnavailable(_)
+            | SpaceError::FamilyUnavailable { .. }
+            | SpaceError::RuntimeUnavailable
+            | SpaceError::Inconsistent(_)
+            | SpaceError::ReplayDivergence(_)
+            | SpaceError::Substrate(_)
+            | SpaceError::Host(_) => false,
+        }
+    }
+
+    /// Added by decision 92: true when the error depends on the state of the space at the place
+    /// of its transaction, and a later state can remove it. `CellOccupied` and
+    /// `CapacityExceeded` depend on the size of a side. `NestedCommitGuard` depends on the stored
+    /// data that a plan matches. Such a transaction commits an anchor only and then fails, so
+    /// replay meets the failure at the same place in the chain of the space (`spaces::anchor`).
+    ///
+    /// Every other variant commits nothing, as before. It is static, or it holds in every later
+    /// state of the evaluation, or it is a platform failure. For example, a counter only grows,
+    /// so `CounterOverflow` stays. The match names every variant, so a new variant needs a
+    /// decision.
+    pub fn is_positional(&self) -> bool {
+        match self {
+            SpaceError::CellOccupied
+            | SpaceError::CapacityExceeded
+            | SpaceError::NestedCommitGuard => true,
+            SpaceError::SpaceAlreadyExists
+            | SpaceError::BadConstructorArgument(_)
+            | SpaceError::UnknownParam { .. }
+            | SpaceError::PositionalParamsUnsupported
+            // Retired by decision 90 (C6, step D) with its variant.
+            // | SpaceError::QualifierUnavailable(_)
+            | SpaceError::TheoryUnavailable(_)
+            | SpaceError::UnknownTheory { .. }
+            | SpaceError::TheoryRefuted { .. }
+            | SpaceError::TheoryUndetermined { .. }
+            | SpaceError::FamilyUnavailable { .. }
+            | SpaceError::RuntimeUnavailable
+            | SpaceError::DanglingHandle { .. }
+            | SpaceError::DanglingName { .. }
+            | SpaceError::SeqSent { .. }
+            | SpaceError::SeqConcurrent { .. }
+            | SpaceError::PayloadNotEmpty
+            | SpaceError::PatternNotEmpty
+            | SpaceError::CounterOverflow
+            | SpaceError::InvalidParam { .. }
+            | SpaceError::MissingParam { .. }
+            | SpaceError::OutOfNames
+            | SpaceError::NotAnIndexName
+            | SpaceError::UnsupportedPathElement
+            | SpaceError::PathTooDeep
+            | SpaceError::QuerySpecUnsupported
+            | SpaceError::ZeroQueryVector
+            | SpaceError::DimensionMismatch { .. }
+            | SpaceError::NonFiniteValue
+            | SpaceError::ValueOutOfRange
+            | SpaceError::QueryNeedsVector { .. }
+            | SpaceError::RadiusNeedsDistance
+            | SpaceError::ThresholdNeedsSimilarity
+            | SpaceError::ConflictingParams
+            | SpaceError::ListModeInJoin
+            | SpaceError::Inconsistent(_)
+            | SpaceError::ReplayDivergence(_)
+            | SpaceError::Substrate(_)
+            | SpaceError::Host(_) => false,
+        }
+    }
 }
 
 /// Readiness review S8: a host error stays a host error, a replay divergence keeps its own
@@ -292,9 +414,20 @@ impl From<RSpaceError> for SpaceError {
 
 impl From<SpaceError> for InterpreterError {
     fn from(error: SpaceError) -> Self {
-        match error {
-            SpaceError::Host(error) => InterpreterError::from(error),
-            other => InterpreterError::ReduceError(format!("reified:{}: {}", other.code(), other)),
+        // Changed by the user decision of 2026-10-25 (as DR-128): a user failure has its own
+        // interpreter error.
+        // match error {
+        //     SpaceError::Host(error) => InterpreterError::from(error),
+        //     other => InterpreterError::ReduceError(format!("reified:{}: {}", other.code(), other)),
+        // }
+        match (error.is_user_failure(), error) {
+            (_, SpaceError::Host(error)) => InterpreterError::from(error),
+            (true, user) => {
+                InterpreterError::SpaceUserError(format!("reified:{}: {}", user.code(), user))
+            }
+            (false, other) => {
+                InterpreterError::ReduceError(format!("reified:{}: {}", other.code(), other))
+            }
         }
     }
 }
@@ -375,7 +508,8 @@ mod tests {
                 suggestion: Some("priority".to_string()),
             },
             SpaceError::PositionalParamsUnsupported,
-            SpaceError::QualifierUnavailable("seq".to_string()),
+            // Retired by decision 90 (C6, step D).
+            // SpaceError::QualifierUnavailable("seq".to_string()),
             SpaceError::TheoryUnavailable("Nat".to_string()),
             SpaceError::UnknownTheory {
                 name: "Natt".to_string(),
@@ -442,6 +576,112 @@ mod tests {
         ]
     }
 
+    // Changed by the user decision of 2026-10-25 (as DR-128): a user failure aborts with
+    // `SpaceUserError`, and the other codes keep `ReduceError`.
+    // #[test]
+    // fn space_errors_abort_with_their_reified_code() {
+    //     let errors = every_space_error();
+    //     let codes: BTreeSet<&str> = errors.iter().map(SpaceError::code).collect();
+    //     assert_eq!(codes.len(), errors.len());
+    //     for error in errors {
+    //         let code = error.code();
+    //         match InterpreterError::from(error) {
+    //             InterpreterError::ReduceError(message) => {
+    //                 assert!(
+    //                     message.starts_with(&format!("reified:{code}: ")),
+    //                     "{message}"
+    //                 );
+    //             }
+    //             other => panic!("{code} converted to {other:?}"),
+    //         }
+    //     }
+    //     let unknown = InterpreterError::from(SpaceError::UnknownParam {
+    //         key: "priorty".to_string(),
+    //         suggestion: Some("priority".to_string()),
+    //     });
+    //     assert_eq!(
+    //         unknown,
+    //         InterpreterError::ReduceError(
+    //             "reified:UnknownParam: \"priorty\" is not a param of this channel, did you mean \
+    //              \"priority\"?"
+    //                 .to_string()
+    //         )
+    //     );
+    //     // DG-3: a dangling handle or name names the missing space id in lowercase hex.
+    //     for (error, noun) in [
+    //         (SpaceError::DanglingHandle { space: [0xab; 32] }, "handle"),
+    //         (SpaceError::DanglingName { space: [0xab; 32] }, "name"),
+    //     ] {
+    //         let code = error.code();
+    //         assert_eq!(
+    //             InterpreterError::from(error),
+    //             InterpreterError::ReduceError(format!(
+    //                 "reified:{code}: the space {} of this {noun} does not exist",
+    //                 "ab".repeat(32)
+    //             ))
+    //         );
+    //     }
+    //     // SQ-2 and SQ-3: a Seq violation names the seq space in lowercase hex.
+    //     assert_eq!(
+    //         InterpreterError::from(SpaceError::SeqSent { space: [0xcd; 32] }),
+    //         InterpreterError::ReduceError(format!(
+    //             "reified:SeqSent: a name of the seq space {} is sent",
+    //             "cd".repeat(32)
+    //         ))
+    //     );
+    //     assert_eq!(
+    //         InterpreterError::from(SpaceError::SeqConcurrent { space: [0xcd; 32] }),
+    //         InterpreterError::ReduceError(format!(
+    //             "reified:SeqConcurrent: a channel of the seq space {} is used by a concurrent \
+    //              process",
+    //             "cd".repeat(32)
+    //         ))
+    //     );
+    //     // TH-4 and TH-5: the theory errors name the theory, its suggestion and the value.
+    //     assert_eq!(
+    //         InterpreterError::from(SpaceError::UnknownTheory {
+    //             name: "Natt".to_string(),
+    //             suggestion: Some("Nat".to_string()),
+    //         }),
+    //         InterpreterError::ReduceError(
+    //             "reified:UnknownTheory: \"Natt\" is not a theory, did you mean \"Nat\"?"
+    //                 .to_string()
+    //         )
+    //     );
+    //     assert_eq!(
+    //         InterpreterError::from(SpaceError::TheoryRefuted {
+    //             theory: "Nat".to_string(),
+    //             index: 1,
+    //         }),
+    //         InterpreterError::ReduceError(
+    //             "reified:TheoryRefuted: the theory Nat refutes the value 1 of the send".to_string()
+    //         )
+    //     );
+    //     // HS-2 and HS-3: a HashSet collection takes units only.
+    //     assert_eq!(
+    //         InterpreterError::from(SpaceError::PayloadNotEmpty),
+    //         InterpreterError::ReduceError(
+    //             "reified:PayloadNotEmpty: a send to a HashSet collection carries a payload"
+    //                 .to_string()
+    //         )
+    //     );
+    //     assert_eq!(
+    //         InterpreterError::from(SpaceError::PatternNotEmpty),
+    //         InterpreterError::ReduceError(
+    //             "reified:PatternNotEmpty: a receive from a HashSet collection has a pattern"
+    //                 .to_string()
+    //         )
+    //     );
+    //     // QT-5: legacy execution refuses `seq`.
+    //     assert_eq!(
+    //         InterpreterError::from(SpaceError::QualifierUnavailable("seq".to_string())),
+    //         InterpreterError::ReduceError(
+    //             "reified:QualifierUnavailable: the seq qualifier needs native execution"
+    //                 .to_string()
+    //         )
+    //     );
+    // }
+
     #[test]
     fn space_errors_abort_with_their_reified_code() {
         let errors = every_space_error();
@@ -449,14 +689,16 @@ mod tests {
         assert_eq!(codes.len(), errors.len());
         for error in errors {
             let code = error.code();
-            match InterpreterError::from(error) {
-                InterpreterError::ReduceError(message) => {
+            let user = error.is_user_failure();
+            match (user, InterpreterError::from(error)) {
+                (true, InterpreterError::SpaceUserError(message))
+                | (false, InterpreterError::ReduceError(message)) => {
                     assert!(
                         message.starts_with(&format!("reified:{code}: ")),
                         "{message}"
                     );
                 }
-                other => panic!("{code} converted to {other:?}"),
+                (_, other) => panic!("{code} (user failure {user}) converted to {other:?}"),
             }
         }
         let unknown = InterpreterError::from(SpaceError::UnknownParam {
@@ -465,7 +707,7 @@ mod tests {
         });
         assert_eq!(
             unknown,
-            InterpreterError::ReduceError(
+            InterpreterError::SpaceUserError(
                 "reified:UnknownParam: \"priorty\" is not a param of this channel, did you mean \
                  \"priority\"?"
                     .to_string()
@@ -479,7 +721,7 @@ mod tests {
             let code = error.code();
             assert_eq!(
                 InterpreterError::from(error),
-                InterpreterError::ReduceError(format!(
+                InterpreterError::SpaceUserError(format!(
                     "reified:{code}: the space {} of this {noun} does not exist",
                     "ab".repeat(32)
                 ))
@@ -488,14 +730,14 @@ mod tests {
         // SQ-2 and SQ-3: a Seq violation names the seq space in lowercase hex.
         assert_eq!(
             InterpreterError::from(SpaceError::SeqSent { space: [0xcd; 32] }),
-            InterpreterError::ReduceError(format!(
+            InterpreterError::SpaceUserError(format!(
                 "reified:SeqSent: a name of the seq space {} is sent",
                 "cd".repeat(32)
             ))
         );
         assert_eq!(
             InterpreterError::from(SpaceError::SeqConcurrent { space: [0xcd; 32] }),
-            InterpreterError::ReduceError(format!(
+            InterpreterError::SpaceUserError(format!(
                 "reified:SeqConcurrent: a channel of the seq space {} is used by a concurrent \
                  process",
                 "cd".repeat(32)
@@ -507,7 +749,7 @@ mod tests {
                 name: "Natt".to_string(),
                 suggestion: Some("Nat".to_string()),
             }),
-            InterpreterError::ReduceError(
+            InterpreterError::SpaceUserError(
                 "reified:UnknownTheory: \"Natt\" is not a theory, did you mean \"Nat\"?"
                     .to_string()
             )
@@ -517,33 +759,104 @@ mod tests {
                 theory: "Nat".to_string(),
                 index: 1,
             }),
-            InterpreterError::ReduceError(
+            InterpreterError::SpaceUserError(
                 "reified:TheoryRefuted: the theory Nat refutes the value 1 of the send".to_string()
             )
         );
         // HS-2 and HS-3: a HashSet collection takes units only.
         assert_eq!(
             InterpreterError::from(SpaceError::PayloadNotEmpty),
-            InterpreterError::ReduceError(
+            InterpreterError::SpaceUserError(
                 "reified:PayloadNotEmpty: a send to a HashSet collection carries a payload"
                     .to_string()
             )
         );
         assert_eq!(
             InterpreterError::from(SpaceError::PatternNotEmpty),
-            InterpreterError::ReduceError(
+            InterpreterError::SpaceUserError(
                 "reified:PatternNotEmpty: a receive from a HashSet collection has a pattern"
                     .to_string()
             )
         );
-        // QT-5: legacy execution refuses `seq`.
-        assert_eq!(
-            InterpreterError::from(SpaceError::QualifierUnavailable("seq".to_string())),
-            InterpreterError::ReduceError(
-                "reified:QualifierUnavailable: the seq qualifier needs native execution"
-                    .to_string()
-            )
-        );
+        // Retired by decision 90 (C6, step D): spaces run only in native execution, so no factory
+        // call fails with `QualifierUnavailable`.
+        // // QT-5: legacy execution refuses `seq`.
+        // assert_eq!(
+        //     InterpreterError::from(SpaceError::QualifierUnavailable("seq".to_string())),
+        //     InterpreterError::ReduceError(
+        //         "reified:QualifierUnavailable: the seq qualifier needs native execution"
+        //             .to_string()
+        //     )
+        // );
+    }
+
+    /// The classes of the user decision of 2026-10-25 (as DR-128). The user codes are pinned
+    /// here, so a change of a class changes this list. A user failure classifies as User, and
+    /// every other code stays Unclassified, as `ReduceError` does.
+    #[test]
+    fn space_user_failures_classify_as_user() {
+        use crate::rust::interpreter::accounting::economic_failure::classify_errors;
+        use crate::rust::interpreter::accounting::phlo_execution::PhloFailure;
+
+        const USER_CODES: [&str; 32] = [
+            "BadConstructorArgument",
+            "UnknownParam",
+            "PositionalParamsUnsupported",
+            "UnknownTheory",
+            "TheoryRefuted",
+            "TheoryUndetermined",
+            "NestedCommitGuard",
+            "DanglingHandle",
+            "DanglingName",
+            "SeqSent",
+            "SeqConcurrent",
+            "PayloadNotEmpty",
+            "PatternNotEmpty",
+            "CounterOverflow",
+            "CellOccupied",
+            "CapacityExceeded",
+            "InvalidParam",
+            "MissingParam",
+            "OutOfNames",
+            "NotAnIndexName",
+            "UnsupportedPathElement",
+            "PathTooDeep",
+            "QuerySpecUnsupported",
+            "ZeroQueryVector",
+            "DimensionMismatch",
+            "NonFiniteValue",
+            "ValueOutOfRange",
+            "QueryNeedsVector",
+            "RadiusNeedsDistance",
+            "ThresholdNeedsSimilarity",
+            "ConflictingParams",
+            "ListModeInJoin",
+        ];
+        let user: BTreeSet<&str> = every_space_error()
+            .iter()
+            .filter(|error| error.is_user_failure())
+            .map(SpaceError::code)
+            .collect();
+        assert_eq!(user, USER_CODES.into_iter().collect::<BTreeSet<_>>());
+        for error in every_space_error() {
+            let code = error.code();
+            let expected = match error.is_user_failure() {
+                true => PhloFailure::User,
+                false => PhloFailure::Unclassified,
+            };
+            let summary =
+                classify_errors(&[InterpreterError::from(error)]).expect("classify one error");
+            assert!(summary.contains(expected), "{code}: {summary:?}");
+            assert_eq!(
+                summary,
+                classify_errors(&[match expected {
+                    PhloFailure::User => InterpreterError::SpaceUserError(code.to_string()),
+                    _ => InterpreterError::ReduceError(code.to_string()),
+                }])
+                .expect("classify one error"),
+                "{code}"
+            );
+        }
     }
 
     #[test]
@@ -640,6 +953,9 @@ mod tests {
             SpaceTxnError::ParentOrderReused,
             SpaceTxnError::CounterOverflow,
             SpaceTxnError::NestedTransaction,
+            // Added by decision 102 (rule CR-6): the record end is a substrate error, which is
+            // not positional.
+            SpaceTxnError::RecordEnded,
         ] {
             assert_eq!(
                 SpaceError::from(error.clone()),

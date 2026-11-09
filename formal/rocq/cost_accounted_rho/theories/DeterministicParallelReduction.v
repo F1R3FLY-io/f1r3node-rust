@@ -1,3 +1,19 @@
+(* DR-132 (decision D4-A): this theory describes the deterministic reduction
+   scheduler, which DR-132 deleted (`deterministic_reduction.rs`).
+   Evaluation now races, as on dev, and native replay finds each recorded
+   operation by its RSpace source.
+
+   The frontier, driver, causal-path and cancellation theorems below describe
+   the removed code. Two results still hold for every order of operations,
+   and proposal section 7.10 still uses them:
+   - intents_conflict_symmetric: the conflict relation of two intents is
+     symmetric.
+   - disjoint_intents_commute: two intents with disjoint footprints commute.
+
+   The TLA+ models of the scheduler, the theories CountedDetachedBisimulation
+   and DetachedPathCompaction, and the Loom test of the frontier are retired
+   with the scheduler. *)
+
 From Stdlib Require Import Arith.Arith.
 From Stdlib Require Import Bool.Bool.
 From Stdlib Require Import Lists.List.

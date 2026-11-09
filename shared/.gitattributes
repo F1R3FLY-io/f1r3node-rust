@@ -1,0 +1,4 @@
+/src/rust/store/soak_snapshot.rs cbc=mandatory cbc-weight=high
+/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high
+/src/rust/store/lmdb_key_value_store.rs cbc=mandatory cbc-weight=high
+/src/rust/dag/observation_work.rs cbc=mandatory cbc-weight=high

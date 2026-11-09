@@ -2,7 +2,9 @@
 //! RSpaces syntax (plan decisions 18 and 21).
 //!
 //! Each adapter normalizes the parts of a construct in the scope that the syntax contract gives
-//! them, and builds the marker tuple only through `models::rust::reified::builders`. The
+// Changed by decision 112: the adapters build fields, not marker tuples. The text before:
+// //! them, and builds the marker tuple only through `models::rust::reified::builders`. The
+//! them, and builds the field only through `models::rust::reified::builders`. The
 //! builders re-check every guarantee of the parser: each key is a unique param key, no
 //! positional param follows a named one, a query takes named params only and is never empty,
 //! and a URI binder takes no space annotation. The adapters apply `validate_param_value` to each
@@ -11,7 +13,9 @@
 use std::collections::HashMap;
 
 use models::rhoapi::{New, Par};
-use models::rust::reified::builders::{new_space, push_process_expr, query_spec, send_params};
+// Changed by decision 112: no builder pushes a marker tuple. The text before:
+// use models::rust::reified::builders::{new_space, push_process_expr, query_spec, send_params};
+use models::rust::reified::builders::{new_space, query_spec, send_params};
 use models::rust::reified::params::SendParam;
 use models::rust::reified::validation::{validate_param_value, ReifiedSyntaxError};
 use rholang_parser::ast::{
@@ -26,6 +30,7 @@ use crate::rust::interpreter::compiler::exports::{
 use crate::rust::interpreter::compiler::normalize::{normalize_ann_proc, VarSort};
 use crate::rust::interpreter::compiler::normalizer::name_normalize_matcher::normalize_name;
 use crate::rust::interpreter::errors::InterpreterError;
+use crate::rust::interpreter::util::prepend_new;
 
 /// The normalizer error for Reified syntax that a builder or a validator rejects.
 pub fn reified_syntax_error(error: ReifiedSyntaxError) -> InterpreterError {
@@ -114,7 +119,9 @@ pub fn normalize_hyperparams<'ast>(
     Ok((normalized, free_map))
 }
 
-/// The trailing PARAMS data element of a send `x!(d…; p…, k=v…)`, or `None` when the send has
+// Changed by decision 112: the params are a field of the send. The text before:
+// /// The trailing PARAMS data element of a send `x!(d…; p…, k=v…)`, or `None` when the send has
+/// The params of a send `x!(d…; p…, k=v…)` for the field `Send.params`, or `None` when the send has
 /// no `;` section or an empty one. The values follow the data in the current scope.
 pub fn normalize_send_params<'ast>(
     params: Option<&HyperparamList<'ast>>,
@@ -122,7 +129,9 @@ pub fn normalize_send_params<'ast>(
     free_map: FreeMap<VarSort>,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
-) -> Result<(Option<Par>, FreeMap<VarSort>), InterpreterError> {
+    // Changed by decision 112: the params are a field of the send. The text before:
+    // ) -> Result<(Option<Par>, FreeMap<VarSort>), InterpreterError> {
+) -> Result<(Option<models::rhoapi::SendParams>, FreeMap<VarSort>), InterpreterError> {
     match params {
         None => Ok((None, free_map)),
         Some(params) => {
@@ -134,19 +143,44 @@ pub fn normalize_send_params<'ast>(
     }
 }
 
-/// The source of a receive bind with the channel `channel`: the channel itself, or the QUERY
-/// tuple `(QUERY, ch, [q…], {k: v…})` when the bind has a query. The payload and then the params
-/// follow the channel in the scope outside the receive.
-pub fn normalize_bind_source<'ast>(
-    channel: Par,
+// Retired by decision 112: the query is a field of the bind, so no QUERY tuple is built.
+// ```
+// /// The source of a receive bind with the channel `channel`: the channel itself, or the QUERY
+// /// tuple `(QUERY, ch, [q…], {k: v…})` when the bind has a query. The payload and then the params
+// /// follow the channel in the scope outside the receive.
+// pub fn normalize_bind_source<'ast>(
+//     channel: Par,
+//     query: Option<&QuerySpec<'ast>>,
+//     bound_map_chain: &BoundMapChain<VarSort>,
+//     free_map: FreeMap<VarSort>,
+//     env: &HashMap<String, Par>,
+//     parser: &'ast RholangParser<'ast>,
+// ) -> Result<(Par, FreeMap<VarSort>), InterpreterError> {
+//     let Some(query) = query else {
+//         return Ok((channel, free_map));
+//     };
+//     let (payload, free_map) =
+//         normalize_procs(&query.payload, bound_map_chain, free_map, env, parser)?;
+//     let (params, free_map) = match &query.params {
+//         Some(params) => normalize_hyperparams(params, bound_map_chain, free_map, env, parser)?,
+//         None => (Vec::new(), free_map),
+//     };
+//     let source = query_spec(channel, payload, params).map_err(reified_syntax_error)?;
+//     Ok((source, free_map))
+// }
+// ```
+/// The query of a receive bind as its field value, or `None` when the bind has no query. The
+/// payload and then the params are normalized after the channel, in the scope outside the
+/// receive.
+pub fn normalize_bind_query<'ast>(
     query: Option<&QuerySpec<'ast>>,
     bound_map_chain: &BoundMapChain<VarSort>,
     free_map: FreeMap<VarSort>,
     env: &HashMap<String, Par>,
     parser: &'ast RholangParser<'ast>,
-) -> Result<(Par, FreeMap<VarSort>), InterpreterError> {
+) -> Result<(Option<models::rhoapi::QuerySpec>, FreeMap<VarSort>), InterpreterError> {
     let Some(query) = query else {
-        return Ok((channel, free_map));
+        return Ok((None, free_map));
     };
     let (payload, free_map) =
         normalize_procs(&query.payload, bound_map_chain, free_map, env, parser)?;
@@ -154,8 +188,8 @@ pub fn normalize_bind_source<'ast>(
         Some(params) => normalize_hyperparams(params, bound_map_chain, free_map, env, parser)?,
         None => (Vec::new(), free_map),
     };
-    let source = query_spec(channel, payload, params).map_err(reified_syntax_error)?;
-    Ok((source, free_map))
+    let query = query_spec(payload, params).map_err(reified_syntax_error)?;
+    Ok((Some(query), free_map))
 }
 
 /// Fails when a receive query is on a `!?`, `?!` or `!m` source, whose desugaring receives on a
@@ -235,13 +269,29 @@ pub fn normalize_space_annotations<'ast>(
     Ok((Some(annotations), free_map))
 }
 
-/// Adds the NEWSPACE tuple of `new` and its binder annotations in front of the expressions of
-/// `par`.
+// Changed by decision 112: an annotated new is a New with its annotations. The text before:
+// ```
+// /// Adds the NEWSPACE tuple of `new` and its binder annotations in front of the expressions of
+// /// `par`.
+// ```
+/// Adds `new` to `par`, with its binder annotations in the field `New.space_types`.
 pub fn push_space_annotated_new(
     par: Par,
     new: New,
     annotations: Vec<Option<Par>>,
 ) -> Result<Par, InterpreterError> {
-    let tuple = new_space(new, annotations).map_err(reified_syntax_error)?;
-    Ok(push_process_expr(par, tuple))
+    // Changed by decision 112: an annotated new is a New with its annotations. The text before:
+    // ```
+    // let tuple = new_space(new, annotations).map_err(reified_syntax_error)?;
+    // Ok(push_process_expr(par, tuple))
+    // ```
+    let new = new_space(new, annotations).map_err(reified_syntax_error)?;
+    let connective_used = new
+        .space_types
+        .iter()
+        .filter_map(|annotation| annotation.space.as_ref())
+        .any(|space| space.connective_used);
+    let mut par = prepend_new(par, new);
+    par.connective_used = par.connective_used || connective_used;
+    Ok(par)
 }

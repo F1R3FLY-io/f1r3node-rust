@@ -67,26 +67,6 @@ pub trait KeyValueStore: Send + Sync + 'static {
 
     fn to_map(&self) -> Result<BTreeMap<ByteBuffer, ByteBuffer>, KvStoreError>;
 
-    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
-        Ok(self
-            .to_map()?
-            .into_iter()
-            .filter(|(key, _)| key.starts_with(prefix))
-            .collect())
-    }
-
-    fn scan_prefix_exact_len(
-        &self,
-        prefix: &[u8],
-        key_length: usize,
-    ) -> Result<Vec<(ByteBuffer, ByteBuffer)>, KvStoreError> {
-        Ok(self
-            .scan_prefix(prefix)?
-            .into_iter()
-            .filter(|(key, _)| key.len() == key_length)
-            .collect())
-    }
-
     fn strict_atomic_mutate(
         &self,
         _mutations: &[AtomicStoreMutation<'_>],
@@ -201,23 +181,6 @@ pub enum KvStoreError {
     LockError(String),
     AtomicityUnavailable(String),
     TransactionConflict(String),
-    StaleFinalization {
-        expected_revision: u64,
-        actual_revision: u64,
-    },
-    FinalizationProjectionPending {
-        revision: u64,
-        projected_revision: u64,
-    },
-    FinalizationCertificateCarrierPending {
-        expected_revision: u64,
-        floor_hash: Vec<u8>,
-        certificate_digest: Vec<u8>,
-    },
-    RecoveryBudgetExhausted {
-        domain: &'static str,
-        capacity: u64,
-    },
     /// Returned when a DAG representation is requested before the
     /// approved-block / last-finalized-block bootstrap has completed.
     LastFinalizedBlockUninitialized,
@@ -245,33 +208,6 @@ impl std::fmt::Display for KvStoreError {
             }
             KvStoreError::TransactionConflict(e) => {
                 write!(f, "Atomic transaction conflict: {}", e)
-            }
-            KvStoreError::StaleFinalization {
-                expected_revision,
-                actual_revision,
-            } => write!(
-                f,
-                "stale finalization base revision {expected_revision}; durable head is revision {actual_revision}"
-            ),
-            KvStoreError::FinalizationCertificateCarrierPending {
-                expected_revision,
-                floor_hash,
-                certificate_digest,
-            } => write!(
-                f,
-                "finalization base revision {expected_revision} is waiting for a causal certificate carrier for floor {} and certificate {}",
-                hex::encode(floor_hash),
-                hex::encode(certificate_digest)
-            ),
-            KvStoreError::FinalizationProjectionPending {
-                revision,
-                projected_revision,
-            } => write!(
-                f,
-                "finalization effects for revision {revision} require projection beyond revision {projected_revision}"
-            ),
-            KvStoreError::RecoveryBudgetExhausted { domain, capacity } => {
-                write!(f, "{domain} recovery budget exhausted at capacity {capacity}")
             }
             KvStoreError::LastFinalizedBlockUninitialized => write!(
                 f,

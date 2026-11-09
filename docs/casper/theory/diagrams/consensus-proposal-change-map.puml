@@ -30,6 +30,7 @@ skinparam nodesep 18
 skinparam ranksep 60
 left to right direction
 title Casper change map for order-then-execute on v6 shards
+footer DR-132: the deterministic scheduler is removed (97d020154), and evaluation races as on dev.
 
 package "1. Unchanged Casper core" as CORE $ca_pkg_indigo {
   component "Signed blocks, justifications,\nsequence numbers\nCasperMessage.proto:290-302" as BLK $ca_capability
@@ -51,7 +52,7 @@ package "3. v6-only machinery" as V6 $ca_pkg_green {
   component "[H] Structural validation,\nno merge, no replay\nvalidation_dispatcher.rs:84-334\ninterpreter_util.rs:402-557" as VAL $ca_pool
   component "[H] Linearizer:\nmain-chain epochs" as LIN $ca_pool
   component "[H] Executor after finality\nwith the P1 gate\nruntime.rs, runtime_manager.rs" as EXE $ca_pool
-  component "[L] Parallel batch executor\nruntime.rs, runtime_manager.rs\ndeterministic_reduction.rs" as PAR $ca_pool
+  component "[L] Parallel batch executor\nruntime.rs, runtime_manager.rs\nreduce.rs, racing evaluation (DR-132)" as PAR $ca_pool
   component "[M] Attestation check\nand slashing evidence" as ATT $ca_pool
 }
 

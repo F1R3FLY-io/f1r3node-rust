@@ -51,7 +51,11 @@ async fn transfer_results(register_target: bool) -> Vec<Par> {
     )
     .unwrap();
     node.runtime_manager
-        .capture_results(&proto_util::post_state_hash(&node.genesis), &deploy)
+        .capture_results(
+            &proto_util::post_state_hash(&node.genesis),
+            &deploy,
+            node.adopted_policy(),
+        )
         .await
         .unwrap()
 }

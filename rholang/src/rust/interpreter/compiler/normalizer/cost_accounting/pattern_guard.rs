@@ -25,12 +25,45 @@ fn cost_syntax_in_pattern_error() -> InterpreterError {
     )
 }
 
+fn reified_syntax_in_pattern_error() -> InterpreterError {
+    InterpreterError::NormalizerError(
+        "reified syntax: a use block, a free theory, send params, a bind query and an annotated \
+         name declaration cannot appear in pattern position"
+            .to_string(),
+    )
+}
+
+fn reified_syntax_in_pattern(proc: &Proc<'_>) -> bool {
+    match proc {
+        Proc::UseBlock { .. } | Proc::FreeTheory { .. } => true,
+        Proc::Send { params, .. } | Proc::SendSync { params, .. } => {
+            params.as_ref().is_some_and(|params| !params.is_empty())
+        }
+        Proc::New { decls, .. } => decls.iter().any(|decl| decl.space.is_some()),
+        Proc::ForComprehension { receipts, .. } => receipts.iter().any(|receipt| {
+            receipt.binds.iter().any(|bind| {
+                bind.query_spec().is_some()
+                    || bind
+                        .source_params()
+                        .is_some_and(|params| !params.is_empty())
+            })
+        }),
+        _ => false,
+    }
+}
+
 /// Reject any signed term or token stack anywhere in a pattern process subtree.
 /// The borrow is tied to `'ast` because `iter_preorder_dfs` (which follows the
 /// arena's `'ast` child pointers) requires it.
 pub fn reject_cost_syntax_in_pattern<'ast>(
     pattern: &'ast AnnProc<'ast>,
 ) -> Result<(), InterpreterError> {
+    if pattern
+        .iter_preorder_dfs()
+        .any(|node| reified_syntax_in_pattern(node.proc))
+    {
+        return Err(reified_syntax_in_pattern_error());
+    }
     if pattern
         .iter_preorder_dfs()
         .any(|node| matches!(node.proc, Proc::SignedTerm { .. } | Proc::TokenStack { .. }))

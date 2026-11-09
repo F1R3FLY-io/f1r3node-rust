@@ -4,6 +4,8 @@ use std::hash::Hash;
 use rspace_plus_plus::rspace::errors::RSpaceError;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
 use rspace_plus_plus::rspace::internal::{Datum, Install, WaitingContinuation};
+// Added by DR-134 (DR-70): the logger of a reporting session.
+use rspace_plus_plus::rspace::logging::RSpaceLogger;
 use rspace_plus_plus::rspace::r#match::Match;
 use rspace_plus_plus::rspace::replay_rspace::native_epoch::{
     NativeReplayBoundary as EpochBoundary, NativeReplayEpoch, NativeReplayRestore as EpochRestore,
@@ -15,6 +17,7 @@ use rspace_plus_plus::rspace::serializers::cold_store_decode::ColdStoreDecode;
 use serde::Serialize;
 
 use super::*;
+use crate::rust::interpreter::execution_space::EvaluationProgress;
 
 mod operations;
 mod execution;
@@ -83,11 +86,56 @@ impl EpochRestore for NativeReplayRestore {
     fn publish(self) { NativeReplayRestore::publish(self) }
 }
 
+/// Added by DR-132 (D2-B): native replay counts the live tasks of each
+/// evaluation for its stall rule (`progress.rs`).
+impl EvaluationProgress for NativeOperationReplay {
+    /// Only a replay with an idle progress word, no open boundary and no
+    /// reserved slot begins an evaluation. A stalled or cancelled replay
+    /// never begins again.
+    fn begin(&self) -> Result<(), RSpaceError> {
+        let state = self.inner.state.lock().expect("native replay state");
+        state.open().map_err(error)?;
+        if !state.quiescent() || !self.inner.progress.begin() {
+            return Err(error(NativeReplayError::Busy));
+        }
+        Ok(())
+    }
+
+    fn enter(&self) { self.inner.progress.enter(); }
+
+    /// The finish that leaves every live task parked declares the stall
+    /// under the state lock, and the waiters wake after the unlock. The drop
+    /// path tolerates a poisoned lock.
+    fn finish(&self) {
+        if self.inner.progress.finish() {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if progress::stall(&mut state, &self.inner.progress) {
+                drop(state);
+                self.inner.changed.notify_waiters();
+            }
+        }
+    }
+
+    fn close(&self) { self.inner.progress.close(); }
+
+    fn identity(&self) -> usize { NativeOperationReplay::identity(self) }
+}
+
 // Changed by D-C2c (D-S1, DR-96): the native session's digest-keyed store
 // holds data, continuations and patterns, which need Clone.
 // pub struct NativeRuntimeReplaySession<C, P, A, K> {
 pub struct NativeRuntimeReplaySession<C, P: Clone, A: Clone, K: Clone> {
     inner: NativeReplaySession<C, P, A, K, SessionEpoch>,
+    /// Added by DR-132 (D2-B): the progress of each evaluation on this
+    /// session.
+    progress: Arc<dyn EvaluationProgress>,
+    /// Added by DR-132 (D2-B): the replay, so tests can read its progress.
+    #[cfg(test)]
+    replay: NativeOperationReplay,
 }
 
 pub struct NativeRuntimeReplayCheckpoint<C: Eq + Hash, P: Clone, A: Clone, K: Clone> {
@@ -191,15 +239,77 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
     {
-        self.build_session(history, matcher, installations, None)
+        // Changed by DR-134 (DR-70): an installed session has no logger.
+        // self.build_session(history, matcher, installations, None)
+        self.build_session(history, matcher, installations, None, None)
     }
 
-    pub(crate) fn into_runtime_session<C, P, A, K>(
+    // Disabled by DR-134 (DR-70): `create_native_replay_env` and
+    // `create_native_replay_env_with_logger` both call
+    // `into_runtime_session_with_logger`, so this wrapper has no caller.
+    //     pub(crate) fn into_runtime_session<C, P, A, K>(
+    //         self,
+    //         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
+    //         matcher: Arc<Box<dyn Match<P, A, K>>>,
+    //         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
+    //         budget: RuntimeBudget,
+    //     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
+    //     where
+    //         C: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + Hash
+    //             + Ord
+    //             + Eq
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //         P: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //         A: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //         K: Clone
+    //             + Debug
+    //             + Default
+    //             + Serialize
+    //             + serde::de::DeserializeOwned
+    //             + ColdStoreDecode
+    //             + 'static
+    //             + Sync
+    //             + Send,
+    //     {
+    //         // Changed by DR-134 (DR-70): validation and play replay without a
+    //         // logger.
+    //         // self.build_session(history, matcher, installations, Some(budget))
+    //         self.into_runtime_session_with_logger(history, matcher, installations, budget, None)
+    //     }
+
+    /// Added by DR-134 (DR-70): `into_runtime_session` whose session logs its
+    /// stored and matched operations to `logger`, for block reports.
+    pub(crate) fn into_runtime_session_with_logger<C, P, A, K>(
         self,
         history: Arc<Box<dyn HistoryRepository<C, P, A, K> + Send + Sync + 'static>>,
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: RuntimeBudget,
+        logger: Option<Box<dyn RSpaceLogger<C, P, A, K>>>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
@@ -242,7 +352,7 @@ impl CheckedNativeOperationTrace {
             + Sync
             + Send,
     {
-        self.build_session(history, matcher, installations, Some(budget))
+        self.build_session(history, matcher, installations, Some(budget), logger)
     }
 
     fn build_session<C, P, A, K>(
@@ -251,6 +361,8 @@ impl CheckedNativeOperationTrace {
         matcher: Arc<Box<dyn Match<P, A, K>>>,
         installations: impl IntoIterator<Item = (Vec<C>, Install<P, K>)>,
         budget: Option<RuntimeBudget>,
+        // Added by DR-134 (DR-70).
+        logger: Option<Box<dyn RSpaceLogger<C, P, A, K>>>,
     ) -> Result<NativeRuntimeReplaySession<C, P, A, K>, RSpaceError>
     where
         C: Clone
@@ -298,13 +410,31 @@ impl CheckedNativeOperationTrace {
             Some(budget) => replay.bind_runtime(budget).map_err(error)?,
             None => replay,
         };
+        // Changed by DR-132 (D2-B): the session keeps the progress of the
+        // replay.
+        // Ok(NativeRuntimeReplaySession {
+        //     inner: NativeReplaySession::new_with_installs(
+        //         history,
+        //         matcher,
+        //         SessionEpoch { replay },
+        //         installations,
+        //     )?,
+        // })
+        let progress: Arc<dyn EvaluationProgress> = Arc::new(replay.clone());
+        #[cfg(test)]
+        let observed = replay.clone();
+        // Changed by DR-134 (DR-70): the session takes the optional logger.
         Ok(NativeRuntimeReplaySession {
-            inner: NativeReplaySession::new_with_installs(
+            inner: NativeReplaySession::new_with_installs_and_logger(
                 history,
                 matcher,
                 SessionEpoch { replay },
                 installations,
+                logger,
             )?,
+            progress,
+            #[cfg(test)]
+            replay: observed,
         })
     }
 }
@@ -351,6 +481,28 @@ where
         + Sync
         + Send,
 {
+    /// Added by DR-132 (D2-B): the progress of each evaluation on this
+    /// session.
+    pub(crate) fn evaluation_progress(&self) -> Arc<dyn EvaluationProgress> {
+        Arc::clone(&self.progress)
+    }
+
+    /// Added by DR-132 (D2-B): the progress word is idle.
+    #[cfg(test)]
+    pub(crate) fn progress_idle(&self) -> bool { self.replay.progress_idle() }
+
+    /// Added by DR-132 (D2-B): replay declared a stall.
+    #[cfg(test)]
+    pub(crate) fn progress_stalled(&self) -> bool { self.replay.progress_stalled() }
+
+    /// Added by DR-132 (D2-B): the live tasks and the parked waiters.
+    #[cfg(test)]
+    pub(crate) fn progress_counts(&self) -> (u64, u64) { self.replay.progress_counts() }
+
+    /// Added by DR-132 (D2-B): poisons the state lock of the replay.
+    #[cfg(test)]
+    pub(crate) fn poison_state(&self) { self.replay.poison_state() }
+
     pub async fn checkpoint(
         &self,
     ) -> Result<NativeRuntimeReplayCheckpoint<C, P, A, K>, RSpaceError> {

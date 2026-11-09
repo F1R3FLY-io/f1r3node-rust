@@ -58,16 +58,19 @@ Monday through Thursday at 19:30 Pacific, Oracle Cloud runs a 22-hour integratio
 
 The duration is 22 hours rather than 24 deliberately. Soak runs share a concurrency group with `cancel-in-progress`, so a 24-hour soak on a 24-hour cadence is cancelled by the following night's launch shortly *before* it finishes — losing its final iteration and its entire artifact upload. Ending at 22 hours leaves the run time to report before the next one starts.
 
-Two conditions can shorten or skip a dev integration soak:
+One condition can skip a dev integration soak:
 
 - **Nothing new to test.** If no commits landed on the branch under test since the previous window, the run is skipped rather than re-soaking already-soaked code. The check fails *open*: any API error or unparseable response runs the soak, because a silently skipped soak is the failure this workflow exists to prevent.
-- **The branch moved.** A soak pins one SHA at checkout and tests that image for its whole run, so once the branch advances it is measuring history. After a floor of 8 hours, the soak stops at the next iteration boundary when the tip changes, recording `early_exit_reason=target_advanced` in its summary. The floor stops an early merge from reducing a night to a token soak; before it, merges are ignored.
+
+A merge into the branch under test does not stop a running soak. The soak pins one SHA at checkout and tests that image for the full window. The next night soaks the new tip.
+
+Until 2026-10-16, a daily soak stopped at the next iteration boundary after 8 hours when the tip changed (`early_exit_reason=target_advanced`). That exit started no replacement soak. It only discarded the later sessions on the pinned SHA. The issue #24 gate needs at most 5 failures in 100 sessions on each provider, and an 8-hour run gives about 26 sessions on each provider. The workflow now sets `merge_exit_min_seconds` to 0 for both series. `scripts/run-merge-recovery-soak.sh` keeps the option.
 
 ### 60h stability soak (series `weekend`)
 
 Friday at 19:30 Pacific, Oracle Cloud runs a 60-hour integration soak, finishing at 07:30 Pacific on Monday. The same replacement policy prevents duplicate 60h stability runs.
 
-Neither shortening condition applies to the 60h stability run. It always launches, and merge-triggered exit is disabled, because its numbers are the week-over-week benchmark baseline and are only comparable if every run covers the same span.
+The skip condition does not apply to the 60h stability run. It always launches, because its numbers are the week-over-week benchmark baseline and are only comparable if every run covers the same span.
 
 The schedule uses paired UTC cron entries and an `America/Los_Angeles` runtime gate so the start time remains 19:30 across daylight-saving transitions. The gate matches on hour *and* minute, and 19:30 Pacific falls on the following UTC day, so the cron entries read 02:30 and 03:30 UTC.
 

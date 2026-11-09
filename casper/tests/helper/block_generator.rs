@@ -1,17 +1,26 @@
 // See casper/src/test/scala/coop/rchain/casper/helper/BlockGenerator.scala
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::HashMap;
+// Disabled by DR-134 (DR-66 items 1 and 5): used only by the disabled `step`
+// helpers below.
+// use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
+// Disabled by DR-134 (DR-66 items 1 and 5): these imports served only the
+// disabled `step` helpers below.
+// use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use block_storage::rust::test::indexed_block_dag_storage::IndexedBlockDagStorage;
-use casper::rust::casper::CasperSnapshot;
-use casper::rust::errors::CasperError;
-use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
-use casper::rust::util::rholang::runtime_manager::RuntimeManager;
-use casper::rust::util::{construct_deploy, proto_util};
+// Disabled by DR-134 (DR-66 items 1 and 5): these imports served only the
+// disabled `step` helpers below.
+// use casper::rust::casper::CasperSnapshot;
+// use casper::rust::errors::CasperError;
+// use casper::rust::util::rholang::interpreter_util::compute_deploys_checkpoint;
+// use casper::rust::util::rholang::runtime_manager::RuntimeManager;
+// Changed by DR-134 (DR-66 items 1 and 5): `proto_util` served only the
+// disabled `step` helpers.
+// use casper::rust::util::{construct_deploy, proto_util};
+use casper::rust::util::construct_deploy;
 use models::rust::block::state_hash::StateHash;
 use models::rust::block_hash::BlockHash;
 use models::rust::block_implicits;
@@ -19,85 +28,92 @@ use models::rust::casper::protocol::casper_message::{
     BlockMessage, Bond, Justification, ProcessedDeploy, RejectedDeploy,
 };
 use models::rust::validator::Validator;
-use rholang::rust::interpreter::system_processes::BlockData;
+// Disabled by DR-134 (DR-66 items 1 and 5): used only by the disabled `step`
+// helpers below.
+// use rholang::rust::interpreter::system_processes::BlockData;
 
-pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
-    CasperSnapshot::new(dag)
-}
-
-pub async fn step(
-    block_dag_storage: &mut IndexedBlockDagStorage,
-    block_store: &mut KeyValueBlockStore,
-    runtime_manager: &mut RuntimeManager,
-    block: &BlockMessage,
-) -> Result<(), CasperError> {
-    let dag = block_dag_storage
-        .get_representation()
-        .expect("dag representation");
-    let (post_b1_state_hash, post_b1_processed_deploys) = compute_block_checkpoint(
-        block_store,
-        block,
-        &mk_casper_snapshot(dag),
-        runtime_manager,
-    )
-    .await?;
-
-    inject_post_state_hash(
-        block_store,
-        block_dag_storage,
-        block,
-        post_b1_state_hash,
-        post_b1_processed_deploys,
-    )
-}
-
-async fn compute_block_checkpoint(
-    block_store: &mut KeyValueBlockStore,
-    block: &BlockMessage,
-    casper_snapshot: &CasperSnapshot,
-    runtime_manager: &mut RuntimeManager,
-) -> Result<(StateHash, Vec<ProcessedDeploy>), CasperError> {
-    let parents = proto_util::get_parents(block_store, block);
-    let deploys = proto_util::deploys(block)
-        .into_iter()
-        .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
-        .collect();
-
-    let checkpoint = compute_deploys_checkpoint(
-        block_store,
-        parents,
-        deploys,
-        Vec::new(), // No system deploys
-        casper_snapshot,
-        runtime_manager,
-        BlockData::from_block(block),
-        HashMap::new(),
-        None,
-        None,
-        None,
-    )
-    .await?;
-
-    Ok((checkpoint.post_state_hash, checkpoint.deploys))
-}
-
-fn inject_post_state_hash(
-    block_store: &mut KeyValueBlockStore,
-    block_dag_storage: &mut IndexedBlockDagStorage,
-    block: &BlockMessage,
-    post_state_hash: StateHash,
-    processed_deploys: Vec<ProcessedDeploy>,
-) -> Result<(), CasperError> {
-    let mut updated_block = block.clone();
-    updated_block.body.state.post_state_hash = post_state_hash;
-    updated_block.body.deploys = processed_deploys.into_iter().map(Into::into).collect();
-    block_store.put(block.block_hash.clone(), &updated_block)?;
-    block_dag_storage.insert(
-        &updated_block,
-        block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
-    )?;
-    Ok(())
-}
+// Disabled by DR-134 (DR-66 items 1 and 5): `step` computed the checkpoint of a
+// block of body-only deploys, and body-only execution now returns the
+// compatibility error. The ported tests use `TestContext::step_offered`
+// (casper/tests/util/rholang/interpreter_util_test.rs), which computes the
+// offered checkpoint, so these helpers have no caller.
+// pub fn mk_casper_snapshot(dag: KeyValueDagRepresentation) -> CasperSnapshot {
+//     CasperSnapshot::new(dag)
+// }
+//
+// pub async fn step(
+//     block_dag_storage: &mut IndexedBlockDagStorage,
+//     block_store: &mut KeyValueBlockStore,
+//     runtime_manager: &mut RuntimeManager,
+//     block: &BlockMessage,
+// ) -> Result<(), CasperError> {
+//     let dag = block_dag_storage
+//         .get_representation()
+//         .expect("dag representation");
+//     let (post_b1_state_hash, post_b1_processed_deploys) = compute_block_checkpoint(
+//         block_store,
+//         block,
+//         &mk_casper_snapshot(dag),
+//         runtime_manager,
+//     )
+//     .await?;
+//
+//     inject_post_state_hash(
+//         block_store,
+//         block_dag_storage,
+//         block,
+//         post_b1_state_hash,
+//         post_b1_processed_deploys,
+//     )
+// }
+//
+// async fn compute_block_checkpoint(
+//     block_store: &mut KeyValueBlockStore,
+//     block: &BlockMessage,
+//     casper_snapshot: &CasperSnapshot,
+//     runtime_manager: &mut RuntimeManager,
+// ) -> Result<(StateHash, Vec<ProcessedDeploy>), CasperError> {
+//     let parents = proto_util::get_parents(block_store, block);
+//     let deploys = proto_util::deploys(block)
+//         .into_iter()
+//         .map(|d| d.as_legacy().expect("legacy fixture").deploy.clone())
+//         .collect();
+//
+//     let checkpoint = compute_deploys_checkpoint(
+//         block_store,
+//         parents,
+//         deploys,
+//         Vec::new(), // No system deploys
+//         casper_snapshot,
+//         runtime_manager,
+//         BlockData::from_block(block),
+//         HashMap::new(),
+//         None,
+//         None,
+//         None,
+//     )
+//     .await?;
+//
+//     Ok((checkpoint.post_state_hash, checkpoint.deploys))
+// }
+//
+// fn inject_post_state_hash(
+//     block_store: &mut KeyValueBlockStore,
+//     block_dag_storage: &mut IndexedBlockDagStorage,
+//     block: &BlockMessage,
+//     post_state_hash: StateHash,
+//     processed_deploys: Vec<ProcessedDeploy>,
+// ) -> Result<(), CasperError> {
+//     let mut updated_block = block.clone();
+//     updated_block.body.state.post_state_hash = post_state_hash;
+//     updated_block.body.deploys = processed_deploys.into_iter().map(Into::into).collect();
+//     block_store.put(block.block_hash.clone(), &updated_block)?;
+//     block_dag_storage.insert(
+//         &updated_block,
+//         block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Normal,
+//     )?;
+//     Ok(())
+// }
 
 /// How a block records the construction of its state: the merge base its
 /// parents were re-based onto — the STATE parent, which for a merge need NOT

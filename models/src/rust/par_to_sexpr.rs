@@ -438,6 +438,7 @@ mod tests {
                 persistent: false,
                 locally_free: vec![],
                 connective_used: false,
+                params: None,
             }],
             ..Default::default()
         };
@@ -454,6 +455,7 @@ mod tests {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 }],
                 body: Some(gint(1)),
                 persistent: false,
@@ -480,6 +482,7 @@ mod tests {
                 uri: vec![],
                 injections: Default::default(),
                 locally_free: vec![],
+                space_types: Vec::new(),
             }],
             ..Default::default()
         };

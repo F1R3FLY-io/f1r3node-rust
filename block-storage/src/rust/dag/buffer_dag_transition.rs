@@ -148,3 +148,27 @@ pub fn reconcile_buffer_against_dag(
     }
     Ok(purged)
 }
+
+pub fn atomic_commit_dependencies(
+    dag: &BlockDagKeyValueStorage,
+    buffer: &CasperBufferKeyValueStorage,
+    child: BlockHashSerde,
+    dependencies: &[BlockHashSerde],
+) -> Result<(), KvStoreError> {
+    let _dag_guard = dag.global_lock.read();
+    let _buf_guard = buffer.write_guard();
+
+    let representation = dag.get_representation_internal()?;
+    let unmet: Vec<&BlockHashSerde> = dependencies
+        .iter()
+        .filter(|dependency| !representation.contains(&dependency.0))
+        .collect();
+
+    if unmet.is_empty() {
+        return buffer.put_pendant_unlocked(child);
+    }
+    for dependency in unmet {
+        buffer.add_relation_unlocked(dependency.clone(), child.clone())?;
+    }
+    Ok(())
+}

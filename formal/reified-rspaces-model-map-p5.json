@@ -7,7 +7,6 @@
   "checker": "scripts/verify-reified/check-model-map.py",
   "formal_files": {
     "rocq": [
-      "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
       "formal/rocq/reified_rspaces/theories/CellDiscipline.v",
       "formal/rocq/reified_rspaces/theories/ContinuationCollection.v",
       "formal/rocq/reified_rspaces/theories/CounterConflict.v",
@@ -96,12 +95,6 @@
       "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
       "statement": "The creation of the allocator record and every take and put of the allocations have distinct event identities."
     },
-    "R11": {
-      "kind": "rocq",
-      "name": "alloc_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/OuterStorage.v",
-      "statement": "An allocation reserves every read before it makes it, reserves nothing after the commit, and reads exactly what it reserves (decision 42)."
-    },
     "R12": {
       "kind": "rocq",
       "name": "vector_index_is_counter",
@@ -134,9 +127,9 @@
     },
     "R17": {
       "kind": "rocq",
-      "name": "query_source_routes_inner_channel",
+      "name": "query_bind_routes_its_channel",
       "file": "formal/rocq/reified_rspaces/theories/SpaceRefs.v",
-      "statement": "A receive whose source is a QUERY tuple reads from the inner channel of the query under the read rule of a receive source. The default space refuses a query with QuerySpecUnsupported, and a QUERY tuple never becomes a host channel."
+      "statement": "A receive bind with a query in its query_spec field reads from the channel of the bind under the read rule of a receive source. The route of the channel decides the result. A native space gets the query. The default space refuses it with QuerySpecUnsupported, and a user agent refuses it with QuerySpecUnsupportedOnAgentSpace (P8 step 3). A bind with a well-formed query never becomes a consume of the host, and a bind without a query keeps the receive of P4 (decision 112)."
     },
     "R18": {
       "kind": "rocq",
@@ -240,12 +233,6 @@
       "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
       "statement": "A peek receive that settles stages exactly the host program: the fire, then the second send of the removed record, which is offered to the waiters first and registers the authority of the record. When no waiter takes the record, the record is stored again, so the peek leaves the multiset of records as it was."
     },
-    "R35": {
-      "kind": "rocq",
-      "name": "scan_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/DataCollection.v",
-      "statement": "Every prefix of the trace of a scan of the driver, the reads after the commit included, reads at most what it reserved (decision 42)."
-    },
     "R36": {
       "kind": "rocq",
       "name": "waiter_removal_by_record_identity",
@@ -323,12 +310,6 @@
       "name": "scan_reissue_identity_stable",
       "file": "formal/rocq/reified_rspaces/theories/GenericRSpace.v",
       "statement": "Decision 43 for a collection without a counter (bag and set). 1. Every order is 0, and a re-issued order other than 0 is Inconsistent. 2. Every round of a re-issued scan produce stages the element of its first round: the same record bytes, persistence and authority, so the same produce identity. 3."
-    },
-    "R49": {
-      "kind": "rocq",
-      "name": "engine_primitives_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/AgentReadCoverage.v",
-      "statement": "The staging primitives of the S1 engine reserve each read, copy and growth of the staged list before they make it, reserve nothing after the commit, and fail before the commit under a cut budget (decision 42)."
     },
     "V1": {
       "kind": "tla",
@@ -456,12 +437,6 @@
       "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
       "statement": "For a cap above 0, a peek of a top record that is not persistent fires, removes the record and stores it again at its order before any settle step, so the settle after the plan stages nothing (decision 45, Rule E)."
     },
-    "R61": {
-      "kind": "rocq",
-      "name": "settle_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/StackDiscipline.v",
-      "statement": "A settle reserves its reads before it makes them: its trace satisfies prefix coverage, the reads of the outcome after the commit included (decision 42, DR-88)."
-    },
     "R62": {
       "kind": "rocq",
       "name": "stack_settle_keeps_unspent_records",
@@ -570,12 +545,6 @@
       "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
       "statement": "The membership test answers key equality for every hash function, so a hash collision never makes two classes one. It compares the full keys exactly when the hashes are equal (DR-90)."
     },
-    "R74": {
-      "kind": "rocq",
-      "name": "set_key_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/SetDiscipline.v",
-      "statement": "Every prefix of the trace of a set key and of a membership test reads at most what it reserved, so a cut budget rejects an operation before its commit (decision 42)."
-    },
     "R75": {
       "kind": "rocq",
       "name": "pq_level_order",
@@ -683,12 +652,6 @@
       "name": "pq_peek_restores_head",
       "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
       "statement": "A peek of a level head that is not persistent stores the record again at its order and level, the record is the head of its level again, and the settle after the plan stages nothing (Rule E)."
-    },
-    "R93": {
-      "kind": "rocq",
-      "name": "level_scan_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/PriorityQueue.v",
-      "statement": "The level scans of a priority queue reserve their reads before they make them (decision 42, DR-88): the trace of a transaction satisfies prefix coverage, with the reads after the commit."
     },
     "R94": {
       "kind": "rocq",
@@ -804,12 +767,6 @@
       "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
       "statement": "The token gives distinct orders, a re-issued persistent operation keeps its first-round order, and a re-entry meets no tie (decisions 31 and 43)."
     },
-    "R107": {
-      "kind": "rocq",
-      "name": "prefix_scan_trace_covered",
-      "file": "formal/rocq/reified_rspaces/theories/PathMapPrefix.v",
-      "statement": "The prefix scan reserves each unit of work before it reads, and the outcome after the commit reads nothing that the scan did not reserve (decision 42)."
-    },
     "V23": {
       "kind": "tla",
       "name": "NoMatchRemains",
@@ -838,7 +795,7 @@
       "kind": "rocq",
       "name": "join_produce_search_agrees_with_head",
       "file": "formal/rocq/reified_rspaces/theories/JoinCascade.v",
-      "statement": "When GREEDY on the state with x stored binds x at p*, SEARCH-PRODUCE completes at a position p <= p* with that assignment at p*, and when HEAD's greedy (x at index 0) binds x both fire the same assignment."
+      "statement": "When GREEDY on the state with x stored binds x at p*, SEARCH-PRODUCE completes at a position p <= p* with that assignment at p*, and when HEAD's greedy (x at index 0) binds x both fire the same assignment. `join_produce_search_agrees_with_head` is a theorem of the search before decision 118. The GREEDY part of `prop_join_produce_search_agrees_with_head` runs for a non-persistent x only, and the allowed set checks a persistent x."
     },
     "R110": {
       "kind": "rocq",
@@ -968,15 +925,15 @@
     },
     "V28": {
       "kind": "tla",
-      "name": "DistinctRecordsPerBind",
+      "name": "NonPersistentBoundOnce",
       "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
-      "statement": "The stored records of one fire are pairwise distinct, and of distinct classes on a set."
+      "statement": "A non-persistent stored record fills at most one position of a fire, on every discipline. On a set, two positions of one class need a persistent member of that class."
     },
     "V29": {
       "kind": "tla",
-      "name": "IncomingBoundOnce",
+      "name": "IncomingHeld",
       "file": "formal/tlaplus/reified_rspaces/JoinCascade.tla",
-      "statement": "A produce-side fire binds its incoming record at exactly one position."
+      "statement": "A produce-side fire binds its incoming record, and it binds a non-persistent incoming record at exactly one position."
     },
     "V30": {
       "kind": "tla",
@@ -1079,8 +1036,6 @@
       "rocq": [
         "operation_ord",
         "scan_round",
-        "engine_staged",
-        "engine_trace",
         "exec",
         "run"
       ],
@@ -1095,7 +1050,6 @@
       ],
       "covers": [
         "R48",
-        "R49",
         "V3",
         "R63",
         "R65",
@@ -1155,7 +1109,7 @@
       ],
       "tla": [
         "CellReceive",
-        "Restore"
+        "CellRestore"
       ],
       "covers": [
         "R42",
@@ -1180,7 +1134,7 @@
         "consume_fire"
       ],
       "tla": [
-        "Restore",
+        "CellRestore",
         "ReceiveStep"
       ],
       "covers": [
@@ -1306,7 +1260,6 @@
       "covers": [
         "R46",
         "V7",
-        "R49",
         "R1",
         "R131"
       ]
@@ -1346,7 +1299,7 @@
         "host_resend"
       ],
       "tla": [
-        "Restore"
+        "CellRestore"
       ],
       "covers": [
         "R47",
@@ -1411,8 +1364,7 @@
       "covers": [
         "R44",
         "V5",
-        "V6",
-        "R49"
+        "V6"
       ]
     },
     {
@@ -1435,23 +1387,6 @@
       ]
     },
     {
-      "item": "push_reserved",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "kind": "fn",
-      "name": "push_reserved",
-      "line": 1430,
-      "role": "Grows the staged list only after the reservation of the doubled buffer.",
-      "rocq": [
-        "grown",
-        "grow_step",
-        "growth"
-      ],
-      "covers": [
-        "R49"
-      ]
-    },
-    {
       "item": "outcome",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/generic.rs",
@@ -1459,24 +1394,9 @@
       "name": "outcome",
       "line": 1778,
       "role": "The outcome of a committed transaction from its staged list.",
-      "rocq": [
-        "engine_round_after"
-      ],
+      "rocq": [],
       "covers": [
-        "R44",
-        "R49"
-      ]
-    },
-    {
-      "item": "prepay_outcome",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/generic.rs",
-      "kind": "fn",
-      "name": "prepay_outcome",
-      "line": 1770,
-      "role": "The reservation of the outcome before the commit.",
-      "covers": [
-        "R49"
+        "R44"
       ]
     },
     {
@@ -1606,7 +1526,7 @@
         "peek_plan"
       ],
       "tla": [
-        "Restore"
+        "ScanRestore"
       ],
       "covers": [
         "R34"
@@ -1652,8 +1572,7 @@
         "FirstById"
       ],
       "covers": [
-        "R39",
-        "R35"
+        "R39"
       ]
     },
     {
@@ -1673,8 +1592,7 @@
       ],
       "covers": [
         "R29",
-        "R30",
-        "R35"
+        "R30"
       ]
     },
     {
@@ -1733,7 +1651,7 @@
         "restore_scan"
       ],
       "tla": [
-        "Restore"
+        "ScanRestore"
       ],
       "covers": [
         "R34",
@@ -1744,10 +1662,10 @@
     {
       "item": "restored_send",
       "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/disciplines/scan.rs",
+      "file": "rholang/src/rust/interpreter/spaces/settle.rs",
       "kind": "fn",
       "name": "restored_send",
-      "line": 759,
+      "line": 840,
       "role": "The cap re-issue of a second send.",
       "rocq": [
         "restore_reissue"
@@ -1819,12 +1737,10 @@
       "line": 875,
       "role": "Compares two class keys: their metered hashes first, and the full keys only on equal hashes (DR-90).",
       "rocq": [
-        "same_class",
-        "key_trace"
+        "same_class"
       ],
       "covers": [
-        "R73",
-        "R74"
+        "R73"
       ]
     },
     {
@@ -1931,13 +1847,13 @@
       ]
     },
     {
-      "item": "CellDiscipline::head_metered",
+      "item": "CellDiscipline::head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/disciplines/cell.rs",
       "scope": "CellDiscipline",
       "kind": "fn",
-      "name": "head_metered",
-      "line": 63,
+      "name": "head",
+      "line": 61,
       "role": "The head: the least (ord, bytes), as the queue.",
       "rocq": [
         "precedes_key",
@@ -2163,14 +2079,9 @@
       "file": "rholang/src/rust/interpreter/spaces/outer/array.rs",
       "kind": "struct",
       "name": "ArrayShape",
-      "line": 57,
+      "line": 56,
       "role": "The size and the cyclic flag of an Array config.",
-      "rocq": [
-        "rule"
-      ],
-      "covers": [
-        "R11"
-      ]
+      "unmodeled": "Decision 96 (decision 89, DR-131) retired its only headline, alloc_trace_covered (R11), which restated the host-work rule of AgentReadCoverage.v for allocations. No live headline models this struct."
     },
     {
       "item": "ArrayOuter::check_key",
@@ -2206,13 +2117,13 @@
       ]
     },
     {
-      "item": "HashMapOuter::key",
+      "item": "CollectionKey::of_channel",
       "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
-      "scope": "HashMapOuter",
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
+      "scope": "CollectionKey",
       "kind": "fn",
-      "name": "key",
-      "line": 29,
+      "name": "of_channel",
+      "line": 186,
       "role": "The collection key of a channel: its canonical bytes (A5).",
       "rocq": [
         "is_key"
@@ -2223,13 +2134,12 @@
       ]
     },
     {
-      "item": "HashMapOuter::data_channel",
+      "item": "namespace::data_channel",
       "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/outer/hashmap.rs",
-      "scope": "HashMapOuter",
+      "file": "rholang/src/rust/interpreter/spaces/namespace.rs",
       "kind": "fn",
       "name": "data_channel",
-      "line": 33,
+      "line": 250,
       "role": "The data channel D(sid, key) of a collection.",
       "rocq": [
         "get",
@@ -2257,7 +2167,6 @@
       ],
       "covers": [
         "R10",
-        "R11",
         "V10"
       ]
     },
@@ -2277,8 +2186,7 @@
         "AllocExec"
       ],
       "covers": [
-        "R10",
-        "R11"
+        "R10"
       ]
     },
     {
@@ -2288,57 +2196,22 @@
       "kind": "fn",
       "name": "reject_query_source",
       "line": 734,
-      "role": "Hook H4: fails only on a malformed QUERY tuple.",
+      "role": "Hook H4: fails only on a malformed query field of the bind.",
       "rocq": [
-        "h4_passes",
-        "decode_source",
-        "sole_marker_tuple",
-        "marker_of"
+        "h4_passes"
       ],
       "covers": [
         "R17"
       ]
     },
     {
-      "item": "takes_fast_path",
+      "item": "ReducerCore::unbundle_receive",
       "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
+      "file": "rholang/src/rust/interpreter/reduce.rs",
+      "scope": "ReducerCore",
       "kind": "fn",
-      "name": "takes_fast_path",
-      "line": 761,
-      "role": "The fast path of a receive admits no marker tuple.",
-      "rocq": [
-        "takes_fast_path",
-        "is_marker_tuple",
-        "marker_tuple_forged"
-      ],
-      "covers": [
-        "R17"
-      ]
-    },
-    {
-      "item": "query_bind",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "query_bind",
-      "line": 774,
-      "role": "The inner channel and the query of a receive bind.",
-      "rocq": [
-        "decode_source",
-        "read_bind"
-      ],
-      "covers": [
-        "R17"
-      ]
-    },
-    {
-      "item": "readable_channel",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/reducer_hooks.rs",
-      "kind": "fn",
-      "name": "readable_channel",
-      "line": 793,
+      "name": "unbundle_receive",
+      "line": 2658,
       "role": "The read rule of a receive source.",
       "rocq": [
         "read_channel"
@@ -3287,7 +3160,6 @@
       ],
       "covers": [
         "R53",
-        "R61",
         "R62"
       ]
     },
@@ -3418,14 +3290,14 @@
       ]
     },
     {
-      "item": "StackDiscipline::head_metered",
+      "item": "StackDiscipline::head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/disciplines/stack.rs",
       "scope": "StackDiscipline",
       "kind": "fn",
-      "name": "head_metered",
-      "line": 75,
-      "role": "The head of a side: the greatest order, then the greater bincode bytes, the earlier index on equal keys, each comparison reserved.",
+      "name": "head",
+      "line": 80,
+      "role": "The head of a side: the greatest order, then the greater bincode bytes, the earlier index on equal keys.",
       "rocq": [
         "above",
         "top_from",
@@ -3442,7 +3314,6 @@
       "covers": [
         "R50",
         "R56",
-        "R61",
         "R64",
         "V16"
       ]
@@ -3674,7 +3545,7 @@
       "tla": [
         "OfferScan",
         "ReceiveScan",
-        "Restore",
+        "ScanRestore",
         "RetireClassOf"
       ],
       "covers": [
@@ -3718,12 +3589,10 @@
       "rocq": [
         "set_key",
         "key_of_encodings",
-        "frame",
-        "key_trace"
+        "frame"
       ],
       "covers": [
-        "R67",
-        "R74"
+        "R67"
       ]
     },
     {
@@ -3735,12 +3604,10 @@
       "line": 200,
       "role": "The bincode bytes of the sorted Par of one element, metered.",
       "rocq": [
-        "canonical_bytes",
-        "key_trace"
+        "canonical_bytes"
       ],
       "covers": [
-        "R67",
-        "R74"
+        "R67"
       ]
     },
     {
@@ -3755,8 +3622,7 @@
         "canonical_map"
       ],
       "covers": [
-        "R67",
-        "R74"
+        "R67"
       ]
     },
     {
@@ -3779,10 +3645,10 @@
     {
       "item": "Level",
       "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs",
       "kind": "struct",
       "name": "Level",
-      "line": 121,
+      "line": 10,
       "role": "The level of a record: Priority(p) ascending, then Unprioritized (F6).",
       "rocq": [
         "lvl_class",
@@ -3802,11 +3668,11 @@
     {
       "item": "Level::candidate_lanes",
       "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs",
       "scope": "Level",
       "kind": "fn",
       "name": "candidate_lanes",
-      "line": 149,
+      "line": 38,
       "role": "The waiter lanes whose heads a datum of the level meets: the waiter queue of a priority level and the unrestricted queue.",
       "rocq": [
         "cand1",
@@ -3822,10 +3688,10 @@
     {
       "item": "Lane",
       "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs",
       "kind": "struct",
       "name": "Lane",
-      "line": 159,
+      "line": 48,
       "role": "The lane of a waiting continuation: the waiter queue of a level, or the unrestricted queue (decision 38).",
       "rocq": [
         "sees"
@@ -3842,11 +3708,11 @@
     {
       "item": "Lane::sees",
       "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
+      "file": "rholang/src/rust/interpreter/spaces/disciplines/lanes.rs",
       "scope": "Lane",
       "kind": "fn",
       "name": "sees",
-      "line": 186,
+      "line": 75,
       "role": "A level lane sees its own level, and the unrestricted lane sees every level.",
       "rocq": [
         "sees",
@@ -3885,13 +3751,13 @@
       ]
     },
     {
-      "item": "PriorityQueueDiscipline::head_metered",
+      "item": "PriorityQueueDiscipline::head",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/disciplines/priority_queue.rs",
       "scope": "PriorityQueueDiscipline",
       "kind": "fn",
-      "name": "head_metered",
-      "line": 243,
+      "name": "head",
+      "line": 268,
       "role": "The head of one lane: the least (ord, bincode bytes), the rule of the queue discipline.",
       "rocq": [
         "below",
@@ -4054,7 +3920,6 @@
       "covers": [
         "R77",
         "R86",
-        "R93",
         "V17"
       ]
     },
@@ -4099,8 +3964,7 @@
       ],
       "covers": [
         "R80",
-        "R94",
-        "R93"
+        "R94"
       ]
     },
     {
@@ -4122,7 +3986,6 @@
         "R75",
         "R79",
         "R84",
-        "R93",
         "V17"
       ]
     },
@@ -4146,7 +4009,6 @@
       "covers": [
         "R80",
         "R84",
-        "R93",
         "V18"
       ]
     },
@@ -4272,7 +4134,6 @@
         "R80",
         "R81",
         "R94",
-        "R93",
         "V18"
       ]
     },
@@ -4546,23 +4407,6 @@
       ]
     },
     {
-      "item": "pathmap::marker_record_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
-      "kind": "fn",
-      "name": "marker_record_metered",
-      "line": 170,
-      "role": "The marker record with each read and copy reserved first (decision 42).",
-      "rocq": [
-        "marker_pars",
-        "envelope"
-      ],
-      "covers": [
-        "R97",
-        "R107"
-      ]
-    },
-    {
       "item": "pathmap::vehicle",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
@@ -4582,22 +4426,6 @@
       ]
     },
     {
-      "item": "pathmap::vehicle_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
-      "kind": "fn",
-      "name": "vehicle_metered",
-      "line": 218,
-      "role": "The vehicle with each read and copy reserved first.",
-      "rocq": [
-        "vehicle_pars"
-      ],
-      "covers": [
-        "R98",
-        "R107"
-      ]
-    },
-    {
       "item": "pathmap::decode_marker",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
@@ -4614,22 +4442,6 @@
       ]
     },
     {
-      "item": "pathmap::decode_marker_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
-      "kind": "fn",
-      "name": "decode_marker_metered",
-      "line": 288,
-      "role": "The strict marker decoder with its reads reserved first.",
-      "rocq": [
-        "decode_marker"
-      ],
-      "covers": [
-        "R97",
-        "R107"
-      ]
-    },
-    {
       "item": "pathmap::decode_vehicle",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
@@ -4642,22 +4454,6 @@
       ],
       "covers": [
         "R98"
-      ]
-    },
-    {
-      "item": "pathmap::decode_vehicle_metered",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/pathmap/markers.rs",
-      "kind": "fn",
-      "name": "decode_vehicle_metered",
-      "line": 310,
-      "role": "The strict vehicle decoder with its reads reserved first.",
-      "rocq": [
-        "decode_vehicle"
-      ],
-      "covers": [
-        "R98",
-        "R107"
       ]
     },
     {
@@ -5657,7 +5453,7 @@
         "SearchProduce",
         "SearchAt",
         "FillProd",
-        "FiresWith",
+        "FiresP",
         "InWin"
       ],
       "covers": [
@@ -5779,7 +5575,7 @@
         "OfferWith",
         "OfferFired",
         "OfferTail",
-        "OfferPick"
+        "OfferPicks"
       ],
       "covers": [
         "R111",
@@ -6029,29 +5825,6 @@
       ]
     },
     {
-      "item": "Engine::class_candidates",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/join.rs",
-      "scope": "Engine",
-      "kind": "fn",
-      "name": "class_candidates",
-      "line": 3455,
-      "role": "A single-bind consume fire on a set binds the class of its representative ([D; n], F3, F20), and its partner stays when a member of the class is persistent.",
-      "rocq": [
-        "rcv_stays",
-        "class_pers",
-        "retire_set_binds"
-      ],
-      "tla": [
-        "RcvStays",
-        "Retire"
-      ],
-      "covers": [
-        "R113",
-        "R114"
-      ]
-    },
-    {
       "item": "KeyedSource::class_claims",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/join.rs",
@@ -6201,17 +5974,6 @@
         "R102",
         "R104"
       ]
-    },
-    {
-      "item": "PathMapOuter::ALWAYS_ESCALATES",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/spaces/outer/pathmap.rs",
-      "scope": "PathMapOuter",
-      "kind": "const",
-      "name": "ALWAYS_ESCALATES",
-      "line": 162,
-      "role": "Every PathMap operation runs in one new transaction over the lock keys of its prefix scope (joins plan 9).",
-      "unmodeled": "The escalation is a lock-key rule of the substrate. The Rust test pathmap_staging_stays_in_the_lock_keys checks one escalation and the lock keys of every staged channel."
     },
     {
       "item": "PathMapOuter::classify",
@@ -6653,8 +6415,8 @@
       "file": "rholang/src/rust/interpreter/reified/system_channels.rs",
       "kind": "const",
       "name": "P6_PROCESSES",
-      "line": 421,
-      "role": "rho:lang:vector, rho:vectordb:embed and rho:vectordb:ann, after the P6 factories.",
+      "line": 444,
+      "role": "rho:lang:vector, rho:vectordb:embed and rho:vectordb:ann, after the P6 factories. Changed by decision 113: a cfg pair, so a build without the feature chromadb has rho:lang:vector alone. p6_others states the build with the feature.",
       "rocq": [
         "p6_others"
       ],

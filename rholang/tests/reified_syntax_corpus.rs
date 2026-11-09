@@ -1,7 +1,9 @@
 // P3b tests of the dual-frontend corpus of the Reified RSpaces syntax (plan "Frontend-neutral
 // syntax layer", decisions 18 and 21, P3 audit §4).
 //
-// `test-vectors/reified-syntax-corpus-v1.json` pairs each source text with the prost bytes of
+// Changed by decision 112: the corpus of this tree is v2. The text before:
+// // `test-vectors/reified-syntax-corpus-v1.json` pairs each source text with the prost bytes of
+// `test-vectors/reified-syntax-corpus-v2.json` pairs each source text with the prost bytes of
 // its normalized Par. The tree-sitter normalizers produce these bytes now, and the MeTTaIL
 // lowerer must produce the same bytes after P12. The corpus holds only keyword-direction rows:
 // a row that uses `use` or `free` as an identifier is a tree-sitter regression, not a
@@ -23,10 +25,20 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use models::rhoapi::expr::ExprInstance;
-use models::rhoapi::{ETuple, Expr, New, Par, Receive, ReceiveBind};
-use models::rust::reified::builders::{push_process_expr, query_spec, send_params, use_block};
+// Changed by decision 112: the Reified syntax is a set of protobuf fields, so the walker reads
+// the fields with the decoders of the fields. The text before:
+// ```
+// use models::rhoapi::{ETuple, Expr, New, Par, Receive, ReceiveBind};
+// use models::rust::reified::builders::{push_process_expr, query_spec, send_params, use_block};
+// use models::rust::reified::encoding::{
+//     decode_free_value, decode_process_tuple, decode_query_source, marker_of, split_trailing_params,
+//     FreeTheory, Marker, NewSpace, QuerySpec, ReifiedConstruct, SendParams, UseBlock,
+// };
+// ```
+use models::rhoapi::{Expr, New, Par, Receive, ReceiveBind};
+use models::rust::reified::builders::{push_use_block, query_spec, send_params, use_block};
 use models::rust::reified::encoding::{
-    decode_free_value, decode_process_tuple, decode_query_source, marker_of, split_trailing_params,
+    check_query_spec, check_send_params, decode_free_value, decode_new_space, decode_use_block,
     FreeTheory, Marker, NewSpace, QuerySpec, ReifiedConstruct, SendParams, UseBlock,
 };
 use models::rust::reified::params::SendParam;
@@ -46,8 +58,15 @@ use rholang_parser::ast::{AnnProc, Bind, Hyperparam, Name, Proc, SendType};
 use rholang_parser::{RholangParser, SourcePos};
 use serde_json::{Map, Value};
 
-const CORPUS_PATH: &str = "test-vectors/reified-syntax-corpus-v1.json";
-const CORPUS_NAME: &str = "reified_syntax_corpus_v1";
+// Changed by decision 112: the fields change the expected prost bytes of each Reified form, so
+// the corpus takes its v2 file and name, and decision 120 keeps v1 frozen as evidence for the
+// masked comparison (ruling 6). The text before:
+// ```
+// const CORPUS_PATH: &str = "test-vectors/reified-syntax-corpus-v1.json";
+// const CORPUS_NAME: &str = "reified_syntax_corpus_v1";
+// ```
+const CORPUS_PATH: &str = "test-vectors/reified-syntax-corpus-v2.json";
+const CORPUS_NAME: &str = "reified_syntax_corpus_v2";
 const CORPUS_RULE: &str = "Each entry pairs a source text with the hex of the prost bytes of its normalized Par. Every frontend of the Reified RSpaces syntax must normalize the source to exactly these bytes.";
 const CAPTURE_ENV: &str = "RRS_CAPTURE_REIFIED_SYNTAX_OUT";
 const PROVENANCE: [(&str, &str); 3] = [
@@ -83,7 +102,9 @@ fn gdouble(value: f64) -> Par {
     expr_par(ExprInstance::GDouble(value.to_bits()), Vec::new(), false)
 }
 
-fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
+// Changed by decision 112: a use block is a field of its process. The text before:
+// fn process(tuple: ETuple) -> Par { push_process_expr(Par::default(), tuple) }
+fn process(block: models::rhoapi::UseBlock) -> Par { push_use_block(Par::default(), block) }
 
 fn new_par(new: New) -> Par { prepend_new(Par::default(), new) }
 
@@ -100,6 +121,7 @@ fn receive_once(source: Par) -> Par {
                 remainder: None,
                 free_count: 1,
                 cost_signature: None,
+                query_spec: None,
             }],
             body: Some(Par::default()),
             persistent: false,
@@ -136,9 +158,20 @@ fn params_model(positional: Vec<Par>, named: Vec<(&str, Par)>) -> ReifiedConstru
     })
 }
 
-fn query_model(channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> ReifiedConstruct {
+// Changed by decision 112: the channel of a query is the source of its bind, so the model holds
+// the payload and the named params. The byte-exact test of the corpus covers the channel. The
+// text before:
+// ```
+// fn query_model(channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> ReifiedConstruct {
+//     ReifiedConstruct::Query(QuerySpec {
+//         channel,
+//         payload,
+//         named: named_map(named),
+//     })
+// }
+// ```
+fn query_model(_channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> ReifiedConstruct {
     ReifiedConstruct::Query(QuerySpec {
-        channel,
         payload,
         named: named_map(named),
     })
@@ -152,16 +185,45 @@ fn named_params(named: Vec<(&str, Par)>) -> Vec<SendParam> {
         .collect()
 }
 
-/// The trailing PARAMS element of a send with the named params `named`.
-fn params_element(named: Vec<(&str, Par)>) -> Par {
-    send_params(named_params(named))
+// Retired by decision 112: the params are a field of the send and the query is a field of the
+// bind, so the model rows use the two helpers below. The text before:
+// ```
+// /// The trailing PARAMS element of a send with the named params `named`.
+// fn params_element(named: Vec<(&str, Par)>) -> Par {
+//     send_params(named_params(named))
+//         .expect("the params of a row are valid")
+//         .expect("a row with named params has a PARAMS element")
+// }
+//
+// /// The bind source `channel ~ (payload…; named…)` of a receive query.
+// fn query_source(channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> Par {
+//     query_spec(channel, payload, named_params(named)).expect("the query of a row is valid")
+// }
+// ```
+
+/// The send `chan!(data…; named…)`.
+fn send_named(chan: Par, data: Vec<Par>, named: Vec<(&str, Par)>) -> Par {
+    let params = send_params(named_params(named))
         .expect("the params of a row are valid")
-        .expect("a row with named params has a PARAMS element")
+        .expect("a row with named params has params");
+    let mut par = send(chan, data);
+    for send in &mut par.sends {
+        send.params = Some(params.clone());
+    }
+    par
 }
 
-/// The bind source `channel ~ (payload…; named…)` of a receive query.
-fn query_source(channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> Par {
-    query_spec(channel, payload, named_params(named)).expect("the query of a row is valid")
+/// The receive `for (@x <- channel ~ (payload…; named…)) { Nil }`: one bind with one free
+/// variable and a query.
+fn receive_query(channel: Par, payload: Vec<Par>, named: Vec<(&str, Par)>) -> Par {
+    let query = query_spec(payload, named_params(named)).expect("the query of a row is valid");
+    let mut par = receive_once(channel);
+    for receive in &mut par.receives {
+        for bind in &mut receive.binds {
+            bind.query_spec = Some(query.clone());
+        }
+    }
+    par
 }
 
 fn free_model(name: &str, args: Vec<Par>) -> ReifiedConstruct {
@@ -380,11 +442,20 @@ fn corpus_table() -> Vec<(&'static str, Vec<ReifiedConstruct>)> {
                             send(gstring("docs"), vec![list(vec![gint(1), gint(0)])]),
                             send(gstring("docs"), vec![list(vec![gint(0), gint(1)])]),
                         ),
-                        receive_once(query_source(
+                        // Changed by decision 112: the query is a field of the bind. The text
+                        // before:
+                        // ```
+                        // receive_once(query_source(
+                        //     gstring("docs"),
+                        //     vec![list(vec![gint(1), gint(0)])],
+                        //     Vec::new(),
+                        // )),
+                        // ```
+                        receive_query(
                             gstring("docs"),
                             vec![list(vec![gint(1), gint(0)])],
                             Vec::new(),
-                        )),
+                        ),
                     )),
                 ),
                 query_model(
@@ -406,20 +477,41 @@ fn corpus_table() -> Vec<(&'static str, Vec<ReifiedConstruct>)> {
                     bound_var(0),
                     sorted(concatenate_pars(
                         two_sends(
-                            send(gstring("docs"), vec![
-                                gstring("origin"),
-                                params_element(vec![("embedding", list(vec![gint(0), gint(0)]))]),
-                            ]),
-                            send(gstring("docs"), vec![
-                                gstring("far"),
-                                params_element(vec![("embedding", list(vec![gint(3), gint(4)]))]),
-                            ]),
+                            // Changed by decision 112: the params are a field of the send. The
+                            // text before:
+                            // ```
+                            // send(gstring("docs"), vec![
+                            //     gstring("origin"),
+                            //     params_element(vec![("embedding", list(vec![gint(0), gint(0)]))]),
+                            // ]),
+                            // send(gstring("docs"), vec![
+                            //     gstring("far"),
+                            //     params_element(vec![("embedding", list(vec![gint(3), gint(4)]))]),
+                            // ]),
+                            // ```
+                            send_named(gstring("docs"), vec![gstring("origin")], vec![(
+                                "embedding",
+                                list(vec![gint(0), gint(0)]),
+                            )]),
+                            send_named(gstring("docs"), vec![gstring("far")], vec![(
+                                "embedding",
+                                list(vec![gint(3), gint(4)]),
+                            )]),
                         ),
-                        receive_once(query_source(
-                            gstring("docs"),
-                            vec![list(vec![gint(0), gint(0)])],
-                            vec![("radius", gint(5)), ("k", gint(2)), ("scores", gbool(true))],
-                        )),
+                        // Changed by decision 112: the query is a field of the bind. The text
+                        // before:
+                        // ```
+                        // receive_once(query_source(
+                        //     gstring("docs"),
+                        //     vec![list(vec![gint(0), gint(0)])],
+                        //     vec![("radius", gint(5)), ("k", gint(2)), ("scores", gbool(true))],
+                        // )),
+                        // ```
+                        receive_query(gstring("docs"), vec![list(vec![gint(0), gint(0)])], vec![
+                            ("radius", gint(5)),
+                            ("k", gint(2)),
+                            ("scores", gbool(true)),
+                        ]),
                     )),
                 ),
                 params_model(Vec::new(), vec![(
@@ -446,7 +538,9 @@ fn corpus_table() -> Vec<(&'static str, Vec<ReifiedConstruct>)> {
             ])],
         ),
         (
-            r#"new ann(`rho:vectordb:ann`) in { for (m <<- @"my-space") { for (mn <<- @"my-name") { for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) { match r { [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } } [false, code, _] => { @"result"!(code) } } } } } }"#,
+            // Changed by decision 114: the ann reply is [true, ids, distances], with no watermark.
+            // r#"new ann(`rho:vectordb:ann`) in { for (m <<- @"my-space") { for (mn <<- @"my-name") { for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) { match r { [true, ids, _, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } } [false, code, _] => { @"result"!(code) } } } } } }"#,
+            r#"new ann(`rho:vectordb:ann`) in { for (m <<- @"my-space") { for (mn <<- @"my-name") { for (@r <- ann!?(*m, *mn, [1.0, 0.0], {"k": 3})) { match r { [true, ids, _] => { for (@x <- mn ~ ([1.0, 0.0]; ids=ids, k=3)) { @"result"!(x) } } [false, code, _] => { @"result"!(code) } } } } } }"#,
             vec![query_model(
                 bound_var(3),
                 vec![list(vec![gdouble(1.0), gdouble(0.0)])],
@@ -591,120 +685,234 @@ fn reified_syntax_corpus_bytes_match() {
 // The model check: decode the corpus bytes with the P2 decoders
 // ---------------------------------------------------------------------------
 
-/// The position of a `Par` in its parent, for the position rules of decision 18.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Slot {
-    /// A process: USE and NEWSPACE tuples are recognized here.
-    Process,
-    /// The last data element of a send: a PARAMS tuple is recognized here.
-    TrailingData,
-    /// The source of a receive bind: a QUERY tuple is recognized here.
-    BindSource,
-    /// Any other position: a FREE tuple is a value anywhere.
-    Value,
-}
+// Retired by decision 112: each Reified construct is now a field or a value, so the position of
+// a construct follows from the type of its field. The walker below reads the fields with the
+// decoders of the fields. The text before:
+// ```
+// /// The position of a `Par` in its parent, for the position rules of decision 18.
+// #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// enum Slot {
+//     /// A process: USE and NEWSPACE tuples are recognized here.
+//     Process,
+//     /// The last data element of a send: a PARAMS tuple is recognized here.
+//     TrailingData,
+//     /// The source of a receive bind: a QUERY tuple is recognized here.
+//     BindSource,
+//     /// Any other position: a FREE tuple is a value anywhere.
+//     Value,
+// }
+//
+// fn tuple_holder(tuple: &ETuple) -> Par {
+//     Par {
+//         exprs: vec![Expr {
+//             expr_instance: Some(ExprInstance::ETupleBody(tuple.clone())),
+//         }],
+//         locally_free: tuple.locally_free.clone(),
+//         connective_used: tuple.connective_used,
+//         ..Par::default()
+//     }
+// }
+//
+// /// Decodes the marker tuple `tuple` with the P2 decoder of its marker, checks its position and
+// /// returns the construct and the slot of each element after the head.
+// fn decode_marker_tuple(
+//     marker: Marker,
+//     tuple: &ETuple,
+//     holder: &Par,
+//     slot: Slot,
+// ) -> Result<(ReifiedConstruct, Vec<Slot>), String> {
+//     let sole = holder.exprs.len() == 1;
+//     let (construct, slots) = match (marker, slot) {
+//         (Marker::Use, Slot::Process) => (
+//             decode_process_tuple(tuple)
+//                 .map_err(|error| error.to_string())?
+//                 .into(),
+//             vec![Slot::Value, Slot::Process],
+//         ),
+//         (Marker::NewSpace, Slot::Process) => (
+//             decode_process_tuple(tuple)
+//                 .map_err(|error| error.to_string())?
+//                 .into(),
+//             vec![Slot::Value, Slot::Process],
+//         ),
+//         (Marker::Params, Slot::TrailingData) if sole => (
+//             ReifiedConstruct::Params(
+//                 split_trailing_params(&[tuple_holder(tuple)])
+//                     .map_err(|error| error.to_string())?
+//                     .ok_or("a PARAMS tuple decodes to no params")?,
+//             ),
+//             vec![Slot::Value, Slot::Value],
+//         ),
+//         (Marker::Query, Slot::BindSource) if sole => (
+//             ReifiedConstruct::Query(
+//                 decode_query_source(&tuple_holder(tuple))
+//                     .map_err(|error| error.to_string())?
+//                     .ok_or("a QUERY tuple decodes to no query")?,
+//             ),
+//             vec![Slot::Value, Slot::Value, Slot::Value],
+//         ),
+//         (Marker::Free, _) => (
+//             ReifiedConstruct::Free(
+//                 decode_free_value(&tuple_holder(tuple))
+//                     .map_err(|error| error.to_string())?
+//                     .ok_or("a FREE tuple decodes to no theory")?,
+//             ),
+//             vec![Slot::Value, Slot::Value],
+//         ),
+//         (marker, slot) => {
+//             return Err(format!("a {marker} tuple in the {slot:?} position"));
+//         }
+//     };
+//     Ok((construct, slots))
+// }
+//
+// fn walk_expr(
+//     expr: &Expr,
+//     holder: &Par,
+//     slot: Slot,
+//     out: &mut Vec<ReifiedConstruct>,
+// ) -> Result<(), String> {
+//     match &expr.expr_instance {
+//         Some(ExprInstance::ETupleBody(tuple)) => match tuple.ps.first().and_then(marker_of) {
+//             Some(marker) => {
+//                 let (construct, slots) = decode_marker_tuple(marker, tuple, holder, slot)?;
+//                 out.push(construct);
+//                 for (element, element_slot) in tuple.ps.iter().skip(1).zip(slots) {
+//                     walk(element, element_slot, out)?;
+//                 }
+//                 Ok(())
+//             }
+//             None => walk_all(&tuple.ps, out),
+//         },
+//         Some(ExprInstance::EListBody(list)) => walk_all(&list.ps, out),
+//         Some(ExprInstance::ESetBody(set)) => walk_all(&set.ps, out),
+//         Some(ExprInstance::EMapBody(map)) => {
+//             for pair in &map.kvs {
+//                 for part in [&pair.key, &pair.value].into_iter().flatten() {
+//                     walk(part, Slot::Value, out)?;
+//                 }
+//             }
+//             Ok(())
+//         }
+//         Some(ExprInstance::EMethodBody(method)) => {
+//             if let Some(target) = &method.target {
+//                 walk(target, Slot::Value, out)?;
+//             }
+//             walk_all(&method.arguments, out)
+//         }
+//         Some(ExprInstance::EEqBody(eq)) => {
+//             for part in [&eq.p1, &eq.p2].into_iter().flatten() {
+//                 walk(part, Slot::Value, out)?;
+//             }
+//             Ok(())
+//         }
+//         _ => Ok(()),
+//     }
+// }
+//
+// fn walk_all(pars: &[Par], out: &mut Vec<ReifiedConstruct>) -> Result<(), String> {
+//     for par in pars {
+//         walk(par, Slot::Value, out)?;
+//     }
+//     Ok(())
+// }
+//
+// /// Collects every Reified construct of `par`, decoded by the P2 decoders, and checks that each
+// /// marker tuple is in its position.
+// fn walk(par: &Par, slot: Slot, out: &mut Vec<ReifiedConstruct>) -> Result<(), String> {
+//     for expr in &par.exprs {
+//         walk_expr(expr, par, slot, out)?;
+//     }
+//     for send in &par.sends {
+//         if let Some(chan) = &send.chan {
+//             walk(chan, Slot::Value, out)?;
+//         }
+//         let last = send.data.len().checked_sub(1);
+//         for (index, datum) in send.data.iter().enumerate() {
+//             let datum_slot = match Some(index) == last {
+//                 true => Slot::TrailingData,
+//                 false => Slot::Value,
+//             };
+//             walk(datum, datum_slot, out)?;
+//         }
+//     }
+//     for receive in &par.receives {
+//         for bind in &receive.binds {
+//             walk_all(&bind.patterns, out)?;
+//             if let Some(source) = &bind.source {
+//                 walk(source, Slot::BindSource, out)?;
+//             }
+//         }
+//         if let Some(body) = &receive.body {
+//             walk(body, Slot::Process, out)?;
+//         }
+//         if let Some(condition) = &receive.condition {
+//             walk(condition, Slot::Value, out)?;
+//         }
+//     }
+//     for new in &par.news {
+//         if let Some(body) = &new.p {
+//             walk(body, Slot::Process, out)?;
+//         }
+//     }
+//     for matched in &par.matches {
+//         if let Some(target) = &matched.target {
+//             walk(target, Slot::Value, out)?;
+//         }
+//         for case in &matched.cases {
+//             if let Some(pattern) = &case.pattern {
+//                 walk(pattern, Slot::Value, out)?;
+//             }
+//             if let Some(body) = &case.source {
+//                 walk(body, Slot::Process, out)?;
+//             }
+//         }
+//     }
+//     Ok(())
+// }
+// ```
 
-fn tuple_holder(tuple: &ETuple) -> Par {
-    Par {
-        exprs: vec![Expr {
-            expr_instance: Some(ExprInstance::ETupleBody(tuple.clone())),
-        }],
-        locally_free: tuple.locally_free.clone(),
-        connective_used: tuple.connective_used,
-        ..Par::default()
+fn walk_all(pars: &[Par], out: &mut Vec<ReifiedConstruct>) -> Result<(), String> {
+    for par in pars {
+        walk(par, out)?;
     }
+    Ok(())
 }
 
-/// Decodes the marker tuple `tuple` with the P2 decoder of its marker, checks its position and
-/// returns the construct and the slot of each element after the head.
-fn decode_marker_tuple(
-    marker: Marker,
-    tuple: &ETuple,
-    holder: &Par,
-    slot: Slot,
-) -> Result<(ReifiedConstruct, Vec<Slot>), String> {
-    let sole = holder.exprs.len() == 1;
-    let (construct, slots) = match (marker, slot) {
-        (Marker::Use, Slot::Process) => (
-            decode_process_tuple(tuple)
-                .map_err(|error| error.to_string())?
-                .into(),
-            vec![Slot::Value, Slot::Process],
-        ),
-        (Marker::NewSpace, Slot::Process) => (
-            decode_process_tuple(tuple)
-                .map_err(|error| error.to_string())?
-                .into(),
-            vec![Slot::Value, Slot::Process],
-        ),
-        (Marker::Params, Slot::TrailingData) if sole => (
-            ReifiedConstruct::Params(
-                split_trailing_params(&[tuple_holder(tuple)])
-                    .map_err(|error| error.to_string())?
-                    .ok_or("a PARAMS tuple decodes to no params")?,
-            ),
-            vec![Slot::Value, Slot::Value],
-        ),
-        (Marker::Query, Slot::BindSource) if sole => (
-            ReifiedConstruct::Query(
-                decode_query_source(&tuple_holder(tuple))
-                    .map_err(|error| error.to_string())?
-                    .ok_or("a QUERY tuple decodes to no query")?,
-            ),
-            vec![Slot::Value, Slot::Value, Slot::Value],
-        ),
-        (Marker::Free, _) => (
-            ReifiedConstruct::Free(
-                decode_free_value(&tuple_holder(tuple))
-                    .map_err(|error| error.to_string())?
-                    .ok_or("a FREE tuple decodes to no theory")?,
-            ),
-            vec![Slot::Value, Slot::Value],
-        ),
-        (marker, slot) => {
-            return Err(format!("a {marker} tuple in the {slot:?} position"));
-        }
-    };
-    Ok((construct, slots))
-}
-
-fn walk_expr(
-    expr: &Expr,
-    holder: &Par,
-    slot: Slot,
-    out: &mut Vec<ReifiedConstruct>,
-) -> Result<(), String> {
+fn walk_expr(expr: &Expr, out: &mut Vec<ReifiedConstruct>) -> Result<(), String> {
     match &expr.expr_instance {
-        Some(ExprInstance::ETupleBody(tuple)) => match tuple.ps.first().and_then(marker_of) {
-            Some(marker) => {
-                let (construct, slots) = decode_marker_tuple(marker, tuple, holder, slot)?;
-                out.push(construct);
-                for (element, element_slot) in tuple.ps.iter().skip(1).zip(slots) {
-                    walk(element, element_slot, out)?;
-                }
-                Ok(())
-            }
-            None => walk_all(&tuple.ps, out),
-        },
+        Some(ExprInstance::EFreeBody(free)) => {
+            let holder = Par {
+                exprs: vec![expr.clone()],
+                ..Par::default()
+            };
+            let decoded = decode_free_value(&holder)
+                .map_err(|error| error.to_string())?
+                .ok_or("a FREE value decodes to no theory")?;
+            walk_all(&free.args, out)?;
+            out.push(ReifiedConstruct::Free(decoded));
+            Ok(())
+        }
+        Some(ExprInstance::ETupleBody(tuple)) => walk_all(&tuple.ps, out),
         Some(ExprInstance::EListBody(list)) => walk_all(&list.ps, out),
         Some(ExprInstance::ESetBody(set)) => walk_all(&set.ps, out),
         Some(ExprInstance::EMapBody(map)) => {
             for pair in &map.kvs {
                 for part in [&pair.key, &pair.value].into_iter().flatten() {
-                    walk(part, Slot::Value, out)?;
+                    walk(part, out)?;
                 }
             }
             Ok(())
         }
         Some(ExprInstance::EMethodBody(method)) => {
             if let Some(target) = &method.target {
-                walk(target, Slot::Value, out)?;
+                walk(target, out)?;
             }
             walk_all(&method.arguments, out)
         }
         Some(ExprInstance::EEqBody(eq)) => {
             for part in [&eq.p1, &eq.p2].into_iter().flatten() {
-                walk(part, Slot::Value, out)?;
+                walk(part, out)?;
             }
             Ok(())
         }
@@ -712,61 +920,82 @@ fn walk_expr(
     }
 }
 
-fn walk_all(pars: &[Par], out: &mut Vec<ReifiedConstruct>) -> Result<(), String> {
-    for par in pars {
-        walk(par, Slot::Value, out)?;
-    }
-    Ok(())
-}
-
-/// Collects every Reified construct of `par`, decoded by the P2 decoders, and checks that each
-/// marker tuple is in its position.
-fn walk(par: &Par, slot: Slot, out: &mut Vec<ReifiedConstruct>) -> Result<(), String> {
+/// Collects every Reified construct of `par`, decoded by the decoders of the fields.
+fn walk(par: &Par, out: &mut Vec<ReifiedConstruct>) -> Result<(), String> {
     for expr in &par.exprs {
-        walk_expr(expr, par, slot, out)?;
+        walk_expr(expr, out)?;
+    }
+    for block in &par.use_blocks {
+        let decoded = decode_use_block(block).map_err(|error| error.to_string())?;
+        walk(&decoded.space, out)?;
+        walk(&decoded.body, out)?;
+        out.push(ReifiedConstruct::Use(decoded));
     }
     for send in &par.sends {
         if let Some(chan) = &send.chan {
-            walk(chan, Slot::Value, out)?;
+            walk(chan, out)?;
         }
-        let last = send.data.len().checked_sub(1);
-        for (index, datum) in send.data.iter().enumerate() {
-            let datum_slot = match Some(index) == last {
-                true => Slot::TrailingData,
-                false => Slot::Value,
-            };
-            walk(datum, datum_slot, out)?;
+        walk_all(&send.data, out)?;
+        if let Some(params) = &send.params {
+            check_send_params(params).map_err(|error| error.to_string())?;
+            walk_all(&params.positional, out)?;
+            for value in params.named.values() {
+                walk(value, out)?;
+            }
+            out.push(ReifiedConstruct::Params(params.clone()));
         }
     }
     for receive in &par.receives {
         for bind in &receive.binds {
             walk_all(&bind.patterns, out)?;
             if let Some(source) = &bind.source {
-                walk(source, Slot::BindSource, out)?;
+                walk(source, out)?;
+            }
+            if let Some(query) = &bind.query_spec {
+                check_query_spec(query).map_err(|error| error.to_string())?;
+                walk_all(&query.payload, out)?;
+                for value in query.named.values() {
+                    walk(value, out)?;
+                }
+                out.push(ReifiedConstruct::Query(query.clone()));
             }
         }
         if let Some(body) = &receive.body {
-            walk(body, Slot::Process, out)?;
+            walk(body, out)?;
         }
         if let Some(condition) = &receive.condition {
-            walk(condition, Slot::Value, out)?;
+            walk(condition, out)?;
         }
     }
     for new in &par.news {
-        if let Some(body) = &new.p {
-            walk(body, Slot::Process, out)?;
+        match new.space_types.as_slice() {
+            [] => {
+                if let Some(body) = &new.p {
+                    walk(body, out)?;
+                }
+            }
+            _ => {
+                let decoded = decode_new_space(new).map_err(|error| error.to_string())?;
+                for annotation in decoded.annotations.iter().flatten() {
+                    walk(annotation, out)?;
+                }
+                if let Some(body) = &decoded.new.p {
+                    walk(body, out)?;
+                }
+                out.push(ReifiedConstruct::NewSpace(decoded));
+            }
         }
     }
     for matched in &par.matches {
         if let Some(target) = &matched.target {
-            walk(target, Slot::Value, out)?;
+            walk(target, out)?;
         }
         for case in &matched.cases {
             if let Some(pattern) = &case.pattern {
-                walk(pattern, Slot::Value, out)?;
+                walk(pattern, out)?;
             }
             if let Some(body) = &case.source {
-                walk(body, Slot::Process, out)?;
+                walk(body, out)?;
             }
         }
     }
@@ -790,7 +1019,10 @@ fn reified_syntax_corpus_decodes_to_source_model() {
         let bytes = hex::decode(&entry.expected_prost_hex).expect("the corpus holds hex");
         let par = Par::decode(bytes.as_slice()).expect("the corpus holds prost Par bytes");
         let mut decoded = Vec::new();
-        match walk(&par, Slot::Process, &mut decoded) {
+        // Changed by decision 112: the walker reads the fields and takes no position. The text
+        // before:
+        // match walk(&par, Slot::Process, &mut decoded) {
+        match walk(&par, &mut decoded) {
             Ok(()) if canonical(decoded.clone()) == canonical(model.clone()) => {}
             Ok(()) => failures.push(format!(
                 "{source}: decoded {decoded:?}, but the model is {model:?}"

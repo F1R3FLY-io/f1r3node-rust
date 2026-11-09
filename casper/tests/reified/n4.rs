@@ -1,31 +1,36 @@
 //! N4: native spaces under Casper's proposal, validation and merge (P9 design v2, section 8,
-//! amendments A2, A3, A17, A18 and A20; plan decisions 82 and 84).
+//! amendments A2, A3, A17, A18 and A20; plan decisions 82, 84 and 108).
 //!
-//! A v6 block holds one offered user deploy (`block_creator.rs:1617-1622`), so N4 runs chains of
-//! single-deploy blocks. One durable family fits the v6 replay limits in one deploy (measurement
-//! R1 of P9 step 1), so each deploy creates or touches the space of one family. The rows follow
-//! three facts of Casper (decision 82):
+//! N4 runs chains of single-deploy blocks. One durable family fits the v6 replay limits in one
+//! deploy (measurement R1 of P9 step 1), so each deploy creates or touches the space of one
+//! family. The rows keep the form that three facts of Casper gave them (decision 82). The probes
+//! of decision 108 show that the merged base changed each fact:
 //!
-//! * The leader rule: while a parent branch holds unfinalized user deploys, only the sender of
-//!   the newest such block includes offered deploys. So node 0 proposes every space block.
-//! * The funding rule: a deploy that peeks or takes a record that another payer funded has no
-//!   feasible signed assignment. So each payer touches only its own spaces.
-//! * The cost rules: a merge rejects the second of two sequential offers of one payer in one
-//!   branch, so the merge row gives each space block its own payer. This tree has no DR-119 fix
-//!   (decision 84): the vault takes one global lock for each paid settlement (bug 11004). So a
-//!   merge of two concurrent paid blocks rejects one of them, and the sender of the rejected
-//!   block then fails the merge block (gap G6). N4 therefore has no row of concurrent paid blocks.
+//! * The leader rule: node 0 proposes every space block. On the merged base, a proposer that is
+//!   not the deploy-inclusion leader also includes its own offered deploys (probe R1). Its
+//!   fallback counts its stored offered envelopes (DR-116, item 8).
+//! * The funding rule: each payer touches only its own spaces. On the merged base, an owner funds
+//!   its stored records (DR-135). So a deploy of one payer can peek and take the records of
+//!   another payer in a valid block (probe R7).
+//! * The cost cursor: two sibling offers of one payer conflict on its cost cursor, and the merge
+//!   rejects one of them (probe R8b). So the concurrent row takes two payers whose cost-cursor
+//!   buckets are disjoint (DR-119). On the merged base, every node validates such a merge block
+//!   (DR-116, gap G6). A merge also keeps two sequential offers of one payer in one branch
+//!   (probe R10).
+//!
+//! A v6 block of the merged base can hold an ordered batch of offers (DR-134, item 9, probe R9).
+//! Each N4 block holds one offer.
 //!
 //! | Test | Property |
 //! |---|---|
 //! | `n4_space_chain_propose_validate` | Node 0 proposes ten blocks: the creations of a queue, a set, a priority queue, a VectorDB space and a PathMap space, each with records and a waiter, and then a touch of each space. Node 1 validates each block. Producer and validator have equal settlement receipts. At the last block, both nodes read the same deliveries of each family: the config of the handle, a take and a fired waiter. |
 //! | `n4_space_merge_with_empty_sibling` | Node 0 proposes two space blocks of two payers, and node 1 proposes an empty block from genesis. Node 2 merges them. The main parent of the merge block is the empty block, the merge rejects no deploy, and every node validates the merge block. Node 0 then touches the queue of its branch on the merge, and every node validates that block. |
-//! | `n4_concurrent_space_blocks_agree` | Disabled by decision 84. Without the DR-119 fix, the merge of two paid siblings rejects one of them, and its sender fails the merge block (gap G6). See the comment at the test. |
+//! | `n4_concurrent_space_blocks_agree` | Two searched payers create their own spaces in sibling blocks over genesis, the first on node 0 and the second on node 1. Every node validates both siblings and the merge block of node 2, and the merge rejects no deploy (decision 108). |
 //! | `n4_tampered_space_block_rejected` | A space block with a changed post-state hash, and the same block with a channel added to the footprint of a space row of its operation journal, are each signed again. The validator rejects each with its reason, keeps its DAG heads, and then accepts the untampered block. A timeout guards against a hang. |
 //!
-//! The keys are the genesis vaults of the test genesis and two labeled signers. The time stamps
-//! are fixed per deploy, and every offer has the phlo limit [`PHLO`] and the exposure
-//! [`EXPOSURE`].
+//! The keys are the genesis vaults of the test genesis, two labeled signers and two searched
+//! signers. The time stamps are fixed per deploy, and every offer has the phlo limit [`PHLO`] and
+//! the exposure [`EXPOSURE`].
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -37,6 +42,9 @@ use casper::rust::casper::{Casper, MultiParentCasper};
 use crypto::rust::private_key::PrivateKey;
 use crypto::rust::public_key::PublicKey;
 use models::rhoapi::expr::ExprInstance;
+// Added by decision 92: the space-row check decodes the channels of a footprint.
+use models::rhoapi::g_unforgeable::UnfInstance;
+use models::rhoapi::{GPrivate, Par};
 use models::rust::casper::protocol::casper_message::{BlockMessage, ProcessedUserDeploy};
 use models::rust::cost_protocol_limits::offered_funded_v6_limits;
 use models::rust::phlo_wire::PhloWireLimits;
@@ -44,21 +52,39 @@ use models::rust::utils::new_gstring_par;
 use rholang::rust::interpreter::accounting::native_phlo_rules::{
     NativeBudgetTraceLimits, NativePhloRegionLimits,
 };
+// Changed by decision 92: the space-row check reads no recording.
+// use rholang::rust::interpreter::accounting::{
+//     decode_native_budget_recording, decode_native_operation_journal,
+//     encode_native_operation_journal, NativeBudgetRecording, NativeOperationRecord,
+//     NativeRecordingWireLimits,
+// };
 use rholang::rust::interpreter::accounting::{
     decode_native_budget_recording, decode_native_operation_journal,
-    encode_native_operation_journal, NativeBudgetRecording, NativeOperationRecord,
-    NativeRecordingWireLimits,
+    encode_native_operation_journal, NativeOperationRecord, NativeRecordingWireLimits,
 };
-use rspace_plus_plus::rspace::space_store_handle::SUB_OPERATION_TAG;
+// Added by decision 92: a space row names the space counter of its space.
+use rholang::rust::interpreter::spaces::namespace::{
+    decode_reified_id, sole_unforgeable, ReifiedId,
+};
+
+// Changed by decision 92: DR-132 names every journal row by its index, so no row has a sub-order
+// segment.
+// use rspace_plus_plus::rspace::space_store_handle::SUB_OPERATION_TAG;
 
 // Changed by decision 84 (the revert of the DR-119 backport): the payers need no bucket search.
 // use super::support::{
 //     accept, offered_v6_genesis, offered_v6_genesis_with_signers, owner_cursor_buckets, propose,
 //     rejection, searched_signer, signed_offer, submit,
 // };
+// Changed by decision 108: the concurrent row searches its payers by bucket again, and the merge
+// row keeps its labeled payers.
+// use super::support::{
+//     accept, labeled_signer, offered_v6_genesis, offered_v6_genesis_with_signers, propose,
+//     rejection, signed_offer, submit,
+// };
 use super::support::{
-    accept, labeled_signer, offered_v6_genesis, offered_v6_genesis_with_signers, propose,
-    rejection, signed_offer, submit,
+    accept, labeled_signer, offered_v6_genesis, offered_v6_genesis_with_signers,
+    owner_cursor_buckets, propose, rejection, searched_signer, signed_offer, submit,
 };
 use crate::helper::block_util::resign_block;
 use crate::helper::test_node::TestNode;
@@ -223,23 +249,24 @@ async fn assert_equal_receipts(nodes: &[TestNode], deploy_id: &Vec<u8>, label: &
     assert_eq!(producer, validator, "{label}: the settlement receipts");
 }
 
-// Changed by decision 84 (the revert of the DR-119 backport): the vault of this tree has no
-// cost-cursor buckets, so the payers need no search.
-// /// Two searched payers whose cost-cursor buckets are disjoint (DR-119). A merge rejects one of
-// /// two offers of one payer in its scope, also of sequential offers in one branch, so the merge
-// /// rows use one payer for each space block (decision 82, fact 3; verification.md, section 34.6).
-// fn disjoint_payers() -> [(PrivateKey, PublicKey); 2] {
-//     let first = searched_signer("rrs-n4-first", |buckets| buckets[0] != buckets[1]);
-//     let first_buckets = owner_cursor_buckets(&first.1);
-//     let second = searched_signer("rrs-n4-second", |buckets| {
-//         buckets[0] != buckets[1] && buckets.iter().all(|bucket| !first_buckets.contains(bucket))
-//     });
-//     [first, second]
-// }
+// Changed by decision 108: the merged base has the cost-cursor buckets of DR-119, so the concurrent
+// row searches its payers again. Decision 84 had disabled this helper. Its doc states the fact
+// that probe R8b measured on the merged base.
+/// Two searched payers whose cost-cursor buckets are disjoint (DR-119). A merge rejects one of
+/// two sibling offers of one payer, because they conflict on its cost cursor (probe R8b of
+/// decision 108). So the concurrent row gives each sibling its own payer.
+fn disjoint_payers() -> [(PrivateKey, PublicKey); 2] {
+    let first = searched_signer("rrs-n4-first", |buckets| buckets[0] != buckets[1]);
+    let first_buckets = owner_cursor_buckets(&first.1);
+    let second = searched_signer("rrs-n4-second", |buckets| {
+        buckets[0] != buckets[1] && buckets.iter().all(|bucket| !first_buckets.contains(bucket))
+    });
+    [first, second]
+}
 
-/// Two labeled payers, one for each space block of the merge row. A merge rejects the second of
-/// two sequential offers of one payer in one branch (decision 82, fact 3; verification.md,
-/// section 34.6).
+/// Two labeled payers, one for each space block of the merge row (decision 82, fact 3;
+/// verification.md, section 34.6). On the merged base, a merge also keeps two sequential offers
+/// of one payer in one branch (probe R10 of decision 108), and the row keeps its two payers.
 fn two_payers() -> [(PrivateKey, PublicKey); 2] {
     [
         labeled_signer("rrs-n4-first"),
@@ -363,62 +390,57 @@ async fn n4_space_merge_with_empty_sibling() {
     );
 }
 
-// Disabled by decision 84 (the revert of the DR-119 backport, P9). Without the DR-119 fix, the
-// vault of this tree takes one global lock for each paid settlement (bug 11004), so the merge of
-// these two paid siblings rejects one of them. Measured after the revert: the merge block
-// rejects one deploy, and the sender of the rejected sibling then fails the merge block with
-// "offered-funded recovery requires an envelope buffer" (gap G6, interpreter_util.rs:2156).
-// Both are Casper defects outside the campaign (decision 70). feature/cost-accounted-rho fixes
-// them (DR-119 and DR-116), so the row can return with the merge of that branch. The merge of
-// concurrent space branches stays covered by the native merge rig (`space_cross_block_merge_*`).
-// /// N4 (decision 82): two payers with disjoint cost-cursor buckets create their own spaces in
-// /// sibling blocks over genesis.
-// #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-// async fn n4_concurrent_space_blocks_agree() {
-//     let signers = disjoint_payers();
-//     let genesis = offered_v6_genesis_with_signers(3, &signers).await;
-//     let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
-//         .await
-//         .expect("the network starts");
-//     let [queue, set, ..] = &FAMILIES;
-//     submit(
-//         &nodes[0],
-//         signed_offer(&signers[0], &queue.creation("x"), 1, PHLO, EXPOSURE),
-//     )
-//     .await;
-//     let x = nodes[0]
-//         .create_block_unsafe(&[])
-//         .await
-//         .expect("node 0 creates the first sibling");
-//     submit(
-//         &nodes[1],
-//         signed_offer(&signers[1], &set.creation("y"), 2, PHLO, EXPOSURE),
-//     )
-//     .await;
-//     let y = nodes[1]
-//         .create_block_unsafe(&[])
-//         .await
-//         .expect("node 1 creates the second sibling");
-//     assert_space_deploy(&x, "the first sibling");
-//     assert_space_deploy(&y, "the second sibling");
-//     for node in nodes.iter_mut() {
-//         accept(node, &x).await;
-//         accept(node, &y).await;
-//     }
-//     nodes[2].allow_empty_blocks = true;
-//     let merge = propose(&mut nodes, 2).await;
-//     let parents: BTreeSet<_> = merge.header.parents_hash_list.iter().cloned().collect();
-//     assert!(
-//         parents.contains(&x.block_hash) && parents.contains(&y.block_hash),
-//         "the merge block has both siblings as parents"
-//     );
-//     assert!(
-//         merge.body.rejected_deploys.is_empty(),
-//         "the merge rejects no deploy"
-//     );
-//     accept(&mut nodes[0], &merge).await;
-//     accept(&mut nodes[1], &merge).await;
-// }
+// Changed by decision 108: the row returns with the merge of feature/cost-accounted-rho, which
+// fixes both defects that disabled it (decision 84). DR-119 gives the vault cost-cursor buckets
+// (bug 11004), and DR-116 removes the envelope-buffer failure of the merge block (gap G6).
+/// N4 (decision 82): two payers with disjoint cost-cursor buckets create their own spaces in
+/// sibling blocks over genesis.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn n4_concurrent_space_blocks_agree() {
+    let signers = disjoint_payers();
+    let genesis = offered_v6_genesis_with_signers(3, &signers).await;
+    let mut nodes = TestNode::create_network(genesis.clone(), 3, None, None, None, None)
+        .await
+        .expect("the network starts");
+    let [queue, set, ..] = &FAMILIES;
+    submit(
+        &nodes[0],
+        signed_offer(&signers[0], &queue.creation("x"), 1, PHLO, EXPOSURE),
+    )
+    .await;
+    let x = nodes[0]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 0 creates the first sibling");
+    submit(
+        &nodes[1],
+        signed_offer(&signers[1], &set.creation("y"), 2, PHLO, EXPOSURE),
+    )
+    .await;
+    let y = nodes[1]
+        .create_block_unsafe(&[])
+        .await
+        .expect("node 1 creates the second sibling");
+    assert_space_deploy(&x, "the first sibling");
+    assert_space_deploy(&y, "the second sibling");
+    for node in nodes.iter_mut() {
+        accept(node, &x).await;
+        accept(node, &y).await;
+    }
+    nodes[2].allow_empty_blocks = true;
+    let merge = propose(&mut nodes, 2).await;
+    let parents: BTreeSet<_> = merge.header.parents_hash_list.iter().cloned().collect();
+    assert!(
+        parents.contains(&x.block_hash) && parents.contains(&y.block_hash),
+        "the merge block has both siblings as parents"
+    );
+    assert!(
+        merge.body.rejected_deploys.is_empty(),
+        "the merge rejects no deploy"
+    );
+    accept(&mut nodes[0], &merge).await;
+    accept(&mut nodes[1], &merge).await;
+}
 
 /// The wire limits of the evidence of a v6 offer.
 fn recording_limits() -> NativeRecordingWireLimits {
@@ -445,13 +467,32 @@ fn recording_limits() -> NativeRecordingWireLimits {
     }
 }
 
-/// True when `row` is a staged space operation: its path ends with a sub-order segment
-/// (decision 19, D3).
-fn is_space_row(recording: &NativeBudgetRecording, row: &NativeOperationRecord) -> bool {
-    recording
-        .paths
-        .last_segment(row.occurrence.path)
-        .is_some_and(|(_, tag)| tag == SUB_OPERATION_TAG)
+// Changed by decision 92: DR-132 of the merged base names every journal row by its index, as the
+// path `[(index, 0)]`, so no row has a sub-order segment. A row of a space transaction names the
+// space counter `S(sid)` of its space in its footprint instead.
+// /// True when `row` is a staged space operation: its path ends with a sub-order segment
+// /// (decision 19, D3).
+// fn is_space_row(recording: &NativeBudgetRecording, row: &NativeOperationRecord) -> bool {
+//     recording
+//         .paths
+//         .last_segment(row.occurrence.path)
+//         .is_some_and(|(_, tag)| tag == SUB_OPERATION_TAG)
+// }
+/// True when `row` is a row of a space transaction: a channel of its footprint is the space
+/// counter `S(sid)` of a space (decision 92). A footprint holds each channel in the bincode form
+/// of its `Par`, as the recorder writes it.
+fn is_space_row(row: &NativeOperationRecord) -> bool {
+    row.footprint.iter().any(|channel| {
+        let Ok(channel) = bincode::deserialize::<Par>(channel) else {
+            return false;
+        };
+        match sole_unforgeable(&channel).map(|unforgeable| &unforgeable.unf_instance) {
+            Some(Some(UnfInstance::GPrivateBody(GPrivate { id }))) => {
+                matches!(decode_reified_id(id), Some(ReifiedId::SpaceCounter(_)))
+            }
+            _ => false,
+        }
+    })
 }
 
 /// Derives the predecessors of each row from the footprints, as the journal check requires.
@@ -488,12 +529,20 @@ fn with_forged_space_row(block: &BlockMessage) -> BlockMessage {
     let journal = decode_native_operation_journal(evidence.operation_journal, &mut recording, wire)
         .expect("the journal decodes");
     let mut rows: Vec<NativeOperationRecord> = journal.to_vec();
+    // Changed by decision 92: the space-row check reads only the row.
+    // let (target, channel) = (0..rows.len())
+    //     .filter(|&target| is_space_row(&recording, &rows[target]))
+    //     .find_map(|target| {
+    //         rows[target + 1..]
+    //             .iter()
+    //             .filter(|row| !is_space_row(&recording, row))
+    //             .find_map(|row| {
     let (target, channel) = (0..rows.len())
-        .filter(|&target| is_space_row(&recording, &rows[target]))
+        .filter(|&target| is_space_row(&rows[target]))
         .find_map(|target| {
             rows[target + 1..]
                 .iter()
-                .filter(|row| !is_space_row(&recording, row))
+                .filter(|row| !is_space_row(row))
                 .find_map(|row| {
                     row.footprint
                         .iter()
@@ -607,8 +656,20 @@ async fn n4_tampered_space_block_rejected() {
 
     let forged = resign_block(&with_forged_space_row(&block), key);
     assert_rejected(&mut nodes[1], &forged, "a forged space row", |error| {
-        matches!(error, BlockError::BlockException(cause)
-            if cause.to_string().contains("native replay epoch is closed"))
+        // Changed by decision 124 (L10): no failure closes the epoch, so the replay of the forged
+        // row ends with a base verdict. It has incomplete operations when no task reaches a row
+        // behind the forged row. A task that reaches one parks counted, and the stall rule ends
+        // the replay once every live task waits (DR-132). The text before:
+        // matches!(error, BlockError::BlockException(cause)
+        //     if cause.to_string().contains("native replay epoch is closed"))
+        match error {
+            BlockError::BlockException(cause) => {
+                let cause = cause.to_string();
+                cause.contains("native replay has incomplete operations")
+                    || cause.contains("native replay stalled")
+            }
+            _ => false,
+        }
     })
     .await;
 

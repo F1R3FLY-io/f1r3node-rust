@@ -11,7 +11,7 @@
 '
 ' Reading order:
 '   1. OFFER-VDB offers the element in flight to the parked waiters in the
-'      canonical order. A list waiter fires only when the element is in its
+'      pick order of the offer. A list waiter fires only when the element is in its
 '      list. A fire without a peek retires the other members of the list.
 '   2. After each fire, the fire count decides: the element settles, a
 '      divergent pair or the round cap ends the offer, or the offer goes on.
@@ -40,7 +40,7 @@ title List fires and LIST-CASCADE of a VectorDB collection (LM-b)
 start
 partition "OFFER-VDB(x): the element of a send" {
   repeat
-    if (a parked waiter W, in the canonical order,\ncan take x? (see the note)) then (no)
+    if (a parked waiter W, in the pick order of the offer,\ncan take x? (see the note)) then (no)
       :CHECK-CAPACITY: CapacityExceeded when
       the collection holds capacity records; <<$rrs_reject>>
       :store x with its embedding: x settles; <<$rrs_storage>>

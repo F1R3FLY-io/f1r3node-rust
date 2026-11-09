@@ -10,6 +10,12 @@
 (* ReorderParents/FinalityUsesDAGAncestry -> finalizer full-DAG traversal    *)
 (* TreatLocalFaultAsInvalid is the defect knob. The unsafe config sets it    *)
 (* TRUE and must violate LocalFaultNeverCreatesSlashEvidence.               *)
+(* DR-134 (DR-66): genesis runs in the trusted install scope and records    *)
+(* cost 0 (RuntimeOps::evaluate_trusted_install); replay refuses a genesis  *)
+(* that records a cost, as historical legacy-metered execution              *)
+(* (offered_only::is_legacy_metered_genesis). AcceptLegacyMeteredGenesis is *)
+(* the defect knob: its config must violate                                 *)
+(* AdmissionRequiresTrustedInstallGenesis.                                  *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences, TLC
 
@@ -19,6 +25,7 @@ CONSTANTS Authorities, Events, InitialSupply, ReplayInitialSupply,
           AllowUnfundedExecution, AllowMismatchedGenesis,
           AllowMismatchedGenesisAuthority,
           CreditGenesisFundingAgain,
+          AcceptLegacyMeteredGenesis, LegacyGenesisCost,
           TreatLocalFaultAsInvalid, InjectObjectiveInvalid,
           ProposerRunsCheckpoint, PeerRunsCheckpoint,
           ProposerChecksBonds, PeerChecksBonds
@@ -40,6 +47,8 @@ ASSUME /\ Authorities # {}
        /\ AllowMismatchedGenesis \in BOOLEAN
        /\ AllowMismatchedGenesisAuthority \in BOOLEAN
        /\ CreditGenesisFundingAgain \in BOOLEAN
+       /\ AcceptLegacyMeteredGenesis \in BOOLEAN
+       /\ LegacyGenesisCost \in Nat \ {0}
        /\ TreatLocalFaultAsInvalid \in BOOLEAN
        /\ InjectObjectiveInvalid \in BOOLEAN
        /\ ProposerRunsCheckpoint \in BOOLEAN
@@ -50,12 +59,12 @@ ASSUME /\ Authorities # {}
 VARIABLES phase, supply, reserved, committed, replayed, status,
           slashEvidence, lfbAdvanced, parentOrder, localFaultPending,
           selectedEvents, deploymentKind, genesisCommitted, genesisReplayed,
-          settlementCompleted
+          settlementCompleted, genesisCost
 
 vars == <<phase, supply, reserved, committed, replayed, status,
           slashEvidence, lfbAdvanced, parentOrder, localFaultPending,
           selectedEvents, deploymentKind, genesisCommitted, genesisReplayed,
-          settlementCompleted>>
+          settlementCompleted, genesisCost>>
 
 Zero == [a \in Authorities |-> 0]
 
@@ -116,12 +125,14 @@ Init ==
   /\ genesisCommitted = Zero
   /\ genesisReplayed = Zero
   /\ settlementCompleted = FALSE
+  /\ genesisCost = 0
 
 CommitGenesis ==
   /\ phase = "GenesisCommit"
   /\ phase' = "GenesisReplay"
   /\ supply' = InitialSupply
   /\ genesisCommitted' = InitialSupply
+  /\ genesisCost' = IF AcceptLegacyMeteredGenesis THEN LegacyGenesisCost ELSE 0
   /\ UNCHANGED <<reserved, committed, replayed, status, slashEvidence,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisReplayed, settlementCompleted>>
@@ -132,13 +143,14 @@ ReplayGenesis ==
   /\ IF /\ (ReplayInitialSupply = genesisCommitted \/ AllowMismatchedGenesis)
          /\ (GenesisReplayAuthority = GenesisExecutionAuthority \/
                 AllowMismatchedGenesisAuthority)
+         /\ (genesisCost = 0 \/ AcceptLegacyMeteredGenesis)
         THEN /\ phase' = "Admission"
              /\ status' = "Pending"
         ELSE /\ phase' = "Rejected"
              /\ status' = "GenesisRejected"
   /\ UNCHANGED <<supply, reserved, committed, replayed, slashEvidence,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
-                  deploymentKind, genesisCommitted, settlementCompleted>>
+                  deploymentKind, genesisCommitted, settlementCompleted, genesisCost>>
 
 Admit ==
   /\ phase = "Admission"
@@ -149,7 +161,7 @@ Admit ==
   /\ UNCHANGED <<supply, committed, replayed, status, slashEvidence,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 RejectUnprovable ==
   /\ phase = "Admission"
@@ -159,7 +171,7 @@ RejectUnprovable ==
   /\ UNCHANGED <<supply, reserved, committed, replayed, slashEvidence,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 RejectUnderfunded ==
   /\ phase = "Admission"
@@ -170,7 +182,7 @@ RejectUnderfunded ==
   /\ UNCHANGED <<supply, reserved, committed, replayed, slashEvidence,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 Commit(event) ==
   /\ phase = "Execution"
@@ -179,7 +191,7 @@ Commit(event) ==
   /\ UNCHANGED <<phase, supply, reserved, replayed, status, slashEvidence,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 FinishExecution ==
   /\ phase = "Execution"
@@ -189,7 +201,7 @@ FinishExecution ==
   /\ UNCHANGED <<supply, reserved, committed, replayed, status,
                   slashEvidence, lfbAdvanced, parentOrder, localFaultPending,
                   selectedEvents, deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 Settle ==
   /\ phase = "Settlement"
@@ -201,7 +213,7 @@ Settle ==
   /\ settlementCompleted' = TRUE
   /\ UNCHANGED <<reserved, committed, status, slashEvidence,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
-                  deploymentKind, genesisCommitted, genesisReplayed>>
+                  deploymentKind, genesisCommitted, genesisReplayed, genesisCost>>
 
 Replay(event) ==
   /\ phase = "Replay"
@@ -210,7 +222,7 @@ Replay(event) ==
   /\ UNCHANGED <<phase, supply, reserved, committed, status,
                   slashEvidence, lfbAdvanced, parentOrder, localFaultPending,
                   selectedEvents, deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 FinishReplay ==
   /\ phase = "Replay"
@@ -222,7 +234,7 @@ FinishReplay ==
   /\ UNCHANGED <<supply, reserved, committed, replayed,
                   slashEvidence, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 LocalFault ==
   /\ phase = "Execution"
@@ -233,7 +245,7 @@ LocalFault ==
   /\ localFaultPending' = FALSE
   /\ UNCHANGED <<supply, reserved, committed, replayed,
                   lfbAdvanced, parentOrder, selectedEvents, deploymentKind,
-                  genesisCommitted, genesisReplayed, settlementCompleted>>
+                  genesisCommitted, genesisReplayed, settlementCompleted, genesisCost>>
 
 Recover ==
   /\ phase = "Recover"
@@ -243,7 +255,7 @@ Recover ==
   /\ UNCHANGED <<supply, reserved, committed, replayed,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 ObjectiveInvalid ==
   /\ phase = "Execution"
@@ -254,7 +266,7 @@ ObjectiveInvalid ==
   /\ UNCHANGED <<supply, reserved, committed, replayed,
                   lfbAdvanced, parentOrder, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 ReorderParents ==
   /\ phase \in {"Execution", "Recover", "Replay"}
@@ -262,7 +274,7 @@ ReorderParents ==
   /\ UNCHANGED <<phase, supply, reserved, committed, replayed, status,
                   slashEvidence, lfbAdvanced, localFaultPending, selectedEvents,
                   deploymentKind, genesisCommitted, genesisReplayed,
-                  settlementCompleted>>
+                  settlementCompleted, genesisCost>>
 
 Next ==
   \/ CommitGenesis
@@ -315,6 +327,7 @@ TypeOK ==
   /\ genesisCommitted \in [Authorities -> Nat]
   /\ genesisReplayed \in [Authorities -> Nat]
   /\ settlementCompleted \in BOOLEAN
+  /\ genesisCost \in Nat
 
 GenesisCommitIsExact ==
   phase \in {"GenesisReplay", "Admission", "Execution", "Settlement", "Replay",
@@ -325,6 +338,10 @@ GenesisCommitIsExact ==
 AdmissionRequiresGenesisAgreement ==
   phase \in {"Admission", "Execution", "Settlement", "Replay", "Recover", "Done"} =>
     genesisReplayed = genesisCommitted
+
+AdmissionRequiresTrustedInstallGenesis ==
+  phase \in {"Admission", "Execution", "Settlement", "Replay", "Recover", "Done"} =>
+    genesisCost = 0
 
 GenesisExecutionReplayAuthorityAgree ==
   phase \in {"Admission", "Execution", "Settlement", "Replay", "Recover", "Done"} =>

@@ -154,6 +154,7 @@ pub fn plain_list_elements(par: &Par) -> Option<&[Par]> {
         connective_used,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     let bare = sends.is_empty()
         && receives.is_empty()
@@ -165,6 +166,7 @@ pub fn plain_list_elements(par: &Par) -> Option<&[Par]> {
         && cost_signed_terms.is_empty()
         && cost_stacks.is_empty()
         && locally_free.is_empty()
+        && use_blocks.is_empty()
         && !*connective_used;
     match (bare, exprs.as_slice(), unforgeables.as_slice()) {
         (
@@ -547,6 +549,7 @@ fn push_par_children<'p>(
         connective_used: _,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     for expr in exprs {
         push_expr_children(expr, spine, work)?;
@@ -558,9 +561,15 @@ fn push_par_children<'p>(
             persistent: _,
             locally_free: _,
             connective_used: _,
+            params,
         } = send;
         push_option(chan, false, work);
         push_all(data, false, work);
+        if let Some(params) = params {
+            for value in params.positional.iter().chain(params.named.values()) {
+                push_par(value, false, work);
+            }
+        }
     }
     for receive in receives {
         let Receive {
@@ -580,10 +589,16 @@ fn push_par_children<'p>(
                 remainder: _,
                 free_count: _,
                 cost_signature,
+                query_spec,
             } = bind;
             push_all(patterns, false, work);
             push_option(source, false, work);
             push_signature(cost_signature, work);
+            if let Some(query) = query_spec {
+                for value in query.payload.iter().chain(query.named.values()) {
+                    push_par(value, false, work);
+                }
+            }
         }
         push_option(body, false, work);
         push_option(condition, false, work);
@@ -595,10 +610,14 @@ fn push_par_children<'p>(
             uri: _,
             injections,
             locally_free: _,
+            space_types,
         } = new;
         push_option(p, false, work);
         for injection in injections.values() {
             push_par(injection, false, work);
+        }
+        for annotation in space_types {
+            push_option(&annotation.space, false, work);
         }
     }
     for matched in matches {
@@ -661,7 +680,14 @@ fn push_par_children<'p>(
         push_option(if_false, false, work);
     }
     for signed in cost_signed_terms {
-        let CostSignedTerm { body, signature } = signed;
+        // Changed by decision 90 (DR-135): a signed term also holds its held price, a plain
+        // integer with no `Par` in it.
+        // let CostSignedTerm { body, signature } = signed;
+        let CostSignedTerm {
+            body,
+            signature,
+            held_price: _,
+        } = signed;
         push_option(body, false, work);
         push_signature(signature, work);
     }
@@ -673,6 +699,10 @@ fn push_par_children<'p>(
                 spine: false,
             });
         }
+    }
+    for block in use_blocks {
+        push_option(&block.space, false, work);
+        push_option(&block.body, false, work);
     }
     Ok(())
 }
@@ -753,6 +783,16 @@ fn push_expr_children<'p>(
         ExprInstance::EMatchesBody(EMatches { target, pattern }) => {
             push_option(target, false, work);
             push_option(pattern, false, work);
+            Ok(())
+        }
+        ExprInstance::EFreeBody(free) => {
+            push_all(&free.args, false, work);
+            Ok(())
+        }
+        ExprInstance::EParamsBody(params) => {
+            for value in params.positional.iter().chain(params.named.values()) {
+                push_par(value, false, work);
+            }
             Ok(())
         }
         ExprInstance::EPathmapBody(_) | ExprInstance::EZipperBody(_) => {
@@ -894,6 +934,7 @@ fn structural_arm(par: &Par) -> Option<Arm<'_>> {
         connective_used,
         cost_signed_terms,
         cost_stacks,
+        use_blocks,
     } = par;
     let bare = sends.is_empty()
         && receives.is_empty()
@@ -905,6 +946,7 @@ fn structural_arm(par: &Par) -> Option<Arm<'_>> {
         && cost_signed_terms.is_empty()
         && cost_stacks.is_empty()
         && locally_free.is_empty()
+        && use_blocks.is_empty()
         && !*connective_used;
     match (bare, exprs.as_slice(), unforgeables.as_slice()) {
         (
@@ -985,6 +1027,8 @@ fn expression_arm(instance: &ExprInstance) -> Option<Arm<'_>> {
         | ExprInstance::EMatchesBody(_)
         | ExprInstance::EPercentPercentBody(_)
         | ExprInstance::EPlusPlusBody(_)
+        | ExprInstance::EFreeBody(_)
+        | ExprInstance::EParamsBody(_)
         | ExprInstance::EMinusMinusBody(_) => None,
     }
 }
@@ -1274,6 +1318,7 @@ mod tests {
                     remainder: None,
                     free_count: 0,
                     cost_signature: None,
+                    query_spec: None,
                 }],
                 body: Some(map.clone()),
                 persistent: false,
@@ -1292,6 +1337,7 @@ mod tests {
                 uri: Vec::new(),
                 injections: Default::default(),
                 locally_free: Vec::new(),
+                space_types: Vec::new(),
             }],
             ..Par::default()
         };

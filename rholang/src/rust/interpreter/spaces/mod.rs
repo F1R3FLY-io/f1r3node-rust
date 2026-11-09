@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod allocator;
+pub mod anchor;
 pub mod counter;
 pub mod disciplines;
 pub mod ephemeral;
@@ -25,3 +26,8 @@ pub mod record;
 pub mod settle;
 pub mod theory;
 pub mod types;
+
+/// Added by decision 102 (plan v4 C5): the support that the unit tests of the native spaces
+/// share: the scripted replay of the pick tests.
+#[cfg(test)]
+pub(crate) mod test_support;

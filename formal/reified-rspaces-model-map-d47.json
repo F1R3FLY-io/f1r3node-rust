@@ -32,29 +32,11 @@
       "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
       "statement": "Native replay fails closed before any effect: no ready row ends NotReady with no call, a forged footprint and an outcome that does not fit the staged kind end Mismatch before any call, and a fire whose recorded candidate is another COMM ends Mismatch after its introduction only, with no COMM observation and no effect (H26)."
     },
-    "N4": {
-      "kind": "rocq",
-      "name": "view_charge_cache_independent",
-      "file": "formal/rocq/reified_rspaces/theories/EventCorrelation.v",
-      "statement": "A view load charges its key and its value only: a hit and a miss load the same value and charge the same amount, so a warm load and a cold load reserve the same work (H27, P5 of design v2)."
-    },
     "N5": {
       "kind": "tla",
       "name": "NativeReplayOutcomeEqual",
       "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
       "statement": "T8: native replay accepts the journal of play, and only it, and then it has the observer calls, the spending, the effects and the status of play, for every transaction of up to three stores and fires, every phlo limit up to 6 and every journal with one tampered well-formed row."
-    },
-    "N6": {
-      "kind": "tla",
-      "name": "NoBlockedReadiness",
-      "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
-      "statement": "With an honest journal, no space row finds a predecessor that is not complete: the key [2]||sid (I-11) keeps the transactions of one space in one conflict group in operation order, also without the native key [2, 0]."
-    },
-    "N7": {
-      "kind": "tla",
-      "name": "NoDeadlock",
-      "file": "formal/tlaplus/reified_rspaces/NativeReplay.tla",
-      "statement": "Until every intent ends, some intent can step: a space transaction never waits under its stripes (P1), a host operation waits before it takes its stripes (F4), and a failed space row closes the epoch, so no operation waits forever for it, also with a footprint-consistent forged journal."
     },
     "N8": {
       "kind": "rocq",
@@ -76,8 +58,7 @@
         "native_replay"
       ],
       "tla": [
-        "ReplayStep",
-        "SpaceBegin"
+        "ReplayStep"
       ],
       "covers": [
         "N1",
@@ -98,16 +79,13 @@
         "native_replay"
       ],
       "tla": [
-        "ReplayStep",
-        "SpaceRow",
-        "SpaceFail"
+        "ReplayStep"
       ],
       "covers": [
         "N1",
         "N2",
         "N3",
         "N5",
-        "N7",
         "N8"
       ]
     },
@@ -123,23 +101,19 @@
       "rocq": [
         "native_replay"
       ],
-      "tla": [
-        "CanSpaceFail",
-        "Ready"
-      ],
+      "tla": [],
       "covers": [
-        "N3",
-        "N7"
+        "N3"
       ]
     },
     {
-      "item": "NativeBackend::publish_denial",
+      "item": "NativeReplaySession::publish_denial",
       "required": true,
-      "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
-      "scope": "NativeBackend",
+      "file": "rspace++/src/rspace/replay_rspace/native_session/operations.rs",
+      "scope": "NativeReplaySession",
       "kind": "fn",
       "name": "publish_denial",
-      "line": 499,
+      "line": 155,
       "role": "Publishes a recorded denial and fails the operation as play fails it, with the epoch open.",
       "rocq": [
         "native_replay"
@@ -149,26 +123,6 @@
       ],
       "covers": [
         "N2"
-      ]
-    },
-    {
-      "item": "NativeBackend::check_candidate",
-      "required": true,
-      "file": "rspace++/src/rspace/replay_rspace/native_session/space.rs",
-      "scope": "NativeBackend",
-      "kind": "fn",
-      "name": "check_candidate",
-      "line": 517,
-      "role": "Compares the staged COMM of a fire with the recorded candidate before the COMM is observed.",
-      "rocq": [
-        "native_replay"
-      ],
-      "tla": [
-        "ReplayStep"
-      ],
-      "covers": [
-        "N3",
-        "N5"
       ]
     },
     {
@@ -220,86 +174,15 @@
       ]
     },
     {
-      "item": "NativeViewReads",
-      "required": true,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
-      "kind": "struct",
-      "name": "NativeViewReads",
-      "line": 966,
-      "role": "The metered reads of native execution: each view load charges its key and its value, the same on a hit and a miss.",
-      "rocq": [
-        "view_load",
-        "accept_all"
-      ],
-      "covers": [
-        "N4"
-      ]
-    },
-    {
-      "item": "SpaceStoreHandle::begin_metered",
-      "required": true,
-      "file": "rspace++/src/rspace/space_store_handle.rs",
-      "scope": "SpaceStoreHandle",
-      "kind": "fn",
-      "name": "begin_metered",
-      "line": 793,
-      "role": "Begins a transaction whose view loads read through metered reads.",
-      "rocq": [
-        "view_load"
-      ],
-      "covers": [
-        "N4"
-      ]
-    },
-    {
       "item": "SpaceEnv::begin",
       "required": true,
       "file": "rholang/src/rust/interpreter/spaces/agent.rs",
       "scope": "SpaceEnv",
       "kind": "fn",
       "name": "begin",
-      "line": 87,
-      "role": "Begins a space transaction with the metered reads of native execution, or with plain reads.",
-      "rocq": [
-        "view_load"
-      ],
-      "covers": [
-        "N4"
-      ]
-    },
-    {
-      "item": "SpaceIntent::extend_footprint",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/reified/schedule.rs",
-      "scope": "SpaceIntent",
-      "kind": "fn",
-      "name": "extend_footprint",
-      "line": 84,
-      "role": "The footprint of a space intent: the key [2]||sid, the extra channels and the authority keys (I-11).",
-      "tla": [
-        "Keys",
-        "Group",
-        "Turn"
-      ],
-      "covers": [
-        "N6",
-        "N7"
-      ]
-    },
-    {
-      "item": "insert_authority",
-      "required": true,
-      "file": "rholang/src/rust/interpreter/deterministic_reduction.rs",
-      "kind": "fn",
-      "name": "insert_authority",
-      "line": 1044,
-      "role": "Adds the native key [2, 0] in native execution (DR-78, DR-79), a second guarantee.",
-      "tla": [
-        "Keys"
-      ],
-      "covers": [
-        "N6"
-      ]
+      "line": 140,
+      "role": "Opens a space transaction over the lock keys: phase A, then phase B over the same keys (decision 94).",
+      "unmodeled": "Decision 89 retired its only headline, view_charge_cache_independent (N4, H27), with the metered view reads. No live headline models this begin."
     }
   ]
 }

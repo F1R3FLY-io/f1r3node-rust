@@ -2,7 +2,8 @@
 ' program, the space transaction of the same operations, and a stop at a
 ' pre-charge.
 '
-' Source of Figure N10 in ../design.md. The figure restates the host charges
+' The former Figure N10 of ../design.md. Decision 90 retired the legacy charges
+' and that figure of the design. The figure restates the host charges
 ' of storage/charging_rspace.rs (a pre-charge before the host call, then the
 ' post-charges of handle_result) and the chain of
 ' rholang/src/rust/interpreter/reified/legacy_charges.rs. It adds no new fact.

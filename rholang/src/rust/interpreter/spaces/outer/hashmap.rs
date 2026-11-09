@@ -10,14 +10,20 @@
 //! accepts every routed key, it stages no records at a creation, and it has no allocator, so
 //! every allocation in a HashMap space is `Allocation::Baseline`.
 
-use crypto::rust::hash::blake2b512_random::Blake2b512Random;
-use models::rhoapi::Par;
-
-use crate::rust::interpreter::spaces::errors::SpaceError;
+// Changed by decision 128 (kind routing): the store takes the routed layout of A5 and the
+// random-tail names of P4, which are the defaults of `OuterStore`, so it imports only the trait.
+// The text before:
+// ```
+// use crypto::rust::hash::blake2b512_random::Blake2b512Random;
+// use models::rhoapi::Par;
+//
+// use crate::rust::interpreter::spaces::errors::SpaceError;
+// use crate::rust::interpreter::spaces::generic::OuterStore;
+// use crate::rust::interpreter::spaces::namespace::{
+//     self, CollectionKey, NameTail, NativeSpace, RandomPurpose,
+// };
+// ```
 use crate::rust::interpreter::spaces::generic::OuterStore;
-use crate::rust::interpreter::spaces::namespace::{
-    self, CollectionKey, NameTail, NativeSpace, RandomPurpose,
-};
 
 /// The HashMap outer store.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -26,46 +32,63 @@ pub struct HashMapOuter;
 impl OuterStore for HashMapOuter {
     const NAME: &'static str = "hashmap";
 
-    fn key(&self, channel: &Par) -> Result<CollectionKey, SpaceError> {
-        CollectionKey::of_channel(channel)
-    }
-
-    fn data_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par {
-        namespace::gprivate(namespace::data_channel(space, key))
-    }
-
-    fn counter_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par {
-        namespace::gprivate(namespace::collection_counter(space, key))
-    }
-
-    /// `N(sid ‖ tail)` with the 32-byte tail `random.split_byte(0xE0).split_byte(GENSYM).next()`
-    /// (P4 design C.8). It touches no storage.
-    fn gensym(&self, space: NativeSpace, random: &Blake2b512Random) -> Result<Par, SpaceError> {
-        let mut tail = [0u8; 32];
-        for (byte, value) in tail
-            .iter_mut()
-            .zip(RandomPurpose::Gensym.derive(random).next())
-        {
-            *byte = value as u8;
-        }
-        Ok(namespace::gprivate(namespace::name_id(
-            space,
-            NameTail::Random(tail),
-        )))
-    }
+    // Changed by decision 128 (kind routing): the routed layout of A5 and the random-tail names of
+    // P4 are the defaults of `OuterStore`, with these bodies, so the store keeps its name only.
+    // The text before:
+    // ```
+    // fn key(&self, channel: &Par) -> Result<CollectionKey, SpaceError> {
+    //     CollectionKey::of_channel(channel)
+    // }
+    //
+    // fn data_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par {
+    //     namespace::gprivate(namespace::data_channel(space, key))
+    // }
+    //
+    // fn counter_channel(&self, space: NativeSpace, key: &CollectionKey) -> Par {
+    //     namespace::gprivate(namespace::collection_counter(space, key))
+    // }
+    //
+    // /// `N(sid ‖ tail)` with the 32-byte tail `random.split_byte(0xE0).split_byte(GENSYM).next()`
+    // /// (P4 design C.8). It touches no storage.
+    // fn gensym(&self, space: NativeSpace, random: &Blake2b512Random) -> Result<Par, SpaceError> {
+    //     let mut tail = [0u8; 32];
+    //     for (byte, value) in tail
+    //         .iter_mut()
+    //         .zip(RandomPurpose::Gensym.derive(random).next())
+    //     {
+    //         *byte = value as u8;
+    //     }
+    //     Ok(namespace::gprivate(namespace::name_id(
+    //         space,
+    //         NameTail::Random(tail),
+    //     )))
+    // }
+    // ```
 }
 
 #[cfg(test)]
 mod tests {
+    // Added by decision 128 (kind routing): the store module no longer imports these names.
+    use crypto::rust::hash::blake2b512_random::Blake2b512Random;
     use models::rhoapi::expr::ExprInstance;
-    use models::rhoapi::{EList, Expr};
+    // Changed by decision 128 (kind routing): the tests name `Par` themselves. The text before:
+    // use models::rhoapi::{EList, Expr};
+    use models::rhoapi::{EList, Expr, Par};
     use models::rust::utils::{new_gint_par, new_gstring_par};
 
     use super::*;
     use crate::rust::interpreter::reified::route::{classify_channel, ChannelClass};
+    // Changed by decision 128 (kind routing): the tests name the types of the layout. The text
+    // before:
+    // ```
+    // use crate::rust::interpreter::spaces::namespace::{
+    //     canonical_inner_channel_bytes, decode_reified_id, reified_id_of, sole_gprivate_id,
+    //     Durability, ReifiedId, REIFIED_TAG, SID_LEN,
+    // };
+    // ```
     use crate::rust::interpreter::spaces::namespace::{
         canonical_inner_channel_bytes, decode_reified_id, reified_id_of, sole_gprivate_id,
-        Durability, ReifiedId, REIFIED_TAG, SID_LEN,
+        CollectionKey, Durability, NameTail, NativeSpace, ReifiedId, REIFIED_TAG, SID_LEN,
     };
 
     const SPACE: NativeSpace = NativeSpace {

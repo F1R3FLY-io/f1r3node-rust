@@ -85,8 +85,8 @@
                              and Top::challenge)
    reenter_offer,            spaces/disciplines/stack.rs:96, 99-108
    reenter_receive           (reaches_head is true, precedes is ord > head)
-                             and spaces/generic.rs:1090-1111 (Cx::at_head)
-   after_fire, cap           reified/costs.rs:44, 322-333 (FIRE_ROUND_CAP,
+                             and spaces/generic.rs:1089-1110 (Cx::at_head)
+   after_fire, cap           reified/costs.rs:17, 71-82 (FIRE_ROUND_CAP,
                              FireRounds::after_fire)
    next_fire                 spaces/disciplines/stack.rs:159-218
                              (StackView::next_fire: the top waiter, then
@@ -103,28 +103,28 @@
                              starts the count at 0 (the settle before the
                              plan and a settle job). settle_at continues
                              the count (the settle after the plan).
-   fires (the fire count)    spaces/generic.rs:708, 801 and 2623
+   fires (the fire count)    spaces/generic.rs:707, 800 and 2619
                              (Plan.rounds, Cx::rounds, and the new
                              FireRounds of each transaction in run_with)
-   plan_at_cap               spaces/generic.rs:1702-1715 (open_plan: the
+   plan_at_cap               spaces/generic.rs:3791-3804 (open_plan: the
                              settle before the plan, then the cap check of
                              the transaction)
-   offer_loop                spaces/generic.rs:1723-1791 (offer_head)
-   receive_loop,             spaces/generic.rs:1800-1884 and 1887-1896
+   offer_loop                spaces/generic.rs:3812-3899 (offer_head)
+   receive_loop,             spaces/generic.rs:3908-4020 and 4023-4032
    consume_fire              (receive_head and restore_peeked: the plain
                              re-store of a peeked record, Rule E)
-   with_settles              spaces/generic.rs:1702-1715, 1723-1791 and
-                             1768-1852 (open_plan and the settle hooks
+   with_settles              spaces/generic.rs:3791-3804, 3812-3899 and
+                             1085-1101 (open_plan and the settle hooks
                              around the plans) and
                              spaces/disciplines/stack.rs:112-138
    carried, next_round       spaces/settle.rs:643-675 and 681-705
                              (reissued_operation: persistent.then(first-
                              round order), and settle_operation) and
-                             spaces/generic.rs:1783, 1876 (the re-issue of
+                             spaces/generic.rs:1782, 1875 (the re-issue of
                              a plan)
-   produce, consume,         spaces/generic.rs:2544-2714 (run_with of
+   produce, consume,         spaces/generic.rs:2543-2710 (run_with of
    bumped, bump_ord          FamilySpace: the bump, then the plan) and
-                             spaces/counter.rs:165-245 (bump)
+                             spaces/counter.rs:165-244 (bump)
    apply, run                the staged view of the substrate
                              (space_store_handle.rs, stage_produce and
                              stage_consume): a store puts its record in
@@ -138,7 +138,7 @@
                              StackDiscipline.tla (no settle hooks)
    scan, settle_round,       spaces/disciplines/stack.rs:159-218,
    settle_trace              spaces/settle.rs:404-498 and 519-563, and
-                             spaces/generic.rs:1021-1049 (the scans of the
+                             spaces/generic.rs:1020-1048 (the scans of the
                              two tops, the payload decode, the metered
                              match, the copies of the plan and of the
                              lift, the prepaid unwrap, the re-offer)
@@ -202,7 +202,12 @@
                                           at most cap times, and a
                                           transaction that re-issues at the
                                           cap fired exactly cap times
-                                          (I-21)
+                                          (I-21). The settle also
+                                          terminates with the book of
+                                          refused pairs, because the book
+                                          stops a second retry of a
+                                          refused pair in the same run
+                                          (C4)
     7. stack_plan_permutation_invariant   the plans ignore the list order
     8. stack_without_settle_breaks_inv    without the settle INV fails
                                           (the computed counterexample)
@@ -216,6 +221,9 @@
                                           above 0)
    12. settle_trace_covered               a settle reserves its reads
                                           before it makes them (DR-88)
+                                          Decision 96 (decision 89,
+                                          DR-131) disables this headline
+                                          with the host-work metering.
    13. stack_settle_keeps_unspent_records a settle loses no record, from
                                           every fire count: only a fire of
                                           a waiter that does not peek
@@ -2586,6 +2594,8 @@ Proof.
   split; [cbv; discriminate |]. split; [reflexivity | exact I].
 Qed.
 
+(* Disabled by decision 96 (decision 89, DR-131): settle_trace_covered goes
+   with the host-work metering. The section stays below as a comment.
 (* ── 15. Headline 12: a settle reserves its reads before it makes them ───── *)
 
 (* The metering rule of DR-88 (decision 42), restated from AgentReadCoverage.v
@@ -2912,6 +2922,7 @@ Section SettleMetering.
     - rewrite after_rounds_read. lia.
   Qed.
 End SettleMetering.
+*)
 
 Print Assumptions stack_head_is_max_ord.
 Print Assumptions stack_produce_preserves_inv.
@@ -2924,5 +2935,8 @@ Print Assumptions stack_peek_restore_needs_no_settle.
 Print Assumptions stack_settle_terminates.
 Print Assumptions stack_plan_permutation_invariant.
 Print Assumptions stack_without_settle_breaks_inv.
+(* Disabled by decision 96 (decision 89, DR-131): settle_trace_covered goes
+   with the host-work metering.
 Print Assumptions settle_trace_covered.
+*)
 Print Assumptions stack_settle_keeps_unspent_records.

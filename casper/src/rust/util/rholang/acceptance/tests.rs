@@ -74,6 +74,9 @@ fn observation() -> StateBoundObservation {
         retained_phlo: 0,
         resource_rev: 30,
         fee_rev: 1,
+        // Added by G3 (DR-135, S7): no owner funding.
+        owner_phlo: 0,
+        owner_rev: 0,
         operation_evidence_hash: [5; 32],
         funding_evidence_hash: [6; 32],
         failure_class: 0,
@@ -247,4 +250,35 @@ fn publication_remains_closed_without_authenticated_scope_and_schedule() {
         .expect("a complete private cut may be settled in isolation");
     assert_eq!(draft.envelope_identity(), [1; 32]);
     assert!(prepared.authorize_publication().is_err());
+}
+
+/// Added by G3 (DR-135, S11): item 13. The signed limit bounds only the
+/// caller's part of the used phlo. A run that uses 5 past the limit 10 is
+/// accepted when its owners paid those 5, and it exceeds the limit when
+/// they paid 4. An owner part above the used phlo is rejected.
+#[test]
+fn the_signed_limit_bounds_only_the_client_part() {
+    let mut owned = observation();
+    owned.phlo_used = 15;
+    owned.fresh_phlo = 15;
+    owned.owner_phlo = 5;
+    owned.owner_rev = 5 * 3;
+    owned.resource_rev = (15 - 5) * 10 + 5 * 3;
+    assert!(
+        compare_state_bound_observations([1; 32], [2; 32], [7; 32], 10, 10, &owned, &owned).is_ok()
+    );
+    let mut short = owned.clone();
+    short.owner_phlo = 4;
+    short.owner_rev = 4 * 3;
+    short.resource_rev = (15 - 4) * 10 + 4 * 3;
+    assert!(
+        compare_state_bound_observations([1; 32], [2; 32], [7; 32], 10, 10, &short, &short)
+            .is_err()
+    );
+    let mut above = owned.clone();
+    above.owner_phlo = 16;
+    assert!(
+        compare_state_bound_observations([1; 32], [2; 32], [7; 32], 10, 10, &above, &above)
+            .is_err()
+    );
 }

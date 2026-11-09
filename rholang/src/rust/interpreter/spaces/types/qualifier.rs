@@ -2,9 +2,9 @@
 //! design B.8 ports the legacy type as it is).
 //!
 //! The config record of a space names its qualifier (I-17). The channels of `temp` and `seq`
-//! spaces live for one deploy (I-4, P7). Legacy execution refuses `seq` with
-//! `QualifierUnavailable`, because the Seq rules need the job order of native execution (P7,
-//! design v3 QT-5).
+//! spaces live for one deploy (I-4, P7). The Seq rules need the job order of native execution
+//! (P7, design v3 QT-5). Spaces run only in native execution, and outside it every space entry
+//! point fails with `RuntimeUnavailable` (decision 90, C6).
 
 use std::fmt;
 

@@ -39,8 +39,13 @@ use models::rust::rholang::implicits::single_bundle;
 use prost::Message;
 
 use super::{static_authority_plan, static_authority_signatures, SigKey};
+// Changed by G3 (DR-135): the estimate sizes the priced region of the run.
+// use crate::rust::interpreter::accounting::authority::{
+//     canonical_cost_signature, cost_region, cost_signature_to_sig, sig_to_cost_signature,
+//     UnprovableDemand,
+// };
 use crate::rust::interpreter::accounting::authority::{
-    canonical_cost_signature, cost_region, cost_signature_to_sig, sig_to_cost_signature,
+    canonical_cost_signature, cost_signature_to_sig, priced_cost_region, sig_to_cost_signature,
     UnprovableDemand,
 };
 use crate::rust::interpreter::accounting::byte_accounting::{
@@ -57,7 +62,8 @@ use crate::rust::interpreter::accounting::native_phlo_rules::{
     NativePhloDimension, NativePhloRules,
 };
 use crate::rust::interpreter::accounting::{RuntimeBudget, Sig};
-use crate::rust::interpreter::deterministic_reduction;
+// Changed by DR-132 (P17): the deterministic scheduler is gone (D3-A).
+// use crate::rust::interpreter::deterministic_reduction;
 use crate::rust::interpreter::env::Env;
 use crate::rust::interpreter::errors::InterpreterError;
 use crate::rust::interpreter::interpreter::InterpreterImpl;
@@ -103,6 +109,13 @@ pub enum IncompleteReason {
     /// reason. Since the G1-6 fix, a client lane is a lane at whose purse a
     /// source is located, or that a source permits for at least one class.
     ForeignLane,
+    /// Added by Reified RSpaces decision 90 (E-1): a use block
+    /// (`Par.use_blocks`) or an annotated `new` (`New.space_types`) among the
+    /// top-level expressions of an execution position. The reducer runs its
+    /// body through a space agent, whose COMMs and stored bytes the estimate
+    /// does not model, so that demand leaves the estimate and the gate holds
+    /// the signed limit.
+    SpaceConstruct,
 }
 
 /// Whether the estimate covers all cost of the deploy (design §5.3).
@@ -281,15 +294,20 @@ pub fn linear_cost_estimate(
     schedule: &PhloScheduleV1<'_>,
     evaluator: &ReducerCore,
 ) -> Result<CostEstimate, InterpreterError> {
-    debug_assert!(
-        deterministic_reduction::current().is_none(),
-        "the pre-execution estimate runs outside a reduction session"
-    );
+    // Changed by DR-132 (P17): no reduction session exists after the revert,
+    // so the estimate cannot run inside one.
+    // debug_assert!(
+    //     deterministic_reduction::current().is_none(),
+    //     "the pre-execution estimate runs outside a reduction session"
+    // );
     let rules = NativePhloRules::resolve(schedule)
         .map_err(|error| InterpreterError::ReduceError(error.to_string()))?;
     let core = isolated_evaluator(evaluator);
     stacker::grow(SIZING_STACK_BYTES, || {
-        let mut estimator = Estimator::new(funding, &core)?;
+        // Changed by G3 (DR-135): the regions of the run carry the actual
+        // price of the schedule, so the estimate sizes them with it (R4).
+        // let mut estimator = Estimator::new(funding, &core)?;
+        let mut estimator = Estimator::new(funding, schedule.actual_price, &core)?;
         estimator.measure(resolved)?;
         // Changed by the G1-4a fix (review M-2): the plan and the static
         // signature list canonicalize every signature recursively, so they
@@ -348,6 +366,12 @@ fn isolated_evaluator(core: &ReducerCore) -> ReducerCore {
         metering: metering.clone(),
         substitute: Substitute { metering },
         residue_seal: false,
+        // Added by G3 (DR-135): the estimate sizes the term of the deployment
+        // itself, outside any fired body.
+        owner: None,
+        caller: None,
+        // Added by G3 (DR-135, S3b): nor held values.
+        held: crate::rust::interpreter::accounting::owner_funding::HeldMap::default(),
         ..core.clone()
     }
 }
@@ -455,12 +479,28 @@ fn par_parts<'a>(par: &'a Par, children: &mut Vec<(u32, Subterm<'a>)>) -> Metric
     for send in &par.sends {
         add(&mut own, send.locally_free.len());
         push_pars(children, 2, send.chan.iter().chain(send.data.iter()));
+        if let Some(params) = &send.params {
+            add(&mut own, 0);
+            push_pars(children, 3, params.positional.iter());
+            for (key, value) in &params.named {
+                add(&mut own, key.len());
+                push_pars(children, 4, std::iter::once(value));
+            }
+        }
     }
     for receive in &par.receives {
         add(&mut own, receive.locally_free.len());
         for bind in &receive.binds {
             add(&mut own, 0);
             push_pars(children, 3, bind.patterns.iter().chain(bind.source.iter()));
+            if let Some(query) = &bind.query_spec {
+                add(&mut own, 0);
+                push_pars(children, 4, query.payload.iter());
+                for (key, value) in &query.named {
+                    add(&mut own, key.len());
+                    push_pars(children, 5, std::iter::once(value));
+                }
+            }
             children.extend(
                 bind.cost_signature
                     .iter()
@@ -491,6 +531,10 @@ fn par_parts<'a>(par: &'a Par, children: &mut Vec<(u32, Subterm<'a>)>) -> Metric
         }
         push_pars(children, 2, new.p.iter());
         push_pars(children, 3, new.injections.values());
+        for annotation in &new.space_types {
+            add(&mut own, 0);
+            push_pars(children, 3, annotation.space.iter());
+        }
     }
     for expr in &par.exprs {
         add(&mut own, 0);
@@ -569,6 +613,10 @@ fn par_parts<'a>(par: &'a Par, children: &mut Vec<(u32, Subterm<'a>)>) -> Metric
         add(&mut own, 0);
         children.extend(stack.cells.iter().map(|cell| (2, Subterm::Signature(cell))));
     }
+    for block in &par.use_blocks {
+        add(&mut own, 0);
+        push_pars(children, 2, block.space.iter().chain(block.body.iter()));
+    }
     if leaf {
         own.height = PAR_LEAF_HEIGHT;
     }
@@ -629,6 +677,14 @@ fn expr_operands(expr: &Expr) -> Vec<(u32, Option<&Par>)> {
         ExprInstance::EMatchesBody(body) => pair(&body.target, &body.pattern),
         ExprInstance::EListBody(list) => each(3, &list.ps),
         ExprInstance::ETupleBody(tuple) => each(3, &tuple.ps),
+        ExprInstance::EFreeBody(free) => each(3, &free.args),
+        ExprInstance::EParamsBody(params) => {
+            let mut slots =
+                Vec::with_capacity(params.positional.len().saturating_add(params.named.len()));
+            slots.extend(params.positional.iter().map(|value| (3, Some(value))));
+            slots.extend(params.named.values().map(|value| (4, Some(value))));
+            slots
+        }
         ExprInstance::ESetBody(set) => each(3, &set.ps),
         ExprInstance::EMapBody(map) => {
             let mut slots = Vec::with_capacity(map.kvs.len().saturating_mul(2));
@@ -683,6 +739,10 @@ fn expr_parts<'a>(expr: &'a Expr, own: &mut Metrics, children: &mut Vec<(u32, Su
             open(own, list.remainder.is_some());
         }
         ExprInstance::ETupleBody(tuple) => add(own, tuple.locally_free.len()),
+        ExprInstance::EFreeBody(free) => add(own, free.theory.len()),
+        ExprInstance::EParamsBody(params) => {
+            add(own, params.named.keys().map(String::len).sum::<usize>())
+        }
         ExprInstance::ESetBody(set) => {
             add(own, set.locally_free.len());
             open(own, set.remainder.is_some());
@@ -897,7 +957,10 @@ fn count_plan_work(root: &Par) -> WorkCounts {
         children.clear();
         plan_children(par, depth, execution, &mut children);
         counts.peak_binders = counts.peak_binders.max(binders);
-        for new in &par.news {
+        // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+        // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+        // for new in &par.news {
+        for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
             counts.peak_binders = counts
                 .peak_binders
                 .max(binders.saturating_add(new_levels(new)));
@@ -949,7 +1012,10 @@ fn plan_children<'a>(
                 .map(|body| (body, 0, true, count(receive.bind_count))),
         );
     }
-    for new in &par.news {
+    // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a space
+    // annotation, as a marker body was never walked (decision 90 R-2). The text before:
+    // for new in &par.news {
+    for new in par.news.iter().filter(|new| new.space_types.is_empty()) {
         out.extend(
             new.p
                 .iter()
@@ -1111,6 +1177,9 @@ pub(crate) struct Estimator<'e> {
     deploy_signature: Option<CostSignature>,
     /// The field length of the deploy region inside a `CostAuthority`.
     deploy_seal: Option<u64>,
+    /// Added by G3 (DR-135): the price that every region of the run carries
+    /// (R4). It sizes each region.
+    price: u64,
     binders: Vec<Binder>,
     env: Env<Par>,
     /// Added by the second G1-4a fix (re-review HIGH-1): the peak binder count
@@ -1167,12 +1236,21 @@ enum Task<'a> {
 }
 
 impl<'e> Estimator<'e> {
-    pub(crate) fn new(funding: &Sig, core: &'e ReducerCore) -> Result<Self, InterpreterError> {
+    // Changed by G3 (DR-135): the estimator takes the price of the regions of
+    // the run (R4).
+    // pub(crate) fn new(funding: &Sig, core: &'e ReducerCore) -> Result<Self, InterpreterError> {
+    pub(crate) fn new(
+        funding: &Sig,
+        price: u64,
+        core: &'e ReducerCore,
+    ) -> Result<Self, InterpreterError> {
         let deploy_signature = sig_to_cost_signature(funding)
             .ok()
             .and_then(|signature| canonical_cost_signature(&signature).ok());
         let deploy_seal = match deploy_signature.as_ref() {
-            Some(signature) => region_field_bytes(signature, 0),
+            // Changed by G3 (DR-135): the deploy region carries the price.
+            // Some(signature) => region_field_bytes(signature, 0),
+            Some(signature) => region_field_bytes(signature, 0, price),
             None => None,
         };
         let mut estimator = Self {
@@ -1181,6 +1259,8 @@ impl<'e> Estimator<'e> {
             deploy_key: funding.lane_hash(),
             deploy_signature,
             deploy_seal,
+            // Added by G3 (DR-135).
+            price,
             binders: Vec::new(),
             env: Env::new(),
             peak_binders: 0,
@@ -1467,6 +1547,8 @@ impl<'e> Estimator<'e> {
             | ExprInstance::EPercentPercentBody(_)
             | ExprInstance::EPlusPlusBody(_)
             | ExprInstance::EMinusMinusBody(_)
+            | ExprInstance::EFreeBody(_)
+            | ExprInstance::EParamsBody(_)
             | ExprInstance::EMatchesBody(_) => operands(),
         }
     }
@@ -1628,7 +1710,14 @@ impl<'e> Estimator<'e> {
             Err(reason) => return Ok(Err(reason)),
         };
         let mut pars = 0u64;
-        for datum in &send.data {
+        // Changed by decision 112 (O-3): a send's params take the size rule of its data.
+        // The text before:
+        // for datum in &send.data {
+        for datum in send.data.iter().chain(
+            send.params
+                .iter()
+                .flat_map(|params| params.positional.iter().chain(params.named.values())),
+        ) {
             if !is_closed(&datum.locally_free) {
                 return Ok(Err(IncompleteReason::OpenData));
             }
@@ -1692,6 +1781,44 @@ impl<'e> Estimator<'e> {
         Ok(Ok(byte_count(pattern.encoded_len())))
     }
 
+    /// The bytes of the query values of a bind. Decision 120 O-3 gives them the rule of the bind
+    /// patterns: a closed value, no marker, and the field length of the substituted value.
+    fn query_length(&self, bind: &ReceiveBind) -> Sizing<u64> {
+        let Some(query) = bind.query_spec.as_ref() else {
+            return Ok(Ok(0));
+        };
+        let mut sum = 0u64;
+        for value in query.payload.iter().chain(query.named.values()) {
+            if !is_closed(&value.locally_free) {
+                return Ok(Err(IncompleteReason::OpenPattern));
+            }
+            if !self.fits(self.measures.par(value)) {
+                return Ok(Err(IncompleteReason::UnsizedValue));
+            }
+            let Ok(substituted) = self
+                .core
+                .substitute
+                .substitute_and_charge(value, 1, &self.env)
+            else {
+                return Ok(Err(IncompleteReason::UnsizedValue));
+            };
+            let length = match find_marker(&substituted)? {
+                Some(Marker::Poison) => {
+                    return Ok(Err(IncompleteReason::ReceivedValueInIntroduction))
+                }
+                Some(Marker::Unknown) => return Ok(Err(IncompleteReason::UnsizedValue)),
+                None => byte_count(substituted.encoded_len()),
+            };
+            let Ok(next) = message_field_bytes(1, length)
+                .and_then(|field| sum.checked_add(field).ok_or(ByteAccountingError::Overflow))
+            else {
+                return Ok(Err(IncompleteReason::UnsizedValue));
+            };
+            sum = next;
+        }
+        Ok(Ok(sum))
+    }
+
     /// Substitutes `term` as the reducer does when it stores it, measures the
     /// result and checks it for markers (design §5.6, item 5).
     fn substituted_length(&mut self, term: &Par, depth: i32, shift: usize) -> Sizing<u64> {
@@ -1746,9 +1873,14 @@ impl<'e> Estimator<'e> {
                 Ok(bytes) => bytes,
                 Err(reason) => return Ok(Err(reason)),
             };
+            let query = match self.query_length(bind)? {
+                Ok(bytes) => bytes,
+                Err(reason) => return Ok(Err(reason)),
+            };
             let Some(sum) = binds
                 .checked_add(channel)
                 .and_then(|sum| sum.checked_add(pattern))
+                .and_then(|sum| sum.checked_add(query))
             else {
                 return Ok(Err(IncompleteReason::UnsizedValue));
             };
@@ -1854,7 +1986,9 @@ impl<'e> Estimator<'e> {
                 Some(metrics)
                     if metrics.height.saturating_add(WRAPPER_MARGIN) <= SIZING_HEIGHT_LIMIT =>
                 {
-                    Ok(region_field_bytes(signature, discriminator))
+                    // Changed by G3 (DR-135): the region carries the price.
+                    // Ok(region_field_bytes(signature, discriminator))
+                    Ok(region_field_bytes(signature, discriminator, self.price))
                 }
                 Some(_) | None => Ok(None),
             },
@@ -1928,7 +2062,13 @@ impl<'e> Estimator<'e> {
         }
         let mut channels = Vec::with_capacity(receive.binds.len());
         for bind in &receive.binds {
-            let channel = self.fresh_channel(bind.source.as_ref());
+            // Changed by decision 112 (O-3): a query keeps the class of a non-fresh channel.
+            // The text before:
+            // let channel = self.fresh_channel(bind.source.as_ref());
+            let channel = match bind.query_spec {
+                Some(_) => None,
+                None => self.fresh_channel(bind.source.as_ref()),
+            };
             if channel.is_none() {
                 self.violate(IncompleteReason::NonFreshChannel);
             }
@@ -2002,12 +2142,21 @@ impl<'e> Estimator<'e> {
     /// Rules X3 and X8 on the top-level expressions of an execution position.
     /// Rule X1 already covers a dequotation there.
     pub(crate) fn check_exprs(&mut self, par: &Par) -> Result<(), InterpreterError> {
+        match (
+            par.use_blocks.as_slice(),
+            par.news.iter().any(|new| !new.space_types.is_empty()),
+        ) {
+            ([], false) => {}
+            _ => self.violate(IncompleteReason::SpaceConstruct),
+        }
         for expr in &par.exprs {
             match expr.expr_instance.as_ref() {
                 Some(ExprInstance::EMethodBody(_)) => {
                     self.violate(IncompleteReason::MethodInProcessPosition)
                 }
                 Some(ExprInstance::EVarBody(_)) => {}
+                // Retired by decision 112: the syntax now lives in protobuf fields, so the check at
+                // the start of this function reports a space construct.
                 Some(_) | None => {
                     if self.expr_names_fresh(expr) {
                         self.violate(IncompleteReason::EscapingName);
@@ -2083,7 +2232,11 @@ impl<'e> Estimator<'e> {
                     let mut ordered = Vec::with_capacity(
                         par.sends.len()
                             + par.receives.len()
-                            + par.news.len()
+                            // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New
+                            // with a space annotation, as a marker body was never walked
+                            // (decision 90 R-2). The text before:
+                            // + par.news.len()
+                            + par.news.iter().filter(|new| new.space_types.is_empty()).count()
                             + par.matches.len()
                             + par.conditionals.len()
                             + par.bundles.len()
@@ -2096,7 +2249,16 @@ impl<'e> Estimator<'e> {
                             .iter()
                             .map(|receive| Task::Receive(receive, scope)),
                     );
-                    ordered.extend(par.news.iter().map(|new| Task::New(new, scope, resolving)));
+                    // Changed by decision 112 (ruling 1): a walk of `par.news` skips a New with a
+                    // space annotation, as a marker body was never walked (decision 90 R-2).
+                    // The text before:
+                    // ordered.extend(par.news.iter().map(|new| Task::New(new, scope, resolving)));
+                    ordered.extend(
+                        par.news
+                            .iter()
+                            .filter(|new| new.space_types.is_empty())
+                            .map(|new| Task::New(new, scope, resolving)),
+                    );
                     ordered.extend(
                         par.matches
                             .iter()
@@ -2672,8 +2834,17 @@ impl SignatureUnitsMeter for EstimateUnits {
 /// The field length of the region of `signature` inside a `CostAuthority`,
 /// from the reducer's own region constructor. The identity is a 32-byte hash
 /// for every entropy, so a zero entropy gives the run-time length.
-fn region_field_bytes(signature: &CostSignature, discriminator: u32) -> Option<u64> {
-    cost_region(signature, &[0; 32], discriminator)
+///
+/// Changed by G3 (DR-135): the region carries `price`, the price of every
+/// region of the run, so the length counts its varint (R4). A residue region
+/// has price 0 and is shorter, so the estimate stays an upper bound.
+// fn region_field_bytes(signature: &CostSignature, discriminator: u32) -> Option<u64> {
+//     cost_region(signature, &[0; 32], discriminator)
+//         .ok()
+//         .and_then(|region| message_field_bytes(1, byte_count(region.encoded_len())).ok())
+// }
+fn region_field_bytes(signature: &CostSignature, discriminator: u32, price: u64) -> Option<u64> {
+    priced_cost_region(signature, &[0; 32], discriminator, price)
         .ok()
         .and_then(|region| message_field_bytes(1, byte_count(region.encoded_len())).ok())
 }
@@ -2724,6 +2895,7 @@ fn bare_level(par: &Par) -> Option<i32> {
         && par.connectives.is_empty()
         && par.conditionals.is_empty()
         && par.cost_signed_terms.is_empty()
+        && par.use_blocks.is_empty()
         && par.cost_stacks.is_empty();
     only.then_some(*level)
 }
@@ -2738,6 +2910,7 @@ fn single_expression(par: &Par) -> bool {
         && par.matches.is_empty()
         && par.unforgeables.is_empty()
         && par.bundles.is_empty()
+        && par.use_blocks.is_empty()
 }
 
 /// The `Par` operands that `eval_expr_to_expr` evaluates for one expression
@@ -2781,6 +2954,7 @@ fn evaluated_operands(expr: &Expr) -> Option<Vec<&Par>> {
         | ExprInstance::EPercentPercentBody(_)
         | ExprInstance::EListBody(_)
         | ExprInstance::ETupleBody(_)
+        | ExprInstance::EFreeBody(_)
         | ExprInstance::ESetBody(_)
         | ExprInstance::EMapBody(_) => expr_operands(expr)
             .into_iter()
@@ -2790,6 +2964,7 @@ fn evaluated_operands(expr: &Expr) -> Option<Vec<&Par>> {
         | ExprInstance::EPathmapBody(_)
         | ExprInstance::EZipperBody(_)
         | ExprInstance::EMatchesBody(_)
+        | ExprInstance::EParamsBody(_)
         | ExprInstance::EMinusMinusBody(_) => None,
     }
 }
@@ -2897,6 +3072,8 @@ fn classify_expr(expr: &Expr, operands: &[Evaluated], env_weight: u64) -> Option
         ExprInstance::ETupleBody(_) | ExprInstance::ESetBody(_) | ExprInstance::EMapBody(_) => {
             value(ValueClass::Other, operand_growth)
         }
+        ExprInstance::EFreeBody(_) => value(ValueClass::Other, operand_growth),
+        ExprInstance::EParamsBody(_) => None,
         ExprInstance::EMethodBody(_)
         | ExprInstance::EPathmapBody(_)
         | ExprInstance::EZipperBody(_)

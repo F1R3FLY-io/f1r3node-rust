@@ -288,6 +288,7 @@ impl NodeRuntime {
             proposer_queue_max_pending,
             proposer_state_ref_opt,
             block_processor,
+            pipeline_width,
             block_processor_state,
             block_processor_queue_tx,
             block_processor_queue_rx,
@@ -329,6 +330,7 @@ impl NodeRuntime {
             trigger_propose_f,
             proposer_state_ref_opt,
             block_processor,
+            pipeline_width,
             block_processor_state,
             block_processor_queue_tx,
             block_processor_queue_rx,
@@ -383,6 +385,7 @@ impl NodeRuntime {
             Arc<tokio::sync::RwLock<casper::rust::state::instances::ProposerState>>,
         >,
         block_processor: casper::rust::blocks::block_processor::BlockProcessor<T>,
+        pipeline_width: usize,
         block_processor_state: Arc<InFlightBlocks>,
         block_processor_queue_tx: tokio::sync::mpsc::Sender<BlockQueueItem>,
         block_processor_queue_rx: tokio::sync::mpsc::Receiver<BlockQueueItem>,
@@ -643,6 +646,7 @@ impl NodeRuntime {
                     (block_processor_queue_rx, bpi_block_queue_tx),
                     Arc::new(block_processor),
                     block_processor_state,
+                    pipeline_width,
                 );
 
                 // BlockProcessorInstance::create spawns the processing task and returns a result receiver

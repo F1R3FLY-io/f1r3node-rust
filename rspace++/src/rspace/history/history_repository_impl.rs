@@ -17,6 +17,7 @@ use super::native_reader::NativeHistoryReader;
 use crate::rspace::errors::{HistoryError, RSpaceError};
 use crate::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use crate::rspace::hashing::stable_hash_provider::{hash, hash_from_vec};
+use crate::rspace::history::checkpoint_writer::CheckpointWriter;
 use crate::rspace::history::cold_store::PersistedData;
 use crate::rspace::history::history::History;
 use crate::rspace::history::history_repository::HistoryRepository;
@@ -34,15 +35,13 @@ use crate::rspace::metrics_constants::{
     HISTORY_CHECKPOINT_ACTIONS_METRIC, HISTORY_CHECKPOINT_HISTORY_LOCK_WAIT_TIME_METRIC,
     HISTORY_CHECKPOINT_HISTORY_PROCESS_TIME_METRIC, HISTORY_CHECKPOINT_LEAF_WRITE_TIME_METRIC,
     HISTORY_CHECKPOINT_PARTITION_TIME_METRIC, HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC,
-    HISTORY_CHECKPOINT_ROOTS_LOCK_WAIT_TIME_METRIC, HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC,
-    HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC, HISTORY_CHECKPOINT_STORAGE_ACTIONS_TIME_METRIC,
-    HISTORY_CHECKPOINT_TIME_METRIC, HISTORY_LOCK_CHECKPOINT_SITE, HISTORY_LOCK_READER_SITE,
-    HISTORY_LOCK_RESET_SITE, HISTORY_LOCK_ROOT_SITE,
-    HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
+    HISTORY_CHECKPOINT_SERIALIZE_TIME_METRIC, HISTORY_CHECKPOINT_SERIALIZED_BYTES_METRIC,
+    HISTORY_CHECKPOINT_STORAGE_ACTIONS_TIME_METRIC, HISTORY_CHECKPOINT_TIME_METRIC,
+    HISTORY_LOCK_CHECKPOINT_SITE, HISTORY_LOCK_READER_SITE, HISTORY_LOCK_RESET_SITE,
+    HISTORY_LOCK_ROOT_SITE, HISTORY_REPO_CURRENT_HISTORY_LOCK_CALLS_METRIC,
     HISTORY_REPO_CURRENT_HISTORY_LOCK_WAIT_NS_METRIC, HISTORY_REPO_ROOTS_LOCK_CALLS_METRIC,
     HISTORY_REPO_ROOTS_LOCK_WAIT_NS_METRIC, HISTORY_RSPACE_METRICS_SOURCE, LockSiteMetrics,
-    ROOTS_LOCK_CHECKPOINT_SITE, ROOTS_LOCK_CONTAINS_ROOT_SITE, ROOTS_LOCK_RECORD_ROOT_SITE,
-    ROOTS_LOCK_RESET_SITE,
+    ROOTS_LOCK_CONTAINS_ROOT_SITE, ROOTS_LOCK_RECORD_ROOT_SITE, ROOTS_LOCK_RESET_SITE,
 };
 use crate::rspace::serializers::serializers::{encode_continuations, encode_datums, encode_joins};
 use crate::rspace::state::rspace_exporter::RSpaceExporter;
@@ -53,6 +52,7 @@ use crate::rspace::state::rspace_importer::RSpaceImporter;
 pub struct HistoryRepositoryImpl<C, P, A, K> {
     pub current_history: Arc<Mutex<Box<dyn History>>>,
     pub roots_repository: Arc<Mutex<RootRepository>>,
+    pub checkpoint_writer: Arc<dyn CheckpointWriter>,
     pub leaf_store: Arc<dyn KeyValueStore>,
     pub node_store: Arc<dyn KeyValueStore>,
     pub rspace_exporter: Arc<dyn RSpaceExporter>,
@@ -195,6 +195,7 @@ where
         Box::new(HistoryRepositoryImpl {
             current_history: self.current_history.clone(),
             roots_repository: self.roots_repository.clone(),
+            checkpoint_writer: self.checkpoint_writer.clone(),
             leaf_store: self.leaf_store.clone(),
             node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
@@ -551,6 +552,7 @@ where
             Box::new(HistoryRepositoryImpl {
                 current_history: Arc::new(Mutex::new(staged_history.next)),
                 roots_repository: self.roots_repository.clone(),
+                checkpoint_writer: self.checkpoint_writer.clone(),
                 leaf_store: self.leaf_store.clone(),
                 node_store: self.node_store.clone(),
                 rspace_exporter: self.rspace_exporter.clone(),
@@ -558,16 +560,8 @@ where
                 _marker: PhantomData,
             });
         self.leaf_store.put_if_absent(prepared.cold_actions)?;
-        if !staged_history.writes.is_empty() {
-            staged_history
-                .store
-                .put(staged_history.writes)
-                .map_err(HistoryError::from)?;
-        }
-        self.roots_repository
-            .lock()
-            .expect("root lock")
-            .commit_native(&new_root)
+        self.checkpoint_writer
+            .write(staged_history.writes, &new_root)
             .map_err(HistoryError::from)?;
         Ok(new_repository)
     }
@@ -639,24 +633,6 @@ where
         metrics::histogram!(HISTORY_CHECKPOINT_PARTITION_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
             .record(partition_start.elapsed().as_secs_f64());
 
-        // save new root for state after checkpoint
-        let store_root = |root| {
-            let (result, lock_wait, commit_time) = {
-                let lock_start = Instant::now();
-                let roots_repo_lock =
-                    lock_roots_repository(&self.roots_repository, &ROOTS_LOCK_CHECKPOINT_SITE);
-                let lock_wait = lock_start.elapsed();
-                let commit_start = Instant::now();
-                let result = roots_repo_lock.commit(root);
-                (result, lock_wait, commit_start.elapsed())
-            };
-            metrics::histogram!(HISTORY_CHECKPOINT_ROOTS_LOCK_WAIT_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-                .record(lock_wait.as_secs_f64());
-            metrics::histogram!(HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
-                .record(commit_time.as_secs_f64());
-            result
-        };
-
         // store cold data
         {
             let serialize_start = Instant::now();
@@ -689,14 +665,14 @@ where
 
         // store everything related to history (history data, new root and populate
         // cache for new root)
-        let (new_history, lock_wait, process_time) = {
+        let (new_history, nodes, lock_wait, process_time) = {
             let lock_start = Instant::now();
             let history_lock =
                 lock_current_history(&self.current_history, &HISTORY_LOCK_CHECKPOINT_SITE);
             let lock_wait = lock_start.elapsed();
             let process_start = Instant::now();
-            let new_history = history_lock.process(history_actions).unwrap();
-            (new_history, lock_wait, process_start.elapsed())
+            let (new_history, nodes) = history_lock.stage(history_actions).unwrap();
+            (new_history, nodes, lock_wait, process_start.elapsed())
         };
         metrics::histogram!(HISTORY_CHECKPOINT_HISTORY_LOCK_WAIT_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
             .record(lock_wait.as_secs_f64());
@@ -704,13 +680,17 @@ where
             .record(process_time.as_secs_f64());
 
         let new_root = new_history.root();
-        store_root(&new_root).expect("History Repository Impl: Unable to store root");
-
-        ();
+        let commit_start = Instant::now();
+        self.checkpoint_writer
+            .write(nodes, &new_root)
+            .expect("History Repository Impl: Unable to write checkpoint");
+        metrics::histogram!(HISTORY_CHECKPOINT_ROOT_COMMIT_TIME_METRIC, "source" => HISTORY_RSPACE_METRICS_SOURCE)
+            .record(commit_start.elapsed().as_secs_f64());
 
         let next = Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(new_history)),
             roots_repository: self.roots_repository.clone(),
+            checkpoint_writer: self.checkpoint_writer.clone(),
             leaf_store: self.leaf_store.clone(),
             node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),
@@ -740,6 +720,7 @@ where
         Ok(Box::new(HistoryRepositoryImpl {
             current_history: Arc::new(Mutex::new(next)),
             roots_repository: self.roots_repository.clone(),
+            checkpoint_writer: self.checkpoint_writer.clone(),
             leaf_store: self.leaf_store.clone(),
             node_store: self.node_store.clone(),
             rspace_exporter: self.rspace_exporter.clone(),

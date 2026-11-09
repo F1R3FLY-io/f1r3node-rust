@@ -107,6 +107,46 @@ pub fn resolve_cmode(cmode_par: &models::rhoapi::Par) -> Option<ConsensusMode> {
 /// genesis-embedded strings).
 pub const FS_NATIVE_URN_PREFIX: &str = "rho:io:fs:native:";
 
+/// Versioned URI prefix used when the runtime registers each FS
+/// native handler in `rho_runtime::fs_handlers_to_definitions` and
+/// when `casper::genesis::contracts::fs_genesis` composes the
+/// FsGenesis source's top-level `new`-clause bindings.  A future
+/// Phase 1 hotfix bumping to `1.0.1` edits HERE only; both sides
+/// then rebuild from this constant.  Cross-crate drift between
+/// this constant and `casper::fs_genesis::FS_NATIVE_URN_PREFIX`
+/// is pinned by
+/// `casper::tests::genesis::contracts::fs_genesis_spec::
+/// fs_native_urn_versioned_prefix_matches_rholang`.
+///
+/// MUST be a strict superset of [`FS_NATIVE_URN_PREFIX`] — the
+/// reducer's `filter_fs_native_urns` check in `eval_new` tests
+/// `urn.starts_with(FS_NATIVE_URN_PREFIX)`, so every URN registered
+/// via `fs_handlers_to_definitions` under this versioned prefix
+/// still matches the shorter filter prefix.  The invariant is
+/// enforced at compile time by the const-assertion below.
+pub const FS_NATIVE_URN_PREFIX_VERSIONED: &str = "rho:io:fs:native:1.0.0/";
+
+const _: () = {
+    let v = FS_NATIVE_URN_PREFIX_VERSIONED.as_bytes();
+    let p = FS_NATIVE_URN_PREFIX.as_bytes();
+    assert!(
+        v.len() > p.len(),
+        "FS_NATIVE_URN_PREFIX_VERSIONED must be strictly longer than \
+         FS_NATIVE_URN_PREFIX (it carries the version suffix)."
+    );
+    let mut i = 0;
+    while i < p.len() {
+        assert!(
+            v[i] == p[i],
+            "FS_NATIVE_URN_PREFIX_VERSIONED must start with \
+             FS_NATIVE_URN_PREFIX; a drift here would let user \
+             deploys bind the versioned URNs without tripping the \
+             reducer's filter_fs_native_urns gate."
+        );
+        i += 1;
+    }
+};
+
 /// Per-call byte cap on `fs_read` / `fs_read_at` — spec §Efficiency
 /// + §Cost accounting.  A read request larger than this surfaces
 /// `FSERR_QUOTA_EXCEEDED`.

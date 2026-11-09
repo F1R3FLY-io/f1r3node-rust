@@ -72,16 +72,16 @@ eval_inner():
      - Bundle -> evaluate in restricted scope
      - Expr -> evaluate arithmetic/logic/collection operations
   4. If produce/consume returns a match -> dispatch continuation
-  5. Drain spawned branch tasks through FuturesUnordered and aggregate errors
-     in stable source order
+  5. Await all spawned tasks, aggregate errors (parTraverseSafe pattern)
 ```
 
 **Parallel evaluation**: Par branches (`A | B | C`) are dispatched as independent
-tokio tasks via `tokio::spawn` and drained through `FuturesUnordered`, preserving
-true parallel execution without a sequential `JoinHandle` barrier. Per-channel
-FIFO locks in RSpace (`tokio::sync::Mutex`) ensure deterministic COMM matching.
-The `ReplayRSpace` event log oracle forces the same COMMs during replay
-regardless of scheduling order.
+tokio tasks via `tokio::spawn`, matching Scala's `parTraverse` for true parallel
+execution. Per-channel FIFO locks in RSpace (`tokio::sync::Mutex`) ensure
+deterministic COMM matching. The `ReplayRSpace` event log oracle forces the same
+COMMs during replay regardless of scheduling order. On the cost-accounting
+branch (DR-132), inside the per-call scope of `inj`, the parent does not await
+its spawned tasks. `inj` drains the scope before it returns.
 
 **Persistent operation re-issue**: When a persistent produce triggers a COMM, the
 data was matched inline (never stored). The reducer re-issues it via
@@ -261,12 +261,12 @@ as the async ISpace provides its own interior mutability and per-channel locking
 `registry_bootstrap.rs` -- Built-in registry contracts installed at genesis.
 
 **Legacy URI aliases**: For backward compatibility with older clients (e.g., rust-client), the following `rho:rchain:*` URIs are aliased to their canonical `rho:system:*` equivalents:
-- `rho:rchain:pos` -> `rho:system:pos` (PoS contract)
-- `rho:rchain:revVault` -> `rho:vault:system` (SystemVault)
 - `rho:rchain:deployId` -> `rho:system:deployId` (deploy context)
 - `rho:rchain:deployerId` -> `rho:system:deployerId` (deploy context)
 
-Aliases are resolved at the registry and normalizer level. Usage is logged at debug level (`f1r3fly.legacy-uri`).
+`rho:rchain:pos` and `rho:rchain:revVault` were never wired up as aliases and do not appear anywhere in the codebase; use `rho:system:pos` and `rho:vault:system` directly.
+
+Aliases are resolved in the normalizer environment. Usage is logged at debug level (`f1r3fly.models.legacy_uri`).
 
 ## Tests
 

@@ -10,19 +10,25 @@
 ' backend replay_rspace/native_session/space.rs with the accessor space_store
 ' (decision 47). It adds no new fact.
 '
+' Changed by decisions 98, 109 and 114: the node setup installs the
+' VectorDB services of a validator, a play publishes the batch of each
+' commit, and nothing repairs the mirror. Before, the node setup started
+' the mirror reconciler, and the final result of an evaluation settled its
+' mirror journal.
+'
 ' Reading order, from the top to the bottom:
 '   1. The callers: a deploy program, the code of a user agent (P8), Casper,
 '      which evaluates each deploy and never changes, and the node setup,
-'      which starts the mirror reconciler (P6).
+'      which installs the VectorDB services of a validator (P6).
 '   2. The frontend: the parser, the normalizer arms and the syntax layer
-'      turn the source text into a Par with marker tuples (P2, P3).
+'      turn the source text into a Par with the fields of each construct (P2, P3).
 '   3. The interpreter at the baseline with its hook lines: the reducer and
 '      the runtime constructors.
 '   4. The Reified runtime: the routing, the scheduling, the system
 '      processes, the translation of user agents, the Seq rules, the costs,
 '      and the VectorDB services.
 '   5. The spaces: the agent and its engine, the disciplines, the outer
-'      stores, the records, the theories, the factory, the mirror journal,
+'      stores, the records, the theories, the factory, the mirror capture,
 '      and the exact numbers.
 '   6. The substrate of P1. The handle opens a HostTxn through the
 '      SpaceTxnHost trait. The HostTxn holds the staging core, and its commit
@@ -72,7 +78,7 @@ package "Callers" as CALLERS $rrs_host {
   component NODE $rrs_host [
   **Node setup**
   node/src/rust/runtime/setup.rs:
-  starts the mirror reconciler (P6)
+  installs the VectorDB services (P6)
   ]
 }
 
@@ -93,8 +99,8 @@ package "Frontend: source text to Par (P2, P3)" as FRONTEND $rrs_syntax {
   component SYNTAX $rrs_syntax [
   **Syntax layer** models/src/rust/reified/
   encoding, builders, params, query_spec,
-  validation: the marker tuples USE, NEWSPACE,
-  PARAMS, QUERY and FREE (decisions 18, 21)
+  validation: the fields use_blocks, space_types,
+  params, query_spec and EFree (decision 112)
   models/src/rust/space_factory_urn.rs:
   the families, URNs and aliases
   ]
@@ -102,16 +108,14 @@ package "Frontend: source text to Par (P2, P3)" as FRONTEND $rrs_syntax {
 
 package "Interpreter at the baseline, with hook lines (P2, P4, P7)" as INTERP $rrs_host {
   component REDUCER $rrs_host [
-  **Reducer** reduce.rs, util/mod.rs,
-  deterministic_reduction.rs
+  **Reducer** reduce.rs, util/mod.rs
   hooks H2 to H4, receive, new, the
-  root evaluation; Intent::Space
+  root evaluation
   ]
   component RHORUNTIME $rrs_host [
   **Runtime constructors** rho_runtime.rs
   the Reified definitions, the bound
   SpaceTxnHost, the native bind call;
-  interpreter.rs: settles the mirror journal (M1);
   system_processes.rs: embed and ann are recorded
   ]
 }
@@ -125,9 +129,9 @@ package "Reified runtime: rholang/src/rust/interpreter/reified/ (P4 to P9)" as R
   params and queries
   ]
   component SCHED $rrs_name [
-  **Runtime and scheduling**
-  runtime.rs, schedule.rs:
-  space intents in the operation order,
+  **Runtime**
+  runtime.rs: each space job runs inline
+  in the counted task of its caller,
   the modes of the runtime, the scope
   of a root evaluation and its sweep
   ]
@@ -150,13 +154,13 @@ package "Reified runtime: rholang/src/rust/interpreter/reified/ (P4 to P9)" as R
   ]
   component COSTS $rrs_name [
   **Costs and errors**
-  costs.rs, legacy_charges.rs, errors.rs
-  host-work charges, FIRE_ROUND_CAP
+  costs.rs, errors.rs
+  FIRE_ROUND_CAP and the fire rounds
   ]
   component VDBSVC $rrs_service [
   **VectorDB services**
-  vectordb_services.rs: embed and ann
-  mirror_reconciler.rs (P6)
+  vectordb_services.rs: the embedder,
+  the mirror and its writer (P6)
   ]
 }
 
@@ -196,8 +200,8 @@ package "Spaces: rholang/src/rust/interpreter/spaces/ and tensor/ (P4 to P7)" as
   admission fails closed
   ]
   component MIRROR $rrs_service [
-  **Mirror journal** mirror.rs
-  the writes of a deploy
+  **Mirror capture** mirror.rs
+  the net writes of a commit
   ]
   component TENSOR $rrs_system [
   **Exact numbers** tensor/
@@ -233,9 +237,12 @@ package "Substrate of P1: rspace++/src/rspace/space_store_handle.rs" as SUB $rrs
   paired COMM events (replay and reporting)
   staged operations with their staged effects
   ]
+  ' Changed by decision 90 (DR-132): no production caller installs an order scope. The text before:
+  '   operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>
   component COMMIT $rrs_substrate [
   **commit_staged**
-  operation i under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>
+  each operation i, under <latex>\mathit{parent} \mathbin{+\!\!+} [(i, 2)]</latex>
+  only when a test installs an order scope
   read-only checks, host calls,
   and the event correlation (FR-7')
   ]
@@ -315,7 +322,7 @@ database "Hot store\n(hot_store.rs)" as HOT $rrs_storage
 database "History trie" as HIST $rrs_storage
 component CHROMA $rrs_service [
 **ChromaDB service** and
-the **embedder** (fastembed):
+the **embedder** (SBERT):
 local to one node, outside
 every state root
 ]
@@ -345,7 +352,7 @@ EVENTS -[hidden]down-> HOT
 PROGRAM -[$rrs_flow]-> PARSER : source text
 PARSER -[$rrs_flow]right-> NORMALIZERS : syntax tree
 NORMALIZERS -[$rrs_flow]right-> SYNTAX : builders\nand validators
-NORMALIZERS -[$rrs_flow]-> RHORUNTIME : normalized Par\nwith marker tuples
+NORMALIZERS -[$rrs_flow]-> RHORUNTIME : normalized Par\nwith its fields
 CASPER -[$rrs_flow]-> RHORUNTIME : play and replay\nof each deploy
 RHORUNTIME -[$rrs_flow]-> REDUCER : evaluates the term
 
@@ -353,7 +360,7 @@ RHORUNTIME -[$rrs_flow]-> REDUCER : evaluates the term
 REDUCER -[$rrs_flow]-> ROUTE : hooks
 REDUCER -[$rrs_flow]-> SYSPROC : calls on op channels\nand handles
 USERCODE -[$rrs_flow]-> SYSPROC : MATCHER_OP, SINK_OP,\nhandle calls
-NODE -[$rrs_flow]-> VDBSVC : starts the reconciler
+NODE -[$rrs_flow]-> VDBSVC : installs the services\nof a validator
 ROUTE -[$rrs_flow]-> SEQ : scan of a send
 ROUTE -[$rrs_flow]-> USERAGENT : agent route
 ROUTE -[$rrs_flow]-> SCHED : space operation,\nroot evaluation
@@ -362,15 +369,15 @@ SYSPROC -[$rrs_flow]-> SCHED : factory and\nhandle jobs
 SYSPROC -[$rrs_flow]-> VDBSVC : embed, ann
 
 ' Spaces.
-SCHED -[$rrs_flow]-> AGENT : runs each job\nin the operation order
+SCHED -[$rrs_flow]-> AGENT : runs each job\ninline
 SYSPROC -[$rrs_relation]-> FACTORY : constructor
-COSTS <-[$rrs_relation]- AGENT : host-work charges
+COSTS <-[$rrs_relation]- AGENT : the fire rounds
 AGENT -[$rrs_relation]-> DISC : candidate order
 AGENT -[$rrs_relation]-> OUTER : keys and paths
 AGENT -[$rrs_relation]-> RECORDS : envelopes, counters,\nSeq claims
 AGENT -[$rrs_relation]-> THEORY : admission
-AGENT -[$rrs_effect]-> MIRROR : journal entries
-VDBSVC <-[$rrs_flow]- MIRROR : published journal
+AGENT -[$rrs_effect]-> MIRROR : the receipt\nof each commit
+VDBSVC <-[$rrs_flow]- MIRROR : the batch of each\ncommit in play (run_op)
 VDBSVC -[$rrs_flow]right-> CHROMA : mirror writes,\nqueries, embeddings
 DISC -[$rrs_relation]-> TENSOR : exact scores
 SYSPROC -[$rrs_relation]-> TENSOR : rho:lang:vector

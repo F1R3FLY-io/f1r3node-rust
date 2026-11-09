@@ -5,9 +5,20 @@
 // Casper runs a user deploy: a soft checkpoint, the evaluation, the event log, and a revert of
 // the soft checkpoint when the deploy fails. The tests read the results from public channels
 // and from the store, and they decode the space records with the public decoders.
+//
+// Changed by decision 90 (C6, decision 69): spaces have one execution model, native funded
+// execution. So the tests run on the native session of the shared harness (`support::session`),
+// which checkpoints a deploy that succeeds, reverts a deploy that fails, and certifies each
+// deploy by native replay. The setup of this file is a free function over the session, so a call
+// `session.setup()` became `setup(&mut session)`. The legacy session of this file is commented
+// out below.
 
 #[path = "../../models/tests/support/reified_strategies.rs"]
 mod reified_strategies;
+
+// Added by decision 90 (C6): the native session of the shared harness.
+#[path = "support/mod.rs"]
+mod support;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -17,11 +28,14 @@ use models::rhoapi::{BindPattern, Bundle, ListParWithRandom, Par, TaggedContinua
 use models::rust::space_factory_urn::{SpaceFactoryUrn, HASHMAP_BAG_ALIAS, PATHMAP_BAG_ALIAS};
 use models::rust::utils::{new_bundle_par, new_gbytearray_par, new_wildcard_var};
 use prost::Message;
-use reified_strategies::{gbool, gstring};
-use rholang::rust::interpreter::accounting::costs::Cost;
-use rholang::rust::interpreter::accounting::Sig;
-use rholang::rust::interpreter::errors::InterpreterError;
-use rholang::rust::interpreter::interpreter::EvaluateResult;
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use reified_strategies::{gbool, gstring};
+use reified_strategies::gbool;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::accounting::costs::Cost;
+// use rholang::rust::interpreter::accounting::Sig;
+// use rholang::rust::interpreter::errors::InterpreterError;
+// use rholang::rust::interpreter::interpreter::EvaluateResult;
 use rholang::rust::interpreter::reified::factory::{
     handle_capability, handle_continuation, handle_pattern,
 };
@@ -34,7 +48,9 @@ use rholang::rust::interpreter::reified::system_channels::{
     HANDLE_OP_PROCESS, HASHMAP_QUEUE_FACTORY, P4_SYSTEM_CHANNELS, P6_PROCESSES, P8_PROCESSES,
 };
 use rholang::rust::interpreter::reified::system_processes::definitions;
-use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::rho_runtime::{RhoRuntime, RhoRuntimeImpl};
+use rholang::rust::interpreter::rho_runtime::RhoRuntime;
 use rholang::rust::interpreter::spaces::errors::SpaceReplyCode;
 use rholang::rust::interpreter::spaces::factory::urn::{
     factory_capability, registered_aliases, registered_channel, registered_p5_families,
@@ -47,20 +63,27 @@ use rholang::rust::interpreter::spaces::namespace::{
 use rholang::rust::interpreter::spaces::record;
 use rholang::rust::interpreter::spaces::types::config::SpaceConfig;
 use rholang::rust::interpreter::spaces::types::qualifier::SpaceQualifier;
-use rholang::rust::interpreter::system_processes::{
-    test_framework_contracts, BodyRefs, Definition,
-};
-use rholang::rust::interpreter::test_utils::resources::create_runtimes;
+// Changed by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::system_processes::{
+//     test_framework_contracts, BodyRefs, Definition,
+// };
+use rholang::rust::interpreter::system_processes::{test_framework_contracts, BodyRefs};
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rholang::rust::interpreter::test_utils::resources::create_runtimes;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::hashing::stable_hash_provider::hash;
 use rspace_plus_plus::rspace::internal::{Datum, WaitingContinuation};
-use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
-use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+// Disabled by decision 90 (C6): the native session holds the runtime and plays the deploys.
+// use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
+// use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
 use rspace_plus_plus::rspace::trace::event::{Event, IOEvent};
+// Added by decision 90 (C6): the native session of the shared harness.
+use support::session::Session;
 
-const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-factory-deploy";
-const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-factory-payer";
-const PHLO: i64 = 100_000_000;
+// Disabled by decision 90 (C6): the native session funds its own deploy signature and limit.
+// const DEPLOY_SIGNATURE: &[u8] = b"rrs-p4-factory-deploy";
+// const FUNDING_SIGNATURE: &[u8] = b"rrs-p4-factory-payer";
+// const PHLO: i64 = 100_000_000;
 
 /// A deploy that creates a space and two names of it. The handle goes to `@"rrs-handle"` and
 /// the names go to `@"rrs-names"`.
@@ -83,187 +106,202 @@ fn injected(name: &str) -> String { format!("rho:rrs:test:{name}") }
 /// The names that a deploy receives through URI binders.
 type Injections = HashMap<String, Par>;
 
-/// One deploy: its result, its event log, and the space-scoped channels with data that it
-/// left in the store before the revert of a failed deploy.
-struct Deploy {
-    result: EvaluateResult,
-    log: Vec<Event>,
-    residue: BTreeSet<Vec<u8>>,
-}
+// Changed by decision 90 (C6, decision 69): the shared harness (`support::session`) has the
+// native session, the deploy and the error codes. The setup of this file follows as a free
+// function. The legacy copies follow.
+//
+// /// One deploy: its result, its event log, and the space-scoped channels with data that it
+// /// left in the store before the revert of a failed deploy.
+// struct Deploy {
+//     result: EvaluateResult,
+//     log: Vec<Event>,
+//     residue: BTreeSet<Vec<u8>>,
+// }
+//
+// impl Deploy {
+//     /// The codes of the errors: `<Code>` of `reified:<Code>: …`, or the debug form of any
+//     /// other error.
+//     fn codes(&self) -> Vec<String> { error_codes(&self.result.errors) }
+// }
+//
+// fn error_codes(errors: &[InterpreterError]) -> Vec<String> {
+//     let mut codes = Vec::with_capacity(errors.len());
+//     for error in errors {
+//         push_codes(error, &mut codes);
+//     }
+//     codes
+// }
+//
+// fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
+//     match error {
+//         InterpreterError::AggregateError { interpreter_errors } => {
+//             for inner in interpreter_errors {
+//                 push_codes(inner, codes);
+//             }
+//         }
+//         InterpreterError::ReduceError(message) => codes.push(
+//             message
+//                 .strip_prefix("reified:")
+//                 .and_then(|rest| rest.split(':').next())
+//                 .map(str::to_owned)
+//                 .unwrap_or_else(|| message.clone()),
+//         ),
+//         other => codes.push(format!("{other:?}")),
+//     }
+// }
+//
+// /// A play runtime over a fresh in-memory store, with a funded deploy.
+// struct Session {
+//     play: RhoRuntimeImpl,
+// }
+//
+// impl Session {
+//     async fn new() -> Self { Self::with_processes(&mut Vec::new()).await }
+//
+//     async fn with_processes(processes: &mut Vec<Definition>) -> Self {
+//         let mut manager = InMemoryStoreManager::new();
+//         let stores = manager
+//             .r_space_stores()
+//             .await
+//             .expect("create the in-memory RSpace stores");
+//         let (play, _replay, _history) = create_runtimes(stores, false, processes).await;
+//         play.cost
+//             .set_deploy_signature_funded(DEPLOY_SIGNATURE, Sig::Ground(FUNDING_SIGNATURE.to_vec()));
+//         Self { play }
+//     }
+//
+//     async fn deploy_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
+//         let fallback = self.play.create_soft_checkpoint().await;
+//         let before = self.space_data_channels().await;
+//         let result = self
+//             .play
+//             .evaluate(
+//                 source,
+//                 Cost::create(PHLO, label.to_owned()),
+//                 injections.clone(),
+//                 Blake2b512Random::create_from_bytes(label.as_bytes()),
+//             )
+//             .await
+//             .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
+//         let log = self.play.take_event_log().await;
+//         let residue = self
+//             .space_data_channels()
+//             .await
+//             .difference(&before)
+//             .cloned()
+//             .collect();
+//         if !result.errors.is_empty() {
+//             self.play.revert_to_soft_checkpoint(fallback).await;
+//         }
+//         Deploy {
+//             result,
+//             log,
+//             residue,
+//         }
+//     }
+//
+//     async fn deploy(&mut self, source: &str, label: &str) -> Deploy {
+//         self.deploy_with(source, label, &Injections::new()).await
+//     }
+//
+//     /// A deploy that must succeed.
+//     async fn run(&mut self, source: &str, label: &str) -> Deploy {
+//         let deploy = self.deploy(source, label).await;
+//         assert!(
+//             deploy.result.errors.is_empty(),
+//             "{label}: the deploy fails: {:?}",
+//             deploy.result.errors
+//         );
+//         deploy
+//     }
+//
+//     /// A deploy that must fail with exactly the error codes `expected` and leave no space data.
+//     async fn fail_with(
+//         &mut self,
+//         source: &str,
+//         label: &str,
+//         injections: &Injections,
+//         expected: &[&str],
+//     ) -> Deploy {
+//         let deploy = self.deploy_with(source, label, injections).await;
+//         assert_eq!(deploy.codes(), expected, "{label}: the error codes");
+//         assert!(
+//             deploy.residue.is_empty(),
+//             "{label}: a failed deploy wrote space data before it failed: {} channels",
+//             deploy.residue.len()
+//         );
+//         deploy
+//     }
+//
+//     /// The data of every datum on `@channel`.
+//     async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
+//         self.play
+//             .get_data(&gstring(channel))
+//             .await
+//             .into_iter()
+//             .map(|datum| datum.a.pars)
+//             .collect()
+//     }
+//
+//     /// The only value of the only datum on `@channel`.
+//     async fn sole(&self, channel: &str) -> Par {
+//         match <[Vec<Par>; 1]>::try_from(self.values(channel).await) {
+//             Ok([pars]) => match <[Par; 1]>::try_from(pars) {
+//                 Ok([value]) => value,
+//                 Err(pars) => panic!("@{channel:?} holds a datum of {} values", pars.len()),
+//             },
+//             Err(data) => panic!("@{channel:?} holds {} data instead of one", data.len()),
+//         }
+//     }
+//
+//     async fn data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
+//         self.play.get_data(channel).await
+//     }
+//
+//     async fn waiters(
+//         &self,
+//         channel: &Par,
+//     ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
+//         self.play.get_continuations(vec![channel.clone()]).await
+//     }
+//
+//     /// The ids of the space-scoped `0xE0` channels that hold data in the store.
+//     async fn space_data_channels(&self) -> BTreeSet<Vec<u8>> {
+//         self.play
+//             .get_hot_changes()
+//             .await
+//             .into_iter()
+//             .filter(|(_, row)| !row.data.is_empty())
+//             .filter_map(|(channels, _)| match channels.as_slice() {
+//                 [channel] => namespace::sole_gprivate_id(channel)
+//                     .filter(|id| id.first() == Some(&REIFIED_TAG) && id.len() > 2)
+//                     .map(<[u8]>::to_vec),
+//                 _ => None,
+//             })
+//             .collect()
+//     }
+//
+//     /// Runs `SETUP` and returns the space, its handle and its two names.
+//     async fn setup(&mut self) -> (NativeSpace, Par, Vec<Par>) {
+//         self.run(SETUP, "rrs-p4-factory-setup").await;
+//         let handle = self.sole("rrs-handle").await;
+//         let names = match <[Vec<Par>; 1]>::try_from(self.values("rrs-names").await) {
+//             Ok([names]) => names,
+//             Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
+//         };
+//         (native(&handle), handle, names)
+//     }
+// }
 
-impl Deploy {
-    /// The codes of the errors: `<Code>` of `reified:<Code>: …`, or the debug form of any
-    /// other error.
-    fn codes(&self) -> Vec<String> { error_codes(&self.result.errors) }
-}
-
-fn error_codes(errors: &[InterpreterError]) -> Vec<String> {
-    let mut codes = Vec::with_capacity(errors.len());
-    for error in errors {
-        push_codes(error, &mut codes);
-    }
-    codes
-}
-
-fn push_codes(error: &InterpreterError, codes: &mut Vec<String>) {
-    match error {
-        InterpreterError::AggregateError { interpreter_errors } => {
-            for inner in interpreter_errors {
-                push_codes(inner, codes);
-            }
-        }
-        InterpreterError::ReduceError(message) => codes.push(
-            message
-                .strip_prefix("reified:")
-                .and_then(|rest| rest.split(':').next())
-                .map(str::to_owned)
-                .unwrap_or_else(|| message.clone()),
-        ),
-        other => codes.push(format!("{other:?}")),
-    }
-}
-
-/// A play runtime over a fresh in-memory store, with a funded deploy.
-struct Session {
-    play: RhoRuntimeImpl,
-}
-
-impl Session {
-    async fn new() -> Self { Self::with_processes(&mut Vec::new()).await }
-
-    async fn with_processes(processes: &mut Vec<Definition>) -> Self {
-        let mut manager = InMemoryStoreManager::new();
-        let stores = manager
-            .r_space_stores()
-            .await
-            .expect("create the in-memory RSpace stores");
-        let (play, _replay, _history) = create_runtimes(stores, false, processes).await;
-        play.cost
-            .set_deploy_signature_funded(DEPLOY_SIGNATURE, Sig::Ground(FUNDING_SIGNATURE.to_vec()));
-        Self { play }
-    }
-
-    async fn deploy_with(&mut self, source: &str, label: &str, injections: &Injections) -> Deploy {
-        let fallback = self.play.create_soft_checkpoint().await;
-        let before = self.space_data_channels().await;
-        let result = self
-            .play
-            .evaluate(
-                source,
-                Cost::create(PHLO, label.to_owned()),
-                injections.clone(),
-                Blake2b512Random::create_from_bytes(label.as_bytes()),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("{label}: the evaluation returns no result: {error:?}"));
-        let log = self.play.take_event_log().await;
-        let residue = self
-            .space_data_channels()
-            .await
-            .difference(&before)
-            .cloned()
-            .collect();
-        if !result.errors.is_empty() {
-            self.play.revert_to_soft_checkpoint(fallback).await;
-        }
-        Deploy {
-            result,
-            log,
-            residue,
-        }
-    }
-
-    async fn deploy(&mut self, source: &str, label: &str) -> Deploy {
-        self.deploy_with(source, label, &Injections::new()).await
-    }
-
-    /// A deploy that must succeed.
-    async fn run(&mut self, source: &str, label: &str) -> Deploy {
-        let deploy = self.deploy(source, label).await;
-        assert!(
-            deploy.result.errors.is_empty(),
-            "{label}: the deploy fails: {:?}",
-            deploy.result.errors
-        );
-        deploy
-    }
-
-    /// A deploy that must fail with exactly the error codes `expected` and leave no space data.
-    async fn fail_with(
-        &mut self,
-        source: &str,
-        label: &str,
-        injections: &Injections,
-        expected: &[&str],
-    ) -> Deploy {
-        let deploy = self.deploy_with(source, label, injections).await;
-        assert_eq!(deploy.codes(), expected, "{label}: the error codes");
-        assert!(
-            deploy.residue.is_empty(),
-            "{label}: a failed deploy wrote space data before it failed: {} channels",
-            deploy.residue.len()
-        );
-        deploy
-    }
-
-    /// The data of every datum on `@channel`.
-    async fn values(&self, channel: &str) -> Vec<Vec<Par>> {
-        self.play
-            .get_data(&gstring(channel))
-            .await
-            .into_iter()
-            .map(|datum| datum.a.pars)
-            .collect()
-    }
-
-    /// The only value of the only datum on `@channel`.
-    async fn sole(&self, channel: &str) -> Par {
-        match <[Vec<Par>; 1]>::try_from(self.values(channel).await) {
-            Ok([pars]) => match <[Par; 1]>::try_from(pars) {
-                Ok([value]) => value,
-                Err(pars) => panic!("@{channel:?} holds a datum of {} values", pars.len()),
-            },
-            Err(data) => panic!("@{channel:?} holds {} data instead of one", data.len()),
-        }
-    }
-
-    async fn data(&self, channel: &Par) -> Vec<Datum<ListParWithRandom>> {
-        self.play.get_data(channel).await
-    }
-
-    async fn waiters(
-        &self,
-        channel: &Par,
-    ) -> Vec<WaitingContinuation<BindPattern, TaggedContinuation>> {
-        self.play.get_continuations(vec![channel.clone()]).await
-    }
-
-    /// The ids of the space-scoped `0xE0` channels that hold data in the store.
-    async fn space_data_channels(&self) -> BTreeSet<Vec<u8>> {
-        self.play
-            .get_hot_changes()
-            .await
-            .into_iter()
-            .filter(|(_, row)| !row.data.is_empty())
-            .filter_map(|(channels, _)| match channels.as_slice() {
-                [channel] => namespace::sole_gprivate_id(channel)
-                    .filter(|id| id.first() == Some(&REIFIED_TAG) && id.len() > 2)
-                    .map(<[u8]>::to_vec),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Runs `SETUP` and returns the space, its handle and its two names.
-    async fn setup(&mut self) -> (NativeSpace, Par, Vec<Par>) {
-        self.run(SETUP, "rrs-p4-factory-setup").await;
-        let handle = self.sole("rrs-handle").await;
-        let names = match <[Vec<Par>; 1]>::try_from(self.values("rrs-names").await) {
-            Ok([names]) => names,
-            Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
-        };
-        (native(&handle), handle, names)
-    }
+/// Runs `SETUP` and returns the space, its handle and its two names.
+async fn setup(session: &mut Session) -> (NativeSpace, Par, Vec<Par>) {
+    session.run(SETUP, "rrs-p4-factory-setup").await;
+    let handle = session.sole("rrs-handle").await;
+    let names = match <[Vec<Par>; 1]>::try_from(session.values("rrs-names").await) {
+        Ok([names]) => names,
+        Err(data) => panic!("@\"rrs-names\" holds {} data", data.len()),
+    };
+    (native(&handle), handle, names)
 }
 
 /// The native space of a handle capability.
@@ -418,11 +456,20 @@ const P6_PINNED: [(&str, u8, i32, i64); 2] = [
 /// body ref)`, after the VectorDB families: `rho:lang:vector`, whose calls the reducer packs into
 /// `[ret, [op, x…]]` (I-18), and the recorded processes `rho:vectordb:embed` and
 /// `rho:vectordb:ann` (decision 57).
+///
+/// Changed by decision 113: only a build with the feature `chromadb` registers `embed` and
+/// `ann`, so this table holds them only in that build.
+#[cfg(feature = "chromadb")]
 const P6_PROCESS_PINS: [(&str, u8, i32, i64); 3] = [
     ("rho:lang:vector", 0x23, 2, 235),
     ("rho:vectordb:embed", 0x24, 2, 236),
     ("rho:vectordb:ann", 0x25, 5, 237),
 ];
+
+/// Added by decision 113: the system processes of P6 that are not factories in a build without
+/// the feature `chromadb`, as `(urn, op, arity, body ref)`: only `rho:lang:vector`.
+#[cfg(not(feature = "chromadb"))]
+const P6_PROCESS_PINS: [(&str, u8, i32, i64); 1] = [("rho:lang:vector", 0x23, 2, 235)];
 
 /// The processes of P8, after the factories of P7: `(urn, op, arity, body ref)` (design v2
 /// MO-1, plan decision 77 U1). The sink has the arity 0 and a wildcard remainder.
@@ -678,8 +725,11 @@ async fn space_private_channels_body_refs_disjoint() {
     }
     // A runtime with the test framework contracts installed holds every body ref once, and each
     // Reified process still answers its own calls.
-    let mut processes = test_framework_contracts();
-    let mut session = Session::with_processes(&mut processes).await;
+    // Changed by decision 90 (C6): the native session takes the constructor of its extra
+    // processes, so its replay installs them again. The legacy lines follow.
+    // let mut processes = test_framework_contracts();
+    // let mut session = Session::with_processes(&mut processes).await;
+    let mut session = Session::with_processes(test_framework_contracts).await;
     let installed: BTreeSet<i64> = session
         .play
         .reducer
@@ -752,7 +802,7 @@ async fn space_private_channels_kind_ids_disjoint() {
     assert_eq!(bytes.len(), 9 * 2 + 2);
     // A real space and a real collection: each channel decodes to its own kind.
     let mut session = Session::new().await;
-    let (space, handle, names) = session.setup().await;
+    let (space, handle, names) = setup(&mut session).await;
     let name = names.first().expect("the setup makes names").clone();
     session
         .run(
@@ -960,12 +1010,23 @@ async fn reified_factory_kwargs_fold() {
         .await;
     // The params come last in the constructor list, so the earlier gates see them after the
     // qualifier and the theory.
+    // Changed by decision 90 (C6): the hashmap queue takes `seq` in native execution, so a
+    // HashSet store, which takes only `seq` (P7), refuses the `default` qualifier at gate 3
+    // before the params gate. The legacy case follows.
+    // session
+    //     .fail_with(
+    //         r#"new factory(`rho:space:hashmap:queue`) in { for (q <- factory!?("seq"; capacity=4)) { Nil } }"#,
+    //         "rrs-p4-kwargs-after-qualifier",
+    //         &Injections::new(),
+    //         &["QualifierUnavailable"],
+    //     )
+    //     .await;
     session
         .fail_with(
-            r#"new factory(`rho:space:hashmap:queue`) in { for (q <- factory!?("seq"; capacity=4)) { Nil } }"#,
+            r#"new factory(`rho:space:hashset:bag`) in { for (q <- factory!?("default"; capacity=4)) { Nil } }"#,
             "rrs-p4-kwargs-after-qualifier",
             &Injections::new(),
-            &["QualifierUnavailable"],
+            &["BadConstructorArgument"],
         )
         .await;
     // Changed by P7 step 4 (design v3 TH-4): gate 4 accepts the builtin theories, so an
@@ -1161,7 +1222,9 @@ async fn reified_factory_p4_gates_fail_closed() {
     for (label, arguments, expected) in [
         // Changed by P7 step 1 (design v3 QT-1): `temp` creates a space for one deploy.
         // ("temp", r#""temp""#, "QualifierUnavailable"),
-        ("seq", r#""seq""#, "QualifierUnavailable"),
+        // Changed by decision 90 (C6): spaces run only in native execution, where gate 3 takes
+        // `seq` (P7). The legacy case follows.
+        // ("seq", r#""seq""#, "QualifierUnavailable"),
         // Changed by P7 step 4 (design v3 TH-4): gate 4 accepts the builtin theories and
         // refuses every other name.
         // ("theory", "free Nat()", "TheoryUnavailable"),
@@ -1177,11 +1240,14 @@ async fn reified_factory_p4_gates_fail_closed() {
             "free Nat(1)",
             "BadConstructorArgument",
         ),
-        (
-            "qualifier-before-theory",
-            r#""seq", free Nat()"#,
-            "QualifierUnavailable",
-        ),
+        // Changed by decision 90 (C6): the hashmap queue takes every qualifier in native
+        // execution, so the order of gates 3 and 4 is checked on a HashSet store below. The
+        // legacy case follows.
+        // (
+        //     "qualifier-before-theory",
+        //     r#""seq", free Nat()"#,
+        //     "QualifierUnavailable",
+        // ),
     ] {
         let source = format!(
             "new factory(`rho:space:hashmap:queue`) in {{ for (q <- factory!?({arguments})) {{ Nil }} }}"
@@ -1195,6 +1261,22 @@ async fn reified_factory_p4_gates_fail_closed() {
             )
             .await;
     }
+    // Added by decision 90 (C6): a HashSet store takes only `seq` (P7), so gate 3 refuses the
+    // `default` qualifier before gate 4 sees the unknown theory.
+    let qualifier_first = session
+        .fail_with(
+            r#"new factory(`rho:space:hashset:bag`) in { for (q <- factory!?("default", free Bounded())) { Nil } }"#,
+            "rrs-p4-gate-qualifier-before-theory",
+            &Injections::new(),
+            &["BadConstructorArgument"],
+        )
+        .await;
+    assert!(
+        format!("{:?}", qualifier_first.result.errors)
+            .contains("the hashset outer store does not take the default qualifier"),
+        "the error names the qualifier: {:?}",
+        qualifier_first.result.errors
+    );
     // A family or a FIPS alias without a registration has no binding, so a program that names it
     // fails before any space operation. P5 and P6 register a family only when the family
     // dispatch wires it. Phase 2 of P5e wires the PathMap families, so their factories and the
@@ -1231,7 +1313,11 @@ async fn reified_factory_p4_gates_fail_closed() {
     {
         let source =
             format!("new factory(`{urn}`) in {{ for (q <- factory!?(\"default\")) {{ Nil }} }}");
-        let deploy = session.deploy(&source, &format!("rrs-p4-gate-{urn}")).await;
+        // Changed by decision 90 (C6): the shared session deploys with explicit injections.
+        // let deploy = session.deploy(&source, &format!("rrs-p4-gate-{urn}")).await;
+        let deploy = session
+            .deploy_with(&source, &format!("rrs-p4-gate-{urn}"), &Injections::new())
+            .await;
         let errors = format!("{:?}", deploy.result.errors);
         assert!(
             errors.contains(&format!("No value set for {urn}")),
@@ -1300,7 +1386,7 @@ async fn space_system_ops_assert_equal() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_get_space_agent_capability() {
     let mut session = Session::new().await;
-    let (space, _, _) = session.setup().await;
+    let (space, _, _) = setup(&mut session).await;
     let deploy = session
         .run(
             r#"
@@ -1358,14 +1444,27 @@ async fn space_system_ops_get_space_agent_dangling_handle() {
     );
     assert_eq!(session.sole("rrs-out").await, dangling(missing));
     // A handle of a space whose creation was reverted is dangling too.
+    // Changed by decision 90 (C6): the shared session deploys with explicit injections. The
+    // legacy call follows.
+    // let reverted = session
+    //     .deploy(
+    //         r#"
+    // new factory(`rho:space:hashmap:queue`) in {
+    //   for (queue <- factory!?("default")) { @"rrs-reverted"!(*queue) | @"rrs-x"!!(1) | @"rrs-x"!!(1; k=1) }
+    // }
+    // "#,
+    //         "rrs-p4-get-space-agent-reverted",
+    //     )
+    //     .await;
     let reverted = session
-        .deploy(
+        .deploy_with(
             r#"
 new factory(`rho:space:hashmap:queue`) in {
   for (queue <- factory!?("default")) { @"rrs-reverted"!(*queue) | @"rrs-x"!!(1) | @"rrs-x"!!(1; k=1) }
 }
 "#,
             "rrs-p4-get-space-agent-reverted",
+            &Injections::new(),
         )
         .await;
     assert_eq!(reverted.codes(), vec!["ParamsUnsupported"]);
@@ -1397,7 +1496,7 @@ new factory(`rho:space:hashmap:queue`) in {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_get_space_agent_not_native() {
     let mut session = Session::new().await;
-    session.setup().await;
+    setup(&mut session).await;
     let cases = [
         ("string", r#""user agent""#, SpaceReplyCode::NotANativeSpace),
         ("list", "[1, 2]", SpaceReplyCode::NotANativeSpace),
@@ -1518,7 +1617,7 @@ new spaceAgent(`rho:space:getSpaceAgent`), equal(`rho:assert:assertEqual`), r1, 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn space_system_ops_persistent_send_aborts() {
     let mut session = Session::new().await;
-    session.setup().await;
+    setup(&mut session).await;
     let cases = [
         (
             "factory",

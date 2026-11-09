@@ -69,14 +69,14 @@
    ─────────────────────────────────────────────────────────────────────────
    Traceability: Rocq definition → Rust code
    ─────────────────────────────────────────────────────────────────────────
-   cell_capacity            spaces/disciplines/cell.rs:57
+   cell_capacity            spaces/disciplines/cell.rs:56
                             (CellDiscipline::CAPACITY = Some(1))
-   has_room                 spaces/generic.rs:1113-1135 (Cx::check_capacity:
+   has_room                 spaces/generic.rs:2424-2439 (Cx::check_capacity:
                             no bound does no work, and a side that holds
                             capacity entries fails with CellOccupied)
-   cell_reaches_head        spaces/disciplines/cell.rs:72-74
+   cell_reaches_head        spaces/disciplines/cell.rs:71
                             (CellDiscipline::reaches_head is true)
-   cell_precedes            spaces/disciplines/cell.rs:76-87
+   cell_precedes            spaces/disciplines/cell.rs:76
                             (CellDiscipline::precedes is true)
    precedes_key, head_from, head_index
                             spaces/disciplines/cell.rs:59-70, which calls
@@ -84,42 +84,42 @@
                             least (ord, bincode bytes), the earlier index
                             on a tie)
    fire_round_cap, after_fire
-                            reified/costs.rs:44, 315-333 (FIRE_ROUND_CAP =
+                            reified/costs.rs:17, 71-82 (FIRE_ROUND_CAP =
                             64, FireRounds::after_fire)
    store_checked, park_checked
-                            spaces/generic.rs:1734-1737, 1743-1746,
-                            1721-1724 and 1786-1789, 1794-1797, 1800-1803
+                            spaces/generic.rs:3823-3824, 3832-3833, 3842-3843,
+                            3854-3855, 3925-3926, 3936-3937, 3946-3947, 3953-3954
                             (check_capacity, then store or park)
-   offer, offer_loop        spaces/generic.rs:1723-1791 (offer_head, the
+   offer, offer_loop        spaces/generic.rs:3812-3899 (offer_head, the
                             default Discipline::offer)
-   receive, receive_loop    spaces/generic.rs:1800-1884 (receive_head, the
+   receive, receive_loop    spaces/generic.rs:3908-4020 (receive_head, the
                             default Discipline::receive)
    fire_view, restores, receive_ops, receive_fired
-                            spaces/generic.rs:1875-1880, 1853-1882 and
-                            1854-1864 (the copy of a peeked non-persistent
+                            spaces/generic.rs:4105-4110, 1852-1881 and
+                            1853-1863 (the copy of a peeked non-persistent
                             record, the fire, and restore_peeked), the
                             default Discipline::restore at
-                            spaces/generic.rs:436-449 and Cx::restore at
+                            spaces/generic.rs:435-448 and Cx::restore at
                             869-880 (a plain store_on with no capacity
                             check). The substrate removes a peeked
                             non-persistent record (decision 45).
    bump_ord, bumped, produce, consume
-                            spaces/generic.rs:2544-2714 (run_with: bump
+                            spaces/generic.rs:2543-2710 (run_with: bump
                             the counter, then the plan with the ord of the
                             bump) and spaces/counter.rs (the ord is the
                             value of the counter, and the first operation
                             takes 0)
-   operation_ord            spaces/generic.rs:1909-1943 (a re-issued ord
+   operation_ord            spaces/generic.rs:1908-1942 (a re-issued ord
                             lies below the value of the counter, else
                             Inconsistent)
    reentry_at_head, record_head_ord, waiter_head_ord
-                            spaces/generic.rs:1084-1111 and 1051-1073
+                            spaces/generic.rs:1083-1110 and 1050-1072
                             (Cx::at_head and Cx::head_ord: an empty side,
                             or the rule precedes, and Inconsistent on an
                             equal ord)
    reenter_offer, reenter_receive, reenter_produce, reenter_consume
-                            spaces/generic.rs:1723-1791, 1800-1884 and
-                            2504-2649 (the plans with a reissued_ord)
+                            spaces/generic.rs:3812-3899, 3908-4020 and
+                            5446-5492 (the plans with a reissued_ord)
    step_view, replay_view   the substrate applies each staged operation to
                             the staged view: a store and a re-store put a
                             record at the front of its list, a park puts a

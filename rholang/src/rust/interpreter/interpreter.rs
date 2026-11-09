@@ -216,7 +216,9 @@ impl InterpreterImpl {
                 }
             }
         };
-        reducer.reified.settle_mirror_journal(&evaluation_result);
+        // Retired by Reified RSpaces decision 98 (DR-114 oracle mode): a play publishes at each
+        // commit, so no final result settles a mirror journal.
+        // reducer.reified.settle_mirror_journal(&evaluation_result);
         evaluation_result
     }
 }

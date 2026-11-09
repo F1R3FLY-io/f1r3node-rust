@@ -26,6 +26,7 @@ skinparam rectangle {
 }
 skinparam ArrowColor $ca_neutral
 title Causal paths of one plan under the two splitters (DR-84)
+footer DR-132: the splitters are removed with the deterministic scheduler (97d020154). Every causal path now has one segment, which names its journal row.
 
 rectangle "**plan of the root participant**\nstep 0: operation\nstep 1: split into child 0 and child 1\n    child 0, its step 0: operation\n    child 1, its step 0: split into one grandchild\n        grandchild, its step 0: operation\nstep 2: operation (after the children rejoin)" as Plan $ca_control
 

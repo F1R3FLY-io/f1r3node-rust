@@ -40,7 +40,10 @@ impl RSpaceAccountingObserver<String, Any, String, String> for DirectedObserver 
         source: RSpaceOperationSource<'_>,
         channels: &[String],
         joins: &[Vec<String>],
-    ) -> Result<(), RSpaceError> {
+        // Changed by DR-132: the start hook returns the name of a recorded row.
+        // ) -> Result<(), RSpaceError> {
+    ) -> Result<Option<rspace_plus_plus::rspace::operation_context::OperationOrder>, RSpaceError>
+    {
         self.inner.observe_operation_start(source, channels, joins)
     }
 

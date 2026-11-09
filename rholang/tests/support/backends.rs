@@ -23,12 +23,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+// Changed by decision 114: no reconciler reads a registry of channels.
+// use rholang::rust::interpreter::reified::vectordb_services::{
+//     self, EmbedFailure, Embedder, MirrorBackend, MirrorFailure, MirrorRegistry, MirrorWriter,
+//     Neighbour, VectorDbServices, COLLECTION_PREFIX,
+// };
 use rholang::rust::interpreter::reified::vectordb_services::{
-    self, EmbedFailure, Embedder, MirrorBackend, MirrorFailure, MirrorRegistry, MirrorWriter,
-    Neighbour, VectorDbServices, COLLECTION_PREFIX,
+    self, EmbedFailure, Embedder, MirrorBackend, MirrorFailure, MirrorWriter, Neighbour,
+    VectorDbServices, COLLECTION_PREFIX,
 };
 use rholang::rust::interpreter::spaces::mirror::{MirrorMetric, MirrorRecord};
-use rholang::rust::interpreter::spaces::namespace::SpaceId;
+// Retired by decision 114: a collection keeps no registered space.
+// use rholang::rust::interpreter::spaces::namespace::SpaceId;
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard, Semaphore};
 
 /// The lock of the services of the process.
@@ -202,14 +208,18 @@ pub enum WriteMode {
     Refuse,
 }
 
-/// One collection of a [`FakeMirror`]: its distance, its records and its registry (P6 step 7c).
+/// One collection of a [`FakeMirror`]: its distance and its records.
+///
+/// Changed by decision 114: a collection keeps no registry. Before, it also kept the registered
+/// space, the registered channels and the watermark of the reconciler (P6 step 7c).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FakeCollection {
     pub metric: MirrorMetric,
     pub records: BTreeMap<[u8; 32], MirrorRecord>,
-    pub space: Option<SpaceId>,
-    pub channels: BTreeMap<String, Vec<u8>>,
-    pub watermark: u64,
+    // Retired by decision 114: a collection keeps no registry.
+    // pub space: Option<SpaceId>,
+    // pub channels: BTreeMap<String, Vec<u8>>,
+    // pub watermark: u64,
 }
 
 impl FakeCollection {
@@ -218,17 +228,22 @@ impl FakeCollection {
         Self {
             metric,
             records: BTreeMap::new(),
-            space: None,
-            channels: BTreeMap::new(),
-            watermark: 0,
+            // Retired by decision 114: a collection keeps no registry.
+            // space: None,
+            // channels: BTreeMap::new(),
+            // watermark: 0,
         }
     }
 }
 
-/// A mirror that answers fixed neighbours, nearest first, and a fixed watermark.
+/// A mirror that answers fixed neighbours, nearest first.
+///
+/// Changed by decision 114: the mirror answers no watermark. Before, it also answered a fixed
+/// watermark.
 pub struct FakeMirror {
     neighbours: Vec<Neighbour>,
-    watermark: u64,
+    // Retired by decision 114: the mirror answers no watermark.
+    // watermark: u64,
     available: bool,
     queries: Mutex<Vec<MirrorQuery>>,
     writes: Mutex<WriteMode>,
@@ -238,15 +253,17 @@ pub struct FakeMirror {
 }
 
 impl FakeMirror {
-    fn with(
-        neighbours: Vec<Neighbour>,
-        watermark: u64,
-        available: bool,
-        writes: WriteMode,
-    ) -> Arc<Self> {
+    // Changed by decision 114: the mirror answers no watermark, so no constructor takes one.
+    // fn with(
+    //     neighbours: Vec<Neighbour>,
+    //     watermark: u64,
+    //     available: bool,
+    //     writes: WriteMode,
+    // ) -> Arc<Self> {
+    fn with(neighbours: Vec<Neighbour>, available: bool, writes: WriteMode) -> Arc<Self> {
         Arc::new(Self {
             neighbours,
-            watermark,
+            // watermark,
             available,
             queries: Mutex::new(Vec::new()),
             writes: Mutex::new(writes),
@@ -256,17 +273,24 @@ impl FakeMirror {
         })
     }
 
-    /// A mirror that answers the first `k` of `neighbours` and the watermark `watermark`, and
-    /// applies each write.
-    pub fn new(neighbours: Vec<Neighbour>, watermark: u64) -> Arc<Self> {
-        Self::with(neighbours, watermark, true, WriteMode::Apply)
+    /// A mirror that answers the first `k` of `neighbours`, and applies each write.
+    ///
+    /// Changed by decision 114: the mirror answers no watermark. Before, `new` also took the
+    /// watermark that the mirror answered.
+    // pub fn new(neighbours: Vec<Neighbour>, watermark: u64) -> Arc<Self> {
+    //     Self::with(neighbours, watermark, true, WriteMode::Apply)
+    // }
+    pub fn new(neighbours: Vec<Neighbour>) -> Arc<Self> {
+        Self::with(neighbours, true, WriteMode::Apply)
     }
 
     /// A mirror that does not answer and refuses each write.
-    pub fn down() -> Arc<Self> { Self::with(Vec::new(), 0, false, WriteMode::Refuse) }
+    // pub fn down() -> Arc<Self> { Self::with(Vec::new(), 0, false, WriteMode::Refuse) }
+    pub fn down() -> Arc<Self> { Self::with(Vec::new(), false, WriteMode::Refuse) }
 
     /// A mirror that holds each write until [`FakeMirror::release`].
-    pub fn stalled() -> Arc<Self> { Self::with(Vec::new(), 0, true, WriteMode::Stall) }
+    // pub fn stalled() -> Arc<Self> { Self::with(Vec::new(), 0, true, WriteMode::Stall) }
+    pub fn stalled() -> Arc<Self> { Self::with(Vec::new(), true, WriteMode::Stall) }
 
     /// Changes the write mode of the mirror, for example to refuse the writes of one deploy.
     pub fn set_writes(&self, mode: WriteMode) {
@@ -322,8 +346,10 @@ impl FakeMirror {
         self.gate().await
     }
 
-    /// Holds, refuses or lets proceed a write, as the write mode says. The registry calls go
-    /// through it without a log entry.
+    /// Holds, refuses or lets proceed a write, as the write mode says.
+    ///
+    /// Changed by decision 114: only the logged write calls go through it. Before, the registry
+    /// calls also went through it, without a log entry.
     async fn gate(&self) -> Result<(), MirrorFailure> {
         let mode = *self
             .writes
@@ -366,12 +392,13 @@ impl MirrorBackend for FakeMirror {
         }
     }
 
-    async fn watermark(&self, _collection: &str) -> Result<u64, MirrorFailure> {
-        match self.available {
-            true => Ok(self.watermark),
-            false => Err(MirrorFailure::Unavailable),
-        }
-    }
+    // Retired by decision 114: nothing repairs the mirror, so it keeps no watermark.
+    // async fn watermark(&self, _collection: &str) -> Result<u64, MirrorFailure> {
+    //     match self.available {
+    //         true => Ok(self.watermark),
+    //         false => Err(MirrorFailure::Unavailable),
+    //     }
+    // }
 
     async fn ensure_collection(
         &self,
@@ -433,26 +460,27 @@ impl MirrorBackend for FakeMirror {
         Ok(())
     }
 
-    async fn register(
-        &self,
-        collection: &str,
-        space: &SpaceId,
-        channels: &BTreeMap<String, Vec<u8>>,
-    ) -> Result<(), MirrorFailure> {
-        self.gate().await?;
-        let mut collections = self
-            .collections
-            .lock()
-            .expect("the collections of the fake mirror");
-        let held = collections
-            .get_mut(collection)
-            .ok_or(MirrorFailure::Unavailable)?;
-        held.space.get_or_insert(*space);
-        for (digest, key) in channels {
-            held.channels.entry(digest.clone()).or_insert(key.clone());
-        }
-        Ok(())
-    }
+    // Retired by decision 114: a batch registers no channels.
+    // async fn register(
+    //     &self,
+    //     collection: &str,
+    //     space: &SpaceId,
+    //     channels: &BTreeMap<String, Vec<u8>>,
+    // ) -> Result<(), MirrorFailure> {
+    //     self.gate().await?;
+    //     let mut collections = self
+    //         .collections
+    //         .lock()
+    //         .expect("the collections of the fake mirror");
+    //     let held = collections
+    //         .get_mut(collection)
+    //         .ok_or(MirrorFailure::Unavailable)?;
+    //     held.space.get_or_insert(*space);
+    //     for (digest, key) in channels {
+    //         held.channels.entry(digest.clone()).or_insert(key.clone());
+    //     }
+    //     Ok(())
+    // }
 
     async fn collections(&self) -> Result<Vec<String>, MirrorFailure> {
         match self.available {
@@ -468,22 +496,23 @@ impl MirrorBackend for FakeMirror {
         }
     }
 
-    async fn registry(&self, collection: &str) -> Result<MirrorRegistry, MirrorFailure> {
-        if !self.available {
-            return Err(MirrorFailure::Unavailable);
-        }
-        Ok(self
-            .collections
-            .lock()
-            .expect("the collections of the fake mirror")
-            .get(collection)
-            .map(|held| MirrorRegistry {
-                space: held.space,
-                channels: held.channels.clone(),
-                watermark: held.watermark,
-            })
-            .unwrap_or_default())
-    }
+    // Retired by decision 114: no reconciler reads a registry of channels.
+    // async fn registry(&self, collection: &str) -> Result<MirrorRegistry, MirrorFailure> {
+    //     if !self.available {
+    //         return Err(MirrorFailure::Unavailable);
+    //     }
+    //     Ok(self
+    //         .collections
+    //         .lock()
+    //         .expect("the collections of the fake mirror")
+    //         .get(collection)
+    //         .map(|held| MirrorRegistry {
+    //             space: held.space,
+    //             channels: held.channels.clone(),
+    //             watermark: held.watermark,
+    //         })
+    //         .unwrap_or_default())
+    // }
 
     async fn ids(
         &self,
@@ -508,14 +537,15 @@ impl MirrorBackend for FakeMirror {
             .unwrap_or_default())
     }
 
-    async fn set_watermark(&self, collection: &str, watermark: u64) -> Result<(), MirrorFailure> {
-        self.gate().await?;
-        self.collections
-            .lock()
-            .expect("the collections of the fake mirror")
-            .get_mut(collection)
-            .ok_or(MirrorFailure::Unavailable)?
-            .watermark = watermark;
-        Ok(())
-    }
+    // Retired by decision 114: nothing repairs the mirror, so it keeps no watermark.
+    // async fn set_watermark(&self, collection: &str, watermark: u64) -> Result<(), MirrorFailure> {
+    //     self.gate().await?;
+    //     self.collections
+    //         .lock()
+    //         .expect("the collections of the fake mirror")
+    //         .get_mut(collection)
+    //         .ok_or(MirrorFailure::Unavailable)?
+    //         .watermark = watermark;
+    //     Ok(())
+    // }
 }

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "status": "accepted-release-train-soak-gates",
+  "claim_ids": [
+    "CLAIM-SOAK-GATE-001"
+  ],
+  "claim_discharge": "discharged",
+  "scope": "release-train-soak-gate",
+  "approval": {
+    "acceptor": "jltatbeach",
+    "where": "PR #793 comment 6305076788",
+    "url": "https://github.com/F1R3FLY-io/f1r3node-rust/pull/793#issuecomment-6305076788",
+    "recorded_at": "2026-10-21T00:39:55Z",
+    "comment_body_sha256": "60b71612a952a9b96ffa8d648e802ebeed634ad05549a5aadc18f2baba7ff9bc",
+    "reviewed_revision": "7d627df83",
+    "tested_commit": "d1d691d583b5c2beca9b00ba70d890661619e5be",
+    "replaces": "PR #793 comment 6303717194, which accepted package soak-release-gates-20261020-01 before commit d1d691d58 changed two of its artifacts",
+    "scope": "The soak gate scripts and the dispatcher workflow, with the gate parts of .github/workflows/merge-recovery-soak.yml. The rest of that workflow and CLAIM-CASPER-CAMPAIGN-003 stay pending."
+  },
+  "review": {
+    "report": "docs/casper/cbc-evidence/runs/soak-release-gates-20261020-02/report.json",
+    "sha256": "8e23c616654e8cfbf9bd3f4e49cdaa80392b44869735c500021823f3a1767a21",
+    "bytes_unchanged": true
+  },
+  "source_digests": {
+    ".github/scripts/report-soak-gate.sh": "5329a9d557c239505d51e4259a53f9ea8f35ebabe9a693fbec76b38976138d55",
+    ".github/scripts/ca-soak-dispatch.sh": "68e8ae11a78955dc58d6079fc6d353e55d9d219e6c4bdbe13b25863ec129f3de",
+    ".github/workflows/ca-soak-dispatch.yml": "e0ac1c25a83f358d21b265e1637cbe1c24b5f1435ddd78aa38c50df6ba6016bc"
+  },
+  "test_digests": {
+    ".github/scripts/test-soak-gate.sh": "9b975c2644b28b622033cbc8f683d2afc038a819fb7d5a34a1b3ced026932cb5",
+    ".github/scripts/test-ca-soak-dispatch.sh": "2655ad6f2fc610cbf4682592879dea496363e89bb3477a50e176ceaf1d00c0b2"
+  },
+  "claim_digests": {
+    "docs/claims/soak-release-gates.md": "11cb0a78d7a07e171abfdd8161383e803bd27f57cc25f223eb53613d27ad3afd"
+  },
+  "previous_ledgers": {
+    "commit": "a3c8bf175",
+    "docs/cbc-evidence/github-scripts-report-soak-gate-sh.md": "5e2afed90d82c3893a3545892dcae7565714c61d5888773b6f94325898f7cd02",
+    "docs/cbc-evidence/github-scripts-ca-soak-dispatch-sh.md": "242278069a35daba458748dfcca051904d3b1930ad8c597bcc13f5a3096326c4",
+    "docs/cbc-evidence/github-workflows-ca-soak-dispatch-yml.md": "33dcf7563bfe7a538de5c2d7a82e3aacd04656c89cf5e1cfabb82bce59d909b8"
+  },
+  "tiers": {
+    "refutation": "bounded-safety-pass",
+    "construction": "not-applicable",
+    "binding": "passed"
+  },
+  "soak": "pending",
+  "remaining_obligations": [
+    "First live ca-item gate soak after this change reaches master",
+    "First live ca-release gate soak, after the ca-canary and ca-release branches exist"
+  ],
+  "related_claims": {
+    "CLAIM-CASPER-CAMPAIGN-003": "pending. This acceptance does not cover the rest of merge-recovery-soak.yml."
+  },
+  "node_execution": false,
+  "waiver": null
+}

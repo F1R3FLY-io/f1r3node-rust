@@ -19,9 +19,15 @@
 //!
 //! Each child that plays also certifies its plays, as proposer self-certification does, and it
 //! writes a record of each deploy: the pre-state and post-state roots, the cost vector, the
-//! evidence bytes and the event log. The parent then plays both blocks warm, in one process over
-//! an in-memory store, and checks every record of the children against its own: R1, R2, the root
-//! of each deploy, each cost vector, the evidence bytes and the event logs.
+//! evidence bytes and the event log. The role of a child names its step and its racing runtime,
+//! for example `touch-8` (decision 111). On each racing runtime, the parent then certifies every
+//! record of the children from the empty root (decision 93). The parent certifies them in one
+//! process over an in-memory store, as a validator in another process does.
+// Changed by decision 93 (decision 111): racing evaluation gives two runs other records, so the
+// parent certifies the records of its children. The old text follows.
+// //! evidence bytes and the event log. The parent then plays both blocks warm, in one process over
+// //! an in-memory store, and checks every record of the children against its own: R1, R2, the root
+// //! of each deploy, each cost vector, the evidence bytes and the event logs.
 //!
 //! The parent keeps the standard output of each child, so no test-harness line of a child
 //! reaches the output of the parent. It shows the standard error of a child that fails.
@@ -41,6 +47,8 @@ use support::native::{
     assert_reproduces, certify, decode_evidence, decode_log, encode_log, evidence_bytes,
     finish_injected, replay_environment_from, NativeChain, Played, AMPLE_LIMIT,
 };
+use support::process::role_runtime;
+use support::props::{racing_runtime, RACING_WORKERS};
 use support::session::Injections;
 
 /// The role of a child process.
@@ -218,9 +226,14 @@ fn scratch_root() -> PathBuf {
     }
 }
 
-/// A fresh run directory.
-fn run_directory() -> PathBuf {
-    let directory = scratch_root().join(format!("p7-restart-{}", std::process::id()));
+/// A fresh run directory `p7-restart-{workers}-{pid}` for the racing runtime with `workers`
+/// worker threads (decision 111).
+// Changed by decision 111: each racing runtime has its own run directory. The old lines follow.
+// /// A fresh run directory.
+// fn run_directory() -> PathBuf {
+//     let directory = scratch_root().join(format!("p7-restart-{}", std::process::id()));
+fn run_directory(workers: usize) -> PathBuf {
+    let directory = scratch_root().join(format!("p7-restart-{workers}-{}", std::process::id()));
     if directory.exists() {
         std::fs::remove_dir_all(&directory).expect("remove an old run directory");
     }
@@ -289,92 +302,184 @@ async fn replay(directory: &Path) {
     let touched = read_records(directory, "touch");
     let first = touched.first().expect("block 2 has deploys");
     let mut chain = NativeChain::open(&directory.join("lmdb"), Some(&root(&first.pre_root))).await;
+    // Changed by decision 93 (decision 111): the loop body moved to `certify_record`, which the
+    // parent also runs. The old loop follows.
+    // for (family, record) in STORED_FAMILIES.iter().zip(&touched) {
+    //     let label = &record.label;
+    //     chain.reset(&root(&record.pre_root)).await;
+    //     let (recording, journal) = decode_evidence(&record.budget_bytes, &record.journal_bytes);
+    //     let environment = replay_environment_from(
+    //         chain.history(),
+    //         decode_log(&record.log),
+    //         AMPLE_LIMIT,
+    //         &recording,
+    //         journal,
+    //     )
+    //     .await
+    //     .unwrap_or_else(|error| panic!("{label}: the evidence checks: {error}"));
+    //     let certification = finish_injected(
+    //         environment,
+    //         &family.touching(),
+    //         Blake2b512Random::create_from_bytes(label.as_bytes()),
+    //         Injections::new(),
+    //     )
+    //     .await;
+    //     let evaluation = certification
+    //         .evaluation
+    //         .as_ref()
+    //         .unwrap_or_else(|error| panic!("{label}: native replay evaluates: {error:?}"));
+    //     assert!(
+    //         evaluation.errors.is_empty(),
+    //         "{label}: {:?}",
+    //         evaluation.errors
+    //     );
+    //     assert_eq!(
+    //         certification.complete,
+    //         Ok(()),
+    //         "{label}: replay consumes every journal row"
+    //     );
+    //     assert_eq!(
+    //         certification.usage,
+    //         Ok(record.used),
+    //         "{label}: replay uses the phlo of play"
+    //     );
+    //     assert_eq!(
+    //         evaluation.native_phlo_usage, record.phlo,
+    //         "{label}: native phlo usage"
+    //     );
+    //     assert_eq!(
+    //         certification.root,
+    //         Ok(root(&record.post_root)),
+    //         "{label}: replay reaches the post-state root of play"
+    //     );
+    // }
     for (family, record) in STORED_FAMILIES.iter().zip(&touched) {
-        let label = &record.label;
-        chain.reset(&root(&record.pre_root)).await;
-        let (recording, journal) = decode_evidence(&record.budget_bytes, &record.journal_bytes);
-        let environment = replay_environment_from(
-            chain.history(),
-            decode_log(&record.log),
-            AMPLE_LIMIT,
-            &recording,
-            journal,
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{label}: the evidence checks: {error}"));
-        let certification = finish_injected(
-            environment,
-            &family.touching(),
-            Blake2b512Random::create_from_bytes(label.as_bytes()),
-            Injections::new(),
-        )
-        .await;
-        let evaluation = certification
-            .evaluation
-            .as_ref()
-            .unwrap_or_else(|error| panic!("{label}: native replay evaluates: {error:?}"));
-        assert!(
-            evaluation.errors.is_empty(),
-            "{label}: {:?}",
-            evaluation.errors
-        );
-        assert_eq!(
-            certification.complete,
-            Ok(()),
-            "{label}: replay consumes every journal row"
-        );
-        assert_eq!(
-            certification.usage,
-            Ok(record.used),
-            "{label}: replay uses the phlo of play"
-        );
-        assert_eq!(
-            evaluation.native_phlo_usage, record.phlo,
-            "{label}: native phlo usage"
-        );
-        assert_eq!(
-            certification.root,
-            Ok(root(&record.post_root)),
-            "{label}: replay reaches the post-state root of play"
-        );
+        certify_record(&mut chain, &family.touching(), record).await;
     }
 }
 
-/// Checks the record `warm` of the warm run against the record `child` of a child.
-fn assert_same_record(warm: &DeployRecord, child: &DeployRecord) {
-    let label = &child.label;
-    assert_eq!(warm.label, child.label);
-    assert_eq!(warm.pre_root, child.pre_root, "{label}: pre-state root");
-    assert_eq!(warm.post_root, child.post_root, "{label}: post-state root");
-    assert_eq!(warm.phlo, child.phlo, "{label}: phlo usage");
-    assert_eq!(warm.used, child.used, "{label}: budget usage");
-    assert_eq!(
-        warm.budget_bytes, child.budget_bytes,
-        "{label}: evidence of the budget recording"
+/// Added by decision 93 (decision 111): certifies the deploy `term` of `record` from its
+/// pre-state in the store of `chain`, as a validator does. The certification decodes the
+/// evidence bytes and runs the journal check, the trace binding, native replay, the completeness
+/// check and the export. It must reach the post-state root of play with the phlo of play.
+async fn certify_record(chain: &mut NativeChain, term: &str, record: &DeployRecord) {
+    let label = &record.label;
+    chain.reset(&root(&record.pre_root)).await;
+    let (recording, journal) = decode_evidence(&record.budget_bytes, &record.journal_bytes);
+    let environment = replay_environment_from(
+        chain.history(),
+        decode_log(&record.log),
+        AMPLE_LIMIT,
+        &recording,
+        journal,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{label}: the evidence checks: {error}"));
+    let certification = finish_injected(
+        environment,
+        term,
+        Blake2b512Random::create_from_bytes(label.as_bytes()),
+        Injections::new(),
+    )
+    .await;
+    let evaluation = certification
+        .evaluation
+        .as_ref()
+        .unwrap_or_else(|error| panic!("{label}: native replay evaluates: {error:?}"));
+    assert!(
+        evaluation.errors.is_empty(),
+        "{label}: {:?}",
+        evaluation.errors
     );
     assert_eq!(
-        warm.journal_bytes, child.journal_bytes,
-        "{label}: evidence of the operation journal"
+        certification.complete,
+        Ok(()),
+        "{label}: replay consumes every journal row"
     );
-    assert_eq!(warm.log, child.log, "{label}: event log");
+    assert_eq!(
+        certification.usage,
+        Ok(record.used),
+        "{label}: replay uses the phlo of play"
+    );
+    assert_eq!(
+        evaluation.native_phlo_usage, record.phlo,
+        "{label}: native phlo usage"
+    );
+    assert_eq!(
+        certification.root,
+        Ok(root(&record.post_root)),
+        "{label}: replay reaches the post-state root of play"
+    );
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn space_restart_rehydrate_three_processes() {
+// Retired by decision 93 (decision 111): racing evaluation gives two runs other records, so no
+// test compares the records of two runs. The parent certifies them (`certify_record`). The old
+// helper follows.
+//
+// /// Checks the record `warm` of the warm run against the record `child` of a child.
+// fn assert_same_record(warm: &DeployRecord, child: &DeployRecord) {
+//     let label = &child.label;
+//     assert_eq!(warm.label, child.label);
+//     assert_eq!(warm.pre_root, child.pre_root, "{label}: pre-state root");
+//     assert_eq!(warm.post_root, child.post_root, "{label}: post-state root");
+//     assert_eq!(warm.phlo, child.phlo, "{label}: phlo usage");
+//     assert_eq!(warm.used, child.used, "{label}: budget usage");
+//     assert_eq!(
+//         warm.budget_bytes, child.budget_bytes,
+//         "{label}: evidence of the budget recording"
+//     );
+//     assert_eq!(
+//         warm.journal_bytes, child.journal_bytes,
+//         "{label}: evidence of the operation journal"
+//     );
+//     assert_eq!(warm.log, child.log, "{label}: event log");
+// }
+
+// Changed by decision 111: the test runs on each racing runtime, and the role of a child names
+// its racing runtime. The old lines follow.
+// #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+// async fn space_restart_rehydrate_three_processes() {
+//     if let Ok(role) = std::env::var(ROLE) {
+//         let directory =
+//             PathBuf::from(std::env::var_os(DIRECTORY).expect("a child knows its run directory"));
+//         return match role.as_str() {
+//             "create" => create(&directory).await,
+//             "touch" => touch(&directory).await,
+//             "replay" => replay(&directory).await,
+//             other => panic!("unknown role {other}"),
+//         };
+//     }
+//     let directory = run_directory();
+//     spawn("create", &directory).await;
+//     spawn("touch", &directory).await;
+//     spawn("replay", &directory).await;
+#[test]
+fn space_restart_rehydrate_three_processes() {
     if let Ok(role) = std::env::var(ROLE) {
         let directory =
             PathBuf::from(std::env::var_os(DIRECTORY).expect("a child knows its run directory"));
-        return match role.as_str() {
-            "create" => create(&directory).await,
-            "touch" => touch(&directory).await,
-            "replay" => replay(&directory).await,
-            other => panic!("unknown role {other}"),
-        };
+        let (step, workers) = role_runtime(&role);
+        return racing_runtime(workers).block_on(async {
+            match step {
+                "create" => create(&directory).await,
+                "touch" => touch(&directory).await,
+                "replay" => replay(&directory).await,
+                other => panic!("unknown role {other}"),
+            }
+        });
     }
-    let directory = run_directory();
-    spawn("create", &directory).await;
-    spawn("touch", &directory).await;
-    spawn("replay", &directory).await;
+    for workers in RACING_WORKERS {
+        racing_runtime(workers).block_on(restart_run(workers));
+    }
+}
+
+/// Added by decision 93 (decision 111): the three children on the racing runtime with `workers`
+/// worker threads, and the certification of their records by the parent.
+async fn restart_run(workers: usize) {
+    let directory = run_directory(workers);
+    spawn(&format!("create-{workers}"), &directory).await;
+    spawn(&format!("touch-{workers}"), &directory).await;
+    spawn(&format!("replay-{workers}"), &directory).await;
     let created = read_records(&directory, "create");
     let touched = read_records(&directory, "touch");
     assert_eq!(created.len(), STORED_FAMILIES.len());
@@ -384,16 +489,37 @@ async fn space_restart_rehydrate_three_processes() {
         created.last().map(|record| &record.post_root),
         "block 2 starts at R1"
     );
-    // The warm run: both blocks in one process, over an in-memory store.
-    let mut warm = NativeChain::new().await;
+    // Changed by decision 93 (decision 111): the parent certifies the records of the children
+    // from the empty root, and it plays no warm run. The old warm run follows.
+    // // The warm run: both blocks in one process, over an in-memory store.
+    // let mut warm = NativeChain::new().await;
+    // for (family, record) in STORED_FAMILIES.iter().zip(&created) {
+    //     let (_, own) = play_recorded(&mut warm, &family.creation(), &creation_label(family)).await;
+    //     assert_same_record(&own, record);
+    // }
+    // for (family, record) in STORED_FAMILIES.iter().zip(&touched) {
+    //     let (_, own) = play_recorded(&mut warm, &family.touching(), &touch_label(family)).await;
+    //     assert_same_record(&own, record);
+    // }
+    // drop(warm);
+    let mut validator = NativeChain::new().await;
+    assert_eq!(
+        created.first().map(|record| root(&record.pre_root)),
+        Some(validator.history().root()),
+        "block 1 starts at the empty root"
+    );
     for (family, record) in STORED_FAMILIES.iter().zip(&created) {
-        let (_, own) = play_recorded(&mut warm, &family.creation(), &creation_label(family)).await;
-        assert_same_record(&own, record);
+        assert_eq!(
+            record.label,
+            creation_label(family),
+            "the records of block 1"
+        );
+        certify_record(&mut validator, &family.creation(), record).await;
     }
     for (family, record) in STORED_FAMILIES.iter().zip(&touched) {
-        let (_, own) = play_recorded(&mut warm, &family.touching(), &touch_label(family)).await;
-        assert_same_record(&own, record);
+        assert_eq!(record.label, touch_label(family), "the records of block 2");
+        certify_record(&mut validator, &family.touching(), record).await;
     }
-    drop(warm);
+    drop(validator);
     std::fs::remove_dir_all(&directory).expect("remove the run directory");
 }

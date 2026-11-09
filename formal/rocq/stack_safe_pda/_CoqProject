@@ -1,0 +1,6 @@
+-Q theories StackSafePDA
+-Q ../cost_accounted_rho/theories CostAccountedRho
+theories/StackSafePDA.v
+theories/SorterSimulation.v
+theories/ScoreComparison.v
+theories/CostAccountingSorter.v
