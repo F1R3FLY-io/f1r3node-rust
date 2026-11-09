@@ -1523,6 +1523,10 @@ rocq_reject_placeholders theories/RPB3SemanticReducerTotal.v
 TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
   rocq_compile_with_closed_count theories/RPB3SemanticReducerTotal.v 15 \
   "the semantic reducer is total on typed-valid inputs"
+rocq_reject_placeholders theories/RPB3IndependentOracleRootMatch.v
+TLC_MEMORY_HIGH=16G TLC_RSS=18G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleRootMatch.v 9 \
+  "the RPB3 independent oracle generated-root agreement"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1566,7 +1570,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3TotalExprPayloadFamilies \
   StackSafePDA.RPB3TotalNameAndPathMapFamilies \
   StackSafePDA.RPB3TotalProcessAndCostFamilies \
-  StackSafePDA.RPB3SemanticReducerTotal
+  StackSafePDA.RPB3SemanticReducerTotal \
+  StackSafePDA.RPB3IndependentOracleRootMatch
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
