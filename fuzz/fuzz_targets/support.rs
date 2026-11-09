@@ -235,7 +235,10 @@ pub fn snapshot(
             .add(metadata)
             .expect("metadata insert");
     }
-    let bonds_map = bonds.iter().cloned().collect::<HashMap<_, _>>();
+    let bonds_map = bonds
+        .iter()
+        .map(|(validator, stake)| (validator.clone(), (*stake).into()))
+        .collect::<HashMap<_, _>>();
     let active_validators = bonds.into_iter().map(|(validator, _)| validator).collect();
     CasperSnapshot {
         dag,

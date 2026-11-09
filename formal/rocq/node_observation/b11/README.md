@@ -36,7 +36,7 @@ All integer bytes use big-endian order. Signed integers use their two's-compleme
 
 Metadata contains the block hash, ordered parents, sender, ordered justifications, weights, block number, sequence number, three flags, float bits, and merge base.
 
-Block numbers and weights use eight bytes. Sequence numbers and float bits use four bytes. Float encoding preserves the exact `f32::to_bits` result.
+Block numbers use eight bytes. Weights use length-prefixed signed BigInt bytes. Sequence numbers and float bits use four bytes. Float encoding preserves the exact `f32::to_bits` result.
 
 Optional fields use zero for absence and one before a present value. Present empty bytes differ from absence.
 

@@ -67,19 +67,19 @@
                   "bonds": [
                     {
                       "validator": "0466fe01872364f0f26be110ba5201383ec450c458edeb862b1b2520b6ef042e91c60094a0c4a98b2d80bbd64d252e58f3b749a4e8d75976b51e441ada4ce667f6",
-                      "stake": 10000032
+                      "stake": "10000032"
                     },
                     {
                       "validator": "0468253959709c06610a32b7607cf489fd0f56602f8c6fbef1c00384ae8e8be9cc43987277a05e13c2f1764a92e9d44e3577ccc9d5c447cef9caf1b77129481133",
-                      "stake": 10000004
+                      "stake": "10000004"
                     },
                     {
                       "validator": "04953bfb7421d530712c507f7f060b9efe636816659add5544949170719c3b3b3c2256076c953b549f3c098421de603d27ecef2b9d208e705dbb90b5972eae174a",
-                      "stake": 10000002
+                      "stake": "10000002"
                     },
                     {
                       "validator": "04bcca4904285db7585e5eea2e70300f23df6332a1fff6ceb718adb2962fca7da1618a59ebf4b423e014584b76b9cc8f02423d39989076963b9845ff5fef7db692",
-                      "stake": 10000008
+                      "stake": "10000008"
                     }
                   ],
                   "blockSize": "138049",
@@ -229,19 +229,19 @@
                 "bonds": [
                   {
                     "validator": "0466fe01872364f0f26be110ba5201383ec450c458edeb862b1b2520b6ef042e91c60094a0c4a98b2d80bbd64d252e58f3b749a4e8d75976b51e441ada4ce667f6",
-                    "stake": 10000032
+                    "stake": "10000032"
                   },
                   {
                     "validator": "0468253959709c06610a32b7607cf489fd0f56602f8c6fbef1c00384ae8e8be9cc43987277a05e13c2f1764a92e9d44e3577ccc9d5c447cef9caf1b77129481133",
-                    "stake": 10000004
+                    "stake": "10000004"
                   },
                   {
                     "validator": "04953bfb7421d530712c507f7f060b9efe636816659add5544949170719c3b3b3c2256076c953b549f3c098421de603d27ecef2b9d208e705dbb90b5972eae174a",
-                    "stake": 10000002
+                    "stake": "10000002"
                   },
                   {
                     "validator": "04bcca4904285db7585e5eea2e70300f23df6332a1fff6ceb718adb2962fca7da1618a59ebf4b423e014584b76b9cc8f02423d39989076963b9845ff5fef7db692",
-                    "stake": 10000008
+                    "stake": "10000008"
                   }
                 ],
                 "blockSize": "139617",
@@ -325,19 +325,19 @@
                   "bonds": [
                     {
                       "validator": "0466fe01872364f0f26be110ba5201383ec450c458edeb862b1b2520b6ef042e91c60094a0c4a98b2d80bbd64d252e58f3b749a4e8d75976b51e441ada4ce667f6",
-                      "stake": 10000032
+                      "stake": "10000032"
                     },
                     {
                       "validator": "0468253959709c06610a32b7607cf489fd0f56602f8c6fbef1c00384ae8e8be9cc43987277a05e13c2f1764a92e9d44e3577ccc9d5c447cef9caf1b77129481133",
-                      "stake": 10000004
+                      "stake": "10000004"
                     },
                     {
                       "validator": "04953bfb7421d530712c507f7f060b9efe636816659add5544949170719c3b3b3c2256076c953b549f3c098421de603d27ecef2b9d208e705dbb90b5972eae174a",
-                      "stake": 10000002
+                      "stake": "10000002"
                     },
                     {
                       "validator": "04bcca4904285db7585e5eea2e70300f23df6332a1fff6ceb718adb2962fca7da1618a59ebf4b423e014584b76b9cc8f02423d39989076963b9845ff5fef7db692",
-                      "stake": 10000008
+                      "stake": "10000008"
                     }
                   ],
                   "blockSize": "138049",
@@ -369,7 +369,7 @@
                     "timestamp": 1600735421769,
                     "sig": "304402202258eac6522a475d582d19387673322829d7b18c50efe828579dd682b6ff4bad0220195a6bc59eca8898d8ff105fa8963d5df4b238288820f8674e0fefaba9d932a5",
                     "sigAlgorithm": "secp256k1",
-                    "phloPrice": 1,
+                    "phloPrice": "1",
                     "phloLimit": 100000,
                     "validAfterBlockNumber": 420136,
                     "cost": 23,
@@ -465,7 +465,7 @@
                           "ExprMap": {
                             "data": {
                               "color": { "ExprString": { "data": "green" } },
-                              "size": { "ExprInt": { "data": 3 } }
+                              "size": { "ExprInt": { "data": "3" } }
                             }
                           }
                         },
@@ -523,7 +523,7 @@
                             "data": [
                               { "ExprBool": { "data": true } },
                               { "ExprBool": { "data": false } },
-                              { "ExprInt": { "data": 1 } }
+                              { "ExprInt": { "data": "1" } }
                             ]
                           }
                         }
@@ -536,7 +536,7 @@
                       "data": "rho:id:3xagffydedp5qq9yb76udp7dsdxpbd9fyryrd8b7wotkkrru65zpps"
                     }
                   },
-                  { "ExprInt": { "data": 123 } },
+                  { "ExprInt": { "data": "123" } },
                   { "ExprString": { "data": "abc" } },
                   { "ExprBool": { "data": true } }
                 ],
@@ -561,19 +561,19 @@
                   "bonds": [
                     {
                       "validator": "0466fe01872364f0f26be110ba5201383ec450c458edeb862b1b2520b6ef042e91c60094a0c4a98b2d80bbd64d252e58f3b749a4e8d75976b51e441ada4ce667f6",
-                      "stake": 10000032
+                      "stake": "10000032"
                     },
                     {
                       "validator": "0468253959709c06610a32b7607cf489fd0f56602f8c6fbef1c00384ae8e8be9cc43987277a05e13c2f1764a92e9d44e3577ccc9d5c447cef9caf1b77129481133",
-                      "stake": 10000004
+                      "stake": "10000004"
                     },
                     {
                       "validator": "04953bfb7421d530712c507f7f060b9efe636816659add5544949170719c3b3b3c2256076c953b549f3c098421de603d27ecef2b9d208e705dbb90b5972eae174a",
-                      "stake": 10000002
+                      "stake": "10000002"
                     },
                     {
                       "validator": "04bcca4904285db7585e5eea2e70300f23df6332a1fff6ceb718adb2962fca7da1618a59ebf4b423e014584b76b9cc8f02423d39989076963b9845ff5fef7db692",
-                      "stake": 10000008
+                      "stake": "10000008"
                     }
                   ],
                   "blockSize": "139522",
@@ -765,7 +765,7 @@
                     "transaction": {
                       "fromAddr": "1111jQZNZp5RdUdANnjM5X2DvZGg7hmXZix8RpxohcwpqPiykw3r6",
                       "toAddr": "11119LqBoAQP7zV3LXXbjRL7kaR1DLWSfn2xGsvPxTw6zh5weNFBN",
-                      "amount": 100,
+                      "amount": "100",
                       "retUnforgeable": {
                         "sends": [],
                         "receives": [],
@@ -800,7 +800,7 @@
                     "transaction": {
                       "fromAddr": "11119LqBoAQP7zV3LXXbjRL7kaR1DLWSfn2xGsvPxTw6zh5weNFBN",
                       "toAddr": "1111jQZNZp5RdUdANnjM5X2DvZGg7hmXZix8RpxohcwpqPiykw3r6",
-                      "amount": 55,
+                      "amount": "55",
                       "retUnforgeable": {
                         "sends": [],
                         "receives": [],
@@ -929,8 +929,8 @@
           "type": "string"
         },
         "stake": {
-          "type": "integer",
-          "format": "int64"
+          "type": "string",
+          "description": "Canonical decimal integer in [0, 2^256-1]"
         }
       },
       "description": "BondInfo"
@@ -1229,9 +1229,8 @@
           "format": "int64"
         },
         "phloPrice": {
-          "type": "integer",
-          "description": "price (in 10^-8 REV) of each unit of computation. typically 1",
-          "format": "int64"
+          "type": "string",
+          "description": "Price in dust of each unit of computation, as a canonical decimal integer in [0, 2^256-1]. JSON numbers are rejected."
         },
         "validAfterBlockNumber": {
           "type": "integer",
@@ -1277,13 +1276,12 @@
         },
         "cost": {
           "type": "integer",
-          "description": "in units of 10^-8 REV",
+          "description": "Phlo consumed",
           "format": "int64"
         },
         "phloPrice": {
-          "type": "integer",
-          "description": "in units of 10^-8 REV",
-          "format": "int64"
+          "type": "string",
+          "description": "Price in dust per phlo, as a canonical decimal integer"
         },
         "validAfterBlockNumber": {
           "type": "integer",
@@ -1313,9 +1311,8 @@
           "description": "Recipient address"
         },
         "amount": {
-          "type": "integer",
-          "format": "int64",
-          "description": "Transfer amount in smallest units (dust)"
+          "type": "string",
+          "description": "Transfer amount in dust, as a decimal integer. A failed transfer reports the attempted value, which can be negative or above 2^256-1."
         },
         "success": {
           "type": "boolean",
@@ -1366,7 +1363,7 @@
         "data": {
           "term": "new world in {\n  world!(\"Hello!\")\n}\n",
           "timestamp": 1600740233668,
-          "phloPrice": 1,
+          "phloPrice": "1",
           "phloLimit": 250000,
           "validAfterBlockNumber": 420299
         },
@@ -1457,7 +1454,7 @@
             },
             "size": {
               "ExprInt": {
-                "data": 3
+                "data": "3"
               }
             }
           }
@@ -1521,13 +1518,13 @@
           "required": ["data"],
           "properties": {
             "data": {
-              "type": "integer",
-              "format": "int64"
+              "type": "string",
+              "description": "64-bit integer as a canonical decimal string"
             }
           }
         }
       },
-      "example": { "ExprInt": { "data": 123 } },
+      "example": { "ExprInt": { "data": "123" } },
       "description": "ExprInt"
     },
     "DataRequest": {
@@ -1625,7 +1622,8 @@
           "type": "string"
         },
         "amount": {
-          "type": "integer"
+          "type": "string",
+          "description": "Transfer amount in dust, as a decimal integer"
         },
         "toAddr": {
           "type": "string"
