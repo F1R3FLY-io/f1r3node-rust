@@ -1463,6 +1463,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleParIdentityBridge.v
 TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleParIdentityBridge.v 35 \
   "Par identity bytes agree across reducers"
+rocq_reject_placeholders theories/RPB3IndependentOracleFixedPointRefusalBridge.v
+TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleFixedPointRefusalBridge.v 36 \
+  "ESet and EMap fixed point refusal agrees"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1491,7 +1495,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentOracleEMapCarrierScoreBridge \
   StackSafePDA.RPB3IndependentOracleEMethodScoreBridge \
   StackSafePDA.RPB3IndependentOracleOrderedCollectionScoreBridge \
-  StackSafePDA.RPB3IndependentOracleParIdentityBridge
+  StackSafePDA.RPB3IndependentOracleParIdentityBridge \
+  StackSafePDA.RPB3IndependentOracleFixedPointRefusalBridge
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
