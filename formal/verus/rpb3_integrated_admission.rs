@@ -33,6 +33,8 @@ mod rpb3_map_push_live_parent_bounds;
 mod rpb3_map_push_fresh_child_extraction;
 #[cfg(rpb3_live_push)]
 mod rpb3_map_push_live_child_projection;
+#[cfg(rpb3_live_push)]
+mod rpb3_map_push_checked_receipt_projection;
 mod rpb3_generic_message_eof_source_refinement;
 mod rpb3_message_driver_source_integration;
 mod rpb3_canonical_path_driver_source_refinement;

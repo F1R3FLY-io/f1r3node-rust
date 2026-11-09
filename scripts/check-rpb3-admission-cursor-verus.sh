@@ -98,6 +98,7 @@ source_files=(
   "$model_dir/rpb3_map_push_live_parent_bounds.rs"
   "$model_dir/rpb3_map_push_fresh_child_extraction.rs"
   "$model_dir/rpb3_map_push_live_child_projection.rs"
+  "$model_dir/rpb3_map_push_checked_receipt_projection.rs"
   "$model_dir/rpb3_generic_message_eof_source_refinement.rs"
   "$model_dir/rpb3_message_driver_source_integration.rs"
   "$model_dir/rpb3_score_transcript.rs"
@@ -2013,6 +2014,23 @@ map_push_live_child_proofs=(
   checked_map_push_observed_child_selects_indexed_action
   pending_value_forgery_preserves_bytes_but_is_not_initial
 )
+map_push_checked_receipt_source="$model_dir/rpb3_map_push_checked_receipt_projection.rs"
+map_push_checked_receipt_proofs=(
+  checked_map_push_live_cursor_rejects_forged_field
+  checked_map_push_live_cursor_discards_forged_template_field
+  checked_map_push_live_cursor_selects_indexed_field
+  checked_map_push_receipt_child_is_observed_projection
+  checked_map_push_constructed_receipt_selects_indexed_action
+  source_bound_receipt_discards_forged_template_body_id
+  concrete_new_map_push_bytes_facts
+  concrete_new_map_push_varints
+  concrete_new_map_push_field_step
+  concrete_new_map_root_initial_exact
+  concrete_new_map_wire_cursor_projects
+  concrete_new_map_runtime_field_exact
+  concrete_new_map_live_before_wf
+  concrete_new_map_root_and_wire_exact
+)
 map_eof_indexed_view_proof_count="$(rg -c '^pub proof fn ' "$map_eof_indexed_view_source")"
 if [[ "$map_eof_indexed_view_proof_count" -ne "${#map_eof_indexed_view_proofs[@]}" ]]; then
   echo "rpb3-admission-cursor: map EOF indexed-view proof inventory changed" >&2
@@ -2056,6 +2074,11 @@ fi
 map_push_live_child_proof_count="$(rg -c '^pub proof fn ' "$map_push_live_child_source")"
 if [[ "$map_push_live_child_proof_count" -ne "${#map_push_live_child_proofs[@]}" ]]; then
   echo "rpb3-admission-cursor: map push live child proof inventory changed" >&2
+  exit 1
+fi
+map_push_checked_receipt_proof_count="$(rg -c '^pub proof fn ' "$map_push_checked_receipt_source")"
+if [[ "$map_push_checked_receipt_proof_count" -ne "${#map_push_checked_receipt_proofs[@]}" ]]; then
+  echo "rpb3-admission-cursor: map push checked receipt proof inventory changed" >&2
   exit 1
 fi
 source_observation_proof_count="$(rg -c '^pub proof fn ' "$source_observation")"
@@ -2468,6 +2491,24 @@ for proof in "${map_push_live_child_proofs[@]}"; do
   if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
     cat "$proof_log"
     echo "rpb3-admission-cursor: map push live child $proof did not verify" >&2
+    exit 1
+  fi
+  sha256sum "$proof_log"
+done
+for proof in "${map_push_checked_receipt_proofs[@]}"; do
+  proof_log="$evidence_dir/map-push-checked-receipt-$proof.log"
+  if ! tlc_bounded timeout "${TLC_RUNTIME_MAX_SEC}s" "$verus_bin" \
+    --no-cheating --num-threads 1 \
+    --rlimit 30 --cfg rpb3_integrated --cfg rpb3_live_push \
+    --verify-only-module rpb3_map_push_checked_receipt_projection --verify-function "$proof" \
+    "$integrated_source" >"$proof_log" 2>&1; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: map push checked receipt $proof proof failed" >&2
+    exit 1
+  fi
+  if ! rg -q 'verification results:: 1 verified, 0 errors' "$proof_log"; then
+    cat "$proof_log"
+    echo "rpb3-admission-cursor: map push checked receipt $proof did not verify" >&2
     exit 1
   fi
   sha256sum "$proof_log"
