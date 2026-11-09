@@ -67,7 +67,7 @@ impl TestContext {
         // genesis PoS Rholang initialization, validator 0 ends up at
         // stake 0 (unbonded), which then trips
         // `slashing_authorization::validate_received_slash_deploys`'s
-        // `TargetNotBonded` guard when an honest validator tries to
+        // `NothingToSlash` guard when an honest validator tries to
         // slash validator 0 for equivocating. The dev-side tests in
         // this file assume the equivocator is bonded — so use a custom
         // bonds_function that gives every validator a comfortably-bonded

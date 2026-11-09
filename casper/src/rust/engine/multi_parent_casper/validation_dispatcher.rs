@@ -142,6 +142,7 @@ async fn run_validation_steps<T: TransportLayer + Send + Sync>(
                 this.casper_shard_conf.max_number_of_parents,
                 this.casper_shard_conf.max_parent_depth,
                 &this.block_store,
+                &this.runtime_manager,
                 this.casper_shard_conf.disable_validator_progress_check,
                 &mut floor_ctx,
             )

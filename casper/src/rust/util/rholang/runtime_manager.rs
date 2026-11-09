@@ -1181,6 +1181,31 @@ impl RuntimeManager {
         Ok(computed)
     }
 
+    /// The stake a slash can take from each validator at `hash`: its bond
+    /// plus any withdrawn stake still in quarantine. Validators with none
+    /// are left out.
+    pub async fn slashable_stakes(
+        &self,
+        hash: &StateHash,
+    ) -> Result<HashMap<Validator, i64>, CasperError> {
+        let bonds = self.compute_bonds(hash).await?;
+        let quarantined = self.quarantined_stakes(hash).await?;
+        let mut stakes: HashMap<Validator, i64> = HashMap::new();
+        for bond in bonds.into_iter().chain(quarantined) {
+            let stake = stakes.entry(bond.validator).or_insert(0);
+            *stake = stake.saturating_add(bond.stake);
+        }
+        stakes.retain(|_, stake| *stake > 0);
+        Ok(stakes)
+    }
+
+    /// Every withdrawn validator at `hash` with the stake it still holds in
+    /// quarantine, until it is paid out.
+    pub async fn quarantined_stakes(&self, hash: &StateHash) -> Result<Vec<Bond>, CasperError> {
+        let runtime = self.spawn_runtime().await?;
+        RuntimeOps::new(runtime).compute_quarantined(hash).await
+    }
+
     // Executes deploy as user deploy with immediate rollback
     pub async fn play_exploratory_deploy(
         &self,

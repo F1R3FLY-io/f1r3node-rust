@@ -2550,6 +2550,8 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
 
         // Use unlimited parents (-1) like in Scala tests: Estimator.UnlimitedParents
         let max_number_of_parents = -1;
+        let runtime_manager =
+            crate::util::rholang::resources::mk_runtime_manager("block-summary", None).await;
 
         let result = Validate::block_summary(
             &signed_block,
@@ -2575,6 +2577,7 @@ async fn block_summary_validation_should_short_circuit_after_first_invalidity() 
             max_number_of_parents,
             i32::MAX, // max_parent_depth: disable depth check for this test
             &block_store,
+            &runtime_manager,
             false,
             &mut None,
         )

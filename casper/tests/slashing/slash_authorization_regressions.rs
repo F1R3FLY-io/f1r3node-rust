@@ -32,7 +32,7 @@ use super::detector_totality_helpers::{block, justification, DetectorFixture};
 
 const CHAIN: [u8; 32] = [0xC1; 32];
 
-fn snapshot(fixture: &DetectorFixture, bonded: &[Bytes]) -> CasperSnapshot {
+fn snapshot(fixture: &DetectorFixture) -> CasperSnapshot {
     CasperSnapshot {
         chain_id: Bytes::from_static(&CHAIN),
         dag: fixture
@@ -49,13 +49,18 @@ fn snapshot(fixture: &DetectorFixture, bonded: &[Bytes]) -> CasperSnapshot {
         max_seq_nums: HashMap::new(),
         on_chain_state: OnChainCasperState {
             shard_conf: CasperShardConf::new(),
-            bonds_map: bonded
-                .iter()
-                .map(|validator| (validator.clone(), 100))
-                .collect(),
-            active_validators: bonded.to_vec(),
+            bonds_map: HashMap::new(),
+            active_validators: Vec::new(),
         },
     }
+}
+
+/// `validators`, each holding stake a slash can take.
+fn stakes(validators: &[Bytes]) -> HashMap<Bytes, i64> {
+    validators
+        .iter()
+        .map(|validator| (validator.clone(), 100))
+        .collect()
 }
 
 fn key(byte: u8) -> PrivateKey { PrivateKey::from_bytes(&[byte; 32]) }
@@ -134,8 +139,9 @@ async fn every_held_equivocation_of_a_bonded_offender_is_a_candidate_whatever_it
     hold(&fixture, &a, &b);
 
     let candidates = authorized_slash_candidates(
-        &snapshot(&fixture, &[public(&offender)]),
+        &snapshot(&fixture),
         &fixture.block_store,
+        &stakes(&[public(&offender)]),
     )
     .expect("candidates");
 
@@ -155,8 +161,9 @@ async fn an_offender_with_several_equivocations_is_one_candidate() {
     hold(&fixture, &a5, &b5);
 
     let candidates = authorized_slash_candidates(
-        &snapshot(&fixture, &[public(&offender)]),
+        &snapshot(&fixture),
         &fixture.block_store,
+        &stakes(&[public(&offender)]),
     )
     .expect("candidates");
 
@@ -172,22 +179,23 @@ async fn an_offender_with_several_equivocations_is_one_candidate() {
 }
 
 #[tokio::test]
-async fn an_unbonded_offender_is_no_candidate() {
+async fn an_offender_holding_no_stake_is_no_candidate() {
     let fixture = DetectorFixture::new().await;
     let offender = key(0x11);
     hold(&fixture, &signed(&offender, 3, 1), &signed(&offender, 3, 2));
 
-    let candidates = authorized_slash_candidates(&snapshot(&fixture, &[]), &fixture.block_store)
-        .expect("candidates");
+    let candidates =
+        authorized_slash_candidates(&snapshot(&fixture), &fixture.block_store, &stakes(&[]))
+            .expect("candidates");
 
     assert!(candidates.is_empty());
 }
 
 /// Judges `block`'s slashes as a node of shard `root` and chain `CHAIN`
-/// whose parents bond `stakes`.
+/// whose floor holds `stakes` a slash can take.
 fn received(block: &BlockMessage, stakes: &[(Bytes, i64)]) -> Result<(), CasperError> {
-    let bonds: HashMap<Bytes, i64> = stakes.iter().cloned().collect();
-    validate_received_slash_deploys(block, &bonds, "root", &CHAIN)
+    let slashable: HashMap<Bytes, i64> = stakes.iter().cloned().collect();
+    validate_received_slash_deploys(block, &slashable, "root", &CHAIN)
 }
 
 #[test]
@@ -271,7 +279,7 @@ fn a_received_slash_citing_a_block_of_another_shard_or_chain_is_rejected() {
 }
 
 #[test]
-fn a_received_slash_of_an_unbonded_or_already_slashed_offender_is_rejected() {
+fn a_received_slash_of_an_offender_holding_no_stake_is_rejected() {
     let (offender, proposer) = (key(0x11), public(&key(0x22)));
     let pair = evidence(&signed(&offender, 3, 1), &signed(&offender, 3, 2));
     let block = carrier(&proposer, vec![slash(pair, &proposer)]);
@@ -282,7 +290,7 @@ fn a_received_slash_of_an_unbonded_or_already_slashed_offender_is_rejected() {
     ]] {
         assert!(matches!(
             auth_error(received(&block, &stakes)),
-            SlashAuthError::TargetNotBonded { .. }
+            SlashAuthError::NothingToSlash { .. }
         ));
     }
 }

@@ -479,15 +479,20 @@ in {
                           for (@invalidBlocks        <- invalidBlocksCh &
                                @userPk               <- userCh &
                                @state, stateUpdateCh <- stateProcessCh) {
-                                new toBeSlashed, valBondCh, valRewardCh in {
+                                new toBeSlashed, stakeCh in {
                                   if (invalidBlocks.contains(blockHash)) {
                                     toBeSlashed!(invalidBlocks.get(blockHash)) |
                                     for (@validator <- toBeSlashed) {
-                                      valBondCh!(state.get("allBonds").get(validator)) |
-                                      for (@valBond <- valBondCh) {
+                                      // The slash takes the bond and any
+                                      // withdrawn stake still in quarantine.
+                                      match state.get("withdrawers").get(validator) {
+                                        Nil => stakeCh!(state.get("allBonds").getOrElse(validator, 0))
+                                        (quarantined, _) => stakeCh!(state.get("allBonds").getOrElse(validator, 0) + quarantined)
+                                      } |
+                                      for (@stake <- stakeCh) {
                                         // Idempotency: a validator already at
                                         // stake 0 has been slashed by a prior
-                                        // call. The transfer of `valBond = 0`
+                                        // call. The transfer of `stake = 0`
                                         // would fail with "Amount must be
                                         // positive value", but the desired
                                         // end state (validator at 0, removed
@@ -503,30 +508,37 @@ in {
                                         // T-9.3 catch-all dispatcher that
                                         // mints a record per slashable
                                         // variant.
-                                        if (valBond <= 0) {
+                                        if (stake <= 0) {
                                           stateUpdateCh!(state, (true, Nil))
                                         } else {
-                                          new transferDoneCh in {
+                                          new transferDoneCh, bondsCh, withdrawersCh in {
                                             @posVault!(
                                               "transfer",
                                               coopMultiVaultAddr,
-                                              valBond,
+                                              stake,
                                               posAuthKey,
                                               *transferDoneCh
                                             ) |
                                             for (@transferResult <- transferDoneCh) {
                                               match transferResult {
                                                 (true, _) => {
-                                                  stateUpdateCh!({
-                                                    "allBonds"        : state.get("allBonds").set(validator, 0),
-                                                    "activeValidators": state.get("activeValidators").delete(validator),
-                                                    "committedRewards" : state.get("committedRewards").delete(validator),
-                                                    "withdrawers"     : state.get("withdrawers"),
-                                                    "pendingWithdrawers": state.get("pendingWithdrawers"),
-                                                    "randomImages"    : state.get("randomImages"),
-                                                    "randomNumbers"   : state.get("randomNumbers")
-                                                  },
-                                                  (true, Nil))
+                                                  if (state.get("allBonds").contains(validator)) {
+                                                    bondsCh!(state.get("allBonds").set(validator, 0))
+                                                  } else {
+                                                    bondsCh!(state.get("allBonds"))
+                                                  } |
+                                                  match state.get("withdrawers").get(validator) {
+                                                    Nil => withdrawersCh!(state.get("withdrawers"))
+                                                    (_, quarantine) => withdrawersCh!(state.get("withdrawers").set(validator, (0, quarantine)))
+                                                  } |
+                                                  for (@bonds <- bondsCh & @withdrawers <- withdrawersCh) {
+                                                    stateUpdateCh!(state
+                                                      .set("allBonds", bonds)
+                                                      .set("withdrawers", withdrawers)
+                                                      .set("activeValidators", state.get("activeValidators").delete(validator))
+                                                      .set("committedRewards", state.get("committedRewards").delete(validator)),
+                                                    (true, Nil))
+                                                  }
                                                 }
                                                 (_, errorMessage) => {
                                                   stateUpdateCh!(state, (false, "transfer failed: " ++ errorMessage))
@@ -654,13 +666,24 @@ in {
                                       // design/09-bug-fixes-and-rationale.md §9.13
                                       // (theorem t_9_10_withdraw_transfer_failure_safety,
                                       // formal/rocq/slashing/theories/BugFixWithdrawTransferFailure.v).
+                                      // A slashed withdrawer is owed nothing,
+                                      // and a transfer of nothing fails, so
+                                      // it is removed without one.
                                       contract payWithdraw(@(pk, (bonds, quantine)), resultCh) = {
                                         new transferResultCh in {
-                                          payWithdrawer!((pk, bonds.toBigInt() + state.get("committedRewards").getOrElse(pk, 0n)), *transferResultCh) |
-                                          for (@transferResult <- transferResultCh) {
-                                            match transferResult {
-                                              (true, _) => { resultCh!((pk, true)) }
-                                              (_, _)    => { resultCh!((pk, false)) }
+                                          match bonds.toBigInt() + state.get("committedRewards").getOrElse(pk, 0n) {
+                                            amount => {
+                                              if (amount <= 0n) {
+                                                resultCh!((pk, true))
+                                              } else {
+                                                payWithdrawer!((pk, amount), *transferResultCh) |
+                                                for (@transferResult <- transferResultCh) {
+                                                  match transferResult {
+                                                    (true, _) => { resultCh!((pk, true)) }
+                                                    (_, _)    => { resultCh!((pk, false)) }
+                                                  }
+                                                }
+                                              }
                                             }
                                           }
                                         }

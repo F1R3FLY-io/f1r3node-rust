@@ -377,6 +377,7 @@ impl Validate {
         max_number_of_parents: i32,
         max_parent_depth: i32,
         block_store: &KeyValueBlockStore,
+        runtime_manager: &RuntimeManager,
         disable_validator_progress_check: bool,
         // Per-operation derivation slot, filled at the first step that
         // consumes the block's floor (transaction expiration) and reused by
@@ -473,7 +474,15 @@ impl Validate {
             Either::Right(_) => {}
         }
         tracing::debug!(target: "f1r3fly.casper", "before-slash-deploy-authorization-validation");
-        match Self::slash_deploy_authorization(block, s, block_store) {
+        match Self::slash_deploy_authorization(
+            block,
+            s,
+            block_store,
+            runtime_manager,
+            floor_ctx_slot,
+        )
+        .await
+        {
             Either::Left(err) => return Either::Left(err),
             Either::Right(_) => {}
         }
@@ -1524,14 +1533,16 @@ impl Validate {
         }
     }
 
-    /// Judges the block's `Slash` system deploys against the bonds of its own
-    /// parents: each validator's highest stake across the parents'
-    /// post-states. Those depend on the block alone, so every node reaches
-    /// the same verdict; a block without parents bonds nobody.
-    pub fn slash_deploy_authorization(
+    /// Judges the block's `Slash` system deploys against the stake a slash
+    /// can take at the block's floor: bonds and stake in quarantine. The
+    /// floor depends on the block alone, so every node reaches the same
+    /// verdict; a block without parents slashes nobody.
+    pub async fn slash_deploy_authorization(
         block: &BlockMessage,
         s: &CasperSnapshot,
         block_store: &KeyValueBlockStore,
+        runtime_manager: &RuntimeManager,
+        floor_ctx_slot: &mut Option<crate::rust::finality::floor_context::FloorContext>,
     ) -> ValidBlockProcessing {
         let carries_slash = block.body.system_deploys.iter().any(|deploy| {
             matches!(deploy, ProcessedSystemDeploy::Succeeded {
@@ -1542,25 +1553,39 @@ impl Validate {
         if !carries_slash {
             return Either::Right(ValidBlock::Valid);
         }
-        let mut bonds: HashMap<Validator, i64> = HashMap::new();
-        for parent_hash in &block.header.parents_hash_list {
-            let parent = match block_store.get(parent_hash) {
-                Ok(Some(parent)) => parent,
-                Ok(None) => return Either::Left(BlockError::MissingBlocks),
-                Err(err) => {
-                    return Either::Left(BlockError::from_validation_error(CasperError::from(err)))
-                }
-            };
-            for bond in &parent.body.state.bonds {
-                let stake = bonds.entry(bond.validator.clone()).or_insert(bond.stake);
-                *stake = (*stake).max(bond.stake);
+        if floor_ctx_slot.is_none() && !block.header.parents_hash_list.is_empty() {
+            let latest_messages: BTreeMap<Validator, BlockHash> = block
+                .justifications
+                .iter()
+                .map(|j| (j.validator.clone(), j.latest_block_hash.clone()))
+                .collect();
+            match crate::rust::finality::floor_context::FloorContext::derive(
+                &s.dag,
+                block_store,
+                &block.header.parents_hash_list,
+                &latest_messages,
+                crate::rust::safety::clique_oracle::FtThreshold::from_ppm(
+                    s.on_chain_state.shard_conf.fault_tolerance_threshold_ppm,
+                ),
+            )
+            .await
+            {
+                Ok(ctx) => *floor_ctx_slot = Some(ctx),
+                Err(ex) => return Either::Left(BlockError::from_validation_error(ex)),
             }
         }
+        let slashable = match floor_ctx_slot.as_ref() {
+            Some(ctx) => match runtime_manager.slashable_stakes(&ctx.floor_state).await {
+                Ok(slashable) => slashable,
+                Err(ex) => return Either::Left(BlockError::from_validation_error(ex)),
+            },
+            None => HashMap::new(),
+        };
         Self::route_slash_validation_outcome(
             block,
             validate_received_slash_deploys(
                 block,
-                &bonds,
+                &slashable,
                 &s.on_chain_state.shard_conf.shard_name,
                 &s.chain_id,
             ),

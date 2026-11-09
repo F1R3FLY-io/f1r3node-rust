@@ -2,9 +2,10 @@
 //!
 //! A slash carries its own evidence: two blocks one sender signed at one
 //! sequence number. The proposer and every receiver apply the same rule to
-//! it, and the rule reads only the evidence and the block's pre-state bonds,
-//! so honest nodes reach the same verdict whatever order they saw the
-//! equivocation in and whichever of its blocks they hold.
+//! it, and the rule reads only the evidence and the stake a slash can take
+//! at the block's floor, its bonds and any stake in quarantine, so honest
+//! nodes reach the same verdict whatever order they saw the equivocation in
+//! and whichever of its blocks they hold.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -32,8 +33,8 @@ pub enum SlashAuthError {
     },
     #[error("slash evidence is not an equivocation: {reason}")]
     NotAnEquivocation { reason: &'static str },
-    #[error("slash deploy target {validator} is not currently bonded")]
-    TargetNotBonded { validator: String },
+    #[error("slash deploy target {validator} holds no stake a slash can take")]
+    NothingToSlash { validator: String },
     #[error("duplicate slash deploy target in block (validator {validator})")]
     DuplicateTarget { validator: String },
 }
@@ -141,25 +142,18 @@ fn evidence_for(
     })
 }
 
-fn bonded(snapshot: &CasperSnapshot, validator: &Validator) -> bool {
-    snapshot
-        .on_chain_state
-        .bonds_map
-        .get(validator)
-        .is_some_and(|stake| *stake > 0)
-}
-
-/// The slashes the block being built issues: one per bonded offender this
-/// node holds an equivocation of. Where an offender has several, the one
-/// recorded on the lowest block hash is used, so every node holding the
-/// same equivocations issues the same slashes.
+/// The slashes the block being built issues: one per offender this node
+/// holds an equivocation of and `slashable` holds stake for. Where an
+/// offender has several, the one recorded on the lowest block hash is used,
+/// so every node holding the same equivocations issues the same slashes.
 pub fn authorized_slash_candidates(
     snapshot: &CasperSnapshot,
     block_store: &KeyValueBlockStore,
+    slashable: &HashMap<Validator, i64>,
 ) -> Result<Vec<AuthorizedSlashCandidate>, CasperError> {
     let mut by_offender: BTreeMap<Validator, BlockMetadata> = BTreeMap::new();
     for metadata in snapshot.dag.invalid_blocks() {
-        if !bonded(snapshot, &metadata.sender) {
+        if !slashable.contains_key(&metadata.sender) {
             continue;
         }
         match by_offender.entry(metadata.sender.clone()) {
@@ -186,12 +180,12 @@ pub fn authorized_slash_candidates(
 
 /// Every succeeded `Slash` system deploy in `block` must be issued by the
 /// block's sender, carry evidence that proves an equivocation on the chain
-/// `chain_id` of shard `shard_id`, target a validator with positive stake in
-/// `bonds`, and be the block's only slash of that validator. Any violation
+/// `chain_id` of shard `shard_id`, target a validator `slashable` holds stake
+/// for, and be the block's only slash of that validator. Any violation
 /// rejects the block as `InvalidBlock::UnauthorizedSlashDeploy`.
 pub fn validate_received_slash_deploys(
     block: &BlockMessage,
-    bonds: &HashMap<Validator, i64>,
+    slashable: &HashMap<Validator, i64>,
     shard_id: &str,
     chain_id: &[u8],
 ) -> Result<(), CasperError> {
@@ -218,8 +212,8 @@ pub fn validate_received_slash_deploys(
             .into());
         }
         let offender = equivocator_proven_by(evidence, shard_id, chain_id)?;
-        if !bonds.get(&offender).is_some_and(|stake| *stake > 0) {
-            return Err(SlashAuthError::TargetNotBonded {
+        if !slashable.get(&offender).is_some_and(|stake| *stake > 0) {
+            return Err(SlashAuthError::NothingToSlash {
                 validator: hex::encode(&offender),
             }
             .into());
