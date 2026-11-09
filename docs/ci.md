@@ -51,7 +51,9 @@ The Integration Pipeline waits for all three of Static Checks, Script Tests, and
 
 ### Commit Policy
 
-The job verifies the commit identities of pull request commits (pull requests only). It reads the pull request head SHA, so it has no cache step. A cache step in the same job is the pattern that the CodeQL rule `actions/cache-poisoning/poisonable-step` reports. The step fetches commit objects only. It runs the commit identity checker and reads the denied identities list from the base commit, so a pull request cannot weaken its own check. Before these files reach the base branch, the step uses the copies in the pull request.
+The job verifies commit identities in pull requests. It reads the pull request head SHA, so it has no cache step. A cache step in the same job matches the CodeQL rule `actions/cache-poisoning/poisonable-step`. The step fetches commit objects only.
+
+Ordinary pull requests use the base commit's checker and denied identities list. Before these files reach the base branch, the step uses the copies in the pull request. Approved workflow transfers can use verified source policy as described below.
 
 `.github/scripts/commit-policy-exemptions.sh` lists the exempt commits: the commits of a human pull request author, and the contributor commits of an imported fork pull request. The step runs the base copy of that script.
 
@@ -65,19 +67,28 @@ Approved branch transfers can also use source history to ratify identities. This
 | `ca-canary` | `backmerge/ca-release-*` | `ca-release` |
 | `ca-release` | `promote/ca-release-*` | `ca-canary` |
 
-The base copy of `.github/scripts/commit-policy-source.sh` validates each transfer. Both PR repositories must match the workflow repository. The API head must match the event head. The source must be protected.
+The base copy of `.github/scripts/commit-policy-source.sh` normally validates each transfer. Both PR repositories must match the workflow repository. The API head must match the event head. The source must be protected.
 
 After validation, the checker finds all merge bases between the PR head and the protected source tip. Those shared ancestors add accepted source authors to the ratified set. This supports snapshots and later base updates. PR-only commits and later source commits cannot ratify identities absent from shared history. Denied identities and forbidden trailers still fail. Ordinary feature PRs and forks retain their existing checks.
 
-If the base commit lacks the source validator, the job uses target-only ratification and reports a notice. It never executes the PR copy of the source validator. A trusted validator failure stops the job.
+Workflow transfers can install policy when the target lacks the source validator. This also replaces the older checker used by such targets. The PR author must be `f1r3node-promotion[bot]`, with account type `Bot`. The temporary head must match an approved route above.
 
-The policy files must reach a target branch before that branch can use source ratification. A merge into `dev` alone does not update the checker on `ca-canary`.
+Before loading source code, inline workflow checks verify both repositories, branch names, commit SHAs, and the author against the event. The source branch must be protected. The job selects a common ancestor of the event head and the captured source tip as the policy revision. This revision belongs to accepted source history and the transferred history.
+
+The job loads the source validator, checker, and exemption script from that verified revision. It combines the target and source denied lists. Target history and shared source history both ratify identities. A missing policy file or failed validator stops the job. Unmerged head edits and later source policy cannot replace the selected policy.
+
+Targets with the source validator retain their existing policy. Other PRs into targets without the validator use target-only ratification and report a notice. They never execute a PR copy of the source validator. A trusted validator failure stops the job.
+
+After this fix reaches `dev`, the normal promotion workflow can transfer its policy into `ca-canary`. No separate policy-only PR or force push is required. An existing sync needs the updated CI workflow in its head before it can use this behavior.
 
 ### Script Tests
 
 The job runs these script tests:
 
 - Commit trailer check
+- Commit Policy exemptions
+- Commit Policy source history
+- Commit Policy bootstrap
 - Pre-push hook
 - Stack CI gate
 - Image publish tags
