@@ -15,10 +15,8 @@ use crate::pace::Pace;
 use crate::ready::ReadyQueue;
 use crate::record::{DeployView, QueueRecord, QueueState, Sig};
 use crate::store::{QueueStore, StoreError};
+use crate::window::ReleaseWindow;
 
-/// Share of the citable depth a released deploy may spend between release
-/// and its verdict.
-const RELEASED_SHARE_OF_DEPTH: f64 = 0.5;
 /// Released deploys never exceed this many of the shard's full blocks.
 const RELEASED_CEILING_BLOCKS: usize = 2;
 const RETRY_FLOOR: Duration = Duration::from_secs(1);
@@ -65,6 +63,8 @@ pub struct QueueSnapshot {
     pub submitted: usize,
     pub in_block: usize,
     pub released_limit: usize,
+    pub release_window: Option<f64>,
+    pub slow_start_threshold: Option<f64>,
     pub held: usize,
     pub settled_per_height: Option<f64>,
     pub secs_per_height: Option<f64>,
@@ -174,6 +174,10 @@ pub struct Engine {
     chain: Option<ChainSnapshot>,
     connected: bool,
     pace: Option<Pace>,
+    window: Option<ReleaseWindow>,
+    /// Tip at which a released deploy was last re-sent to the node, while
+    /// it stays released.
+    resent_at: HashMap<Sig, i64>,
     next_sequence: u64,
     retry_at: Option<Instant>,
     retry_delay: Duration,
@@ -223,6 +227,8 @@ impl Engine {
             chain: None,
             connected: false,
             pace: None,
+            window: None,
+            resent_at: HashMap::new(),
             next_sequence,
             retry_at: None,
             retry_delay: RETRY_FLOOR,
@@ -399,6 +405,12 @@ impl Engine {
         );
         if self.pace.is_none() {
             self.pace = Some(Pace::new(citable_depth(&chain.shard)));
+        }
+        if self.window.is_none() {
+            self.window = Some(ReleaseWindow::new(
+                citable_depth(&chain.shard),
+                RELEASED_CEILING_BLOCKS * chain.shard.max_user_deploys_per_block as usize,
+            ));
         }
         self.chain = Some(chain);
         self.connected = true;
@@ -677,19 +689,17 @@ impl Engine {
         self.count(QueueState::Submitted) + self.count(QueueState::InBlock)
     }
 
-    /// Released deploys the queue allows at once: what settles at the
-    /// measured pace within the released share of the citable depth
-    /// (Little's law), at least one so a stalled pace is still probed, at
-    /// most a couple of the shard's full blocks.
-    fn released_limit(&self) -> usize {
-        let (Some(chain), Some(pace)) = (&self.chain, &self.pace) else {
-            return 0;
-        };
-        let full_blocks =
-            RELEASED_CEILING_BLOCKS * chain.shard.max_user_deploys_per_block as usize;
-        let span = citable_depth(&chain.shard) as f64 * RELEASED_SHARE_OF_DEPTH;
-        pace.deploys_settled_in(span)
-            .clamp(full_blocks.min(1), full_blocks)
+    fn released_limit(&self) -> usize { self.window.as_ref().map_or(0, ReleaseWindow::limit) }
+
+    /// Heights the longest-waiting released deploy has gone without a
+    /// verdict.
+    fn oldest_unsettled_age(&self, tip: i64) -> Option<i64> {
+        self.records
+            .values()
+            .filter(|record| matches!(record.state, QueueState::Submitted | QueueState::InBlock))
+            .filter_map(|record| record.submitted_at_height)
+            .min()
+            .map(|released_at| tip - released_at)
     }
 
     fn release_open(&self) -> bool {
@@ -704,6 +714,7 @@ impl Engine {
     fn submit(&mut self, sig: &Sig, tip: i64) -> Result<(), StoreError> {
         let request = self.request_for(sig)?;
         self.remove_expiry(sig);
+        self.resent_at.remove(sig);
         self.update(sig, |record| {
             record.state = QueueState::Submitted;
             record.submitted_at_height = Some(tip);
@@ -747,6 +758,10 @@ impl Engine {
                 pace.record_unsettled();
             }
             pace.on_tip(number, Instant::now());
+        }
+        let oldest_unsettled_age = self.oldest_unsettled_age(number);
+        if let Some(window) = self.window.as_mut() {
+            window.on_tip(number, oldest_unsettled_age);
         }
         let became_valid = self.waiting.split_off(&(number + 1, 0));
         let valid_now = std::mem::replace(&mut self.waiting, became_valid);
@@ -819,21 +834,26 @@ impl Engine {
         else {
             return Ok(());
         };
+        // The release height stays put: it is what a verdict's settle delay
+        // is measured from.
         let stale: Vec<Sig> = self
             .records
             .iter()
-            .filter(|(_, record)| {
+            .filter(|(sig, record)| {
+                let last_sent = self
+                    .resent_at
+                    .get(*sig)
+                    .copied()
+                    .or(record.submitted_at_height);
                 record.state == QueueState::Submitted
-                    && record
-                        .submitted_at_height
-                        .is_some_and(|height| tip - height > depth)
+                    && last_sent.is_some_and(|height| tip - height > depth)
             })
             .map(|(sig, _)| sig.clone())
             .collect();
         for sig in stale {
             let request = self.request_for(&sig)?;
+            self.resent_at.insert(sig.clone(), tip);
             self.update(&sig, |record| {
-                record.submitted_at_height = Some(tip);
                 record.submissions += 1;
             })?;
             metrics::counter!("deploy_queue.resubmissions").increment(1);
@@ -973,9 +993,22 @@ impl Engine {
         if before == QueueState::Queued {
             self.unplace(sig);
         }
+        self.resent_at.remove(sig);
         if matches!(before, QueueState::Submitted | QueueState::InBlock) {
             if let Some(pace) = self.pace.as_mut() {
                 pace.record_settled(1);
+            }
+            // An expiry measures the deploy's window, not how long the shard
+            // took to settle it.
+            let released_at = self.records[sig].submitted_at_height;
+            if let (true, Some(released_at)) = (
+                matches!(state, QueueState::Finalized | QueueState::Failed),
+                released_at,
+            ) {
+                let held_back = !self.ready.is_empty();
+                if let Some(window) = self.window.as_mut() {
+                    window.on_verdict(tip - released_at, tip, held_back);
+                }
             }
         }
         self.update(sig, |record| {
@@ -1045,6 +1078,8 @@ impl Engine {
             submitted: self.count(QueueState::Submitted),
             in_block: self.count(QueueState::InBlock),
             released_limit: self.released_limit(),
+            release_window: self.window.as_ref().map(ReleaseWindow::window),
+            slow_start_threshold: self.window.as_ref().map(ReleaseWindow::slow_start_threshold),
             held: self.records.len(),
             settled_per_height: self.pace.as_ref().map(Pace::settled_per_height),
             secs_per_height: self.pace.as_ref().and_then(Pace::secs_per_height),

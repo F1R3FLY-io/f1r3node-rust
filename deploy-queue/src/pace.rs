@@ -14,7 +14,8 @@ struct Sample {
 
 /// How fast the shard settles this queue's deploys, as the queue observes
 /// it: its own released deploys that reach a verdict per height, and wall
-/// time per height.
+/// time per height. Admission predicts waits from it; release is governed
+/// by the release window instead.
 ///
 /// Settlement, not inclusion, is the capacity signal: a validator puts
 /// everything in its pool into its next block, so inclusion follows whatever
@@ -134,11 +135,6 @@ impl Pace {
         Some((deploys as f64 / self.settled_per_height).ceil() as i64)
     }
 
-    /// Deploys that settle in `heights` heights at the observed rate.
-    pub fn deploys_settled_in(&self, heights: f64) -> usize {
-        (self.settled_per_height * heights).ceil() as usize
-    }
-
     /// Wall-clock seconds for `heights` heights, once a height has been
     /// timed.
     pub fn seconds_for(&self, heights: i64) -> Option<u64> {
@@ -167,7 +163,6 @@ mod tests {
         assert_eq!(pace.settled_per_height(), 1.0);
         assert_eq!(pace.heights_to_settle(0), Some(0));
         assert_eq!(pace.heights_to_settle(9), Some(9));
-        assert_eq!(pace.deploys_settled_in(12.5), 13);
         assert_eq!(pace.seconds_for(3), None);
     }
 
@@ -249,6 +244,5 @@ mod tests {
         }
         assert_eq!(pace.heights_to_settle(1), None);
         assert_eq!(pace.heights_to_settle(0), Some(0), "an empty queue still admits");
-        assert_eq!(pace.deploys_settled_in(12.5), 0);
     }
 }
