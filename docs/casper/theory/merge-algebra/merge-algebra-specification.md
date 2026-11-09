@@ -134,7 +134,10 @@ Given a base state and a set of deploy chains to merge:
   - **Runtime guard (allowed, semantics-preserving).** The *assumption* R-ORDER relies on —
     that no order-dependent survivor pair reaches apply — **MAY** be enforced by a
     detection-only runtime guard (`OrderDependenceGuard`, `conflict_set_merger.rs`) that trips
-    iff a datum is contributed to a side by ≥ 2 distinct survivors on a non-mergeable channel.
+    iff, on a non-mergeable channel, a datum is contributed to a side by ≥ 2 distinct source
+    blocks, or by ≥ 2 sibling survivors of one block while another survivor contributes it to
+    the opposite side. Sibling chains of one block carry that block's whole diff, so their
+    repeated contribution alone is not order-dependent.
     Such a guard is permitted **because it changes no post-state** (`debug_assert!` + release
     log/metric only); it does **not** alter the operator or the merge result. Sound by
     `ChannelNetting.v combine_max_order_independent_under_no_dup`.

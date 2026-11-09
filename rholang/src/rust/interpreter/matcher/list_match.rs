@@ -79,7 +79,7 @@ macro_rules! list_match {
                 } else if plen == 0 && remainder.is_some() {
                     if tlist
                         .iter()
-                        .all(|t| self.locally_free(t.to_owned(), 0).is_empty())
+                        .all(|t| t.locally_free(0).is_empty())
                     {
                         self.handle_remainder(tlist, remainder.unwrap(), merger)
                     } else {
@@ -175,13 +175,13 @@ macro_rules! list_match {
               fn match_function(&mut self, pattern: Pattern<$type>, t: $type) -> Option<FreeMap> {
                 let match_effect: Option<()> = match pattern {
                   Pattern::Term(p) => {
-                     if !self.connective_used(p.clone()) {
+                     if !p.connective_used() {
                          guard(t == p)
                       } else {
                          self.spatial_match(t, p)
                       }
                   }
-                  Pattern::Remainder(_) => guard(self.locally_free(t, 0).is_empty()),
+                  Pattern::Remainder(_) => guard(t.locally_free(0).is_empty()),
                 };
 
                 match match_effect {

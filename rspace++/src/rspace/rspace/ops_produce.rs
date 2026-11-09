@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rand::seq::SliceRandom;
@@ -24,9 +25,9 @@ use crate::rspace::trace::event::{COMM, Produce};
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
 {
     pub(super) fn locked_produce(
         &self,
@@ -47,11 +48,12 @@ where
         self.log_produce(produce_ref, persist);
 
         let t1 = Instant::now();
-        let extracted = self.extract_produce_candidate(grouped_channels, channel.clone(), Datum {
-            a: data.clone(),
+        let datum = Arc::new(Datum {
+            a: data,
             persist,
             source: produce_ref.clone(),
         });
+        let extracted = self.extract_produce_candidate(grouped_channels, &channel, &datum);
         metrics::counter!("rspace.produce.extract_candidate_ns", "source" => RSPACE_METRICS_SOURCE)
             .increment(t1.elapsed().as_nanos() as u64);
 
@@ -71,7 +73,8 @@ where
             }
             None => {
                 let t2 = Instant::now();
-                let result = Ok(self.store_data(channel, data, persist, produce_ref.clone()));
+                let datum = Arc::try_unwrap(datum).unwrap_or_else(|shared| (*shared).clone());
+                let result = Ok(self.store_data(&channel, datum));
                 metrics::counter!("rspace.produce.store_data_ns", "source" => RSPACE_METRICS_SOURCE)
                     .increment(t2.elapsed().as_nanos() as u64);
                 tracing::trace!(target: "f1r3fly.rspace.ops", mark = "finished-locked-produce", "locked_produce");
@@ -90,8 +93,8 @@ where
     fn extract_produce_candidate(
         &self,
         grouped_channels: Vec<Vec<C>>,
-        bat_channel: C,
-        data: Datum<A>,
+        bat_channel: &C,
+        data: &Arc<Datum<A>>,
     ) -> MaybeProduceCandidate<C, P, A, K> {
         let fetch_matching_continuations =
             |channels: Vec<C>| -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)> {
@@ -112,10 +115,10 @@ where
          *
          * In this version, we also add the produced data directly to this cache.
          */
-        let fetch_matching_data = |channel| -> (C, Vec<(Datum<A>, i32)>) {
-            let data_vec = self.get_store().get_data(&channel);
+        let fetch_matching_data = |channel| -> (C, IndexedData<A>) {
+            let data_vec = self.get_store().get_data_arc(&channel);
             let mut shuffled_data = self.shuffle_with_index(data_vec);
-            if channel == bat_channel {
+            if &channel == bat_channel {
                 shuffled_data.insert(0, (data.clone(), -1));
             }
             (channel, shuffled_data)
@@ -168,19 +171,8 @@ where
         self.wrap_result(&channels, &continuation, &data_candidates)
     }
 
-    fn store_data(
-        &self,
-        channel: C,
-        data: A,
-        persist: bool,
-        produce_ref: Produce,
-    ) -> MaybeProduceResult<C, P, A, K> {
-        self.get_store().put_datum(&channel, Datum {
-            a: data,
-            persist,
-            source: produce_ref,
-        });
-
+    fn store_data(&self, channel: &C, datum: Datum<A>) -> MaybeProduceResult<C, P, A, K> {
+        self.get_store().put_datum(channel, datum);
         None
     }
 
@@ -213,7 +205,7 @@ where
             Vec<C>,
         )
             -> Vec<(std::sync::Arc<WaitingContinuation<P, K>>, i32)>,
-        fetch_matching_data: impl Fn(C) -> (C, Vec<(Datum<A>, i32)>),
+        fetch_matching_data: impl Fn(C) -> (C, IndexedData<A>),
     ) -> MaybeProduceCandidate<C, P, A, K> {
         for channels in &grouped_channels {
             let t_cont = Instant::now();
@@ -224,7 +216,7 @@ where
                 .increment(match_candidates.len() as u64);
 
             let t_data = Instant::now();
-            let channel_to_indexed_data: HashMap<C, Vec<(Datum<A>, i32)>> = channels
+            let channel_to_indexed_data: HashMap<C, IndexedData<A>> = channels
                 .iter()
                 .map(|c| fetch_matching_data(c.clone()))
                 .collect();

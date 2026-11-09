@@ -85,110 +85,88 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> GenesisCeremonyMaster<T>
         disable_state_exporter: bool,
         heartbeat_signal_ref: crate::rust::heartbeat_signal::HeartbeatSignalRef,
     ) -> Result<(), CasperError> {
-        sleep(Duration::from_secs(2)).await;
+        let approved_block = loop {
+            sleep(Duration::from_secs(2)).await;
 
-        let last_approved_block_opt = last_approved_block.lock().unwrap().clone();
-
-        match last_approved_block_opt {
-            None => {
-                Box::pin(Self::waiting_for_approved_block_loop(
-                    transport_layer,
-                    rp_conf_ask,
-                    connections_cell,
-                    last_approved_block,
-                    event_publisher,
-                    block_retriever,
-                    engine_cell,
-                    block_store,
-                    block_dag_storage,
-                    deploy_storage,
-                    rejected_deploy_buffer,
-                    casper_buffer_storage,
-                    runtime_manager,
-                    estimator,
-                    block_processing_queue_tx,
-                    blocks_in_processing,
-                    casper_shard_conf,
-                    validator_id,
-                    disable_state_exporter,
-                    heartbeat_signal_ref,
-                ))
-                .await
+            if let Some(approved_block) = last_approved_block.lock().unwrap().clone() {
+                break approved_block;
             }
-            Some(approved_block) => {
-                let ab = approved_block.candidate.block.clone();
+        };
 
-                insert_into_block_and_dag_store(
-                    &mut block_store,
-                    &mut block_dag_storage,
-                    &ab,
-                    approved_block.clone(),
-                )?;
-                // History rooted at genesis: coverage is complete from 0.
-                block_dag_storage.record_carrier_coverage_from(0)?;
+        let ab = approved_block.candidate.block.clone();
 
-                let casper = Self::create_casper_from_storage(
-                    event_publisher,
-                    &runtime_manager,
-                    &estimator,
-                    &block_store,
-                    &block_dag_storage,
-                    &deploy_storage,
-                    &rejected_deploy_buffer,
-                    &casper_buffer_storage,
-                    validator_id.clone(),
-                    &casper_shard_conf,
-                    ab,
-                    &block_retriever,
-                    &heartbeat_signal_ref,
-                )
-                .await?;
+        insert_into_block_and_dag_store(
+            &mut block_store,
+            &mut block_dag_storage,
+            &ab,
+            approved_block.clone(),
+        )?;
+        // History rooted at genesis: coverage is complete from 0.
+        block_dag_storage.record_carrier_coverage_from(0)?;
 
-                // Scala: Engine.transitionToRunning[F](..., init = ().pure[F], ...)
-                let the_init = Arc::new(|| {
-                    Box::pin(async { Ok(()) })
-                        as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
-                });
+        let casper = Self::create_casper_from_storage(
+            event_publisher,
+            &runtime_manager,
+            &estimator,
+            &block_store,
+            &block_dag_storage,
+            &deploy_storage,
+            &rejected_deploy_buffer,
+            &casper_buffer_storage,
+            validator_id.clone(),
+            &casper_shard_conf,
+            ab,
+            &block_retriever,
+            &heartbeat_signal_ref,
+        )
+        .await?;
 
-                // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
-                record_direct_to_running_init_metrics();
+        // Scala: Engine.transitionToRunning[F](..., init = ().pure[F], ...)
+        let the_init = Arc::new(|| {
+            Box::pin(async { Ok(()) })
+                as Pin<Box<dyn Future<Output = Result<(), CasperError>> + Send>>
+        });
 
-                transition_to_running(
-                    block_processing_queue_tx.clone(),
-                    blocks_in_processing.clone(),
-                    Arc::new(casper),
-                    approved_block.clone(),
-                    the_init,
-                    disable_state_exporter,
-                    transport_layer.clone(),
-                    rp_conf_ask.clone(),
-                    block_retriever.clone(),
-                    // Phase 7b-1: ceremony-master path is genesis-rooted.
-                    // Snapshot chunk fetch has nothing to anchor against
-                    // (no prior snapshot exists), so passing `None` is
-                    // correct here regardless of boot pipeline state.
-                    None,
-                    // Phase 7b-2: ceremony-master also has no prior
-                    // WAL slice to fetch between snapshots, so the
-                    // payload-fetch dispatch stays disabled.
-                    None,
-                    &engine_cell,
-                    event_publisher,
-                    // The ceremony master transitions genesis-rooted: its
-                    // anchor is height 0, so the settled door never opens and
-                    // no runtime state fetch can be needed.
-                    None,
-                )
-                .await?;
+        // Direct-to-running path: emit init metrics that are otherwise produced in Initializing.
+        record_direct_to_running_init_metrics();
 
-                // Scala: CommUtil[F].sendForkChoiceTipRequest
-                transport_layer
-                    .send_fork_choice_tip_request(&connections_cell, &rp_conf_ask)
-                    .await?;
+        transition_to_running(
+            block_processing_queue_tx.clone(),
+            blocks_in_processing.clone(),
+            Arc::new(casper),
+            approved_block.clone(),
+            the_init,
+            disable_state_exporter,
+            transport_layer.clone(),
+            rp_conf_ask.clone(),
+            block_retriever.clone(),
+            // Phase 7b-1: ceremony-master path is genesis-rooted.
+            // Snapshot chunk fetch has nothing to anchor against
+            // (no prior snapshot exists), so passing `None` is
+            // correct here regardless of boot pipeline state.
+            None,
+            // Phase 7b-2: ceremony-master also has no prior
+            // WAL slice to fetch between snapshots, so the
+            // payload-fetch dispatch stays disabled.
+            None,
+            &engine_cell,
+            event_publisher,
+            // The ceremony master transitions genesis-rooted: its
+            // anchor is height 0, so the settled door never opens and
+            // no runtime state fetch can be needed.
+            None,
+        )
+        .await?;
 
-                Ok(())
-            }
+        // Scala: CommUtil[F].sendForkChoiceTipRequest
+        if let Err(e) = transport_layer
+            .send_fork_choice_tip_request(&connections_cell, &rp_conf_ask)
+            .await
+        {
+            tracing::warn!(error = %e, "Fork choice tip request after genesis failed");
         }
+
+        Ok(())
     }
 
     /// Helper function to create MultiParentCasper from storage components

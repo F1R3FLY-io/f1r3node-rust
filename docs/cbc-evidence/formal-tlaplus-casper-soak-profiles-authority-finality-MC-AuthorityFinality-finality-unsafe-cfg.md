@@ -1,1 +1,0 @@
-../casper/cbc-evidence/formal-tlaplus-casper-soak-profiles-authority-finality-MC-AuthorityFinality-finality-unsafe-cfg.md

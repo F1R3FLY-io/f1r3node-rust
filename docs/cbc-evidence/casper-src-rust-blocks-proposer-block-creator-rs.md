@@ -1,1 +1,0 @@
-../casper/cbc-evidence/casper-src-rust-blocks-proposer-block-creator-rs.md

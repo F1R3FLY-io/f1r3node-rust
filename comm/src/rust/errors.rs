@@ -18,6 +18,7 @@ pub enum CommError {
     PeerNodeNotFound(String),
     PeerUnavailable(String),
     WrongNetwork(String, String),
+    WrongChainId(String, String),
     MessageToLarge(String),
     MalformedMessage(String),
     CouldNotConnectToBootstrap,
@@ -68,6 +69,9 @@ impl fmt::Display for CommError {
             CommError::ParseError(msg) => write!(f, "Parse error: {}", msg),
             CommError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
             CommError::CasperError(msg) => write!(f, "Casper error: {}", msg),
+            CommError::WrongChainId(peer, msg) => {
+                write!(f, "Peer {} belongs to a different chain. {}", peer, msg)
+            }
             _ => write!(f, "{:?}", self),
         }
     }
@@ -89,6 +93,8 @@ pub fn peer_node_not_found(peer: String) -> CommError { CommError::PeerNodeNotFo
 pub fn peer_unavailable(peer: String) -> CommError { CommError::PeerUnavailable(peer) }
 
 pub fn wrong_network(peer: String, msg: String) -> CommError { CommError::WrongNetwork(peer, msg) }
+
+pub fn wrong_chain_id(peer: String, msg: String) -> CommError { CommError::WrongChainId(peer, msg) }
 
 pub fn message_too_large(peer: String) -> CommError { CommError::MessageToLarge(peer) }
 

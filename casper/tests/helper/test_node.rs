@@ -8,7 +8,8 @@ use block_storage::rust::deploy::key_value_deploy_storage::KeyValueDeployStorage
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
 use casper::rust::block_status::BlockStatus;
 use casper::rust::blocks::block_processor::{
-    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, InFlightBlocks,
+    BlockProcessor, BlockProcessorDependencies, BlockQueueItem, CheckedBlock, InFlightBlocks,
+    IntegrityFailure, StoreVerdict,
 };
 use casper::rust::blocks::proposer::block_creator;
 use casper::rust::blocks::proposer::propose_result::BlockCreatorResult;
@@ -21,6 +22,7 @@ use casper::rust::engine::running::Running;
 use casper::rust::errors::CasperError;
 use casper::rust::estimator::Estimator;
 use casper::rust::genesis::genesis::Genesis;
+use casper::rust::metrics_constants::BLOCK_PROCESSOR_METRICS_SOURCE;
 use casper::rust::safety_oracle::CliqueOracleImpl;
 use casper::rust::util::comm::casper_packet_handler::CasperPacketHandler;
 use casper::rust::util::rholang::runtime_manager::RuntimeManager;
@@ -54,6 +56,27 @@ use crate::util::comm::transport_layer_test_impl::{
 use crate::util::genesis_builder::GenesisContext;
 use crate::util::rholang::resources;
 
+/// What shard a node is being built into: the genesis it starts from and the
+/// conf overrides applied to it.
+struct ShardSetup<'a> {
+    genesis: &'a GenesisContext,
+    overrides: &'a ShardOverrides,
+    /// Fixed by the constructor, not by a per-spec override: only
+    /// `standalone_with_state_exporter` wants the exporter running.
+    disable_state_exporter: bool,
+}
+
+/// Shard-conf overrides for a test network; `None` takes the shipped default.
+#[derive(Default, Clone)]
+pub struct ShardOverrides {
+    pub synchrony_constraint_threshold: Option<f64>,
+    pub max_number_of_parents: Option<i32>,
+    pub max_parent_depth: Option<i32>,
+    pub with_read_only_size: Option<usize>,
+    pub deploy_lifespan: Option<i64>,
+    pub finalization_rate: Option<i32>,
+}
+
 pub struct TestNode {
     pub name: String,
     pub local: PeerNode,
@@ -65,7 +88,7 @@ pub struct TestNode {
     pub block_processor: BlockProcessor<TransportLayerTestImpl>,
     pub block_store: KeyValueBlockStore,
     pub block_dag_storage: BlockDagKeyValueStorage,
-    pub deploy_storage: Arc<parking_lot::Mutex<KeyValueDeployStorage>>,
+    pub deploy_storage: Arc<KeyValueDeployStorage>,
     pub rejected_deploy_buffer: Arc<
         Mutex<block_storage::rust::deploy::key_value_deploy_storage::KeyValueRejectedDeployBuffer>,
     >,
@@ -170,7 +193,7 @@ impl TestNode {
     ///
     /// This method:
     /// 1. Checks if block is of interest
-    /// 2. Checks if well-formed and stores
+    /// 2. Stores (CheckedBlock::check has already checked format, signature, and hash)
     /// 3. Checks dependencies
     /// 4. Validates with effects
     pub async fn process_block_through_pipe(
@@ -178,25 +201,44 @@ impl TestNode {
         block_processor: &BlockProcessor<TransportLayerTestImpl>,
         block: BlockMessage,
     ) -> Result<ValidBlockProcessing, CasperError> {
+        let checked = match CheckedBlock::check(block.clone(), BLOCK_PROCESSOR_METRICS_SOURCE) {
+            Ok(checked) => checked,
+            Err((_, IntegrityFailure::Malformed)) => {
+                return Ok(Either::Left(BlockStatus::invalid_format()))
+            }
+            Err((_, IntegrityFailure::HashMismatch)) => {
+                return Ok(Either::Left(BlockStatus::invalid_block_hash()))
+            }
+        };
+
         // Check if block is of interest
-        let verdict = block_processor.check_if_of_interest(casper.clone(), &block)?;
+        let verdict = block_processor.check_if_of_interest(casper.clone(), &checked)?;
 
         if !verdict.is_fresh() {
             return Ok(Either::Left(BlockStatus::not_of_interest()));
         }
 
-        // Check if well-formed and store
-        let is_well_formed = block_processor
-            .check_if_well_formed_and_store(&block)
-            .await?;
+        let Some(store_mode) = block_processor
+            .check_sender_authorization(&checked)?
+            .store_mode()
+        else {
+            return Ok(Either::Left(BlockStatus::invalid_sender()));
+        };
 
-        if !is_well_formed {
-            return Ok(Either::Left(BlockStatus::invalid_format()));
+        // Store
+        match block_processor.store(&checked, store_mode).await? {
+            StoreVerdict::Stored => {}
+            StoreVerdict::PendingRefused(refusal) => {
+                block_processor
+                    .release_refused_pending(&block, refusal)
+                    .await?;
+                return Ok(Either::Left(BlockStatus::missing_blocks()));
+            }
         }
 
         // Check dependencies
         let dependencies_ready = block_processor
-            .check_dependencies_with_effects(casper.clone(), &block)
+            .check_dependencies_with_effects(casper.clone(), &checked)
             .await?;
 
         if !dependencies_ready {
@@ -205,7 +247,7 @@ impl TestNode {
 
         // Validate with effects
         block_processor
-            .validate_with_effects(casper.clone(), &block, None)
+            .validate_with_effects(casper.clone(), &checked, None)
             .await
     }
 
@@ -802,30 +844,24 @@ impl TestNode {
         max_parent_depth: Option<i32>,
         with_read_only_size: Option<usize>,
     ) -> Result<Vec<TestNode>, CasperError> {
-        Self::create_network_with_deploy_lifespan(
-            genesis,
-            network_size,
+        Self::create_network_with_overrides(genesis, network_size, ShardOverrides {
             synchrony_constraint_threshold,
             max_number_of_parents,
             max_parent_depth,
             with_read_only_size,
-            None,
-        )
+            ..Default::default()
+        })
         .await
     }
 
-    /// `create_network` with a shard `deploy_lifespan` override (default 50).
-    /// A short lifespan lets a spec close deploy validity windows within a
-    /// handful of blocks — required to exercise window-boundary behavior
-    /// (block-expiry, the merge-time window rule) without ~50 filler blocks.
-    pub async fn create_network_with_deploy_lifespan(
+    /// `create_network` with shard-conf overrides. A short `deploy_lifespan`
+    /// closes deploy validity windows within a handful of blocks instead of ~50;
+    /// `finalization_rate: Some(0)` suppresses the detached finalizer, leaving
+    /// `finalize()` as the only thing that moves the LFB.
+    pub async fn create_network_with_overrides(
         genesis: GenesisContext,
         network_size: usize,
-        synchrony_constraint_threshold: Option<f64>,
-        max_number_of_parents: Option<i32>,
-        max_parent_depth: Option<i32>,
-        with_read_only_size: Option<usize>,
-        deploy_lifespan: Option<i64>,
+        overrides: ShardOverrides,
     ) -> Result<Vec<TestNode>, CasperError> {
         // Initialize the shared tracing subscriber once per test process.
         // Without this, tracing calls in production code are silently
@@ -839,19 +875,15 @@ impl TestNode {
         let sks_to_use: Vec<PrivateKey> = genesis
             .validator_sks()
             .into_iter()
-            .take(network_size + with_read_only_size.unwrap_or(0))
+            .take(network_size + overrides.with_read_only_size.unwrap_or(0))
             .collect();
 
         Self::network(
             sks_to_use,
             genesis.clone(),
-            synchrony_constraint_threshold.unwrap_or(0.0),
-            max_number_of_parents.unwrap_or(Estimator::UNLIMITED_PARENTS),
-            max_parent_depth,
-            with_read_only_size.unwrap_or(0),
             None,
             test_network,
-            deploy_lifespan,
+            overrides,
             true,
         )
         .await
@@ -874,13 +906,9 @@ impl TestNode {
         Self::network(
             sks_to_use,
             genesis,
-            0.0,
-            Estimator::UNLIMITED_PARENTS,
-            None,
-            0,
             Some(bootstrap_index),
             test_network,
-            None,
+            ShardOverrides::default(),
             true,
         )
         .await
@@ -901,13 +929,9 @@ impl TestNode {
         let nodes = Self::network(
             sks_to_use,
             genesis,
-            0.0,
-            Estimator::UNLIMITED_PARENTS,
-            None,
-            0,
             None,
             test_network,
-            None,
+            ShardOverrides::default(),
             false,
         )
         .await?;
@@ -916,21 +940,16 @@ impl TestNode {
     }
 
     /// Creates a network of TestNodes
-    #[allow(clippy::too_many_arguments)]
     async fn network(
         sks: Vec<PrivateKey>,
         genesis_context: GenesisContext,
-        synchrony_constraint_threshold: f64,
-        max_number_of_parents: i32,
-        max_parent_depth: Option<i32>,
-        with_read_only_size: usize,
         bootstrap_index: Option<usize>,
         test_network: TestNetwork,
-        deploy_lifespan: Option<i64>,
+        overrides: ShardOverrides,
         disable_state_exporter: bool,
     ) -> Result<Vec<TestNode>, CasperError> {
-        let genesis = genesis_context.genesis_block.clone();
         let n = sks.len();
+        let with_read_only_size = overrides.with_read_only_size.unwrap_or(0);
 
         // Generate node names: "node-1", "node-2", ..., "readOnly-{i}" for read-only nodes
         let names: Vec<String> = (1..=n)
@@ -964,17 +983,15 @@ impl TestNode {
             let node = Self::create_node(
                 name,
                 peer,
-                genesis.clone(),
                 sk,
-                synchrony_constraint_threshold,
-                max_number_of_parents,
-                max_parent_depth,
                 is_readonly,
                 test_network.clone(),
-                &genesis_context,
                 bootstrap_peer.clone(),
-                deploy_lifespan,
-                disable_state_exporter,
+                ShardSetup {
+                    genesis: &genesis_context,
+                    overrides: &overrides,
+                    disable_state_exporter,
+                },
             )
             .await;
             nodes.push(node);
@@ -998,23 +1015,31 @@ impl TestNode {
         Ok(nodes)
     }
 
-    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[allow(clippy::type_complexity)]
     async fn create_node(
         name: String,
         current_peer_node: PeerNode,
-        genesis: BlockMessage,
         sk: PrivateKey,
-        // TODO: logical_time: LogicalTime,
-        synchrony_constraint_threshold: f64,
-        max_number_of_parents: i32,
-        max_parent_depth: Option<i32>,
         is_read_only: bool,
         test_network: TestNetwork,
-        genesis_context: &GenesisContext,
         bootstrap_peer: Option<PeerNode>,
-        deploy_lifespan: Option<i64>,
-        disable_state_exporter: bool,
+        setup: ShardSetup<'_>,
     ) -> TestNode {
+        let ShardSetup {
+            genesis: genesis_context,
+            overrides,
+            disable_state_exporter,
+        } = setup;
+        let genesis = genesis_context.genesis_block.clone();
+        let synchrony_constraint_threshold =
+            overrides.synchrony_constraint_threshold.unwrap_or(0.0);
+        let max_number_of_parents = overrides
+            .max_number_of_parents
+            .unwrap_or(Estimator::UNLIMITED_PARENTS);
+        let max_parent_depth = overrides.max_parent_depth;
+        let deploy_lifespan = overrides.deploy_lifespan;
+        let finalization_rate = overrides.finalization_rate;
+
         let tle = Arc::new(TransportLayerTestImpl::new(test_network.clone()));
         let tls =
             TransportLayerServerTestImpl::new(current_peer_node.clone(), test_network.clone());
@@ -1053,11 +1078,11 @@ impl TestNode {
                 block_storage::rust::dag::block_dag_key_value_storage::InsertMode::Approved,
             )
             .expect("Failed to insert genesis into DAG storage in TestNode");
-        let deploy_storage = Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = Arc::new(
             resources::key_value_deploy_storage_from_dyn(&mut *kvm)
                 .await
                 .unwrap(),
-        ));
+        );
 
         let rejected_deploy_buffer = Arc::new(Mutex::new(
             resources::key_value_rejected_deploy_buffer_from_dyn(&mut *kvm)
@@ -1150,7 +1175,7 @@ impl TestNode {
         let _block_processor_state = Arc::new(RwLock::new(HashSet::<BlockHash>::new()));
 
         let shard_id = "root".to_string();
-        let finalization_rate = 1;
+        let finalization_rate = finalization_rate.unwrap_or(1);
 
         let _approved_block = ApprovedBlock {
             candidate: ApprovedBlockCandidate {
@@ -1161,7 +1186,8 @@ impl TestNode {
             sigs: vec![],
         };
         let shard_conf = CasperShardConf {
-            fault_tolerance_threshold: 0.0,
+            fault_tolerance_threshold: 0.1,
+            fault_tolerance_threshold_ppm: 100_000,
             shard_name: shard_id.clone(),
             parent_shard_id: "".to_string(),
             finalization_rate,
@@ -1176,12 +1202,12 @@ impl TestNode {
             // Validators will try to put deploy in a block only for next `deploy_lifespan` blocks.
             // Required to enable protection from re-submitting duplicate deploys
             deploy_lifespan: deploy_lifespan.unwrap_or(50),
-            casper_version: 1,
-            bond_minimum: 0,
-            bond_maximum: i64::MAX,
+            casper_version: genesis.header.version,
+            bond_minimum: 0.into(),
+            bond_maximum: (i64::MAX as u64).into(),
             epoch_length: 10000,
             quarantine_length: 20000,
-            min_phlo_price: 1,
+            min_phlo_price: (1).into(),
             deploy_heartbeat_wake_enabled: false, // Disabled to prevent deploy loss
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false, // Keep mergeable data unless GC is explicitly enabled
@@ -1189,39 +1215,42 @@ impl TestNode {
             ..CasperShardConf::new()
         };
 
-        let casper_impl = MultiParentCasperImpl {
-            observer: std::sync::OnceLock::new(),
+        let finalized_bond_cache =
+            casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
+                &block_dag_storage,
+                validator_id_opt.as_ref(),
+            )
+            .unwrap();
+        let finalization = casper::rust::engine::multi_parent_casper::FinalizationContext {
+            observer: std::sync::Arc::new(std::sync::OnceLock::new()),
+            finalized_bond_cache: finalized_bond_cache.clone(),
+            block_dag_storage: block_dag_storage.clone(),
+            block_store: block_store.clone(),
+            runtime_manager: Arc::new(runtime_manager.clone()),
+            event_publisher: event_publisher.clone(),
             divergence_monitor: std::sync::Arc::new(
                 casper::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
             ),
+            deploy_storage: deploy_storage.clone(),
+            shard_conf,
+        };
+        let casper_impl = MultiParentCasperImpl {
+            observer: finalization.observer.clone(),
+            divergence_monitor: finalization.divergence_monitor.clone(),
             block_retriever: block_retriever.clone(),
             event_publisher: event_publisher.clone(),
-            runtime_manager: Arc::new(runtime_manager.clone()),
+            runtime_manager: finalization.runtime_manager.clone(),
             estimator: estimator.clone(),
             block_store: block_store.clone(),
             block_dag_storage: block_dag_storage.clone(),
             deploy_storage: deploy_storage.clone(),
             rejected_deploy_buffer: rejected_deploy_buffer.clone(),
-            deploy_lifecycle: Arc::new(
-                casper::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
-            ),
             casper_buffer_storage: casper_buffer_storage.clone(),
             validator_id: validator_id_opt.clone(),
-            finalized_bond_cache:
-                casper::rust::engine::multi_parent_casper::FinalizedBondCache::from_storage(
-                    &block_dag_storage,
-                    validator_id_opt.as_ref(),
-                )
-                .unwrap(),
-            casper_shard_conf: shard_conf,
+            finalized_bond_cache,
+            casper_shard_conf: finalization.shard_conf.clone(),
             approved_block: genesis.clone(),
-            finalization_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            finalizer_task_in_progress: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            finalizer_task_queued: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            finalizer: casper::rust::engine::multi_parent_casper::Finalizer::start(finalization),
             heartbeat_signal_ref: casper::rust::heartbeat_signal::new_heartbeat_signal_ref(),
             deploys_in_scope_cache: std::sync::Arc::new(parking_lot::Mutex::new(None)),
             active_validators_cache: std::sync::Arc::new(tokio::sync::Mutex::new(

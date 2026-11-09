@@ -22,9 +22,9 @@ use crate::rspace::striped_locks;
 impl<C, P, A, K> RSpace<C, P, A, K>
 where
     C: Clone + Debug + Default + Serialize + Hash + Ord + Eq + 'static + Sync + Send,
-    P: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    P: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
     A: Clone + Debug + Default + Serialize + 'static + Sync + Send,
-    K: Clone + Debug + Default + Serialize + 'static + Sync + Send,
+    K: Clone + Debug + Default + PartialEq + Serialize + 'static + Sync + Send,
 {
     /**
      * Creates [[RSpace]] from [[HistoryRepository]] and [[HotStore]].
@@ -65,9 +65,25 @@ where
             + Hash
             + for<'a> Deserialize<'a>
             + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        P: Clone
+            + Debug
+            + Default
+            + PartialEq
+            + Send
+            + Sync
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + 'static,
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        K: Clone
+            + Debug
+            + Default
+            + PartialEq
+            + Send
+            + Sync
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + 'static,
     {
         let setup = Self::create_history_repo(store).unwrap();
         let (history_reader, store) = setup;
@@ -90,9 +106,25 @@ where
             + Hash
             + for<'a> Deserialize<'a>
             + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        P: Clone
+            + Debug
+            + Default
+            + PartialEq
+            + Send
+            + Sync
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + 'static,
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        K: Clone
+            + Debug
+            + Default
+            + PartialEq
+            + Send
+            + Sync
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + 'static,
     {
         let setup = Self::create_history_repo(store).unwrap();
         let (history_repo, store) = setup;
@@ -136,9 +168,25 @@ where
             + Eq
             + Hash
             + 'static,
-        P: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        P: Clone
+            + Debug
+            + Default
+            + PartialEq
+            + Send
+            + Sync
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + 'static,
         A: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
-        K: Clone + Debug + Default + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+        K: Clone
+            + Debug
+            + Default
+            + PartialEq
+            + Send
+            + Sync
+            + Serialize
+            + for<'a> Deserialize<'a>
+            + 'static,
     {
         let history_repo =
             HistoryRepositoryInstances::lmdb_repository(store.history, store.roots, store.cold)?;

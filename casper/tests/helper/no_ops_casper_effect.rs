@@ -159,7 +159,7 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn normalized_initial_fault(
         &self,
-        _weights: HashMap<Validator, u64>,
+        _weights: HashMap<Validator, num_bigint::BigInt>,
     ) -> Result<f32, CasperError> {
         Ok(0.0)
     }
@@ -174,9 +174,13 @@ impl MultiParentCasper for NoOpsCasperEffect {
 
     fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
     fn casper_shard_conf(&self) -> &CasperShardConf { &self.shard_conf }
 
     fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+
+    fn is_local_validator_bonded(&self) -> bool { false }
 
     async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
         self.runtime_manager.get_history_repo().exporter()

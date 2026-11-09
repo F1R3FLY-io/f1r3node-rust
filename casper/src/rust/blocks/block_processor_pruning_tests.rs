@@ -1,8 +1,9 @@
 use block_storage::rust::dag::block_dag_key_value_storage::InsertMode;
+use block_storage::rust::pending_blocks::PendingBlockLimits;
 use comm::rust::peer_node::{NodeIdentifier, PeerNode};
 use comm::rust::rp::connect::Connections;
 use comm::rust::test_instances::{create_rp_conf_ask, TransportLayerStub};
-use models::rust::block_implicits::get_random_block;
+use models::rust::block_implicits::{get_random_block, get_random_block_default};
 use rspace_plus_plus::rspace::shared::in_mem_store_manager::InMemoryStoreManager;
 use shared::rust::store::key_value_store::{KeyValueStore, KvStoreError};
 
@@ -17,6 +18,7 @@ struct ReadProbeStore {
     inner: Arc<dyn KeyValueStore>,
     tracked: Arc<HashSet<Vec<u8>>>,
     reads: Arc<std::sync::atomic::AtomicUsize>,
+    on_contains: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl KeyValueStore for ReadProbeStore {
@@ -42,6 +44,10 @@ impl KeyValueStore for ReadProbeStore {
 
     fn delete(&self, keys: Vec<Vec<u8>>) -> Result<usize, KvStoreError> { self.inner.delete(keys) }
 
+    fn delete_if_value(&self, key: &Vec<u8>, expected: &Vec<u8>) -> Result<bool, KvStoreError> {
+        self.inner.delete_if_value(key, expected)
+    }
+
     fn iterate(&self, f: fn(Vec<u8>, Vec<u8>)) -> Result<(), KvStoreError> { self.inner.iterate(f) }
 
     fn iterate_while(
@@ -62,6 +68,9 @@ impl KeyValueStore for ReadProbeStore {
     fn non_empty(&self) -> Result<bool, KvStoreError> { self.inner.non_empty() }
 
     fn contains(&self, keys: &Vec<Vec<u8>>) -> Result<Vec<bool>, KvStoreError> {
+        if let Some(on_contains) = &self.on_contains {
+            on_contains();
+        }
         self.inner.contains(keys)
     }
 
@@ -180,6 +189,379 @@ impl Fixture {
             .casper_buffer
             .contains(&BlockHashSerde(self.child.clone())));
     }
+}
+
+#[tokio::test]
+async fn pending_descendant_selects_deepest_matching_sender() {
+    let fixture = Fixture::new().await;
+    let grandchild_hash = BlockHash::from(vec![5; 32]);
+    fixture
+        .dependencies
+        .casper_buffer
+        .add_relation(
+            BlockHashSerde(fixture.child.clone()),
+            BlockHashSerde(grandchild_hash.clone()),
+        )
+        .unwrap();
+
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    let mut child = get_random_block_default();
+    child.block_hash = fixture.child.clone();
+    child.sender = parent.sender.clone();
+    let mut grandchild = get_random_block_default();
+    grandchild.block_hash = grandchild_hash.clone();
+    grandchild.sender = parent.sender.clone();
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_store
+            .put_pending_as(&child, PendingClass::Solicited)
+            .unwrap()
+            .status,
+        PendingInsert::Accepted
+    );
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_store
+            .put_pending_as(&grandchild, PendingClass::Solicited)
+            .unwrap()
+            .status,
+        PendingInsert::Accepted
+    );
+
+    assert_eq!(
+        fixture
+            .dependencies
+            .pending_descendant(&parent)
+            .map(|block| block.block_hash),
+        Some(grandchild_hash)
+    );
+}
+
+#[tokio::test]
+async fn deferred_dependency_free_block_is_requested_after_parent_validation() {
+    let fixture = Fixture::new().await;
+    fixture
+        .dependencies
+        .casper_buffer
+        .remove(BlockHashSerde(fixture.parent.clone()))
+        .unwrap();
+    assert!(fixture
+        .dependencies
+        .casper_buffer
+        .is_pendant(&BlockHashSerde(fixture.child.clone())));
+
+    let mut child = get_random_block_default();
+    child.block_hash = fixture.child.clone();
+    fixture.dependencies.defer_pending(&child);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.child)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(fixture.dependencies.transport.request_count() > 0);
+}
+
+#[tokio::test]
+async fn deferred_dependency_retries_when_lower_priority_block_fills_pending_area() {
+    let fixture = Fixture::new().await;
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    let mut occupant = get_random_block_default();
+    occupant.block_hash = BlockHash::from(vec![9; 32]);
+    occupant.sender = parent.sender.clone();
+    fixture
+        .dependencies
+        .block_store
+        .set_pending_limits(PendingBlockLimits {
+            max_blocks: 1,
+            max_bytes: usize::MAX,
+            max_per_sender: 1,
+        });
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_store
+            .put_pending_as(&occupant, PendingClass::Unsolicited)
+            .unwrap()
+            .status,
+        PendingInsert::Accepted
+    );
+    fixture.dependencies.defer_pending(&parent);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.parent)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(fixture.dependencies.transport.request_count() > 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn deferred_chain_requests_ancestor_before_descendants() {
+    let fixture = Fixture::new().await;
+    let grandchild_hash = BlockHash::from(vec![5; 32]);
+    fixture
+        .dependencies
+        .casper_buffer
+        .add_relation(
+            BlockHashSerde(fixture.child.clone()),
+            BlockHashSerde(grandchild_hash.clone()),
+        )
+        .unwrap();
+    fixture
+        .dependencies
+        .block_store
+        .set_pending_limits(PendingBlockLimits {
+            max_blocks: 1,
+            max_bytes: usize::MAX,
+            max_per_sender: 1,
+        });
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    let mut child = get_random_block_default();
+    child.block_hash = fixture.child.clone();
+    child.sender = parent.sender.clone();
+    let mut grandchild = get_random_block_default();
+    grandchild.block_hash = grandchild_hash.clone();
+    grandchild.sender = parent.sender.clone();
+
+    fixture.dependencies.defer_pending(&grandchild);
+    fixture.dependencies.defer_pending(&child);
+    fixture.dependencies.defer_pending(&parent);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.parent)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!fixture
+        .dependencies
+        .block_retriever
+        .was_requested_as_dependency(&fixture.child)
+        .unwrap());
+    assert!(!fixture
+        .dependencies
+        .block_retriever
+        .was_requested_as_dependency(&grandchild_hash)
+        .unwrap());
+}
+
+#[tokio::test]
+async fn deferred_dependency_survives_recovery_cooldown() {
+    let fixture = Fixture::new().await;
+    fixture.request_parent().await;
+    fixture
+        .dependencies
+        .block_retriever
+        .ack_receive(fixture.parent.clone())
+        .await
+        .unwrap();
+    fixture
+        .dependencies
+        .block_retriever
+        .recover_dependency(fixture.parent.clone())
+        .await
+        .unwrap();
+    fixture.dependencies.transport.reset();
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    fixture.dependencies.defer_pending(&parent);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fixture.dependencies.transport.request_count() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn deferred_worker_releases_entries_lock_before_store_reads() {
+    let mut fixture = Fixture::new().await;
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    let original = fixture
+        .dependencies
+        .block_store
+        .soak_capture_store()
+        .clone();
+    let state = fixture.dependencies.deferred_pending.clone();
+    let child = fixture.child.clone();
+    let sender = parent.sender.clone();
+    let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let unlocked = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let inserted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed_reads = reads.clone();
+    let observed_unlocked = unlocked.clone();
+    let observed_inserted = inserted.clone();
+    fixture.dependencies.block_store = KeyValueBlockStore::new(
+        Arc::new(ReadProbeStore {
+            inner: original.clone(),
+            tracked: Arc::new(HashSet::new()),
+            reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            on_contains: Some(Arc::new(move || {
+                observed_reads.fetch_add(1, Ordering::Relaxed);
+                match state.entries.try_lock() {
+                    Ok(mut entries) => {
+                        if !observed_inserted.swap(true, Ordering::Relaxed) {
+                            entries.insert(child.clone(), (sender.clone(), 1));
+                        }
+                    }
+                    Err(_) => observed_unlocked.store(false, Ordering::Relaxed),
+                }
+            })),
+        }),
+        original,
+    );
+    fixture.dependencies.defer_pending(&parent);
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.parent)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(reads.load(Ordering::Relaxed) > 0);
+    assert!(unlocked.load(Ordering::Relaxed));
+    assert!(inserted.load(Ordering::Relaxed));
+    assert!(fixture
+        .dependencies
+        .deferred_pending
+        .entries
+        .lock()
+        .unwrap()
+        .contains_key(&fixture.child));
+}
+
+#[tokio::test]
+async fn deferred_worker_restarts_after_stopping() {
+    let fixture = Fixture::new().await;
+    fixture.dependencies.start_deferred_pending_worker();
+    {
+        let worker = fixture.dependencies.deferred_pending.worker.lock().unwrap();
+        worker.as_ref().unwrap().abort();
+    }
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if fixture
+                .dependencies
+                .deferred_pending
+                .worker
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_finished()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+    fixture.dependencies.defer_pending(&parent);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !fixture
+            .dependencies
+            .block_retriever
+            .was_requested_as_dependency(&fixture.parent)
+            .unwrap()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn refused_dependency_keeps_its_request_tracking() {
+    let fixture = Fixture::new().await;
+    fixture.request_parent().await;
+    fixture
+        .dependencies
+        .block_retriever
+        .ack_receive(fixture.parent.clone())
+        .await
+        .unwrap();
+    fixture
+        .dependencies
+        .block_retriever
+        .set_retry_attempts_for_test(&fixture.parent, 3)
+        .unwrap();
+    fixture
+        .dependencies
+        .block_store
+        .set_pending_limits(PendingBlockLimits {
+            max_blocks: 0,
+            max_bytes: usize::MAX,
+            max_per_sender: 0,
+        });
+    let mut parent = get_random_block_default();
+    parent.block_hash = fixture.parent.clone();
+
+    fixture
+        .dependencies
+        .release_refused_pending(&parent, PendingInsert::SenderLimitReached)
+        .await
+        .unwrap();
+
+    assert!(fixture
+        .dependencies
+        .block_retriever
+        .was_requested_as_dependency(&fixture.parent)
+        .unwrap());
+    assert!(fixture
+        .dependencies
+        .block_retriever
+        .get_request_state_for_test(&fixture.parent)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        fixture
+            .dependencies
+            .block_retriever
+            .retry_attempts_for_test(&fixture.parent)
+            .unwrap(),
+        3
+    );
 }
 
 #[tokio::test]
@@ -458,6 +840,7 @@ async fn overflow_prune_does_not_decode_ready_blocks_on_later_passes() {
             inner: original.clone(),
             tracked: Arc::new(hashes.clone()),
             reads: reads.clone(),
+            on_contains: None,
         }),
         original,
     );

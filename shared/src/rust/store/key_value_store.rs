@@ -22,6 +22,12 @@ pub trait KeyValueStore: Send + Sync + 'static {
 
     fn delete(&self, keys: Vec<ByteBuffer>) -> Result<usize, KvStoreError>;
 
+    fn delete_if_value(
+        &self,
+        key: &ByteBuffer,
+        expected: &ByteBuffer,
+    ) -> Result<bool, KvStoreError>;
+
     fn iterate(&self, f: fn(ByteBuffer, ByteBuffer)) -> Result<(), KvStoreError>;
     fn iterate_while(
         &self,

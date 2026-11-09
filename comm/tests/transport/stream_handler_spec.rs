@@ -80,6 +80,28 @@ mod stream_handler_spec {
     }
 
     #[tokio::test]
+    async fn should_refuse_a_second_header_chunk() {
+        // given
+        let cache = Arc::new(dashmap::DashMap::new());
+        let mut chunks = create_stream_iterator(
+            10 * 1024,
+            30 * 1024,
+            "sender".to_string(),
+            "BlockMessageTest".to_string(),
+        )
+        .await;
+        let header = chunks[0].clone();
+        chunks.insert(2, header);
+
+        // when
+        let err = handle_stream_err(stream::iter(chunks), None, Some(cache.clone())).await;
+
+        // then
+        assert!(matches!(err, StreamError::Unexpected { .. }));
+        assert!(cache.is_empty());
+    }
+
+    #[tokio::test]
     async fn should_stop_processing_stream_if_incomplete_data() {
         // given
         let cache = Arc::new(dashmap::DashMap::new());
@@ -105,6 +127,35 @@ mod stream_handler_spec {
         assert_eq!(msg.sender, peer_node("sender"));
         assert_eq!(msg.type_id, "BlockMessageTest");
         assert!(msg.compressed); // Should be marked as compressed
+    }
+
+    #[tokio::test]
+    async fn should_restore_exact_bytes_from_multi_chunk_streams() {
+        for content_length in [32 * 1024, 600 * 1024] {
+            let mut rng = StdRng::seed_from_u64(content_length as u64);
+            let content: Vec<u8> = (0..content_length).map(|_| rng.random::<u8>()).collect();
+            let blob = Blob {
+                sender: peer_node("sender"),
+                packet: Packet {
+                    type_id: "BlockMessageTest".to_string(),
+                    content: Bytes::from(content.clone()),
+                },
+            };
+            let chunks = Chunker::chunk_it(NETWORK_ID, Bytes::new(), &blob, 4096);
+            assert!(chunks.len() > 2);
+
+            let cache = Arc::new(dashmap::DashMap::new());
+            let message = StreamHandler::handle_stream(stream::iter(chunks), never_break, &cache)
+                .await
+                .expect("stream should complete");
+            assert_eq!(message.compressed, content_length > 500 * 1024);
+
+            let restored = StreamHandler::restore(&message, &cache)
+                .await
+                .expect("stream should restore");
+            assert_eq!(restored.packet.content.as_ref(), content);
+            assert!(cache.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -215,6 +266,7 @@ mod stream_handler_spec {
         let stream_message = comm::rust::transport::messages::StreamMessage::new(
             peer_node("sender"),
             "TestType".to_string(),
+            Bytes::new(),
             cache_key,
             false, // Not compressed
             test_data.len() as i32,
@@ -241,6 +293,7 @@ mod stream_handler_spec {
         let stream_message = comm::rust::transport::messages::StreamMessage::new(
             peer_node("sender"),
             "TestType".to_string(),
+            Bytes::new(),
             "non_existent_key".to_string(),
             false,
             10,
@@ -347,7 +400,7 @@ mod stream_handler_spec {
         };
 
         // Use Chunker to create chunks
-        Chunker::chunk_it(NETWORK_ID, &blob, message_size)
+        Chunker::chunk_it(NETWORK_ID, Bytes::new(), &blob, message_size)
     }
 
     /// Create a stream without header (for testing missing header scenario)
@@ -430,7 +483,7 @@ mod stream_handler_spec {
         };
 
         // Create chunks with wrong network ID
-        let mut chunks = Chunker::chunk_it("wrong_network", &blob, 4096);
+        let mut chunks = Chunker::chunk_it("wrong_network", Bytes::new(), &blob, 4096);
 
         // Replace the network_id in the header chunk to simulate wrong network
         if let Some(first_chunk) = chunks.get_mut(0) {

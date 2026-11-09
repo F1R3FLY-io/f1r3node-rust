@@ -13,6 +13,7 @@ use models::rust::casper::protocol::casper_message::{
 use models::rust::casper::protocol::packet_type_tag::ToPacket;
 use prost::bytes::Bytes;
 use prost::Message;
+use shared::rust::token_amount::TokenAmount;
 use tracing::{info, warn};
 
 use crate::rust::errors::CasperError;
@@ -30,22 +31,39 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
     validator_id: ValidatorIdentity,
     pub deploy_timestamp: i64,
     pub vaults: Vec<Vault>,
-    pub bonds_bytes: HashMap<Bytes, i64>, // helper map keyed by raw bytes
-    pub minimum_bond: i64,
-    pub maximum_bond: i64,
+    pub bonds_bytes: HashMap<Bytes, TokenAmount>, // helper map keyed by raw bytes
+    pub minimum_bond: TokenAmount,
+    pub maximum_bond: TokenAmount,
     pub epoch_length: i32,
     pub quarantine_length: i32,
     pub number_of_active_validators: u32,
     pub fault_tolerance_threshold_ppm: i64,
     pub max_parent_depth: i32,
     pub deploy_lifespan: i64,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     pub required_sigs: i32,
     pub pos_multi_sig_public_keys: Vec<String>,
     pub pos_multi_sig_quorum: u32,
     pub native_token_name: String,
     pub native_token_symbol: String,
     pub native_token_decimals: u32,
+
+    /// Operator-declared fs cap bundle (projected from the local
+    /// HOCON's `storage.{oracle,consensus}-static-*` entries by
+    /// `node::rust::configuration::provisioning_merge::project_bundle`).
+    /// The validator feeds this to `default_blessed_terms` so its
+    /// locally-reconstructed deploy list matches the ceremony master's.
+    /// Mismatch → `BlockApproverProtocol::validate_candidate` returns
+    /// a deploy-count-or-shape error at the length check in the
+    /// blessed-contracts comparison, which is the correct behavior
+    /// when leader and follower disagree on `fs_bundle`.
+    pub fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+
+    /// Operator-declared snapshot cadence for consensus-fs state.
+    /// Hardcoded `None` on the ceremony-master side today
+    /// (`approve_block_protocol.rs:206`); threaded here so the two
+    /// sides stay in sync when either lifts cadence from `None`.
+    pub consensus_fs_snapshot_cadence: Option<u64>,
 
     // Infrastructure
     transport: Arc<T>,
@@ -54,26 +72,29 @@ pub struct BlockApproverProtocol<T: TransportLayer + Send + Sync + 'static> {
 
 impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
     /// Corresponds to Scala `BlockApproverProtocol.of` – constructor with basic validation.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         validator_id: ValidatorIdentity,
         deploy_timestamp: i64,
         vaults: Vec<Vault>,
-        bonds: HashMap<crypto::rust::public_key::PublicKey, i64>,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        bonds: HashMap<crypto::rust::public_key::PublicKey, TokenAmount>,
+        minimum_bond: TokenAmount,
+        maximum_bond: TokenAmount,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: i64,
+        min_phlo_price: TokenAmount,
         required_sigs: i32,
         pos_multi_sig_public_keys: Vec<String>,
         pos_multi_sig_quorum: u32,
         native_token_name: String,
         native_token_symbol: String,
         native_token_decimals: u32,
+        fs_bundle: Vec<crate::rust::genesis::contracts::fs_genesis::BundleEntry>,
+        consensus_fs_snapshot_cadence: Option<u64>,
         transport: Arc<T>,
         conf: Arc<RPConf>,
     ) -> Result<Self, CasperError> {
@@ -90,9 +111,9 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             )));
         }
 
-        let bonds_bytes: HashMap<Bytes, i64> = bonds
+        let bonds_bytes: HashMap<Bytes, TokenAmount> = bonds
             .iter()
-            .map(|(pk, stake)| (pk.bytes.clone(), *stake))
+            .map(|(pk, stake)| (pk.bytes.clone(), stake.clone()))
             .collect();
 
         Ok(Self {
@@ -115,6 +136,8 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             native_token_name,
             native_token_symbol,
             native_token_decimals,
+            fs_bundle,
+            consensus_fs_snapshot_cadence,
             transport,
             conf,
         })
@@ -151,28 +174,31 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
     ///
     /// Corresponds to Scala `BlockApproverProtocol.validateCandidate` –
     /// performs full validation of the candidate genesis block.
+    #[allow(clippy::too_many_arguments)]
     pub async fn validate_candidate(
         runtime_manager: &RuntimeManager,
         candidate: &ApprovedBlockCandidate,
         required_sigs: i32,
         _deploy_timestamp: i64,
         vaults: &Vec<Vault>,
-        bonds: &HashMap<Bytes, i64>,
-        minimum_bond: i64,
-        maximum_bond: i64,
+        bonds: &HashMap<Bytes, TokenAmount>,
+        minimum_bond: TokenAmount,
+        maximum_bond: TokenAmount,
         epoch_length: i32,
         quarantine_length: i32,
         number_of_active_validators: u32,
         fault_tolerance_threshold_ppm: i64,
         max_parent_depth: i32,
         deploy_lifespan: i64,
-        min_phlo_price: i64,
+        min_phlo_price: TokenAmount,
         shard_id: &str,
         pos_multi_sig_public_keys: &[String],
         pos_multi_sig_quorum: u32,
         native_token_name: &str,
         native_token_symbol: &str,
         native_token_decimals: u32,
+        fs_bundle: &[crate::rust::genesis::contracts::fs_genesis::BundleEntry],
+        consensus_fs_snapshot_cadence: Option<u64>,
     ) -> Result<(), String> {
         // Basic checks – required sigs, absence of system deploys, bonds equality
         if candidate.required_sigs < required_sigs {
@@ -187,12 +213,12 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             return Err("Candidate must not contain system deploys.".to_string());
         }
 
-        let block_bonds: HashMap<Bytes, i64> = block
+        let block_bonds: HashMap<Bytes, TokenAmount> = block
             .body
             .state
             .bonds
             .iter()
-            .map(|b| (b.validator.clone(), b.stake))
+            .map(|b| (b.validator.clone(), b.stake.clone()))
             .collect();
 
         if &block_bonds != bonds {
@@ -204,7 +230,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .iter()
             .map(|(pk_bytes, stake)| Validator {
                 pk: crypto::rust::public_key::PublicKey::new(pk_bytes.clone()),
-                stake: *stake,
+                stake: stake.clone(),
             })
             .collect();
 
@@ -229,37 +255,44 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
 
         tracing::info!(
             shard_id = %shard_id,
-            pos_minimum_bond = pos_params.minimum_bond,
-            pos_maximum_bond = pos_params.maximum_bond,
+            pos_minimum_bond = %pos_params.minimum_bond,
+            pos_maximum_bond = %pos_params.maximum_bond,
             pos_epoch_length = pos_params.epoch_length,
             pos_quarantine_length = pos_params.quarantine_length,
             vault_count = vaults.len(),
             "genesis parameters resolved",
         );
 
-        // Expected blessed contracts
+        // Expected blessed contracts.
         //
-        // TODO(fs-bundle-threading): slice 5.67 threads
-        // `fs_bundle` + `consensus_fs_snapshot_cadence` through
-        // `default_blessed_terms`.  This caller passes empty + None
-        // for both, which matches the MVP posture.  A future slice
-        // should accept these as function args so a validator can
-        // verify a candidate with a non-empty bundle; without that
-        // thread-through, validators cannot approve genesis blocks
-        // whose leader included a non-empty bundle.  Blocking only
-        // when ceremony operators configure non-empty bundles —
-        // the MVP (empty bundle) path is fine today.
+        // `fs_bundle` + `consensus_fs_snapshot_cadence` are threaded
+        // in from the caller's local operator config so the validator's
+        // locally-reconstructed deploy list matches the ceremony
+        // master's byte-for-byte.  A mismatch here (e.g., leader's
+        // bundle has entries the validator's config does not) surfaces
+        // at the length check below as the specific
+        // "Mismatch between number of candidate deploys and expected
+        // number of deploys" error — the correct outcome when
+        // leader and follower disagree on the fs bundle.
+        //
+        // Shape invariant: both sides project their `fs_bundle` from
+        // the SAME HOCON block via
+        // `node::rust::configuration::provisioning_merge::project_bundle`,
+        // which is deterministic over its input.  Operators who want
+        // their validators to approve a non-empty bundle must ship
+        // the same `storage.{oracle,consensus}-static-*` entries to
+        // every participant.
         let genesis_blessed_contracts =
             crate::rust::genesis::genesis::Genesis::default_blessed_terms(
                 &pos_params,
                 vaults,
-                i64::MAX,
+                (i64::MAX as u64).into(),
                 shard_id,
                 native_token_name,
                 native_token_symbol,
                 native_token_decimals,
-                &[],
-                None,
+                fs_bundle,
+                consensus_fs_snapshot_cadence,
             );
 
         let block_deploys: &Vec<ProcessedDeploy> = &block.body.deploys;
@@ -316,7 +349,7 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             .await
             .map_err(|e| format!("{:?}", e))?;
 
-        let tuplespace_bonds_map: HashMap<Bytes, i64> = tuplespace_bonds
+        let tuplespace_bonds_map: HashMap<Bytes, TokenAmount> = tuplespace_bonds
             .into_iter()
             .map(|b| (b.validator, b.stake))
             .collect();
@@ -344,21 +377,23 @@ impl<T: TransportLayer + Send + Sync + 'static> BlockApproverProtocol<T> {
             self.deploy_timestamp,
             &self.vaults,
             &self.bonds_bytes,
-            self.minimum_bond,
-            self.maximum_bond,
+            self.minimum_bond.clone(),
+            self.maximum_bond.clone(),
             self.epoch_length,
             self.quarantine_length,
             self.number_of_active_validators,
             self.fault_tolerance_threshold_ppm,
             self.max_parent_depth,
             self.deploy_lifespan,
-            self.min_phlo_price,
+            self.min_phlo_price.clone(),
             shard_id,
             &self.pos_multi_sig_public_keys,
             self.pos_multi_sig_quorum,
             &self.native_token_name,
             &self.native_token_symbol,
             self.native_token_decimals,
+            &self.fs_bundle,
+            self.consensus_fs_snapshot_cadence,
         )
         .await
     }

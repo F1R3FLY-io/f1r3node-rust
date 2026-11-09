@@ -19,6 +19,7 @@ case "$*" in
 	*"actions/workflows/ci.yml/runs?head_sha="*) printf '%s\n' "${FAKE_RUN_ID:-}" ;;
 	*"-X POST "*"/cancel"*) printf 'completed\n' >"$FAKE_STATUS_FILE" ;;
 	*"-X POST "*"/rerun"*) : ;;
+	*"/jobs?"*) printf '%s\n' "${FAKE_HEAVY:-none}" ;;
 	*"actions/runs/"*) cat "$FAKE_STATUS_FILE" ;;
 	*) printf 'unexpected gh call: %s\n' "$*" >&2; exit 9 ;;
 esac
@@ -55,6 +56,36 @@ out="$(FAKE_RUN_ID='' HEAD_SHA="$SHA" run_tool)"
 
 : >"$TMP/gh.log"
 printf 'in_progress\n' >"$TMP/status"
+FAKE_RUN_ID=44 FAKE_HEAVY=active WANT_HEAVY=true HEAD_SHA="$SHA" run_tool >/dev/null
+! grep -q -- '-X POST' "$TMP/gh.log" || fail "a run that already runs the heavy pipeline was cancelled or rerun: $(cat "$TMP/gh.log")"
+
+: >"$TMP/gh.log"
+printf 'completed\n' >"$TMP/status"
+FAKE_RUN_ID=45 FAKE_HEAVY=failed WANT_HEAVY=true HEAD_SHA="$SHA" run_tool >/dev/null
+grep -qx 'api -X POST repos/example/repo/actions/runs/45/rerun' "$TMP/gh.log" || fail "a failed heavy run was not rerun for ci-heavy: $(cat "$TMP/gh.log")"
+
+: >"$TMP/gh.log"
+printf 'in_progress\n' >"$TMP/status"
+FAKE_RUN_ID=46 FAKE_HEAVY=active WANT_HEAVY=false HEAD_SHA="$SHA" run_tool >/dev/null
+grep -q 'actions/runs/46/cancel' "$TMP/gh.log" || fail "a waiver did not cancel the running heavy run: $(cat "$TMP/gh.log")"
+grep -qx 'api -X POST repos/example/repo/actions/runs/46/rerun' "$TMP/gh.log" || fail "a waiver did not rerun CI with the current labels: $(cat "$TMP/gh.log")"
+
+: >"$TMP/gh.log"
+printf 'completed\n' >"$TMP/status"
+FAKE_RUN_ID=47 FAKE_HEAVY=failed WANT_HEAVY=false HEAD_SHA="$SHA" run_tool >/dev/null
+grep -qx 'api -X POST repos/example/repo/actions/runs/47/rerun' "$TMP/gh.log" || fail "a waiver did not replace failed Integration Gate results: $(cat "$TMP/gh.log")"
+
+: >"$TMP/gh.log"
+printf 'completed\n' >"$TMP/status"
+FAKE_RUN_ID=48 FAKE_HEAVY=none WANT_HEAVY=false HEAD_SHA="$SHA" run_tool >/dev/null
+! grep -q -- '-X POST' "$TMP/gh.log" || fail "a completed run without a heavy pipeline was rerun for a waiver: $(cat "$TMP/gh.log")"
+
+status=0
+FAKE_RUN_ID=41 WANT_HEAVY=maybe HEAD_SHA="$SHA" run_tool >/dev/null 2>&1 || status=$?
+[ "$status" -eq 2 ] || fail "an invalid WANT_HEAVY was accepted (exit $status)"
+
+: >"$TMP/gh.log"
+printf 'in_progress\n' >"$TMP/status"
 status=0
 (
 	# shellcheck disable=SC2016 # The pattern matches the literal text of the fake gh.
@@ -68,4 +99,4 @@ status=0
 FAKE_RUN_ID=41 HEAD_SHA=not-a-sha run_tool >/dev/null 2>&1 || status=$?
 [ "$status" -eq 2 ] || fail "an invalid head SHA was accepted (exit $status)"
 
-printf 'PASS: the ci-heavy label reruns the newest CI run of the head, cancels a running one first, skips a missing run, and fails when the run does not complete.\n'
+printf 'PASS: the ci-heavy label reruns the newest CI run of the head, cancels a running one first, skips a missing run, and fails when the run does not complete. A run that already runs the heavy pipeline is kept. A waiver cancels a running heavy run, replaces failed gate results, and leaves a completed light run alone.\n'

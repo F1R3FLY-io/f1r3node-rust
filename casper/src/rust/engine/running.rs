@@ -27,7 +27,14 @@ use crate::rust::casper::MultiParentCasper;
 use crate::rust::engine::block_retriever::{self, BlockRetriever};
 use crate::rust::engine::engine::{self, Engine};
 use crate::rust::engine::engine_cell::EngineCell;
+use crate::rust::engine::peer_scoring::Strike;
 use crate::rust::engine::snapshot_chunk_sync::SnapshotChunkSyncDriver;
+use crate::rust::engine::snapshot_chunk_wire::{
+    handle_get_snapshot_chunk_request, handle_has_snapshot_request,
+};
+use crate::rust::engine::wal_payload_wire::{
+    handle_get_wal_payload_request, handle_has_wal_payload_request,
+};
 use crate::rust::errors::CasperError;
 use crate::rust::finality::floor::floor_of_block;
 use crate::rust::metrics_constants::{
@@ -243,6 +250,16 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
     }
 
     async fn handle(&self, peer: PeerNode, msg: CasperMessage) -> Result<(), CasperError> {
+        let unrequested_block_traffic = match &msg {
+            CasperMessage::BlockHashMessage(_) => true,
+            CasperMessage::BlockMessage(b) => !self.block_retriever.awaits_block(&b.block_hash),
+            CasperMessage::HasBlock(h) => !self.block_retriever.awaits_block(&h.hash),
+            _ => false,
+        };
+        if unrequested_block_traffic && self.block_retriever.should_ignore_peer(&peer) {
+            tracing::debug!("Ignoring block traffic from scored-out peer {}", peer);
+            return Ok(());
+        }
         match msg {
             CasperMessage::BlockHashMessage(h) => {
                 metrics::counter!(BLOCK_HASH_RECEIVED_METRIC, "source" => RUNNING_METRICS_SOURCE)
@@ -251,14 +268,6 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                     .await
             }
             CasperMessage::BlockMessage(b) => {
-                if let Some(id) = self.casper.get_validator() {
-                    if b.sender == id.public_key.bytes {
-                        tracing::warn!(
-                            "There is another node {} proposing using the same private key as you. Or did you restart your node?",
-                            peer
-                        );
-                    }
-                }
                 if self.ignore_casper_message(b.block_hash.clone())? {
                     tracing::debug!(
                         "Ignoring BlockMessage {} from {}",
@@ -266,35 +275,77 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
                         peer.endpoint.host
                     );
                 } else {
-                    tracing::debug!(
-                        "Incoming BlockMessage {} from {}",
-                        PrettyPrinter::build_string_block_message(&b, true),
-                        peer.endpoint.host
-                    );
                     let block_hash = b.block_hash.clone();
-                    let guard = match mark_in_flight(&self.blocks_in_processing, block_hash.clone())
+                    let (checked, guard) = match ReceiptVerifier::shared()
+                        .verify_and_mark(&peer.id.key, b, &self.blocks_in_processing)
+                        .await
                     {
-                        InFlightMark::Marked(guard) => guard,
-                        InFlightMark::AlreadyInFlight => {
-                            tracing::debug!(
-                                    "Skipping BlockMessage {} enqueue because it is already queued/in-processing",
-                                    PrettyPrinter::build_string_bytes(&block_hash)
+                        Ok(admitted) => admitted,
+                        Err(ReceiptRefusal::Overloaded) => {
+                            if self.block_retriever.awaits_block(&block_hash) {
+                                self.block_retriever.note_local_backpressure_drop(
+                                    &block_hash,
+                                    "running-verification",
                                 );
+                            } else {
+                                metrics::counter!(
+                                    crate::rust::metrics_constants::BLOCK_INFLIGHT_CAP_DROP_METRIC,
+                                    "site" => "running-verification"
+                                )
+                                .increment(1);
+                            }
+                            tracing::debug!(
+                                "Dropping BlockMessage {} from {}: block verification is at capacity",
+                                PrettyPrinter::build_string_bytes(&block_hash),
+                                peer.endpoint.host
+                            );
                             return Ok(());
                         }
-                        InFlightMark::CapReached => {
+                        Err(ReceiptRefusal::Invalid(invalid)) => {
+                            let (strike, reason) = match invalid {
+                                crate::rust::block_status::InvalidBlock::InvalidBlockHash => {
+                                    (Strike::HashMismatch, "hash-mismatch")
+                                }
+                                _ => (Strike::Malformed, "malformed"),
+                            };
+                            metrics::counter!(
+                                crate::rust::metrics_constants::BLOCK_INTEGRITY_REJECTED_METRIC,
+                                "source" => RUNNING_METRICS_SOURCE,
+                                "reason" => reason
+                            )
+                            .increment(1);
+                            self.block_retriever.strike_peer(&peer, &block_hash, strike);
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::AlreadyInFlight) => {
+                            tracing::debug!(
+                                "Skipping BlockMessage {} because it is already queued/in-processing",
+                                PrettyPrinter::build_string_bytes(&block_hash)
+                            );
+                            return Ok(());
+                        }
+                        Err(ReceiptRefusal::InFlightCapReached) => {
                             self.block_retriever
                                 .note_local_backpressure_drop(&block_hash, "running-receipt");
-                            tracing::warn!(
-                                    "Dropping BlockMessage {} because in-flight block cap {} is reached",
-                                    PrettyPrinter::build_string_bytes(&block_hash),
-                                    MAX_BLOCKS_IN_PROCESSING
-                                );
                             return Ok(());
                         }
                     };
+                    if let Some(id) = self.casper.get_validator() {
+                        if checked.block().sender == id.public_key.bytes {
+                            tracing::warn!(
+                                "There is another node {} proposing using the same private key as you. Or did you restart your node?",
+                                peer
+                            );
+                        }
+                    }
+                    tracing::debug!(
+                        "Incoming BlockMessage {} from {}",
+                        PrettyPrinter::build_string_block_message(checked.block(), true),
+                        peer.endpoint.host
+                    );
+                    self.block_retriever.note_block_source(&block_hash, &peer)?;
                     self.block_processing_queue_tx
-                        .send((self.casper.clone(), b, guard))
+                        .send((self.casper.clone(), QueuedBlock::Network(checked), guard))
                         .await
                         .map_err(|e| {
                             CasperError::RuntimeError(format!(
@@ -406,6 +457,13 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             // Chunks answering the runtime state requester's root fetches.
             // Without a requester wired these fall through as they always did.
             CasperMessage::StoreItemsMessage(items) => {
+                if self.conf.bootstrap.as_ref() != Some(&peer) {
+                    tracing::warn!(
+                        "Dropping StoreItemsMessage from {}: state chunks are requested only from the bootstrap.",
+                        peer
+                    );
+                    return Ok(());
+                }
                 if let Some(tx) = &self.state_items_tx {
                     if tx.try_send(items).is_err() {
                         tracing::warn!(
@@ -419,16 +477,109 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
             CasperMessage::FloorCacheRequest(req) => {
                 self.handle_floor_cache_request(peer, req.hashes).await
             }
-            CasperMessage::MergeableEntryRequest(req) => {
-                if self.disable_state_exporter {
-                    tracing::debug!(
-                        "Received MergeableEntryRequest but state-export is disabled; ignoring (from {}).",
-                        peer
-                    );
-                    return Ok(());
+            // Phase 7b-1 snapshot chunk-fetch dispatch.  Only routed
+            // if a `SnapshotChunkContext` has been installed (via
+            // `install_snapshot_chunk_context`); otherwise falls
+            // through as a silent no-op — observers and transitional
+            // engines without an fs_snapshot_writer still see these
+            // messages but never need to serve or consume them.
+            CasperMessage::GetSnapshotChunkRequest(req) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    // Per-request O(1) lookup instead of cloning the
+                    // whole map — anchor is `Copy` so the closure
+                    // returns the value, no borrow held across await.
+                    let anchor: Option<([u8; 32], [u8; 32])> = ctx
+                        .snapshot_merkle_roots
+                        .read()
+                        .await
+                        .get(req.block_hash.as_ref())
+                        .copied();
+                    handle_get_snapshot_chunk_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &ctx.snapshot_dir,
+                        |_| anchor,
+                    )
+                    .await;
                 }
-                self.handle_mergeable_entry_request(peer, req.block_hash)
-                    .await
+                Ok(())
+            }
+            CasperMessage::HasSnapshotRequest(req) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    let anchor: Option<([u8; 32], [u8; 32])> = ctx
+                        .snapshot_merkle_roots
+                        .read()
+                        .await
+                        .get(req.block_hash.as_ref())
+                        .copied();
+                    handle_has_snapshot_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &ctx.snapshot_dir,
+                        |_| anchor,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::SnapshotChunkResponse(resp) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    ctx.sync_driver.on_chunk_response(peer, &resp).await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasSnapshot(hs) => {
+                if let Some(ctx) = self.snapshot_chunk_ctx() {
+                    ctx.sync_driver.on_has_snapshot(peer, &hs).await;
+                }
+                Ok(())
+            }
+            // Phase 7b-2 WAL payload-fetch dispatch.  Same
+            // installed-or-silent-no-op posture as the snapshot
+            // chunk arms above — nodes without a payload backing
+            // store (observers, test harnesses) leave the context
+            // unset and these messages fall through.
+            CasperMessage::GetWalPayloadRequest(req) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    handle_get_wal_payload_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &*ctx.payload_lookup,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasWalPayloadRequest(req) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    handle_has_wal_payload_request(
+                        &*self.transport,
+                        &self.conf,
+                        &peer,
+                        &req,
+                        &*ctx.payload_lookup,
+                    )
+                    .await;
+                }
+                Ok(())
+            }
+            CasperMessage::WalPayloadResponse(resp) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    ctx.sync_driver.on_payload_response(peer, &resp).await;
+                }
+                Ok(())
+            }
+            CasperMessage::HasWalPayload(hs) => {
+                if let Some(ctx) = self.wal_payload_ctx() {
+                    ctx.sync_driver.on_has_wal_payload(peer, &hs).await;
+                }
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -475,7 +626,7 @@ pub struct Running<T: TransportLayer + Send + Sync> {
 }
 
 use crate::rust::blocks::block_processor::{
-    mark_in_flight, BlockQueueItem, InFlightBlocks, InFlightMark, MAX_BLOCKS_IN_PROCESSING,
+    BlockQueueItem, InFlightBlocks, QueuedBlock, ReceiptRefusal, ReceiptVerifier,
 };
 
 impl<T: TransportLayer + Send + Sync> Running<T> {
@@ -760,12 +911,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         Ok(())
     }
 
-    /// Respond to a `MergeableEntryRequest`.
-    ///
-    /// - Block not in our store: silent (no response).
-    /// - Block present, no mergeable entry: respond with empty `serialized_entry`.
-    /// - Block present and entry present: respond with raw bincode bytes from
-    ///   the mergeable_store.
     /// Serve cached finalized-floor values for the requested blocks.
     ///
     /// The values are pure functions of the named blocks, computed when this
@@ -821,47 +966,6 @@ impl<T: TransportLayer + Send + Sync> Running<T> {
         self.transport
             .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
             .await?;
-        Ok(())
-    }
-
-    async fn handle_mergeable_entry_request(
-        &self,
-        peer: PeerNode,
-        block_hash: BlockHash,
-    ) -> Result<(), CasperError> {
-        let block = match self.casper.block_store().get(&block_hash)? {
-            Some(b) => b,
-            None => {
-                tracing::debug!(
-                    "MergeableEntryRequest for {} from {}: block not in store; silent ignore.",
-                    PrettyPrinter::build_string_bytes(&block_hash),
-                    peer
-                );
-                return Ok(());
-            }
-        };
-
-        let runtime = self.casper.runtime_manager();
-        let (_key_bytes, value_bytes_opt) = runtime.get_mergeable_entry_bytes(&block)?;
-
-        let serialized_entry: prost::bytes::Bytes = value_bytes_opt
-            .map(prost::bytes::Bytes::from)
-            .unwrap_or_default();
-
-        let resp = casper_message::MergeableEntryResponse {
-            block_hash: block_hash.clone(),
-            serialized_entry,
-        };
-
-        self.transport
-            .stream_message_to_peer(&self.conf, &peer, Arc::new(resp.to_proto()))
-            .await?;
-
-        tracing::debug!(
-            "Mergeable entry sent to {} for block {}.",
-            peer,
-            PrettyPrinter::build_string_bytes(&block_hash)
-        );
         Ok(())
     }
 

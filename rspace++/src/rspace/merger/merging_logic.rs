@@ -672,51 +672,6 @@ pub fn consumes_affected(e: &EventLogIndex) -> HashableSet<Consume> {
     HashableSet(result)
 }
 
-/// If produce is copied by peek in one index and originated in another - it is
-/// considered as created in aggregate.
-pub fn combine_produces_copied_by_peek(
-    x: &EventLogIndex,
-    y: &EventLogIndex,
-) -> HashableSet<Produce> {
-    let combined_copied_by_peek: HashableSet<Produce> = HashableSet(
-        x.produces_copied_by_peek
-            .0
-            .union(&y.produces_copied_by_peek.0)
-            .cloned()
-            .collect(),
-    );
-
-    let combined_created: HashableSet<Produce> = HashableSet(
-        produces_created(x)
-            .0
-            .union(&produces_created(y).0)
-            .cloned()
-            .collect(),
-    );
-
-    let result: HashSet<Produce> = combined_copied_by_peek
-        .0
-        .difference(&combined_created.0)
-        .cloned()
-        .collect();
-    if tracing::enabled!(target: "f1r3fly.merge.step", tracing::Level::DEBUG) {
-        let channels: Vec<String> = result
-            .iter()
-            .map(|p| hex::encode(p.channel_hash.clone().bytes()))
-            .collect();
-        tracing::debug!(
-            target: "f1r3fly.merge.step",
-            step = "combine_produces_copied_by_peek.EXIT",
-            combined_copied_by_peek = combined_copied_by_peek.0.len(),
-            combined_created = combined_created.0.len(),
-            result = result.len(),
-            channels = ?channels,
-            "produces copied-by-peek in aggregate but not created in either index"
-        );
-    }
-    HashableSet(result)
-}
-
 /// Arrange list[v] into map v -> Vec[v] for items that match predicate.
 /// NOTE: predicate here is forced to be non directional.
 /// If either (a,b) or (b,a) is true, both relations are recorded as true.
@@ -1935,8 +1890,9 @@ mod tests {
         y.produces_copied_by_peek.0.insert(p2.clone());
         y.produces_linear.0.insert(p1.clone());
 
-        // Test combine_produces_copied_by_peek
-        let combined = combine_produces_copied_by_peek(&x, &y);
+        let combined = EventLogIndex::combine(&x, &y)
+            .unwrap()
+            .produces_copied_by_peek;
 
         // p1 is created in y, so it shouldn't be in the result
         // p2 is copied by peek in both but not created in either, so it should be in
@@ -1945,11 +1901,11 @@ mod tests {
         assert!(combined.0.contains(&p2));
         assert!(!combined.0.contains(&p1));
 
-        // Test empty case
-        let empty_x = EventLogIndex::empty();
-        let empty_y = EventLogIndex::empty();
+        let empty = EventLogIndex::empty();
         assert!(
-            combine_produces_copied_by_peek(&empty_x, &empty_y)
+            EventLogIndex::combine(&empty, &empty)
+                .unwrap()
+                .produces_copied_by_peek
                 .0
                 .is_empty()
         );

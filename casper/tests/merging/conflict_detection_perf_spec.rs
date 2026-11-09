@@ -376,7 +376,10 @@ fn event_indexed_conflict_map_for_chains(
     chain_set: &HashableSet<DeployChainIndex>,
 ) -> HashMap<DeployChainIndex, HashableSet<DeployChainIndex>> {
     let chains_vec: Vec<DeployChainIndex> = chain_set.0.iter().cloned().collect();
-    let event_logs: Vec<&EventLogIndex> = chains_vec.iter().map(|c| &c.event_log_index).collect();
+    let event_logs: Vec<&EventLogIndex> = chains_vec
+        .iter()
+        .map(|c| c.event_log_index.as_ref())
+        .collect();
     merging_logic::compute_conflict_map_event_indexed(&chains_vec, &event_logs)
 }
 
@@ -768,7 +771,10 @@ fn event_indexed_depends_map_for_chains(
     chain_set: &HashableSet<DeployChainIndex>,
 ) -> HashMap<DeployChainIndex, HashableSet<DeployChainIndex>> {
     let chains_vec: Vec<DeployChainIndex> = chain_set.0.iter().cloned().collect();
-    let event_logs: Vec<&EventLogIndex> = chains_vec.iter().map(|c| &c.event_log_index).collect();
+    let event_logs: Vec<&EventLogIndex> = chains_vec
+        .iter()
+        .map(|c| c.event_log_index.as_ref())
+        .collect();
     merging_logic::compute_depends_map_event_indexed(&chains_vec, &event_logs)
 }
 

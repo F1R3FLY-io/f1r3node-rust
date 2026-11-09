@@ -14,6 +14,7 @@ mkdir -p \
 printf '%s\n' test-capability >"$TMP/node/.github/system-integration-node-capabilities.txt"
 touch \
 	"$TMP/harness/integration-tests/test/tests/custom/test_alpha.py" \
+	"$TMP/harness/integration-tests/test/tests/custom/test_heartbeat_timing.py" \
 	"$TMP/harness/integration-tests/test/tests/shared/test_beta.py" \
 	"$TMP/harness/integration-tests/test/tests/standalone/test_gamma.py"
 printf '%s\n' \
@@ -26,11 +27,13 @@ cat >"$TMP/bin/poetry" <<'EOF'
 set -euo pipefail
 xml=
 collect=false
+ignore_timing=false
 selectors=()
 for arg in "$@"; do
 	case "$arg" in
 	--junitxml=*) xml=${arg#*=} ;;
 	--collect-only) collect=true ;;
+	--ignore=integration-tests/test/tests/custom/test_heartbeat_timing.py) ignore_timing=true ;;
 	integration-tests/test/tests/*/) selectors+=("$arg") ;;
 	esac
 done
@@ -43,6 +46,9 @@ if [ "$collect" = true ]; then
 				'integration-tests/test/tests/shared/test_beta.py::test_one' \
 				'integration-tests/test/tests/custom/test_alpha.py::test_two' \
 				'integration-tests/test/tests/standalone/test_gamma.py::test_three'
+			if [ "$ignore_timing" = false ]; then
+				printf '%s\n' 'integration-tests/test/tests/custom/test_heartbeat_timing.py::test_heartbeat_timing'
+			fi
 			exit 0
 			;;
 	esac
@@ -53,6 +59,9 @@ suite=${selectors[0]%/}
 suite=${suite##*/}
 printf '%s\n' "$suite" >>"${FAKE_CALLS:?}"
 body="<testcase name=\"$suite\"/>"
+if [ "$suite" = custom ] && [ "$ignore_timing" = false ]; then
+	body+='<testcase name="heartbeat_timing"><skipped/></testcase>'
+fi
 status=0
 case "${FAKE_MODE:-pass}:$suite" in
 	skip:custom) body='<testcase name="custom"><skipped/></testcase>' ;;
@@ -88,7 +97,12 @@ test "$(cat "$TMP/pass/calls")" = $'shared\ncustom\nstandalone'
 test -f "$TMP/pass/junit-shared.xml"
 test -f "$TMP/pass/junit-custom.xml"
 test -f "$TMP/pass/junit-standalone.xml"
+grep -Fxq integration-tests/test/tests/custom/test_heartbeat_timing.py "$TMP/pass/excluded-tests.txt"
 test "$(grep -o '<testcase ' "$TMP/pass/junit.xml" | wc -l)" -eq 3
+
+HEARTBEAT_TIMING=1 run_preflight "$TMP/profile" "$TMP/timing-enabled"
+test "$(cat "$TMP/timing-enabled/result")" = passed
+grep -Fq 'tests=3 collected=3 failures=0 errors=0 skipped=0' "$TMP/timing-enabled/report.txt"
 
 if run_preflight "$TMP/profile" "$TMP/skip" skip; then
 	printf 'preflight accepted a skipped test\n' >&2

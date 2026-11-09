@@ -1,6 +1,6 @@
 // See casper/src/main/scala/coop/rchain/casper/util/ProtoUtil.scala
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 use block_storage::rust::dag::block_dag_key_value_storage::KeyValueDagRepresentation;
 use block_storage::rust::key_value_block_store::KeyValueBlockStore;
@@ -13,13 +13,15 @@ use models::rust::block_hash::BlockHash;
 use models::rust::block_metadata::BlockMetadata;
 use models::rust::casper::pretty_printer::PrettyPrinter;
 use models::rust::casper::protocol::casper_message::{
-    BlockMessage, Body, Bond, DeployData, Header, Justification, ProcessedDeploy,
-    ProcessedSystemDeploy, RejectedDeploy,
+    BlockMessage, Body, Bond, DeployData, F1r3flyState, Header, Justification, ProcessedDeploy,
+    ProcessedSystemDeploy, RejectedDeploy, SystemDeployData,
 };
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use rholang::rust::interpreter::deploy_parameters::DeployParameters;
 use shared::rust::dag::observation_work::{NoopWork, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
+use shared::rust::token_amount::TokenAmount;
 use shared::rust::ByteString;
 
 use crate::rust::errors::CasperError;
@@ -111,23 +113,23 @@ pub fn get_creator_justification_as_list_until_goal_in_memory(
 /// Get weight map from a block message
 pub fn weight_map(
     block_message: &BlockMessage,
-) -> std::collections::HashMap<prost::bytes::Bytes, i64> {
+) -> std::collections::HashMap<prost::bytes::Bytes, BigInt> {
     weight_map_from_state(&block_message.body.state)
 }
 
 /// Get weight map from a state
 fn weight_map_from_state(
     state: &models::rust::casper::protocol::casper_message::F1r3flyState,
-) -> std::collections::HashMap<prost::bytes::Bytes, i64> {
+) -> std::collections::HashMap<prost::bytes::Bytes, BigInt> {
     state
         .bonds
         .iter()
-        .map(|bond| (bond.validator.clone(), bond.stake))
+        .map(|bond| (bond.validator.clone(), bond.stake.to_bigint()))
         .collect()
 }
 
 /// Get total weight from a weight map
-pub fn weight_map_total(weights: &std::collections::HashMap<ByteString, i64>) -> i64 {
+pub fn weight_map_total(weights: &std::collections::HashMap<ByteString, BigInt>) -> BigInt {
     weights.values().sum()
 }
 
@@ -136,10 +138,14 @@ pub fn min_total_validator_weight(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     max_clique_min_size: i32,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     dag.lookup(block_hash).map(|block_metadata_opt| {
         let block_metadata = block_metadata_opt.expect("Block metadata should exist");
-        let mut sorted_weights: Vec<i64> = block_metadata.weight_map.values().cloned().collect();
+        let mut sorted_weights: Vec<BigInt> = block_metadata
+            .weight_map
+            .values()
+            .map(TokenAmount::to_bigint)
+            .collect();
         sorted_weights.sort();
         sorted_weights
             .iter()
@@ -150,7 +156,7 @@ pub fn min_total_validator_weight(
 
 /// Get main parent of a block
 pub fn main_parent(
-    block_store: &mut KeyValueBlockStore,
+    block_store: &KeyValueBlockStore,
     block_message: &BlockMessage,
 ) -> Result<Option<BlockMessage>, KvStoreError> {
     match block_message.header.parents_hash_list.first() {
@@ -164,7 +170,7 @@ pub fn weight_from_validator_by_dag(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     validator: &Validator,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     weight_from_validator_by_dag_metered(&NoopWork, dag, block_hash, validator)
 }
 
@@ -173,7 +179,7 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
     dag: &mut KeyValueDagRepresentation,
     block_hash: &BlockHash,
     validator: &Validator,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     // On the fork-choice BFS a traversed block — or its main parent, read for
     // the weight map — can be absent from the metadata index: a sync/prune
     // window, or, on an LFS-restored node, a parent below the restore horizon
@@ -208,43 +214,51 @@ pub fn weight_from_validator_by_dag_metered<W: WorkMeter>(
             Ok(parent_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
-                .unwrap_or(0))
+                .map(TokenAmount::to_bigint)
+                .unwrap_or_default())
         }
         None => {
             // No parents (genesis) - use current block's weight map
             Ok(block_metadata
                 .weight_map
                 .get(validator)
-                .cloned()
-                .unwrap_or(0))
+                .map(TokenAmount::to_bigint)
+                .unwrap_or_default())
         }
     }
 }
 
 /// Get weight from validator
 pub fn weight_from_validator(
-    block_store: &mut KeyValueBlockStore,
+    block_store: &KeyValueBlockStore,
     b: &BlockMessage,
     validator: &prost::bytes::Bytes,
-) -> Result<i64, KvStoreError> {
-    // Get main parent
-    let maybe_main_parent = main_parent(block_store, b)?;
-
-    // Get weight from validator (from parent or current block)
-    let weight = match maybe_main_parent {
-        Some(parent) => weight_map(&parent).get(validator).cloned().unwrap_or(0),
-        None => weight_map(b).get(validator).cloned().unwrap_or(0), // No parents means genesis - use itself
+) -> Result<BigInt, KvStoreError> {
+    // A block's own bonds are written by its sender, so they never decide its
+    // weight: a parentless block carries none here (`Validate::
+    // block_sender_has_weight` judges it against the genesis). A main parent this
+    // node does not hold leaves the weight unknown, never self-asserted.
+    let Some(parent_hash) = b.header.parents_hash_list.first() else {
+        return Ok(BigInt::from(0));
     };
+    let parent = block_store
+        .get(parent_hash)?
+        .ok_or_else(|| KvStoreError::MissingBlock {
+            hash: parent_hash.clone(),
+            context: MissingBlockContext::new("weight_from_validator: main parent"),
+        })?;
 
-    Ok(weight)
+    Ok(weight_map(&parent)
+        .get(validator)
+        .cloned()
+        .unwrap_or_default())
 }
 
 /// Get weight from sender
 pub fn weight_from_sender(
-    block_store: &mut KeyValueBlockStore,
+    block_store: &KeyValueBlockStore,
     b: &BlockMessage,
-) -> Result<i64, KvStoreError> {
+) -> Result<BigInt, KvStoreError> {
     weight_from_validator(block_store, b, &b.sender)
 }
 
@@ -300,40 +314,81 @@ pub enum UnheldParent {
     SkipSettled,
 }
 
-pub fn parent_metadatas_above_block_number(
-    block: &BlockMetadata,
-    block_number: i64,
+/// Breadth-first walk from `start` down the parent edges, over the blocks at
+/// or above `block_number`. The start blocks are always visited. `visit` sees
+/// each block once, in breadth-first order, and stops the walk by returning
+/// `true`; that block is the result.
+///
+/// A parent is resolved when the walk first reaches it: one metadata row per
+/// block, read only for a parent that is not yet queued and whose height in
+/// the in-memory index is inside the window (#776). Reading every parent of
+/// every visited block made one walk cost ~window·n² rows of size O(n).
+/// A parent without a metadata row meets the unheld policy at that point and
+/// is never queued, so `visit` only sees held blocks, and a `Surface` walk
+/// fails before any later block can match.
+pub fn walk_blocks_in_scope<F>(
     dag: &KeyValueDagRepresentation,
+    start: impl IntoIterator<Item = BlockMetadata>,
+    block_number: i64,
     on_unheld: UnheldParent,
-) -> Result<Vec<BlockMetadata>, CasperError> {
-    let mut result = Vec::with_capacity(block.parents.len());
-    for parent in &block.parents {
-        match dag.lookup(parent).map_err(CasperError::from)? {
-            Some(meta) => {
-                if meta.block_number >= block_number {
-                    result.push(meta);
-                }
-            }
-            None => match on_unheld {
-                UnheldParent::Surface => {
-                    return Err(CasperError::BlockNotHeld(
-                        parent.clone(),
-                        MissingBlockContext::new("parent_metadatas_above_block_number"),
-                    ))
-                }
-                UnheldParent::SkipSettled => {
-                    tracing::warn!(
-                        parent = %PrettyPrinter::build_string_bytes(parent),
-                        child = %PrettyPrinter::build_string_bytes(&block.block_hash),
-                        earliest_wanted = block_number,
-                        "in-scope walk skipped an unheld parent: settled ancestry below \
-                         a restore horizon, or an undersized block floor"
-                    );
-                }
-            },
+    mut visit: F,
+) -> Result<Option<BlockHash>, CasperError>
+where
+    F: FnMut(&BlockHash) -> Result<bool, CasperError>,
+{
+    let mut visited: HashSet<BlockHash> = HashSet::new();
+    let mut queue: VecDeque<(BlockHash, Vec<BlockHash>)> = VecDeque::new();
+    for meta in start {
+        if visited.insert(meta.block_hash.clone()) {
+            queue.push_back((meta.block_hash, meta.parents));
         }
     }
-    Ok(result)
+    while let Some((current, parents)) = queue.pop_front() {
+        if visit(&current)? {
+            return Ok(Some(current));
+        }
+        for parent in parents {
+            if visited.contains(&parent) {
+                continue;
+            }
+            match dag.block_number(&parent) {
+                Some(number) if number < block_number => {}
+                Some(_) => match dag.lookup(&parent).map_err(CasperError::from)? {
+                    Some(meta) => {
+                        visited.insert(parent.clone());
+                        queue.push_back((parent, meta.parents));
+                    }
+                    None => unheld_in_scope(&parent, &current, block_number, on_unheld)?,
+                },
+                None => unheld_in_scope(&parent, &current, block_number, on_unheld)?,
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn unheld_in_scope(
+    parent: &BlockHash,
+    child: &BlockHash,
+    block_number: i64,
+    on_unheld: UnheldParent,
+) -> Result<(), CasperError> {
+    match on_unheld {
+        UnheldParent::Surface => Err(CasperError::BlockNotHeld(
+            parent.clone(),
+            MissingBlockContext::new("walk_blocks_in_scope"),
+        )),
+        UnheldParent::SkipSettled => {
+            tracing::warn!(
+                parent = %PrettyPrinter::build_string_bytes(parent),
+                child = %PrettyPrinter::build_string_bytes(child),
+                earliest_wanted = block_number,
+                "in-scope walk skipped an unheld parent: settled ancestry below \
+                 a restore horizon, or an undersized block floor"
+            );
+            Ok(())
+        }
+    }
 }
 
 pub fn deploys(block: &BlockMessage) -> Vec<ProcessedDeploy> { block.body.deploys.clone() }
@@ -357,7 +412,7 @@ pub fn block_number(block: &BlockMessage) -> i64 { block.body.state.block_number
 pub fn bond_to_bond_info(bond: &Bond) -> BondInfo {
     BondInfo {
         validator: PrettyPrinter::build_string_no_limit(&bond.validator),
-        stake: bond.stake,
+        stake: bond.stake.to_string(),
     }
 }
 
@@ -495,7 +550,7 @@ pub fn unsigned_block_proto_with_leaves(
 }
 
 // =========================================================================
-// Block hash — Merkle scheme v1
+// Block hash — Merkle scheme v3
 // =========================================================================
 //
 // Shape:
@@ -504,10 +559,11 @@ pub fn unsigned_block_proto_with_leaves(
 //
 // where `deploys_root` is a Merkle root over per-deploy leaves (user
 // deploys first, then system deploys, in commit order) and
-// `header_preimage` concatenates header + body-state + metadata fields
-// together with Merkle roots of the rejected-deploy and
-// applied-from-scope lists.  See `docs/designs/merkle-block-hash.md` for
-// the full recipe.  Hard-fork surface: the domain-byte constants below
+// `header_preimage` concatenates header + body-state + metadata fields,
+// each variable-length field preceded by its u32 little-endian length,
+// together with Merkle roots of the bonds, justifications, rejected-deploy
+// and applied-from-scope lists; `header_preimage` gives the field order.
+// Hard-fork surface: the domain-byte constants below
 // pin the shape — any change flips every block hash on-network.
 //
 // This is a per-release hard fork for each shard.  Shards running an
@@ -525,7 +581,7 @@ pub fn unsigned_block_proto_with_leaves(
 
 /// Scheme-version byte prepended to the header preimage.  Bumping this
 /// constant is a hard fork — see the file-level docstring.
-pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x01;
+pub const BLOCK_HASH_SCHEME_VERSION: u8 = 0x03;
 
 /// Interior-node domain byte used by `MERKLE_PARAMS`.
 const INTERIOR_DOMAIN: u8 = 0x01;
@@ -542,6 +598,7 @@ const LEAF_HEADER: u8 = 0x12;
 const LEAF_REJECTED_DEPLOY: u8 = 0x13;
 const LEAF_APPLIED_FROM_SCOPE_SIG: u8 = 0x14;
 const LEAF_BOND: u8 = 0x15;
+const LEAF_JUSTIFICATION: u8 = 0x16;
 
 const MERKLE_PARAMS: crypto::rust::hash::merkle::MerkleParams =
     crypto::rust::hash::merkle::MerkleParams::new(INTERIOR_DOMAIN);
@@ -562,19 +619,71 @@ pub fn hash_processed_system_deploy_leaf(psd: &ProcessedSystemDeploy) -> [u8; 32
     crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_PROCESSED_SYSTEM_DEPLOY, &proto_bytes)
 }
 
+/// Minimum combined (user + system) deploy count at which
+/// `deploys_root_leaves` switches from a sequential to a Rayon-parallel
+/// hashing pass.  Below the threshold, the sequential version avoids
+/// Rayon's per-call thread-pool wake-up overhead (tens of microseconds
+/// on cold pools) and the small per-task bookkeeping; at and above it,
+/// the embarrassingly-parallel work (`prost(pd)` + Blake2b per leaf)
+/// amortises those costs across cores.
+///
+/// Rationale (see `merkle_block_hash_tests::hash_block_timing`):
+/// sequential cost scales linearly with leaves, measured at ~1 us per
+/// user deploy on a developer laptop (release).  Rayon's cold-pool
+/// start-up overhead is in the same ballpark as the sequential cost at
+/// 16 leaves — the two curves cross somewhere in the 16-32 range.  32
+/// is a comfortable choice: below it the serial path is at worst a
+/// constant 32 us; above it the parallel path wins immediately and the
+/// margin widens.
+const PARALLEL_LEAF_THRESHOLD: usize = 32;
+
 /// Build the deploys-root leaf vector from a `BlockMessage` body in
 /// commit order: all user deploys first, then all system deploys.  This
 /// is the recomputation path used by validators that are not replaying
 /// the block (e.g., validating a stored block).  The hot path accepts
 /// pre-computed leaves via `hash_block_with_leaves`.
+///
+/// Parallelises leaf hashing with Rayon when the combined (user +
+/// system) deploy count reaches `PARALLEL_LEAF_THRESHOLD`.  Below the
+/// threshold the sequential path avoids thread-pool wake-up overhead.
+/// The output order is preserved either way — user leaves first (in
+/// `body.deploys` order), then system leaves (in `body.system_deploys`
+/// order) — which is the invariant the Merkle recipe depends on.
 fn deploys_root_leaves(block: &BlockMessage) -> Vec<[u8; 32]> {
-    let mut leaves = Vec::with_capacity(block.body.deploys.len() + block.body.system_deploys.len());
-    for pd in &block.body.deploys {
-        leaves.push(hash_processed_deploy_leaf(pd));
+    let n_user = block.body.deploys.len();
+    let n_system = block.body.system_deploys.len();
+    let total = n_user + n_system;
+
+    if total < PARALLEL_LEAF_THRESHOLD {
+        // Sequential path for small blocks.
+        let mut leaves = Vec::with_capacity(total);
+        for pd in &block.body.deploys {
+            leaves.push(hash_processed_deploy_leaf(pd));
+        }
+        for psd in &block.body.system_deploys {
+            leaves.push(hash_processed_system_deploy_leaf(psd));
+        }
+        return leaves;
     }
-    for psd in &block.body.system_deploys {
-        leaves.push(hash_processed_system_deploy_leaf(psd));
-    }
+
+    // Parallel path for larger blocks.  `par_iter().collect()` preserves
+    // the input order, so the concatenation of (user leaves, system
+    // leaves) matches the sequential path's output byte-for-byte.
+    use rayon::prelude::*;
+    let mut leaves: Vec<[u8; 32]> = block
+        .body
+        .deploys
+        .par_iter()
+        .map(hash_processed_deploy_leaf)
+        .collect();
+    leaves.reserve(n_system);
+    let sys_leaves: Vec<[u8; 32]> = block
+        .body
+        .system_deploys
+        .par_iter()
+        .map(hash_processed_system_deploy_leaf)
+        .collect();
+    leaves.extend(sys_leaves);
     leaves
 }
 
@@ -609,67 +718,114 @@ fn applied_from_scope_root(block: &BlockMessage) -> [u8; 32] {
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Merkle root over the bonds sub-tree.  Bonds are sorted by validator
-/// public key before leaf-hashing so the root is independent of
-/// in-memory order.  Each leaf is
-/// `Blake2b256(LEAF_BOND || validator_pk || stake_le)`.
+/// Merkle root over the bonds, sorted by validator. Each leaf is
+/// `Blake2b256(LEAF_BOND || BondProto encoding)`, whose stake is 32 bytes.
 fn bonds_root(bonds: &[Bond]) -> [u8; 32] {
     let mut sorted: Vec<&Bond> = bonds.iter().collect();
     sorted.sort_by(|a, b| a.validator.as_ref().cmp(b.validator.as_ref()));
     let leaves: Vec<[u8; 32]> = sorted
         .iter()
         .map(|b| {
-            let mut buf = Vec::with_capacity(b.validator.len() + 8);
-            buf.extend_from_slice(b.validator.as_ref());
-            buf.extend_from_slice(&b.stake.to_le_bytes());
+            use prost::Message;
+            let buf = (*b).clone().to_proto().encode_to_vec();
             crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_BOND, &buf)
         })
         .collect();
     crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
 }
 
-/// Build the header-side preimage.  See file-level docstring and
-/// `docs/designs/merkle-block-hash.md` for the field order.  Any change
-/// here is a hard fork — pinned by the `hash_block` golden-hex tests.
+fn justifications_root(justifications: &[Justification]) -> [u8; 32] {
+    let leaves: Vec<[u8; 32]> = justifications
+        .iter()
+        .map(|j| {
+            let mut buf = Vec::with_capacity(4 + j.validator.len() + j.latest_block_hash.len());
+            buf.extend_from_slice(&(j.validator.len() as u32).to_le_bytes());
+            buf.extend_from_slice(j.validator.as_ref());
+            buf.extend_from_slice(j.latest_block_hash.as_ref());
+            crypto::rust::hash::merkle::hash_leaf_tagged(LEAF_JUSTIFICATION, &buf)
+        })
+        .collect();
+    crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &leaves)
+}
+
+/// Build the header-side preimage.  Any change here is a hard fork —
+/// pinned by the `hash_block` golden-hex tests.
 fn header_preimage(block: &BlockMessage) -> Vec<u8> {
     use prost::Message;
-    let state = &block.body.state;
-    let header_bytes = block.header.to_proto().encode_to_vec();
+    let BlockMessage {
+        block_hash: _,
+        header,
+        body,
+        justifications,
+        sender,
+        seq_num,
+        sig: _,
+        sig_algorithm,
+        shard_id,
+        extra_bytes,
+    } = block;
+    let Body {
+        state,
+        deploys: _,
+        rejected_deploys: _,
+        system_deploys: _,
+        extra_bytes: body_extra_bytes,
+        applied_from_scope: _,
+        merge_base,
+    } = body;
+    let F1r3flyState {
+        pre_state_hash,
+        post_state_hash,
+        bonds,
+        block_number,
+    } = state;
+
+    let header_bytes = header.to_proto().encode_to_vec();
     let r_root = rejected_root(block);
     let afs_root = applied_from_scope_root(block);
-    let b_root = bonds_root(&state.bonds);
+    let b_root = bonds_root(bonds);
+    let j_root = justifications_root(justifications);
 
     let mut buf = Vec::with_capacity(
-        1 + header_bytes.len()
-            + state.pre_state_hash.len()
-            + state.post_state_hash.len()
+        1 + 9 * 4 // length prefixes
+            + header_bytes.len()
+            + pre_state_hash.len()
+            + post_state_hash.len()
             + 32  // bonds_root
+            + 32  // justifications_root
             + 8   // block_number
             + 32  // rejected_root
             + 32  // applied_from_scope_root
-            + block.body.merge_base.len()
-            + block.body.extra_bytes.len()
-            + block.sender.len()
-            + block.sig_algorithm.len()
+            + merge_base.len()
+            + body_extra_bytes.len()
+            + sender.len()
+            + sig_algorithm.len()
             + 4   // seq_num
-            + block.shard_id.len()
-            + block.extra_bytes.len(),
+            + shard_id.len()
+            + extra_bytes.len(),
     );
+    // Every variable-length field carries its length, so no byte can move
+    // from one field to its neighbour without changing the preimage.
+    let push_field = |buf: &mut Vec<u8>, field: &[u8]| {
+        buf.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        buf.extend_from_slice(field);
+    };
     buf.push(BLOCK_HASH_SCHEME_VERSION);
-    buf.extend_from_slice(&header_bytes);
-    buf.extend_from_slice(state.pre_state_hash.as_ref());
-    buf.extend_from_slice(state.post_state_hash.as_ref());
+    push_field(&mut buf, &header_bytes);
+    push_field(&mut buf, pre_state_hash.as_ref());
+    push_field(&mut buf, post_state_hash.as_ref());
     buf.extend_from_slice(&b_root);
-    buf.extend_from_slice(&state.block_number.to_le_bytes());
+    buf.extend_from_slice(&j_root);
+    buf.extend_from_slice(&block_number.to_le_bytes());
     buf.extend_from_slice(&r_root);
     buf.extend_from_slice(&afs_root);
-    buf.extend_from_slice(block.body.merge_base.as_ref());
-    buf.extend_from_slice(block.body.extra_bytes.as_ref());
-    buf.extend_from_slice(block.sender.as_ref());
-    buf.extend_from_slice(block.sig_algorithm.as_bytes());
-    buf.extend_from_slice(&block.seq_num.to_le_bytes());
-    buf.extend_from_slice(block.shard_id.as_bytes());
-    buf.extend_from_slice(block.extra_bytes.as_ref());
+    push_field(&mut buf, merge_base.as_ref());
+    push_field(&mut buf, body_extra_bytes.as_ref());
+    push_field(&mut buf, sender.as_ref());
+    push_field(&mut buf, sig_algorithm.as_bytes());
+    buf.extend_from_slice(&seq_num.to_le_bytes());
+    push_field(&mut buf, shard_id.as_bytes());
+    push_field(&mut buf, extra_bytes.as_ref());
     buf
 }
 
@@ -826,6 +982,31 @@ pub fn slashed_block_senders(
     Ok(map)
 }
 
+pub fn block_slash_invalid_blocks(
+    dag: &KeyValueDagRepresentation,
+    block: &BlockMessage,
+) -> Result<std::collections::HashMap<BlockHash, Validator>, KvStoreError> {
+    slashed_block_senders(dag, &block_slash_targets(block))
+}
+
+pub fn block_slash_targets(block: &BlockMessage) -> Vec<BlockHash> {
+    block
+        .body
+        .system_deploys
+        .iter()
+        .filter_map(|psd| match psd {
+            ProcessedSystemDeploy::Succeeded {
+                system_deploy:
+                    SystemDeployData::Slash {
+                        invalid_block_hash, ..
+                    },
+                ..
+            } => Some(invalid_block_hash.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn get_creator_blocks_between(
     dag: &KeyValueDagRepresentation,
     top_block: &BlockMetadata,
@@ -923,7 +1104,7 @@ mod fork_choice_b1_repro_tests {
 
     fn md(hash: Bytes, parents: Vec<Bytes>, num: i64, v: &Bytes) -> BlockMetadata {
         let mut wm = BTreeMap::new();
-        wm.insert(v.clone(), 7i64);
+        wm.insert(v.clone(), 7u64.into());
         BlockMetadata {
             block_hash: hash,
             parents,
@@ -1030,32 +1211,78 @@ mod fork_choice_b1_repro_tests {
             &v,
         );
         let dag = dag_with(vec![held_meta, child_meta.clone()]);
+        let walk = |block_number: i64, on_unheld: UnheldParent| {
+            let mut visited = Vec::new();
+            walk_blocks_in_scope(
+                &dag,
+                [child_meta.clone()],
+                block_number,
+                on_unheld,
+                |hash| {
+                    visited.push(hash.clone());
+                    Ok(false)
+                },
+            )
+            .map(|_| visited)
+        };
 
-        let in_window =
-            parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::SkipSettled)
-                .expect("unheld parent must be skipped, not an error");
         assert_eq!(
-            in_window.iter().map(|m| &m.block_hash).collect::<Vec<_>>(),
-            vec![&held_parent],
+            walk(3, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error"),
+            vec![child.clone(), held_parent.clone()],
             "the held parent survives; the unheld one is silently settled"
         );
-
-        let above_window =
-            parent_metadatas_above_block_number(&child_meta, 6, &dag, UnheldParent::SkipSettled)
-                .expect("unheld parent must be skipped, not an error");
-        assert!(
-            above_window.is_empty(),
+        assert_eq!(
+            walk(6, UnheldParent::SkipSettled)
+                .expect("unheld parent must be skipped, not an error"),
+            vec![child.clone()],
             "the number filter still bounds the held parent"
         );
 
         // The verdict policy refuses the same DAG.
         assert!(
             matches!(
-                parent_metadatas_above_block_number(&child_meta, 3, &dag, UnheldParent::Surface),
+                walk(3, UnheldParent::Surface),
                 Err(crate::rust::errors::CasperError::BlockNotHeld(ref h, _)) if *h == missing_parent
             ),
             "the verdict walk must surface the unheld parent"
         );
+    }
+
+    /// Breadth-first order, each block once, and the walk stops at the first
+    /// block `visit` accepts.
+    #[test]
+    fn in_scope_walk_visits_each_block_once_and_stops_at_a_match() {
+        let v = h(9);
+        let (root, left, right, top) = (h(10), h(11), h(12), h(13));
+        let top_meta = md(top.clone(), vec![left.clone(), right.clone()], 2, &v);
+        let dag = dag_with(vec![
+            md(root.clone(), vec![], 0, &v),
+            md(left.clone(), vec![root.clone()], 1, &v),
+            md(right.clone(), vec![root.clone()], 1, &v),
+            top_meta.clone(),
+        ]);
+
+        let mut visited = Vec::new();
+        let found =
+            walk_blocks_in_scope(&dag, [top_meta.clone()], 0, UnheldParent::Surface, |hash| {
+                visited.push(hash.clone());
+                Ok(false)
+            })
+            .expect("held walk");
+        assert_eq!(found, None);
+        assert_eq!(visited, vec![
+            top.clone(),
+            left.clone(),
+            right.clone(),
+            root.clone()
+        ]);
+
+        let found = walk_blocks_in_scope(&dag, [top_meta], 0, UnheldParent::Surface, |hash| {
+            Ok(*hash == right)
+        })
+        .expect("held walk");
+        assert_eq!(found, Some(right));
     }
 
     /// The BFS twin of the case above: the traversed block itself is unheld
@@ -1217,7 +1444,7 @@ mod merkle_block_hash_tests {
         let data = DeployData {
             term: format!("@{nonce}!({nonce})"),
             time_stamp: nonce,
-            phlo_price: 1,
+            phlo_price: (1).into(),
             phlo_limit: 100_000,
             valid_after_block_number: 0,
             shard_id: "test-shard".to_string(),
@@ -1417,7 +1644,7 @@ mod merkle_block_hash_tests {
         let mut b = base.clone();
         b.body.state.bonds = vec![Bond {
             validator: Bytes::from(vec![0xBB; 33]),
-            stake: 1,
+            stake: 1.into(),
         }];
         assert_ne!(hash_block(&b), h0, "bonds must affect hash");
 
@@ -1489,6 +1716,32 @@ mod merkle_block_hash_tests {
     }
 
     #[test]
+    fn bigint_bonds_root_uses_canonical_amounts() {
+        use prost::Message;
+        let first = Bond {
+            validator: Bytes::from_static(b"v"),
+            stake: TokenAmount::max(),
+        };
+        let second = Bond {
+            validator: Bytes::from_static(b"v\x01"),
+            stake: TokenAmount::new(BigInt::from(1) << 248).unwrap(),
+        };
+        let leaf = crypto::rust::hash::merkle::hash_leaf_tagged(
+            LEAF_BOND,
+            &first.clone().to_proto().encode_to_vec(),
+        );
+        assert_eq!(
+            bonds_root(&[first.clone()]),
+            crypto::rust::hash::merkle::merkle_root(&MERKLE_PARAMS, &[leaf])
+        );
+        assert_ne!(bonds_root(&[first.clone()]), bonds_root(&[second.clone()]));
+        assert_eq!(
+            bonds_root(&[first.clone(), second.clone()]),
+            bonds_root(&[second, first])
+        );
+    }
+
+    #[test]
     fn bonds_root_is_order_independent() {
         let v1 = Bytes::from(vec![0x11; 33]);
         let v2 = Bytes::from(vec![0x22; 33]);
@@ -1496,22 +1749,22 @@ mod merkle_block_hash_tests {
         a.body.state.bonds = vec![
             Bond {
                 validator: v1.clone(),
-                stake: 100,
+                stake: 100.into(),
             },
             Bond {
                 validator: v2.clone(),
-                stake: 200,
+                stake: 200.into(),
             },
         ];
         let mut b = empty_block();
         b.body.state.bonds = vec![
             Bond {
                 validator: v2,
-                stake: 200,
+                stake: 200.into(),
             },
             Bond {
                 validator: v1,
-                stake: 100,
+                stake: 100.into(),
             },
         ];
         assert_eq!(
@@ -1962,6 +2215,65 @@ mod merkle_block_hash_tests {
         );
     }
 
+    /// Correctness pin for the Rayon-parallel branch of
+    /// `deploys_root_leaves` (triggered at or above
+    /// `PARALLEL_LEAF_THRESHOLD`): the parallel pass must produce a
+    /// byte-identical leaf vector to a serial recomputation.  Rayon's
+    /// `par_iter().collect()` preserves input order, so this test
+    /// exercises both (a) that invariant and (b) that leaf hashing is a
+    /// pure function of each deploy — no shared state leaked between
+    /// threads.
+    #[test]
+    fn parallel_deploys_root_leaves_matches_serial() {
+        // Pick a user-deploy count well above the threshold so the
+        // parallel branch is taken for sure.
+        let n_user = (PARALLEL_LEAF_THRESHOLD * 4).max(64);
+        let n_system = 3;
+        let mut b = empty_block();
+        b.body.deploys = (0..n_user as i64).map(processed_deploy).collect();
+        b.body.system_deploys = (0..n_system)
+            .map(|i| {
+                if i % 2 == 0 {
+                    processed_system_deploy_close()
+                } else {
+                    processed_system_deploy_slash((i as u8).wrapping_add(7))
+                }
+            })
+            .collect();
+
+        // Parallel path (via the real function).
+        let parallel_leaves = deploys_root_leaves(&b);
+        assert_eq!(parallel_leaves.len(), n_user + n_system);
+
+        // Serial recomputation inline — mirrors the sequential-branch
+        // body of `deploys_root_leaves` so this test fails if either
+        // path mutates its input or returns leaves in the wrong order.
+        let mut serial_leaves: Vec<[u8; 32]> =
+            Vec::with_capacity(b.body.deploys.len() + b.body.system_deploys.len());
+        for pd in &b.body.deploys {
+            serial_leaves.push(hash_processed_deploy_leaf(pd));
+        }
+        for psd in &b.body.system_deploys {
+            serial_leaves.push(hash_processed_system_deploy_leaf(psd));
+        }
+
+        assert_eq!(
+            parallel_leaves, serial_leaves,
+            "parallel deploys_root_leaves diverged from serial recomputation",
+        );
+
+        // And the block hash itself must come out identical on both paths.
+        let h_parallel = hash_block(&b);
+        let h_fast = hash_block_with_leaves(&b, &serial_leaves);
+        assert_eq!(
+            h_parallel.to_vec(),
+            h_fast.to_vec(),
+            "hash_block (parallel internal path) disagrees with \
+             hash_block_with_leaves (serial-recomputed leaves) — \
+             a mismatch means propose and validate would disagree",
+        );
+    }
+
     /// Golden hex for the empty block fixture.  Pins the whole hash
     /// recipe (header-preimage field order, domain bytes, scheme
     /// version, top-combiner).  Any accidental change to the Merkle
@@ -1984,7 +2296,192 @@ mod merkle_block_hash_tests {
         // pre/post state hashes, sender = 33 zero bytes, timestamp =
         // 1_700_000_000_000, version = 1, shard_id = "test-shard",
         // sig_algorithm = "secp256k1".
-        const EXPECTED: &str = "e1959261b81b13412671713f51402b701fee1e1e261970e0f9215df87b051d23";
+        const EXPECTED: &str = "602ea568b611a2a16415363ffd358f08afa358a231094bce24b755e8a6f631f2";
         assert_eq!(hex, EXPECTED, "block-hash recipe changed");
+    }
+
+    // ---------------------------------------------------------------
+    // Performance guard: micro-bench of hash_block / hash_block_with_leaves
+    // across representative block shapes.  Marked #[ignore] so it only
+    // runs on explicit invocation (prints wall-clock timings to stdout):
+    //
+    //   cargo test --release -p casper -- --ignored --nocapture \
+    //       merkle_block_hash_tests::hash_block_timing
+    //
+    // The paper's targets (capnp-vs-protobuf.pdf §6 Table 7, 2 vCPU Xeon
+    // 2.8 GHz baseline): end-of-block hash check on a 32-deploy block
+    // falls from ~463 us (old serial scheme) to ~7 us (new scheme, when
+    // the leaves were computed during replay).  We don't try to match
+    // those absolute numbers on arbitrary developer hardware; instead
+    // this test enforces a *loose* ceiling that regressions in the hash
+    // path would blow past.  Tighten the thresholds if the implementation
+    // gets noticeably faster.
+    // ---------------------------------------------------------------
+
+    fn bench_block(n_user: usize, n_system: usize) -> BlockMessage {
+        let mut b = empty_block();
+        b.body.deploys = (0..n_user as i64).map(processed_deploy).collect();
+        b.body.system_deploys = (0..n_system)
+            .map(|i| {
+                if i % 2 == 0 {
+                    processed_system_deploy_close()
+                } else {
+                    processed_system_deploy_slash((i as u8).wrapping_add(1))
+                }
+            })
+            .collect();
+        b
+    }
+
+    fn time_us<F: FnMut()>(iters: u32, mut f: F) -> u128 {
+        let t0 = std::time::Instant::now();
+        for _ in 0..iters {
+            f();
+        }
+        t0.elapsed().as_micros() / iters as u128
+    }
+
+    #[test]
+    #[ignore]
+    fn hash_block_timing() {
+        // Warm up prost allocator paths once so the first measurement
+        // isn't dominated by first-call setup noise.
+        let warmup = bench_block(4, 1);
+        for _ in 0..100 {
+            std::hint::black_box(hash_block(&warmup));
+        }
+
+        let shapes = [(0usize, 0usize), (1, 0), (8, 1), (32, 1), (200, 1)];
+        println!();
+        println!(
+            "{:>8} {:>8}  {:>10}  {:>12}  {:>12}",
+            "n_user", "n_system", "recompute", "fast_path", "ratio"
+        );
+        println!(
+            "{:>8} {:>8}  {:>10}  {:>12}  {:>12}",
+            "------", "--------", "---------", "---------", "-----"
+        );
+        for (n_user, n_system) in shapes {
+            let b = bench_block(n_user, n_system);
+            let leaves = deploys_root_leaves(&b);
+            let iters: u32 = if n_user >= 32 { 50 } else { 500 };
+
+            let recompute_us = time_us(iters, || {
+                std::hint::black_box(hash_block(&b));
+            });
+            let fast_us = time_us(iters, || {
+                std::hint::black_box(hash_block_with_leaves(&b, &leaves));
+            });
+            let ratio = if fast_us > 0 {
+                recompute_us as f64 / fast_us as f64
+            } else {
+                f64::INFINITY
+            };
+            println!(
+                "{:>8} {:>8}  {:>8} us  {:>10} us  {:>12.1}x",
+                n_user, n_system, recompute_us, fast_us, ratio
+            );
+        }
+
+        // Loose regression ceiling.  The paper reports a 32-deploy
+        // end-of-block check at 7 us when leaves are pre-computed (the
+        // fast path).  Even on a slow laptop with a 10x slowdown
+        // allowance, this should stay well under 1 ms.  If this trips,
+        // either (a) something regressed on the hot path, or (b) the
+        // test is running on contended CI hardware with less headroom
+        // than the 100x slack suggests — in which case loosen deliberately
+        // rather than papering over a real slowdown.
+        const CEILING_US: u128 = 1_000;
+        let b32 = bench_block(32, 1);
+        let leaves32 = deploys_root_leaves(&b32);
+        let fast_32_us = time_us(100, || {
+            std::hint::black_box(hash_block_with_leaves(&b32, &leaves32));
+        });
+        assert!(
+            fast_32_us <= CEILING_US,
+            "hash_block_with_leaves on 32-user+1-system block took {fast_32_us} us, \
+             exceeds regression ceiling {CEILING_US} us (paper target ~7 us)"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hash_block_tests {
+    use models::rust::block_implicits::get_random_block_default;
+
+    use super::*;
+
+    fn justification(validator: u8, block: u8) -> Justification {
+        Justification {
+            validator: vec![validator; 65].into(),
+            latest_block_hash: vec![block; 32].into(),
+        }
+    }
+
+    #[test]
+    fn hash_block_commits_to_justifications() {
+        let mut block = get_random_block_default();
+        block.justifications = vec![justification(1, 1), justification(2, 2)];
+        let original = hash_block(&block);
+
+        let mut changed = block.clone();
+        changed.justifications[1].latest_block_hash = vec![3; 32].into();
+        let mut removed = block.clone();
+        removed.justifications.pop();
+        let mut added = block.clone();
+        added.justifications.push(justification(3, 3));
+        let mut moved_to_extra_bytes = removed.clone();
+        moved_to_extra_bytes.extra_bytes = [vec![2; 65], vec![2; 32]].concat().into();
+
+        for mutated in [changed, removed, added, moved_to_extra_bytes] {
+            assert_ne!(hash_block(&mutated), original);
+        }
+    }
+
+    #[test]
+    fn moving_bytes_between_adjacent_fields_changes_the_hash() {
+        use prost::bytes::Bytes;
+
+        let mut block = get_random_block_default();
+        block.body.merge_base = vec![7; 32].into();
+        block.body.extra_bytes = vec![8; 4].into();
+        block.extra_bytes = vec![9; 4].into();
+        block.sig_algorithm = "secp256k1".to_string();
+        block.shard_id = "root".to_string();
+        let original = hash_block(&block);
+        let join = |a: &[u8], b: &[u8]| -> Bytes { [a, b].concat().into() };
+
+        let mut pre_into_post = block.clone();
+        let pre = block.body.state.pre_state_hash.clone();
+        pre_into_post.body.state.pre_state_hash = pre.slice(..pre.len() - 1);
+        pre_into_post.body.state.post_state_hash =
+            join(&pre[pre.len() - 1..], &block.body.state.post_state_hash);
+
+        let mut merge_base_into_body_extra = block.clone();
+        merge_base_into_body_extra.body.merge_base = Bytes::new();
+        merge_base_into_body_extra.body.extra_bytes =
+            join(&block.body.merge_base, &block.body.extra_bytes);
+
+        let mut body_extra_into_sender = block.clone();
+        body_extra_into_sender.body.extra_bytes = Bytes::new();
+        body_extra_into_sender.sender = join(&block.body.extra_bytes, &block.sender);
+
+        let mut sig_algorithm_into_sender = block.clone();
+        sig_algorithm_into_sender.sender = join(&block.sender, b"s");
+        sig_algorithm_into_sender.sig_algorithm = "ecp256k1".to_string();
+
+        let mut shard_id_into_extra = block.clone();
+        shard_id_into_extra.shard_id = String::new();
+        shard_id_into_extra.extra_bytes = join(b"root", &block.extra_bytes);
+
+        for mutated in [
+            pre_into_post,
+            merge_base_into_body_extra,
+            body_extra_into_sender,
+            sig_algorithm_into_sender,
+            shard_id_into_extra,
+        ] {
+            assert_ne!(hash_block(&mutated), original);
+        }
     }
 }

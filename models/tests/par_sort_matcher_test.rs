@@ -9,8 +9,8 @@ use models::rhoapi::connective::ConnectiveInstance::{
 };
 use models::rhoapi::expr::ExprInstance;
 use models::rhoapi::{
-    Connective, ConnectiveBody, EMap, Expr, KeyValuePair, Match, MatchCase, New, Par, Receive,
-    ReceiveBind, Send, VarRef,
+    Connective, ConnectiveBody, EMap, ESet, Expr, KeyValuePair, Match, MatchCase, New, Par,
+    Receive, ReceiveBind, Send, VarRef,
 };
 use models::rust::rholang::sorter::expr_sort_matcher::ExprSortMatcher;
 use models::rust::rholang::sorter::par_sort_matcher::ParSortMatcher;
@@ -21,8 +21,8 @@ use models::rust::utils::{
     new_emethod_expr, new_eminus_expr_gint, new_emult_expr_gint, new_eneq_expr_gint, new_eor_expr,
     new_eplus_expr_gint, new_eplus_par, new_eplus_par_gint, new_eset_par, new_freevar_expr,
     new_freevar_par, new_gbool_expr, new_gbool_par, new_gint32_expr, new_gint_expr, new_gint_par,
-    new_gstring_expr, new_guint64_expr, new_guint8_expr, new_guri_expr, new_key_value_pair,
-    new_new_par, new_send_par, new_wildcard_par,
+    new_gstring_expr, new_gstring_par, new_guint64_expr, new_guint8_expr, new_guri_expr,
+    new_key_value_pair, new_new_par, new_send_par, new_wildcard_par,
 };
 
 #[test]
@@ -1392,5 +1392,112 @@ fn expr_should_sort_based_on_connective_used_flag() {
     assert_eq!(
         result.term, expr,
         "Expression was not sorted correctly based on the connective_used flag"
+    );
+}
+
+#[test]
+fn par_should_sort_deeply_nested_maps_and_sets_in_bounded_time() {
+    // Built from raw protobuf so construction does no sorting of its own.
+    const DEPTH: i64 = 30;
+    let mut map = new_gint_par(0, Vec::new(), false);
+    let mut set = new_gint_par(0, Vec::new(), false);
+    for level in 1..=DEPTH {
+        map = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs: vec![
+                    new_key_value_pair(
+                        new_gstring_par("b".to_string(), Vec::new(), false),
+                        new_gint_par(level, Vec::new(), false),
+                    ),
+                    new_key_value_pair(new_gstring_par("a".to_string(), Vec::new(), false), map),
+                ],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+        set = Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps: vec![new_gint_par(level, Vec::new(), false), set],
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }]);
+    }
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let sorted_map = ParSortMatcher::sort_match(&map).term;
+        let sorted_set = ParSortMatcher::sort_match(&set).term;
+        done_tx
+            .send((
+                ParSortMatcher::sort_match(&sorted_map).term == sorted_map,
+                ParSortMatcher::sort_match(&sorted_set).term == sorted_set,
+            ))
+            .expect("receiver alive");
+    });
+
+    let (map_idempotent, set_idempotent) = done_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("sorting a depth-30 nested map and set must not take exponential time");
+    assert!(
+        map_idempotent,
+        "sorting a sorted nested map must not change it"
+    );
+    assert!(
+        set_idempotent,
+        "sorting a sorted nested set must not change it"
+    );
+}
+
+#[test]
+fn par_should_sort_entries_equal_only_after_sorting_like_their_deduplicated_form() {
+    // `1 | 2` and `2 | 1` differ as written and are equal once sorted.
+    let one_two = || Par::default().with_exprs(vec![new_gint_expr(1), new_gint_expr(2)]);
+    let two_one = || Par::default().with_exprs(vec![new_gint_expr(2), new_gint_expr(1)]);
+    let value = |n| new_gint_par(n, Vec::new(), false);
+    let map = |kvs: Vec<KeyValuePair>| {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::EMapBody(EMap {
+                kvs,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    };
+    let set = |ps: Vec<Par>| {
+        Par::default().with_exprs(vec![Expr {
+            expr_instance: Some(ExprInstance::ESetBody(ESet {
+                ps,
+                locally_free: Vec::new(),
+                connective_used: false,
+                remainder: None,
+            })),
+        }])
+    };
+
+    let colliding_map = map(vec![
+        new_key_value_pair(one_two(), value(10)),
+        new_key_value_pair(two_one(), value(10)),
+    ]);
+    let single_map = map(vec![new_key_value_pair(one_two(), value(10))]);
+    let colliding_set = set(vec![one_two(), two_one()]);
+    let single_set = set(vec![one_two()]);
+
+    for (colliding, single) in [(&colliding_map, &single_map), (&colliding_set, &single_set)] {
+        let colliding = ParSortMatcher::sort_match(colliding);
+        let single = ParSortMatcher::sort_match(single);
+        assert_eq!(colliding.term, single.term);
+        assert_eq!(colliding.score, single.score);
+    }
+
+    // The score orders a map among its siblings, so a stale score would place
+    // the colliding map differently from its deduplicated form.
+    let other_map = map(vec![new_key_value_pair(one_two(), value(11))]);
+    assert_eq!(
+        ParSortMatcher::sort_match(&set(vec![colliding_map, other_map.clone()])).term,
+        ParSortMatcher::sort_match(&set(vec![single_map, other_map])).term,
     );
 }

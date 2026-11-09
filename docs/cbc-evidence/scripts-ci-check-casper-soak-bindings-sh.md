@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-ci-check-casper-soak-bindings-sh.md

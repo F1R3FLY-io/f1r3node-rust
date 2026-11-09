@@ -20,10 +20,12 @@ use dashmap::DashSet;
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::protocol::casper_message::{BlockMessage, DeployData, Justification};
 use models::rust::validator::Validator;
+use num_bigint::BigInt;
 use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::history::Either;
 use rspace_plus_plus::rspace::state::rspace_exporter::RSpaceExporter;
 use shared::rust::shared::f1r3fly_events::F1r3flyEvents;
+use shared::rust::token_amount::TokenAmount;
 
 use crate::rust::block_status::{BlockError, InvalidBlock, ValidBlock};
 use crate::rust::engine::block_retriever::BlockRetriever;
@@ -171,30 +173,22 @@ pub trait MultiParentCasper: Casper + Send + Sync {
     // this initial fault weight combined with our fault tolerance threshold t.
     fn normalized_initial_fault(
         &self,
-        weights: HashMap<Validator, u64>,
+        weights: HashMap<Validator, BigInt>,
     ) -> Result<f32, CasperError>;
 
+    /// The persisted LFB. Reading it never advances finality.
     async fn last_finalized_block(&self) -> Result<BlockMessage, CasperError>;
 
     // Equivalent to Scala's blockDag: F[BlockDagRepresentation[F]]
     async fn block_dag(&self) -> Result<KeyValueDagRepresentation, CasperError>;
 
-    fn is_local_validator_bonded(
-        &self,
-        dag: &KeyValueDagRepresentation,
-    ) -> Result<bool, CasperError> {
-        let metadata = dag.lookup_unsafe(&dag.last_finalized_block())?;
-        Ok(self
-            .get_validator()
-            .map(|id| metadata.weight_map.contains_key(&id.public_key.bytes))
-            .unwrap_or(false))
-    }
+    /// Whether this node's validator is bonded at the persisted LFB.
+    fn is_local_validator_bonded(&self) -> bool;
 
     fn block_store(&self) -> &KeyValueBlockStore;
 
     /// The shard's genesis block hash when this node holds or has learned it.
-    /// Defaulted to `None` so effect mocks need no genesis wiring.
-    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+    fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError>;
 
     /// Read-only access to the shard configuration. Used by APIs that need
     /// shard-scoped parameters such as `deploy_lifespan` to compute deploy
@@ -304,20 +298,20 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
             &approved_block.body.state.post_state_hash,
         )
         .await?;
-    if (onchain_mpd, onchain_lifespan, onchain_min_phlo)
+    if (onchain_mpd, onchain_lifespan, &onchain_min_phlo)
         != (
             casper_shard_conf.max_parent_depth,
             casper_shard_conf.deploy_lifespan,
-            casper_shard_conf.min_phlo_price,
+            &casper_shard_conf.min_phlo_price,
         )
     {
         tracing::info!(
             onchain_max_parent_depth = onchain_mpd,
             onchain_deploy_lifespan = onchain_lifespan,
-            onchain_min_phlo_price = onchain_min_phlo,
+            onchain_min_phlo_price = %onchain_min_phlo,
             local_max_parent_depth = casper_shard_conf.max_parent_depth,
             local_deploy_lifespan = casper_shard_conf.deploy_lifespan,
-            local_min_phlo_price = casper_shard_conf.min_phlo_price,
+            local_min_phlo_price = %casper_shard_conf.min_phlo_price,
             "Adopting on-chain consensus parameters over local configuration"
         );
     }
@@ -379,31 +373,36 @@ pub async fn hash_set_casper<T: TransportLayer + Send + Sync>(
 
     let finalized_bond_cache =
         FinalizedBondCache::from_storage(&block_dag_storage, validator_id.as_ref())?;
-
-    Ok(MultiParentCasperImpl {
-        observer: std::sync::OnceLock::new(),
-        divergence_monitor: std::sync::Arc::new(
-            crate::rust::engine::multi_parent_casper::finalization_runner::DivergenceMonitor::default(),
-        ),
-        block_retriever,
-        event_publisher,
-        runtime_manager,
-        estimator,
-        block_store,
+    let finalization = crate::rust::engine::multi_parent_casper::FinalizationContext {
+        observer: Arc::new(std::sync::OnceLock::new()),
+        finalized_bond_cache: finalized_bond_cache.clone(),
         block_dag_storage,
-        deploy_storage: Arc::new(parking_lot::Mutex::new(deploy_storage)),
-        rejected_deploy_buffer,
-        deploy_lifecycle: Arc::new(
-            crate::rust::finality::deploy_lifecycle::DeployLifecycle::default(),
+        block_store,
+        runtime_manager,
+        event_publisher,
+        divergence_monitor: Arc::new(
+            crate::rust::engine::multi_parent_casper::DivergenceMonitor::default(),
         ),
+        deploy_storage: Arc::new(deploy_storage),
+        shard_conf: casper_shard_conf,
+    };
+    Ok(MultiParentCasperImpl {
+        observer: finalization.observer.clone(),
+        divergence_monitor: finalization.divergence_monitor.clone(),
+        block_retriever,
+        event_publisher: finalization.event_publisher.clone(),
+        runtime_manager: finalization.runtime_manager.clone(),
+        estimator,
+        block_store: finalization.block_store.clone(),
+        block_dag_storage: finalization.block_dag_storage.clone(),
+        deploy_storage: finalization.deploy_storage.clone(),
+        rejected_deploy_buffer,
         casper_buffer_storage,
         validator_id,
         finalized_bond_cache,
-        casper_shard_conf,
+        casper_shard_conf: finalization.shard_conf.clone(),
         approved_block,
-        finalization_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        finalizer_task_queued: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        finalizer: crate::rust::engine::multi_parent_casper::Finalizer::start(finalization),
         heartbeat_signal_ref,
         deploys_in_scope_cache: Arc::new(parking_lot::Mutex::new(None)),
         active_validators_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -449,7 +448,10 @@ impl CasperSnapshot {
             return Ok(false);
         };
         let metadata = self.dag.lookup_unsafe(&parent.block_hash)?;
-        Ok(metadata.weight_map.contains_key(validator))
+        Ok(metadata
+            .weight_map
+            .get(validator)
+            .is_some_and(|stake| !stake.is_zero()))
     }
 
     pub fn new(dag: KeyValueDagRepresentation) -> Self {
@@ -471,7 +473,7 @@ impl CasperSnapshot {
 #[derive(Clone)]
 pub struct OnChainCasperState {
     pub shard_conf: CasperShardConf,
-    pub bonds_map: HashMap<Validator, i64>,
+    pub bonds_map: HashMap<Validator, BigInt>,
     pub active_validators: Vec<Validator>,
 }
 
@@ -526,11 +528,11 @@ pub struct CasperShardConf {
     /// re-judgements.
     pub heartbeat_check_interval: std::time::Duration,
     pub casper_version: i64,
-    pub bond_minimum: i64,
-    pub bond_maximum: i64,
+    pub bond_minimum: TokenAmount,
+    pub bond_maximum: TokenAmount,
     pub epoch_length: i32,
     pub quarantine_length: i32,
-    pub min_phlo_price: i64,
+    pub min_phlo_price: TokenAmount,
     /// When `true`, `add_deploy` triggers an immediate heartbeat-signal
     /// wake so the heartbeat task picks up the new deploy on the next
     /// tick rather than waiting up to `check_interval` seconds. Defaults
@@ -582,11 +584,11 @@ impl CasperShardConf {
             deploy_play_budget_is_derived: false,
             heartbeat_check_interval: Duration::ZERO,
             casper_version: 0,
-            bond_minimum: 0,
-            bond_maximum: 0,
+            bond_minimum: 0.into(),
+            bond_maximum: 0.into(),
             epoch_length: 0,
             quarantine_length: 0,
-            min_phlo_price: 0,
+            min_phlo_price: (0).into(),
             deploy_heartbeat_wake_enabled: false,
             disable_validator_progress_check: false,
             enable_mergeable_channel_gc: false,
@@ -728,7 +730,7 @@ pub mod test_helpers {
             {
                 parent.body.state.bonds.push(Bond {
                     validator,
-                    stake: 100,
+                    stake: 100.into(),
                 });
             }
         }
@@ -815,7 +817,7 @@ pub mod test_helpers {
 
         fn normalized_initial_fault(
             &self,
-            _weights: HashMap<Validator, u64>,
+            _weights: HashMap<Validator, num_bigint::BigInt>,
         ) -> Result<f32, CasperError> {
             Ok(0.0)
         }
@@ -830,6 +832,8 @@ pub mod test_helpers {
 
         fn block_store(&self) -> &KeyValueBlockStore { &self.block_store }
 
+        fn genesis_block_hash(&self) -> Result<Option<BlockHash>, CasperError> { Ok(None) }
+
         fn casper_shard_conf(&self) -> &CasperShardConf { &self.snapshot.on_chain_state.shard_conf }
 
         fn runtime_manager(&self) -> Arc<RuntimeManager> {
@@ -837,6 +841,8 @@ pub mod test_helpers {
         }
 
         fn get_validator(&self) -> Option<ValidatorIdentity> { None }
+
+        fn is_local_validator_bonded(&self) -> bool { false }
 
         async fn get_history_exporter(&self) -> Arc<dyn RSpaceExporter> {
             unimplemented!("get_history_exporter not needed for heartbeat tests")

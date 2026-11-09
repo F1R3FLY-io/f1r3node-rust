@@ -1,1 +1,0 @@
-../casper/cbc-evidence/scripts-casper-soak-src-bin-casper-authority-p2p-rs.md

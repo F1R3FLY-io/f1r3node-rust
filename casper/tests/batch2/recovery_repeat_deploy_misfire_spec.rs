@@ -57,11 +57,11 @@ fn mk_casper_snapshot(
         height_constraint_threshold: 0,
         deploy_lifespan: 50,
         casper_version: 1,
-        bond_minimum: 0,
-        bond_maximum: i64::MAX,
+        bond_minimum: 0.into(),
+        bond_maximum: (i64::MAX as u64).into(),
         epoch_length: 0,
         quarantine_length: 0,
-        min_phlo_price: 0,
+        min_phlo_price: (0).into(),
         enable_mergeable_channel_gc: false,
         mergeable_channels_gc_depth_buffer: 10,
         disable_validator_progress_check: false,
@@ -228,11 +228,11 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         );
 
         let mut aux_kvm = InMemoryStoreManager::new();
-        let deploy_storage = std::sync::Arc::new(parking_lot::Mutex::new(
+        let deploy_storage = std::sync::Arc::new(
             KeyValueDeployStorage::new(&mut aux_kvm)
                 .await
                 .expect("Failed to create deploy storage"),
-        ));
+        );
         let rejected_deploy_buffer = std::sync::Arc::new(StdMutex::new(
             KeyValueRejectedDeployBuffer::new(&mut aux_kvm)
                 .await
@@ -242,7 +242,7 @@ async fn proposer_must_skip_recovery_when_deploy_is_canonically_finalized() {
         // D sits in the recovery buffer — the stale entry that the proposer
         // would otherwise re-include via the exemption path.
         {
-            let mut buf = rejected_deploy_buffer.lock().unwrap();
+            let buf = rejected_deploy_buffer.lock().unwrap();
             buf.add(vec![signed_deploy.clone()])
                 .expect("Failed to add deploy to buffer");
         }

@@ -459,9 +459,18 @@ mod tests {
         // (Consensus-observable: divergent caps fork at the
         //  `FSERR_QUOTA_EXCEEDED` boundary — a validator with a
         //  lower cap rejects a 32-MiB write that another accepts.)
-        // PeTTa consensus mode → `9e5ad671849d18a3`: orders 18-29 from
+        // fs_mkdir (WalOp::Mkdir variant + SNAPSHOT_FORMAT_VERSION
+        // bump 6 → 7) → `dd40a754542ccc54`.  Rolls two orders in
+        // one slice:
+        //    3  WAL_OP_VARIANTS         16 → 17 (u64_be)
+        //   15  SNAPSHOT_FORMAT_VERSION  6 → 7  (u8_raw)
+        // (Both are consensus-observable: WAL op discriminants are
+        //  wire bytes embedded in every WAL entry, and the snapshot
+        //  version is the leading byte of the encoded slice whose
+        //  Blake2b256 root is the on-chain commitment.)
+        // PeTTa consensus mode → `50121f842c8657a9`: orders 18-29 from
         // `swi_prolog_service.rs` (limits, phlo, allowlist, backend pins).
-        const EXPECTED_FOR_CURRENT: &str = "9e5ad671849d18a3";
+        const EXPECTED_FOR_CURRENT: &str = "50121f842c8657a9";
         assert_eq!(
             fp, EXPECTED_FOR_CURRENT,
             "fingerprint changed — a `register_consensus_constant!` \

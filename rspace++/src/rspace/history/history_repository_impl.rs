@@ -610,9 +610,9 @@ where
     }
 }
 
-pub fn prepend_bytes(element: u8, _bytes: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.push(element);
-    bytes.extend(_bytes.iter().cloned());
-    bytes
+pub fn prepend_bytes(element: u8, bytes: &[u8]) -> Vec<u8> {
+    let mut prefixed = Vec::with_capacity(bytes.len() + 1);
+    prefixed.push(element);
+    prefixed.extend_from_slice(bytes);
+    prefixed
 }

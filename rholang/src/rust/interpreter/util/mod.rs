@@ -26,50 +26,34 @@ pub enum GeneratedMessage {
 
 // See models/src/main/scala/coop/rchain/models/rholang/implicits.scala - prepend
 pub fn prepend_connective(mut p: Par, c: Connective, depth: i32) -> Par {
-    let mut new_connectives = vec![c.clone()];
-    new_connectives.append(&mut p.connectives);
-
-    Par {
-        connectives: new_connectives,
-        locally_free: c.locally_free(c.clone(), depth),
-        connective_used: p.connective_used || c.clone().connective_used(c),
-        ..p.clone()
-    }
+    p.locally_free = c.locally_free(depth);
+    p.connective_used |= c.connective_used();
+    p.connectives.insert(0, c);
+    p
 }
 
 pub fn prepend_expr(mut p: Par, e: Expr, depth: i32) -> Par {
-    let mut new_exprs = vec![e.clone()];
-    new_exprs.append(&mut p.exprs);
-
-    Par {
-        exprs: new_exprs,
-        locally_free: union(p.locally_free.clone(), e.locally_free(e.clone(), depth)),
-        connective_used: p.connective_used || e.clone().connective_used(e),
-        ..p.clone()
-    }
+    p.locally_free = union(std::mem::take(&mut p.locally_free), e.locally_free(depth));
+    p.connective_used |= e.connective_used();
+    p.exprs.insert(0, e);
+    p
 }
 
 pub fn prepend_new(mut p: Par, n: New) -> Par {
-    let mut new_news = vec![n.clone()];
-    new_news.append(&mut p.news);
-
-    Par {
-        news: new_news,
-        locally_free: union(p.locally_free.clone(), n.clone().locally_free),
-        connective_used: p.connective_used || n.clone().connective_used(n),
-        ..p.clone()
-    }
+    p.locally_free = union(std::mem::take(&mut p.locally_free), n.locally_free.clone());
+    p.connective_used |= n.connective_used();
+    p.news.insert(0, n);
+    p
 }
 
 pub fn prepend_bundle(mut p: Par, b: Bundle) -> Par {
-    let mut new_bundles = vec![b.clone()];
-    new_bundles.append(&mut p.bundles);
-
-    Par {
-        bundles: new_bundles,
-        locally_free: union(p.locally_free.clone(), b.body.unwrap().locally_free),
-        ..p.clone()
-    }
+    let body = b.body.as_ref().expect("a bundle always has a body");
+    p.locally_free = union(
+        std::mem::take(&mut p.locally_free),
+        body.locally_free.clone(),
+    );
+    p.bundles.insert(0, b);
+    p
 }
 
 // for locally_free parameter, in case when we have (bodyResult.par.locallyFree.from(boundCount).map(x => x - boundCount))

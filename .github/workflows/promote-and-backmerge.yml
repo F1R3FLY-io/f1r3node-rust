@@ -1,0 +1,137 @@
+name: Promote and Back-merge
+run-name: ${{ inputs.operation == 'backmerge' && 'Back-merge master into dev' || inputs.operation == 'ca-promote' && 'Promote ca-canary to ca-release' || inputs.operation == 'ca-sync' && 'Sync dev into ca-canary' || 'Promote dev to master' }}
+
+# The Run workflow button on the Actions tab opens one of four pull requests.
+# The operation input selects it:
+#
+#   promote    dev -> master, as `just promote` does. It runs
+#              .github/scripts/open-promotion-pr.sh, which creates a temporary
+#              promote/* branch at the origin/dev commit. A promotion never
+#              uses dev as its head.
+#   backmerge  master -> dev, as `just backmerge` does. It runs
+#              .github/scripts/open-backmerge-pr.sh, which creates a temporary
+#              backmerge/* branch at the origin/master commit. A back-merge
+#              never uses master as its head.
+#   ca-promote ca-canary -> ca-release, as `just ca-promote` does. It runs
+#              open-promotion-pr.sh with PROMOTE_SOURCE=ca-canary and
+#              PROMOTE_TARGET=ca-release, which creates a temporary
+#              promote/ca-release-* branch at the origin/ca-canary commit.
+#              The ca-daily-sync workflow does the ca-release -> ca-canary
+#              back-merge.
+#   ca-sync    dev -> ca-canary, as `just ca-sync` does. It runs
+#              open-backmerge-pr.sh with BACKMERGE_SOURCE=dev and
+#              BACKMERGE_TARGET=ca-canary, which creates a temporary
+#              ca/sync-dev-* branch at the origin/dev commit. The sync is a
+#              ca/ item, so it needs the ca-soak soak like any other item.
+#              A pull request with head dev is closed by the protected head
+#              guard.
+#
+# The workflow always runs from master. The operation input selects the
+# direction, not the "Use workflow from" branch: the release-credentials
+# environment allows master only, so code merged to dev never runs with the app
+# token.
+#
+# A pull request opened with GITHUB_TOKEN starts no pull_request workflows, so
+# its required checks never report. The job opens the pull request with a
+# dedicated promotion GitHub App instead. The app installation grants only
+# Contents: write (to create the branch) and Pull requests: write (to open the
+# pull request). The app must not be a bypass actor on the devProtect or
+# masterProtect ruleset. The CI automation app is such a bypass actor, so this
+# workflow does not use it. The release-credentials environment holds
+# PROMOTION_APP_ID and PROMOTION_APP_PRIVATE_KEY.
+#
+# The app is the pull request author, so the user who started the workflow
+# could approve the pull request alone. The pull request body names that user
+# and asks a different member of ci-maintainers to approve. CODEOWNERS requests
+# the review.
+#
+# GitHub shows the button only for a workflow on the default branch (master).
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "promote opens dev -> master. backmerge opens master -> dev. ca-promote opens ca-canary -> ca-release. ca-sync opens dev -> ca-canary."
+        type: choice
+        options:
+          - promote
+          - backmerge
+          - ca-promote
+          - ca-sync
+        default: promote
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-and-backmerge
+  cancel-in-progress: false
+
+jobs:
+  open:
+    name: Open Promotion or Back-merge Pull Request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-credentials
+    steps:
+      # A run from another branch fails here with a clear message. The
+      # environment rule also rejects it. A skipped job would look like a pass.
+      - name: Require master
+        env:
+          REF: ${{ github.ref }}
+        shell: bash -euo pipefail {0}
+        run: |
+          if [ "$REF" != refs/heads/master ]; then
+            echo "::error::Run Promote and Back-merge from master, not $REF. Select the direction with the operation input."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create promotion token
+        id: promotion-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.PROMOTION_APP_ID }}
+          private-key: ${{ secrets.PROMOTION_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ steps.promotion-token.outputs.token }}
+          OPERATION: ${{ inputs.operation }}
+          REPOSITORY: ${{ github.repository }}
+          TRIGGERED_BY: ${{ github.triggering_actor }}
+        shell: bash -euo pipefail {0}
+        run: |
+          case "$OPERATION" in
+            promote)
+              PROMOTE_REPOSITORY="$REPOSITORY" PROMOTE_TRIGGERED_BY="$TRIGGERED_BY" \
+                bash .github/scripts/open-promotion-pr.sh
+              ;;
+            backmerge)
+              BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_TRIGGERED_BY="$TRIGGERED_BY" \
+                bash .github/scripts/open-backmerge-pr.sh
+              ;;
+            ca-promote)
+              PROMOTE_SOURCE=ca-canary PROMOTE_TARGET=ca-release \
+                PROMOTE_REPOSITORY="$REPOSITORY" PROMOTE_TRIGGERED_BY="$TRIGGERED_BY" \
+                bash .github/scripts/open-promotion-pr.sh
+              ;;
+            ca-sync)
+              BACKMERGE_SOURCE=dev BACKMERGE_TARGET=ca-canary \
+                BACKMERGE_REPOSITORY="$REPOSITORY" BACKMERGE_TRIGGERED_BY="$TRIGGERED_BY" \
+                bash .github/scripts/open-backmerge-pr.sh
+              ;;
+            # The form allows only the four choices, but an API dispatch can
+            # send any value. Keep this guard.
+            *)
+              echo "::error::Unknown operation '$OPERATION'. Use promote, backmerge, ca-promote, or ca-sync."
+              exit 1
+              ;;
+          esac

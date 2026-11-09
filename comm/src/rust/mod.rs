@@ -4,6 +4,7 @@ pub mod metrics_constants;
 pub mod p2p;
 pub mod peer_node;
 pub mod rp;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod test_instances;
 pub mod transport;
 pub mod upnp;

@@ -1,0 +1,8 @@
+/src/rust/dag/soak_snapshot.rs cbc=mandatory cbc-weight=high
+/src/rust/dag/soak_snapshot/canonical_wire_tests.rs cbc=mandatory cbc-weight=high
+/tests/soak_snapshot.rs cbc=mandatory cbc-weight=high
+/src/rust/dag/carrier_index.rs cbc=mandatory cbc-weight=high
+/src/rust/dag/block_dag_key_value_storage.rs cbc=mandatory cbc-weight=high
+/src/rust/dag/soak_equivocations.rs cbc=mandatory cbc-weight=high
+/src/rust/casperbuffer/casper_buffer_key_value_storage.rs cbc=mandatory cbc-weight=high
+/src/rust/dag/buffer_dag_transition.rs cbc=mandatory cbc-weight=high

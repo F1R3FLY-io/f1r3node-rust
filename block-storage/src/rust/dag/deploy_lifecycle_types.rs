@@ -26,17 +26,8 @@ use shared::rust::ByteString;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LifecycleEventKind {
-    Included {
-        is_failed: bool,
-    },
-    Rejected {
-        duplicate: bool,
-        /// The CARRIER this record adjudicated — the block whose body held the
-        /// copy the forming merge rejected. Carried through from the block's
-        /// `rejected_deploys` so the register decides coverage by equality
-        /// rather than re-inferring it from ancestry and a distance bound.
-        carrier: ByteString,
-    },
+    Included { is_failed: bool },
+    Rejected { duplicate: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,8 +103,7 @@ impl DeployLifecycleTables {
     /// against orphan events from a crash inside `insert`'s ingest-first
     /// window: an event whose block never became DAG-visible must not
     /// resolve as an appearance. The terminal path needs no filter — the
-    /// finality evaluator writes terminals from DAG facts (floor-closure
-    /// guarded), so the frozen block was visible at the write.
+    /// finality evaluator freezes only DAG-visible blocks into the record.
     pub fn canonical_appearance(
         &self,
         sig: &[u8],
@@ -163,11 +153,28 @@ impl DeployLifecycleTables {
         self.events.put_one(sig.to_vec(), row)
     }
 
-    /// Every sig with an open event row — the schedule rebuild's input.
-    /// Rows are pruned at the terminal write, so this enumerates OPEN
-    /// sigs, not history.
-    pub fn open_sigs(&self) -> Result<Vec<ByteString>, KvStoreError> {
-        self.events.to_map().map(|m| m.into_keys().collect())
+    /// Every open event row. Rows are pruned at the terminal write, so this
+    /// enumerates OPEN sigs, not history.
+    pub fn open_rows(&self) -> Result<Vec<(ByteString, LifecycleEvents)>, KvStoreError> {
+        self.events.to_map().map(|m| m.into_iter().collect())
+    }
+
+    /// Drop the open row for `sig` if `discardable` still holds for its
+    /// current contents. The caller holds the tables' write lock, so no event
+    /// can be appended between the check and the delete. Returns whether the
+    /// row was dropped.
+    pub fn discard_events_if(
+        &self,
+        sig: &[u8],
+        discardable: impl Fn(&LifecycleEvents) -> bool,
+    ) -> Result<bool, KvStoreError> {
+        match self.get_events(sig)? {
+            Some(row) if discardable(&row) => {
+                self.events.delete(vec![sig.to_vec()])?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// Redelivery-idempotent append: a no-op when the row already holds an
@@ -276,7 +283,7 @@ mod tests {
             "the event row is pruned at the terminal write"
         );
         assert!(
-            tables.open_sigs().expect("open").is_empty(),
+            tables.open_rows().expect("open").is_empty(),
             "a terminal sig is no longer open"
         );
     }
@@ -298,6 +305,54 @@ mod tests {
             .expect("distinct block appends");
         let row = tables.get_events(b"sig").expect("read").expect("row");
         assert_eq!(row.events.len(), 2);
+    }
+
+    #[test]
+    fn a_discard_rechecks_the_row_it_deletes() {
+        let tables = DeployLifecycleTables::in_memory();
+        let record = LifecycleEvent {
+            height: 3,
+            block_hash: vec![3; 32],
+            kind: LifecycleEventKind::Rejected { duplicate: false },
+        };
+        tables
+            .append_events(b"sig", None, vec![record])
+            .expect("record-only row");
+        let record_only = |row: &LifecycleEvents| row.valid_after.is_none();
+        assert!(
+            tables
+                .open_rows()
+                .expect("snapshot")
+                .iter()
+                .all(|(_, row)| record_only(row)),
+            "fixture precondition: the snapshot sees a record-only row"
+        );
+
+        tables
+            .append_events(b"sig", Some(1), vec![included(4, false)])
+            .expect("an inclusion lands after the snapshot");
+        assert!(
+            !tables
+                .discard_events_if(b"sig", record_only)
+                .expect("discard"),
+            "the row gained an inclusion, so it is no longer record-only"
+        );
+        assert!(
+            tables.get_events(b"sig").expect("read").is_some(),
+            "the inclusion must survive the discard"
+        );
+
+        tables
+            .append_events(b"other", None, vec![LifecycleEvent {
+                height: 5,
+                block_hash: vec![5; 32],
+                kind: LifecycleEventKind::Rejected { duplicate: false },
+            }])
+            .expect("record-only row");
+        assert!(tables
+            .discard_events_if(b"other", record_only)
+            .expect("discard"));
+        assert!(tables.get_events(b"other").expect("read").is_none());
     }
 
     #[test]

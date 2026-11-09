@@ -10,7 +10,7 @@ use prost::bytes::Bytes;
 use rspace_plus_plus::rspace::errors::HistoryError;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use rspace_plus_plus::rspace::history::history_repository::HistoryRepository;
-use rspace_plus_plus::rspace::merger::event_log_index::EventLogIndex;
+use rspace_plus_plus::rspace::merger::event_log_index::{EventLogIndex, EventLogIndexFold};
 use rspace_plus_plus::rspace::merger::state_change::StateChange;
 use shared::rust::hashable_set::HashableSet;
 
@@ -24,14 +24,16 @@ pub struct DeployIdWithCost {
 }
 
 /** index of deploys depending on each other inside a single block (state transition) */
+/// The event-log indices and state changes are immutable once built and are
+/// shared, so a clone of a chain does not copy them.
 #[derive(Debug, Clone)]
 pub struct DeployChainIndex {
     pub deploys_with_cost: HashableSet<DeployIdWithCost>,
     post_state_hash: Blake2b256Hash,
-    pub user_event_log_index: EventLogIndex,
-    pub system_event_log_index: EventLogIndex,
-    pub event_log_index: EventLogIndex,
-    pub state_changes: StateChange,
+    pub user_event_log_index: Arc<EventLogIndex>,
+    pub system_event_log_index: Arc<EventLogIndex>,
+    pub event_log_index: Arc<EventLogIndex>,
+    pub state_changes: Arc<StateChange>,
     // Source block identity. Allows the merge algorithm to identify chains
     // whose diffs were computed against a block that was subsequently rejected.
     pub source_block_hash: BlockHash,
@@ -78,22 +80,17 @@ impl DeployChainIndex {
             })
             .collect();
 
-        let (user_event_log_index, system_event_log_index) = deploys.into_iter().try_fold(
-            (EventLogIndex::empty(), EventLogIndex::empty()),
-            |(user_acc, system_acc), deploy| -> Result<_, HistoryError> {
-                if is_system_deploy_id(&deploy.deploy_id) {
-                    Ok((
-                        user_acc,
-                        EventLogIndex::combine(&system_acc, &deploy.event_log_index)?,
-                    ))
-                } else {
-                    Ok((
-                        EventLogIndex::combine(&user_acc, &deploy.event_log_index)?,
-                        system_acc,
-                    ))
-                }
-            },
-        )?;
+        let mut user_fold = EventLogIndexFold::default();
+        let mut system_fold = EventLogIndexFold::default();
+        for deploy in deploys {
+            if is_system_deploy_id(&deploy.deploy_id) {
+                system_fold.add(&deploy.event_log_index)?;
+            } else {
+                user_fold.add(&deploy.event_log_index)?;
+            }
+        }
+        let user_event_log_index = user_fold.finish();
+        let system_event_log_index = system_fold.finish();
 
         let event_log_index =
             EventLogIndex::combine(&user_event_log_index, &system_event_log_index)?;
@@ -112,10 +109,10 @@ impl DeployChainIndex {
         Ok(Self {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: post_state_hash.clone(),
-            user_event_log_index,
-            system_event_log_index,
-            event_log_index,
-            state_changes,
+            user_event_log_index: Arc::new(user_event_log_index),
+            system_event_log_index: Arc::new(system_event_log_index),
+            event_log_index: Arc::new(event_log_index),
+            state_changes: Arc::new(state_changes),
             source_block_hash,
             source_block_number,
             deploy_windows,
@@ -148,10 +145,10 @@ impl DeployChainIndex {
         DeployChainIndex {
             deploys_with_cost,
             post_state_hash,
-            user_event_log_index,
-            system_event_log_index,
-            event_log_index,
-            state_changes,
+            user_event_log_index: Arc::new(user_event_log_index),
+            system_event_log_index: Arc::new(system_event_log_index),
+            event_log_index: Arc::new(event_log_index),
+            state_changes: Arc::new(state_changes),
             source_block_hash,
             source_block_number,
             deploy_windows,
@@ -279,10 +276,10 @@ mod tests {
         DeployChainIndex {
             deploys_with_cost: HashableSet(deploys_with_cost),
             post_state_hash: Blake2b256Hash::from_bytes(vec![post_state_seed; 32]),
-            user_event_log_index: EventLogIndex::empty(),
-            system_event_log_index: EventLogIndex::empty(),
-            event_log_index: EventLogIndex::empty(),
-            state_changes: StateChange::empty(),
+            user_event_log_index: Arc::new(EventLogIndex::empty()),
+            system_event_log_index: Arc::new(EventLogIndex::empty()),
+            event_log_index: Arc::new(EventLogIndex::empty()),
+            state_changes: Arc::new(StateChange::empty()),
             source_block_hash: Bytes::from(vec![post_state_seed; 32]),
             source_block_number: 0,
             deploy_windows: std::collections::HashMap::new(),

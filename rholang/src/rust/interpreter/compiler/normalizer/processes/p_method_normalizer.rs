@@ -65,10 +65,10 @@ pub fn normalize_p_method<'ast>(
         target: Some(target.clone()),
         arguments: arg_results.0,
         locally_free: union(
-            target.locally_free(target.clone(), input.bound_map_chain.depth() as i32),
+            target.locally_free(input.bound_map_chain.depth() as i32),
             arg_results.2,
         ),
-        connective_used: target.connective_used(target.clone()) || arg_results.3,
+        connective_used: target.connective_used() || arg_results.3,
     };
 
     let updated_par = prepend_expr(

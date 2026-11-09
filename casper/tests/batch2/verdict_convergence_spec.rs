@@ -21,7 +21,7 @@ use models::rust::casper::protocol::casper_message::BlockMessage;
 use prost::bytes::Bytes;
 use serial_test::serial;
 
-use crate::helper::test_node::TestNode;
+use crate::helper::test_node::{ShardOverrides, TestNode};
 use crate::util::genesis_builder::GenesisBuilder;
 
 fn rejected_sigs(block: &BlockMessage) -> Vec<Bytes> {
@@ -49,17 +49,13 @@ async fn three_node_network() -> (Vec<TestNode>, String) {
     // disabled sentinel those verdicts are never writable (bound = None →
     // Pending by design) and the landing asserts here would fail
     // vacuously.
-    let mut nodes = TestNode::create_network_with_deploy_lifespan(
-        genesis,
-        n_validators,
-        None,
-        None,
-        Some(10),
-        None,
-        None,
-    )
-    .await
-    .expect("create_network");
+    let mut nodes =
+        TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
+            max_parent_depth: Some(10),
+            ..Default::default()
+        })
+        .await
+        .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }
@@ -471,17 +467,14 @@ async fn private_carrier_must_not_strand_the_verdict_pending_forever() {
         .await
         .unwrap();
     let shard_id = genesis.genesis_block.shard_id.clone();
-    let mut nodes = TestNode::create_network_with_deploy_lifespan(
-        genesis,
-        n_validators,
-        None,
-        None,
-        Some(5),
-        None,
-        Some(10),
-    )
-    .await
-    .expect("create_network");
+    let mut nodes =
+        TestNode::create_network_with_overrides(genesis, n_validators, ShardOverrides {
+            max_parent_depth: Some(5),
+            deploy_lifespan: Some(10),
+            ..Default::default()
+        })
+        .await
+        .expect("create_network");
     for node in nodes.iter_mut() {
         node.allow_empty_blocks = true;
     }

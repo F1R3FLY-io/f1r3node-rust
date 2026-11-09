@@ -50,6 +50,17 @@ spec:
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           args:
             {{- toYaml $.Values.containerArgs | nindent 12 }}
+            {{- if not $isObserverNode }}
+            - "--validator-private-key=$(VALIDATOR_PRIVATE_KEY)"
+            {{- end }}
+          {{- if not $isObserverNode }}
+          env:
+            - name: VALIDATOR_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "validatorKeys.existingSecret must name a Secret with the validator private keys (keys validator-<index>)" $.Values.validatorKeys.existingSecret }}
+                  key: validator-{{ $index }}
+          {{- end }}
           ports:
           {{- range $port := $.Values.service.ports }}
             - name: {{ $port.containerPort }}-port

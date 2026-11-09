@@ -32,11 +32,13 @@ jobs:
         with:
           toolchain: nightly-2026-02-09
       - name: Install the verifier
+        timeout-minutes: 5
         env:
           TLA_TOOLS_URL: https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
         run: |
-          sudo apt-get update
-          sudo apt-get install -y default-jre
+          java_home="${JAVA_HOME_21_X64:?The runner image has no JDK 21}"
+          printf '%s\n' "$java_home/bin" >> "$GITHUB_PATH"
+          "$java_home/bin/java" -version
           mkdir -p "$RUNNER_TEMP/casper-publication-tools"
           curl --fail --location --retry 3 "$TLA_TOOLS_URL" -o "$RUNNER_TEMP/casper-publication-tools/tla2tools.jar"
           printf '%s  %s\n' 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88 "$RUNNER_TEMP/casper-publication-tools/tla2tools.jar" | sha256sum --check -

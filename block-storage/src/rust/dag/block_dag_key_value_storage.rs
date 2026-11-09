@@ -54,6 +54,7 @@ use models::rust::validator::{self, Validator, ValidatorSerde};
 use parking_lot::RwLock as PlRwLock;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+use shared::rust::blocking::in_blocking;
 use shared::rust::dag::observation_work::{NoopWork, WorkKind, WorkMeter};
 use shared::rust::store::key_value_store::{KvStoreError, MissingBlockContext};
 use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
@@ -93,6 +94,7 @@ pub enum InsertMode {
     /// frontier, so it is never anyone's latest message, and letting it
     /// advance one hands fork choice a frontier this node does not hold.
     SettledHistory,
+    SlashEvidence,
 }
 
 // Phase 8 (A-6): `InsertMode::flags()` projection deleted; `insert_internal`
@@ -248,9 +250,20 @@ impl KeyValueDagRepresentation {
         self.lifecycle.write().put_terminal_if_absent(sig, record)
     }
 
-    /// Lifecycle: every open sig — the register's schedule rebuild input.
-    pub fn open_lifecycle_sigs(&self) -> Result<Vec<DeployId>, KvStoreError> {
-        self.lifecycle.read().open_sigs()
+    /// Lifecycle: every open event row — the work list of a settle pass.
+    pub fn open_lifecycle_rows(&self) -> Result<Vec<(DeployId, LifecycleEvents)>, KvStoreError> {
+        self.lifecycle.read().open_rows()
+    }
+
+    /// Lifecycle: drop an open row if `discardable` still holds for its
+    /// contents under the write lock, so an event appended since the caller
+    /// read the row is never deleted with it.
+    pub fn discard_lifecycle_events_if(
+        &self,
+        sig: &[u8],
+        discardable: impl Fn(&LifecycleEvents) -> bool,
+    ) -> Result<bool, KvStoreError> {
+        self.lifecycle.write().discard_events_if(sig, discardable)
     }
 
     /// Repeat-deploy carrier index: the height since which every insert
@@ -270,8 +283,7 @@ impl KeyValueDagRepresentation {
     }
 
     /// Repeat-deploy carrier index: drop entries below the cutoff (below
-    /// every future scan window). The finality register drives this on
-    /// floor advances.
+    /// every future scan window). The finalizer drives this on LFB advances.
     pub fn prune_carriers_below(&self, cutoff: i64) -> Result<u64, KvStoreError> {
         self.carrier_index.read().prune_below(cutoff)
     }
@@ -689,34 +701,36 @@ impl KeyValueDagRepresentation {
     }
 
     pub fn non_finalized_blocks(&self) -> Result<HashSet<BlockHash>, KvStoreError> {
-        let mut result = HashSet::new();
-        let mut visited = HashSet::new();
-        let mut tips: VecDeque<BlockHash> = self
-            .latest_messages()?
-            .values()
-            .map(|metadata| metadata.block_hash.clone())
-            .collect::<VecDeque<_>>();
+        in_blocking(|| {
+            let mut result = HashSet::new();
+            let mut visited = HashSet::new();
+            let mut tips: VecDeque<BlockHash> = self
+                .latest_messages()?
+                .values()
+                .map(|metadata| metadata.block_hash.clone())
+                .collect::<VecDeque<_>>();
 
-        while let Some(hash) = tips.pop_front() {
-            if !visited.insert(hash.clone()) {
-                continue;
-            }
+            while let Some(hash) = tips.pop_front() {
+                if !visited.insert(hash.clone()) {
+                    continue;
+                }
 
-            if self.is_finalized(&hash) {
-                continue;
-            }
+                if self.is_finalized(&hash) {
+                    continue;
+                }
 
-            result.insert(hash.clone());
+                result.insert(hash.clone());
 
-            let metadata = self.lookup_unsafe(&hash)?;
-            for parent in metadata.parents {
-                if !visited.contains(&parent) {
-                    tips.push_back(parent);
+                let metadata = self.lookup_unsafe(&hash)?;
+                for parent in metadata.parents {
+                    if !visited.contains(&parent) {
+                        tips.push_back(parent);
+                    }
                 }
             }
-        }
 
-        Ok(result)
+            Ok(result)
+        })
     }
 
     pub fn descendants(&self, block_hash: &BlockHash) -> Result<HashSet<BlockHash>, KvStoreError> {
@@ -972,9 +986,10 @@ impl BlockDagKeyValueStorage {
 
     pub async fn new(kvm: &mut impl KeyValueStoreManager) -> Result<Self, KvStoreError> {
         let block_metadata_kv_store = kvm.store("block-metadata".to_string()).await?;
+        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let block_metadata_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(block_metadata_kv_store);
-        let block_metadata_store = BlockMetadataStore::new(block_metadata_db);
+        let block_metadata_store = BlockMetadataStore::try_new(block_metadata_db)?;
 
         let equivocation_tracker_kv_store = kvm.store("equivocation-tracker".to_string()).await?;
         let equivocation_tracker_db: KeyValueTypedStoreImpl<
@@ -987,7 +1002,6 @@ impl BlockDagKeyValueStorage {
         let latest_messages_db: KeyValueTypedStoreImpl<ValidatorSerde, BlockHashSerde> =
             KeyValueTypedStoreImpl::new(latest_messages_kv_store);
 
-        let invalid_blocks_kv_store = kvm.store("invalid-blocks".to_string()).await?;
         let invalid_blocks_db: KeyValueTypedStoreImpl<BlockHashSerde, BlockMetadata> =
             KeyValueTypedStoreImpl::new(invalid_blocks_kv_store);
 
@@ -1273,9 +1287,10 @@ impl BlockDagKeyValueStorage {
         // Phase 8 (A-6): derive the per-branch booleans directly from the
         // enum via `matches!`. The previous `mode.flags()` projection
         // shim survived a Phase-4 transition; it is no longer needed.
-        let invalid = matches!(mode, InsertMode::Invalid);
+        let invalid = matches!(mode, InsertMode::Invalid | InsertMode::SlashEvidence);
         let approved = matches!(mode, InsertMode::Approved);
-        let settled_history = matches!(mode, InsertMode::SettledHistory);
+        let settled_history =
+            matches!(mode, InsertMode::SettledHistory | InsertMode::SlashEvidence);
         let sender_is_empty = block.sender.is_empty();
         let sender_has_invalid_format =
             !sender_is_empty && (block.sender.len() != validator::LENGTH);
@@ -1474,7 +1489,6 @@ impl BlockDagKeyValueStorage {
                             block_hash: block.block_hash.to_vec(),
                             kind: LifecycleEventKind::Rejected {
                                 duplicate: rd.duplicate,
-                                carrier: rd.carrier.to_vec(),
                             },
                         })?;
                     }
@@ -1697,35 +1711,37 @@ impl BlockDagKeyValueStorage {
     }
 
     fn propagate_ft_to_finalized_blocks(&self, ft_value: f32) -> Result<(), KvStoreError> {
-        // P2-12: mutates `block_metadata_index`; exclusive lock.
-        let _lock_guard = self.global_lock.write();
+        in_blocking(|| {
+            // P2-12: mutates `block_metadata_index`; exclusive lock.
+            let _lock_guard = self.global_lock.write();
 
-        // Nothing is below the bound and this scan only raises, so it would
-        // rewrite nothing. Skipping keeps `global_lock` off an O(finalized) walk.
-        if ft_value <= f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed)) {
-            metrics::counter!("propagate_ft.skipped", "source" => "f1r3fly.casper.block-dag")
-                .increment(1);
-            return Ok(());
-        }
+            // Nothing is below the bound and this scan only raises, so it would
+            // rewrite nothing. Skipping keeps `global_lock` off an O(finalized) walk.
+            if ft_value <= f32::from_bits(self.ft_lower_bound.load(Ordering::Relaxed)) {
+                metrics::counter!("propagate_ft.skipped", "source" => "f1r3fly.casper.block-dag")
+                    .increment(1);
+                return Ok(());
+            }
 
-        // Update ALL finalized blocks with lower FT, not just ancestors of the
-        // current LFB. In a multi-parent DAG, finalized blocks on orphaned
-        // branches are not reachable via the ancestor chain of the new LFB.
-        let scan_started = std::time::Instant::now();
-        let mut block_metadata_index_guard = self.block_metadata_index.write();
-        let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
-        let scanned = finalized_hashes.len();
-        block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)?;
-        drop(block_metadata_index_guard);
-        metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
-            .record(scan_started.elapsed().as_secs_f64());
-        metrics::histogram!("propagate_ft.scan.blocks", "source" => "f1r3fly.casper.block-dag")
-            .record(scanned as f64);
+            // Update ALL finalized blocks with lower FT, not just ancestors of the
+            // current LFB. In a multi-parent DAG, finalized blocks on orphaned
+            // branches are not reachable via the ancestor chain of the new LFB.
+            let scan_started = std::time::Instant::now();
+            let mut block_metadata_index_guard = self.block_metadata_index.write();
+            let finalized_hashes = block_metadata_index_guard.finalized_block_hashes();
+            let scanned = finalized_hashes.len();
+            block_metadata_index_guard.update_ft_if_higher(finalized_hashes, ft_value)?;
+            drop(block_metadata_index_guard);
+            metrics::histogram!("propagate_ft.scan.time", "source" => "f1r3fly.casper.block-dag")
+                .record(scan_started.elapsed().as_secs_f64());
+            metrics::histogram!("propagate_ft.scan.blocks", "source" => "f1r3fly.casper.block-dag")
+                .record(scanned as f64);
 
-        // Every finalized block is now at or above `ft_value`.
-        self.ft_lower_bound
-            .store(ft_value.to_bits(), Ordering::Relaxed);
-        Ok(())
+            // Every finalized block is now at or above `ft_value`.
+            self.ft_lower_bound
+                .store(ft_value.to_bits(), Ordering::Relaxed);
+            Ok(())
+        })
     }
 }
 
@@ -1800,5 +1816,144 @@ fn missing_block(block_hash: &BlockHash, method: &'static str) -> KvStoreError {
     KvStoreError::MissingBlock {
         hash: block_hash.clone(),
         context: MissingBlockContext::with_backtrace(method),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use models::rust::block_hash::BlockHashSerde;
+    use models::rust::block_metadata::BlockMetadata;
+    use models::rust::casper::protocol::casper_message::Justification;
+    use prost::bytes::Bytes;
+    use rspace_plus_plus::rspace::shared::key_value_store_manager::KeyValueStoreManager;
+    use rspace_plus_plus::rspace::shared::lmdb_dir_store_manager::{
+        Db, LmdbDirStoreManager, LmdbEnvConfig,
+    };
+    use shared::rust::store::key_value_typed_store::KeyValueTypedStore;
+
+    use super::*;
+
+    const DAG_STORES: [&str; 11] = [
+        "block-metadata",
+        "equivocation-tracker",
+        "latest-messages",
+        "invalid-blocks",
+        "floor-index",
+        "frontier-index",
+        "deploy-lifecycle-events",
+        "deploy-lifecycle-terminal",
+        "carrier-index",
+        "carrier-index-meta",
+        "genesis-hash",
+    ];
+
+    fn hash(i: u32) -> Bytes {
+        let mut bytes = vec![1u8; 32];
+        bytes[..4].copy_from_slice(&i.to_be_bytes());
+        Bytes::from(bytes)
+    }
+
+    fn validator(v: u8) -> Bytes { Bytes::from(vec![v; 65]) }
+
+    fn finalized_metadata(i: u32) -> BlockMetadata {
+        BlockMetadata {
+            block_hash: hash(i),
+            parents: if i == 0 { vec![] } else { vec![hash(i - 1)] },
+            sender: validator((i % 3) as u8 + 10),
+            justifications: (0..3u8)
+                .map(|v| Justification {
+                    validator: validator(v + 10),
+                    latest_block_hash: hash(i.saturating_sub(1)),
+                })
+                .collect(),
+            weight_map: (0..3u8)
+                .map(|v| (validator(v + 10), 1_000_000u64.into()))
+                .collect::<BTreeMap<_, _>>(),
+            block_number: i as i64,
+            sequence_number: (i / 3) as i32,
+            invalid: false,
+            directly_finalized: false,
+            finalized: true,
+            fault_tolerance_value: 0.0,
+            merge_base: Bytes::new(),
+        }
+    }
+
+    #[test]
+    fn ft_propagation_scan_hands_off_its_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let mapping: HashMap<Db, LmdbEnvConfig> = DAG_STORES
+            .iter()
+            .map(|name| {
+                (Db::new(name.to_string(), None), LmdbEnvConfig {
+                    name: "dagstorage".to_string(),
+                    max_env_size: 1 << 30,
+                    max_dbs: 32,
+                })
+            })
+            .collect();
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let storage = runtime.block_on(async {
+            let mut kvm = LmdbDirStoreManager::new(dir.path().to_path_buf(), mapping);
+            let metadata = KeyValueTypedStoreImpl::<BlockHashSerde, BlockMetadata>::new(
+                kvm.store("block-metadata".to_string()).await.unwrap(),
+            );
+            metadata
+                .put(
+                    (0..20_000)
+                        .map(|i| (BlockHashSerde(hash(i)), finalized_metadata(i)))
+                        .collect(),
+                )
+                .unwrap();
+            Arc::new(BlockDagKeyValueStorage::new(&mut kvm).await.unwrap())
+        });
+
+        let (scan, largest_gap) = runtime.block_on(async move {
+            let ticks = Arc::new(parking_lot::Mutex::new(Vec::<Instant>::new()));
+            let ticker_ticks = ticks.clone();
+            let ticker = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                    ticker_ticks.lock().push(Instant::now());
+                }
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let (started, finished) = tokio::spawn(async move {
+                let started = Instant::now();
+                storage.propagate_ft_to_finalized_blocks(0.5).unwrap();
+                (started, Instant::now())
+            })
+            .await
+            .unwrap();
+            ticker.abort();
+            let mut marks = vec![started];
+            marks.extend(
+                ticks
+                    .lock()
+                    .iter()
+                    .copied()
+                    .filter(|t| *t > started && *t < finished),
+            );
+            marks.push(finished);
+            let largest_gap = marks
+                .windows(2)
+                .map(|pair| pair[1] - pair[0])
+                .max()
+                .unwrap();
+            (finished - started, largest_gap)
+        });
+
+        assert!(
+            largest_gap < scan / 4,
+            "the FT propagation scan held the only worker for {largest_gap:?} of its {scan:?}"
+        );
     }
 }

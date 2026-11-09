@@ -72,8 +72,8 @@ async fn rnode_store_manager_quarantines_undecodable_deploy_records_across_reope
     let damaged_value = vec![0xff, 0x01];
     let damaged_key = {
         let mut kvm = new_key_value_store_manager(dir.path().to_path_buf(), None);
-        let mut storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
-        let mut buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
+        let storage = KeyValueDeployStorage::new(&mut kvm).await.unwrap();
+        let buffer = KeyValueRejectedDeployBuffer::new(&mut kvm).await.unwrap();
         storage.add(vec![valid.clone()]).unwrap();
         buffer.add(vec![valid.clone()]).unwrap();
         let damaged_key = storage.store.encode_key(&vec![7u8; 64]).unwrap();
