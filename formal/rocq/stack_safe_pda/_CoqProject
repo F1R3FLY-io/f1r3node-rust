@@ -178,6 +178,7 @@ theories/RPB3IndependentOracleEMethodScoreBridge.v
 theories/RPB3IndependentOracleOrderedCollectionScoreBridge.v
 theories/RPB3IndependentOracleParIdentityBridge.v
 theories/RPB3IndependentOracleFixedPointRefusalBridge.v
+theories/RPB3IndependentOracleUnaryExprScoreBridge.v
 theories/RPB3TypedValid.v
 theories/RPB3ScoreClass.v
 theories/RPB3RootLocallyFreeQuotient.v
