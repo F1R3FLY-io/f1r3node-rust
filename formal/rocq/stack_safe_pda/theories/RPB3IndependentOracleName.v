@@ -53,8 +53,12 @@ Definition source_string_map_auxiliary_score (key : list nat)
 Definition source_pathmap_values_accepted
     (values : list (bool * Core.source_exact_summary)) : bool :=
   forallb (fun entry =>
-    let '(semantic_default, summary) := entry in
-    negb semantic_default && negb (Core.source_summary_refused summary))
+    let '(_, summary) := entry in
+    negb (Core.source_summary_refused summary) &&
+    match Core.source_summary_exact_score summary with
+    | Some _ => true
+    | None => false
+    end)
     values.
 
 Definition source_name_completeness (type_id : nat)
@@ -248,15 +252,18 @@ Lemma source_string_map_rejects_default_present_par :
     source_string_map_auxiliary_score key (Some (true, summary)) = None.
 Proof. reflexivity. Qed.
 
-Lemma source_pathmap_values_reject_default_par :
-  forall prefix summary suffix,
-    source_pathmap_values_accepted
-      (prefix ++ (true, summary) :: suffix) = false.
+(** Production admits an EPM1 map value equal to the default Par: unlike a
+    protobuf map entry, EPM1 has no absent-value encoding for it. *)
+Lemma source_pathmap_values_accept_default_par :
+  forall summary score,
+    Core.source_summary_refused summary = false ->
+    Core.source_summary_exact_score summary = Some score ->
+    source_pathmap_values_accepted [(true, summary)] = true.
 Proof.
-  intros prefix summary suffix.
+  intros summary score unrefused scored.
   unfold source_pathmap_values_accepted.
-  rewrite forallb_app. simpl.
-  now rewrite andb_false_r.
+  simpl.
+  now rewrite unrefused, scored.
 Qed.
 
 Lemma source_pathmap_values_reject_refused_par :
@@ -298,7 +305,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 Print Assumptions source_pathmap_score_is_raw_snapshot.
 Print Assumptions source_string_map_rejects_default_present_par.
-Print Assumptions source_pathmap_values_reject_default_par.
+Print Assumptions source_pathmap_values_accept_default_par.
 Print Assumptions source_pathmap_values_reject_refused_par.
 Print Assumptions source_pathmap_score_roundtrip.
 Print Assumptions source_name_family_absent_connective_score.

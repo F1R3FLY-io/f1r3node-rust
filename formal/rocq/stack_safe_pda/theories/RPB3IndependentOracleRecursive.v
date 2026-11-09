@@ -304,13 +304,15 @@ Definition source_evaluate_node
                                               (source_par_raw value_body) with
                                           | Some summary =>
                                               match Core.source_summary_semantic_default
+                                                  summary,
+                                                Core.source_summary_exact_score
                                                   summary with
-                                              | Some false =>
+                                              | Some semantic_default, Some _ =>
                                                   if Core.source_summary_refused
                                                       summary
                                                   then None else Some
-                                                    (false, summary)
-                                              | _ => None
+                                                    (semantic_default, summary)
+                                              | _, _ => None
                                               end
                                           | None => None
                                           end) (EPM1.value_bodies snapshot)) in

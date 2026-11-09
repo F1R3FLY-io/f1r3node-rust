@@ -124,6 +124,7 @@ theories/RPB3IndependentOracleRecursive.v
 theories/RPB3IndependentOracleFuel.v
 theories/RPB3IndependentOracleAdequacy.v
 theories/RPB3IndependentOracleProjection.v
+theories/RPB3IndependentOracleParAnswer.v
 theories/RPB3IndependentOracleProcessProjection.v
 theories/RPB3IndependentOracleNameProjection.v
 theories/RPB3IndependentOracleNameDecoderBridge.v

@@ -27,11 +27,12 @@ Definition source_selected_unrefused_par
     : option (bool * Core.source_exact_summary) :=
   match candidate with
   | Some summary =>
-      match Core.source_summary_semantic_default summary with
-      | Some false =>
+      match Core.source_summary_semantic_default summary,
+            Core.source_summary_exact_score summary with
+      | Some semantic_default, Some _ =>
           if Core.source_summary_refused summary
-          then None else Some (false, summary)
-      | _ => None
+          then None else Some (semantic_default, summary)
+      | _, _ => None
       end
   | None => None
   end.
