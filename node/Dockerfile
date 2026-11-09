@@ -107,7 +107,7 @@ RUN --network=none \
 # must ship the same de-pythonified interpreter that the PeTTa specs, petta.sh,
 # and the handler doc assume.
 ARG PETTA_REPO=https://github.com/mlabs-haskell/PeTTa.git
-ARG PETTA_REF=fcc22e8a2e5623870c87b6033ecb3f33d72a7338
+ARG PETTA_REF=b9ca1884ecc131d48457570ccbac3ef4344f19fe
 RUN git clone "${PETTA_REPO}" /build/PeTTa && \
     git -C /build/PeTTa checkout --detach "${PETTA_REF}" && \
     rm -rf /build/PeTTa/.git
@@ -213,7 +213,7 @@ COPY petta.sh functions.sh /build/
 # devshell (f1r3fly-rust-devshell flake.lock) locks. Full clones so the pinned
 # commit (on a non-default branch) is reachable. Bump the *_REF args to upgrade.
 ARG PETTA_NOPYTHON_REPO=https://github.com/mlabs-haskell/PeTTa.git
-ARG PETTA_NOPYTHON_REF=fcc22e8a2e5623870c87b6033ecb3f33d72a7338
+ARG PETTA_NOPYTHON_REF=b9ca1884ecc131d48457570ccbac3ef4344f19fe
 ARG PLN_REPO=https://github.com/dylon/PLN.git
 ARG PLN_REF=fbb2ae0f43824106102cb7de4085699dedab0db7
 ARG METTA_MOSES_REPO=https://github.com/mlabs-haskell/metta-moses.git
@@ -243,7 +243,6 @@ ENV PETTA_PATH=/build/PeTTa-nopython \
     METTA_ATTENTION_DIR=/build/metta-attention \
     CACHE_DIR=/build/.petta-cache \
     SANDBOX_LIB_PATH=/usr/lib/libsandbox.so \
-    PETTA_BLOCKED_PREDS=readln! \
     REQUIRE_PETTA_TESTS=1 \
     TERMINFO=/usr/share/terminfo \
     TERMINFO_DIRS=/usr/share/terminfo
@@ -403,7 +402,6 @@ ENV PETTA_PATH=/opt/docker/PeTTa \
     PETTA_DIR=/opt/docker/PeTTa \
     CACHE_DIR=/opt/docker/.petta-cache \
     SANDBOX_LIB_PATH=/usr/lib/libsandbox.so \
-    PETTA_BLOCKED_PREDS=readln! \
     TERMINFO=/usr/share/terminfo \
     TERMINFO_DIRS=/usr/share/terminfo \
     HOME=/opt/docker
