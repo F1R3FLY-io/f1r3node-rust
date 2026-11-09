@@ -4,3 +4,4 @@ pub mod deploy_finalization_status;
 pub mod graph_generator;
 pub mod machine_verifiable_dag;
 pub mod pending_deploys;
+pub mod validator_liveness;

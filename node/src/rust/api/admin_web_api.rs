@@ -4,11 +4,14 @@
 use std::sync::Arc;
 
 use casper::rust::api::block_api::{BlockAPI, ProposeReadOnlyError};
+use casper::rust::api::validator_liveness::validator_liveness;
 use casper::rust::engine::engine_cell::EngineCell;
 use casper::rust::state::instances::proposer_state::ProposerState;
 use casper::rust::ProposeFunction;
 use eyre::Result;
 use tokio::sync::RwLock;
+
+use crate::rust::api::serde_types::validator_liveness::ValidatorLivenessResponse;
 
 /// Admin Web API trait defining the interface for admin HTTP endpoints
 #[async_trait::async_trait]
@@ -18,6 +21,10 @@ pub trait AdminWebApi {
 
     /// Get the result of the latest proposal
     async fn propose_result(&self) -> Result<String>;
+
+    /// This node's view of every validator's liveness, and what its last
+    /// finalized block records of claims and ejections.
+    async fn validator_liveness(&self) -> Result<ValidatorLivenessResponse>;
 }
 
 /// Admin Web API implementation
@@ -60,5 +67,10 @@ impl AdminWebApi for AdminWebApiImpl {
             }
             None => Err(eyre::eyre!("Error: read-only node.")),
         }
+    }
+
+    async fn validator_liveness(&self) -> Result<ValidatorLivenessResponse> {
+        let report = validator_liveness(&self.engine_cell).await?;
+        Ok(ValidatorLivenessResponse::from(&report))
     }
 }

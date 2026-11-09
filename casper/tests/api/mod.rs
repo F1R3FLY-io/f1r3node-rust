@@ -10,3 +10,4 @@ pub mod listening_name_api_test;
 pub mod machine_verifiable_dag_tests;
 pub mod pending_deploys_test;
 pub mod preview_private_name_test;
+pub mod validator_liveness_test;

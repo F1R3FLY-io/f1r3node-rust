@@ -298,6 +298,41 @@ impl LeakyBucketProposal {
     }
 }
 
+/// The view as it stands: every tracked bucket under the latest reconciled
+/// floor, the committee at the tip, and the ejection claims still open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewSnapshot {
+    pub reconciled_floor: i64,
+    pub credited_from: i64,
+    pub tip_height: i64,
+    /// In identity order.
+    pub tip_committee: Vec<Validator>,
+    /// In identity order.
+    pub buckets: Vec<BucketSnapshot>,
+    /// Target and the block its claim was opened at, in identity order.
+    pub open_ejection_claims: Vec<(Validator, i64)>,
+    /// In identity order.
+    pub slashed: Vec<Validator>,
+}
+
+/// One validator's bucket. Level, threshold and overflow are in units of
+/// `1 / PPM` of a bond unit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BucketSnapshot {
+    pub validator: Validator,
+    pub capacity: u64,
+    pub level: u128,
+    pub threshold: u128,
+    pub drained: bool,
+    /// Consecutive observations below the threshold.
+    pub blocks_below_threshold: u64,
+    /// Everything credited, before payments are taken off.
+    pub overflow: u128,
+    /// Bond units paid out of the overflow since the view began crediting.
+    pub paid: i64,
+    pub ejected: bool,
+}
+
 /// Decides a block's offers and votes from what its floor's state records.
 pub type LeakyBucketDecision = Arc<dyn Fn(&Knowledge) -> LeakyBucketProposal + Send + Sync>;
 
@@ -594,6 +629,63 @@ impl BucketView {
             .filter(|validator| state.known.is_ejected(validator))
             .cloned()
             .collect()
+    }
+
+    /// The view as it stands, with every rejoin the floor records applied.
+    pub fn snapshot(&self) -> ViewSnapshot {
+        let state = self.state.lock();
+        let uncredited_through = state.uncredited_through();
+        let mut buckets: Vec<BucketSnapshot> = state
+            .live
+            .iter()
+            .map(|(validator, live)| {
+                let mut entry = *live;
+                entry.refill(
+                    &effective(
+                        &state.known,
+                        &state.remembered,
+                        validator,
+                        self.params.retention_window_blocks,
+                    ),
+                    i64::MAX,
+                    uncredited_through,
+                );
+                BucketSnapshot {
+                    validator: validator.clone(),
+                    capacity: entry.capacity.get(),
+                    level: entry.level,
+                    threshold: entry.threshold(self.params.theta_eject_ppm),
+                    drained: entry.is_drained(self.params.theta_eject_ppm),
+                    blocks_below_threshold: entry.blocks_below_threshold,
+                    overflow: entry.overflow,
+                    paid: state.paid_since_baseline(validator, &state.known),
+                    ejected: state.known.is_ejected(validator),
+                }
+            })
+            .collect();
+        buckets.sort_by(|a, b| a.validator.cmp(&b.validator));
+        let mut tip_committee: Vec<Validator> = state.tip.committee.iter().cloned().collect();
+        tip_committee.sort();
+        let mut open_ejection_claims: Vec<(Validator, i64)> = state
+            .claims
+            .iter()
+            .filter(|(target, _)| {
+                state.ejection_claim_open(target, self.params.claim_deadline_blocks)
+            })
+            .map(|(target, opened)| (target.clone(), *opened))
+            .collect();
+        open_ejection_claims.sort();
+        let mut slashed: Vec<Validator> = state.slashed.iter().cloned().collect();
+        slashed.sort();
+        ViewSnapshot {
+            reconciled_floor: state.known.floor_number,
+            credited_from: state.baseline.credited_from,
+            tip_height: state.tip.height,
+            tip_committee,
+            buckets,
+            open_ejection_claims,
+            slashed,
+        }
     }
 
     /// The decision this view makes for `own`'s proposals.
@@ -959,27 +1051,16 @@ mod tests {
 
     impl BucketView {
         fn status_of(&self, validator: &Validator) -> Option<BucketStatus> {
-            let state = self.state.lock();
-            let uncredited_through = state.uncredited_through();
-            state.live.get(validator).map(|live| {
-                let mut entry = *live;
-                entry.refill(
-                    &effective(
-                        &state.known,
-                        &state.remembered,
-                        validator,
-                        self.params.retention_window_blocks,
-                    ),
-                    i64::MAX,
-                    uncredited_through,
-                );
-                BucketStatus {
-                    level: entry.level,
-                    overflow: entry.overflow,
-                    capacity: entry.capacity.get(),
-                    blocks_below_threshold: entry.blocks_below_threshold,
-                }
-            })
+            self.snapshot()
+                .buckets
+                .into_iter()
+                .find(|bucket| bucket.validator == *validator)
+                .map(|bucket| BucketStatus {
+                    level: bucket.level,
+                    overflow: bucket.overflow,
+                    capacity: bucket.capacity,
+                    blocks_below_threshold: bucket.blocks_below_threshold,
+                })
         }
 
         fn tracked(&self) -> usize { self.state.lock().live.len() }
@@ -1449,6 +1530,47 @@ mod tests {
                 "a producing member must never reach the ejection window"
             );
         }
+    }
+
+    /// A snapshot shows each member's bucket against its threshold, the
+    /// committee at the tip, and the claims still open.
+    #[test]
+    fn a_snapshot_shows_a_silent_member_draining_and_the_producers_holding() {
+        let committee = [(1u8, 1_000i64), (2, 1_000), (3, 1_000)];
+        let view = with_rate(100_000);
+        view.observe(&observation(0, 1, &[], &committee));
+        for number in 1..=70i64 {
+            let (sender, other) = if number % 2 == 0 { (1, 2) } else { (2, 1) };
+            view.observe(&observation(number, sender, &[other], &committee));
+        }
+        view.observe(&observation_opening(71, 1, &[2], &committee, 3));
+
+        let snapshot = view.snapshot();
+        assert_eq!(snapshot.tip_height, 71);
+        assert_eq!(snapshot.tip_committee, vec![
+            validator(1),
+            validator(2),
+            validator(3)
+        ]);
+        assert_eq!(snapshot.open_ejection_claims, vec![(validator(3), 71)]);
+        let buckets: Vec<&Validator> = snapshot.buckets.iter().map(|b| &b.validator).collect();
+        assert_eq!(buckets, vec![&validator(1), &validator(2), &validator(3)]);
+        for bucket in &snapshot.buckets {
+            assert_eq!(bucket.capacity, 1_000);
+            assert_eq!(
+                bucket.threshold,
+                1_000 * view.params().theta_eject_ppm as u128
+            );
+            assert_eq!(bucket.drained, bucket.level < bucket.threshold);
+            assert!(!bucket.ejected);
+        }
+        let silent = &snapshot.buckets[2];
+        assert!(silent.drained);
+        assert!(silent.blocks_below_threshold >= view.params().eject_observation_blocks);
+        assert_eq!(silent.overflow, 0);
+        assert!(snapshot.buckets[..2]
+            .iter()
+            .all(|producer| !producer.drained));
     }
 
     /// An observer outside every committee in these tests.

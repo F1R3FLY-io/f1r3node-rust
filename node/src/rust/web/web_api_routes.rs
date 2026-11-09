@@ -1054,6 +1054,17 @@ mod router_tests {
         async fn propose(&self) -> eyre::Result<String> { Ok("proposed".to_string()) }
 
         async fn propose_result(&self) -> eyre::Result<String> { Ok("result".to_string()) }
+
+        async fn validator_liveness(
+            &self,
+        ) -> eyre::Result<
+            crate::rust::api::serde_types::validator_liveness::ValidatorLivenessResponse,
+        > {
+            use crate::rust::api::serde_types::validator_liveness::{
+                sample, ValidatorLivenessResponse,
+            };
+            Ok(ValidatorLivenessResponse::from(&sample()))
+        }
     }
 
     struct StubNodeDiscovery;
@@ -1390,6 +1401,63 @@ mod router_tests {
         assert_eq!(json["shardId"], "root");
         assert_eq!(json["isReady"], true);
         assert_eq!(json["lastFinalizedBlockNumber"], 5);
+    }
+
+    /// The admin listener reports validator liveness as JSON: keys in camel
+    /// case, bucket amounts as decimal strings, validators in hex, claim terms
+    /// tagged by kind.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn validator_liveness_route_reports_the_view_and_the_finalized_state() {
+        let response = crate::rust::web::admin_web_api_routes::AdminWebApiRoutes::create_router()
+            .with_state(app_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/validator-liveness")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let validator = |byte: u8| hex::encode(vec![byte; models::rust::validator::LENGTH]);
+        let bucket = &json["localView"]["buckets"][0];
+        assert_eq!(bucket["validator"], validator(2));
+        assert_eq!(bucket["level"], "30000000000000000000");
+        assert_eq!(bucket["threshold"], "300000000");
+        assert_eq!(bucket["drained"], true);
+        assert_eq!(bucket["blocksBelowThreshold"], 61);
+        assert_eq!(
+            json["localView"]["openEjectionClaims"][0],
+            serde_json::json!({ "target": validator(2), "openedAt": 42 })
+        );
+        assert_eq!(json["decision"]["ejectionOffers"][0], validator(2));
+        assert_eq!(json["decision"]["shortfall"][0]["amount"], "970000000");
+        assert_eq!(json["params"]["thetaEjectPpm"].is_u64(), true);
+
+        let finalized = &json["finalizedState"];
+        assert_eq!(finalized["blockNumber"], 40);
+        assert_eq!(finalized["withdrawers"][0]["stake"], 300);
+        assert_eq!(
+            finalized["claims"][0]["terms"],
+            serde_json::json!({ "kind": "rejoin", "topup": 20, "graceEnd": 60 })
+        );
+        assert_eq!(finalized["claims"][0]["family"], "rejoin");
+        assert_eq!(
+            finalized["graceEnds"][0],
+            serde_json::json!({ "validator": validator(3), "graceEnd": 60 })
+        );
+        assert_eq!(
+            finalized["freezes"][0]["intervals"],
+            serde_json::json!([
+                { "from": 10, "rejoinedAt": 20, "topup": 5 },
+                { "from": 30, "rejoinedAt": null, "topup": null }
+            ])
+        );
     }
 
     async fn ready_response(is_ready: bool) -> (StatusCode, serde_json::Value) {

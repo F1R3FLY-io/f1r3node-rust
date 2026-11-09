@@ -935,6 +935,32 @@ curl -X POST http://localhost:40405/api/propose
 | `409` | No new deploys to propose (`no_new_deploys`) |
 | `500` | Node-side propose failure (`unknown_error`, `replay_failure`) |
 
+#### `GET /api/validator-liveness`
+
+Report how this node sees the liveness of every validator. The response has four parts:
+
+| Field | Content |
+|-------|---------|
+| `params` | The leaky-bucket parameters this node runs with |
+| `localView` | This node's bucket for each validator: capacity, level, threshold, drained state, consecutive blocks below the threshold, overflow and amount paid. It also gives the committee at the highest block, the open ejection claims and the slashed validators. |
+| `decision` | What this node would offer and vote in its next block. A node without a validator identity omits it. |
+| `finalizedState` | What this node's last finalized block records: bonds, active validators, stake in withdrawal quarantine, open claims with their electorate and terms, ejected validators with the end of their grace, freezes and overflow paid |
+
+The local view depends on which blocks this node accepted, and in what order, so two nodes can report different levels for the same validator. The finalized state is the same on every node that holds the same last finalized block.
+
+Validators are hex public keys. Bucket levels, thresholds, overflow and shortfall are in millionths of a bond unit, as decimal strings, because they can exceed 64 bits.
+
+**Parameters:** None
+
+```bash
+curl http://localhost:40405/api/validator-liveness
+```
+
+| Status | Condition |
+|--------|-----------|
+| `200` | The liveness report |
+| `500` | Casper is not available yet, or the finalized state could not be read |
+
 ---
 
 ## gRPC API
