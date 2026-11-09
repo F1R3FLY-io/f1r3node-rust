@@ -154,6 +154,7 @@ theories/RPB3IndependentOracleExprNestedGroundScalarBridge.v
 theories/RPB3IndependentOracleExprNestedGroundScoreBridge.v
 theories/RPB3IndependentOracleRegionChildBridge.v
 theories/RPB3IndependentOracleScalarContractBridge.v
+theories/RPB3IndependentOracleScalarDecoderBridge.v
 theories/RPB3IndependentTypedSemanticReference.v
 theories/RPB3SourceIndexedFrames.v
 theories/RPB3SourceIndexedTermination.v
