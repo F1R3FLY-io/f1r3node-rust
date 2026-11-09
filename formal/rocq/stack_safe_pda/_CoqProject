@@ -158,6 +158,7 @@ theories/RPB3IndependentOracleScalarDecoderBridge.v
 theories/RPB3IndependentOracleScalarVerdictBridge.v
 theories/RPB3IndependentOracleCostFamilyBridge.v
 theories/RPB3IndependentOracleNameFamilyBridge.v
+theories/RPB3IndependentOraclePathMapVerdictBridge.v
 theories/RPB3IndependentTypedSemanticReference.v
 theories/RPB3SourceIndexedFrames.v
 theories/RPB3SourceIndexedTermination.v
