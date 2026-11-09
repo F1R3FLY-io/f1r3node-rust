@@ -33,9 +33,9 @@ Demonstrates basic MeTTa pattern matching by defining a `swap` function that rev
 
 ### 02-fib-long.rho - Recursive Computation
 
-Computes a large Fibonacci number (fib(1000000)) using tail recursion,
-which on consumer hardware should exceed the timeout of 10 seconds currently
-defined for all MeTTa computations.
+Computes a large Fibonacci number (fib(1000000)) using tail recursion. The
+result is larger than the 64 KiB integer limit, so the call fails with
+`max_integer_size_exceeded`. The failure is the same on every node.
 
 
 **MeTTa code:**
@@ -47,12 +47,11 @@ defined for all MeTTa computations.
 
 ### Return Value Structure
 
-PeTTa always returns results wrapped in a `{"results": [...]}` JSON object, which is converted to a Rholang map:
+The acknowledgment channel receives a Rholang list with one element for each
+`!` query of the program:
 
 ```rholang
-{
-  "results": [result1, result2, ...]  // Rholang list
-}
+[result1, result2, ...]
 ```
 
 ## Common Patterns
@@ -63,9 +62,9 @@ PeTTa always returns results wrapped in a `{"results": [...]}` JSON object, whic
 new executePetta(`rho:petta:execute`), retCh in {
   executePetta!("!(+ 1 2)", *retCh) |
   for(@result <- retCh) {
-    // result = {"results": [3]}
+    // result = [3]
     match result {
-      {"results": [answer]} => {
+      [answer] => {
         stdout!(answer)  // Prints: 3
       }
     }
@@ -115,9 +114,10 @@ apt-get install swi-prolog  # Ubuntu/Debian
 which swipl
 ```
 
-### Timeout Errors
+### Resource Limit Errors
 
-**Cause:** Computation exceeded 10-second limit
+**Cause:** The program passed a deterministic resource limit. The error reason
+names the limit, for example `inference_limit_exceeded`.
 
 **Solutions:**
 1. Break computation into smaller steps
@@ -133,48 +133,44 @@ which swipl
 tail -f ~/.rnode/rnode.log
 ```
 
-## Error Handling and Replay Behavior
+## Consensus Execution
 
-### Non-Deterministic Operation
+Every validator runs the program again during replay. The event log records only
+a 32-byte hash of the result and the `println!` frames. On a different hash, the
+validator logs an error on the `f1r3fly.petta` target with the deploy, both
+hashes, and the inference count. It then uses its fresh result, and replay
+validation rejects the block.
 
-`rho:petta:execute` is a **non-deterministic operation**. This means:
+PeTTa runs without network under `consensus_lockdown/1`, which keeps only the
+functions in `PETTA_CONSENSUS_ALLOWED_FUNS`. Clock, sleep, entropy, host access,
+assertion, and raw Prolog forms fail with `consensus_forbidden(<name>)` or stay
+inert. Seeded `rand-*` stays available.
 
-1. **During play execution:** PeTTa is invoked and the result (or error) is cached
-2. **During replay:** The cached result is used without re-invoking PeTTa
-3. **Consensus safety:** All validators must agree on both successes and failures
+| Limit | Value | Error reason |
+|-------|-------|--------------|
+| Inferences | 10,000,000 | `inference_limit_exceeded` |
+| Stack | 1 GiB | `stack_limit_exceeded` |
+| Integer size | 64 KiB | `max_integer_size_exceeded` |
+| Output (frames and result) | 2^20 characters | `output_limit_exceeded` |
+| Address space (liveness only) | 4 GiB | `memory_limit_exceeded` |
+| Wall clock (liveness only, node fault) | 600 s | backstop error |
 
-### Error Recording
+Other Prolog errors give the formal error term without its context. Every
+failure sends no output on the acknowledgment channel.
 
-When PeTTa execution fails (timeout, syntax error, etc.):
-- The error is wrapped in `NonDeterministicProcessFailure`
-- The failure is recorded in the event log
-- No output is produced to the acknowledgment channel
-- During replay, the same error is reproduced from the event log
+**Phlo.** A call costs 100,000 phlo before the sandbox starts and 1 phlo for each
+inference after the run. A run without an inference count pays the full budget.
 
-This ensures that:
-- Validators reach consensus on failures as well as successes
-- Failed operations don't cause replay divergence
-- Contract behavior is deterministic across all validators
+**Pins.** The consensus fingerprint holds the limits, the phlo rate, the
+allowlist, `SWIPL_VERSION`, and the tree hashes of the PeTTa and PLN sources
+(SHA-256 over `path\0content` of each file in sorted path order). When
+`PETTA_DIR` is set, the node runs `check_backend()` at startup and exits on a
+mismatch. `test_petta_backend_matches_pins` checks a local backend.
 
-### Failure Modes
-
-| Error Type | Description | Replay Behavior |
-|------------|-------------|-----------------|
-| Timeout | Execution exceeds 10 seconds | Cached failure replayed |
-| Syntax Error | Invalid MeTTa code | Cached failure replayed |
-| PeTTa Not Found | Missing SWI-Prolog or PeTTa | Cached failure replayed |
-| Number Overflow | Result number exceeds i64 | Cached failure replayed |
-| Floating Point | Non-integer JSON number | Cached failure replayed |
-
-All failures prevent output from being sent on the acknowledgment channel,
-which may cause the calling contract to deadlock or timeout.
+**Known limit.** One builtin call can run for a long time with few inferences,
+for example `term_to_atom` of a large shared term.
 
 ## Security Notes
 
-⚠️ **Important Security Considerations: this feature is EXPERIMENTAL.**
-
-1. **Untrusted Code:** Never execute untrusted MeTTa code - there is currently
-   no sandboxing at language level
-2. **Timeouts:** All execution limited to 10 seconds to prevent DoS
-3. **Non-Deterministic:** Results are cached for replay (consensus safety)
-4. **Resource Limits:** System memory limits apply
+⚠️ **This feature is EXPERIMENTAL.** PeTTa runs in a bubblewrap sandbox with a
+seccomp filter and no network, under the consensus lockdown and the limits above.
