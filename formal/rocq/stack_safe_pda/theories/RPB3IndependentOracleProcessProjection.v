@@ -18,8 +18,35 @@ Definition projected_process_children
     : list Target.semantic_summary :=
   map Projection.project_source_summary children.
 
+(** The fields of [process_child_correspondence] that read a scalar, or that
+    apply to one family's arm, are stated only where a family reducer reads
+    them.  The unrestricted forms are false on the children the oracle
+    actually produces: a varint field of a non-bool kind carrying the byte
+    [1] reads as [true] at both target boolean readers while the oracle reads
+    a non-bool scalar.  The closed refutations are in
+    [RPB3IndependentOracleProcessChildCorrespondence].  Each slot function
+    below lists exactly the (family, tag) pairs its reader is applied to by
+    the score functions in this theory. *)
+Definition process_scalar_true_slot (family tag : nat) : bool :=
+  match family, tag with
+  | 8, 2 | 8, 3 | 15, 3 | 15, 6 | 23, 5 => true
+  | _, _ => false
+  end.
+
+Definition process_exact_bool_slot (family tag : nat) : bool :=
+  match family, tag with
+  | 19, 3 | 19, 4 | 19, 7 | 22, 5 => true
+  | _, _ => false
+  end.
+
+Definition process_i32_slot (family tag : nat) : bool :=
+  match family, tag with
+  | 19, 5 | 21, 3 => true
+  | _, _ => false
+  end.
+
 Record process_child_correspondence
-    (children : list Core.source_exact_summary) : Prop := {
+    (family : nat) (children : list Core.source_exact_summary) : Prop := {
   process_child_score_corresponds : forall tag,
     Target.exact_child_score tag (projected_process_children children) =
       option_map Core.project_score (Process.source_child_score tag children);
@@ -33,16 +60,20 @@ Record process_child_correspondence
       option_map (option_map Core.project_score)
         (Process.source_optional_score tag children);
   process_scalar_true_corresponds : forall tag,
+    process_scalar_true_slot family tag = true ->
     Target.scalar_true_or_absent tag (projected_process_children children) =
       Process.source_bool_or_absent tag children;
   process_bool_corresponds : forall tag,
+    process_exact_bool_slot family tag = true ->
     Target.exact_bool_or_absent tag (projected_process_children children) =
       Process.source_bool_or_absent tag children;
   process_i32_corresponds : forall tag,
+    process_i32_slot family tag = true ->
     Target.exact_pbint32_or_absent tag
       (projected_process_children children) =
       Process.source_i32_or_absent tag children;
   process_new_word_corresponds :
+    family = 20 ->
     Target.new_bind_count_word (projected_process_children children) =
       option_map Process.source_signed_word
         (Process.source_i32_or_absent 1 children);
@@ -67,11 +98,13 @@ Record process_child_correspondence
       option_map Core.project_score
         (Process.source_typed_optional_score_or tag type_id fallback
           children);
-  process_expr_arm_corresponds : forall child,
+  process_expr_arm_corresponds :
+    family = 24 -> forall child,
     In child children ->
     Target.exact_expr_score [Projection.project_source_summary child] =
       option_map Core.project_score (Process.source_expr_score [child]);
-  process_scalar_arm_corresponds : forall child,
+  process_scalar_arm_corresponds :
+    family = 24 -> forall child,
     In child children ->
     Schema.payload_eqb
       (Schema.raw_payload (Core.source_summary_raw child)) Schema.Scalar =
@@ -79,7 +112,8 @@ Record process_child_correspondence
       | Core.TypedSourceScalar _ _ => true
       | _ => false
       end;
-  process_receive_default_atom_corresponds : forall child,
+  process_receive_default_atom_corresponds :
+    family = 19 -> forall child,
     In child children ->
     ((Core.source_summary_tag child =? 8) &&
       negb (Core.source_summary_refused child) &&
@@ -98,7 +132,8 @@ Record process_child_correspondence
         (Projection.project_source_summary child)) &&
       Target.par_source_is_semantic_default
         (Target.sem_body (Projection.project_source_summary child)));
-  process_match_default_atom_corresponds : forall child,
+  process_match_default_atom_corresponds :
+    family = 22 -> forall child,
     In child children ->
     Process.source_match_case_has_default_guard child =
       Target.match_case_has_present_default_guard
@@ -158,7 +193,7 @@ Lemma projected_process_completeness :
     In type_id [8; 15; 16; 19; 20; 21; 22; 23; 24] ->
     Admission.source_scan_seen_slots source_state =
       Schema.scan_seen target_state ->
-    process_child_correspondence children ->
+    process_child_correspondence type_id children ->
     Process.source_process_completeness type_id source_state children =
       Target.component_completeness type_id target_state
         (projected_process_children children).
@@ -182,7 +217,7 @@ Proof.
   destruct children as [|child [|second rest]]; simpl; try reflexivity.
   unfold projected_process_children.
   cbn [map].
-  rewrite (process_scalar_arm_corresponds _ correspond child
+  rewrite (process_scalar_arm_corresponds _ _ correspond eq_refl child
     (or_introl eq_refl)).
   destruct (Core.source_summary_value child); reflexivity.
 Qed.
@@ -247,7 +282,7 @@ Qed.
 
 Lemma projected_process_receive_default :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 19 children ->
     Process.source_present_default_condition children =
       Target.receive_has_present_default_condition
         (projected_process_children children).
@@ -257,12 +292,13 @@ Proof.
     Target.receive_has_present_default_condition.
   apply projected_process_existsb.
   intros child present.
-  exact (process_receive_default_atom_corresponds _ correspond child present).
+  exact (process_receive_default_atom_corresponds _ _ correspond eq_refl child
+    present).
 Qed.
 
 Lemma projected_process_match_default :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 22 children ->
     Process.source_present_default_match_guard children =
       existsb Target.match_case_has_present_default_guard
         (projected_process_children children).
@@ -271,7 +307,8 @@ Proof.
   unfold Process.source_present_default_match_guard.
   apply projected_process_existsb.
   intros child present.
-  exact (process_match_default_atom_corresponds _ correspond child present).
+  exact (process_match_default_atom_corresponds _ _ correspond eq_refl child
+    present).
 Qed.
 
 Lemma projected_process_bundle_child_score :
@@ -307,15 +344,15 @@ Ltac finish_process_score :=
 
 Lemma projected_process_bundle_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 8 children ->
     Target.exact_bundle_score (projected_process_children children) =
       option_map Core.project_score (Process.source_bundle_score children).
 Proof.
   intros children correspond.
   rewrite projected_process_bundle_child_score.
-  rewrite (process_child_score_corresponds _ correspond 1).
-  rewrite (process_scalar_true_corresponds _ correspond 2).
-  rewrite (process_scalar_true_corresponds _ correspond 3).
+  rewrite (process_child_score_corresponds _ _ correspond 1).
+  rewrite (process_scalar_true_corresponds _ _ correspond 2 eq_refl).
+  rewrite (process_scalar_true_corresponds _ _ correspond 3 eq_refl).
   unfold Process.source_bundle_score.
   destruct (Process.source_child_score 1 children) as [body|];
     destruct (Process.source_bool_or_absent 2 children) as [write|];
@@ -325,17 +362,17 @@ Qed.
 
 Lemma projected_process_send_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 15 children ->
     Target.exact_send_score (projected_process_children children) =
       option_map Core.project_score (Process.source_send_score children).
 Proof.
   intros children correspond.
   unfold Target.exact_send_score, Process.source_send_score.
-  rewrite (process_scalar_true_corresponds _ correspond 3).
-  rewrite (process_child_score_corresponds _ correspond 1).
-  rewrite (process_selected_scores_correspond _ correspond 2).
-  rewrite (process_scalar_true_corresponds _ correspond 6).
-  rewrite (process_optional_score_corresponds _ correspond 7).
+  rewrite (process_scalar_true_corresponds _ _ correspond 3 eq_refl).
+  rewrite (process_child_score_corresponds _ _ correspond 1).
+  rewrite (process_selected_scores_correspond _ _ correspond 2).
+  rewrite (process_scalar_true_corresponds _ _ correspond 6 eq_refl).
+  rewrite (process_optional_score_corresponds _ _ correspond 7).
   destruct (Process.source_bool_or_absent 3 children) as [persistent|];
     destruct (Process.source_child_score 1 children) as [channel|];
     destruct (Process.source_selected_scores 2 children) as [data|];
@@ -349,16 +386,16 @@ Qed.
 
 Lemma projected_process_if_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 23 children ->
     Target.exact_if_score (projected_process_children children) =
       option_map Core.project_score (Process.source_if_score children).
 Proof.
   intros children correspond.
   unfold Target.exact_if_score, Process.source_if_score.
-  rewrite (process_child_score_corresponds _ correspond 1).
-  rewrite (process_child_score_corresponds _ correspond 2).
-  rewrite (process_child_score_corresponds _ correspond 3).
-  rewrite (process_scalar_true_corresponds _ correspond 5).
+  rewrite (process_child_score_corresponds _ _ correspond 1).
+  rewrite (process_child_score_corresponds _ _ correspond 2).
+  rewrite (process_child_score_corresponds _ _ correspond 3).
+  rewrite (process_scalar_true_corresponds _ _ correspond 5 eq_refl).
   destruct (Process.source_child_score 1 children) as [condition|];
     destruct (Process.source_child_score 2 children) as [if_true|];
     destruct (Process.source_child_score 3 children) as [if_false|];
@@ -369,7 +406,7 @@ Qed.
 
 Lemma projected_process_receive_bind_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 16 children ->
     Target.exact_receive_bind_score
       (projected_process_children children) =
       option_map Core.project_score
@@ -378,13 +415,13 @@ Proof.
   intros children correspond.
   unfold Target.exact_receive_bind_score,
     Process.source_receive_bind_score.
-  rewrite (process_typed_child_corresponds _ correspond 2 1).
-  rewrite (process_typed_selected_corresponds _ correspond 1 1).
+  rewrite (process_typed_child_corresponds _ _ correspond 2 1).
+  rewrite (process_typed_selected_corresponds _ _ correspond 1 1).
   change (Target.ScoreInteger 0)
     with (Core.project_score (Core.SourceInteger 0)).
-  rewrite (process_typed_fallback_corresponds _ correspond 3 6
+  rewrite (process_typed_fallback_corresponds _ _ correspond 3 6
     (Core.SourceInteger 0)).
-  rewrite (process_typed_optional_corresponds _ correspond 5 12).
+  rewrite (process_typed_optional_corresponds _ _ correspond 5 12).
   destruct (Process.source_typed_child_score 2 1 children) as [source|];
     destruct (Process.source_typed_selected_scores 1 1 children)
       as [patterns|];
@@ -406,7 +443,7 @@ Proof. reflexivity. Qed.
 
 Lemma projected_process_match_case_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 21 children ->
     Target.exact_match_case_score
       (projected_process_children children) =
       option_map Core.project_score
@@ -415,11 +452,11 @@ Proof.
   intros children correspond.
   unfold Target.exact_match_case_score,
     Process.source_match_case_score.
-  rewrite (process_typed_child_corresponds _ correspond 1 1).
-  rewrite (process_typed_child_corresponds _ correspond 2 1).
-  rewrite (process_i32_corresponds _ correspond 3).
+  rewrite (process_typed_child_corresponds _ _ correspond 1 1).
+  rewrite (process_typed_child_corresponds _ _ correspond 2 1).
+  rewrite (process_i32_corresponds _ _ correspond 3 eq_refl).
   rewrite <- projected_process_empty_par_score.
-  rewrite (process_typed_fallback_corresponds _ correspond 4 1
+  rewrite (process_typed_fallback_corresponds _ _ correspond 4 1
     Process.source_empty_par_score).
   destruct (Process.source_typed_child_score 1 1 children) as [pattern|];
     destruct (Process.source_typed_child_score 2 1 children) as [source|];
@@ -458,15 +495,15 @@ Qed.
 
 Lemma projected_process_new_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 20 children ->
     Target.exact_new_score (projected_process_children children) =
       option_map Core.project_score (Process.source_new_score children).
 Proof.
   intros children correspond.
   unfold Target.exact_new_score, Process.source_new_score.
-  rewrite (process_new_word_corresponds _ correspond).
-  rewrite (process_child_score_corresponds _ correspond 2).
-  rewrite (process_selected_scores_correspond _ correspond 4).
+  rewrite (process_new_word_corresponds _ _ correspond eq_refl).
+  rewrite (process_child_score_corresponds _ _ correspond 2).
+  rewrite (process_selected_scores_correspond _ _ correspond 4).
   destruct (Process.source_i32_or_absent 1 children) as [count|];
     destruct (Process.source_child_score 2 children) as [body|];
     destruct (Process.source_selected_scores 4 children) as [injections|];
@@ -483,7 +520,7 @@ Qed.
 
 Lemma projected_process_receive_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 19 children ->
     Target.exact_receive_score (projected_process_children children) =
       option_map Core.project_score (Process.source_receive_score children).
 Proof.
@@ -492,16 +529,16 @@ Proof.
   rewrite <- (projected_process_receive_default children correspond).
   destruct (Process.source_present_default_condition children) eqn:default;
     [reflexivity|].
-  rewrite (process_bool_corresponds _ correspond 3).
-  rewrite (process_bool_corresponds _ correspond 4).
-  rewrite (process_typed_selected_corresponds _ correspond 1 16).
-  rewrite (process_typed_child_corresponds _ correspond 2 1).
-  rewrite (process_i32_corresponds _ correspond 5).
-  rewrite (process_bool_corresponds _ correspond 7).
+  rewrite (process_bool_corresponds _ _ correspond 3 eq_refl).
+  rewrite (process_bool_corresponds _ _ correspond 4 eq_refl).
+  rewrite (process_typed_selected_corresponds _ _ correspond 1 16).
+  rewrite (process_typed_child_corresponds _ _ correspond 2 1).
+  rewrite (process_i32_corresponds _ _ correspond 5 eq_refl).
+  rewrite (process_bool_corresponds _ _ correspond 7 eq_refl).
   rewrite <- projected_process_empty_par_score.
-  rewrite (process_typed_fallback_corresponds _ correspond 8 1
+  rewrite (process_typed_fallback_corresponds _ _ correspond 8 1
     Process.source_empty_par_score).
-  rewrite (process_typed_optional_corresponds _ correspond 9 12).
+  rewrite (process_typed_optional_corresponds _ _ correspond 9 12).
   destruct (Process.source_bool_or_absent 3 children) as [persistent|];
     destruct (Process.source_bool_or_absent 4 children) as [peek|];
     destruct (Process.source_typed_selected_scores 1 16 children)
@@ -519,7 +556,7 @@ Qed.
 
 Lemma projected_process_match_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 22 children ->
     Target.exact_match_score (projected_process_children children) =
       option_map Core.project_score (Process.source_match_score children).
 Proof.
@@ -528,9 +565,9 @@ Proof.
   rewrite <- (projected_process_match_default children correspond).
   destruct (Process.source_present_default_match_guard children)
     eqn:default; [reflexivity|].
-  rewrite (process_typed_child_corresponds _ correspond 1 1).
-  rewrite (process_typed_selected_corresponds _ correspond 2 21).
-  rewrite (process_bool_corresponds _ correspond 5).
+  rewrite (process_typed_child_corresponds _ _ correspond 1 1).
+  rewrite (process_typed_selected_corresponds _ _ correspond 2 21).
+  rewrite (process_bool_corresponds _ _ correspond 5 eq_refl).
   destruct (Process.source_typed_child_score 1 1 children) as [target|];
     destruct (Process.source_typed_selected_scores 2 21 children)
       as [cases|];
@@ -543,20 +580,20 @@ Qed.
 
 Lemma projected_process_expr_score :
   forall children,
-    process_child_correspondence children ->
+    process_child_correspondence 24 children ->
     Target.exact_expr_score (projected_process_children children) =
       option_map Core.project_score (Process.source_expr_score children).
 Proof.
   intros children correspond.
   destruct children as [|child [|second rest]]; simpl; try reflexivity.
-  exact (process_expr_arm_corresponds _ correspond child
+  exact (process_expr_arm_corresponds _ _ correspond eq_refl child
     (or_introl eq_refl)).
 Qed.
 
 Theorem projected_process_family_score :
   forall type_id complete children,
     In type_id [8; 15; 16; 19; 20; 21; 22; 23; 24] ->
-    process_child_correspondence children ->
+    process_child_correspondence type_id children ->
     Target.score_evidence_for type_id complete
       (projected_process_children children) =
       Projection.project_source_evidence
@@ -599,7 +636,7 @@ Theorem projected_process_family_refusal :
     In type_id [8; 15; 16; 19; 20; 21; 22; 23; 24] ->
     Admission.source_scan_seen_slots source_state =
       Schema.scan_seen target_state ->
-    process_child_correspondence children ->
+    process_child_correspondence type_id children ->
     Process.source_process_family_refused type_id complete source_state
       children =
       ((if (type_id =? 20) && Target.seen_slot target_state 1
@@ -666,7 +703,7 @@ Theorem source_process_message_projects_to_target :
       (Admission.source_scan_children program children) = true ->
     Admission.source_required_pathmaps_present program
       (Admission.source_scan_children program children) = true ->
-    process_child_correspondence children ->
+    process_child_correspondence type_id children ->
     let source_state := Admission.source_scan_children program children in
     let target_summary := Target.reduce_semantic_field raw
       (projected_process_children children) in
