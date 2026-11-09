@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use casper::rust::api::block_api::{
-    BlockAPI, DeployNotFoundError, InvalidHashError, InvalidPublicKeyError,
+    BlockAPI, DeployNotFoundError, DeployValidationError, InvalidHashError, InvalidPublicKeyError,
 };
 use casper::rust::api::block_report_api::BlockReportAPI;
 use casper::rust::engine::engine_cell::EngineCell;
@@ -1736,25 +1736,34 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
     request
         .data
         .validate_amounts()
-        .map_err(|error| eyre!("Invalid deploy amount: {error}"))?;
-    models::rust::deploy_parameters::validate_parameters(&request.data.parameters)
-        .map_err(|error| eyre!("Invalid deploy parameters: {}", error))?;
+        .map_err(|error| DeployValidationError {
+            message: format!("Invalid deploy amount: {error}"),
+        })?;
+    models::rust::deploy_parameters::validate_parameters(&request.data.parameters).map_err(
+        |error| DeployValidationError {
+            message: format!("Invalid deploy parameters: {error}"),
+        },
+    )?;
     // Decode hex strings
-    let pk_bytes = hex::decode(&request.deployer)
-        .map_err(|e| eyre!("Public key is not valid base16 format: {}", e))?;
+    let pk_bytes = hex::decode(&request.deployer).map_err(|e| DeployValidationError {
+        message: format!("Public key is not valid base16 format: {e}"),
+    })?;
 
-    let sig_bytes = hex::decode(&request.signature)
-        .map_err(|e| eyre!("Signature is not valid base16 format: {}", e))?;
+    let sig_bytes = hex::decode(&request.signature).map_err(|e| DeployValidationError {
+        message: format!("Signature is not valid base16 format: {e}"),
+    })?;
 
     // Create public key
     let pk = PublicKey::from_bytes(&pk_bytes);
 
     // Look up signature algorithm by name
     let sig_alg = SignaturesAlgFactory::apply(&request.sig_algorithm).ok_or_else(|| {
-        eyre!(
-            "Signature algorithm not supported: {}",
-            request.sig_algorithm
-        )
+        DeployValidationError {
+            message: format!(
+                "Signature algorithm not supported: {}",
+                request.sig_algorithm
+            ),
+        }
     })?;
 
     // Create DeployData (use the data from request)
@@ -1762,8 +1771,15 @@ fn to_signed_deploy(request: &DeployRequest) -> Result<Signed<DeployData>> {
 
     // Create signed deploy
     Signed::from_signed_data(deploy_data, pk, sig_bytes.into(), sig_alg)
-        .map_err(|e| eyre!("Invalid signature: {}", e))?
-        .ok_or_else(|| eyre!("Failed to create signed deploy"))
+        .map_err(|e| DeployValidationError {
+            message: format!("Invalid signature: {e}"),
+        })?
+        .ok_or_else(|| {
+            DeployValidationError {
+                message: "Invalid signature or public key".to_string(),
+            }
+            .into()
+        })
 }
 
 // Conversion functions for protobuf generated types

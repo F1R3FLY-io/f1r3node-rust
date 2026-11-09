@@ -34,11 +34,28 @@ All HTTP endpoints return errors as structured JSON. Every non-2xx response body
 | `400` | Client sent invalid input | `invalid_request_body`, `invalid_path_parameter`, `invalid_query_parameter`, `invalid_hash`, `illegal_argument`, `rholang_bad_term`, `readonly_node_required`, `validator_node_required`|
 | `404` | Requested resource not found | `block_not_found`, `deploy_not_found`, `endpoint_not_found` |
 | `405` | HTTP method not allowed for this path | `method_not_allowed` |
-| `422` | Input is valid but execution failed | `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
+| `415` | Unsupported JSON content type | `invalid_request_body` |
+| `422` | Invalid JSON fields or execution failure | `invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`, `aggregate_error` |
 | `409` | Expected state conflict (empty mempool, propose refused) | `no_new_deploys`, `validator_not_bonded`, `not_enough_new_blocks`, `too_far_ahead_of_finalized` |
 | `500` | Node-side failure | `interpreter_internal_error`, `runtime_error`, `replay_failure`, `signing_error`, `kv_store_error`, `history_error`, `system_runtime_error`, `stream_error`, `lock_error`, `other_error`, `unknown_error` |
 | `502` | Upstream or peer communication failure | `comm_error`, `external_service_error` |
 | `503` | Node cannot serve the request yet, retry later | `observer_busy`, `block_not_held`, `history_incomplete`, `missing_block` |
+
+### JSON request validation
+
+JSON endpoints return `400 invalid_request_body` for malformed JSON. Valid JSON with invalid field types or values returns `422 invalid_request_body`.
+
+Unsupported content types return `415 invalid_request_body`. Other extractor failures retain their HTTP status, including `413` for oversized request bodies.
+
+This contract applies to POST `/api/deploy`, `/api/explore-deploy`, `/api/explore-deploy-by-block-hash`, `/api/prepare-deploy`, `/api/data-at-name-by-block-hash`, and `/api/estimate-cost`.
+
+Deploy `phloPrice` requires a canonical unsigned decimal string within uint256 bounds. JSON numbers, signs, leading zeros, fractions, exponents, and values above `2^256 - 1` return `422`.
+
+An `int` deploy parameter requires a canonical decimal string within int64 bounds. A `bigInt` parameter requires a canonical decimal string with absolute value below `2^512`.
+
+Deploy conversion returns `400 illegal_argument` for invalid amounts, parameters, hexadecimal values, public keys, signature algorithms, and signatures. The response preserves the validation message.
+
+Maximum charge overflow also returns `400 illegal_argument`. Validation completes before deploy admission, so rejected deploys cannot enter the pending queue.
 
 ### Read-only-only endpoints on validators
 
@@ -305,8 +322,9 @@ curl -X POST http://localhost:40413/api/deploy \
 | Status | Condition |
 |--------|-----------|
 | `200` | Deploy accepted; body is the deploy ID (hex string) |
-| `400` | Malformed body or invalid field value: read-only node, unbonded validator, wrong shard ID, forbidden key, phlo price below minimum, deploy expired (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `400` | Malformed JSON, invalid amount, parameters, key, algorithm, signature, term, or deploy admission failure (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`, `replay_failure`, `signing_error`) |
 | `502` | Peer communication failure (`comm_error`) |
 
@@ -560,6 +578,8 @@ The `names` array contains hex-encoded unforgeable names that will be produced b
 |--------|-----------|
 | `200` | Sequence number and (optionally) names returned |
 | `400` | Malformed body or invalid deployer hex (`invalid_request_body`, `invalid_hash`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value (`invalid_request_body`) |
 | `500` | Node-side failure (`runtime_error`) |
 
 ---
@@ -588,7 +608,8 @@ curl -X POST http://localhost:40453/api/explore-deploy \
 |--------|-----------|
 | `200` | Execution succeeded; returns channel data |
 | `400` | Malformed body, invalid Rholang, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `readonly_node_required`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
 | `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
@@ -618,8 +639,9 @@ curl -X POST http://localhost:40453/api/explore-deploy-by-block-hash \
 |--------|-----------|
 | `200` | Execution succeeded; returns channel data |
 | `400` | Malformed body, invalid Rholang, invalid block hash, or node is not read-only (`invalid_request_body`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`, `user_abort`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 | `502` | External service failure (`external_service_error`) |
 | `503` | Exploratory capacity is occupied (`observer_busy`); carries `Retry-After` |
@@ -655,6 +677,8 @@ curl -X POST http://localhost:40453/api/data-at-name-by-block-hash \
 |--------|-----------|
 | `200` | Data found |
 | `400` | Malformed body or invalid block hash (`invalid_request_body`, `invalid_hash`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
+| `422` | Invalid JSON field type or value (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
@@ -937,8 +961,9 @@ curl -X POST http://localhost:40453/api/estimate-cost \
 |--------|-----------|
 | `200` | Cost estimated |
  | `400` | Malformed body, invalid Rholang, invalid block hash, invalid deployer key, or node is not read-only (`invalid_request_body`, `illegal_argument`, `rholang_bad_term`, `invalid_hash`, `readonly_node_required`) |
+| `415` | Unsupported content type (`invalid_request_body`) |
 | `404` | Specified block not found (`block_not_found`) |
-| `422` | Term valid but execution failed (`rholang_execution_error`, `out_of_phlogistons`) |
+| `422` | Invalid JSON field type or value, or execution failure (`invalid_request_body`, `rholang_execution_error`, `out_of_phlogistons`) |
 | `500` | Node-side failure (`interpreter_internal_error`) |
 
 ---
