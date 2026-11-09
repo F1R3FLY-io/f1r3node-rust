@@ -1421,6 +1421,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleMessageAssembly.v
 TLC_MEMORY_HIGH=14G TLC_RSS=16G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleMessageAssembly.v 58 \
   "oracle message summary projects to the target reducer"
+rocq_reject_placeholders theories/RPB3RecursiveParUnfold.v
+TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
+  rocq_compile_with_closed_count theories/RPB3RecursiveParUnfold.v 11 \
+  "the unfolding equation of the recursive Par reference"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1440,7 +1444,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentOracleParOrderBridge \
   StackSafePDA.RPB3IndependentOracleStringMapVerdictBridge \
   StackSafePDA.RPB3IndependentOracleUnscoredFamilyBridge \
-  StackSafePDA.RPB3IndependentOracleMessageAssembly
+  StackSafePDA.RPB3IndependentOracleMessageAssembly \
+  StackSafePDA.RPB3RecursiveParUnfold
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
