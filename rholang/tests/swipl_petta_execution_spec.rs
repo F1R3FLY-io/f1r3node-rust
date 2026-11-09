@@ -261,3 +261,69 @@ async fn test_petta_custom_blocked_pred() {
         par
     );
 }
+
+/// Two PeTTa trees with a different `lib/lib_import.metta` get two patched copies in
+/// one `CACHE_DIR`. A run never gets the patched copy of another tree.
+#[tokio::test]
+async fn test_petta_cache_is_keyed_on_lib_import_content() {
+    if should_skip_petta_test() {
+        return;
+    }
+
+    let work = tempfile::tempdir().unwrap();
+    let cache = work.path().join("cache");
+    let other = work.path().join("PeTTa");
+    std::fs::create_dir(&cache).unwrap();
+    let status = std::process::Command::new("cp")
+        .args(["-r", "--no-preserve=mode"])
+        .arg(std::env::var("PETTA_DIR").unwrap())
+        .arg(&other)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let lib_import = other.join("lib/lib_import.metta");
+    let mut content = std::fs::read_to_string(&lib_import).unwrap();
+    content.push_str("\n; cache key marker\n");
+    std::fs::write(&lib_import, content).unwrap();
+
+    let program = work.path().join("program.metta");
+    std::fs::write(&program, "!(+ 1 2)").unwrap();
+    let script = std::env::var("PETTA_SCRIPT_PATH").unwrap_or_else(|_| "./petta.sh".to_string());
+    for petta_dir in [
+        std::env::var("PETTA_DIR").unwrap(),
+        other.display().to_string(),
+    ] {
+        let out = std::process::Command::new(&script)
+            .arg(&program)
+            .env_remove("LD_PRELOAD")
+            .env("PETTA_DIR", &petta_dir)
+            .env("CACHE_DIR", &cache)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let patched: Vec<String> = std::fs::read_dir(&cache)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("lib_import.no-git-import."))
+        .collect();
+    assert_eq!(patched.len(), 2, "{patched:?}");
+    let markers = patched
+        .iter()
+        .filter(|n| {
+            std::fs::read_to_string(cache.join(n))
+                .unwrap()
+                .contains("cache key marker")
+        })
+        .count();
+    assert_eq!(
+        markers, 1,
+        "Exactly one patched copy comes from the changed tree"
+    );
+}

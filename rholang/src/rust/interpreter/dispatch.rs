@@ -8,7 +8,7 @@ use prost::Message;
 use super::env::Env;
 use super::errors::InterpreterError;
 use super::reduce::DebruijnInterpreter;
-use super::system_processes::{non_deterministic_ops, RhoDispatchMap};
+use super::system_processes::{non_deterministic_ops, verifying_ops, RhoDispatchMap};
 use super::unwrap_option_safe;
 
 pub fn build_env(data_list: Vec<ListParWithRandom>) -> Env<Par> {
@@ -74,14 +74,14 @@ impl RholangAndScalaDispatcher {
                 }
                 TaggedCont::ScalaBodyRef(_ref) => {
                     let is_non_deterministic = non_deterministic_ops().contains(&_ref);
+                    let is_recorded = is_non_deterministic || verifying_ops().contains(&_ref);
                     let dispatch_table = self._dispatch_table.read().await;
                     match dispatch_table.get(&_ref) {
                         Some(f) => {
                             match f((data_list, is_replay, previous_output)).await {
-                                Ok(output) => RholangAndScalaDispatcher::dispatch_type(
-                                    is_non_deterministic,
-                                    output,
-                                ),
+                                Ok(output) => {
+                                    RholangAndScalaDispatcher::dispatch_type(is_recorded, output)
+                                }
                                 Err(e) if is_non_deterministic => {
                                     // Non-deterministic process failed - return FailedNonDeterministicCall
                                     // so the produce event can be marked as failed for replay safety
@@ -102,10 +102,10 @@ impl RholangAndScalaDispatcher {
     }
 
     fn dispatch_type(
-        is_non_deterministic: bool,
+        is_recorded: bool,
         output: Vec<Par>,
     ) -> Result<DispatchType, InterpreterError> {
-        if is_non_deterministic {
+        if is_recorded {
             Ok(DispatchType::NonDeterministicCall(
                 output.iter().map(|p| p.encode_to_vec()).collect(),
             ))

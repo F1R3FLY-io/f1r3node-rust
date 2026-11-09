@@ -193,7 +193,7 @@ impl FdPositionMutator {
     }
 }
 
-fn par_stable_hash(par: &Par) -> [u8; 32] {
+pub fn par_stable_hash(par: &Par) -> [u8; 32] {
     let h = stable_hash_provider::hash(par).bytes();
     assert_eq!(
         h.len(),

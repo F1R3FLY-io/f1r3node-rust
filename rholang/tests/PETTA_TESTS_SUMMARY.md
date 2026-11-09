@@ -45,14 +45,14 @@ Tests JSON→Par conversion for all data types:
 - Basic types: `null`, `boolean`, `number`, `string`
 - Collections: `array`, `object`
 - Nested structures: nested arrays, nested objects.
-- **Timeout test:** Large fibonacci computation that exceeds 10-second timeout
+- **Timeout test:** Large fibonacci computation that exceeds the 10-second timeout of the NORMAL-mode `petta_execute` path
 
 **Run:** `PETTA_PATH=/path/to/PeTTa cargo test --package rholang --lib swi_prolog_service::tests`
 
 ### 2. Direct Execution Tests
 **Location:** `rholang/tests/swipl_petta_execution_spec.rs`
 
-**Coverage:** 6 tests
+**Coverage:** 9 tests
 
 Tests the `petta_execute` function directly:
 - `test_petta_execute_simple_swap` - Basic pattern matching
@@ -61,34 +61,35 @@ Tests the `petta_execute` function directly:
 - `test_petta_execute_invalid_syntax` - Error handling
 - `test_petta_execute_empty_code` - Edge case handling
 - `test_petta_execute_timeout_large_fibonacci` - Timeout enforcement for long-running computations
+- `test_petta_cache_is_keyed_on_lib_import_content` - A changed PeTTa tree never gets the cached patch of another tree
 
 **Run:** `PETTA_PATH=/path/to/PeTTa cargo test --package rholang --test swipl_petta_execution_spec`
 
 ### 3. Integration Tests with Rholang Runtime
 **Location:** `rholang/tests/swipl_petta_integration_spec.rs`
 
-**Coverage:** 6 tests
+**Coverage:** 15 tests
 
-Same tests as above, but using the Rholang runtime.
+The direct-execution cases through the Rholang runtime, plus consensus mode:
+lockdown escape cases, PLN under lockdown, the inference budget, and phlo
+(`test_petta_cost_grows_with_inferences`, `test_petta_underfunded_deploy_does_not_spawn`,
+`test_petta_run_without_inference_count_pays_full_budget`).
 
 **Run:** `PETTA_PATH=/path/to/PeTTa cargo test --package rholang --test swipl_petta_integration_spec`
 
 ### 4. Replay Tests (Deterministic Re-Execution Verification)
 **Location:** `rholang/tests/swipl_petta_replay_spec.rs`
 
-**Coverage:** 6 tests
+**Coverage:** 13 tests
 
-PeTTa is a deterministic system process: every node runs the interpreter,
-including validators during replay. It is NOT cached in the event log. These
-tests verify that replay re-executes PeTTa and matches the recorded log:
-- `test_petta_is_registered_as_deterministic` - Verifies `PETTA_EXECUTE` is absent from `non_deterministic_ops()`
-- `test_petta_replay_consistency` - Replay re-executes and succeeds
-- `test_petta_replay_with_multiple_calls` - Multiple PeTTa calls in one contract
-- `test_petta_replay_error_consistency` - A failing program reproduces the same `SwiplError` on replay
-- `test_petta_replay_timeout_error` - A timeout reproduces on replay by re-running PeTTa
-- `test_petta_replay_re_executes` - Confirms replay re-runs the interpreter rather than reading a cache
+Every node runs PeTTa again on replay. The event log records only a hash of the
+result and the frames. The tests check that each limit gives the same reason and
+cost in play and replay, that play records the hash, and that a changed hash
+logs a divergence and still produces the fresh result.
 
 **Run:** `PETTA_PATH=/path/to/PeTTa cargo test --package rholang --test swipl_petta_replay_spec`
+
+The NODE-mode tests need mlabs-haskell/PeTTa b9ca1884 in `PETTA_DIR`.
 
 ## Running All Tests
 

@@ -1366,6 +1366,7 @@ fn dispatch_table_creator(
     grpc_client_service: GrpcClientService,
     chromadb_service: SharedChromaDBService,
     fs_handles: super::io::handle_table::FileHandleTable,
+    cost: _cost,
 ) -> RhoDispatchMap {
     let mut dispatch_table = HashMap::new();
 
@@ -1443,6 +1444,7 @@ fn dispatch_table_creator(
             grpc_client_service.clone(),
             chromadb_service.clone(),
             urn_to_channel.clone(),
+            cost.clone(),
         ));
 
         dispatch_table.insert(tuple.0, tuple.1);
@@ -1551,6 +1553,7 @@ async fn setup_reducer(
         grpc_client_service,
         chromadb_service,
         fs_handles,
+        cost.clone(),
     );
 
     let dispatcher = Arc::new(RholangAndScalaDispatcher {

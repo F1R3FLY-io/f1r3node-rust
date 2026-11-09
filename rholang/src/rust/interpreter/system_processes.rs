@@ -23,10 +23,13 @@ use models::rust::utils::{new_gbool_par, new_gbytearray_par, new_gsys_auth_token
 use prost::Message;
 use shared::rust::{BitSet, Byte};
 
+use super::accounting::_cost;
+use super::accounting::costs::Cost;
 use super::contract_call::ContractCall;
 use super::dispatch::RhoDispatch;
 use super::errors::{illegal_argument_error, InterpreterError};
 use super::grpc_client_service::GrpcClientService;
+use super::io::verify::par_stable_hash;
 use super::ollama_service::{ChatMessage, SharedOllamaService};
 use super::openai_service::SharedOpenAIService;
 use super::pretty_printer::PrettyPrinter;
@@ -37,7 +40,9 @@ use super::rho_type::{
     RhoBoolean, RhoByteArray, RhoDeployId, RhoDeployerId, RhoList, RhoName, RhoNumber, RhoString,
     RhoSysAuthToken, RhoUri,
 };
-use super::swi_prolog_service::{petta_execute_framed, Frame};
+use super::swi_prolog_service::{
+    petta_execute_framed, Frame, PETTA_BASE_COST, PETTA_MAX_INFERENCES, PETTA_PHLO_PER_INFERENCE,
+};
 use super::util::vault_address::VaultAddress;
 use crate::rust::interpreter::chromadb_service::SharedChromaDBService;
 #[cfg(feature = "chromadb")]
@@ -608,6 +613,25 @@ pub fn non_deterministic_ops() -> HashSet<i64> {
     ])
 }
 
+/// Deterministic system processes whose output hash the event log records for replay checks.
+pub fn verifying_ops() -> HashSet<i64> { HashSet::from([BodyRefs::SWIPL_EXECUTE_PETTA]) }
+
+fn petta_output_digest(output: &Par, frames: &[Frame]) -> [u8; 32] {
+    let frame_pars = frames
+        .iter()
+        .map(|f| {
+            RhoList::create_par(vec![
+                RhoString::create_par(f.channel.clone()),
+                RhoList::create_par(f.arguments.clone()),
+            ])
+        })
+        .collect();
+    par_stable_hash(&RhoList::create_par(vec![
+        output.clone(),
+        RhoList::create_par(frame_pars),
+    ]))
+}
+
 /// Channel URNs that a PeTTa program is allowed to forward emission frames to
 /// (see [`SystemProcesses::forward_frames`]). The frame `channel` is controlled
 /// by the MeTTa program, and `urn_to_channel` holds every dispatch-table URN
@@ -644,6 +668,7 @@ impl ProcessContext {
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
         urn_to_channel: Arc<HashMap<String, Par>>,
+        cost: _cost,
     ) -> Self {
         ProcessContext {
             space: space.clone(),
@@ -663,6 +688,7 @@ impl ProcessContext {
                 grpc_client_service,
                 chromadb_service,
                 urn_to_channel.clone(),
+                cost,
             ),
             urn_to_channel,
         }
@@ -827,6 +853,7 @@ pub struct SystemProcesses {
     #[allow(dead_code)] // Note: This isn't dead when the chromadb flag is used
     chromadb_service: SharedChromaDBService,
     pub urn_to_channel: Arc<HashMap<String, Par>>,
+    cost: _cost,
 }
 
 impl SystemProcesses {
@@ -841,6 +868,7 @@ impl SystemProcesses {
         grpc_client_service: GrpcClientService,
         chromadb_service: SharedChromaDBService,
         urn_to_channel: Arc<HashMap<String, Par>>,
+        cost: _cost,
     ) -> Self {
         SystemProcesses {
             dispatcher,
@@ -854,6 +882,7 @@ impl SystemProcesses {
             pretty_printer: PrettyPrinter::new(),
             chromadb_service,
             urn_to_channel,
+            cost,
         }
     }
 
@@ -2323,26 +2352,19 @@ impl SystemProcesses {
     ///
     /// # Return Shape
     ///
-    /// Sends a single `Par` on the acknowledgment channel containing the execution result.
-    /// The structure matches PeTTa's JSON output converted to Rholang types.
+    /// Sends a Rholang list with one element for each `!` query on the acknowledgment
+    /// channel, and returns the 32-byte stable hash of the result and the frames.
     ///
     /// # Determinism and consensus
     ///
-    /// This is a **deterministic** system process. It is NOT registered in
-    /// [`non_deterministic_ops`], so the output is not cached in the event log.
-    /// Every node runs the interpreter: the proposer during play, and each
-    /// validator again during replay. Determinism is enforced by ordinary replay
-    /// validation — the recomputed post-state hash, the COMM matching in the
-    /// replay rspace (including the forwarded frames), and the deploy cost must
-    /// all match the proposer's block.
+    /// Every node runs the interpreter. The event log records the output hash
+    /// ([`verifying_ops`]). On replay a different hash logs an error on `f1r3fly.petta`
+    /// with the deploy, both hashes and the inference count, and the fresh result is
+    /// still produced, so replay validation rejects the block. Lockdown and the limits
+    /// of [`petta_execute_framed`] make the run deterministic.
     ///
-    /// Re-execution is deterministic because [`petta_execute_framed`] closes every
-    /// nondeterminism source: network unshared, `git-import!` stripped, Python excluded;
-    /// the entropy/clock builtins are blocked (`PETTA_CONSENSUS_BLOCKED_PREDS`, a denylist
-    /// — add future ones there), leaving seeded `rand-*` for randomness; and the wall-clock
-    /// timeout is replaced by a deterministic inference budget (`PETTA_MAX_INFERENCES`), so
-    /// an over-budget run fails identically on every node. A deploy that still diverges is
-    /// rejected as an invalid transaction (non-slashable).
+    /// Phlo: `PETTA_BASE_COST` before the run, then `PETTA_PHLO_PER_INFERENCE` for each
+    /// inference, or the full budget when the run gives no count.
     ///
     /// # Error handling
     ///
@@ -2355,6 +2377,7 @@ impl SystemProcesses {
     ///
     /// - [`petta_execute`] - Low-level PeTTa execution (in `swi_prolog_service`)
     /// - [`non_deterministic_ops`] - Registry of non-deterministic body refs (PeTTa is absent)
+    /// - [`verifying_ops`] - Registry of verifying body refs (PeTTa is present)
     /// - Tests: `swipl_petta_replay_spec.rs`
     pub async fn petta_execute(
         &self,
@@ -2366,7 +2389,7 @@ impl SystemProcesses {
             .map(|lpwr| lpwr.random_state.clone())
             .unwrap_or_default();
 
-        let Some((produce, _is_replay, _previous_output, args)) =
+        let Some((produce, is_replay, previous_output, args)) =
             self.is_contract_call().unapply(contract_args)
         else {
             return Err(illegal_argument_error("petta_execute"));
@@ -2379,24 +2402,45 @@ impl SystemProcesses {
             return Err(illegal_argument_error("petta_execute"));
         };
 
-        // Deterministic: `petta_execute_framed` blocks the entropy/clock builtins and
-        // bounds the run with an inference budget, so every node re-executes to the same
-        // output and frames (confirmed by ordinary replay validation).
-        let (frames, output_par) = match petta_execute_framed(&metta_code).await {
-            Ok((frames, par)) => (frames, par),
-            Err(e) => return Err(InterpreterError::SwiplError(e.to_string().into())),
-        };
+        // Positive charges only: out-of-phlo must not depend on branch scheduling.
+        self.cost
+            .charge(Cost::create(PETTA_BASE_COST, "petta base cost"))?;
+        let (outcome, inferences) = petta_execute_framed(&metta_code).await;
+        let used = inferences.map_or(PETTA_MAX_INFERENCES, |n| n.min(PETTA_MAX_INFERENCES));
+        self.cost.charge(Cost::create(
+            used as i64 * PETTA_PHLO_PER_INFERENCE,
+            "petta inferences",
+        ))?;
+        let (frames, output_par) =
+            outcome.map_err(|e| InterpreterError::SwiplError(e.to_string().into()))?;
+
+        let digest = petta_output_digest(&output_par, &frames);
+        if is_replay {
+            let recorded = previous_output.first().and_then(RhoByteArray::unapply);
+            if recorded.as_deref() != Some(&digest[..]) {
+                let deploy = self.deploy_data.read().await;
+                tracing::error!(
+                    target: "f1r3fly.petta",
+                    deploy_id = %hex::encode(&deploy.deploy_id),
+                    deployer = %hex::encode(&deploy.deployer_id.bytes),
+                    deploy_timestamp = deploy.timestamp,
+                    proposer_hash = %recorded.map(hex::encode).unwrap_or_else(|| "missing".to_string()),
+                    fresh_hash = %hex::encode(digest),
+                    inferences = ?inferences,
+                    "PeTTa replay divergence: the fresh output hash differs from the proposer hash"
+                );
+            }
+        }
 
         // Forward emission frames to their Rholang channels.
         self.forward_frames(&frames, rand.clone()).await?;
 
-        let output = vec![output_par];
-        if let Err(e) = produce(&output, ack).await {
+        if let Err(e) = produce(&[output_par], ack).await {
             return Err(InterpreterError::SwiplError(
                 format!("Failed to produce PeTTa output on ack channel: {e}").into(),
             ));
         }
-        Ok(output)
+        Ok(vec![RhoByteArray::create_par(digest.to_vec())])
     }
 
     /// Forward frames emitted by the MeTTa interpreter to their Rholang channels.

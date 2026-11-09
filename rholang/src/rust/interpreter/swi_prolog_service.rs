@@ -1,9 +1,10 @@
 use std::env;
 use std::fs::{remove_file, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crypto::rust::hash::sha_256::Sha256Hasher;
 use models::rhoapi::Par;
 use serde_json::Value;
 use tempfile::NamedTempFile;
@@ -15,22 +16,136 @@ use crate::rust::interpreter::rho_type::{
     RhoBoolean, RhoList, RhoMap, RhoNil, RhoNumber, RhoString,
 };
 
-/// Consensus blocklist for the `rho:petta:execute` path ([`petta_execute_framed`]):
-/// entropy/clock builtins that would diverge on replay. Blocked via `petta.sh`'s
-/// `PETTA_BLOCKED_PREDS` → `block_predicate` (each becomes inert). Hardcoded, not env,
-/// so every node is identical; seeded `rand-*` stays available for randomness.
-const PETTA_CONSENSUS_BLOCKED_PREDS: &str = "readln! random-int random-float \
-current-time format-time time-time perf-counter now time-sleep";
+/// MeTTa functions that `consensus_lockdown/1` keeps: the fork's `register_fun` lists
+/// without interop, assertion, host, clock, sleep and entropy builtins. Sorted.
+pub const PETTA_CONSENSUS_ALLOWED_FUNS: &str =
+    "!= #* #+ #- #// #< #= #> #\\= #div #max #min #mod % * + - / < <= = == =? =alpha > \
+>= abs-math acos-math add-atom add-translator-rule! alpha-unique-atom and append \
+asin-math atan-math atom_chars atom_concat bind! car-atom cdr-atom ceil-math \
+change-state! concat cons cons-atom copy_term cos cos-math decons decons-atom empty \
+eval exclude-item exp filter-atom first first-from-pair floor-math foldl-atom \
+get-atoms get-metatype get-mettatype get-state get-type id implies import! \
+index-atom intersection-atom is-alpha-member is-expr is-ground is-inf is-member \
+is-nan is-space is-var isinf-math isnan-math last length let let* library \
+list_to_set log log-math map-atom match max max-atom member min min-atom msort \
+nan-value neg-inf not or parse pos-inf pow-math println! py-int py-round py-str \
+py-xor py_inf py_int py_nan py_neginf py_round py_round_ndigits py_str py_xor \
+rand-choice rand-getrandbits rand-randbelow rand-randint rand-random rand-seed \
+rand_getrandbits rand_randbelow rand_randint rand_random rand_seed randomFloat \
+reduce remove-atom remove-translator-rule! repr repra reverse round-math \
+second-from-pair sin sin-math size-atom sort sort-atom sqrt sqrt-math sread \
+subtraction-atom superpose tan-math term_hash trunc-math union-atom unique-atom xor";
 
-/// Deterministic execution budget (SWI-Prolog inferences) for the handler path:
-/// `petta.sh` wraps the run in `call_with_inference_limit/3`. The consensus bound
-/// replacing the wall-clock timeout — an inference count is reproducible, so an
-/// over-budget run fails identically on every node. Provisional; tune / couple to phlo.
-const PETTA_MAX_INFERENCES: u64 = 100_000_000;
+/// Inference budget of the handler path: `call_with_inference_limit/3`, checked again after the run.
+pub const PETTA_MAX_INFERENCES: u64 = 10_000_000;
 
-/// Wall-clock backstop (seconds) — NOT the consensus bound ([`PETTA_MAX_INFERENCES`]
-/// is). Guards only against a hang that burns no inferences; sized never to fire first.
-const PETTA_WALLCLOCK_BACKSTOP_SECS: u64 = 60;
+/// Phlo charged for each inference that a `rho:petta:execute` run uses.
+pub const PETTA_PHLO_PER_INFERENCE: i64 = 1;
+
+/// Phlo charged before the sandbox starts (tunable).
+pub const PETTA_BASE_COST: i64 = 100_000;
+
+/// Deterministic memory limits for the handler path, passed to `petta.sh` NODE mode.
+pub const PETTA_STACK_LIMIT_BYTES: u64 = 1 << 30;
+pub const PETTA_TABLE_SPACE_BYTES: u64 = 128 << 20;
+pub const PETTA_MAX_INTEGER_SIZE_BYTES: u64 = 64 << 10;
+
+/// Address-space limit (liveness only). An abort gives `memory_limit_exceeded`.
+pub const PETTA_ADDRESS_SPACE_BYTES: u64 = 4 << 30;
+
+/// Characters of all frames and the result. The stdout reader stops at 4x in bytes.
+pub const PETTA_MAX_OUTPUT_CHARS: u64 = 1 << 20;
+
+/// Wall-clock backstop (seconds), liveness only. A hit is a node fault.
+const PETTA_WALLCLOCK_BACKSTOP_SECS: u64 = 600;
+
+/// SWI-Prolog version of the pinned `swipl` image in `node/Dockerfile`.
+pub const SWIPL_VERSION: &str = "10.0.2";
+
+/// [`petta_tree_hash`] of `src` and `lib` of mlabs-haskell/PeTTa b9ca1884.
+pub const PETTA_SRC_TREE_HASH: &str =
+    "6338b387b02394e51bed0d84f532eb20f9ec4a373bfe862bbf88f0efac3b2ebf";
+
+/// [`petta_tree_hash`] of the whole dylon/PLN fbb2ae0f tree.
+pub const PLN_SRC_TREE_HASH: &str =
+    "d47114554b1bb75ab090914e5360c8f26f9471bdb77035ce1f4e705a24a2d3a5";
+
+crate::register_consensus_constant!(order = 18, name = PETTA_MAX_INFERENCES, u64_be);
+crate::register_consensus_constant!(order = 19, name = PETTA_STACK_LIMIT_BYTES, u64_be);
+crate::register_consensus_constant!(order = 20, name = PETTA_TABLE_SPACE_BYTES, u64_be);
+crate::register_consensus_constant!(order = 21, name = PETTA_MAX_INTEGER_SIZE_BYTES, u64_be);
+crate::register_consensus_constant!(order = 22, name = PETTA_ADDRESS_SPACE_BYTES, u64_be);
+crate::register_consensus_constant!(order = 23, name = PETTA_MAX_OUTPUT_CHARS, u64_be);
+crate::register_consensus_constant!(order = 24, name = PETTA_PHLO_PER_INFERENCE, u64_be);
+crate::register_consensus_constant!(order = 25, name = PETTA_BASE_COST, u64_be);
+crate::register_consensus_constant!(order = 26, name = PETTA_CONSENSUS_ALLOWED_FUNS, str_bytes);
+crate::register_consensus_constant!(order = 27, name = SWIPL_VERSION, str_bytes);
+crate::register_consensus_constant!(order = 28, name = PETTA_SRC_TREE_HASH, str_bytes);
+crate::register_consensus_constant!(order = 29, name = PLN_SRC_TREE_HASH, str_bytes);
+
+/// Hex SHA-256 of `path\0content` for each file under `subdirs` ("" is `root`), in sorted
+/// relative-path order, skipping `.git`.
+pub fn petta_tree_hash(root: &Path, subdirs: &[&str]) -> std::io::Result<String> {
+    fn walk(root: &Path, dir: &Path, files: &mut Vec<String>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.file_name().is_some_and(|n| n == ".git") {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, files)?;
+            } else {
+                let rel = path.strip_prefix(root).expect("walked path is under root");
+                files.push(rel.to_string_lossy().into_owned());
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    for sub in subdirs {
+        walk(root, &root.join(sub), &mut files)?;
+    }
+    files.sort();
+    let mut buf = Vec::new();
+    for file in &files {
+        buf.extend_from_slice(file.as_bytes());
+        buf.push(0);
+        buf.extend(std::fs::read(root.join(file))?);
+    }
+    Ok(hex::encode(Sha256Hasher::hash(buf)))
+}
+
+/// Compares `swipl --version`, `PETTA_DIR` and `PLN_DIR` (when set) with the pins.
+pub fn check_backend() -> Result<(), String> {
+    let out = std::process::Command::new("swipl")
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("cannot run swipl --version: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let version = text.split_whitespace().nth(2).unwrap_or_default();
+    if version != SWIPL_VERSION {
+        return Err(format!(
+            "swipl version {version:?}, expected {SWIPL_VERSION}"
+        ));
+    }
+
+    let check_tree = |var: &str, subdirs: &[&str], pin: &str| -> Result<(), String> {
+        match env::var(var) {
+            Ok(dir) if !dir.is_empty() => {
+                let hash = petta_tree_hash(Path::new(&dir), subdirs)
+                    .map_err(|e| format!("cannot hash {var}={dir}: {e}"))?;
+                if hash != pin {
+                    return Err(format!("{var}={dir} has tree hash {hash}, expected {pin}"));
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    };
+    check_tree("PETTA_DIR", &["src", "lib"], PETTA_SRC_TREE_HASH)?;
+    check_tree("PLN_DIR", &[""], PLN_SRC_TREE_HASH)
+}
 
 /// A frame emitted by the MeTTa interpreter in NODE mode.
 ///
@@ -283,25 +398,41 @@ pub async fn petta_execute(metta_code: &str) -> Result<Par, InterpreterError> {
 ///
 /// # Returns
 ///
-/// `Ok((frames, result))` where `frames` contains all emission frames (may be empty) and
+/// A pair. The first element is `Ok((frames, result))`, where `frames` contains all emission frames (may be empty) and
 /// `result` is the MeTTa execution's return value as a `Par`.
+/// The second element is the inference count of the run, from the result frame or the
+/// error frame. It is `None` when the run gave no count, for example on a halt or an abort.
 ///
 /// # Error Conditions
 ///
-/// Same as [`petta_execute`] plus:
+/// The setup errors of [`petta_execute`], without its 10-second timeout, plus:
+/// - `InterpreterError::SwiplError("PeTTa execution error: <reason>")` — a canonical reason
+///   such as `inference_limit_exceeded` or `consensus_forbidden(<name>)`
+/// - `InterpreterError::SwiplError("MeTTa execution hit the 600s wall-clock backstop")`
 /// - `InterpreterError::SwiplError("No result line found ...")` — stdout ended without a result line
 /// - Unknown channel URNs in frames are silently skipped (the caller may handle them)
 ///
 /// # Environment Variables
 ///
-/// Same as [`petta_execute`], plus `PETTA_MODE=NODE` is set automatically.
+/// The paths of [`petta_execute`]. The mode, the allowlist and the limits come from the constants.
 ///
 /// # See Also
 ///
 /// - [`petta_execute`] — single-shot variant (NORMAL mode, backward compatible)
 /// - [`Frame`] — per-println! emission frame
 /// - [`system_processes::petta_execute`] — Rholang contract wrapper that forwards frames to rspace
-pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par), InterpreterError> {
+pub async fn petta_execute_framed(
+    metta_code: &str,
+) -> (Result<(Vec<Frame>, Par), InterpreterError>, Option<u64>) {
+    let mut inferences = None;
+    let result = run_framed(metta_code, &mut inferences).await;
+    (result, inferences)
+}
+
+async fn run_framed(
+    metta_code: &str,
+    inferences: &mut Option<u64>,
+) -> Result<(Vec<Frame>, Par), InterpreterError> {
     let (_metta_file, metta_file_path) = create_metta_file(metta_code)?;
     let env = PettaEnv::from_env()?;
 
@@ -315,8 +446,13 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
             .env("PETTA_DIR", &env.petta_dir)
             .env("CACHE_DIR", &env.cache_dir)
             .env("SANDBOX_LIB_PATH", &env.sandbox_lib_path)
-            .env("PETTA_BLOCKED_PREDS", PETTA_CONSENSUS_BLOCKED_PREDS)
-            .env("PETTA_MAX_INFERENCES", PETTA_MAX_INFERENCES.to_string());
+            .env("PETTA_ALLOWED_FUNS", PETTA_CONSENSUS_ALLOWED_FUNS)
+            .env("PETTA_MAX_INFERENCES", PETTA_MAX_INFERENCES.to_string())
+            .env("PETTA_STACK_LIMIT_BYTES", PETTA_STACK_LIMIT_BYTES.to_string())
+            .env("PETTA_TABLE_SPACE_BYTES", PETTA_TABLE_SPACE_BYTES.to_string())
+            .env("PETTA_MAX_INTEGER_SIZE_BYTES", PETTA_MAX_INTEGER_SIZE_BYTES.to_string())
+            .env("PETTA_ADDRESS_SPACE_BYTES", PETTA_ADDRESS_SPACE_BYTES.to_string())
+            .env("PETTA_MAX_OUTPUT_CHARS", PETTA_MAX_OUTPUT_CHARS.to_string());
         let mut child = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -348,8 +484,10 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
 
         let timeout_secs: u64 = PETTA_WALLCLOCK_BACKSTOP_SECS;
         let framed_result = tokio::time::timeout(Duration::from_secs(timeout_secs), async {
-            use tokio::io::AsyncBufReadExt;
-            let reader = BufReader::new(child_stdout);
+            use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+            let reader_cap = 4 * PETTA_MAX_OUTPUT_CHARS + 1;
+            let reader = BufReader::new(child_stdout.take(reader_cap + 1));
+            let mut read_bytes: u64 = 0;
             let mut lines = tokio_stream::wrappers::LinesStream::new(reader.lines());
 
             let mut frames: Vec<Frame> = Vec::new();
@@ -362,6 +500,18 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
                         format!("Failed to read line from PeTTa stdout: {}", e).into(),
                     )
                 })?;
+
+                read_bytes += line.len() as u64 + 1;
+                if read_bytes > reader_cap {
+                    tracing::error!(
+                        target: "f1r3fly.petta",
+                        reader_cap,
+                        "node fault: PeTTa stdout passed the reader cap"
+                    );
+                    return Err(InterpreterError::SwiplError(
+                        "PeTTa output passed the reader cap".into(),
+                    ));
+                }
 
                 let trimmed = line.trim().to_string();
                 if trimmed.is_empty() {
@@ -404,6 +554,7 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
                     Value::Object(ref map)
                         if map.get("type").and_then(|v| v.as_str()) == Some("result") =>
                     {
+                        *inferences = map.get("inferences").and_then(Value::as_u64);
                         let value_field = map.get("value").ok_or_else(|| {
                             InterpreterError::SwiplError(
                                 "Result frame missing 'value' field".into(),
@@ -417,6 +568,7 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
                     Value::Object(ref map)
                         if map.get("type").and_then(|v| v.as_str()) == Some("error") =>
                     {
+                        *inferences = map.get("inferences").and_then(Value::as_u64);
                         let reason = map
                             .get("reason")
                             .and_then(|v| v.as_str())
@@ -436,6 +588,11 @@ pub async fn petta_execute_framed(metta_code: &str) -> Result<(Vec<Frame>, Par),
         })
         .await
         .map_err(|_| {
+            tracing::error!(
+                target: "f1r3fly.petta",
+                backstop_secs = PETTA_WALLCLOCK_BACKSTOP_SECS,
+                "node fault: PeTTa execution hit the wall-clock backstop"
+            );
             InterpreterError::SwiplError(
                 format!(
                     "MeTTa execution hit the {}s wall-clock backstop",
@@ -594,6 +751,41 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    #[test]
+    fn test_petta_tree_hash_format() {
+        let dir = tempfile::tempdir().unwrap();
+        for (path, content) in [
+            ("src/a", "x"),
+            ("lib/b", "y"),
+            (".git/c", "z"),
+            ("other/d", "w"),
+        ] {
+            let file = dir.path().join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, content).unwrap();
+        }
+        assert_eq!(
+            petta_tree_hash(dir.path(), &["src", "lib"]).unwrap(),
+            "5fd30b96986205199049074cc773bb322db7bed661aa8d53ce45ed0373b37f6f"
+        );
+    }
+
+    #[test]
+    fn test_petta_backend_matches_pins() {
+        use crate::rust::interpreter::test_utils::utils::should_skip_petta_test;
+
+        if should_skip_petta_test() {
+            return;
+        }
+        assert_eq!(check_backend(), Ok(()));
+    }
+
+    #[test]
+    fn test_consensus_allowlist_is_sorted_and_unique() {
+        let names: Vec<&str> = PETTA_CONSENSUS_ALLOWED_FUNS.split(' ').collect();
+        assert!(names.windows(2).all(|w| w[0] < w[1]), "{names:?}");
+    }
+
     #[test]
     fn test_value_to_par_null() {
         let result = value_to_par(json!(null)).unwrap();
