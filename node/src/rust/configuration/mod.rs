@@ -771,6 +771,29 @@ mod embedded_defaults_tests {
     }
 
     #[test]
+    fn report_cache_retention_outside_its_range_is_rejected() {
+        for value in ["-1", "4294967296"] {
+            let override_config = format!("api-server.report-cache-retention-blocks = {value}");
+            let result: Result<NodeConf, _> = hocon::HoconLoader::new()
+                .load_str(EMBEDDED_DEFAULTS)
+                .unwrap()
+                .load_str(&override_config)
+                .unwrap()
+                .resolve();
+            assert!(result.is_err(), "{value}");
+        }
+
+        let cfg: NodeConf = hocon::HoconLoader::new()
+            .load_str(EMBEDDED_DEFAULTS)
+            .unwrap()
+            .load_str("api-server.report-cache-retention-blocks = 4294967295")
+            .unwrap()
+            .resolve()
+            .unwrap();
+        assert_eq!(cfg.api_server.report_cache_retention_blocks, u32::MAX);
+    }
+
+    #[test]
     fn negative_logging_byte_limits_are_rejected() {
         for field in ["max-file-size-bytes", "max-total-size-bytes"] {
             let override_config = format!("logging.file.{} = -1", field);

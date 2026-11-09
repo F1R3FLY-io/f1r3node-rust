@@ -17,15 +17,29 @@ fn lmdb_environments() -> BTreeSet<String> {
         .collect()
 }
 
+/// Size in bytes of the file at `path`; `None` when it does not exist yet.
+fn file_size(path: &Path) -> std::io::Result<Option<u64>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata.len())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// Size in bytes of each LMDB data file under `data_dir`, keyed by its
-/// environment directory. Environments not created yet are left out.
+/// environment directory. Environments not created yet are left out; a store
+/// whose size cannot be read is logged and left out.
 pub fn store_sizes(data_dir: &Path) -> Vec<(String, u64)> {
     lmdb_environments()
         .into_iter()
         .filter_map(|env| {
-            std::fs::metadata(data_dir.join(&env).join(LMDB_DATA_FILE))
-                .ok()
-                .map(|metadata| (env, metadata.len()))
+            match file_size(&data_dir.join(&env).join(LMDB_DATA_FILE)) {
+                Ok(size) => size.map(|bytes| (env, bytes)),
+                Err(e) => {
+                    tracing::warn!(store = %env, error = %e, "Cannot read the size of an LMDB store");
+                    None
+                }
+            }
         })
         .collect()
 }
@@ -52,6 +66,29 @@ mod tests {
         let dir = data_dir.join(env);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(LMDB_DATA_FILE), vec![0u8; len]).unwrap();
+    }
+
+    #[test]
+    fn a_missing_file_has_no_size_but_other_errors_are_reported() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let not_a_dir = data_dir.path().join("plain-file");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+
+        assert_eq!(file_size(&data_dir.path().join("missing")).unwrap(), None);
+        assert!(file_size(&not_a_dir.join(LMDB_DATA_FILE)).is_err());
+    }
+
+    #[test]
+    fn an_unreadable_store_is_left_out_without_hiding_the_others() {
+        let data_dir = tempfile::tempdir().unwrap();
+        write_data_file(data_dir.path(), "rspace/cold", 8192);
+        std::fs::create_dir_all(data_dir.path().join("rspace")).unwrap();
+        std::fs::write(data_dir.path().join("rspace/history"), b"x").unwrap();
+
+        assert_eq!(store_sizes(data_dir.path()), vec![(
+            "rspace/cold".to_string(),
+            8192
+        )]);
     }
 
     #[test]

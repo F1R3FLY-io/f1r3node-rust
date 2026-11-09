@@ -61,51 +61,6 @@ fn block_report_prewarm_enabled(is_node_read_only: bool, dev_mode: bool) -> bool
     is_node_read_only || dev_mode
 }
 
-/// Upper bound on the heights one prune pass walks, so the first pass after a
-/// restart (cursor back at 0) spreads over several finalized blocks.
-const REPORT_PRUNE_MAX_HEIGHTS: i64 = 1_000;
-
-/// Heights whose cached reports fall out of the retention window once
-/// `finalized_height` is finalized, starting at `cursor` (the first height not
-/// yet pruned). `None` when retention is off or nothing new is out of window.
-fn report_prune_heights(
-    cursor: i64,
-    finalized_height: i64,
-    retention: u64,
-) -> Option<std::ops::Range<i64>> {
-    if retention == 0 {
-        return None;
-    }
-    let retention = i64::try_from(retention).unwrap_or(i64::MAX);
-    let keep_from = finalized_height.saturating_sub(retention);
-    (keep_from > cursor)
-        .then(|| cursor..keep_from.min(cursor.saturating_add(REPORT_PRUNE_MAX_HEIGHTS)))
-}
-
-async fn prune_report_cache(
-    report_api: &casper::rust::api::block_report_api::BlockReportAPI,
-    heights: std::ops::Range<i64>,
-) -> bool {
-    match report_api.prune_cached_reports(heights.clone()).await {
-        Ok((reports, bytes)) => {
-            metrics::counter!("block_report.cache_pruned_reports", "source" => "node")
-                .increment(reports as u64);
-            metrics::counter!("block_report.cache_pruned_bytes", "source" => "node")
-                .increment(bytes);
-            true
-        }
-        Err(e) => {
-            tracing::warn!(
-                start = heights.start,
-                end = heights.end,
-                error = %e,
-                "Block report cache prune failed; retrying on the next finalized block"
-            );
-            false
-        }
-    }
-}
-
 /// Populate the `RootIdentityRegistry` from the operator's consensus-mode
 /// static-provisioning entries so `/@bundle/<logical>` -> on-disk root
 /// resolution works at Rholang-handler syscall time.
@@ -989,7 +944,8 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         block_store.clone(),
         oracle,
         conf.dev_mode,
-    );
+    )
+    .with_report_cache_retention(conf.api_server.report_cache_retention_blocks);
 
     // API Servers - gRPC services for REPL, Deploy, Propose, and LSP
     let is_node_read_only = conf.casper.validator_private_key.is_none();
@@ -1033,31 +989,19 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         let transfer_unforgeable_for_reports = transfer_unforgeable.clone();
         let event_pub_for_reports = event_publisher.clone();
         let prewarm_enabled = block_report_prewarm_enabled(is_node_read_only, conf.dev_mode);
-        let report_cache_retention = conf.api_server.report_cache_retention_blocks;
 
         tokio::spawn(async move {
-            let mut report_prune_cursor = 0;
             while let Some(finalized) = report_rx.recv().await {
                 metrics::gauge!("block_report.prewarm_queue_depth", "source" => "node")
                     .set(report_rx.len() as f64);
-                let finalized_height = finalized.block_number;
                 handle_block_finalized(
                     report_api.clone(),
                     transfer_unforgeable_for_reports.clone(),
                     event_pub_for_reports.clone(),
                     finalized.block_hash,
-                    finalized_height,
+                    finalized.block_number,
                 )
                 .await;
-                if let Some(heights) = report_prune_heights(
-                    report_prune_cursor,
-                    finalized_height,
-                    report_cache_retention,
-                ) {
-                    if prune_report_cache(&report_api, heights.clone()).await {
-                        report_prune_cursor = heights.end;
-                    }
-                }
             }
         });
 
@@ -1521,10 +1465,7 @@ fn build_deploy_transfers(
 mod tests {
     use models::casper::TransferInfo;
 
-    use super::{
-        block_report_prewarm_enabled, build_deploy_transfers, report_prune_heights,
-        REPORT_PRUNE_MAX_HEIGHTS,
-    };
+    use super::{block_report_prewarm_enabled, build_deploy_transfers};
 
     #[test]
     fn block_report_prewarm_supports_read_only_and_dev_mode_nodes() {
@@ -1532,33 +1473,6 @@ mod tests {
         assert!(block_report_prewarm_enabled(false, true));
         assert!(block_report_prewarm_enabled(true, true));
         assert!(!block_report_prewarm_enabled(false, false));
-    }
-
-    #[test]
-    fn report_prune_heights_is_off_without_retention() {
-        assert_eq!(report_prune_heights(0, 10_000, 0), None);
-    }
-
-    #[test]
-    fn report_prune_heights_keeps_the_retention_window() {
-        assert_eq!(report_prune_heights(0, 100, 100), None);
-        assert_eq!(report_prune_heights(0, 50, 100), None);
-        assert_eq!(report_prune_heights(0, 101, 100), Some(0..1));
-        assert_eq!(report_prune_heights(1, 101, 100), None);
-        assert_eq!(report_prune_heights(1, 150, 100), Some(1..50));
-    }
-
-    #[test]
-    fn report_prune_heights_bounds_one_pass() {
-        assert_eq!(
-            report_prune_heights(0, 5_000, 10),
-            Some(0..REPORT_PRUNE_MAX_HEIGHTS)
-        );
-        assert_eq!(
-            report_prune_heights(REPORT_PRUNE_MAX_HEIGHTS, 5_000, 10),
-            Some(REPORT_PRUNE_MAX_HEIGHTS..2 * REPORT_PRUNE_MAX_HEIGHTS)
-        );
-        assert_eq!(report_prune_heights(0, 5, u64::MAX), None);
     }
 
     fn transfer(from: &str, to: &str, amount: i64) -> TransferInfo {
