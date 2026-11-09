@@ -166,6 +166,7 @@ theories/RPB3IndependentOracleProcessTypedChildren.v
 theories/RPB3IndependentOracleProcessChildAssembly.v
 theories/RPB3IndependentOracleScanBridge.v
 theories/RPB3IndependentOracleParOrderBridge.v
+theories/RPB3IndependentOracleStringMapVerdictBridge.v
 theories/RPB3IndependentTypedSemanticReference.v
 theories/RPB3SourceIndexedFrames.v
 theories/RPB3SourceIndexedTermination.v
