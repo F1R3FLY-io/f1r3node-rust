@@ -87,8 +87,12 @@ pub struct ApiErrorResponse {
     /// **405 Method Not Allowed:**
     /// `method_not_allowed`
     ///
+    /// **415 Unsupported Media Type:**
+    /// `invalid_request_body`
+    ///
     /// **422 Unprocessable Entity:**
-    /// `out_of_phlogistons`, `user_abort`, `rholang_execution_error`, `aggregate_error`
+    /// `invalid_request_body`, `out_of_phlogistons`, `user_abort`,
+    /// `rholang_execution_error`, `aggregate_error`
     ///
     /// **409 Conflict:**
     /// `no_new_deploys`

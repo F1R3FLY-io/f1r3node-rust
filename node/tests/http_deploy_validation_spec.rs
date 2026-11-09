@@ -94,8 +94,8 @@ mod http_deploy_validation {
     use casper::rust::casper::MultiParentCasper;
     use casper::rust::engine::engine::Engine;
     use casper::rust::errors::CasperError;
-    use crypto::rust::private_key::PrivateKey;
     use crypto::rust::signatures::secp256k1::Secp256k1;
+    use crypto::rust::signatures::signatures_alg::SignaturesAlg;
     use crypto::rust::signatures::signed::Signed;
     use models::rust::casper::protocol::casper_message::{CasperMessage, DeployData};
     use node::rust::api::web_api::DeployRequest;
@@ -129,15 +129,21 @@ mod http_deploy_validation {
             valid_after_block_number: 0,
             shard_id: "root".into(),
             expiration_timestamp: None,
-            parameters: vec![models::rust::deploy_parameters::DeployParameter {
-                name: "input".into(),
-                value: models::rust::deploy_parameters::RholangValue::BigInt(
-                    (num_bigint::BigInt::from(1) << 511usize) - 1,
-                ),
-            }],
+            parameters: vec![
+                models::rust::deploy_parameters::DeployParameter {
+                    name: "input".into(),
+                    value: models::rust::deploy_parameters::RholangValue::BigInt(
+                        (num_bigint::BigInt::from(1) << 512usize) - 1,
+                    ),
+                },
+                models::rust::deploy_parameters::DeployParameter {
+                    name: "count".into(),
+                    value: models::rust::deploy_parameters::RholangValue::Int(42),
+                },
+            ],
         };
-        let signed =
-            Signed::create(data, Box::new(Secp256k1), PrivateKey::from_bytes(&[1; 32])).unwrap();
+        let (key, _) = Secp256k1.new_key_pair();
+        let signed = Signed::create(data, Box::new(Secp256k1), key).unwrap();
         DeployRequest {
             data: signed.data,
             deployer: hex::encode(signed.pk.bytes),
@@ -236,6 +242,11 @@ mod http_deploy_validation {
         let request = signed_request();
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["data"]["phloPrice"], TokenAmount::max().to_string());
+        assert_eq!(json["data"]["parameters"][1]["value"]["value"], "42");
+        assert_eq!(
+            json["data"]["parameters"][0]["value"]["value"],
+            ((num_bigint::BigInt::from(1) << 512usize) - 1u32).to_string()
+        );
         let (status, body) = response(router, json.to_string(), "application/json").await;
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
@@ -297,5 +308,80 @@ mod http_deploy_validation {
         let error = web.deploy(request).await.unwrap_err();
         assert!(error.downcast_ref::<DeployValidationError>().is_some());
         assert!(error.to_string().contains("Invalid deploy parameters"));
+    }
+
+    #[test]
+    fn json_routes_document_extraction_errors_in_all_openapi_artifacts() {
+        use node::rust::web::web_api_docs::{AdminApi, PublicApi};
+        use utoipa::OpenApi;
+
+        let static_api: Value =
+            serde_json::from_str(include_str!("../../docs/rnode-api/rnode-openapi.json")).unwrap();
+        for api in [PublicApi::openapi(), AdminApi::openapi()] {
+            let api = serde_json::to_value(api).unwrap();
+            for route in [
+                "/deploy",
+                "/explore-deploy",
+                "/explore-deploy-by-block-hash",
+                "/api/prepare-deploy",
+                "/api/data-at-name-by-block-hash",
+                "/api/estimate-cost",
+            ] {
+                let responses = &api["paths"][route]["post"]["responses"];
+                let static_route = route.strip_prefix("/api").unwrap_or(route);
+                let static_responses = &static_api["paths"][static_route]["post"]["responses"];
+                for status in ["400", "415", "422"] {
+                    let response = &responses[status];
+                    assert_eq!(
+                        response["content"]["application/json"]["schema"]["$ref"],
+                        "#/components/schemas/ApiErrorResponse",
+                        "{route}: {status}"
+                    );
+                    assert_eq!(
+                        static_responses[status]["schema"]["$ref"],
+                        "#/definitions/ApiErrorResponse",
+                        "{route}: {status}"
+                    );
+                }
+                for status in ["415", "422"] {
+                    for responses in [responses, static_responses] {
+                        assert!(
+                            responses[status]["description"]
+                                .as_str()
+                                .unwrap()
+                                .contains("invalid_request_body"),
+                            "{route}: {status}"
+                        );
+                    }
+                }
+                assert_eq!(
+                    static_api["paths"][static_route]["post"]["consumes"],
+                    json!(["application/json"])
+                );
+            }
+            assert_eq!(
+                api["components"]["schemas"]["ApiErrorResponse"]["required"],
+                json!(["error", "message"])
+            );
+            let error_description = api["components"]["schemas"]["ApiErrorResponse"]["properties"]
+                ["error"]["description"]
+                .as_str()
+                .unwrap();
+            for heading in [
+                "**415 Unsupported Media Type:**",
+                "**422 Unprocessable Entity:**",
+            ] {
+                let section = error_description.split_once(heading).unwrap().1;
+                assert!(section
+                    .split("**")
+                    .next()
+                    .unwrap()
+                    .contains("invalid_request_body"));
+            }
+        }
+        assert_eq!(
+            static_api["definitions"]["ApiErrorResponse"]["required"],
+            json!(["error", "message"])
+        );
     }
 }
