@@ -424,6 +424,8 @@ struct StubCasper {
     runtime_manager: Arc<RuntimeManager>,
     validation: Gate,
     validation_started: Mutex<HashSet<BlockHash>>,
+    /// Validation of this block panics.
+    panic_on: Mutex<Option<BlockHash>>,
 }
 
 impl StubCasper {
@@ -474,6 +476,9 @@ impl Casper for StubCasper {
             .lock()
             .expect("validation_started lock")
             .insert(block.block_hash.clone());
+        if self.panic_on.lock().expect("panic_on lock").as_ref() == Some(&block.block_hash) {
+            panic!("validation of this block panics");
+        }
         self.validation.pass().await;
         Ok(Either::Right(ValidBlock::Valid))
     }
@@ -620,6 +625,7 @@ impl Node {
             connections: connections.clone(),
             conf: conf.clone(),
             validation_width: VALIDATION_WIDTH,
+            max_number_of_parents: casper::rust::casper::UNLIMITED_PARENTS,
             state_root_fetch_tx: None,
             state_root_results: None,
         })
@@ -634,6 +640,7 @@ impl Node {
             runtime_manager: Arc::new(runtime_manager),
             validation: setup.validation,
             validation_started: Mutex::new(HashSet::new()),
+            panic_on: Mutex::new(None),
         });
         ingest
             .attach_casper(casper.clone())
@@ -1089,5 +1096,105 @@ async fn a_chain_is_validated_when_its_parent_arrives_while_a_paused_peer_is_ask
         node.count_in_dag(&chain),
         chain.len(),
         outcome.unwrap_err(),
+    );
+}
+
+// ── A flood of announcements must not hold off block requests ──────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn block_requests_keep_going_out_during_an_announcement_flood() {
+    init_tracing();
+    let mut validators = Validators::new(4);
+    let genesis = validators.genesis();
+    let mut stores = Stores::with_genesis(genesis.clone()).await;
+    let node = Node::start(&mut stores, NodeSetup {
+        peers: 4,
+        behaviour: PeerBehaviour::holding_nothing(),
+        block_requests: Gate::new(true),
+        validation: Gate::new(true),
+    })
+    .await;
+    let unheld_parent = validators.sign(1, &[&genesis]);
+    let waiting = validators.sign(0, &[&unheld_parent]);
+    node.gossip_and_settle(0, &waiting).await;
+
+    let total = |sent: &SentRequests| {
+        sent.block_requests_to_seed_peers.load(Ordering::SeqCst)
+            + sent.block_requests_to_other_peers.load(Ordering::SeqCst)
+            + sent.has_block_requests.load(Ordering::SeqCst)
+    };
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flooders: Vec<JoinHandle<()>> = (0..3u64)
+        .map(|t| {
+            let ingest = node.ingest.clone();
+            let from = node.peers[(t as usize) % node.peers.len()].clone();
+            let stop = stop.clone();
+            tokio::spawn(async move {
+                let mut i: u64 = 0;
+                while !stop.load(Ordering::Relaxed) {
+                    let mut bytes = t.to_be_bytes().to_vec();
+                    bytes.extend_from_slice(&i.to_be_bytes());
+                    bytes.resize(32, 0);
+                    ingest.announce(Bytes::from(bytes), from.clone());
+                    i += 1;
+                    if i.is_multiple_of(1024) {
+                        tokio::task::yield_now().await;
+                    }
+                }
+            })
+        })
+        .collect();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before_flood = total(&node.sent);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let during_flood = total(&node.sent) - before_flood;
+    stop.store(true, Ordering::Relaxed);
+    for f in flooders {
+        f.await.unwrap();
+    }
+    node.stop().await;
+    assert!(
+        during_flood > 0,
+        "no block request went out during 3 s of announcement flood"
+    );
+}
+
+// ── A panic validating one block must not stop block ingest ────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial]
+async fn a_panic_validating_one_block_leaves_block_ingest_running() {
+    init_tracing();
+    let mut validators = Validators::new(4);
+    let genesis = validators.genesis();
+    let mut stores = Stores::with_genesis(genesis.clone()).await;
+    let mut node = Node::start(&mut stores, NodeSetup {
+        peers: 4,
+        behaviour: PeerBehaviour::holding_nothing(),
+        block_requests: Gate::new(true),
+        validation: Gate::new(true),
+    })
+    .await;
+    let poison = validators.sign(1, &[&genesis]);
+    *node.casper.panic_on.lock().unwrap() = Some(poison.block_hash.clone());
+    node.gossip(0, &poison).await;
+    wait_until(Duration::from_secs(10), || {
+        node.casper.validation_started(&poison.block_hash)
+    })
+    .await
+    .expect("the poisoned block reaches validation");
+
+    let healthy = validators.sign(2, &[&genesis]);
+    node.gossip(1, &healthy).await;
+    let validated = wait_until(Duration::from_secs(10), || node.in_dag(&healthy)).await;
+    let ended = tokio::time::timeout(Duration::from_millis(100), node.ingest_tasks.join_next())
+        .await
+        .is_ok();
+    node.stop().await;
+    assert!(!ended, "an ingest task ended after a validation panic");
+    assert!(
+        validated.is_ok(),
+        "a block received after the panic was not validated"
     );
 }

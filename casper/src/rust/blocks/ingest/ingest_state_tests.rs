@@ -26,6 +26,10 @@ const LIMITS: PendingBlockLimits = PendingBlockLimits {
 struct Dag {
     blocks: HashSet<BlockHash>,
     area: PendingUsage,
+    /// The bonds of every block in the DAG, the last finalized one included.
+    bonds: HashSet<Bytes>,
+    /// Pending bodies the area no longer holds; every other one it does.
+    discarded: HashSet<BlockHash>,
 }
 
 impl StoreReads for Dag {
@@ -34,12 +38,22 @@ impl StoreReads for Dag {
     fn is_satisfied(&self, hash: &BlockHash) -> bool { self.blocks.contains(hash) }
 
     fn pending_usage(&self) -> PendingUsage { self.area.clone() }
+
+    fn holds_pending(&self, hash: &BlockHash) -> bool { !self.discarded.contains(hash) }
+
+    fn bonded_in(&self, hash: &BlockHash) -> Option<HashSet<Bytes>> {
+        self.blocks.contains(hash).then(|| self.bonds.clone())
+    }
+
+    fn bonded_in_last_finalized(&self) -> Option<HashSet<Bytes>> { Some(self.bonds.clone()) }
 }
 
 fn dag_with(hashes: &[u32]) -> Dag {
     Dag {
         blocks: hashes.iter().copied().map(hash).collect(),
         area: usage(0, HashMap::new()),
+        bonds: HashSet::new(),
+        discarded: HashSet::new(),
     }
 }
 
@@ -58,6 +72,9 @@ fn meta(i: u32, height: i64, deps: &[u32]) -> HeldMeta {
         sender: Bytes::from_static(b"v0"),
         height,
         deps: deps.iter().copied().map(hash).collect(),
+        parents: deps.iter().copied().map(hash).collect(),
+        justification_validators: Vec::new(),
+        deferred: false,
         body: BodyAt::Disk,
         size: 1_000,
         trusted: true,
@@ -152,6 +169,14 @@ fn a_block_is_dispatched_once_its_parents_are_inserted() {
     assert_eq!(s.next_dispatch(), Some((hash(7), Work::Validate)));
     dag.blocks.insert(hash(7));
     s.handle(IngestInput::Inserted { hash: hash(7) }, 0, &dag);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(7),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
     assert!(!s.is_held(&hash(7)) && !view.has_waiters(&hash(7)));
     assert_eq!(s.next_dispatch(), Some((hash(10), Work::Validate)));
 }
@@ -464,26 +489,39 @@ fn a_block_that_keeps_failing_is_dropped_and_quarantined() {
     let (mut s, _) = state();
     let dag = dag_with(&[0]);
     s.handle(received(meta(1, 1, &[0])), 0, &dag);
-    for _ in 0..super::dependency_tracker::MAX_VALIDATION_FAILURES {
-        assert!(s.next_dispatch().is_some());
-        s.handle(
-            IngestInput::Outcome {
-                hash: hash(1),
-                outcome: WorkOutcome::Failed,
-            },
-            0,
-            &dag,
-        );
-    }
+    let given_up_ms = fail_until_given_up(&mut s, 1, 0, &dag);
     assert!(!s.is_held(&hash(1)));
-    s.handle(received(meta(1, 1, &[0])), 1_000, &dag);
+    s.handle(received(meta(1, 1, &[0])), given_up_ms + 1_000, &dag);
     assert!(!s.is_held(&hash(1)), "quarantined");
     s.handle(
         received(meta(1, 1, &[0])),
-        super::dependency_tracker::VALIDATION_FAILURE_QUARANTINE_MS,
+        given_up_ms + super::dependency_tracker::VALIDATION_FAILURE_QUARANTINE_MS,
         &dag,
     );
     assert!(s.is_held(&hash(1)));
+}
+
+/// Dispatch block `i` and fail it until the owner gives up on it, waiting out
+/// each retry delay. Returns the time of the last failure.
+fn fail_until_given_up(s: &mut IngestState, i: u32, start_ms: u64, dag: &Dag) -> u64 {
+    use super::dependency_tracker::{validation_retry_delay_ms, MAX_VALIDATION_FAILURES};
+    let mut now_ms = start_ms;
+    for failures in 1..=MAX_VALIDATION_FAILURES {
+        assert_eq!(s.next_dispatch(), Some((hash(i), Work::Validate)));
+        s.handle(
+            IngestInput::Outcome {
+                hash: hash(i),
+                outcome: WorkOutcome::Failed,
+            },
+            now_ms,
+            dag,
+        );
+        if failures < MAX_VALIDATION_FAILURES {
+            now_ms += validation_retry_delay_ms(failures);
+            tick(s, now_ms, &[], dag);
+        }
+    }
+    now_ms
 }
 
 #[test]
@@ -724,6 +762,471 @@ fn a_block_too_large_for_the_area_expires_its_need_and_its_waiters() {
     assert!(!view.is_awaited(&hash(1)) && !view.has_waiters(&hash(1)));
 }
 
+fn network_fetches_for(effects: &[Effect], h: &BlockHash) -> usize {
+    fetches(effects)
+        .iter()
+        .filter(|action| match action {
+            FetchAction::RequestBlock { hash, .. } => hash == h,
+            FetchAction::BroadcastHasBlockRequest(hash) => hash == h,
+            _ => false,
+        })
+        .count()
+}
+
+/// Blocks recorded as equivocations: satisfied, not in the DAG.
+struct Recorded {
+    dag: Dag,
+    recorded: HashSet<BlockHash>,
+}
+
+impl StoreReads for Recorded {
+    fn in_dag(&self, hash: &BlockHash) -> bool { self.dag.in_dag(hash) }
+
+    fn is_satisfied(&self, hash: &BlockHash) -> bool {
+        self.dag.in_dag(hash) || self.recorded.contains(hash)
+    }
+
+    fn pending_usage(&self) -> PendingUsage { self.dag.pending_usage() }
+
+    fn holds_pending(&self, hash: &BlockHash) -> bool { self.dag.holds_pending(hash) }
+
+    fn bonded_in(&self, hash: &BlockHash) -> Option<HashSet<Bytes>> { self.dag.bonded_in(hash) }
+
+    fn bonded_in_last_finalized(&self) -> Option<HashSet<Bytes>> {
+        self.dag.bonded_in_last_finalized()
+    }
+}
+
+#[test]
+fn a_failed_validation_waits_before_its_retry() {
+    use super::dependency_tracker::validation_retry_delay_ms;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(1),
+            outcome: WorkOutcome::Failed,
+        },
+        0,
+        &dag,
+    );
+    let delay = validation_retry_delay_ms(1);
+    tick(&mut s, delay - 1, &[], &dag);
+    assert!(s.next_dispatch().is_none());
+    tick(&mut s, delay, &[], &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+}
+
+#[test]
+fn giving_up_on_a_failing_block_keeps_its_waiters_and_asks_for_it_after_the_quarantine() {
+    use super::dependency_tracker::VALIDATION_FAILURE_QUARANTINE_MS;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    let peers = [peer("a")];
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    s.handle(received(meta(2, 2, &[1])), 0, &dag);
+    s.handle(received(meta(3, 3, &[2])), 0, &dag);
+    let given_up_ms = fail_until_given_up(&mut s, 1, 0, &dag);
+    assert!(!s.is_held(&hash(1)));
+    assert!(s.is_held(&hash(2)) && s.is_held(&hash(3)));
+    assert!(s.is_needed(&hash(1)));
+    let until_ms = given_up_ms + VALIDATION_FAILURE_QUARANTINE_MS;
+    let early = tick(&mut s, until_ms - 1, &peers, &dag);
+    assert_eq!(network_fetches_for(&early, &hash(1)), 0);
+    let due = tick(&mut s, until_ms, &peers, &dag);
+    assert!(network_fetches_for(&due, &hash(1)) > 0);
+}
+
+#[test]
+fn a_per_sender_pass_counts_blocks_the_global_pass_already_evicted() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    for i in 1..=50 {
+        let mut m = meta(i, 1, &[99]);
+        m.trusted = false;
+        s.handle(received(pending(m, b"v1", false, Some(peer("p")))), 0, &dag);
+    }
+    dag.area = usage(90, [(Bytes::from_static(b"v1"), 50)].into());
+    let discarded = tick(&mut s, 0, &[], &dag)
+        .iter()
+        .filter(|e| matches!(e, Effect::DiscardPending(_)))
+        .count();
+    assert_eq!(
+        discarded, 14,
+        "the global pass to 80 takes 10, leaving v1 at 40; its mark is 36, so 4 more"
+    );
+}
+
+#[test]
+fn a_quarantined_local_copy_moves_its_need_to_the_network_after_the_quarantine() {
+    use super::dependency_tracker::VALIDATION_FAILURE_QUARANTINE_MS;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    let peers = [peer("a")];
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    let given_up_ms = fail_until_given_up(&mut s, 1, 0, &dag);
+    let now_ms = given_up_ms + 1_000;
+    s.handle(received(meta(2, 2, &[1])), now_ms, &dag);
+    assert_eq!(fetches(&tick(&mut s, now_ms, &peers, &dag)), vec![
+        FetchAction::LookupLocal(hash(1))
+    ]);
+    s.handle(received(meta(1, 1, &[0])), now_ms, &dag);
+    assert!(!s.is_held(&hash(1)), "still quarantined");
+    let due = tick(
+        &mut s,
+        given_up_ms + VALIDATION_FAILURE_QUARANTINE_MS,
+        &peers,
+        &dag,
+    );
+    assert!(network_fetches_for(&due, &hash(1)) > 0);
+}
+
+#[test]
+fn a_local_copy_refused_without_a_peer_moves_its_need_to_the_network() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    let peers = [peer("a")];
+    s.handle(received(meta(10, 2, &[5])), 0, &dag);
+    assert_eq!(fetches(&tick(&mut s, 0, &peers, &dag)), vec![
+        FetchAction::LookupLocal(hash(5))
+    ]);
+    s.handle(
+        IngestInput::IntakeRefused(Refused {
+            hash: hash(5),
+            from: None,
+            unsolicited: false,
+            size: 10,
+            sender: Bytes::from_static(b"v0"),
+            reason: Refusal::NotOfInterest,
+        }),
+        0,
+        &dag,
+    );
+    assert!(network_fetches_for(&tick(&mut s, 1, &peers, &dag), &hash(5)) > 0);
+}
+
+#[test]
+fn a_validation_that_keeps_naming_a_dependency_in_the_dag_is_bounded() {
+    use super::dependency_tracker::MAX_VALIDATION_FAILURES;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0, 5]);
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    for _ in 0..MAX_VALIDATION_FAILURES {
+        assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+        s.handle(
+            IngestInput::Outcome {
+                hash: hash(1),
+                outcome: WorkOutcome::AwaitingBlock(hash(5)),
+            },
+            0,
+            &dag,
+        );
+    }
+    assert!(!s.is_held(&hash(1)));
+    assert!(s.next_dispatch().is_none());
+}
+
+#[test]
+fn naming_a_recorded_block_leaves_that_block_with_its_worker() {
+    let (mut s, _) = state();
+    let stores = Recorded {
+        dag: dag_with(&[0]),
+        recorded: [hash(1)].into(),
+    };
+    s.handle(
+        received(pending(meta(1, 1, &[0]), b"v1", false, Some(peer("p")))),
+        0,
+        &stores,
+    );
+    assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+    s.handle(received(meta(2, 2, &[0])), 0, &stores);
+    assert_eq!(s.next_dispatch(), Some((hash(2), Work::Validate)));
+    let effects = s.handle(
+        IngestInput::Outcome {
+            hash: hash(2),
+            outcome: WorkOutcome::AwaitingBlock(hash(1)),
+        },
+        0,
+        &stores,
+    );
+    assert!(s.is_held(&hash(1)));
+    assert!(!effects.contains(&Effect::DiscardPending(hash(1))));
+    s.handle(received(meta(1, 1, &[0])), 0, &stores);
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(1),
+            outcome: WorkOutcome::AwaitingState(Blake2b256Hash::new(b"r")),
+        },
+        0,
+        &stores,
+    );
+    assert!(s.is_held(&hash(1)));
+}
+
+#[test]
+fn a_late_refusal_for_a_block_in_the_dag_leaves_no_need() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(IngestInput::Need { hash: hash(1) }, 0, &dag);
+    s.handle(
+        received(pending(meta(1, 1, &[0]), b"v1", true, None)),
+        0,
+        &dag,
+    );
+    assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+    dag.blocks.insert(hash(1));
+    s.handle(IngestInput::Inserted { hash: hash(1) }, 0, &dag);
+    s.handle(
+        refused(
+            1,
+            "q",
+            true,
+            b"v1",
+            Refusal::Pending(PendingRefusal::AreaFull),
+        ),
+        0,
+        &dag,
+    );
+    assert!(!s.is_needed(&hash(1)));
+}
+
+#[test]
+fn a_sender_flooding_the_disk_bound_cannot_evict_other_senders_blocks() {
+    use super::dependency_tracker::MAX_DISK_ENTRIES;
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    for i in 0..MAX_DISK_ENTRIES as u32 {
+        let mut flood = meta(1_000_000 + i, 1, &[0, 3_000_000 + i]);
+        flood.sender = Bytes::from_static(b"byzantine");
+        s.handle(received(flood), 0, &dag);
+    }
+    for (k, height) in [(10u32, 100i64), (11, 101), (12, 102)] {
+        s.handle(received(meta(k, height, &[0])), 0, &dag);
+        assert!(s.is_held(&hash(k)), "honest block {k} was evicted");
+    }
+    let dispatched: HashSet<BlockHash> = std::iter::from_fn(|| s.next_dispatch())
+        .map(|(h, _)| h)
+        .collect();
+    assert_eq!(dispatched, [10, 11, 12].map(hash).into());
+    assert_eq!(s.disk_entries(), MAX_DISK_ENTRIES);
+}
+
+#[test]
+fn a_block_that_leaves_for_good_has_its_stored_body_deleted() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+    let effects = s.handle(
+        IngestInput::Outcome {
+            hash: hash(1),
+            outcome: WorkOutcome::Rejected {
+                invalid_sender: false,
+            },
+        },
+        0,
+        &dag,
+    );
+    assert!(effects.contains(&Effect::DiscardStored(hash(1))));
+}
+
+#[test]
+fn a_stored_body_that_a_held_block_still_waits_on_is_kept() {
+    let (mut s, _) = state();
+    let dag = dag_with(&[0]);
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    s.handle(received(meta(2, 2, &[1])), 0, &dag);
+    let mut now_ms = 0;
+    let mut effects = Vec::new();
+    for failures in 1..=super::dependency_tracker::MAX_VALIDATION_FAILURES {
+        assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+        effects = s.handle(
+            IngestInput::Outcome {
+                hash: hash(1),
+                outcome: WorkOutcome::Failed,
+            },
+            now_ms,
+            &dag,
+        );
+        now_ms += super::dependency_tracker::validation_retry_delay_ms(failures);
+        tick(&mut s, now_ms, &[], &dag);
+    }
+    assert!(!s.is_held(&hash(1)) && s.is_needed(&hash(1)));
+    assert!(!effects.contains(&Effect::DiscardStored(hash(1))));
+}
+
+#[test]
+fn a_report_for_a_pending_body_already_discarded_is_not_held() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(20, 3, &[1])), 0, &dag);
+    let one = || received(pending(meta(1, 2, &[2]), b"v1", true, None));
+    s.handle(one(), 0, &dag);
+    dag.area = usage(LIMITS.max_blocks, HashMap::new());
+    let effects = s.handle(
+        refused(
+            50,
+            "q",
+            true,
+            b"v2",
+            Refusal::Pending(PendingRefusal::AreaFull),
+        ),
+        0,
+        &dag,
+    );
+    assert!(effects.contains(&Effect::DiscardPending(hash(1))));
+    dag.discarded.insert(hash(1));
+    s.handle(one(), 0, &dag);
+    assert!(!s.is_held(&hash(1)));
+    assert!(s.is_needed(&hash(1)));
+}
+
+#[test]
+fn a_block_inserted_while_validated_releases_its_waiters_after_its_outcome() {
+    let (mut s, _) = state();
+    let mut dag = dag_with(&[0]);
+    s.handle(received(meta(1, 1, &[0])), 0, &dag);
+    s.handle(received(meta(2, 2, &[1])), 0, &dag);
+    assert_eq!(s.next_dispatch(), Some((hash(1), Work::Validate)));
+    dag.blocks.insert(hash(1));
+    s.handle(IngestInput::Inserted { hash: hash(1) }, 0, &dag);
+    assert!(
+        s.next_dispatch().is_none(),
+        "the child waits for the parent's outcome"
+    );
+    s.handle(
+        IngestInput::Outcome {
+            hash: hash(1),
+            outcome: WorkOutcome::Settled,
+        },
+        0,
+        &dag,
+    );
+    assert!(!s.is_held(&hash(1)));
+    assert_eq!(s.next_dispatch(), Some((hash(2), Work::Validate)));
+}
+
+/// Per-block bonds and the last finalized block's bonds.
+struct Bonds {
+    dag: Dag,
+    by_block: HashMap<BlockHash, HashSet<Bytes>>,
+    last_finalized: HashSet<Bytes>,
+}
+
+impl StoreReads for Bonds {
+    fn in_dag(&self, hash: &BlockHash) -> bool { self.dag.in_dag(hash) }
+
+    fn is_satisfied(&self, hash: &BlockHash) -> bool { self.dag.is_satisfied(hash) }
+
+    fn pending_usage(&self) -> PendingUsage { self.dag.pending_usage() }
+
+    fn holds_pending(&self, hash: &BlockHash) -> bool { self.dag.holds_pending(hash) }
+
+    fn bonded_in(&self, hash: &BlockHash) -> Option<HashSet<Bytes>> {
+        self.dag
+            .in_dag(hash)
+            .then(|| self.by_block.get(hash).cloned().unwrap_or_default())
+    }
+
+    fn bonded_in_last_finalized(&self) -> Option<HashSet<Bytes>> {
+        Some(self.last_finalized.clone())
+    }
+}
+
+fn validator(i: u32) -> Bytes {
+    Bytes::copy_from_slice(&[b"val-".as_slice(), &i.to_be_bytes()].concat())
+}
+
+/// Block `i` with main parent `main_parent` and one justification per named
+/// validator, each pointing at block `first_justification + k`.
+fn shaped(i: u32, main_parent: u32, validators: &[u32], first_justification: u32) -> HeldMeta {
+    let justifications: Vec<u32> = (0..validators.len() as u32)
+        .map(|k| first_justification + k)
+        .collect();
+    let mut deps: Vec<u32> = justifications.clone();
+    deps.push(main_parent);
+    let mut m = meta(i, 10, &deps);
+    m.parents = vec![hash(main_parent)];
+    m.justification_validators = validators.iter().copied().map(validator).collect();
+    m
+}
+
+fn bonds_of(validators: &[u32]) -> HashSet<Bytes> {
+    validators.iter().copied().map(validator).collect()
+}
+
+#[test]
+fn a_block_naming_validators_bonded_in_the_last_finalized_block_cites_every_dependency_at_once() {
+    let (mut s, _) = state();
+    let stores = Bonds {
+        dag: dag_with(&[0]),
+        by_block: HashMap::new(),
+        last_finalized: bonds_of(&[1, 2, 3]),
+    };
+    s.handle(received(shaped(100, 50, &[1, 2, 3], 60)), 0, &stores);
+    assert_eq!(
+        s.block_needs(),
+        4,
+        "the main parent and three justifications"
+    );
+}
+
+#[test]
+fn a_block_naming_validators_outside_the_bonds_cites_only_its_main_parent() {
+    let (mut s, _) = state();
+    let stores = Bonds {
+        dag: dag_with(&[0]),
+        by_block: HashMap::new(),
+        last_finalized: bonds_of(&[1, 2, 3]),
+    };
+    let fabricated: Vec<u32> = (1_000..201_000).collect();
+    s.handle(
+        received(shaped(100, 50, &fabricated, 1_000_000)),
+        0,
+        &stores,
+    );
+    assert_eq!(s.block_needs(), 1);
+    assert!(s.is_needed(&hash(50)));
+}
+
+#[test]
+fn a_deferred_block_cites_the_rest_once_its_main_parent_shows_it_fits() {
+    let (mut s, _) = state();
+    let mut stores = Bonds {
+        dag: dag_with(&[0]),
+        by_block: [(hash(50), bonds_of(&[1, 2, 3, 4]))].into(),
+        last_finalized: bonds_of(&[1, 2, 3]),
+    };
+    s.handle(received(shaped(100, 50, &[1, 2, 3, 4], 60)), 0, &stores);
+    assert_eq!(
+        s.block_needs(),
+        1,
+        "validator 4 is not bonded in the last finalized block"
+    );
+    stores.dag.blocks.insert(hash(50));
+    s.handle(IngestInput::Inserted { hash: hash(50) }, 0, &stores);
+    assert_eq!(s.block_needs(), 4);
+    assert!(
+        s.next_dispatch().is_none(),
+        "the block waits on its justifications"
+    );
+}
+
+#[test]
+fn a_block_whose_validators_do_not_match_its_main_parent_goes_to_validation() {
+    let (mut s, _) = state();
+    let stores = Bonds {
+        dag: dag_with(&[0, 50]),
+        by_block: [(hash(50), bonds_of(&[1, 2, 3]))].into(),
+        last_finalized: bonds_of(&[1, 2, 3]),
+    };
+    s.handle(received(shaped(100, 50, &[1, 2, 2], 60)), 0, &stores);
+    assert_eq!(s.block_needs(), 0);
+    assert_eq!(s.next_dispatch(), Some((hash(100), Work::Validate)));
+}
+
 // ── Simulation ──────────────────────────────────────────────────────────────
 
 /// A DAG of blocks above genesis (hash 0): block `i` cites the listed parents.
@@ -811,6 +1314,14 @@ impl StoreReads for SimStores<'_> {
             by_sender: HashMap::new(),
         }
     }
+
+    fn holds_pending(&self, hash: &BlockHash) -> bool { self.area.contains_key(hash) }
+
+    fn bonded_in(&self, hash: &BlockHash) -> Option<HashSet<Bytes>> {
+        self.dag.contains(hash).then(HashSet::new)
+    }
+
+    fn bonded_in_last_finalized(&self) -> Option<HashSet<Bytes>> { Some(HashSet::new()) }
 }
 
 struct Sim<'a> {
@@ -893,6 +1404,11 @@ impl<'a> Sim<'a> {
             match effect {
                 Effect::DiscardPending(h) => {
                     self.area.remove(&h);
+                }
+                Effect::DiscardStored(h) => {
+                    if !self.dag.contains(&h) {
+                        self.disk.remove(&h);
+                    }
                 }
                 Effect::Fetch(FetchAction::LookupLocal(h)) => {
                     if self.disk.contains(&h) {

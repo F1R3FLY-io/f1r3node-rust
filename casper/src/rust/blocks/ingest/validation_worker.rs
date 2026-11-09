@@ -275,15 +275,15 @@ impl<T: TransportLayer + Send + Sync + 'static> Validation<T> {
                     &snapshot,
                 )?
             }
+            // Not a verdict on the block: it is retried, and the blocks that
+            // wait on it keep waiting.
             Either::Left(other) => {
                 tracing::warn!(
-                    "Block {} validation returned {:?}; dropped.",
+                    "Block {} validation returned {:?}; counted as a failed attempt.",
                     PrettyPrinter::build_string_bytes(&block.block_hash),
                     other
                 );
-                WorkOutcome::Rejected {
-                    invalid_sender: false,
-                }
+                WorkOutcome::Failed
             }
         };
         tracing::info!(

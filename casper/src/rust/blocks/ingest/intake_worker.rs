@@ -150,6 +150,13 @@ impl Intake {
             sender: block.sender.clone(),
             height: proto_util::block_number(block),
             deps,
+            parents: block.header.parents_hash_list.clone(),
+            justification_validators: block
+                .justifications
+                .iter()
+                .map(|justification| justification.validator.clone())
+                .collect(),
+            deferred: false,
             body,
             size,
             trusted,

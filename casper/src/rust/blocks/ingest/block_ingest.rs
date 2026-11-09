@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -8,9 +10,10 @@ use comm::rust::peer_node::PeerNode;
 use comm::rust::rp::connect::ConnectionsCell;
 use comm::rust::rp::rp_conf::RPConf;
 use comm::rust::transport::transport_layer::TransportLayer;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use models::rust::block_hash::BlockHash;
 use models::rust::casper::pretty_printer::PrettyPrinter;
+use models::rust::validator::Validator;
 use rspace_plus_plus::rspace::hashing::blake2b256_hash::Blake2b256Hash;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinSet;
@@ -51,6 +54,7 @@ pub const OUTBOUND_CAPACITY: usize = 1_024;
 pub const OUTBOUND_CONCURRENCY: usize = 16;
 pub const INTAKE_TASKS: usize = 4;
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
+pub const STUCK_VALIDATION_WARN_MS: u64 = 10 * 60 * 1000;
 
 pub type SharedCasper = Arc<dyn MultiParentCasper + Send + Sync>;
 
@@ -150,7 +154,7 @@ impl IngestHandle {
     /// A peer sent a block. It never waits: when its lane is full the block
     /// is dropped, and a block the node needs is asked for again.
     pub fn deliver(&self, block: CheckedBlock, from: PeerNode) {
-        let (lane, label) = match self.view.is_awaited(&block.block().block_hash) {
+        let (lane, label) = match self.view.is_solicited(&block.block().block_hash) {
             true => (&self.awaited, "awaited"),
             false => (&self.unsolicited, "unsolicited"),
         };
@@ -206,6 +210,8 @@ pub struct IngestSetup<T: TransportLayer + Send + Sync> {
     pub connections: ConnectionsCell,
     pub conf: RPConf,
     pub validation_width: usize,
+    /// The node's `max-number-of-parents`; `-1` is unlimited.
+    pub max_number_of_parents: i32,
     pub state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
     pub state_root_results: Option<mpsc::UnboundedReceiver<(Blake2b256Hash, StateFetchResult)>>,
 }
@@ -235,7 +241,45 @@ impl StoreReads for Stores<'_> {
         }
     }
 
+    fn unsatisfied(&self, hashes: &[BlockHash]) -> Vec<BlockHash> {
+        match self.dag.unsatisfied_dependencies(hashes) {
+            Ok(unsatisfied) => unsatisfied,
+            // Unproven satisfaction is waited on; the insert observer
+            // releases the waiter if a block is in the DAG after all.
+            Err(error) => {
+                tracing::warn!(%error, "dependency check failed; the block waits on its dependencies");
+                hashes
+                    .iter()
+                    .filter(|hash| !self.dag.contains(hash))
+                    .cloned()
+                    .collect()
+            }
+        }
+    }
+
     fn pending_usage(&self) -> PendingUsage { self.block_store.pending_usage() }
+
+    fn holds_pending(&self, hash: &BlockHash) -> bool { self.block_store.is_pending(hash) }
+
+    fn bonded_in(&self, hash: &BlockHash) -> Option<HashSet<Validator>> {
+        match self.dag.lookup(hash) {
+            Ok(meta) => meta.map(|meta| meta.weight_map.keys().cloned().collect()),
+            // An unreadable block's bonds are unknown; the block waits on its
+            // main parent until its shape can be checked.
+            Err(error) => {
+                tracing::warn!(
+                    hash = %PrettyPrinter::build_string_bytes(hash),
+                    %error,
+                    "bond lookup failed"
+                );
+                None
+            }
+        }
+    }
+
+    fn bonded_in_last_finalized(&self) -> Option<HashSet<Validator>> {
+        self.bonded_in(&self.dag.last_finalized_block()?)
+    }
 }
 
 /// Spawn block ingest: the owner task, its intake and validation tasks, and
@@ -292,8 +336,9 @@ pub fn spawn<T: TransportLayer + Send + Sync + 'static>(
         handle.view.clone(),
     ));
 
+    let max_parents = usize::try_from(setup.max_number_of_parents).ok();
     let owner = Owner {
-        state: IngestState::new(handle.view.clone()),
+        state: IngestState::new(handle.view.clone()).with_max_parents(max_parents),
         view: handle.view.clone(),
         block_store: setup.block_store.clone(),
         dag: setup.dag.clone(),
@@ -302,6 +347,7 @@ pub fn spawn<T: TransportLayer + Send + Sync + 'static>(
         outbound: outbound_tx,
         work: work_tx,
         validating: 0,
+        in_validation: HashMap::new(),
         width: setup.validation_width,
         state_root_fetch_tx: setup.state_root_fetch_tx,
     };
@@ -366,7 +412,16 @@ async fn run_intake(
             }
             IntakeJob::Local(hash) => match block_store.get(&hash) {
                 Ok(Some(block)) => match CheckedBlock::check(block, BLOCK_INGEST_METRICS_SOURCE) {
-                    Ok(checked) => attached.intake.admit(&checked, None),
+                    // A local lookup always gets a report, or its need would
+                    // never reach the network.
+                    Ok(checked) => attached.intake.admit(&checked, None).or_else(|error| {
+                        tracing::warn!(
+                            hash = %PrettyPrinter::build_string_bytes(&hash),
+                            %error,
+                            "intake of a stored block failed; asking the network"
+                        );
+                        Ok(IngestInput::LocalMiss { hash })
+                    }),
                     // A bad copy this node stored would shadow the honest
                     // block: delete it, and ask the network.
                     Err((refused, _)) => {
@@ -419,9 +474,21 @@ async fn run_validation<T: TransportLayer + Send + Sync + 'static>(
                     "Block {} processing started.",
                     PrettyPrinter::build_string_bytes(&hash)
                 );
-                match kind {
-                    Work::Validate => validation.validate(casper, &block).await,
-                    Work::AdmitSettled => validation.admit_settled(casper, &block).await,
+                let attempt = async {
+                    match kind {
+                        Work::Validate => validation.validate(casper, &block).await,
+                        Work::AdmitSettled => validation.admit_settled(casper, &block).await,
+                    }
+                };
+                match AssertUnwindSafe(attempt).catch_unwind().await {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        tracing::error!(
+                            hash = %PrettyPrinter::build_string_bytes(&hash),
+                            "block validation panicked; counted as a failed attempt"
+                        );
+                        super::ingest_state::WorkOutcome::Failed
+                    }
                 }
             }
             (None, _) => {
@@ -505,6 +572,8 @@ struct Owner {
     outbound: mpsc::Sender<Outbound>,
     work: mpsc::Sender<(BlockHash, Work)>,
     validating: usize,
+    /// Blocks sent to validation: when, and whether a stuck warning went out.
+    in_validation: HashMap<BlockHash, (u64, bool)>,
     width: usize,
     state_root_fetch_tx: Option<mpsc::Sender<Blake2b256Hash>>,
 }
@@ -521,25 +590,29 @@ impl Owner {
         let mut tick = tokio::time::interval(TICK_INTERVAL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            // Peer traffic comes last: a flood of inputs must not hold off the
+            // tick, which sends every request, or the node's own results.
             let input = tokio::select! {
                 biased;
                 Some(hash) = inserted.recv() => IngestInput::Inserted { hash },
-                Some(input) = inputs.recv() => input,
+                _ = tick.tick() => {
+                    metrics::gauge!(BLOCK_INGEST_INSERTS_PENDING_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE)
+                        .set(inserted.len() as f64);
+                    self.warn_stuck_validations();
+                    self.tick_input()
+                }
                 Some((root, result)) = async {
                     match state_root_results.as_mut() {
                         Some(results) => results.recv().await,
                         None => std::future::pending().await,
                     }
                 } => IngestInput::StateFetch { root, result },
-                _ = tick.tick() => {
-                    metrics::gauge!(BLOCK_INGEST_INSERTS_PENDING_METRIC, "source" => BLOCK_INGEST_METRICS_SOURCE)
-                        .set(inserted.len() as f64);
-                    self.tick_input()
-                }
+                Some(input) = inputs.recv() => input,
                 else => return,
             };
-            if matches!(input, IngestInput::Outcome { .. }) {
+            if let IngestInput::Outcome { hash, .. } = &input {
                 self.validating = self.validating.saturating_sub(1);
+                self.in_validation.remove(hash);
             }
             self.handle(input).await;
             self.dispatch().await;
@@ -607,6 +680,18 @@ impl Owner {
                 self.block_store.discard_pending(&hash);
                 None
             }
+            Effect::DiscardStored(hash) => {
+                if !self.dag.contains(&hash) {
+                    if let Err(error) = self.block_store.discard_stored(&hash) {
+                        tracing::warn!(
+                            hash = %PrettyPrinter::build_string_bytes(&hash),
+                            %error,
+                            "could not delete the stored body of a block that left block ingest"
+                        );
+                    }
+                }
+                None
+            }
             Effect::Struck {
                 peer,
                 strike,
@@ -643,10 +728,29 @@ impl Owner {
             let Some(work) = self.state.next_dispatch() else {
                 return;
             };
+            let hash = work.0.clone();
             if self.work.send(work).await.is_err() {
                 return;
             }
             self.validating += 1;
+            self.in_validation.insert(hash, (self.now_ms(), false));
+        }
+    }
+
+    /// Warn once for each block whose validation has held a slot for longer
+    /// than `STUCK_VALIDATION_WARN_MS`.
+    fn warn_stuck_validations(&mut self) {
+        let now_ms = self.now_ms();
+        for (hash, (since_ms, warned)) in self.in_validation.iter_mut() {
+            let elapsed_ms = now_ms.saturating_sub(*since_ms);
+            if !*warned && elapsed_ms >= STUCK_VALIDATION_WARN_MS {
+                *warned = true;
+                tracing::warn!(
+                    hash = %PrettyPrinter::build_string_bytes(hash),
+                    elapsed_ms,
+                    "block validation still running; it holds one validation slot"
+                );
+            }
         }
     }
 

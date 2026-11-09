@@ -71,10 +71,11 @@ struct Entry {
     sender: Bytes,
 }
 
-fn decode(encoded: &Bytes) -> Option<BlockMessage> {
-    BlockMessageProto::decode(encoded.as_ref())
-        .ok()
-        .and_then(|proto| BlockMessage::from_proto(proto).ok())
+fn decode(encoded: &Bytes) -> BlockMessage {
+    let proto = BlockMessageProto::decode(encoded.as_ref())
+        .expect("the pending area decodes only bytes it encoded from a BlockMessage");
+    BlockMessage::from_proto(proto)
+        .expect("the pending area decodes only bytes it encoded from a BlockMessage")
 }
 
 struct Inner {
@@ -176,7 +177,7 @@ impl PendingBlocks {
 
     pub fn get(&self, hash: &BlockHash) -> Option<BlockMessage> {
         let encoded = self.lock().entries.get(hash)?.encoded.clone();
-        decode(&encoded)
+        Some(decode(&encoded))
     }
 
     pub fn contains(&self, hash: &BlockHash) -> bool { self.lock().entries.contains_key(hash) }

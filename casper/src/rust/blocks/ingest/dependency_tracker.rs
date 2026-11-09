@@ -14,6 +14,19 @@ pub const MAX_VALIDATION_FAILURES: u32 = 32;
 
 pub const VALIDATION_FAILURE_QUARANTINE_MS: u64 = 120_000;
 
+/// First wait before a failed validation is retried. Each further failure
+/// doubles it, up to `VALIDATION_FAILURE_QUARANTINE_MS`.
+pub const VALIDATION_RETRY_BASE_MS: u64 = 500;
+
+/// The wait before retry number `failures + 1` of a block whose validation
+/// failed `failures` times.
+pub fn validation_retry_delay_ms(failures: u32) -> u64 {
+    let doublings = failures.saturating_sub(1).min(16);
+    VALIDATION_RETRY_BASE_MS
+        .saturating_mul(1 << doublings)
+        .min(VALIDATION_FAILURE_QUARANTINE_MS)
+}
+
 /// Where a held block's body is: the block store, or the pending area for a
 /// block whose sender's authorization is not yet known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +44,13 @@ pub struct HeldMeta {
     /// Self-declared until the block is validated.
     pub height: i64,
     pub deps: Vec<BlockHash>,
+    /// The parents as listed, main parent first.
+    pub parents: Vec<BlockHash>,
+    /// The validators the justifications name, as listed.
+    pub justification_validators: Vec<Validator>,
+    /// The block cites only its main parent until the main parent is in the
+    /// DAG and the block's shape can be checked against its bonds.
+    pub deferred: bool,
     pub body: BodyAt,
     pub size: usize,
     /// Signature checked and the sender bonded in the last finalized block.
@@ -62,6 +82,7 @@ struct Held {
     stage: Stage,
     missing: HashSet<BlockHash>,
     awaiting_root: Option<Blake2b256Hash>,
+    retry_at_ms: Option<u64>,
     seq: u64,
 }
 
@@ -76,6 +97,8 @@ impl Held {
 pub struct Departure {
     /// The entries that left.
     pub removed: Vec<HeldMeta>,
+    /// Waiters that the departure made ready.
+    pub released: Vec<BlockHash>,
     /// Missing dependencies that no remaining entry waits on.
     pub unwaited: Vec<BlockHash>,
     /// State roots that no remaining entry awaits.
@@ -106,9 +129,11 @@ pub struct DependencyTracker {
     waiters: HashMap<BlockHash, HashSet<BlockHash>>,
     root_waiters: HashMap<Blake2b256Hash, HashSet<BlockHash>>,
     ready: BTreeSet<(i64, u64, BlockHash)>,
+    cooling: BTreeSet<(u64, BlockHash)>,
     failures: HashMap<BlockHash, u32>,
     quarantined_until: HashMap<BlockHash, u64>,
     disk_entries: usize,
+    disk_by_sender: HashMap<Validator, usize>,
     next_seq: u64,
 }
 
@@ -120,9 +145,11 @@ impl DependencyTracker {
             waiters: HashMap::new(),
             root_waiters: HashMap::new(),
             ready: BTreeSet::new(),
+            cooling: BTreeSet::new(),
             failures: HashMap::new(),
             quarantined_until: HashMap::new(),
             disk_entries: 0,
+            disk_by_sender: HashMap::new(),
             next_seq: 0,
         }
     }
@@ -136,6 +163,7 @@ impl DependencyTracker {
         );
         if meta.body == BodyAt::Disk {
             self.disk_entries += 1;
+            *self.disk_by_sender.entry(meta.sender.clone()).or_insert(0) += 1;
         }
         self.view.set_held(&hash, true, meta.solicited);
         let seq = self.next_seq;
@@ -154,6 +182,7 @@ impl DependencyTracker {
             },
             missing,
             awaiting_root: None,
+            retry_at_ms: None,
             seq,
         };
         if held.stage == Stage::Ready {
@@ -163,6 +192,12 @@ impl DependencyTracker {
     }
 
     pub fn contains(&self, hash: &BlockHash) -> bool { self.held.contains_key(hash) }
+
+    pub fn is_working(&self, hash: &BlockHash) -> bool {
+        self.held
+            .get(hash)
+            .is_some_and(|held| held.stage == Stage::Working)
+    }
 
     pub fn meta(&self, hash: &BlockHash) -> Option<&HeldMeta> {
         self.held.get(hash).map(|held| &held.meta)
@@ -208,7 +243,7 @@ impl DependencyTracker {
     /// on it. Returns the departure of its entry, if it was held.
     pub fn inserted(&mut self, hash: &BlockHash) -> Departure {
         self.failures.remove(hash);
-        let departure = match self.held.contains_key(hash) {
+        let mut departure = match self.held.contains_key(hash) {
             true => self.take(hash),
             false => Departure::default(),
         };
@@ -220,10 +255,34 @@ impl DependencyTracker {
                     .get_mut(&waiter)
                     .expect("a waiter is a held entry");
                 held.missing.remove(hash);
-                self.promote_if_ready(&waiter);
+                if self.promote_if_ready(&waiter) {
+                    departure.released.push(waiter);
+                }
             }
         }
         departure
+    }
+
+    /// A ready block whose shape now checks out waits on the rest of its
+    /// dependencies.
+    pub fn wait_on_dependencies(&mut self, hash: &BlockHash, missing: Vec<BlockHash>) {
+        let held = self.held.get_mut(hash).expect("a released block is held");
+        assert_eq!(held.stage, Stage::Ready, "only a ready block is held back");
+        let key = held.ready_key();
+        held.stage = Stage::Waiting;
+        held.missing.extend(missing.iter().cloned());
+        self.ready.remove(&key);
+        for dependency in &missing {
+            self.add_waiter(dependency, hash);
+        }
+        self.promote_if_ready(hash);
+    }
+
+    /// Whether `hash` still has its shape to check, clearing the mark.
+    pub fn take_deferred(&mut self, hash: &BlockHash) -> bool {
+        self.held
+            .get_mut(hash)
+            .is_some_and(|held| std::mem::take(&mut held.meta.deferred))
     }
 
     pub fn root_imported(&mut self, root: &Blake2b256Hash) {
@@ -270,19 +329,62 @@ impl DependencyTracker {
         self.promote_if_ready(hash);
     }
 
-    /// A validation attempt of `hash` failed without a verdict.
+    /// A validation attempt of `hash` failed without a verdict. A retry waits
+    /// `validation_retry_delay_ms`; the last failure quarantines the block.
     pub fn failed(&mut self, hash: &BlockHash, now_ms: u64) -> FailureVerdict {
-        let failures = self.failures.entry(hash.clone()).or_insert(0);
-        *failures += 1;
-        if *failures < MAX_VALIDATION_FAILURES {
-            self.working(hash).stage = Stage::Waiting;
-            self.promote_if_ready(hash);
-            return FailureVerdict::Retry;
+        self.record_failure(hash, now_ms, true)
+    }
+
+    /// Validation of `hash` named a dependency the stores already satisfy, so
+    /// its snapshot predates that dependency. The block is retried at once,
+    /// but the attempt counts as a failure, which bounds a repeat.
+    pub fn stale_snapshot(&mut self, hash: &BlockHash, now_ms: u64) -> FailureVerdict {
+        self.record_failure(hash, now_ms, false)
+    }
+
+    fn record_failure(&mut self, hash: &BlockHash, now_ms: u64, paced: bool) -> FailureVerdict {
+        let failures = {
+            let failures = self.failures.entry(hash.clone()).or_insert(0);
+            *failures += 1;
+            *failures
+        };
+        self.working(hash).stage = Stage::Waiting;
+        if failures >= MAX_VALIDATION_FAILURES {
+            self.failures.remove(hash);
+            self.quarantined_until
+                .insert(hash.clone(), now_ms + VALIDATION_FAILURE_QUARANTINE_MS);
+            return FailureVerdict::GiveUp;
         }
-        self.failures.remove(hash);
-        self.quarantined_until
-            .insert(hash.clone(), now_ms + VALIDATION_FAILURE_QUARANTINE_MS);
-        FailureVerdict::GiveUp
+        if paced {
+            let retry_at_ms = now_ms + validation_retry_delay_ms(failures);
+            self.held
+                .get_mut(hash)
+                .expect("a failing block is held")
+                .retry_at_ms = Some(retry_at_ms);
+            self.cooling.insert((retry_at_ms, hash.clone()));
+        } else {
+            self.promote_if_ready(hash);
+        }
+        FailureVerdict::Retry
+    }
+
+    /// Failed blocks whose retry delay has passed become ready again.
+    pub fn release_cooled(&mut self, now_ms: u64) {
+        while let Some((due_ms, hash)) = self.cooling.first().cloned() {
+            if due_ms > now_ms {
+                return;
+            }
+            self.cooling.remove(&(due_ms, hash.clone()));
+            self.held
+                .get_mut(&hash)
+                .expect("a cooling entry is held")
+                .retry_at_ms = None;
+            self.promote_if_ready(&hash);
+        }
+    }
+
+    pub fn quarantined_until(&self, hash: &BlockHash) -> Option<u64> {
+        self.quarantined_until.get(hash).copied()
     }
 
     pub fn forget_expired_quarantines(&mut self, now_ms: u64) {
@@ -382,6 +484,36 @@ impl DependencyTracker {
             .collect()
     }
 
+    /// The block to evict when bodies on disk exceed their bound: one of the
+    /// sender holding the most of them, so no sender can push out the others'
+    /// blocks. Within that sender, eviction order applies.
+    pub fn disk_victim(&self) -> Option<BlockHash> {
+        let mut senders: Vec<(&Validator, usize)> = self
+            .disk_by_sender
+            .iter()
+            .map(|(sender, count)| (sender, *count))
+            .collect();
+        senders.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        senders.into_iter().find_map(|(sender, _)| {
+            self.held
+                .values()
+                .filter(|held| {
+                    held.stage != Stage::Working
+                        && held.meta.body == BodyAt::Disk
+                        && held.meta.sender == *sender
+                })
+                .min_by_key(|held| {
+                    (
+                        held.meta.solicited || self.waiters.contains_key(&held.meta.hash),
+                        held.meta.trusted,
+                        Reverse(held.meta.height),
+                        Reverse(held.seq),
+                    )
+                })
+                .map(|held| held.meta.hash.clone())
+        })
+    }
+
     pub fn is_trusted(&self, hash: &BlockHash) -> bool {
         self.held.get(hash).is_some_and(|held| held.meta.trusted)
     }
@@ -399,12 +531,17 @@ impl DependencyTracker {
         held
     }
 
-    fn promote_if_ready(&mut self, hash: &BlockHash) {
+    fn promote_if_ready(&mut self, hash: &BlockHash) -> bool {
         let held = self.held.get_mut(hash).expect("promoted entries are held");
-        if held.stage == Stage::Waiting && held.missing.is_empty() && held.awaiting_root.is_none() {
+        let ready = held.stage == Stage::Waiting
+            && held.missing.is_empty()
+            && held.awaiting_root.is_none()
+            && held.retry_at_ms.is_none();
+        if ready {
             held.stage = Stage::Ready;
             self.ready.insert(held.ready_key());
         }
+        ready
     }
 
     fn add_waiter(&mut self, dependency: &BlockHash, waiter: &BlockHash) {
@@ -418,11 +555,23 @@ impl DependencyTracker {
     fn take(&mut self, hash: &BlockHash) -> Departure {
         let held = self.held.remove(hash).expect("only held entries are taken");
         self.view.set_held(hash, false, false);
+        self.failures.remove(hash);
         if held.meta.body == BodyAt::Disk {
             self.disk_entries -= 1;
+            let count = self
+                .disk_by_sender
+                .get_mut(&held.meta.sender)
+                .expect("every disk entry is counted under its sender");
+            *count -= 1;
+            if *count == 0 {
+                self.disk_by_sender.remove(&held.meta.sender);
+            }
         }
         if held.stage == Stage::Ready {
             self.ready.remove(&held.ready_key());
+        }
+        if let Some(retry_at_ms) = held.retry_at_ms {
+            self.cooling.remove(&(retry_at_ms, hash.clone()));
         }
         let mut unwaited = Vec::new();
         for dependency in &held.missing {
@@ -451,6 +600,7 @@ impl DependencyTracker {
         }
         Departure {
             removed: vec![held.meta],
+            released: Vec::new(),
             unwaited,
             unawaited_roots,
         }
@@ -471,6 +621,9 @@ pub(crate) mod tests {
             sender: Bytes::from_static(b"sender"),
             height,
             deps: deps.iter().copied().map(hash).collect(),
+            parents: deps.iter().copied().map(hash).collect(),
+            justification_validators: Vec::new(),
+            deferred: false,
             body: BodyAt::Disk,
             size: 100,
             trusted: true,
@@ -640,6 +793,8 @@ pub(crate) mod tests {
         for _ in 1..MAX_VALIDATION_FAILURES {
             assert!(t.next_ready().is_some());
             assert_eq!(t.failed(&hash(1), 0), FailureVerdict::Retry);
+            assert!(t.next_ready().is_none(), "a retry waits out its delay");
+            t.release_cooled(VALIDATION_FAILURE_QUARANTINE_MS);
         }
         t.next_ready();
         assert_eq!(t.failed(&hash(1), 0), FailureVerdict::GiveUp);
@@ -654,12 +809,14 @@ pub(crate) mod tests {
         for _ in 1..MAX_VALIDATION_FAILURES {
             t.next_ready();
             assert_eq!(t.failed(&hash(1), 0), FailureVerdict::Retry);
+            t.release_cooled(VALIDATION_FAILURE_QUARANTINE_MS);
         }
         t.inserted(&hash(1));
         hold(&mut t, 1, 1, &[]);
         for _ in 1..MAX_VALIDATION_FAILURES {
             t.next_ready();
             assert_eq!(t.failed(&hash(1), 0), FailureVerdict::Retry);
+            t.release_cooled(VALIDATION_FAILURE_QUARANTINE_MS);
         }
     }
 

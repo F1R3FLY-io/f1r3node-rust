@@ -256,6 +256,11 @@ impl InlineIngest {
             Effect::DiscardPending(hash) => {
                 self.block_store.discard_pending(&hash);
             }
+            Effect::DiscardStored(hash) => {
+                if !self.dag.contains(&hash) {
+                    self.block_store.discard_stored(&hash)?;
+                }
+            }
         }
         Ok(())
     }

@@ -240,8 +240,8 @@ impl<T: TransportLayer + Send + Sync + Clone + 'static> Engine for Running<T> {
         let view = self.ingest.view();
         let unrequested_block_traffic = match &msg {
             CasperMessage::BlockHashMessage(_) => true,
-            CasperMessage::BlockMessage(b) => !view.is_awaited(&b.block_hash),
-            CasperMessage::HasBlock(h) => !view.is_awaited(&h.hash),
+            CasperMessage::BlockMessage(b) => !view.is_solicited(&b.block_hash),
+            CasperMessage::HasBlock(h) => !view.is_solicited(&h.hash),
             _ => false,
         };
         if unrequested_block_traffic && view.is_ignored(&peer) {

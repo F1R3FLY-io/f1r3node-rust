@@ -933,14 +933,36 @@ impl BlockDagKeyValueStorage {
     /// A block that depends on `hash` need not wait for it: the block is in
     /// the DAG, or it was detected as an equivocation.
     pub fn is_dependency_satisfied(&self, hash: &BlockHash) -> Result<bool, KvStoreError> {
-        if self.contains(hash) {
-            return Ok(true);
+        Ok(self
+            .unsatisfied_dependencies(std::slice::from_ref(hash))?
+            .is_empty())
+    }
+
+    /// The hashes in `hashes` that a dependent block must still wait for:
+    /// neither in the DAG nor detected as an equivocation. The equivocation
+    /// records are read once for the whole list.
+    pub fn unsatisfied_dependencies(
+        &self,
+        hashes: &[BlockHash],
+    ) -> Result<Vec<BlockHash>, KvStoreError> {
+        let absent: Vec<BlockHash> = hashes
+            .iter()
+            .filter(|hash| !self.contains(hash))
+            .cloned()
+            .collect();
+        if absent.is_empty() {
+            return Ok(absent);
         }
         self.access_equivocations_tracker(|tracker| {
-            Ok(tracker
-                .data()?
-                .iter()
-                .any(|record| record.equivocation_detected_block_hashes.contains(hash)))
+            let records = tracker.data()?;
+            Ok(absent
+                .into_iter()
+                .filter(|hash| {
+                    !records
+                        .iter()
+                        .any(|record| record.equivocation_detected_block_hashes.contains(hash))
+                })
+                .collect())
         })
     }
 

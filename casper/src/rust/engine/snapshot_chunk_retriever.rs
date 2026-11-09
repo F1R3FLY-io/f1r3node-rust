@@ -57,9 +57,8 @@ pub struct ChunkRequestState {
     pub initial_request_ms: u64,
     /// Peers we've asked so far.  Used to rotate through peers
     /// on retry rather than re-asking the same node.  Represented
-    /// as opaque `Vec<u8>` peer identifiers (matches
-    /// `BlockRetriever`'s `HashSet<PeerNode>`; kept as bytes here
-    /// to avoid pulling in comm types).
+    /// as opaque `Vec<u8>` peer identifiers, to avoid pulling in comm
+    /// types.
     pub peers_tried: Vec<Vec<u8>>,
     /// Number of retry attempts across peers.  Increments on
     /// each timeout without a valid response.  Retriever gives

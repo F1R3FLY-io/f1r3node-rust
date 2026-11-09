@@ -613,6 +613,7 @@ pub async fn setup_node_program<T: TransportLayer + Send + Sync + Clone + 'stati
         connections: rp_connections.clone(),
         conf: rp_conf.clone(),
         validation_width,
+        max_number_of_parents: conf.casper.max_number_of_parents,
         state_root_fetch_tx: Some(state_requester_handles.fetch_tx.clone()),
         state_root_results: Some(state_requester_handles.results),
     })?;

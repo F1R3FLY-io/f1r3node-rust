@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use block_storage::rust::pending_blocks::{PendingBlockLimits, PendingUsage};
 use comm::rust::peer_node::PeerNode;
 use models::rust::block_hash::BlockHash;
@@ -119,6 +121,8 @@ pub enum IngestInput {
 pub enum Effect {
     Fetch(FetchAction),
     DiscardPending(BlockHash),
+    /// Delete the block's body from disk unless the block is in the DAG.
+    DiscardStored(BlockHash),
     Struck {
         peer: PeerNode,
         strike: Strike,
@@ -133,7 +137,39 @@ pub trait StoreReads {
     /// In the DAG, or recorded as an equivocation or an invalid block.
     fn is_satisfied(&self, hash: &BlockHash) -> bool;
 
+    /// The hashes in `hashes` that are not satisfied.
+    fn unsatisfied(&self, hashes: &[BlockHash]) -> Vec<BlockHash> {
+        hashes
+            .iter()
+            .filter(|hash| !self.is_satisfied(hash))
+            .cloned()
+            .collect()
+    }
+
     fn pending_usage(&self) -> PendingUsage;
+
+    /// The pending area holds a body for `hash`.
+    fn holds_pending(&self, hash: &BlockHash) -> bool;
+
+    /// The validators with stake in `hash`, or `None` if the DAG does not
+    /// hold it.
+    fn bonded_in(&self, hash: &BlockHash) -> Option<HashSet<Validator>>;
+
+    /// The validators with stake in the last finalized block, once there is
+    /// one.
+    fn bonded_in_last_finalized(&self) -> Option<HashSet<Validator>>;
+}
+
+/// What a held block's parents and justifications show before validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// Fits the bonds it can be checked against: every dependency is cited.
+    Fits,
+    /// Cannot be checked yet: only the main parent is cited.
+    Unchecked,
+    /// Cannot be valid: only the main parent is cited, and validation judges
+    /// the block.
+    Invalid,
 }
 
 /// The block ingest owner's state: what the node holds, what it needs, and
@@ -144,6 +180,11 @@ pub struct IngestState {
     /// Height of the approved block, once casper runs: cited blocks at or
     /// below it may be admitted as settled history.
     anchor_height: Option<i64>,
+    /// The most parents a valid block lists; `None` when unlimited.
+    max_parents: Option<usize>,
+    /// Blocks inserted while a worker still validated them; their waiters
+    /// are released when the outcome arrives.
+    inserted_while_working: HashSet<BlockHash>,
     tracker: DependencyTracker,
     scheduler: FetchScheduler,
     reputation: PeerReputation,
@@ -153,10 +194,19 @@ impl IngestState {
     pub fn new(view: IngestView) -> Self {
         Self {
             anchor_height: None,
+            max_parents: None,
+            inserted_while_working: HashSet::new(),
             tracker: DependencyTracker::new(view.clone()),
             scheduler: FetchScheduler::new(view.clone()),
             reputation: PeerReputation::new(view),
         }
+    }
+
+    /// Blocks listing more than `max_parents` parents cite only their main
+    /// parent; `None` leaves the parent count unchecked.
+    pub fn with_max_parents(mut self, max_parents: Option<usize>) -> Self {
+        self.max_parents = max_parents;
+        self
     }
 
     /// The local lookup for `hash` could not be issued; issue it again.
@@ -218,7 +268,7 @@ impl IngestState {
                 self.strike(&peer, strike, now_ms, &mut effects)
             }
             IngestInput::LocalMiss { hash } => self.scheduler.local_miss(&hash, now_ms),
-            IngestInput::Inserted { hash } => self.inserted(&hash),
+            IngestInput::Inserted { hash } => self.inserted(&hash, now_ms, stores),
             IngestInput::Outcome { hash, outcome } => {
                 self.outcome(&hash, outcome, now_ms, stores, &mut effects)
             }
@@ -238,6 +288,7 @@ impl IngestState {
             },
             IngestInput::Tick { connected } => {
                 self.tracker.forget_expired_quarantines(now_ms);
+                self.tracker.release_cooled(now_ms);
                 self.proactive_pass(&stores.pending_usage(), now_ms, &mut effects);
                 effects.extend(
                     self.scheduler
@@ -261,10 +312,28 @@ impl IngestState {
         if self.tracker.contains(&hash) {
             return;
         }
-        if stores.in_dag(&hash) || self.tracker.is_quarantined(&hash, now_ms) {
+        if stores.in_dag(&hash) {
             if meta.body == BodyAt::Pending {
-                effects.push(Effect::DiscardPending(hash));
+                effects.push(Effect::DiscardPending(hash.clone()));
             }
+            self.scheduler.remove_block(&hash);
+            return;
+        }
+        if let Some(until_ms) = self
+            .tracker
+            .quarantined_until(&hash)
+            .filter(|until_ms| now_ms < *until_ms)
+        {
+            if meta.body == BodyAt::Pending {
+                effects.push(Effect::DiscardPending(hash.clone()));
+            }
+            self.scheduler.defer_until(&hash, until_ms);
+            return;
+        }
+        // A late report for a pending body the owner already discarded: the
+        // block is not held, so its need stays and it is fetched again.
+        if meta.body == BodyAt::Pending && !stores.holds_pending(&hash) {
+            self.scheduler.local_miss(&hash, now_ms);
             return;
         }
         let need = self.scheduler.remove_block(&hash);
@@ -292,7 +361,19 @@ impl IngestState {
         }
         let (work, missing) = match settled {
             true => (Work::AdmitSettled, Vec::new()),
-            false => (Work::Validate, missing_dependencies(&meta.deps, stores)),
+            false => match self.shape(&meta, stores) {
+                Shape::Fits => (Work::Validate, missing_dependencies(&meta.deps, stores)),
+                shape => {
+                    meta.deferred = shape == Shape::Unchecked;
+                    let main_parent = meta
+                        .parents
+                        .first()
+                        .cloned()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    (Work::Validate, missing_dependencies(&main_parent, stores))
+                }
+            },
         };
         let facts = citation(&meta);
         let body = meta.body;
@@ -330,14 +411,19 @@ impl IngestState {
         }
         match reason {
             Refusal::NotOfInterest | Refusal::Unauthorized => {
-                if let Some(peer) = &from {
-                    self.scheduler.peer_failed(&hash, peer, now_ms);
+                if stores.in_dag(&hash) || self.tracker.contains(&hash) {
+                    self.scheduler.remove_block(&hash);
+                } else {
+                    match &from {
+                        Some(peer) => self.scheduler.peer_failed(&hash, peer, now_ms),
+                        None => self.scheduler.local_miss(&hash, now_ms),
+                    }
                 }
             }
             Refusal::Pending(_) if unsolicited => {}
             Refusal::Pending(PendingRefusal::AreaFull) => {
                 self.reactive_pass(&stores.pending_usage(), size, now_ms, effects);
-                self.keep_wanted(&hash, now_ms);
+                self.keep_wanted(&hash, now_ms, stores);
             }
             Refusal::Pending(PendingRefusal::SenderLimitReached) => {
                 let area = stores.pending_usage();
@@ -365,7 +451,7 @@ impl IngestState {
                 for victim in waiting {
                     self.displace(&victim, now_ms, effects);
                 }
-                self.keep_wanted(&hash, now_ms);
+                self.keep_wanted(&hash, now_ms, stores);
             }
             Refusal::Pending(PendingRefusal::TooLarge) => {
                 self.scheduler.remove_block(&hash);
@@ -375,10 +461,79 @@ impl IngestState {
         }
     }
 
-    fn inserted(&mut self, hash: &BlockHash) {
+    fn inserted(&mut self, hash: &BlockHash, now_ms: u64, stores: &dyn StoreReads) {
+        // The worker validating `hash` still applies the insert's effects
+        // (latest messages, finalization); its waiters start after its
+        // outcome.
+        if self.tracker.is_working(hash) {
+            self.inserted_while_working.insert(hash.clone());
+            return;
+        }
+        self.finish_insert(hash, now_ms, stores);
+    }
+
+    fn finish_insert(&mut self, hash: &BlockHash, now_ms: u64, stores: &dyn StoreReads) {
         let departure = self.tracker.inserted(hash);
         self.scheduler.remove_block(hash);
+        let released = departure.released.clone();
         self.released(departure);
+        for waiter in released {
+            self.check_deferred_shape(&waiter, now_ms, stores);
+        }
+    }
+
+    /// A block that cited only its main parent, released now that the main
+    /// parent is in the DAG: if its shape fits that parent's bonds, it waits
+    /// on the rest of its dependencies; otherwise validation judges it.
+    fn check_deferred_shape(&mut self, hash: &BlockHash, now_ms: u64, stores: &dyn StoreReads) {
+        if !self.tracker.take_deferred(hash) {
+            return;
+        }
+        let meta = self
+            .tracker
+            .meta(hash)
+            .expect("a released block is held")
+            .clone();
+        if self.shape(&meta, stores) != Shape::Fits {
+            return;
+        }
+        let missing = missing_dependencies(&meta.deps, stores);
+        if missing.is_empty() {
+            return;
+        }
+        self.tracker.wait_on_dependencies(hash, missing.clone());
+        self.cite(&missing, &citation(&meta), now_ms);
+    }
+
+    /// Whether `meta`'s parents and justifications fit the rules a valid
+    /// block meets: no validator named twice, no more parents than allowed,
+    /// and the named validators equal to the main parent's bonds. Before the
+    /// main parent is in the DAG, the named validators must be bonded in the
+    /// last finalized block.
+    fn shape(&self, meta: &HeldMeta, stores: &dyn StoreReads) -> Shape {
+        let named: HashSet<&Validator> = meta.justification_validators.iter().collect();
+        if named.len() != meta.justification_validators.len()
+            || self
+                .max_parents
+                .is_some_and(|max_parents| meta.parents.len() > max_parents)
+        {
+            return Shape::Invalid;
+        }
+        let Some(main_parent) = meta.parents.first() else {
+            return Shape::Invalid;
+        };
+        match stores.bonded_in(main_parent) {
+            Some(bonds) => {
+                match named.len() == bonds.len() && named.iter().all(|v| bonds.contains(*v)) {
+                    true => Shape::Fits,
+                    false => Shape::Invalid,
+                }
+            }
+            None => match stores.bonded_in_last_finalized() {
+                Some(bonds) if named.iter().all(|v| bonds.contains(*v)) => Shape::Fits,
+                _ => Shape::Unchecked,
+            },
+        }
     }
 
     fn outcome(
@@ -389,6 +544,10 @@ impl IngestState {
         stores: &dyn StoreReads,
         effects: &mut Vec<Effect>,
     ) {
+        if self.inserted_while_working.remove(hash) {
+            self.finish_insert(hash, now_ms, stores);
+            return;
+        }
         let Some(meta) = self.tracker.meta(hash) else {
             return;
         };
@@ -404,10 +563,12 @@ impl IngestState {
                 self.departed(departure, effects);
             }
             WorkOutcome::AwaitingBlock(missing) => {
-                self.tracker.wait_on_block(hash, &missing);
                 if stores.is_satisfied(&missing) {
-                    self.inserted(&missing);
+                    if self.tracker.stale_snapshot(hash, now_ms) == FailureVerdict::GiveUp {
+                        self.give_up(hash, now_ms, effects);
+                    }
                 } else {
+                    self.tracker.wait_on_block(hash, &missing);
                     self.cite(std::slice::from_ref(&missing), &facts, now_ms);
                 }
             }
@@ -422,10 +583,20 @@ impl IngestState {
             }
             WorkOutcome::Failed => {
                 if self.tracker.failed(hash, now_ms) == FailureVerdict::GiveUp {
-                    let departure = self.tracker.drop_with_dependents(hash);
-                    self.departed(departure, effects);
+                    self.give_up(hash, now_ms, effects);
                 }
             }
+        }
+    }
+
+    /// Stop holding a block whose validation keeps failing. The blocks that
+    /// wait on it keep waiting, and it is asked for again once its quarantine
+    /// ends.
+    fn give_up(&mut self, hash: &BlockHash, now_ms: u64, effects: &mut Vec<Effect>) {
+        let quarantined_until = self.tracker.quarantined_until(hash);
+        self.evict(hash, now_ms, effects);
+        if let Some(until_ms) = quarantined_until {
+            self.scheduler.defer_until(hash, until_ms);
         }
     }
 
@@ -450,14 +621,18 @@ impl IngestState {
     }
 
     /// Entries left for good: their pending bodies are discarded.
+    /// A body on disk is deleted only when nothing needs the block any more;
+    /// a needed block is read back from disk by a local lookup.
     fn departed(&mut self, departure: Departure, effects: &mut Vec<Effect>) {
-        effects.extend(
-            departure
-                .removed
-                .iter()
-                .filter(|meta| meta.body == BodyAt::Pending)
-                .map(|meta| Effect::DiscardPending(meta.hash.clone())),
-        );
+        for meta in &departure.removed {
+            match meta.body {
+                BodyAt::Pending => effects.push(Effect::DiscardPending(meta.hash.clone())),
+                BodyAt::Disk if !self.scheduler.is_needed(&meta.hash) => {
+                    effects.push(Effect::DiscardStored(meta.hash.clone()))
+                }
+                BodyAt::Disk => {}
+            }
+        }
         self.released(departure);
     }
 
@@ -477,7 +652,10 @@ impl IngestState {
     /// A refused requested block stays needed after the passes that made room
     /// for it, which may have removed its last waiter, and is asked for again
     /// without waiting out its re-request interval.
-    fn keep_wanted(&mut self, hash: &BlockHash, now_ms: u64) {
+    fn keep_wanted(&mut self, hash: &BlockHash, now_ms: u64, stores: &dyn StoreReads) {
+        if stores.in_dag(hash) || self.tracker.contains(hash) {
+            return;
+        }
         self.scheduler
             .need_block(hash, NeedOrigin::Requested, NeedFacts::default(), now_ms);
         self.scheduler.hasten(hash, now_ms);
@@ -520,26 +698,10 @@ impl IngestState {
     }
 
     fn enforce_disk_bound(&mut self, now_ms: u64, effects: &mut Vec<Effect>) {
-        let Some(excess) = self
-            .tracker
-            .disk_entries()
-            .checked_sub(MAX_DISK_ENTRIES)
-            .filter(|excess| *excess > 0)
-        else {
-            return;
-        };
-        let victims: Vec<BlockHash> = self
-            .tracker
-            .victims(BodyAt::Disk, VictimClass::Unsolicited, None)
-            .into_iter()
-            .chain(
-                self.tracker
-                    .victims(BodyAt::Disk, VictimClass::Solicited, None),
-            )
-            .map(|(hash, _)| hash)
-            .take(excess)
-            .collect();
-        for victim in victims {
+        while self.tracker.disk_entries() > MAX_DISK_ENTRIES {
+            let Some(victim) = self.tracker.disk_victim() else {
+                return;
+            };
             self.evict(&victim, now_ms, effects);
         }
     }
@@ -564,6 +726,7 @@ impl IngestState {
                 PendingBlockLimits::low_water(limits.max_bytes),
             ),
         ];
+        let mut evicted_by_sender: HashMap<Validator, usize> = HashMap::new();
         for (trusted_too, block_target, byte_target) in passes {
             if blocks <= block_target && bytes <= byte_target {
                 continue;
@@ -577,7 +740,14 @@ impl IngestState {
                 {
                     break;
                 }
+                let sender = self
+                    .tracker
+                    .meta(&victim)
+                    .expect("a victim is held")
+                    .sender
+                    .clone();
                 self.evict(&victim, now_ms, effects);
+                *evicted_by_sender.entry(sender).or_insert(0) += 1;
                 blocks = blocks.saturating_sub(1);
                 bytes = bytes.saturating_sub(size);
             }
@@ -586,8 +756,12 @@ impl IngestState {
         let mut over: Vec<(&Validator, usize)> = area
             .by_sender
             .iter()
-            .filter(|(_, count)| **count > sender_target)
-            .map(|(sender, count)| (sender, *count))
+            .map(|(sender, count)| {
+                // A sender absent here lost no block in the passes above.
+                let evicted = evicted_by_sender.get(sender).copied().unwrap_or(0);
+                (sender, count.saturating_sub(evicted))
+            })
+            .filter(|(_, count)| *count > sender_target)
             .collect();
         over.sort_unstable();
         for (sender, count) in over {
@@ -651,11 +825,7 @@ fn citation(meta: &HeldMeta) -> NeedFacts {
 }
 
 fn missing_dependencies(deps: &[BlockHash], stores: &dyn StoreReads) -> Vec<BlockHash> {
-    let mut missing: Vec<BlockHash> = deps
-        .iter()
-        .filter(|dependency| !stores.is_satisfied(dependency))
-        .cloned()
-        .collect();
+    let mut missing = stores.unsatisfied(deps);
     missing.sort_unstable();
     missing.dedup();
     missing

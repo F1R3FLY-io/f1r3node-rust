@@ -336,6 +336,7 @@ impl<T: TransportLayer + Send + Sync + 'static> Node<T> {
             },
             conf: create_rp_conf_ask(setup::peer_node("ingest-local", 40401), None, None),
             validation_width: 3,
+            max_number_of_parents: casper::rust::casper::UNLIMITED_PARENTS,
             state_root_fetch_tx: None,
             state_root_results: None,
         })

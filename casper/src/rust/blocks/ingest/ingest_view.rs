@@ -47,8 +47,8 @@ impl IngestView {
     /// Pending, ready or being validated.
     pub fn is_held(&self, hash: &BlockHash) -> bool { self.0.held.contains(hash) }
 
-    /// A request is outstanding for the hash, whatever created the need,
-    /// including a peer's announcement.
+    /// The node needs the hash, whatever created the need, including a peer's
+    /// announcement.
     pub fn is_awaited(&self, hash: &BlockHash) -> bool { self.0.needed.contains(hash) }
 
     /// Needed because a held block cites it, the proposer asked for it, or a

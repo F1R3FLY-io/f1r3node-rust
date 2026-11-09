@@ -8,8 +8,6 @@
 //! `PeerReputation` (peers ignored for pushing invalid blocks), and publishes
 //! read-only answers through `IngestView`.
 
-#![warn(clippy::all)]
-
 pub mod block_ingest;
 pub mod checked_block;
 pub mod dependency_tracker;

@@ -310,6 +310,14 @@ impl FetchScheduler {
         }
     }
 
+    /// No copy of `hash` can be held before `until_ms`: ask the network then.
+    pub fn defer_until(&mut self, hash: &BlockHash, until_ms: u64) {
+        if let Some(need) = self.blocks.get_mut(hash) {
+            need.stage = Stage::Network;
+            need.next_due_ms = need.next_due_ms.max(until_ms);
+        }
+    }
+
     /// `peer` delivered something for `hash` that cannot satisfy the need;
     /// move on to the next peer now.
     pub fn peer_failed(&mut self, hash: &BlockHash, peer: &PeerNode, now_ms: u64) {

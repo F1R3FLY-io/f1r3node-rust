@@ -52,7 +52,7 @@ Intake reads three bounded lanes, in this order:
 
 | Lane | Capacity | Content |
 |---|---:|---|
-| Awaited | 512 | Blocks that the node asked for |
+| Awaited | 512 | Blocks that the node asked for, not those only announced |
 | Local | 256 | Blocks that the owner reads from the block store for a need |
 | Unsolicited | 1,024 | All other pushed blocks |
 
@@ -68,6 +68,8 @@ A need exists while a held block waits on it. A need also exists when the propos
 - Re-requests start at 500 ms. The interval grows until the 32nd attempt and then stays at 4 s. Pacing never ends a need.
 - A peer that announces a needed block is asked next, also if the node asked it before. Announcements never make the node ask for a block sooner than 500 ms after its last request for that block.
 - At most 4,096 needs that no held block cites are kept. Announced-only needs leave first.
+
+A held block cites every missing dependency when its parents and justifications fit the rules a valid block meets: no validator named twice, no more parents than `max-number-of-parents`, and the named validators equal to the bonds of its main parent. Before the main parent is in the DAG, the named validators must be bonded in the last finalized block. A block that does not fit cites only its main parent. When the main parent arrives, the owner checks the block again: a block that now fits cites the rest, and any other block goes to validation, which judges it. So a block creates at most one need per bonded validator plus its parents.
 
 A need ends early only when waiting cannot help. A block that is too large for the pending area ends its need. A state root ends its need when the state requester exhausts its budget. The blocks that waited on it then leave.
 
@@ -86,14 +88,24 @@ Intake gives each block a class. A requested block is `Solicited`. Another block
 
 The owner evicts in two passes. The proactive pass runs on each tick and after each pending block arrives. It evicts unsolicited blocks from unknown senders down to 80 percent of each limit, then any unsolicited block down to 90 percent. The reactive pass runs when the area refuses a requested block because it is full. It evicts unsolicited blocks first. It evicts requested blocks only when no unsolicited block is left. A block that another held block waits on counts as requested. Untrusted blocks leave before trusted blocks, and higher blocks leave first.
 
+A requested block that the area refuses because its sender is at its limit takes slots from that sender's blocks: first the sender's unsolicited blocks, then the sender's requested blocks that wait on it, directly or through other held blocks. The refused block stays needed and is asked for again after one base interval.
+
 An evicted block that others wait on becomes a need again. It keeps the peer that pushed it.
+
+## Bodies on disk
+
+When more held blocks have a body on disk than the bound allows, the owner evicts from the sender that holds the most of them. Within that sender, unsolicited blocks leave first, then untrusted ones, then the highest. One sender cannot push out the blocks of other senders.
+
+## Failed validations
+
+A validation that ends without a verdict is retried after 500 ms. Each further failure doubles the wait, up to 120 s. After 32 failures the owner stops holding the block and quarantines it for 120 s. The blocks that wait on it keep waiting, and the node asks for it again when the quarantine ends. A panic during validation counts as a failure. A validation still running after 10 minutes is logged once as a warning, because it holds one validation slot.
 
 ## Bounds
 
 | Bound | Value |
 |---|---:|
 | Held blocks with a body on disk | 65,536 |
-| Validation failures before the block is dropped | 32 |
+| Validation failures before the block is quarantined | 32 |
 | Quarantine after the failure limit | 120 s |
 | Settled-history admissions for the node's lifetime | 512 |
 | Block-hash announces in flight | 128 |
@@ -108,7 +120,7 @@ The owner strikes a peer when an unsolicited block from that peer fails one of t
 - the sender has no stake in the main parent
 - validation finds an invalid sender
 
-These checks are about the block's sender, so a requested block never causes them to strike. A block message that fails the integrity check strikes its peer always, requested or not, because the peer sent a body that does not match its hash or signature. The 16th strike in 10 minutes makes the node ignore the peer's block traffic for one hour. `Running` still accepts a block or a `HasBlock` that the node waits for. Each table tracks at most 1,024 peers.
+These checks are about the block's sender, so a requested block never causes them to strike. A block message that fails the integrity check strikes its peer always, requested or not, because the peer sent a body that does not match its hash or signature. The 16th strike in 10 minutes makes the node ignore the peer's block traffic for one hour. `Running` still accepts a block or a `HasBlock` that the node asked for. Each table tracks at most 1,024 peers.
 
 ## Startup
 

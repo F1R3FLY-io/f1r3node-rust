@@ -326,6 +326,17 @@ impl KeyValueBlockStore {
         self.store.delete_if_value(&key, &bytes)
     }
 
+    /// Delete the body stored on disk for `block_hash`, if there is one. The
+    /// delete compares against the bytes just read, so a body rewritten in
+    /// between stays.
+    pub fn discard_stored(&self, block_hash: &BlockHash) -> Result<bool, KvStoreError> {
+        let key = block_hash.to_vec();
+        let Some(bytes) = self.store.get_one(&key)? else {
+            return Ok(false);
+        };
+        self.store.delete_if_value(&key, &bytes)
+    }
+
     pub fn is_pending(&self, block_hash: &BlockHash) -> bool { self.pending.contains(block_hash) }
 
     pub fn pending_blocks(&self) -> &PendingBlocks { &self.pending }
