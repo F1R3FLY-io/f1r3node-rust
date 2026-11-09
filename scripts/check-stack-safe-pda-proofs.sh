@@ -1397,6 +1397,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleProcessTypedChildren.v
 TLC_MEMORY_HIGH=6G TLC_RSS=8G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleProcessTypedChildren.v 14 \
   "Process child, selected, optional and typed child correspondences"
+rocq_reject_placeholders theories/RPB3IndependentOracleProcessChildAssembly.v
+TLC_MEMORY_HIGH=10G TLC_RSS=12G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleProcessChildAssembly.v 27 \
+  "Process atoms and record assembly"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1410,7 +1414,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentOracleProcessChildCorrespondence \
   StackSafePDA.RPB3IndependentOracleProcessExprChildren \
   StackSafePDA.RPB3IndependentOracleProcessNumericChildren \
-  StackSafePDA.RPB3IndependentOracleProcessTypedChildren
+  StackSafePDA.RPB3IndependentOracleProcessTypedChildren \
+  StackSafePDA.RPB3IndependentOracleProcessChildAssembly
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
