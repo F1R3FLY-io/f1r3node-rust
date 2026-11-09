@@ -1373,6 +1373,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleCostFamilyBridge.v
 TLC_MEMORY_HIGH=6G TLC_RSS=8G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleCostFamilyBridge.v 12 \
   "Cost family correspondence for actual decoded children"
+rocq_reject_placeholders theories/RPB3IndependentOracleNameFamilyBridge.v
+TLC_MEMORY_HIGH=4G TLC_RSS=5G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleNameFamilyBridge.v 49 \
+  "Name family scores project totally for actual children"
 TLC_MEMORY_HIGH=11G TLC_RSS=13G TLC_RUNTIME_MAX_SEC=1800 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1380,7 +1384,8 @@ TLC_MEMORY_HIGH=11G TLC_RSS=13G TLC_RUNTIME_MAX_SEC=1800 \
   StackSafePDA.RPB3IndependentOracleScalarContractBridge \
   StackSafePDA.RPB3IndependentOracleScalarDecoderBridge \
   StackSafePDA.RPB3IndependentOracleScalarVerdictBridge \
-  StackSafePDA.RPB3IndependentOracleCostFamilyBridge
+  StackSafePDA.RPB3IndependentOracleCostFamilyBridge \
+  StackSafePDA.RPB3IndependentOracleNameFamilyBridge
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1
