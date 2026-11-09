@@ -235,11 +235,35 @@ Definition all_match_cases_required (children : list semantic_summary) : bool :=
   forallb (fun child =>
     if sem_tag child =? 2 then sem_case_required_present child else true) children.
 
+(** ** Completeness of the payload families (C:993-1066; EMap P:3163-3170).
+
+    Var and the ordered collections are always complete.  EMap is the
+    conjunction over its pairs, and the remaining families are decided by the
+    seen slots of the generated program.  Types 56 and 57 have no completeness
+    notion, so they remain [None], as does every other type id outside the
+    payload families. *)
+Definition expr_payload_completeness (type_id : nat) (state : scan_state)
+    (children : list semantic_summary) : option bool :=
+  match type_id with
+  | 6 | 27 | 28 | 29 => Some true
+  | 30 =>
+      Some (forallb (fun child =>
+        if sem_tag child =? 1
+        then match sem_complete child with Some true => true | _ => false end
+        else true) children)
+  | 33 => Some (seen_slot state 1)
+  | 34 => Some (seen_slot state 0 && seen_slot state 1)
+  | 35 | 36 | 37 => Some (seen_slot state 0)
+  | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52
+  | 53 | 54 => Some (seen_slot state 0 && seen_slot state 1)
+  | _ => None
+  end.
+
 (** These are the family-specific completeness predicates in the production
     reducers. The two auxiliary flags are computed from ReceiveBind and
     MatchCase descriptor slots below, rather than a child's completeness.
-    Expr message arms need their payload reducer's optional score and fixed
-    point state, so [None] records that outstanding obligation. *)
+    Expression payload families are decided by [expr_payload_completeness];
+    any other type id stays [None]. *)
 Definition component_completeness (type_id : nat) (state : scan_state)
     (children : list semantic_summary) : option bool :=
   match type_id with
@@ -264,7 +288,7 @@ Definition component_completeness (type_id : nat) (state : scan_state)
   | 25 | 26 => Some true                     (* no-score ground payloads *)
   | 31 => Some (seen_slot state 3)
   | 32 => Some (seen_slot state 0)
-  | _ => None
+  | _ => expr_payload_completeness type_id state children
   end.
 
 Definition incomplete_component_uses_nonsemantic_score (type_id : nat) : bool :=
@@ -692,35 +716,6 @@ Theorem generated_connective_scalar_rules_are_boolean :
      Some (RPB3SourceScalarReduction.ScalarRule 9
       RPB3DescriptorProjectionData.GeneratedData.PBBool false)].
 Proof. vm_compute. reflexivity. Qed.
-
-Definition exact_connective_score (children : list semantic_summary)
-    : option canonical_score :=
-  match children with
-  | [] => Some (ScoreInteger 0)
-  | [child] =>
-      match sem_wire child, sem_definitely_refused child,
-          sem_payload child, connective_scalar_constructor (sem_tag child) with
-      | Varint, false, Scalar, Some constructor =>
-          match RPB3SourceScalarReduction.scalar_semantic_from_source
-              (RPB3SourceScalarReduction.ScalarRule (sem_tag child)
-                RPB3DescriptorProjectionData.GeneratedData.PBBool false)
-              (sem_body child) with
-          | Some (RPB3SourceScalarReduction.ScalarBool value) =>
-              Some (score_constructor constructor
-                [ScoreInteger (if value then 1 else 0)])
-          | _ => None
-          end
-      | LengthDelimited, false, Message, _ =>
-          if (sem_tag child =? 3) && (sem_type_id child =? 1) then
-            match sem_score_evidence child with
-            | ExactScore score => Some (score_constructor 400 [score])
-            | ScoreNotDerived => None
-            end
-          else None
-      | _, _, _, _ => None
-      end
-  | _ => None
-  end.
 
 Definition generated_unforgeable_arms :
     list (nat * wire_kind * payload_kind * option nat) :=
@@ -1427,27 +1422,35 @@ Definition exact_connective_message_arm (child : semantic_summary)
   | _ => None
   end.
 
-(** ** Completeness of the payload families (C:993-1066; EMap P:3163-3170).
-
-    Var and the ordered collections are always complete.  EMap is the
-    conjunction over its pairs, and the remaining families are decided by the
-    seen slots of the generated program.  Types 56 and 57 have no completeness
-    notion, so they remain [None], as does every other type id outside the
-    payload families. *)
-Definition expr_payload_completeness (type_id : nat) (state : scan_state)
-    (children : list semantic_summary) : option bool :=
-  match type_id with
-  | 6 | 27 | 28 | 29 => Some true
-  | 30 =>
-      Some (forallb (fun child =>
-        if sem_tag child =? 1
-        then match sem_complete child with Some true => true | _ => false end
-        else true) children)
-  | 33 => Some (seen_slot state 1)
-  | 34 => Some (seen_slot state 0 && seen_slot state 1)
-  | 35 | 36 | 37 => Some (seen_slot state 0)
-  | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52
-  | 53 | 54 => Some (seen_slot state 0 && seen_slot state 1)
+(** The Connective score (type 55).  It reads the message arms And, Or and
+    VarRef through [exact_connective_message_arm] when the Not arm's guard does
+    not hold; it is defined here, after the arm helpers it calls. *)
+Definition exact_connective_score (children : list semantic_summary)
+    : option canonical_score :=
+  match children with
+  | [] => Some (ScoreInteger 0)
+  | [child] =>
+      match sem_wire child, sem_definitely_refused child,
+          sem_payload child, connective_scalar_constructor (sem_tag child) with
+      | Varint, false, Scalar, Some constructor =>
+          match RPB3SourceScalarReduction.scalar_semantic_from_source
+              (RPB3SourceScalarReduction.ScalarRule (sem_tag child)
+                RPB3DescriptorProjectionData.GeneratedData.PBBool false)
+              (sem_body child) with
+          | Some (RPB3SourceScalarReduction.ScalarBool value) =>
+              Some (score_constructor constructor
+                [ScoreInteger (if value then 1 else 0)])
+          | _ => None
+          end
+      | LengthDelimited, false, Message, _ =>
+          if (sem_tag child =? 3) && (sem_type_id child =? 1) then
+            match sem_score_evidence child with
+            | ExactScore score => Some (score_constructor 400 [score])
+            | ScoreNotDerived => None
+            end
+          else exact_connective_message_arm child
+      | _, _, _, _ => None
+      end
   | _ => None
   end.
 
@@ -1516,6 +1519,10 @@ Definition score_evidence_for (type_id : nat) (complete : option bool)
   | 60, Some true => exact_or_unknown (exact_unforgeable_score children)
   | 31, Some true => exact_or_unknown (exact_epathmap_score children)
   | 32, Some true => exact_or_unknown (exact_ezipper_score children)
+  | 57, _ => exact_or_unknown (exact_connective_body_carrier children)
+  | 56, _ => exact_or_unknown (exact_var_ref_carrier children)
+  | 34, Some true => exact_or_unknown (exact_kvp_carrier children)
+  | _, Some true => exact_or_unknown (exact_expr_payload_score type_id children)
   | _, Some false =>
       if incomplete_component_uses_nonsemantic_score type_id
       then ExactScore (score_constructor 2147483647 [])
@@ -1619,19 +1626,37 @@ Proof.
   now destruct (sem_wire child).
 Qed.
 
+(** The message arms outside And, Or, Not and VarRef stay underived; tags 1, 2
+    and 4 now reach [exact_connective_message_arm], so only tags outside
+    [[1; 2; 3; 4]] are excluded. *)
+Lemma exact_connective_message_arm_unlisted :
+  forall child,
+    ~ In (sem_tag child) [1; 2; 3; 4] ->
+    exact_connective_message_arm child = None.
+Proof.
+  intros child other.
+  unfold exact_connective_message_arm.
+  destruct (sem_tag child) as [|[|[|[|[|tag]]]]];
+    try reflexivity;
+    exfalso; apply other; cbn [In]; tauto.
+Qed.
+
 Theorem connective_other_message_arm_remains_underived :
   forall child,
     sem_payload child = Message ->
-    sem_tag child <> 3 ->
+    ~ In (sem_tag child) [1; 2; 3; 4] ->
     score_evidence_for 55 (Some true) [child] = ScoreNotDerived.
 Proof.
   intros child payload other.
+  pose proof (exact_connective_message_arm_unlisted child other) as arm_none.
+  assert (not_three : sem_tag child <> 3).
+  { intro same. apply other. rewrite same. cbn [In]. tauto. }
+  apply Nat.eqb_neq in not_three.
   cbn [score_evidence_for exact_connective_score].
   rewrite payload.
-  apply Nat.eqb_neq in other.
   destruct (sem_wire child), (sem_definitely_refused child),
     (connective_scalar_constructor (sem_tag child));
-    simpl; try reflexivity; now rewrite other.
+    simpl; try reflexivity; now rewrite not_three, arm_none.
 Qed.
 
 Example connective_bool_true_source_has_exact_score :
@@ -2679,6 +2704,18 @@ Definition payload_fixed_point_violated (type_id : nat)
   | _, _ => false
   end.
 
+(** Only the two canonical collections can be outside the fixed point. *)
+Lemma payload_fixed_point_violated_other_family :
+  forall type_id complete children,
+    type_id <> 29 -> type_id <> 30 ->
+    payload_fixed_point_violated type_id complete children = false.
+Proof.
+  intros type_id complete children not_eset not_emap.
+  do 31 (destruct type_id as [|type_id];
+    [first [reflexivity | (exfalso; lia)] |]).
+  reflexivity.
+Qed.
+
 Definition reduce_semantic_field (field : raw_field)
     (children : list semantic_summary) : semantic_summary :=
   let resolved := generated_wire_program field in
@@ -2706,7 +2743,8 @@ Definition reduce_semantic_field (field : raw_field)
     complete_receive_has_default_condition (program_family program)
       complete children ||
     complete_match_has_default_guard (program_family program)
-      complete children in
+      complete children ||
+    payload_fixed_point_violated (program_family program) complete children in
   SemanticSummary (raw_tag field) (raw_wire field) (raw_payload field)
     (program_family program) (raw_body field) refused complete
     (score_evidence_for (program_family program) complete children)

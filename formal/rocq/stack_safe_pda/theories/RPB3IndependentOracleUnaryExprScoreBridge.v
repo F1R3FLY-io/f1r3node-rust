@@ -9,17 +9,16 @@
     scan state equals the oracle completeness on the oracle scan state.
 
     Absent and present EVar payloads are recorded after the theorem by
-    computed examples on the generated decoder.  A note on scope: the
-    compiled oracle does not yet dispatch a score for program type 6, so the
-    Var child it really evaluates has no score of its own, and on that child
-    the theorem equates [None] with [None].  The example
-    [evar_present_empty_var_with_its_score] applies the helpers to that same
-    child carrying the score [source_var_score []], and the lemma
+    computed examples on the generated decoder.  The oracle's message dispatch
+    scores program type 6, so the Var child it really evaluates carries the
+    score [source_var_score []], and on that child the theorem equates
+    [Some (constructor 100 over the integer 0)] on both sides; the computed
+    example [evar_present_empty_var_as_evaluated] records exactly this.  The
+    example [evar_present_empty_var_with_its_score] applies the helpers to
+    that child with the score written out, and the lemma
     [evar_present_scored_var_constructs_100] states the general case.  The
     proof of the theorem never unfolds the oracle's message score, so it does
-    not depend on whether that dispatch exists.  The computed example
-    [evar_present_empty_var_as_evaluated] does record the present [None]: it
-    is expected to change, and to fail to compile, when the dispatch is added.
+    not depend on how that dispatch is defined.
 
     Every theory is referred to by its full logical name and no module alias
     is declared.  The placed target helpers of RPB3SemanticReducer and the oracle
@@ -533,9 +532,10 @@ Proof.
   split; [|split; [|split]]; vm_compute; reflexivity.
 Qed.
 
-(** The Var child the compiled oracle really produces: tag 1, type 6, not
-    refused.  It is complete for its parent; since the compiled oracle gives
-    type 6 no score, both score sides are [None]. *)
+(** The Var child the oracle really produces: tag 1, type 6, not refused.  It
+    is complete for its parent, and since the dispatch now gives type 6 a
+    score, the present empty Var is scored as the integer 0 and both sides of
+    the EVar score are constructor 100 over it. *)
 Example evar_present_empty_var_as_evaluated :
   map RPB3IndependentOracleCore.source_summary_tag (witness_children 35 present_empty_payload_body)
     = [1] /\
@@ -553,9 +553,14 @@ Example evar_present_empty_var_as_evaluated :
     (witness_children 35 present_empty_payload_body) = Some true /\
   exact_expr_payload_score 35
     (map RPB3IndependentOracleProjection.project_source_summary
-      (witness_children 35 present_empty_payload_body)) = None /\
-  source_expr_payload_score 35
-    (witness_children 35 present_empty_payload_body) = None.
+      (witness_children 35 present_empty_payload_body)) =
+    Some (RPB3SemanticReducer.score_constructor 100
+      [RPB3SemanticReducer.ScoreInteger 0]) /\
+  option_map RPB3IndependentOracleCore.project_score
+    (source_expr_payload_score 35
+      (witness_children 35 present_empty_payload_body)) =
+    Some (RPB3SemanticReducer.score_constructor 100
+      [RPB3SemanticReducer.ScoreInteger 0]).
 Proof.
   split; [|split; [|split; [|split; [|split; [|split]]]]];
     vm_compute; reflexivity.

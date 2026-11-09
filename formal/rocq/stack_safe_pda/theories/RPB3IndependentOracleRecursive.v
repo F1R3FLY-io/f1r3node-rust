@@ -242,7 +242,13 @@ Definition source_message_completeness (type_id : nat)
   if type_id =? 13 then Some true
   else match Process.source_process_completeness type_id scan children with
   | Some complete => Some complete
-  | None => Name.source_name_completeness type_id scan
+  | None =>
+      match Name.source_name_completeness type_id scan with
+      | Some complete => Some complete
+      | None =>
+          RPB3IndependentOracleExprPayload.source_expr_payload_completeness
+            type_id scan children
+      end
   end.
 
 Definition source_message_score (type_id : nat)
@@ -256,7 +262,13 @@ Definition source_message_score (type_id : nat)
     then None else Cost.cost_family_score type_id children
   else match Process.source_process_family_score type_id complete children with
   | Some score => Some score
-  | None => Name.source_name_family_score type_id complete children
+  | None =>
+      match Name.source_name_family_score type_id complete children with
+      | Some score => Some score
+      | None =>
+          RPB3IndependentOracleExprPayload.source_expr_payload_family_score
+            type_id complete children
+      end
   end.
 
 Definition source_message_extra_refused (type_id : nat)
@@ -266,7 +278,8 @@ Definition source_message_extra_refused (type_id : nat)
   Process.source_process_family_refused type_id complete scan children ||
     (if type_id =? 1
      then source_order_definitely_bad (source_par_component_order children)
-     else false).
+     else false) ||
+    source_collection_outside_fixed_point type_id complete children.
 
 Definition source_message_summary (raw : Schema.raw_field)
     (program : Schema.generated_program)

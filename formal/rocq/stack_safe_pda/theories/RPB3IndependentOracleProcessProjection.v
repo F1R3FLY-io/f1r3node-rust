@@ -768,6 +768,14 @@ Proof.
   split; [reflexivity|].
   repeat (replace (negb true) with false by reflexivity).
   repeat rewrite orb_false_l.
+  assert (not_fixed_point_family :
+    Target.payload_fixed_point_violated type_id
+      (Process.source_process_completeness type_id
+        (Admission.source_scan_children program children) children)
+      (projected_process_children children) = false).
+  { apply Target.payload_fixed_point_violated_other_family;
+      intro same; subst type_id; cbn [In] in family; lia. }
+  rewrite not_fixed_point_family, orb_false_r.
   rewrite <- refused.
   reflexivity.
 Qed.

@@ -35,10 +35,14 @@ Ltac close_unscored_literal_case unlisted :=
     residual tail in which only the default arms can match.  The unbounded
     [type_id] is thus covered through the finite depth of the [match], and
     the [Some false] fall-through of the target is excluded because its
-    nonsemantic identifiers are all listed. *)
+    nonsemantic identifiers are all listed.  The list now names the nineteen
+    families of the original dispatch, the twenty-six expression payload
+    families, and the three carriers 34, 56 and 57, so the payload dispatch
+    of the target and the oracle cannot reach an identifier outside it. *)
 Lemma unscored_family_summaries_agree :
   forall type_id complete children,
-    ~ In type_id [1;8;9;10;11;12;13;15;16;19;20;21;22;23;24;31;32;55;60] ->
+    ~ In type_id [1;6;8;9;10;11;12;13;15;16;19;20;21;22;23;24;27;28;29;30;31;32;33;34;
+       35;36;37;38;39;40;41;42;43;44;45;46;47;48;49;50;51;52;53;54;55;56;57;60] ->
     Target.score_evidence_for type_id complete
       (map Projection.project_source_summary children) = Target.ScoreNotDerived /\
     Process.source_process_family_score type_id complete children = None /\

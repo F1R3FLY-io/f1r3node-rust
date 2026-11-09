@@ -1520,12 +1520,17 @@ Lemma one_pair_emap_witness_satisfies_the_hypotheses :
       one_pair_emap_children) = true.
 Proof. vm_compute. repeat split; reflexivity. Qed.
 
-Example one_pair_emap_is_unscored_on_both_sides :
-  exact_emap_score
-    (map Projection.project_source_summary one_pair_emap_children) = None /\
-  option_map Core.project_score (source_emap_score one_pair_emap_children) =
-    None.
-Proof. vm_compute. split; reflexivity. Qed.
+(** The pair's carrier is scored once the dispatch reaches it, so the one-pair
+    EMap is scored on both sides, with the target equal to the projected
+    oracle. *)
+Example one_pair_emap_is_scored_on_both_sides :
+  exists score,
+    exact_emap_score
+      (map Projection.project_source_summary one_pair_emap_children) =
+      Some score /\
+    option_map Core.project_score (source_emap_score one_pair_emap_children) =
+      Some score.
+Proof. eexists. split; vm_compute; reflexivity. Qed.
 
 Print Assumptions payload_typed_message_score_is_process.
 Print Assumptions aligned_child_typed_message_score_projects.
@@ -1577,4 +1582,4 @@ Print Assumptions value_including_carrier_fails_the_bridge.
 Print Assumptions empty_emap_witness_satisfies_the_hypotheses.
 Print Assumptions empty_emap_scores_agree.
 Print Assumptions one_pair_emap_witness_satisfies_the_hypotheses.
-Print Assumptions one_pair_emap_is_unscored_on_both_sides.
+Print Assumptions one_pair_emap_is_scored_on_both_sides.

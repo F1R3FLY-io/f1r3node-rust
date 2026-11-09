@@ -60,7 +60,7 @@ Proof. vm_compute. reflexivity. Qed.
 
 Example oracle_refuses_unscored_pathmap_value :
   oracle_scored_par_reference constant_hash
-    (pathmap_par_with_values [[42; 2; 42; 0]]) = None.
+    (pathmap_par_with_values [[42; 5; 162; 2; 2; 10; 0]]) = None.
 Proof. vm_compute. reflexivity. Qed.
 
 Print Assumptions oracle_admits_default_pathmap_value.

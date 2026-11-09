@@ -7,6 +7,8 @@ From StackSafePDA Require Import RPB3DescriptorProjectionData
   RPB3IndependentOracleNameDecoderBridge RPB3IndependentOracleRecursive
   RPB3IndependentOracleRecursiveProjection
   RPB3IndependentOracleProcessChildProvenance.
+From StackSafePDA Require RPB3IndependentOracleExprPayload
+  RPB3IndependentOracleConnectiveArmScoreBridge.
 
 Import ListNotations.
 
@@ -810,11 +812,15 @@ Qed.
 Lemma connective_single_child_projects_totally :
   forall child,
     connective_child_total child ->
+    Target.exact_connective_message_arm
+      (Projection.project_source_summary child) =
+    option_map Core.project_score
+      (RPB3IndependentOracleExprPayload.source_connective_message_arm child) ->
     Target.exact_connective_score
       (map Projection.project_source_summary [child]) =
     option_map Core.project_score (Name.source_connective_score [child]).
 Proof.
-  intros child facts.
+  intros child facts arm.
   unfold Target.exact_connective_score, Name.source_connective_score.
   cbn [map].
   change (Target.sem_tag (Projection.project_source_summary child))
@@ -858,7 +864,7 @@ Proof.
         as [[|[|observed]]|];
         destruct (Core.source_summary_tag child =? 3);
         destruct (Core.source_summary_exact_score child) as [nested|];
-        reflexivity.
+        first [exact arm | reflexivity].
     + exfalso. exact facts.
     + exfalso. exact facts.
 Qed.
@@ -866,32 +872,45 @@ Qed.
 Lemma connective_score_projects_totally :
   forall children,
     Forall connective_child_total children ->
+    Forall (fun child =>
+      Target.exact_connective_message_arm
+        (Projection.project_source_summary child) =
+      option_map Core.project_score
+        (RPB3IndependentOracleExprPayload.source_connective_message_arm child))
+      children ->
     Target.exact_connective_score
       (map Projection.project_source_summary children) =
     option_map Core.project_score (Name.source_connective_score children).
 Proof.
-  intros children total.
+  intros children total arms.
   destruct children as [|child [|second rest]].
   - reflexivity.
   - inversion total as [|? ? head_total ?]; subst.
-    exact (connective_single_child_projects_totally child head_total).
+    inversion arms as [|? ? head_arm ?]; subst.
+    exact (connective_single_child_projects_totally child head_total head_arm).
   - reflexivity.
 Qed.
 
 Lemma connective_family_projects :
   forall children,
     Forall connective_child_total children ->
+    Forall (fun child =>
+      Target.exact_connective_message_arm
+        (Projection.project_source_summary child) =
+      option_map Core.project_score
+        (RPB3IndependentOracleExprPayload.source_connective_message_arm child))
+      children ->
     Target.score_evidence_for 55 (Some true)
       (map Projection.project_source_summary children) =
     Projection.project_source_evidence
       (Name.source_name_family_score 55 (Some true) children).
 Proof.
-  intros children total.
+  intros children total arms.
   change (Target.exact_or_unknown (Target.exact_connective_score
       (map Projection.project_source_summary children)) =
     Projection.project_source_evidence (Name.source_connective_score children)).
   exact (exact_or_unknown_of_projected _ _
-    (connective_score_projects_totally children total)).
+    (connective_score_projects_totally children total arms)).
 Qed.
 
 (** ** The unforgeable-name family, 60 *)
@@ -1344,7 +1363,7 @@ Theorem generated_name_family_score_projects_totally :
       (Name.source_name_family_score family complete children).
 Proof.
   intros fuel hash_fn family program body nodes children complete
-    family_member looked_up decoded selected _.
+    family_member looked_up decoded selected scan_valid.
   assert (aligned :
     Forall2 (aligned_child fuel hash_fn body program) nodes children).
   { exact (ProcessChild.generated_selected_children_are_aligned program
@@ -1361,7 +1380,10 @@ Proof.
         looked_up aligned).
     + exact (connective_family_projects children
         (connective_children_are_total fuel hash_fn body program nodes children
-          looked_up aligned)).
+          looked_up aligned)
+        (proj1 (RPB3IndependentOracleConnectiveArmScoreBridge.connective_message_arm_projects
+          fuel hash_fn 55 program body nodes children looked_up decoded selected
+          scan_valid) eq_refl)).
     + exact (unforgeable_family_projects children
         (unforgeable_children_are_total fuel hash_fn body program nodes children
           looked_up aligned)).

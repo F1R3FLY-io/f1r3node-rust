@@ -2,6 +2,7 @@ From Stdlib Require Import List Bool Arith NArith.
 From StackSafePDA Require Import RPB3DescriptorProjectionData
   RPB3GeneratedFieldRefinement RPB3IndependentOracleCore
   RPB3IndependentOracleAdmission.
+From StackSafePDA Require RPB3IndependentOracleExprPayload.
 
 Import ListNotations.
 
@@ -152,7 +153,8 @@ Definition source_connective_score
           then option_map (fun score =>
             Core.source_score_constructor 400 [score])
             (Core.source_summary_exact_score child)
-          else None
+          else RPB3IndependentOracleExprPayload.source_connective_message_arm
+            child
       | _ => None
       end
   | _ => None

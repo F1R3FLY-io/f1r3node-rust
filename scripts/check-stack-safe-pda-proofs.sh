@@ -1379,10 +1379,6 @@ rocq_reject_placeholders theories/RPB3IndependentOracleCostFamilyBridge.v
 TLC_MEMORY_HIGH=6G TLC_RSS=8G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleCostFamilyBridge.v 12 \
   "Cost family correspondence for actual decoded children"
-rocq_reject_placeholders theories/RPB3IndependentOracleNameFamilyBridge.v
-TLC_MEMORY_HIGH=4G TLC_RSS=5G \
-  rocq_compile_with_closed_count theories/RPB3IndependentOracleNameFamilyBridge.v 49 \
-  "Name family scores project totally for actual children"
 rocq_reject_placeholders theories/RPB3IndependentOraclePathMapVerdictBridge.v
 TLC_MEMORY_HIGH=3G TLC_RSS=4G \
   rocq_compile_with_closed_count theories/RPB3IndependentOraclePathMapVerdictBridge.v 6 \
@@ -1423,18 +1419,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleUnscoredFamilyBridge.v
 TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleUnscoredFamilyBridge.v 2 \
   "unscored RPB3 family agreement"
-rocq_reject_placeholders theories/RPB3IndependentOracleMessageAssembly.v
-TLC_MEMORY_HIGH=14G TLC_RSS=16G \
-  rocq_compile_with_closed_count theories/RPB3IndependentOracleMessageAssembly.v 58 \
-  "oracle message summary projects to the target reducer"
 rocq_reject_placeholders theories/RPB3RecursiveParUnfold.v
 TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
   rocq_compile_with_closed_count theories/RPB3RecursiveParUnfold.v 11 \
   "the unfolding equation of the recursive Par reference"
-rocq_reject_placeholders theories/RPB3IndependentOracleRecursiveMatch.v
-TLC_MEMORY_HIGH=16G TLC_RSS=18G \
-  rocq_compile_with_closed_count theories/RPB3IndependentOracleRecursiveMatch.v 44 \
-  "recursive mixed reference matches the independent oracle"
 rocq_reject_placeholders theories/RPB3ExprPayloadHelperControls.v
 TLC_MEMORY_HIGH=1G TLC_RSS=1536M \
   rocq_compile_with_closed_count theories/RPB3ExprPayloadHelperControls.v 24 \
@@ -1447,6 +1435,10 @@ rocq_reject_placeholders theories/RPB3IndependentOracleConnectiveArmScoreBridge.
 TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleConnectiveArmScoreBridge.v 23 \
   "Connective And Or VarRef arms project from the oracle"
+rocq_reject_placeholders theories/RPB3IndependentOracleNameFamilyBridge.v
+TLC_MEMORY_HIGH=4G TLC_RSS=5G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleNameFamilyBridge.v 49 \
+  "Name family scores project totally for actual children"
 rocq_reject_placeholders theories/RPB3IndependentOracleEMapCarrierScoreBridge.v
 TLC_MEMORY_HIGH=4G TLC_RSS=5G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleEMapCarrierScoreBridge.v 51 \
@@ -1495,6 +1487,18 @@ rocq_reject_placeholders theories/RPB3IndependentOracleVarScoreBridge.v
 TLC_MEMORY_HIGH=1536M TLC_RSS=2G \
   rocq_compile_with_closed_count theories/RPB3IndependentOracleVarScoreBridge.v 24 \
   "Var score helper projects from the oracle"
+rocq_reject_placeholders theories/RPB3IndependentOracleExprPayloadAgreement.v
+TLC_MEMORY_HIGH=4G TLC_RSS=5G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleExprPayloadAgreement.v 14 \
+  "expression payload family agreement between the two reducers"
+rocq_reject_placeholders theories/RPB3IndependentOracleMessageAssembly.v
+TLC_MEMORY_HIGH=16G TLC_RSS=18G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleMessageAssembly.v 58 \
+  "oracle message summary projects to the target reducer"
+rocq_reject_placeholders theories/RPB3IndependentOracleRecursiveMatch.v
+TLC_MEMORY_HIGH=16G TLC_RSS=18G \
+  rocq_compile_with_closed_count theories/RPB3IndependentOracleRecursiveMatch.v 44 \
+  "recursive mixed reference matches the independent oracle"
 TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   rocq_check_modules "the RPB3 recursive oracle bridge" \
   StackSafePDA.RPB3IndependentOracleParAnswer \
@@ -1531,7 +1535,8 @@ TLC_MEMORY_HIGH=24G TLC_RSS=28G TLC_RUNTIME_MAX_SEC=5400 \
   StackSafePDA.RPB3IndependentTypedSemanticReference \
   StackSafePDA.RPB3TypedValid \
   StackSafePDA.RPB3IndependentOracleUnaryExprScoreBridge \
-  StackSafePDA.RPB3IndependentOracleVarScoreBridge
+  StackSafePDA.RPB3IndependentOracleVarScoreBridge \
+  StackSafePDA.RPB3IndependentOracleExprPayloadAgreement
 generation_checkpoint_rocq_output="$(
   tlc_bounded "$coqc_bin" -Q theories StackSafePDA \
     theories/GenerationCheckpointPublication.v 2>&1

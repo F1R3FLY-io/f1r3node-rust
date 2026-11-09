@@ -52,6 +52,8 @@ From StackSafePDA Require Import RPB3DescriptorProjectionData
   RPB3IndependentOracleCostFamilyBridge.
 From StackSafePDA Require Import RPB3IndependentOracleNameFamilyBridge
   RPB3IndependentOracleProcessChildAssembly.
+From StackSafePDA Require RPB3IndependentOracleExprPayload
+  RPB3IndependentOracleExprPayloadAgreement.
 
 Import ListNotations.
 
@@ -196,6 +198,10 @@ Lemma reduce_semantic_field_resolved :
        Target.complete_match_has_default_guard type_id
          (Target.component_completeness type_id
            (fold_left (Target.scan_child program) children Schema.empty_scan)
+           children) children ||
+       Target.payload_fixed_point_violated type_id
+         (Target.component_completeness type_id
+           (fold_left (Target.scan_child program) children Schema.empty_scan)
            children) children)
       (Target.component_completeness type_id
         (fold_left (Target.scan_child program) children Schema.empty_scan)
@@ -307,6 +313,9 @@ Record family_agreement (type_id : nat)
        (Oracle.source_message_completeness type_id scan children)
        (projected children) ||
      Target.complete_match_has_default_guard type_id
+       (Oracle.source_message_completeness type_id scan children)
+       (projected children) ||
+     Target.payload_fixed_point_violated type_id
        (Oracle.source_message_completeness type_id scan children)
        (projected children))
 }.
@@ -464,9 +473,10 @@ Proof.
     rewrite score.
     destruct (Oracle.source_par_score children); reflexivity.
   - change (Oracle.source_order_definitely_bad
-      (Oracle.source_par_component_order children) =
+      (Oracle.source_par_component_order children) || false =
       Target.order_definitely_bad
-        (Target.raw_par_component_order (projected children)) || false || false).
+        (Target.raw_par_component_order (projected children)) || false || false
+        || false).
     rewrite RPB3IndependentOracleParOrderBridge.source_par_component_order_projects.
     destruct (Target.raw_par_component_order (projected children))
       as [[|]|]; reflexivity.
@@ -549,7 +559,9 @@ Proof.
   intros family complete scan children member.
   unfold Oracle.source_message_extra_refused.
   destruct member as [same|[same|[same|[same|[same|[same|[same|[same|[same|[]]]]]]]]]];
-    subst family; cbn [Nat.eqb]; rewrite orb_false_r; reflexivity.
+    subst family;
+    cbn [Nat.eqb Oracle.source_collection_outside_fixed_point];
+    repeat rewrite orb_false_r; reflexivity.
 Qed.
 
 Lemma process_family_agreement :
@@ -560,6 +572,10 @@ Lemma process_family_agreement :
     family_agreement family scan scanned children.
 Proof.
   intros family scan scanned children member same_seen correspond.
+  assert (not_eset : family <> 29)
+    by (intro same; subst family; cbn [In] in member; lia).
+  assert (not_emap : family <> 30)
+    by (intro same; subst family; cbn [In] in member; lia).
   constructor.
   - rewrite (source_message_completeness_on_process_family family scan children
       member).
@@ -576,6 +592,10 @@ Proof.
       member).
     rewrite (ProcessProjection.projected_process_target_order_refusal family
       scanned (projected children) member).
+    rewrite (Target.payload_fixed_point_violated_other_family family
+      (Oracle.source_message_completeness family scan children)
+      (projected children) not_eset not_emap).
+    rewrite orb_false_r.
     exact (ProcessProjection.projected_process_family_refusal family
       (Oracle.source_message_completeness family scan children) scan scanned
       children member same_seen correspond).
@@ -600,7 +620,16 @@ Lemma source_message_score_on_name_family :
     Name.source_name_family_score family complete children.
 Proof.
   intros family complete children [same|[same|[same|[same|[]]]]]; subst family;
-    destruct complete as [[|]|]; reflexivity.
+    destruct complete as [[|]|];
+    lazymatch goal with
+    | |- _ = Name.source_name_family_score ?listed ?complete_value ?kids =>
+        change (match Name.source_name_family_score listed complete_value kids with
+                | Some score => Some score
+                | None => None
+                end = Name.source_name_family_score listed complete_value kids);
+        destruct (Name.source_name_family_score listed complete_value kids);
+        reflexivity
+    end.
 Qed.
 
 Lemma name_family_agreement :
@@ -659,7 +688,8 @@ Qed.
     their default arms, which agree for every remaining identifier. *)
 Lemma unscored_family_completeness_agrees :
   forall type_id scan scanned children target_children,
-    ~ In type_id [1;8;9;10;11;12;13;15;16;19;20;21;22;23;24;31;32;55;60] ->
+    ~ In type_id [1;6;8;9;10;11;12;13;15;16;19;20;21;22;23;24;27;28;29;30;31;32;33;34;
+       35;36;37;38;39;40;41;42;43;44;45;46;47;48;49;50;51;52;53;54;55;56;57;60] ->
     Oracle.source_message_completeness type_id scan children =
     Target.component_completeness type_id scanned target_children.
 Proof.
@@ -681,23 +711,64 @@ Lemma unscored_when_outside_every_family_group :
     ~ In type_id [9; 10; 11; 12; 13] ->
     ~ In type_id [8; 15; 16; 19; 20; 21; 22; 23; 24] ->
     ~ In type_id [31; 32; 55; 60] ->
-    ~ In type_id [1;8;9;10;11;12;13;15;16;19;20;21;22;23;24;31;32;55;60].
+    ~ In type_id
+      RPB3IndependentOracleExprPayloadAgreement.expr_payload_family_ids ->
+    ~ In type_id [1;6;8;9;10;11;12;13;15;16;19;20;21;22;23;24;27;28;29;30;31;32;33;34;
+       35;36;37;38;39;40;41;42;43;44;45;46;47;48;49;50;51;52;53;54;55;56;57;60].
 Proof.
-  intros type_id not_par not_cost not_process not_name listed.
+  intros type_id not_par not_cost not_process not_name not_payload listed.
+  unfold RPB3IndependentOracleExprPayloadAgreement.expr_payload_family_ids
+    in not_payload.
   repeat (destruct listed as [same | listed];
     [ subst type_id;
       first
         [ exact (not_par eq_refl)
         | (apply not_cost; cbn [In]; tauto)
         | (apply not_process; cbn [In]; tauto)
-        | (apply not_name; cbn [In]; tauto) ]
+        | (apply not_name; cbn [In]; tauto)
+        | (apply not_payload; cbn [In]; tauto) ]
     | ]).
   exact listed.
 Qed.
 
+(** The default arm of the oracle's fixed-point refusal, the counterpart of
+    [Target.payload_fixed_point_violated_other_family]. *)
+Lemma source_collection_outside_fixed_point_default :
+  forall family complete children,
+    family <> 29 -> family <> 30 ->
+    Oracle.source_collection_outside_fixed_point family complete children =
+    false.
+Proof.
+  intros family complete children not_eset not_emap.
+  do 31 (destruct family as [|family];
+    [first [reflexivity | (exfalso; lia)] |]).
+  reflexivity.
+Qed.
+
+(** The oracle's payload fall-through also has no score outside the listed
+    families: every payload arm of [source_expr_payload_family_score] and of
+    [source_expr_payload_score] is listed, and the rest is the default arm. *)
+Lemma unscored_family_has_no_expr_payload_score :
+  forall type_id complete children,
+    ~ In type_id [1;6;8;9;10;11;12;13;15;16;19;20;21;22;23;24;27;28;29;30;31;32;33;34;
+       35;36;37;38;39;40;41;42;43;44;45;46;47;48;49;50;51;52;53;54;55;56;57;60] ->
+    RPB3IndependentOracleExprPayload.source_expr_payload_family_score
+      type_id complete children = None.
+Proof.
+  intros type_id complete children unscored.
+  pose proof (RPB3IndependentOracleUnscoredFamilyBridge.absent_type_id_is_unlisted
+    type_id _ unscored) as unlisted.
+  clear unscored.
+  destruct complete as [[|]|];
+    do 61 (destruct type_id as [|type_id];
+           [first [discriminate unlisted | reflexivity]|]);
+    first [discriminate unlisted | reflexivity].
+Qed.
+
 Lemma unscored_family_agreement :
   forall family scan scanned children,
-    ~ In family [1;8;9;10;11;12;13;15;16;19;20;21;22;23;24;31;32;55;60] ->
+    ~ In family [1;6;8;9;10;11;12;13;15;16;19;20;21;22;23;24;27;28;29;30;31;32;33;34;
+       35;36;37;38;39;40;41;42;43;44;45;46;47;48;49;50;51;52;53;54;55;56;57;60] ->
     family_agreement family scan scanned children.
 Proof.
   intros family scan scanned children unscored.
@@ -721,6 +792,10 @@ Proof.
     by (intro same; subst family; discriminate unlisted).
   assert (not_match : family <> 22)
     by (intro same; subst family; discriminate unlisted).
+  assert (not_eset : family <> 29)
+    by (intro same; subst family; discriminate unlisted).
+  assert (not_emap : family <> 30)
+    by (intro same; subst family; discriminate unlisted).
   constructor.
   - exact (unscored_family_completeness_agrees family scan scanned children _
       unscored).
@@ -735,7 +810,10 @@ Proof.
       rewrite (cost_family_excludes_other_families family not_nine not_ten
         not_eleven not_twelve not_thirteen).
       rewrite process_none.
-      exact name_none. }
+      rewrite name_none.
+      exact (unscored_family_has_no_expr_payload_score
+        family (Oracle.source_message_completeness family scan children) children
+        unscored). }
     rewrite source_none, target_unscored.
     reflexivity.
   - unfold Oracle.source_message_extra_refused,
@@ -748,6 +826,12 @@ Proof.
       (proj2 (Nat.eqb_neq family 19) not_receive),
       (proj2 (Nat.eqb_neq family 20) not_new),
       (proj2 (Nat.eqb_neq family 22) not_match).
+    rewrite (source_collection_outside_fixed_point_default family
+      (Oracle.source_message_completeness family scan children) children
+      not_eset not_emap),
+      (Target.payload_fixed_point_violated_other_family family
+        (Oracle.source_message_completeness family scan children)
+        (projected children) not_eset not_emap).
     reflexivity.
 Qed.
 
@@ -848,13 +932,14 @@ Qed.
     refusal.  The boolean rearrangement is first a closed lemma so that the
     scan agreement can be rewritten before the final comparison. *)
 Lemma refusal_rearrangement :
-  forall well_formed required ordered order_bad receive_bad guard_bad extra : bool,
-    extra = (order_bad || receive_bad || guard_bad) ->
+  forall well_formed required ordered order_bad receive_bad guard_bad fixed_bad
+      extra : bool,
+    extra = (order_bad || receive_bad || guard_bad || fixed_bad) ->
     negb well_formed || negb true || negb required || negb ordered || extra =
     negb ordered ||
       (negb true || negb well_formed || negb true || negb true ||
-       negb required || order_bad || receive_bad || guard_bad).
-Proof. intros [] [] [] [] [] [] extra same; subst extra; reflexivity. Qed.
+       negb required || order_bad || receive_bad || guard_bad || fixed_bad).
+Proof. intros [] [] [] [] [] [] [] extra same; subst extra; reflexivity. Qed.
 
 Lemma message_summary_refusal_component :
   forall raw type_id program children,
@@ -878,7 +963,7 @@ Proof.
   rewrite <- (family_completeness_agrees _ _ _ _ agreement).
   change (Admission.source_raw_bytes_well_formed raw)
     with (Schema.valid_raw_body raw).
-  exact (refusal_rearrangement _ _ _ _ _ _ _
+  exact (refusal_rearrangement _ _ _ _ _ _ _ _
     (family_refusal_agrees _ _ _ _ agreement)).
 Qed.
 
@@ -1283,9 +1368,19 @@ Proof.
                (target_scan program children) children is_name same_seen).
              exact (name_statement fuel hash_fn type_id program body nodes
                children is_name looked_up decoded sequenced valid).
-          -- apply unscored_family_agreement.
-             exact (unscored_when_outside_every_family_group type_id not_par
-               not_cost not_process not_name). }
+          -- destruct (in_dec Nat.eq_dec type_id
+               RPB3IndependentOracleExprPayloadAgreement.expr_payload_family_ids)
+               as [is_payload|not_payload].
+             ++ destruct (RPB3IndependentOracleExprPayloadAgreement.expr_payload_family_agreement
+                  fuel hash_fn type_id program body nodes children is_payload
+                  looked_up decoded sequenced valid)
+                  as [same_complete [same_score same_refused]].
+                exact (Build_family_agreement type_id
+                  (source_scan program children) (target_scan program children)
+                  children same_complete same_score same_refused).
+             ++ apply unscored_family_agreement.
+                exact (unscored_when_outside_every_family_group type_id not_par
+                  not_cost not_process not_name not_payload). }
   exact (Build_message_summary_premises raw type_id program children payload
     program_id looked_up same_family valid agreement).
 Qed.

@@ -4,6 +4,7 @@ From StackSafePDA Require Import RPB3DescriptorProjectionData
   RPB3SemanticReducer RPB3IndependentOracleCore
   RPB3IndependentOracleAdmission RPB3IndependentOracleName
   RPB3IndependentOracleProjection.
+From StackSafePDA Require RPB3IndependentOracleExprPayload.
 
 Import ListNotations.
 
@@ -310,6 +311,111 @@ Definition unforgeable_child_corresponds
     Target.exact_unforgeable_leaf_bytes type_id
       (Core.source_summary_body child) = Some bytes.
 
+(** A message child accepted by the oracle's typed read projects to the same
+    typed read on the target, once the child's wire and payload are known.
+    [projected_connective_score_success] needs this for the arms that fall
+    through to [source_connective_message_arm]. *)
+Lemma projected_typed_message_score_success :
+  forall expected child raw values score,
+    Core.source_summary_value child = Core.TypedSourceMessage raw values ->
+    Schema.raw_wire (Core.source_summary_raw child) =
+      Schema.LengthDelimited ->
+    Schema.raw_payload (Core.source_summary_raw child) = Schema.Message ->
+    RPB3IndependentOracleExprPayload.source_payload_typed_message_score
+      expected child = Some score ->
+    Target.exact_typed_message_score expected
+      (Projection.project_source_summary child) =
+    Some (Core.project_score score).
+Proof.
+  intros expected child raw values score source_value wire payload accepted.
+  unfold RPB3IndependentOracleExprPayload.source_payload_typed_message_score
+    in accepted.
+  rewrite source_value in accepted.
+  destruct (Core.source_summary_type_id child)
+    as [observed|] eqn:source_type; [|discriminate].
+  destruct ((observed =? expected) &&
+      negb (Core.source_summary_refused child)) eqn:guard; [|discriminate].
+  apply andb_true_iff in guard as [type_matches not_refused].
+  change (Core.source_summary_exact_score child = Some score) in accepted.
+  unfold Target.exact_typed_message_score.
+  change (Target.sem_type_id (Projection.project_source_summary child))
+    with (match Core.source_summary_type_id child with
+      | Some type_id => type_id | None => 0 end).
+  change (Target.sem_wire (Projection.project_source_summary child))
+    with (Schema.raw_wire (Core.source_summary_raw child)).
+  change (Target.sem_payload (Projection.project_source_summary child))
+    with (Schema.raw_payload (Core.source_summary_raw child)).
+  change (Target.sem_definitely_refused
+      (Projection.project_source_summary child))
+    with (Core.source_summary_refused child).
+  change (Target.sem_score_evidence
+      (Projection.project_source_summary child))
+    with (Projection.project_source_evidence
+      (Core.source_summary_exact_score child)).
+  rewrite source_type, wire, payload, not_refused.
+  cbn [Schema.wire_eqb Schema.payload_eqb].
+  rewrite type_matches, accepted.
+  reflexivity.
+Qed.
+
+Lemma projected_connective_body_arm_success :
+  forall constructor child raw values score,
+    Core.source_summary_value child = Core.TypedSourceMessage raw values ->
+    Schema.raw_wire (Core.source_summary_raw child) =
+      Schema.LengthDelimited ->
+    Schema.raw_payload (Core.source_summary_raw child) = Schema.Message ->
+    RPB3IndependentOracleExprPayload.source_connective_body_arm
+      constructor child = Some score ->
+    Target.exact_connective_body_arm constructor
+      (Projection.project_source_summary child) =
+    Some (Core.project_score score).
+Proof.
+  intros constructor child raw values score source_value wire payload accepted.
+  unfold RPB3IndependentOracleExprPayload.source_connective_body_arm
+    in accepted.
+  unfold Target.exact_connective_body_arm.
+  destruct (RPB3IndependentOracleExprPayload.source_payload_typed_message_score
+      57 child) as [carrier_score|] eqn:typed; [|discriminate].
+  rewrite (projected_typed_message_score_success 57 child raw values
+    carrier_score source_value wire payload typed).
+  destruct carrier_score as [word|text|bytes|forest]; try discriminate.
+  destruct forest as [|head tail]; try discriminate.
+  destruct head as [carrier|head_text|head_bytes|head_forest];
+    try discriminate.
+  cbn [Core.project_score Core.project_score_forest].
+  destruct (N.eqb carrier 0); [|discriminate].
+  inversion accepted; subst score.
+  reflexivity.
+Qed.
+
+Lemma projected_connective_message_arm_success :
+  forall child raw values score,
+    Core.source_summary_value child = Core.TypedSourceMessage raw values ->
+    Schema.raw_wire (Core.source_summary_raw child) =
+      Schema.LengthDelimited ->
+    Schema.raw_payload (Core.source_summary_raw child) = Schema.Message ->
+    RPB3IndependentOracleExprPayload.source_connective_message_arm child =
+      Some score ->
+    Target.exact_connective_message_arm
+      (Projection.project_source_summary child) =
+    Some (Core.project_score score).
+Proof.
+  intros child raw values score source_value wire payload accepted.
+  unfold RPB3IndependentOracleExprPayload.source_connective_message_arm
+    in accepted.
+  unfold Target.exact_connective_message_arm.
+  change (Target.sem_tag (Projection.project_source_summary child))
+    with (Core.source_summary_tag child).
+  destruct (Core.source_summary_tag child) as [|[|[|[|[|tag]]]]];
+    try discriminate.
+  - exact (projected_connective_body_arm_success 401 child raw values score
+      source_value wire payload accepted).
+  - exact (projected_connective_body_arm_success 402 child raw values score
+      source_value wire payload accepted).
+  - exact (projected_typed_message_score_success 56 child raw values score
+      source_value wire payload accepted).
+Qed.
+
 Lemma projected_connective_score_success :
   forall children score,
     Forall connective_child_corresponds children ->
@@ -360,7 +466,25 @@ Proof.
           match Core.source_summary_type_id child with
           | Some type_id => type_id =? 1
           | None => false
-          end) eqn:arm; [|discriminate].
+          end) eqn:arm.
+      2: {
+        (* Neither reducer takes the Not arm: both fall through to the
+           And, Or and VarRef arms. *)
+        rewrite wire, payload.
+        change (Target.sem_type_id
+            (Projection.project_source_summary child))
+          with (match Core.source_summary_type_id child with
+            | Some type_id => type_id | None => 0 end).
+        assert (target_guard :
+          (Core.source_summary_tag child =? 3) &&
+          (match Core.source_summary_type_id child with
+           | Some type_id => type_id | None => 0 end =? 1) = false).
+        { destruct (Core.source_summary_type_id child) as [observed|].
+          - exact arm.
+          - exact (andb_false_r _). }
+        rewrite target_guard.
+        exact (projected_connective_message_arm_success child raw values
+          score source_value wire payload accepted). }
       apply andb_true_iff in arm as [tag_is_three type_is_one].
       destruct (Core.source_summary_type_id child)
         as [observed|] eqn:source_type; [|discriminate].

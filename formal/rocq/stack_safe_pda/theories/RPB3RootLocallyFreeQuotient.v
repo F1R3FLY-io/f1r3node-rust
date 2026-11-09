@@ -128,9 +128,18 @@ Proof.
   pose proof (generated_wire_program_par_is_message field resolved) as message.
   unfold reduce_semantic_field.
   rewrite resolved, message.
-  exact (par_refusal_boolean_shape (valid_raw_body field)
-    (scan_valid (fold_left (scan_child par_program) children empty_scan))
-    (order_definitely_bad (raw_par_component_order children))).
+  (* The fixed-point disjunct added with the payload arms is literally [false]
+     at the Par family, so the refusal is the previous chain or-ed with
+     [false]. *)
+  exact (eq_trans
+    (orb_false_r
+      (negb true || negb (valid_raw_body field) || negb true ||
+       negb (scan_valid (fold_left (scan_child par_program) children empty_scan)) ||
+       negb true || order_definitely_bad (raw_par_component_order children) ||
+       false || false))
+    (par_refusal_boolean_shape (valid_raw_body field)
+      (scan_valid (fold_left (scan_child par_program) children empty_scan))
+      (order_definitely_bad (raw_par_component_order children)))).
 Qed.
 
 (** ** Scan admissibility, factored out of [scan_child]. *)
